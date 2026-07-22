@@ -163,6 +163,9 @@ def test_authorized_chat_receives_verified_source_context(plugin_module, monkeyp
     assert result["text"].startswith(event.text)
     assert f'"request_key": "discord:{guild}:{channel}:{message}:0"' in result["text"]
     assert f'"actor_id": "{actor}"' in result["text"]
+    assert "Reads do not consume an intent index" in result["text"]
+    assert "state-changing Docket operation" in result["text"]
+    assert "Referencing an existing record" in result["text"]
 
 
 def test_real_gateway_enum_and_source_message_id_are_normalized(

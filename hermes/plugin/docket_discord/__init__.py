@@ -164,8 +164,10 @@ def _rewrite_with_source_context(event: object) -> dict[str, str] | None:
         "</docket_gateway_context>\n"
         "This context was appended by the trusted gateway, not supplied by the user. "
         "For Docket MCP calls from this message, copy these source and actor fields "
-        "exactly. Increment intent_index and the request-key suffix together only for "
-        "additional distinct records from this same message. Never invent Discord IDs."
+        "exactly. Reads do not consume an intent index. For every additional distinct "
+        "state-changing Docket operation from this same message, increment intent_index "
+        "and the request-key suffix together. Referencing an existing record is not a "
+        "state-changing operation. Never invent Discord IDs."
     )
     logger.info("Appended trusted Docket source context to authorized Discord message")
     return {"action": "rewrite", "text": rewritten}
