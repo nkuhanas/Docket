@@ -31,7 +31,7 @@ The final local gate completed with:
 
 ```text
 uv run pytest -q
-138 passed, 1 third-party Starlette deprecation warning
+139 passed, 1 third-party Starlette deprecation warning
 
 uv run ruff check .
 All checks passed!
@@ -105,7 +105,8 @@ google_oauth: configured
 The active ignored Hermes config contained the exact seventeen-tool template
 allowlist, no Discord cron tool, logged-only tool progress, no interim narration,
 no commentary, and no background-process notifications. Preparation removed the
-prior Discord home-channel binding. `hermes cron list --all` reported no jobs.
+prior Discord home-channel binding and maps the configured Docket operator into
+Hermes' Discord user allowlist. `hermes cron list --all` reported no jobs.
 The Docket startup log showed the transactional `0006 -> 0007` migration and no
 worker, provider, or plugin startup error. PostgreSQL reported `queue_channel_id`
 and `daily_thread_id`, no legacy destination column, and zero enabled reminder

@@ -573,12 +573,14 @@ after active-config changes, and send `/reload-mcp` in existing sessions after a
 tool/schema change.
 
 Preparation rewrites the ignored Hermes `.env` from the credential files and
-does not carry forward `DISCORD_HOME_CHANNEL`. On Docket's Discord surface,
-background-process notifications are disabled and `/sethome` is rejected in
-chat, queue, and system lanes. If chat starts receiving unsolicited output,
-first check the effective home-channel variables, the four managed display
-keys, and `hermes cron list --all`; do not treat chat as a generic delivery
-target.
+maps `DOCKET_OPERATOR_DISCORD_USER_ID` to Hermes' `DISCORD_ALLOWED_USERS`. It
+does not carry forward `DISCORD_HOME_CHANNEL`. Compose repeats the operator
+mapping explicitly so a container recreation cannot silently lose gateway
+authorization. On Docket's Discord surface, background-process notifications
+are disabled and `/sethome` is rejected in chat, queue, and system lanes. If
+chat starts receiving unsolicited output, first check the effective
+home-channel variables, the four managed display keys, and
+`hermes cron list --all`; do not treat chat as a generic delivery target.
 
 ## Calendar cache and reminder recovery
 

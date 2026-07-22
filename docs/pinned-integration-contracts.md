@@ -96,7 +96,9 @@ threads under Docket chat. `/sethome` and generic `/cron` commands fail closed
 on Docket surfaces; the Discord toolset omits generic cron creation, and tool
 progress is logged rather than posted to chat. Background-process notifications
 are disabled, and the prepared Hermes environment has no Discord home-channel
-binding.
+binding. The configured Docket operator is also the sole generated
+`DISCORD_ALLOWED_USERS` entry; Compose repeats that mapping so Hermes' gateway
+authorization and the plugin's exact actor gate cannot drift after recreation.
 
 The current deployment does not register a native Docket Discord application
 command. Persistent Approve/Reject components on the projected card are the

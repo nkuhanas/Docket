@@ -76,6 +76,7 @@ python3 "$ROOT/scripts/sync_hermes_docket_config.py" \
 
 {
     echo "DISCORD_BOT_TOKEN=$(head -n 1 "$CREDENTIALS_DIR/discord_bot_token")"
+    echo "DISCORD_ALLOWED_USERS=$operator_id"
     echo "DOCKET_MCP_TOKEN=$(head -n 1 "$CREDENTIALS_DIR/docket_to_hermes_token")"
     echo "HERMES_TO_DOCKET_TOKEN_FILE=/run/docket-secrets/hermes_to_docket_token"
     echo "DOCKET_INTERNAL_URL=http://docket:8000"
