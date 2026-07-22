@@ -316,6 +316,32 @@ def docket_get_calendar_sync_status(
 
 
 @mcp.tool()
+def docket_list_reminder_rules(
+    account_id: uuid.UUID,
+    calendar_id: CalendarId,
+    enabled: bool | None = None,
+    limit: CalendarLimit = 100,
+) -> dict[str, Any]:
+    """List bounded canonical reminder rules for the configured Calendar target.
+
+    Use this read before updating or disabling a rule so its UUID and current version
+    come from Docket rather than conversational memory or a past-session search. It
+    never schedules, changes, disables, or sends a notification.
+    """
+    try:
+        with session_scope() as session:
+            rules = ReminderRuleService(session).list(
+                account_id=account_id,
+                calendar_id=calendar_id,
+                enabled=enabled,
+                limit=limit,
+            )
+            return {"ok": True, "reminder_rules": rules}
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
 def docket_set_reminder_rule(
     account_id: uuid.UUID,
     calendar_id: CalendarId,

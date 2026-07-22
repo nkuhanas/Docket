@@ -418,13 +418,28 @@ class CalendarSyncService:
 
     def run_due_once(self) -> bool:
         with self.session_factory() as session:
-            accounts = session.scalars(
-                select(Account)
-                .where(Account.provider == "google", Account.enabled.is_(True))
-                .order_by(Account.id)
-            ).all()
-        for account in accounts:
-            if self.sync_target(account.id, self.settings.google_calendar_id):
+            account_attempts = list(
+                session.execute(
+                    select(Account.id, CalendarSyncState.last_attempt_at)
+                    .outerjoin(
+                        CalendarSyncState,
+                        (CalendarSyncState.account_id == Account.id)
+                        & (CalendarSyncState.calendar_id == self.settings.google_calendar_id),
+                    )
+                    .where(Account.provider == "google", Account.enabled.is_(True))
+                ).all()
+            )
+        account_attempts.sort(
+            key=lambda item: (
+                item[1] is not None,
+                _aware(item[1])
+                if item[1] is not None
+                else datetime.min.replace(tzinfo=UTC),
+                str(item[0]),
+            )
+        )
+        for account_id, _last_attempt_at in account_attempts:
+            if self.sync_target(account_id, self.settings.google_calendar_id):
                 return True
         return False
 
@@ -621,7 +636,7 @@ class CalendarReadService:
             rows = list(session.scalars(statement).all())
             rows.sort(
                 key=lambda row: (
-                    row.start_at.astimezone(UTC)
+                    _aware(row.start_at).astimezone(UTC)
                     if row.start_at is not None
                     else datetime.combine(
                         row.start_date or date.max, datetime_time.min, tzinfo=zone

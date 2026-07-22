@@ -20,6 +20,7 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
         "docket_list_accounts",
         "docket_list_calendar_events",
         "docket_get_calendar_sync_status",
+        "docket_list_reminder_rules",
         "docket_set_reminder_rule",
         "docket_disable_reminder_rule",
         "docket_list_queue_items",
@@ -118,6 +119,14 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
     lookup_properties = calendar_lookup.inputSchema["properties"]
     assert lookup_properties["freshness"]["enum"] == ["prefer_cache", "require_fresh"]
     assert lookup_properties["limit"]["maximum"] == 100
+
+    list_rules = tools["docket_list_reminder_rules"]
+    list_rules_description = " ".join((list_rules.description or "").split())
+    assert "rather than conversational memory or a past-session search" in (
+        list_rules_description
+    )
+    list_rules_properties = list_rules.inputSchema["properties"]
+    assert list_rules_properties["limit"]["maximum"] == 100
 
     reminder = tools["docket_set_reminder_rule"]
     reminder_description = " ".join((reminder.description or "").split())

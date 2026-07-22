@@ -27,3 +27,4 @@ def test_manual_intent_skill_preserves_calendar_freshness_and_explicit_reminders
     assert "only when the user explicitly asks for a standing" in skill
     assert "not model-authored text" in skill
     assert "reminder_destination_not_allowed" in skill
+    assert "never search past sessions for a rule UUID or version" in skill

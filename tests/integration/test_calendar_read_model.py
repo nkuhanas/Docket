@@ -17,7 +17,11 @@ from docket.models import (
     ReminderRule,
     ScheduledNotification,
 )
-from docket.providers.discord import FakeDiscordBackend, FakeDiscordProjectionAdapter
+from docket.providers.discord import (
+    DiscordProjectionError,
+    FakeDiscordBackend,
+    FakeDiscordProjectionAdapter,
+)
 from docket.providers.google.calendar import CalendarSnapshotEvent, CalendarSnapshotPage
 from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.schemas.calendar import DisableReminderRuleInput, SetReminderRuleInput
@@ -178,6 +182,46 @@ def test_snapshot_rejects_duplicate_events_and_page_token_loops(
         assert state is not None
         assert state.status == "failed"
         assert state.last_error_code == "calendar_snapshot_page_loop"
+
+
+@pytest.mark.integration
+def test_failed_account_does_not_starve_another_calendar_sync_target(session_factory) -> None:
+    base = datetime(2026, 7, 22, 14, tzinfo=UTC)
+    settings = get_settings().model_copy(update={"calendar_reads_enabled": True})
+    with session_factory.begin() as session:
+        accounts = [
+            Account(
+                provider="google",
+                external_account_id=f"account-{suffix}",
+                capabilities=["calendar_read"],
+                enabled=True,
+            )
+            for suffix in ("a", "b")
+        ]
+        session.add_all(accounts)
+        session.flush()
+        account_ids = sorted((account.id for account in accounts), key=str)
+
+    provider = FakeCalendarProvider()
+    provider.put_snapshot_event(_timed("shared-event", base + timedelta(hours=1)))
+    provider.fail_snapshot_page = 0
+    sync = CalendarSyncService(session_factory, provider, settings, clock=lambda: base)
+
+    assert sync.run_due_once()
+    provider.fail_snapshot_page = None
+    assert sync.run_due_once()
+    with session_factory() as session:
+        states = {
+            state.account_id: state.status
+            for state in session.scalars(select(CalendarSyncState)).all()
+        }
+        assert states == {account_ids[0]: "failed", account_ids[1]: "current"}
+
+    assert sync.run_due_once()
+    with session_factory() as session:
+        states = session.scalars(select(CalendarSyncState)).all()
+        assert {state.account_id for state in states} == set(account_ids)
+        assert all(state.status == "current" for state in states)
 
 
 @pytest.mark.integration
@@ -521,6 +565,12 @@ def test_reminder_rule_is_idempotent_versioned_disabled_and_audited(session_fact
         assert disabled.enabled is False
 
     with session_factory() as session:
+        listed = ReminderRuleService(session, settings).list(
+            account_id=account_id,
+            calendar_id=settings.google_calendar_id,
+            enabled=False,
+            limit=100,
+        )
         rules = session.scalars(select(ReminderRule)).all()
         notifications = session.scalars(select(ScheduledNotification)).all()
         audit_types = set(
@@ -532,6 +582,19 @@ def test_reminder_rule_is_idempotent_versioned_disabled_and_audited(session_fact
             ).all()
         )
         assert len(rules) == 1
+        assert listed == [
+            {
+                "rule_id": str(created.rule_id),
+                "account_id": str(account_id),
+                "calendar_id": settings.google_calendar_id,
+                "scope": "event",
+                "provider_event_id": "rule-event",
+                "lead_seconds": 600,
+                "destination_channel_id": settings.effective_reminder_channel_id(),
+                "enabled": False,
+                "version": 3,
+            }
+        ]
         assert all(item.status == "cancelled" for item in notifications)
         assert audit_types == {
             "reminder_rule.created",
@@ -640,6 +703,71 @@ def test_due_reminder_survives_lost_ack_without_duplicate_discord_message(
         assert notification.attempt_count == 2
         assert notification.discord_message_id is not None
         assert len(backend.notification_messages) == 1
+
+
+@pytest.mark.integration
+def test_exhausted_reminder_delivery_fails_and_emits_one_system_alert(
+    session_factory,
+) -> None:
+    base = datetime.now(UTC).replace(microsecond=0)
+    settings = get_settings().model_copy(
+        update={"calendar_reads_enabled": True, "discord_projection_max_attempts": 2}
+    )
+    account_id = _account(session_factory)
+    provider = FakeCalendarProvider()
+    provider.put_snapshot_event(_timed("failed-delivery", base + timedelta(minutes=5)))
+    sync = CalendarSyncService(session_factory, provider, settings, clock=lambda: base)
+    assert sync.sync_target(account_id, settings.google_calendar_id, force=True)
+
+    message_id = "121212121212121212"
+    with session_factory.begin() as session:
+        result = ReminderRuleService(session, settings).set(
+            SetReminderRuleInput(
+                account_id=account_id,
+                calendar_id=settings.google_calendar_id,
+                scope="event",
+                provider_event_id="failed-delivery",
+                lead_seconds=300,
+                request_key=_request_key(message_id),
+                source=_source(message_id),
+                actor_id=settings.operator_discord_user_id,
+            )
+        )
+        rule_id = result.rule_id
+    assert ReminderDispatcher(
+        session_factory, settings, clock=lambda: base + timedelta(seconds=1)
+    ).run_due_once()
+
+    class FailingAdapter(FakeDiscordProjectionAdapter):
+        def post_calendar_reminder(self, payload):
+            raise DiscordProjectionError("injected_delivery_failure", "Injected failure")
+
+    runner = DiscordProjectionRunner(session_factory, FailingAdapter(), settings)
+    assert runner.run_due_once()
+    with session_factory.begin() as session:
+        outbox = session.scalar(
+            select(OutboxEvent).where(
+                OutboxEvent.event_type == "discord.calendar_reminder.requested"
+            )
+        )
+        assert outbox is not None and outbox.status == "pending"
+        outbox.next_attempt_at = None
+    assert runner.run_due_once()
+
+    with session_factory() as session:
+        notification = session.scalar(
+            select(ScheduledNotification)
+            .join(ReminderRule, ReminderRule.id == ScheduledNotification.reminder_rule_id)
+            .where(ReminderRule.id == rule_id)
+        )
+        alerts = session.scalars(
+            select(OutboxEvent).where(OutboxEvent.event_type == "discord.system_alert.requested")
+        ).all()
+        assert notification is not None and notification.status == "failed"
+        assert notification.attempt_count == 2
+        assert notification.last_error_code == "injected_delivery_failure"
+        assert len(alerts) == 1
+        assert alerts[0].payload["title"] == "Docket Calendar reminder delivery failure"
 
 
 @pytest.mark.integration

@@ -19,6 +19,7 @@ EXPECTED_TOOLS = {
     "docket_list_accounts",
     "docket_list_calendar_events",
     "docket_get_calendar_sync_status",
+    "docket_list_reminder_rules",
     "docket_set_reminder_rule",
     "docket_disable_reminder_rule",
     "docket_list_queue_items",

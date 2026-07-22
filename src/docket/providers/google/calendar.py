@@ -10,6 +10,12 @@ import httpx
 
 from docket.providers.google.oauth import CALENDAR_EVENTS_SCOPE
 
+_SNAPSHOT_FIELDS = (
+    "nextPageToken,timeZone,"
+    "items(id,status,summary,location,start,end,recurringEventId,"
+    "originalStartTime,etag,updated)"
+)
+
 
 @dataclass(frozen=True, slots=True)
 class CalendarEventRequest:
@@ -440,6 +446,7 @@ class GoogleCalendarProvider:
             "singleEvents": "true",
             "showDeleted": "true",
             "maxResults": "2500",
+            "fields": _SNAPSHOT_FIELDS,
         }
         if page_token is not None:
             params["pageToken"] = page_token

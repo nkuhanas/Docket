@@ -69,6 +69,11 @@ def test_google_snapshot_request_is_bounded_paginated_and_redacted(monkeypatch) 
         "singleEvents": "true",
         "showDeleted": "true",
         "maxResults": "2500",
+        "fields": (
+            "nextPageToken,timeZone,"
+            "items(id,status,summary,location,start,end,recurringEventId,"
+            "originalStartTime,etag,updated)"
+        ),
         "pageToken": "page-1",
     }
     assert page.next_page_token == "next-page"
