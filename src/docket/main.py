@@ -15,6 +15,7 @@ from docket.database import configure_database, create_schema_for_smoke, session
 from docket.internal_api import router as internal_router
 from docket.mcp import mcp
 from docket.providers.google import FakeGoogleProvider
+from docket.services.accounts import AccountService
 from docket.worker import WorkerRuntime
 
 
@@ -39,6 +40,8 @@ worker = WorkerRuntime(settings.worker_heartbeat_seconds)
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     if settings.auto_create_schema:
         create_schema_for_smoke()
+    with session_scope() as session:
+        AccountService(session).ensure_configured_google(settings)
     await worker.start()
     async with mcp.session_manager.run():
         yield

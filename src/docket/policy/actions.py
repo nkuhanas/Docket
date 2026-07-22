@@ -1,7 +1,10 @@
 from dataclasses import dataclass
 
+from pydantic import BaseModel
+
 from docket.domain.enums import ActionAvailability, RiskClass
 from docket.domain.errors import ActionDisabled, DocketError
+from docket.schemas.actions import CalendarMeetingActionParameters
 
 
 @dataclass(frozen=True, slots=True)
@@ -10,6 +13,9 @@ class ActionDefinition:
     risk_class: RiskClass
     executor: str | None
     availability: ActionAvailability
+    parameter_schema: type[BaseModel] | None = None
+    requires_account: bool = False
+    approval_ttl_seconds: int = 900
 
 
 ACTION_REGISTRY: dict[str, ActionDefinition] = {
@@ -20,12 +26,16 @@ ACTION_REGISTRY: dict[str, ActionDefinition] = {
             RiskClass.EXTERNAL_PRIVATE_WRITE,
             "google_calendar",
             ActionAvailability.ENABLED,
+            parameter_schema=CalendarMeetingActionParameters,
+            requires_account=True,
         ),
         ActionDefinition(
             "calendar_update_meeting",
             RiskClass.EXTERNAL_PRIVATE_WRITE,
             "google_calendar",
             ActionAvailability.ENABLED,
+            parameter_schema=CalendarMeetingActionParameters,
+            requires_account=True,
         ),
         ActionDefinition(
             "gmail_archive_message",

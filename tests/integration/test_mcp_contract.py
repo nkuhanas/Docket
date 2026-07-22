@@ -14,6 +14,9 @@ async def test_record_and_milestone_two_scaffold_tools_are_exposed() -> None:
         "docket_search_records",
         "docket_update_record",
         "docket_archive_record",
+        "docket_list_accounts",
+        "docket_propose_action",
+        "docket_get_action",
     }
     assert not names.intersection(
         {"record_approval", "consume_approval", "execute_action", "raw_gmail_modify"}
@@ -53,3 +56,14 @@ async def test_record_and_milestone_two_scaffold_tools_are_exposed() -> None:
     assert definitions["RecordSourceInput"]["properties"]["source_type"]["const"] == (
         "discord_message"
     )
+
+    proposal = tools["docket_propose_action"]
+    proposal_description = " ".join((proposal.description or "").split())
+    assert "never records or consumes an approval" in proposal_description
+    assert "never contacts Google Calendar" in proposal_description
+    proposal_properties = proposal.inputSchema["properties"]
+    assert proposal_properties["action_type"]["enum"] == [
+        "calendar_create_meeting",
+        "calendar_update_meeting",
+    ]
+    assert "risk_class" not in proposal_properties

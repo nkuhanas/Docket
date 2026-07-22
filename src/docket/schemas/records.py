@@ -55,6 +55,22 @@ class RecordSourceInput(StrictModel):
     metadata: DiscordSourceMetadata
 
 
+def validate_discord_request_fields(
+    request_key: str, source: RecordSourceInput, actor_id: str
+) -> None:
+    metadata = source.metadata
+    if source.source_object_id != metadata.message_id:
+        raise ValueError("source_object_id must equal metadata.message_id")
+    if actor_id != metadata.user_id:
+        raise ValueError("actor_id must equal metadata.user_id")
+    expected_key = (
+        f"discord:{metadata.guild_id}:{metadata.channel_id}:"
+        f"{metadata.message_id}:{metadata.intent_index}"
+    )
+    if request_key != expected_key:
+        raise ValueError("request_key must match the verified Discord source metadata")
+
+
 class TermData(StrictModel):
     institution: str = Field(min_length=1, max_length=255)
     term_name: str = Field(min_length=1, max_length=255)
@@ -160,18 +176,7 @@ class RememberRecordInput(StrictModel):
         ):
             raise ValueError("generic records require GenericIdentity and GenericRecordData")
 
-        source = self.source
-        metadata = source.metadata
-        if source.source_object_id != metadata.message_id:
-            raise ValueError("source_object_id must equal metadata.message_id")
-        if self.actor_id != metadata.user_id:
-            raise ValueError("actor_id must equal metadata.user_id")
-        expected_key = (
-            f"discord:{metadata.guild_id}:{metadata.channel_id}:"
-            f"{metadata.message_id}:{metadata.intent_index}"
-        )
-        if self.request_key != expected_key:
-            raise ValueError("request_key must match the verified Discord source metadata")
+        validate_discord_request_fields(self.request_key, self.source, self.actor_id)
         return self
 
 

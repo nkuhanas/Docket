@@ -44,5 +44,29 @@ uses exactly `institution`, `term_name`, `start_date`, `end_date`, `timezone`,
 and `notes`; copy explicitly supplied dates without substituting institutional
 calendar dates. The Docket tool's generated JSON schema is authoritative.
 
+Courses always use `record_type: course`. Their canonical identity is
+`term_record_id`, `course_code`, and nullable `section`; the data must repeat
+those fields exactly and use the generated `meetings` object schema. Meeting
+IDs are stable descriptive keys such as `lecture-mo-we-1`, never array indexes.
+If one weekday in a combined meeting changes, replace the course data with
+separate stable meeting objects for the unchanged and changed recurrence.
+
+For one message containing a term, course, and Calendar request, use distinct
+intent indexes from the trusted gateway context: term `0`, course `1`, and
+Calendar proposal `2`. Increment both the source metadata `intent_index` and
+request-key suffix together. Store the term and course before proposing the
+external action.
+
+Before a Calendar proposal, read the course's current version and call
+`docket_list_accounts` to select the explicit enabled Google account. Call
+`docket_propose_action` only when the user explicitly asked for the Calendar
+write. Select the calendar ID returned by `docket_list_accounts`; never
+substitute another target. Docket derives the risk, exact
+schedule, preview, hashes, and approval expiry. If a proposal succeeds, show
+the immutable preview and short code, then instruct the operator to enter
+`/docket approve <short-code>` or `/docket reject <short-code>` in the configured
+Docket queue channel. Do not describe the provider write as complete until
+`docket_get_action` reports a succeeded operation.
+
 External actions are proposals only. Never represent conversational assent as a
 Docket approval and never call a raw provider mutation.

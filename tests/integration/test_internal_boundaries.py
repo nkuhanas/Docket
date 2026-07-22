@@ -41,7 +41,8 @@ def test_internal_api_and_mcp_require_distinct_tokens(session_factory) -> None:
             json=payload,
             headers={"Authorization": f"Bearer {settings.hermes_to_docket_token()}"},
         )
-        assert authenticated.status_code == 501
+        assert authenticated.status_code == 404
+        assert authenticated.json()["detail"]["code"] == "approval_not_found"
 
         assert client.get("/mcp").status_code == 401
         mcp_response = client.get(

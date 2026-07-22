@@ -5,7 +5,6 @@ from typing import Any, cast
 from sqlalchemy import Select, select
 from sqlalchemy.orm import Session
 
-from docket.config import get_settings
 from docket.domain.canonical import canonical_record_key, sha256_json
 from docket.domain.enums import CommandStatus, RecordStatus
 from docket.domain.errors import DocketError, IdempotencyConflict, RecordNotFound, VersionConflict
@@ -19,6 +18,7 @@ from docket.schemas.records import (
     TermData,
     UpdateRecordInput,
 )
+from docket.services.source_context import validate_configured_discord_source
 
 
 def _validated_data(
@@ -49,26 +49,6 @@ def _replayed(result: dict[str, Any]) -> RecordResult:
     replayed = dict(result)
     replayed["disposition"] = "replayed_request"
     return RecordResult.model_validate(replayed)
-
-
-def _validate_discord_source(request: RememberRecordInput) -> None:
-    settings = get_settings()
-    metadata = request.source.metadata
-    expected = {
-        "guild_id": settings.discord_guild_id,
-        "channel_id": settings.chat_channel_id,
-        "user_id": settings.operator_discord_user_id,
-    }
-    actual = {
-        "guild_id": metadata.guild_id,
-        "channel_id": metadata.channel_id,
-        "user_id": metadata.user_id,
-    }
-    if actual != expected:
-        raise DocketError(
-            code="invalid_source_context",
-            message="Discord record source does not match the configured operator context.",
-        )
 
 
 class RecordService:
@@ -158,7 +138,7 @@ class RecordService:
             )
 
     def remember(self, request: RememberRecordInput) -> RecordResult:
-        _validate_discord_source(request)
+        validate_configured_discord_source(request.source, request.actor_id)
         payload = request.model_dump(mode="json")
         command, replay = self._start_command(
             request_key=request.request_key,

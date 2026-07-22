@@ -59,6 +59,9 @@ class Settings(BaseSettings):
         alias="GOOGLE_OAUTH_TOKEN_FILE",
     )
     google_calendar_id: str = Field(default="docket-smoke-calendar", alias="GOOGLE_CALENDAR_ID")
+    google_account_external_id: str = Field(
+        default="primary", alias="GOOGLE_ACCOUNT_EXTERNAL_ID"
+    )
 
     @field_validator("log_level")
     @classmethod
