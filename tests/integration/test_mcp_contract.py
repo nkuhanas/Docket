@@ -1,3 +1,4 @@
+import runpy
 from pathlib import Path
 
 import pytest
@@ -41,6 +42,8 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
         if line.strip()
     }
     assert configured_names == names
+    smoke_contract = runpy.run_path("scripts/compose-mcp-smoke.py")
+    assert smoke_contract["EXPECTED_TOOLS"] == names
     store_description = " ".join((tools["docket_store_record"].description or "").split())
     assert "not Hermes memory" in store_description
     assert "even when search found" in store_description
