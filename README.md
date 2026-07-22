@@ -1,11 +1,11 @@
 # Docket
 
 Docket is a durable authorization and state layer for personal operations. This
-repository currently implements the Milestone 0/1 scaffold: record persistence,
-command idempotency, audit history, health checks, an MCP surface, a
-trusted-internal API boundary, a worker heartbeat, and Hermes integration
-scaffolding. Detailed implementation specifications are maintained privately
-and excluded from Git.
+repository currently implements the Milestone 0-2 path: term/course persistence,
+typed Calendar proposals, immutable previews, authenticated one-time approvals,
+durable operations and attempts, Google Calendar create/update/reconciliation,
+audit history, and Hermes integration. Detailed implementation specifications
+are maintained privately and excluded from Git.
 
 ## Operational documentation
 
@@ -25,7 +25,9 @@ The checked-in smoke configuration is intentionally fake:
 * fake Discord and service tokens
 * the Hermes service is behind the optional `hermes` Compose profile
 
-No smoke command can contact Discord, Gmail, or Google Calendar through Docket.
+With this switch false, Calendar operations use the stateful fake adapter and
+cannot contact Google. The Hermes profile remains opt-in, so the basic smoke
+also cannot contact Discord.
 
 ## Quick smoke
 
@@ -122,8 +124,9 @@ Compose mounts the interactive `docket-manual-intent` skill into Hermes's normal
 skill index. The restricted Gmail triage skill remains plugin-namespaced and is
 not exposed to ordinary Discord sessions.
 
-Do not enable external calls until fake-adapter tests pass and the applicable
-milestone explicitly requires a real-account smoke.
+Do not enable external calls until the fake-adapter suite passes and an operator
+is present for the separately controlled real-account smoke. Automated tests
+never load the production OAuth credential or calendar ID.
 
 ## Hermes pin
 

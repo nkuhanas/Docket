@@ -25,3 +25,17 @@ one consent flow and avoiding future reauthorization. Compensating controls are
 the ignored credential directory, mode-0600 atomic persistence, read-only
 container mount, external calls disabled by default, and narrow Docket-owned
 adapters when those features are implemented.
+
+## 2026-07-22 — Persist the last synchronized Calendar snapshot
+
+`calendar_links` includes a `synced_snapshot` JSON value in addition to the
+private specification's listed columns. The specified link fields identify the
+provider object and record version but cannot reconstruct the exact prior
+schedule after the canonical course record changes. Without a snapshot, an
+update preview cannot honestly show before/after values and reconciliation
+cannot compare the provider result with the last confirmed representation.
+
+The snapshot is a bounded, normalized subset: summary, location, start/end,
+recurrence, and Docket correlation. It excludes attendee data, creator email,
+HTML links, descriptions, credentials, and arbitrary provider response fields.
+It is updated only in the same transaction that confirms operation success.

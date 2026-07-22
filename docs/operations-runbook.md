@@ -9,7 +9,7 @@ Never paste service tokens, OAuth files, authorization headers, or an
 unredacted Hermes session export into tickets or chat. Discord snowflake IDs
 are identifiers rather than credentials, but still minimize their exposure.
 
-## Core operational invariant
+## Record operational invariant
 
 An explicit Discord request to remember or store an operational fact succeeds
 only when all of the following are true:
@@ -27,6 +27,28 @@ only when all of the following are true:
 claim such as “stored” or “confirmed” after only search/get calls is a failure,
 even if the returned fact is correct.
 
+## Calendar operational invariant
+
+A Calendar write succeeds only through this durable sequence:
+
+1. Hermes stores the course and calls `docket_propose_action` with the current
+   record version, stable meeting ID, explicit account UUID, configured calendar
+   ID, and trusted Discord source.
+2. Docket derives the executable parameters, risk, preview, hashes, target
+   versions, short code, and expiry. No provider call occurs here.
+3. The operator enters `/docket approve <short-code>` in the configured queue
+   channel. The trusted plugin calls the internal approval route; ordinary MCP
+   tools cannot approve.
+4. Docket consumes the approval once and commits a pending logical operation.
+5. The worker persists an execution attempt and a call-started marker before
+   contacting Calendar. Confirmed success commits the event link and state
+   transitions together. Ambiguous outcomes enter reconciliation.
+
+Proposed, approved, queued, and succeeded are distinct states. A tool response
+containing a short code is not evidence that Calendar changed. The final
+evidence is a succeeded operation plus a `calendar_links` row at the intended
+record version.
+
 ## First five checks
 
 Run these before changing code or credentials:
@@ -43,8 +65,9 @@ Expected results:
 
 * PostgreSQL and Docket are healthy; Hermes and SearXNG are running.
 * `docket-discord` is `enabled`.
-* Hermes connects to `http://docket:8000/mcp/` and discovers exactly five
-  Milestone 1 tools, including `docket_remember_record`.
+* Hermes connects to `http://docket:8000/mcp/` and discovers exactly eight
+  tools, including `docket_remember_record`, `docket_propose_action`, and
+  `docket_get_action`.
 * Logs contain no startup, plugin-load, MCP-authentication, or migration error.
 
 `hermes mcp test` proves discovery and prints abbreviated descriptions. It does
@@ -65,6 +88,12 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Plugin or skill edit appears ignored | Restart Hermes and begin a new Discord turn | Bind-mounted file changed, but Python hook/skill registration is cached |
 | Docket Python edit appears ignored | Rebuild and recreate Docket | Application source is copied into the image, not bind-mounted |
 | Correct record is returned but no new provenance exists | Inspect `record_sources` and `record.matched` audit evidence | Read path passed; remember path did not |
+| Proposal returns `action_unavailable` | Inspect the named stable meeting and missing-fields detail | Incomplete dates, local times, timezone, or no selected weekday in range |
+| Proposal returns `calendar_not_allowed` | Compare the exact ID returned by `docket_list_accounts` with `GOOGLE_CALENDAR_ID` | Display name or different calendar substituted for the configured opaque ID |
+| `/docket approve` is ignored or rejected | Verify the command was sent in the configured queue channel by the configured operator | Plugin context gate, stale/incorrect short code, or expired approval |
+| Approval is consumed but no Calendar link appears | Inspect operation status, next attempt, attempts, and worker log | Worker stopped, provider failure, backoff, or reconciliation required |
+| Operation is `reconciliation_required` | Inspect attempt error and provider correlation; never force a create retry | Timeout/crash may have reached Google, or reconciliation found conflicting matches |
+| Update creates a second event | Stop external calls and compare action type, link, idempotency key, and external event ID | Update was proposed as create, link was missing, or execution contract regressed |
 
 ## Missing trusted Discord context
 
@@ -183,9 +212,9 @@ Run the local contract test first:
 uv run pytest tests/integration/test_mcp_contract.py
 ```
 
-It verifies the public tool set, descriptions, record-type enum, term schema,
-Discord snowflake patterns, and structured source constraint. Then verify live
-discovery:
+It verifies the public tool set, descriptions, term/course/meeting schemas,
+proposal enum, absence of caller-controlled risk, Discord snowflake patterns,
+and structured source constraint. Then verify live discovery:
 
 ```bash
 sudo docker compose exec -T hermes hermes mcp test docket
@@ -318,9 +347,48 @@ before relying on runtime token rotation.
 be preserved exactly. Do not strip the suffix or replace it with a display
 name.
 
-Keep `DOCKET_EXTERNAL_CALLS_ENABLED=false` until the milestone implementing a
-provider operation has passed fake, adversarial, and explicit live-account
-verification.
+With `DOCKET_EXTERNAL_CALLS_ENABLED=false`, the worker executes against the
+stateful in-process fake Calendar. This exercises approval, operation, attempt,
+link, retry, and reconciliation state without network access. Recreating Docket
+clears fake provider state; this is expected and is not a provider durability
+claim.
+
+With the switch true, Docket loads the authorized-user file, refreshes an access
+token in memory when needed, and calls only the configured Calendar through its
+narrow adapter. The read-only credential mount is sufficient because the
+long-lived refresh token is already persisted and access-token refresh does not
+need to rewrite the file. If Google rotates or replaces the refresh token, rerun
+the host OAuth setup deliberately.
+
+Before changing the switch, confirm the fake crash-window suite:
+
+```bash
+uv run pytest \
+  tests/integration/test_calendar_operations.py \
+  tests/integration/test_schedule_workflow.py
+```
+
+After an action attempt, inspect bounded operational state without dumping
+provider bodies or credentials:
+
+```bash
+sudo docker compose exec -T postgres psql -U docket -d docket -x -c '
+select id, operation_type, status, attempt_count, next_attempt_at,
+       last_error_code, provider_correlation
+from operations order by created_at desc limit 10;
+select operation_id, attempt_number, kind, status, error_code,
+       provider_request_id, started_at, completed_at
+from execution_attempts order by started_at desc limit 20;
+select record_id, meeting_id, calendar_id, external_event_id,
+       last_synced_version, updated_at
+from calendar_links order by updated_at desc limit 10;'
+```
+
+Never manually change a `reconciliation_required` operation to `pending` while
+the external outcome is unknown. Exactly one correlation match is linked;
+zero matches wait through the consistency window before the same operation is
+retried; multiple or mismatched results remain visible and emit a system-alert
+outbox event.
 
 ## Private SearXNG routing
 

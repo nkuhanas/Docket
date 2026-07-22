@@ -3,7 +3,7 @@
 Start here when operating or changing the deployed stack:
 
 * [Operations runbook](operations-runbook.md) — symptom-first diagnosis,
-  reload/rebuild rules, safe recovery, and Milestone 1 verification.
+  reload/rebuild rules, safe recovery, and schedule/Calendar verification.
 * [Pinned integration contracts](pinned-integration-contracts.md) — fragile
   Hermes, MCP, container, and Compose assumptions that must be revalidated on
   upgrades.

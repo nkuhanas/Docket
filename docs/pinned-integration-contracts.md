@@ -145,10 +145,11 @@ This currently assumes compatible numeric ownership for the files Hermes must
 read; moving the stack to a host with a different user mapping requires an
 ownership or narrowly scoped ACL plan, not broader file modes.
 
-The Google credential mount is currently read-only. The host-side Docket OAuth
-setup can create the token, but a future in-container adapter cannot assume it
-can persist refreshed credentials through the same mount. Treat refresh-token
-persistence as an explicit design checkpoint when provider execution is added.
+The Google credential mount is read-only. The Calendar adapter loads the
+persisted refresh token and refreshes short-lived access tokens in memory; it
+does not rewrite the mounted file. A future flow that relies on refresh-token
+rotation or credential replacement must add an explicit host-side persistence
+handoff rather than making the mount writable.
 
 The private SearXNG URL is resolved through the Compose service name. It works
 only from a container on the Docket network; no host port is intentionally
@@ -183,6 +184,40 @@ The model-facing persistence tool is intentionally named
 source-backed assertion: create when absent, match when present, and attach the
 current provenance in either case. The earlier create-oriented name caused the
 model to use read tools when a canonical record already existed.
+
+Calendar proposals are also generated from strict Pydantic input. The model
+supplies a stable meeting ID, exact record version, account UUID, and calendar
+ID; Docket derives risk, executable schedule, hashes, preview, target versions,
+approval references, and operation idempotency. No model-visible tool records
+approval or directly calls Google.
+
+## Google Calendar REST contract
+
+The current adapter uses Calendar API v3 REST endpoints rather than a generated
+client. Calendar IDs and event IDs are percent-encoded as opaque path segments.
+Create uses `events.insert`; modify-in-place uses `events.patch` with the stored
+ETag when available and `sendUpdates=none`.
+
+Every write stores `docket_correlation=<operation UUID>` in
+`extendedProperties.private`. Reconciliation calls `events.list` with the
+`privateExtendedProperty` constraint, `singleEvents=false`, and a bounded result
+count. This behavior follows Google's documented
+[private extended-property search contract](https://developers.google.com/workspace/calendar/api/guides/extended-properties).
+Changing Calendar API behavior, OAuth libraries, recurrence
+serialization, or HTTP transport requires rerunning the zero/one/multiple-match
+and unknown-outcome tests before a live write.
+
+The normalized link snapshot deliberately retains only summary, location,
+start/end, recurrence, and the Docket correlation. Google response fields such
+as creator email and HTML link never enter the link, operation result, audit, or
+Discord projection.
+
+The worker commits an attempt with no provider marker, then commits a
+`call-started:<lease UUID>` marker immediately before network I/O. On lease
+recovery, no marker permits the same operation to return to pending; a marker
+requires reconciliation. A crash between writing the marker and the HTTP call
+therefore takes the conservative reconciliation path and may cost a read, but
+cannot justify a blind duplicate write.
 
 ## Source provenance boundary
 
