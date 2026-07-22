@@ -38,3 +38,56 @@ class RiskClass(StrEnum):
 class ActionAvailability(StrEnum):
     ENABLED = "enabled"
     DISABLED = "disabled"
+
+
+class QueueItemStatus(StrEnum):
+    PENDING = "pending"
+    AWAITING_APPROVAL = "awaiting_approval"
+    EXECUTING = "executing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    RECONCILIATION_REQUIRED = "reconciliation_required"
+    SNOOZED = "snoozed"
+    IGNORED = "ignored"
+
+
+class ActionStatus(StrEnum):
+    AVAILABLE = "available"
+    APPROVAL_PENDING = "approval_pending"
+    READY = "ready"
+    EXECUTING = "executing"
+    SUCCEEDED = "succeeded"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+    SUPERSEDED = "superseded"
+    FAILED = "failed"
+    RECONCILIATION_REQUIRED = "reconciliation_required"
+
+
+class ApprovalStatus(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    CONSUMED = "consumed"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+    SUPERSEDED = "superseded"
+
+
+class OperationStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    RECONCILIATION_REQUIRED = "reconciliation_required"
+
+
+class AttemptKind(StrEnum):
+    EXECUTE = "execute"
+    RECONCILE = "reconcile"
+
+
+class AttemptStatus(StrEnum):
+    STARTED = "started"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    UNKNOWN = "unknown"

@@ -17,11 +17,18 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
     command.upgrade(config, "head")
     engine = create_engine(database_url)
     assert {
+        "action_revisions",
+        "actions",
         "accounts",
+        "approvals",
+        "calendar_links",
         "records",
         "record_sources",
         "command_requests",
+        "execution_attempts",
+        "operations",
         "outbox_events",
+        "queue_items",
         "audit_events",
     }.issubset(set(inspect(engine).get_table_names()))
 
