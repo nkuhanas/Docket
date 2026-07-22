@@ -81,7 +81,9 @@ that channel as control-only and skips every message that is not an exact
 approval or rejection command, so queue conversation cannot reach the model.
 
 The current deployment does not register a native Docket Discord application
-command. Its reliable operator fallback remains an ordinary message:
+command. Persistent Approve/Reject components on the projected card are the
+normal operator surface. The plugin retains this ordinary-message syntax only
+for operator-runbook break-glass recovery:
 
 ```text
 docket approve SHORT-CODE
@@ -89,9 +91,11 @@ docket reject SHORT-CODE
 ```
 
 The hook accepts a leading slash for compatibility if Discord delivers it as an
-ordinary message, but user guidance must not depend on `/docket`. Projection
-buttons use message components and the raw interaction listener described
-above; they do not imply that a native slash command was registered.
+ordinary message, but model guidance must not suggest either typed form. The
+model-facing proposal result omits the short code and identifies the daily
+thread card as the approval surface. Projection buttons use message components
+and the raw interaction listener described above; they do not imply that a
+native slash command was registered.
 
 The real current event shape is:
 
@@ -252,7 +256,9 @@ natural-language intent with the tool's persistence responsibility.
 Calendar proposals are also generated from strict Pydantic input. The model
 supplies a stable meeting ID, exact record version, account UUID, and calendar
 ID; Docket derives risk, executable schedule, hashes, preview, target versions,
-approval references, and operation idempotency. No model-visible tool records
+approval references, and operation idempotency. The short code remains durable
+for break-glass operations but is removed from the model-facing MCP result,
+which instead supplies button-card guidance. No model-visible tool records
 approval or directly calls Google.
 
 ## Google Calendar REST contract
@@ -334,6 +340,11 @@ returns `record_conflict` and attaches no provenance. Historical command rows
 retain the operation name `docket_remember_record`; the store service accepts
 that name only as a replay-compatible predecessor and writes
 `docket_store_record` for new commands.
+
+After `record_conflict`, fetching the canonical data and resubmitting it under a
+new request key is forbidden. It would make a current source appear to support
+fields learned only from Docket. A replacement requires the explicit update
+path and operator intent.
 
 Reusing a request key with any different hashed input is an idempotency
 conflict. For that reason, live replay tests should reuse captured tool

@@ -11,6 +11,7 @@ from docket.domain.errors import DocketError
 from docket.schemas.actions import (
     CalendarActionType,
     CalendarMeetingActionParameters,
+    ProposalResult,
     ProposeActionInput,
 )
 from docket.schemas.records import (
@@ -58,6 +59,27 @@ def _error(exc: Exception) -> dict[str, Any]:
     }
 
 
+def _model_proposal_result(result: ProposalResult) -> dict[str, Any]:
+    """Return the proposal result exposed to the model-facing MCP client.
+
+    The short code remains in Docket's durable action/outbox state for an
+    operator-only break-glass path. It is deliberately absent from the model
+    response so ordinary agent guidance cannot regress from persistent Discord
+    controls to legacy typed approval messages.
+    """
+    payload = result.model_dump(mode="json", exclude={"short_code"})
+    payload["approval_surface"] = {
+        "kind": "discord_button_card",
+        "location": "today's ISO-dated thread under the configured Docket queue",
+        "delivery_status": result.projection_status,
+        "operator_instruction": (
+            "Use the Approve or Reject button on the projected Docket card."
+        ),
+        "typed_code_policy": "break_glass_only_not_for_agent_guidance",
+    }
+    return payload
+
+
 @mcp.tool()
 def docket_store_record(
     record_type: RecordType,
@@ -73,8 +95,9 @@ def docket_store_record(
     Always call this for a current trusted Discord store/save/remember request, even when
     search found the canonical record. Materially equal existing records return
     ``matched_existing`` while attaching the current source provenance. Different data
-    returns ``record_conflict`` without attaching provenance; use ``docket_update_record``
-    for an authorized replacement. Search/get calls alone never persist provenance.
+    returns ``record_conflict`` without attaching provenance. Never copy the existing
+    record into a retry to manufacture a match; use ``docket_update_record`` only for an
+    explicitly authorized replacement. Search/get calls alone never persist provenance.
     """
     try:
         request = StoreRecordInput(
@@ -220,8 +243,11 @@ def docket_propose_action(
     """Propose a typed Calendar write from trusted Discord context.
 
     Docket derives risk, exact executable parameters, immutable preview, hashes,
-    target versions, and approval expiry. This tool never records or consumes an
-    approval and never contacts Google Calendar.
+    target versions, and approval expiry. Normal approval occurs only through the
+    persistent Approve/Reject buttons on the projected card in today's ISO-dated
+    Docket queue thread. Do not instruct the operator to type an approval code; that
+    compatibility path is break-glass only and is not returned to the model. This tool
+    never records or consumes an approval and never contacts Google Calendar.
     """
     try:
         request = ProposeActionInput(
@@ -236,7 +262,7 @@ def docket_propose_action(
         )
         with session_scope() as session:
             result = ActionService(session).propose(request)
-            return {"ok": True, **result.model_dump(mode="json")}
+            return {"ok": True, **_model_proposal_result(result)}
     except Exception as exc:
         return _error(exc)
 

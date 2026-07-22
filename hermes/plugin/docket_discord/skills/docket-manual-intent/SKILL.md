@@ -35,6 +35,11 @@ For manual Discord input:
    the canonical `record` snapshot in the result; do not replace this call with
    a read. A `record_conflict` means no source provenance was attached and must
    not be described as stored.
+   - On `record_conflict`, stop the persistence flow and report the conflict.
+     Never fetch the canonical record, copy its data into a second store call,
+     or advance the intent index merely to manufacture `matched_existing`.
+     Existing canonical data is not evidence that the current message asserted
+     it. Use `docket_update_record` only after an explicit replacement request.
 6. Say that a fact was stored or confirmed only after the store call returns
    `ok: true`. If trusted gateway context is missing or the call fails, say that
    no write occurred instead of implying success.
@@ -60,6 +65,9 @@ those fields exactly and use the generated `meetings` object schema. Meeting
 IDs are stable descriptive keys such as `lecture-mo-we-1`, never array indexes.
 If one weekday in a combined meeting changes, replace the course data with
 separate stable meeting objects for the unchanged and changed recurrence.
+Do not turn test framing or conversational descriptors into `course_title` or
+`notes`; leave optional fields null unless the user explicitly supplies their
+value as course data.
 
 Allocate intent indexes only to state-changing Docket operations actually
 requested by the message, in message order. Reads such as search, get, and
@@ -79,10 +87,12 @@ explicit enabled Google account. Call
 write. Select the calendar ID returned by `docket_list_accounts`; never
 substitute another target. Docket derives the risk, exact
 schedule, preview, hashes, and approval expiry. If a proposal succeeds, show
-the immutable preview and short code, then instruct the operator to send the
-plain message `docket approve <short-code>` or `docket reject <short-code>` in
-the configured Docket queue channel. Do not prefix this fallback with `/`:
-there is no registered Docket Discord application command in the current pin.
+the immutable preview and explain that Docket is publishing a persistent card
+to today's ISO-dated thread under the configured queue. Tell the operator to use
+that card's **Approve** or **Reject** button. Do not instruct or suggest that the
+operator type an approval/rejection code, slash command, or conversational
+assent. Typed codes are an operator-runbook-only break-glass mechanism and are
+intentionally absent from the model-facing proposal result.
 Do not describe the provider write as complete until `docket_get_action`
 reports a succeeded operation.
 

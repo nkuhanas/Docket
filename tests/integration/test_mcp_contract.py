@@ -28,6 +28,7 @@ async def test_record_and_milestone_two_scaffold_tools_are_exposed() -> None:
     assert "even when search found" in store_description
     assert "attaching the current source provenance" in store_description
     assert "record_conflict" in store_description
+    assert "Never copy the existing record" in store_description
     assert "docket_update_record" in store_description
     search_description = " ".join(
         (tools["docket_search_records"].description or "").split()
@@ -67,6 +68,8 @@ async def test_record_and_milestone_two_scaffold_tools_are_exposed() -> None:
     proposal_description = " ".join((proposal.description or "").split())
     assert "never records or consumes an approval" in proposal_description
     assert "never contacts Google Calendar" in proposal_description
+    assert "persistent Approve/Reject buttons" in proposal_description
+    assert "Do not instruct the operator to type an approval code" in proposal_description
     proposal_properties = proposal.inputSchema["properties"]
     assert proposal_properties["action_type"]["enum"] == [
         "calendar_create_meeting",

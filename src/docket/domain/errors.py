@@ -50,7 +50,9 @@ class RecordConflict(DocketError):
             code="record_conflict",
             message=(
                 "The canonical identity already exists with different data; "
-                "no source provenance was attached."
+                "no source provenance was attached. Do not copy the existing "
+                "record and retry as though the current source asserted it; "
+                "request an explicit update decision."
             ),
             details={
                 "record_id": record_id,

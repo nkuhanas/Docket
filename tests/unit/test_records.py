@@ -161,6 +161,7 @@ def test_new_request_with_conflicting_canonical_data_is_rejected(session: Sessio
         service.store(changed)
 
     assert raised.value.code == "record_conflict"
+    assert "Do not copy the existing record" in raised.value.message
     assert raised.value.details is not None
     assert raised.value.details["differing_fields"] == ["end_date"]
     session.rollback()

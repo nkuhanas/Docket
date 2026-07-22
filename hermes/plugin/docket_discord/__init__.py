@@ -1,9 +1,10 @@
 """Trusted Hermes gateway bridge for Docket control messages.
 
 The bridge intentionally uses ``pre_gateway_dispatch`` instead of a model tool.
-Hermes v2026.7.20 supplies the normalized source actor on this hook. The primary
-approval syntax is a plain ``docket approve|reject CODE`` message because no
-native Docket Discord application command is registered. Leading-slash messages
+Hermes v2026.7.20 supplies the normalized source actor on this hook. Persistent
+Approve/Reject buttons are the normal approval surface. Plain
+``docket approve|reject CODE`` messages remain accepted only as an operator
+break-glass path; they are not model-facing guidance. Leading-slash messages
 remain accepted when the Discord client delivers them as ordinary messages.
 """
 

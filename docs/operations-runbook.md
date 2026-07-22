@@ -41,10 +41,10 @@ A Calendar write succeeds only through this durable sequence:
 2. Docket derives the executable parameters, risk, preview, hashes, target
    versions, short code, and expiry. No provider call occurs here.
 3. Docket projects the immutable preview into the ISO-dated public thread under
-   the configured queue. The operator presses Approve/Reject there, or sends the
-   plain fallback `docket approve <short-code>` in the root queue. The trusted
-   plugin calls the internal approval route; ordinary MCP tools cannot approve.
-   The deployment has no registered `/docket` application command.
+   the configured queue. The operator presses Approve/Reject on that card. The
+   trusted plugin calls the internal approval route; ordinary MCP tools cannot
+   approve. Typed approval codes are break-glass compatibility only and must
+   never be presented by Hermes as the normal next step.
 4. Docket consumes the approval once and commits a pending logical operation.
 5. The worker persists an execution attempt and a call-started marker before
    contacting Calendar. Confirmed success commits the event link and state
@@ -62,6 +62,11 @@ with intent `1` using the returned canonical record snapshot. Treat an extra
 past-session search, a separate immediate record read, an idempotency conflict,
 a second proposal attempt, or a runtime skill-edit attempt as orchestration
 regressions even when the final provider behavior succeeds.
+
+A `record_conflict` is not permission to fetch the canonical record, copy its
+data, and retry the store under a new intent index. That sequence falsely binds
+the current Discord source to assertions found only in Docket. Stop and request
+an explicit update decision instead.
 
 ## First five checks
 
@@ -123,6 +128,7 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | No daily thread/card appears | Inspect projection outbox status, then the private plugin listener and Hermes logs | Hermes not recreated after plugin/env change, private listener unavailable, Discord permission/API failure, or retry backoff |
 | Duplicate daily thread or card | Stop retries and inspect exact name/owner or footer-marker collisions | Archived lookup drift, manually copied marker, lost binding, or plugin concurrency regression |
 | Button says the control is unauthorized/stale | Compare stored control projection with actual parent/thread/message and actor | Copied/old card, wrong operator, changed thread parent, projection refresh, or callback drift |
+| Hermes appears stuck on a Docket tool label | Confirm the tool's completion time, then find the following provider-request start/completion pair in `agent.log` | The MCP call may already be complete while the next model stream is stalled; the UI retains the last tool label |
 | Approval is consumed but no Calendar link appears | Inspect operation status, next attempt, attempts, and worker log | Worker stopped, provider failure, backoff, or reconciliation required |
 | Operation is `reconciliation_required` | Inspect attempt error and provider correlation; never force a create retry | Timeout/crash may have reached Google, or reconciliation found conflicting matches |
 | Update creates a second event | Stop external calls and compare action type, link, idempotency key, and external event ID | Update was proposed as create, link was missing, or execution contract regressed |
@@ -250,9 +256,11 @@ no_thread_channels
 ```
 
 The plugin makes that free-response exception safe by dropping every queue
-message except an exact `docket approve CODE` or `docket reject CODE`, then
-checking the configured operator, guild, and channel before calling Docket. A
-queue message never belongs in a model session.
+message except an exact break-glass `docket approve CODE` or
+`docket reject CODE`, then checking the configured operator, guild, and channel
+before calling Docket. A queue message never belongs in a model session. Hermes
+does not receive short codes from `docket_propose_action` and must direct the
+operator to the persistent card buttons instead.
 
 When a decision appears inert, inspect the action graph by action UUID:
 
@@ -280,6 +288,25 @@ are null, with no operation, means the callback never arrived. Check the queue
 channel lists and plugin load before investigating the worker or Calendar. If
 `expires_at` has passed, create a fresh proposal after fixing ingress; never
 manually advance the expired row.
+
+## Hermes appears stuck after a completed Docket call
+
+The Discord progress display retains the last visible tool name while Hermes
+waits for the next model response. It does not prove that Docket is polling.
+Compare these ordered `agent.log` records:
+
+```text
+agent.tool_executor: tool mcp__docket__... completed (...s)
+run_agent: OpenAI client created (codex_stream_request, ...)
+run_agent: OpenAI client closed (request_complete, ...)
+```
+
+If the tool completed but the following client has no close/completion record,
+the wait is in the model-provider stream. `/stop` releases the active run lock
+but preserves conversation history. If the next attempt repeats the stall, use
+`/reset` for a clean session; use `/restart` when a fresh gateway/provider
+connection is also required. Before resubmitting, confirm whether any
+state-changing Docket call completed so a retry cannot create duplicate intent.
 
 ## Discord projection or button failure
 
