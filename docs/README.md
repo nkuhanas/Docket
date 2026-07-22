@@ -1,0 +1,16 @@
+# Docket documentation
+
+Start here when operating or changing the deployed stack:
+
+* [Operations runbook](operations-runbook.md) — symptom-first diagnosis,
+  reload/rebuild rules, safe recovery, and Milestone 1 verification.
+* [Pinned integration contracts](pinned-integration-contracts.md) — fragile
+  Hermes, MCP, container, and Compose assumptions that must be revalidated on
+  upgrades.
+* [Specification deviations](deviations.md) — accepted differences from the
+  private implementation specification and their compensating controls.
+
+These notes describe the current pinned stack. They are not a substitute for
+the specification or migrations. When behavior and documentation disagree,
+capture live evidence, fail closed, and update both the implementation and
+these notes in the same change.

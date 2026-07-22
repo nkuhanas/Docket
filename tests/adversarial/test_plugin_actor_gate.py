@@ -1,0 +1,204 @@
+import importlib.util
+from enum import Enum
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+PLUGIN_PATH = Path("hermes/plugin/docket_discord/__init__.py")
+
+
+class Platform(Enum):
+    DISCORD = "discord"
+
+
+@pytest.fixture
+def plugin_module():
+    spec = importlib.util.spec_from_file_location("docket_discord_plugin", PLUGIN_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.adversarial
+def test_unauthorized_actor_is_dropped_before_model(plugin_module, monkeypatch) -> None:
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", "operator")
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", "guild")
+    monkeypatch.setenv("DOCKET_QUEUE_CHANNEL_ID", "queue")
+    delivered = False
+
+    def fake_post(**_kwargs) -> None:
+        nonlocal delivered
+        delivered = True
+
+    monkeypatch.setattr(plugin_module, "_post_decision", fake_post)
+    event = SimpleNamespace(
+        text="/docket approve ABCDEFGH",
+        message_id="message",
+        source=SimpleNamespace(
+            platform="discord",
+            user_id="attacker",
+            guild_id="guild",
+            chat_id="queue",
+        ),
+    )
+
+    result = plugin_module._pre_gateway_dispatch(event)
+    assert result == {"action": "skip", "reason": "unauthorized-docket-control"}
+    assert delivered is False
+
+
+@pytest.mark.adversarial
+def test_authorized_control_is_handled_without_model(plugin_module, monkeypatch) -> None:
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", "operator")
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", "guild")
+    monkeypatch.setenv("DOCKET_QUEUE_CHANNEL_ID", "queue")
+    captured = {}
+
+    def fake_post(**kwargs) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(plugin_module, "_post_decision", fake_post)
+    event = SimpleNamespace(
+        text="/docket reject ABCDEFGH",
+        message_id="message",
+        source=SimpleNamespace(
+            platform="discord",
+            user_id="operator",
+            guild_id="guild",
+            chat_id="queue",
+        ),
+    )
+
+    result = plugin_module._pre_gateway_dispatch(event)
+    assert result == {"action": "skip", "reason": "docket-control-handled"}
+    assert captured["decision"] == "reject"
+
+
+@pytest.mark.adversarial
+@pytest.mark.parametrize(
+    ("guild_id", "channel_id"),
+    [("", "queue"), ("other-guild", "queue"), ("guild", "other-channel")],
+)
+def test_control_is_rejected_outside_trusted_context(
+    plugin_module, monkeypatch, guild_id: str, channel_id: str
+) -> None:
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", "operator")
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", "guild")
+    monkeypatch.setenv("DOCKET_QUEUE_CHANNEL_ID", "queue")
+    delivered = False
+
+    def fake_post(**_kwargs) -> None:
+        nonlocal delivered
+        delivered = True
+
+    monkeypatch.setattr(plugin_module, "_post_decision", fake_post)
+    event = SimpleNamespace(
+        text="/docket approve ABCDEFGH",
+        message_id="message",
+        source=SimpleNamespace(
+            platform="discord",
+            user_id="operator",
+            guild_id=guild_id,
+            chat_id=channel_id,
+        ),
+    )
+
+    result = plugin_module._pre_gateway_dispatch(event)
+    assert result == {"action": "skip", "reason": "unauthorized-docket-control"}
+    assert delivered is False
+
+
+def test_authorized_chat_receives_verified_source_context(plugin_module, monkeypatch) -> None:
+    actor = "111111111111111111"
+    guild = "222222222222222222"
+    channel = "333333333333333333"
+    message = "444444444444444444"
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", channel)
+    event = SimpleNamespace(
+        text="Store my Fall 2026 term",
+        message_id=message,
+        source=SimpleNamespace(
+            platform="discord",
+            user_id=actor,
+            guild_id=guild,
+            chat_id=channel,
+        ),
+    )
+
+    result = plugin_module._pre_gateway_dispatch(event)
+
+    assert result is not None and result["action"] == "rewrite"
+    assert result["text"].startswith(event.text)
+    assert f'"request_key": "discord:{guild}:{channel}:{message}:0"' in result["text"]
+    assert f'"actor_id": "{actor}"' in result["text"]
+
+
+def test_real_gateway_enum_and_source_message_id_are_normalized(
+    plugin_module, monkeypatch
+) -> None:
+    actor = "111111111111111111"
+    guild = "222222222222222222"
+    channel = "333333333333333333"
+    message = "444444444444444444"
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", channel)
+    event = SimpleNamespace(
+        text="Remember my Fall 2026 term",
+        message_id=None,
+        source=SimpleNamespace(
+            platform=Platform.DISCORD,
+            user_id=actor,
+            guild_id=guild,
+            chat_id=channel,
+            message_id=message,
+        ),
+    )
+
+    result = plugin_module._pre_gateway_dispatch(event)
+
+    assert result is not None and result["action"] == "rewrite"
+    assert f'"request_key": "discord:{guild}:{channel}:{message}:0"' in result["text"]
+
+
+def test_chat_context_is_not_added_for_untrusted_actor(plugin_module, monkeypatch) -> None:
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", "111111111111111111")
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", "222222222222222222")
+    monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", "333333333333333333")
+    event = SimpleNamespace(
+        text="Store attacker data",
+        message_id="444444444444444444",
+        source=SimpleNamespace(
+            platform="discord",
+            user_id="999999999999999999",
+            guild_id="222222222222222222",
+            chat_id="333333333333333333",
+        ),
+    )
+
+    assert plugin_module._pre_gateway_dispatch(event) is None
+
+
+def test_session_commands_are_not_rewritten(plugin_module, monkeypatch) -> None:
+    actor = "111111111111111111"
+    guild = "222222222222222222"
+    channel = "333333333333333333"
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", channel)
+    event = SimpleNamespace(
+        text="/reset",
+        message_id="444444444444444444",
+        source=SimpleNamespace(
+            platform="discord",
+            user_id=actor,
+            guild_id=guild,
+            chat_id=channel,
+        ),
+    )
+
+    assert plugin_module._pre_gateway_dispatch(event) is None

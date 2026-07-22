@@ -1,0 +1,12 @@
+.git
+.gitignore
+.venv
+.runtime
+.env
+backups
+secrets
+tests
+**/__pycache__
+**/*.py[cod]
+*.db
+*.log

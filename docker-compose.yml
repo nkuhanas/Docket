@@ -1,0 +1,118 @@
+name: docket
+
+services:
+  postgres:
+    image: postgres:16.9-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: docket
+      POSTGRES_USER: docket
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-docket-smoke}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U docket -d docket"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks: [docket-internal]
+
+  docket:
+    build: .
+    restart: unless-stopped
+    user: "${DOCKET_UID:-10001}:${DOCKET_GID:-10001}"
+    command:
+      - sh
+      - -c
+      - ./.venv/bin/alembic upgrade head && exec ./.venv/bin/uvicorn docket.main:app --host 0.0.0.0 --port 8000
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DOCKET_DATABASE_URL: ${DOCKET_DATABASE_URL:-postgresql+psycopg://docket:docket-smoke@postgres:5432/docket}
+      DOCKET_TO_HERMES_TOKEN_FILE: /run/docket-secrets/docket_to_hermes_token
+      HERMES_TO_DOCKET_TOKEN_FILE: /run/docket-secrets/hermes_to_docket_token
+      DOCKET_INTERACTION_SIGNING_KEY_FILE: /run/docket-secrets/interaction_signing_key
+      GOOGLE_OAUTH_CLIENT_FILE: /run/docket-secrets/google_oauth_client.json
+      GOOGLE_OAUTH_TOKEN_FILE: /run/docket-secrets/google_oauth_token.json
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ${DOCKET_CREDENTIALS_DIR:-./secrets/smoke}:/run/docket-secrets:ro
+      - ./backups:/var/lib/docket/backups
+    ports:
+      - "127.0.0.1:${DOCKET_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready')"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+    networks: [docket-internal]
+
+  searxng:
+    image: ${SEARXNG_IMAGE:-docker.io/searxng/searxng:2026.7.19-6da6eee26@sha256:b8ca38ba06eea544d7555e88321e212ddc0d5c3c7de055419cfb2e5c6bf30812}
+    restart: unless-stopped
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - export SEARXNG_SECRET="$$(cat /run/secrets/searxng_secret)"; exec /usr/local/searxng/entrypoint.sh
+    environment:
+      SEARXNG_BIND_ADDRESS: 0.0.0.0
+      SEARXNG_PORT: 8080
+      SEARXNG_LIMITER: "false"
+      SEARXNG_PUBLIC_INSTANCE: "false"
+    secrets:
+      - searxng_secret
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - searxng-cache:/var/cache/searxng
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    networks: [docket-internal]
+
+  hermes:
+    profiles: ["hermes"]
+    image: ${HERMES_IMAGE:-nousresearch/hermes-agent:v2026.7.20}
+    restart: unless-stopped
+    command: ["gateway", "run"]
+    env_file:
+      - path: .runtime/hermes/.env
+        required: false
+    environment:
+      HERMES_UID: ${HERMES_UID:-1000}
+      HERMES_GID: ${HERMES_GID:-1000}
+      HERMES_TO_DOCKET_TOKEN_FILE: /run/docket-secrets/hermes_to_docket_token
+      DOCKET_INTERNAL_URL: http://docket:8000
+      DOCKET_OPERATOR_DISCORD_USER_ID: ${DOCKET_OPERATOR_DISCORD_USER_ID:-000000000000000001}
+      DOCKET_DISCORD_GUILD_ID: ${DOCKET_DISCORD_GUILD_ID:-000000000000000002}
+      DOCKET_CHAT_CHANNEL_ID: ${DOCKET_CHAT_CHANNEL_ID:-000000000000000003}
+      DOCKET_QUEUE_CHANNEL_ID: ${DOCKET_QUEUE_CHANNEL_ID:-000000000000000004}
+      HERMES_PLUGINS_DEBUG: ${HERMES_PLUGINS_DEBUG:-0}
+    depends_on:
+      docket:
+        condition: service_healthy
+    volumes:
+      - ./.runtime/hermes:/opt/data
+      - ./hermes/plugin/docket_discord:/opt/data/plugins/docket-discord:ro
+      - ./hermes/plugin/docket_discord/skills/docket-manual-intent:/opt/data/skills/docket-manual-intent:ro
+      - ${DOCKET_CREDENTIALS_DIR:-./secrets/smoke}:/run/docket-secrets:ro
+    networks: [docket-internal]
+
+volumes:
+  postgres-data:
+  searxng-cache:
+
+secrets:
+  searxng_secret:
+    file: ${DOCKET_CREDENTIALS_DIR:-./secrets/smoke}/searxng_secret
+
+networks:
+  docket-internal:
+    internal: false

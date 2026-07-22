@@ -1,0 +1,47 @@
+# Hermes Agent v2026.7.20 / source commit c7d08de287556b3d339df336b180a39d4980ebd7
+# Replace every Discord ID before enabling the gateway.
+
+discord:
+  require_mention: true
+  thread_require_mention: false
+  free_response_channels:
+    - "000000000000000003" # docket-chat
+  allowed_channels:
+    - "000000000000000003" # docket-chat
+    - "000000000000000004" # docket-queue
+    - "000000000000000005" # docket-system
+  no_thread_channels:
+    - "000000000000000003"
+  ignored_channels: []
+  history_backfill: false
+  allow_mentions:
+    everyone: false
+    roles: false
+    users: true
+    replied_user: true
+
+group_sessions_per_user: true
+
+plugins:
+  enabled:
+    - docket-discord
+
+mcp_servers:
+  docket:
+    url: "http://docket:8000/mcp/"
+    headers:
+      Authorization: "Bearer ${DOCKET_MCP_TOKEN}"
+    timeout: 30
+    connect_timeout: 15
+    supports_parallel_tool_calls: false
+    sampling:
+      enabled: false
+    tools:
+      include:
+        - docket_remember_record
+        - docket_get_record
+        - docket_search_records
+        - docket_update_record
+        - docket_archive_record
+      prompts: false
+      resources: false

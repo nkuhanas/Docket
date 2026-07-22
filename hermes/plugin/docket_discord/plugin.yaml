@@ -1,0 +1,24 @@
+name: docket-discord
+version: 0.1.0
+description: Trusted Discord source-provenance and approval bridge for Docket
+provides_hooks:
+  - pre_gateway_dispatch
+requires_env:
+  - name: DOCKET_INTERNAL_URL
+    description: Private Compose URL for the Docket service
+    secret: false
+  - name: HERMES_TO_DOCKET_TOKEN_FILE
+    description: Mounted service-token file used only by the trusted callback path
+    secret: true
+  - name: DOCKET_OPERATOR_DISCORD_USER_ID
+    description: The only Discord user allowed to submit Docket control commands
+    secret: false
+  - name: DOCKET_DISCORD_GUILD_ID
+    description: The only Discord guild allowed to submit Docket control commands
+    secret: false
+  - name: DOCKET_CHAT_CHANNEL_ID
+    description: The only Discord channel whose messages receive trusted Docket source context
+    secret: false
+  - name: DOCKET_QUEUE_CHANNEL_ID
+    description: The only Discord channel allowed to submit Docket control commands
+    secret: false
