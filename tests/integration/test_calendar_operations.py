@@ -310,3 +310,33 @@ def test_multiple_reconciliation_matches_remain_visible(session_factory) -> None
         assert operation.status == "reconciliation_required"
         assert alert is not None
         assert alert.payload["match_count"] == 2
+
+
+@pytest.mark.integration
+def test_transient_failure_retries_same_operation_with_new_attempt(session_factory) -> None:
+    operation_id = seed_create(session_factory)
+    provider = FakeCalendarProvider()
+    provider.next_create_outcome = "transient"
+    runner = OperationRunner(session_factory, provider)
+
+    assert runner.run_due_once() is True
+    with session_factory.begin() as session:
+        operation = session.get(Operation, operation_id)
+        assert operation.status == "pending"
+        assert operation.attempt_count == 1
+        operation.next_attempt_at = utc_now()
+
+    assert runner.run_due_once() is True
+    with session_factory() as session:
+        operation = session.get(Operation, operation_id)
+        attempts = list(
+            session.scalars(
+                select(ExecutionAttempt)
+                .where(ExecutionAttempt.operation_id == operation_id)
+                .order_by(ExecutionAttempt.attempt_number)
+            )
+        )
+        assert operation.status == "succeeded"
+        assert [attempt.status for attempt in attempts] == ["failed", "succeeded"]
+        assert [attempt.attempt_number for attempt in attempts] == [1, 2]
+        assert len(provider.events) == 1
