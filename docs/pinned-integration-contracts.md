@@ -48,7 +48,7 @@ on every request. Docket's callback uses the independent
 
 Hermes performs overlapping plugin discovery during this pin's startup. Each
 discovery pass imports an isolated plugin module, so module globals alone cannot
-prevent a transient second bind. Plugin `0.4.0` starts the private HTTP server
+prevent a transient second bind. Plugin `0.5.0` starts the private HTTP server
 under a background supervisor: an `EADDRINUSE` defers that copy without failing
 plugin registration, and it retries if the process that temporarily owned the
 port exits. Healthy startup may contain one `startup deferred` line, followed
@@ -68,6 +68,9 @@ Pinned outbound assumptions to revalidate:
   initial response before the authenticated Docket callback and follow-up.
 * message history and embed footer text are available for stable marker
   recovery after an acknowledgement is lost.
+* configured-channel reminder posts can recover by the stable
+  `docket-calendar-reminder:<notification UUID>` footer without enabling
+  mentions, components, arbitrary content, or arbitrary destinations.
 
 The hook is invoked before ordinary gateway authorization. Therefore the plugin
 must perform its own exact actor/guild/channel check and fail closed for control
@@ -269,6 +272,14 @@ for break-glass operations but is removed from the model-facing MCP result,
 which instead supplies button-card guidance. No model-visible tool records
 approval or directly calls Google.
 
+Calendar lookups add four model-visible tools without exposing a provider
+client: bounded cache lookup, redacted sync status, explicit reminder-rule set,
+and explicit reminder-rule disable. Their generated schemas cap lookup windows,
+result counts, filters, lead times, destinations, source context, and optimistic
+rule versions. The active and template allowlists are synchronized by
+`scripts/prepare-hermes-home.sh`, but an existing Hermes session still requires
+`/reload-mcp` after deployment.
+
 ## Google Calendar REST contract
 
 The current adapter uses Calendar API v3 REST endpoints rather than a generated
@@ -289,6 +300,19 @@ The normalized link snapshot deliberately retains only summary, location,
 start/end, recurrence, and the Docket correlation. Google response fields such
 as creator email and HTML link never enter the link, operation result, audit, or
 Discord projection.
+
+The Calendar read adapter uses `events.list` with explicit `timeMin`, `timeMax`,
+`singleEvents=true`, `showDeleted=true`, bounded page/event counts, and full
+pagination. It never combines rolling-window bounds with a provider sync token.
+Only a complete in-memory page walk enters the database promotion transaction;
+any timeout, malformed page, repeated identity/token, authorization failure, or
+bound exhaustion leaves the prior generation intact and reports it stale.
+
+`DOCKET_CALENDAR_READS_ENABLED` selects this real read adapter independently of
+`DOCKET_EXTERNAL_WRITES_ENABLED`, which selects the mutation/reconciliation
+adapter. Both default false. This split is a least-privilege boundary: enabling
+read synchronization cannot cause an approved or pending write operation to be
+sent to Google.
 
 The worker commits an attempt with no provider marker, then commits a
 `call-started:<lease UUID>` marker immediately before network I/O. On lease

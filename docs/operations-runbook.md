@@ -114,17 +114,17 @@ Run the Hermes plugin-list probe only after the gateway log reports that Discord
 is connected and the gateway is running. Do not parallelize it with a Hermes
 restart: this pinned CLI imports user plugins, whose registration has the side
 effect of binding the private projection port. A startup-time probe can contend
-with the gateway on port 8787. Plugin `0.4.0` retries that bind, but avoiding the
+with the gateway on port 8787. Plugin `0.5.0` retries that bind, but avoiding the
 race keeps startup and diagnostics unambiguous.
 
 Expected results:
 
 * PostgreSQL and Docket are healthy; Hermes and SearXNG are running.
-* `docket-discord` `0.4.0` is `enabled`.
-* Hermes connects to `http://docket:8000/mcp/` and discovers exactly twelve
+* `docket-discord` `0.5.0` is `enabled`.
+* Hermes connects to `http://docket:8000/mcp/` and discovers exactly sixteen
   tools, including `docket_store_record`, `docket_propose_action`,
   `docket_list_queue_items`, `docket_snooze_queue_item`, and
-  `docket_ignore_queue_item`.
+  `docket_ignore_queue_item`, plus the four Calendar read/reminder tools.
 * Logs contain no startup, plugin-load, MCP-authentication, or migration error.
 
 After an MCP tool, schema, or allowlist change, send `/reload-mcp` in the active
@@ -167,6 +167,9 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Approval is consumed but no Calendar link appears | Inspect operation status, next attempt, attempts, and worker log | Worker stopped, provider failure, backoff, or reconciliation required |
 | Operation is `reconciliation_required` | Inspect attempt error and provider correlation; never force a create retry | Timeout/crash may have reached Google, or reconciliation found conflicting matches |
 | Update creates a second event | Stop external calls and compare action type, link, idempotency key, and external event ID | Update was proposed as create, link was missing, or execution contract regressed |
+| Calendar lookup is empty or stale | Inspect `calendar_sync_states`, its covered window, and the prior cache generation before changing credentials | Read gate disabled, sync due/leased, OAuth failure, partial page walk, or requested range outside the cache |
+| Reminder does not arrive | Inspect rule version, event cache identity, scheduled row, notification outbox, and plugin `0.5.0` logs | Rule disabled, event moved/cancelled, stale event already began, wrong configured reminder channel, or Discord retry |
+| Duplicate reminder appears | Stop retries and compare notification ID, event-start key, outbox dedupe key, and `docket-calendar-reminder:<uuid>` footer marker | Marker collision, manual copy, lost binding, or plugin idempotency regression |
 
 ## Missing trusted Discord context
 
@@ -369,7 +372,7 @@ from discord_projections order by created_at desc limit 20;'
 First failure points:
 
 * `discord_transport_error` or `discord_runtime_unavailable`: verify Hermes is
-  running, plugin `0.4.0` is enabled, port 8787 is exposed only internally, and
+  running, plugin `0.5.0` is enabled, port 8787 is exposed only internally, and
   Hermes was recreated after Compose environment changes. The default ten
   attempts cover ordinary Hermes startup; do not reduce the window without
   measuring the pinned runtime's initialization time.
@@ -400,7 +403,7 @@ print("projection listener reachable")'
 Hermes plugin edits require a gateway restart. `/reload-mcp` is still required
 for MCP tool/schema changes, but it does not reload this Python plugin.
 
-The pinned Hermes runtime performs overlapping plugin discovery. Plugin `0.4.0`
+The pinned Hermes runtime performs overlapping plugin discovery. Plugin `0.5.0`
 therefore starts port 8787 under a retrying supervisor: one discovery pass may
 log that startup is deferred because the port is in use, but plugin loading must
 still succeed and one listener must remain reachable. A warning that the plugin
@@ -523,8 +526,9 @@ After any lifecycle action, rerun the first checks.
 
 `DOCKET_ENVIRONMENT` accepts `smoke`, `development`, `test`, and `production`.
 A real Discord deployment should use `production`, even while
-`DOCKET_EXTERNAL_CALLS_ENABLED=false`. The external-call switch is independent
-of the environment label.
+`DOCKET_CALENDAR_READS_ENABLED=false` and
+`DOCKET_EXTERNAL_WRITES_ENABLED=false`. Both provider gates are independent of
+the environment label and of each other.
 
 Production mode adds safety checks: placeholder Discord IDs and automatic
 schema creation are rejected. It does not enable Google or other provider
@@ -537,7 +541,7 @@ calls.
 * sets Docket's container UID/GID to the invoking host UID/GID;
 * writes `.env` and secret files atomically with restrictive modes.
 
-It does not set `DOCKET_ENVIRONMENT=production`, enable external calls, fill in
+It does not set `DOCKET_ENVIRONMENT=production`, enable provider gates, fill in
 Discord IDs, rotate an existing PostgreSQL role, or authorize Google. Check
 those items separately.
 
@@ -553,15 +557,54 @@ Hermes will fail to read its mounted files even though the paths exist. Check
 numeric ownership and container UID before loosening permissions; do not solve
 the problem with world-readable secrets.
 
-`scripts/prepare-hermes-home.sh` has asymmetric update behavior:
+`scripts/prepare-hermes-home.sh` preserves operator-managed Hermes settings:
 
 * it creates `.runtime/hermes/config.yaml` from the template only when the
   active file does not already exist;
+* it synchronizes only Docket's managed MCP tool allowlist on every run;
 * it rewrites `.runtime/hermes/.env` on every run.
 
-Therefore rerunning it does not propagate later tool-allowlist or template
-changes into an existing active config. Diff the active and example configs
-explicitly, apply intended non-secret changes to both, and restart Hermes.
+Other template changes remain deliberately non-destructive. Diff them
+explicitly before applying, restart Hermes after active-config changes, and
+send `/reload-mcp` in existing sessions after a tool/schema change.
+
+## Calendar cache and reminder recovery
+
+Inspect only bounded metadata and deterministic notification state:
+
+```bash
+sudo docker compose exec -T postgres psql -U docket -d docket -x -c '
+select account_id, calendar_id, window_start, window_end, status,
+       last_attempt_at, last_success_at, last_error_code, leased_until
+from calendar_sync_states;
+select provider_event_id, status, is_all_day, start_at, start_date,
+       recurring_event_id, synced_at
+from calendar_event_cache order by coalesce(start_at, start_date::timestamp)
+limit 50;
+select id, scope, provider_event_id, lead_seconds, enabled, version
+from reminder_rules order by updated_at desc limit 20;
+select id, reminder_rule_id, provider_event_id, event_start_key,
+       scheduled_for, status, attempt_count, last_error_code
+from scheduled_notifications order by scheduled_for desc limit 50;'
+```
+
+First failure points:
+
+* A sync in `syncing` past `leased_until` should be recovered by the worker. If
+  it is not, inspect the worker heartbeat before altering the row.
+* `stale` with a prior generation means Docket deliberately retained the last
+  complete cache. Investigate `last_error_code`; never delete the generation or
+  present it as fresh merely to clear the status.
+* `failed` with no `last_success_at` means no complete snapshot has ever
+  promoted. Check the read gate, OAuth status, exact Calendar ID, and Google
+  response class.
+* `missed_stale_calendar` means the event was first dispatchable only after it
+  had begun. Docket intentionally did not emit a misleading on-time reminder.
+* A notification in `delivering` is coupled to its outbox row. Recover/retry the
+  outbox; do not create a second notification or post a manual copy.
+* A reminder delivery retry searches the configured channel for the exact
+  `docket-calendar-reminder:<notification UUID>` footer. A foreign or duplicate
+  marker is a security failure, not a reason to pick one arbitrarily.
 
 ## Google OAuth and calendar identifiers
 
@@ -591,25 +634,25 @@ before relying on runtime token rotation.
 be preserved exactly. Do not strip the suffix or replace it with a display
 name.
 
-With `DOCKET_EXTERNAL_CALLS_ENABLED=false`, the worker executes against the
-stateful in-process fake Calendar. This exercises approval, operation, attempt,
-link, retry, and reconciliation state without network access. Recreating Docket
-clears fake provider state; this is expected and is not a provider durability
-claim.
+`DOCKET_CALENDAR_READS_ENABLED` permits only bounded, paginated snapshots of the
+configured Calendar. `DOCKET_EXTERNAL_WRITES_ENABLED` independently selects the
+real mutation/reconciliation adapter. With writes disabled, approval and
+operation smokes use the stateful in-process fake provider even if real reads
+are enabled; a Calendar lookup can therefore never drain a pending write.
 
-With the switch true, Docket loads the authorized-user file, refreshes an access
-token in memory when needed, and calls only the configured Calendar through its
-narrow adapter. The read-only credential mount is sufficient because the
-long-lived refresh token is already persisted and access-token refresh does not
-need to rewrite the file. If Google rotates or replaces the refresh token, rerun
-the host OAuth setup deliberately.
+When either gate is enabled, Docket loads the authorized-user file and refreshes
+an access token in memory. The read-only credential mount is sufficient because
+the long-lived refresh token is already persisted and access-token refresh does
+not need to rewrite the file. If Google rotates or replaces the refresh token,
+rerun the host OAuth setup deliberately.
 
-Before changing the switch, confirm the fake crash-window suite:
+Before changing either gate, confirm the fake crash-window and snapshot suite:
 
 ```bash
 uv run pytest \
   tests/integration/test_calendar_operations.py \
-  tests/integration/test_schedule_workflow.py
+  tests/integration/test_schedule_workflow.py \
+  tests/integration/test_calendar_read_model.py
 ```
 
 After an action attempt, inspect bounded operational state without dumping
@@ -699,6 +742,15 @@ uv run pytest \
   tests/unit/test_queue_lifecycle.py \
   tests/integration/test_queue_rollover.py \
   tests/integration/test_system_alerts.py \
+  tests/adversarial/test_plugin_actor_gate.py
+```
+
+For Milestone 3.5 Calendar cache/reminder changes, also run:
+
+```bash
+uv run pytest \
+  tests/unit/test_calendar_snapshot_provider.py \
+  tests/integration/test_calendar_read_model.py \
   tests/adversarial/test_plugin_actor_gate.py
 ```
 

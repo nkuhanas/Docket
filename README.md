@@ -1,7 +1,7 @@
 # Docket
 
 Docket is a durable authorization and state layer for personal operations. This
-repository currently implements the Milestone 0-3 path: term/course persistence,
+repository currently implements the Milestone 0-3.5 path: term/course persistence,
 typed Calendar proposals, immutable previews, authenticated one-time approvals,
 durable operations and attempts, Google Calendar create/update/reconciliation,
 audit history, durable Discord daily-thread/card projection, and Hermes
@@ -9,6 +9,8 @@ integration. Milestone 3 adds canonical queue reads and local transitions,
 07:00 local daily rollover, carryover with one current control surface, thread
 archival recovery, and durable system-channel failure reporting. Detailed
 implementation specifications are maintained privately and excluded from Git.
+Milestone 3.5 adds a bounded, atomically promoted Calendar read model, freshness
+reporting, explicit reminder rules, and deterministic deduplicated Discord reminders.
 
 ## Operational documentation
 
@@ -23,12 +25,13 @@ before upgrades.
 
 The checked-in smoke configuration is intentionally fake:
 
-* `DOCKET_EXTERNAL_CALLS_ENABLED=false`
+* `DOCKET_CALENDAR_READS_ENABLED=false`
+* `DOCKET_EXTERNAL_WRITES_ENABLED=false`
 * fake Google OAuth files
 * fake Discord and service tokens
 * the Hermes service is behind the optional `hermes` Compose profile
 
-With this switch false, Calendar operations use the stateful fake adapter and
+With both gates false, Calendar reads and writes use stateful fake adapters and
 cannot contact Google. The Hermes profile remains opt-in, so the basic smoke
 also cannot contact Discord.
 
@@ -127,9 +130,24 @@ Compose mounts the interactive `docket-manual-intent` skill into Hermes's normal
 skill index. The restricted Gmail triage skill remains plugin-namespaced and is
 not exposed to ordinary Discord sessions.
 
-Do not enable external calls until the fake-adapter suite passes and an operator
-is present for the separately controlled real-account smoke. Automated tests
-never load the production OAuth credential or calendar ID.
+Do not enable Calendar reads or external writes until the fake-adapter suite
+passes and an operator is present for the separately controlled real-account
+smoke. The gates are independent: enabling bounded Calendar synchronization
+does not activate approved provider writes. Automated tests never load the
+production OAuth credential or calendar ID.
+
+## Calendar cache and reminders
+
+Docket owns the rolling Calendar snapshot; Hermes never receives a raw Google
+client. The cache retains the last complete generation when pagination or
+authorization fails, and every lookup reports coverage and freshness. Real
+snapshot calls require `DOCKET_CALENDAR_READS_ENABLED=true`. Approved Calendar
+mutations remain separately gated by `DOCKET_EXTERNAL_WRITES_ENABLED=true`.
+
+Reminder rules are created only by an explicit operator request. Delivery uses
+a bounded deterministic embed in `DOCKET_REMINDER_CHANNEL_ID`, which defaults
+to the configured Docket chat channel. Rules cannot act as an arbitrary message
+send surface.
 
 ## Hermes pin
 
