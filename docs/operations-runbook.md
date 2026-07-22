@@ -121,10 +121,10 @@ Expected results:
 
 * PostgreSQL and Docket are healthy; Hermes and SearXNG are running.
 * `docket-discord` `0.5.0` is `enabled`.
-* Hermes connects to `http://docket:8000/mcp/` and discovers exactly sixteen
+* Hermes connects to `http://docket:8000/mcp/` and discovers exactly seventeen
   tools, including `docket_store_record`, `docket_propose_action`,
   `docket_list_queue_items`, `docket_snooze_queue_item`, and
-  `docket_ignore_queue_item`, plus the four Calendar read/reminder tools.
+  `docket_ignore_queue_item`, plus the five Calendar read/reminder tools.
 * Logs contain no startup, plugin-load, MCP-authentication, or migration error.
 
 After an MCP tool, schema, or allowlist change, send `/reload-mcp` in the active
@@ -155,7 +155,7 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Correct record is returned but no new provenance exists | Inspect `record_sources` and `record.matched` audit evidence | Read path passed; store path did not |
 | Proposal returns `action_unavailable` | Inspect the named stable meeting and missing-fields detail | Incomplete dates, local times, timezone, or no selected weekday in range |
 | Proposal returns `calendar_not_allowed` | Compare the exact ID returned by `docket_list_accounts` with `GOOGLE_CALENDAR_ID` | Display name or different calendar substituted for the configured opaque ID |
-| Approval message is ignored | Use plain `docket approve CODE`; verify queue is both allowed and free-response | Discord mention gate dropped ingress, plugin context gate failed, or code expired |
+| Approval button appears inert | Inspect the stored projection/message binding and interaction listener before using any break-glass code | Stale/copied card, wrong parent or actor, listener unavailable, token expired, or action already resolved |
 | No daily thread/card appears | Inspect projection outbox status, then the private plugin listener and Hermes logs | Hermes not recreated after plugin/env change, private listener unavailable, Discord permission/API failure, or retry backoff |
 | No rollover occurs after 07:00 local | Inspect `system:daily_rollover:ISO-DATE`, worker heartbeat, timezone, and rollover hour | Worker unavailable, wrong timezone/hour, or a prior command already owns the date |
 | Duplicate daily thread or card | Stop retries and inspect exact name/owner or footer-marker collisions | Archived lookup drift, manually copied marker, lost binding, or plugin concurrency regression |

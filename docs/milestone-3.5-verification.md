@@ -31,7 +31,7 @@ The final local gate completed with:
 
 ```text
 uv run pytest -q
-125 passed, 1 third-party Starlette deprecation warning
+127 passed, 1 third-party Starlette deprecation warning
 
 uv run ruff check .
 All checks passed!
@@ -46,6 +46,7 @@ The suite specifically proves:
 * a second-page failure retains the prior complete generation and reports stale;
 * timed and all-day lookups are bounded, indexed, redacted, and freshness-labelled;
 * malformed provider pages, duplicate event identities, and page-token loops fail closed;
+* a repeatedly failing account cannot starve another enabled Calendar sync target;
 * enabling real reads does not select a real write provider;
 * successful Docket-created events are transactionally reflected in the cache;
 * event movement reschedules a pending reminder and event removal cancels it;
@@ -56,8 +57,9 @@ The suite specifically proves:
 * all-day reminder timing follows the configured timezone across DST;
 * a lost Discord acknowledgement followed by a new runner instance produces one
   reminder message, not two;
+* an exhausted reminder delivery becomes failed and emits one bounded system alert;
 * stale synchronization creates one deduplicated system alert per stale episode;
-* MCP publishes exactly sixteen allowlisted tools with strict Calendar and reminder
+* MCP publishes exactly seventeen allowlisted tools with strict Calendar and reminder
   schemas; and
 * the pinned Hermes plugin rejects reminder destinations outside the configured
   channel.
@@ -68,7 +70,7 @@ Alembic metadata with the ORM model.
 
 ## Pinned Hermes handoff
 
-The repository template contains the exact sixteen-tool Docket allowlist. Running
+The repository template contains the exact seventeen-tool Docket allowlist. Running
 `scripts/prepare-hermes-home.sh` now synchronizes only that managed block into an
 existing ignored Hermes config, preserving all other operator settings and failing
 closed if the block is ambiguous or contains unmanaged entries. A live conversation
@@ -89,13 +91,13 @@ PostgreSQL: healthy
 SearXNG: healthy
 Hermes gateway: connected to Discord
 Hermes Docket plugin: enabled, version 0.5.0
-MCP discovery: connected, 16 tools
+MCP discovery: connected, 17 tools
 calendar_reads_enabled: false
 external_writes_enabled: false
 google_oauth: configured
 ```
 
-The active ignored Hermes config contained the exact sixteen-tool template
+The active ignored Hermes config contained the exact seventeen-tool template
 allowlist. The Docket startup log showed the transactional `0005 -> 0006`
 migration and no worker, provider, or plugin startup error. All four new table
 counts were zero before the live gate, and PostgreSQL reported the expected

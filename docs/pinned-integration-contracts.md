@@ -272,11 +272,13 @@ for break-glass operations but is removed from the model-facing MCP result,
 which instead supplies button-card guidance. No model-visible tool records
 approval or directly calls Google.
 
-Calendar lookups add four model-visible tools without exposing a provider
-client: bounded cache lookup, redacted sync status, explicit reminder-rule set,
-and explicit reminder-rule disable. Their generated schemas cap lookup windows,
-result counts, filters, lead times, destinations, source context, and optimistic
-rule versions. The active and template allowlists are synchronized by
+Calendar lookups add five model-visible tools without exposing a provider
+client: bounded cache lookup, redacted sync status, bounded canonical reminder-rule
+listing, explicit reminder-rule set, and explicit reminder-rule disable. The list
+tool supplies rule UUIDs and current versions after session compaction, avoiding a
+past-session search. Their generated schemas cap lookup windows, result counts,
+filters, lead times, destinations, source context, and optimistic rule versions.
+The active and template allowlists are synchronized by
 `scripts/prepare-hermes-home.sh`, but an existing Hermes session still requires
 `/reload-mcp` after deployment.
 
@@ -303,7 +305,11 @@ Discord projection.
 
 The Calendar read adapter uses `events.list` with explicit `timeMin`, `timeMax`,
 `singleEvents=true`, `showDeleted=true`, bounded page/event counts, and full
-pagination. It never combines rolling-window bounds with a provider sync token.
+pagination. Its Google partial-response selector requests only page tokens,
+calendar timezone, and the event identity/status/summary/location/time/recurrence/
+ETag/update fields admitted by the cache; descriptions, attendees, conferencing,
+organizers, attachments, and arbitrary extended properties are not requested.
+It never combines rolling-window bounds with a provider sync token.
 Only a complete in-memory page walk enters the database promotion transaction;
 any timeout, malformed page, repeated identity/token, authorization failure, or
 bound exhaustion leaves the prior generation intact and reports it stale.
