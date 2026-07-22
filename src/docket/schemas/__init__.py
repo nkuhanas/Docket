@@ -1,5 +1,8 @@
 from docket.schemas.records import (
     ArchiveRecordInput,
+    CourseData,
+    CourseIdentity,
+    CourseMeeting,
     RecordResult,
     RecordSourceInput,
     RememberRecordInput,
@@ -9,6 +12,9 @@ from docket.schemas.records import (
 
 __all__ = [
     "ArchiveRecordInput",
+    "CourseData",
+    "CourseIdentity",
+    "CourseMeeting",
     "RecordResult",
     "RecordSourceInput",
     "RememberRecordInput",

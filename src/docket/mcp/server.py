@@ -9,6 +9,8 @@ from docket.domain.enums import RecordStatus
 from docket.domain.errors import DocketError
 from docket.schemas.records import (
     ArchiveRecordInput,
+    CourseData,
+    CourseIdentity,
     DiscordId,
     DiscordRequestKey,
     GenericIdentity,
@@ -51,9 +53,9 @@ def _error(exc: Exception) -> dict[str, Any]:
 @mcp.tool()
 def docket_remember_record(
     record_type: RecordType,
-    canonical_identity: TermIdentity | GenericIdentity,
+    canonical_identity: TermIdentity | CourseIdentity | GenericIdentity,
     title: str,
-    data: TermData | GenericRecordData,
+    data: TermData | CourseData | GenericRecordData,
     request_key: DiscordRequestKey,
     source: RecordSourceInput,
     actor_id: DiscordId,

@@ -1,11 +1,11 @@
-from datetime import date
+from datetime import date, time
 from typing import Annotated, Any, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-RecordType = Literal["term", "generic"]
+RecordType = Literal["term", "course", "generic"]
 _DISCORD_REQUEST_KEY_PATTERN = (
     r"^discord:[0-9]{17,20}:[0-9]{17,20}:[0-9]{17,20}:(0|[1-9][0-9]*)$"
 )
@@ -24,6 +24,12 @@ class StrictModel(BaseModel):
 class TermIdentity(StrictModel):
     institution: str = Field(min_length=1, max_length=255)
     term_name: str = Field(min_length=1, max_length=255)
+
+
+class CourseIdentity(StrictModel):
+    term_record_id: UUID
+    course_code: str = Field(min_length=1, max_length=64)
+    section: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class GenericIdentity(StrictModel):
@@ -73,11 +79,65 @@ class TermData(StrictModel):
         return self
 
 
+MeetingDay = Literal["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
+MeetingId = Annotated[
+    str,
+    Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$"),
+]
+
+
+class CourseMeeting(StrictModel):
+    meeting_type: str = Field(min_length=1, max_length=64)
+    days: list[MeetingDay] = Field(min_length=1, max_length=7)
+    start_time: time | None = None
+    end_time: time | None = None
+    location: str | None = Field(default=None, max_length=512)
+    start_date: date | None = None
+    end_date: date | None = None
+    timezone: str | None = Field(default=None, min_length=1, max_length=255)
+
+    @field_validator("days")
+    @classmethod
+    def days_must_be_unique(cls, value: list[MeetingDay]) -> list[MeetingDay]:
+        if len(value) != len(set(value)):
+            raise ValueError("meeting days must be unique")
+        return value
+
+    @field_validator("timezone")
+    @classmethod
+    def timezone_must_be_iana(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("timezone must be a valid IANA timezone") from exc
+        return value
+
+    @model_validator(mode="after")
+    def bounds_are_ordered(self) -> "CourseMeeting":
+        if self.start_time and self.end_time and self.end_time <= self.start_time:
+            raise ValueError("end_time must be after start_time")
+        if self.start_date and self.end_date and self.end_date < self.start_date:
+            raise ValueError("end_date must not be before start_date")
+        return self
+
+
+class CourseData(StrictModel):
+    term_record_id: UUID
+    course_code: str = Field(min_length=1, max_length=64)
+    course_title: str | None = Field(default=None, max_length=512)
+    section: str | None = Field(default=None, min_length=1, max_length=64)
+    instructor: str | None = Field(default=None, max_length=255)
+    meetings: dict[MeetingId, CourseMeeting] = Field(default_factory=dict, max_length=32)
+    notes: str | None = None
+
+
 class RememberRecordInput(StrictModel):
     record_type: RecordType
-    canonical_identity: TermIdentity | GenericIdentity
+    canonical_identity: TermIdentity | CourseIdentity | GenericIdentity
     title: str = Field(min_length=1, max_length=512)
-    data: TermData | GenericRecordData
+    data: TermData | CourseData | GenericRecordData
     request_key: DiscordRequestKey
     source: RecordSourceInput
     actor_type: Literal["hermes"] = "hermes"
@@ -90,6 +150,11 @@ class RememberRecordInput(StrictModel):
                 self.data, TermData
             ):
                 raise ValueError("term records require TermIdentity and TermData")
+        elif self.record_type == "course":
+            if not isinstance(self.canonical_identity, CourseIdentity) or not isinstance(
+                self.data, CourseData
+            ):
+                raise ValueError("course records require CourseIdentity and CourseData")
         elif not isinstance(self.canonical_identity, GenericIdentity) or not isinstance(
             self.data, GenericRecordData
         ):

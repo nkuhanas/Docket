@@ -5,7 +5,7 @@ from docket.mcp import mcp
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_only_milestone_one_tools_are_exposed() -> None:
+async def test_record_and_milestone_two_scaffold_tools_are_exposed() -> None:
     tools = {tool.name: tool for tool in await mcp.list_tools()}
     names = set(tools)
     assert names == {
@@ -33,11 +33,23 @@ async def test_only_milestone_one_tools_are_exposed() -> None:
     remember_schema = tools["docket_remember_record"].inputSchema
     properties = remember_schema["properties"]
     definitions = remember_schema["$defs"]
-    assert properties["record_type"]["enum"] == ["term", "generic"]
+    assert properties["record_type"]["enum"] == ["term", "course", "generic"]
     assert properties["request_key"]["pattern"].startswith("^discord:")
     assert properties["actor_id"]["pattern"] == "^[0-9]{17,20}$"
     assert definitions["TermData"]["additionalProperties"] is False
     assert definitions["TermData"]["required"] == ["institution", "term_name"]
+    assert definitions["CourseData"]["additionalProperties"] is False
+    assert definitions["CourseData"]["required"] == ["term_record_id", "course_code"]
+    assert definitions["CourseMeeting"]["additionalProperties"] is False
+    assert definitions["CourseMeeting"]["properties"]["days"]["items"]["enum"] == [
+        "MO",
+        "TU",
+        "WE",
+        "TH",
+        "FR",
+        "SA",
+        "SU",
+    ]
     assert definitions["RecordSourceInput"]["properties"]["source_type"]["const"] == (
         "discord_message"
     )

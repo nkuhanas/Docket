@@ -13,6 +13,7 @@ from docket.models import AuditEvent, CommandRequest, Record, RecordSource
 from docket.models.base import utc_now
 from docket.schemas.records import (
     ArchiveRecordInput,
+    CourseData,
     RecordResult,
     RememberRecordInput,
     TermData,
@@ -27,6 +28,20 @@ def _validated_data(
         term = TermData.model_validate(data)
         normalized = term.model_dump(mode="json")
         return normalized, term.start_date, term.end_date
+    if record_type == "course":
+        course = CourseData.model_validate(data)
+        normalized = course.model_dump(mode="json")
+        starts = [
+            meeting.start_date
+            for meeting in course.meetings.values()
+            if meeting.start_date is not None
+        ]
+        ends = [
+            meeting.end_date
+            for meeting in course.meetings.values()
+            if meeting.end_date is not None
+        ]
+        return normalized, min(starts, default=None), max(ends, default=None)
     return data, None, None
 
 
@@ -102,6 +117,46 @@ class RecordService:
         command.result = result.model_dump(mode="json")
         command.completed_at = utc_now()
 
+    def _validate_course_term(self, course: CourseData) -> None:
+        term = self.session.get(Record, course.term_record_id)
+        if (
+            term is None
+            or term.record_type != "term"
+            or term.status != RecordStatus.ACTIVE.value
+        ):
+            raise DocketError(
+                code="invalid_term_reference",
+                message="Course records must reference an active term record.",
+                details={"term_record_id": str(course.term_record_id)},
+            )
+
+    def _validate_record_identity(
+        self, record_type: str, canonical_key: str, data: dict[str, Any]
+    ) -> None:
+        if record_type == "term":
+            term = TermData.model_validate(data)
+            expected_key = canonical_record_key(
+                "term", {"institution": term.institution, "term_name": term.term_name}
+            )
+        elif record_type == "course":
+            course = CourseData.model_validate(data)
+            self._validate_course_term(course)
+            expected_key = canonical_record_key(
+                "course",
+                {
+                    "term_record_id": course.term_record_id,
+                    "course_code": course.course_code,
+                    "section": course.section,
+                },
+            )
+        else:
+            return
+        if canonical_key != expected_key:
+            raise DocketError(
+                code="canonical_identity_mismatch",
+                message="Canonical identity must match the validated record data.",
+            )
+
     def remember(self, request: RememberRecordInput) -> RecordResult:
         _validate_discord_source(request)
         payload = request.model_dump(mode="json")
@@ -122,15 +177,7 @@ class RecordService:
             request.record_type, request_data
         )
 
-        if request.record_type == "term":
-            term = TermData.model_validate(normalized_data)
-            if canonical_key != canonical_record_key(
-                "term", {"institution": term.institution, "term_name": term.term_name}
-            ):
-                raise DocketError(
-                    code="canonical_identity_mismatch",
-                    message="Term identity must match the validated record data.",
-                )
+        self._validate_record_identity(request.record_type, canonical_key, normalized_data)
 
         record = self.session.scalar(
             select(Record).where(
@@ -232,6 +279,7 @@ class RecordService:
             raise VersionConflict(str(record.id), request.expected_version, record.version)
 
         normalized_data, valid_from, valid_until = _validated_data(record.record_type, request.data)
+        self._validate_record_identity(record.record_type, record.canonical_key, normalized_data)
         previous_hash = sha256_json(record.data)
         record.data = normalized_data
         record.valid_from_date = valid_from
