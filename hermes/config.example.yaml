@@ -1,6 +1,32 @@
 # Hermes Agent v2026.7.20 / source commit c7d08de287556b3d339df336b180a39d4980ebd7
 # Replace every Discord ID before enabling the gateway.
 
+display:
+  tool_progress: log
+  interim_assistant_messages: false
+  show_commentary: false
+  background_process_notifications: off
+
+# Generic Hermes cron delivery is intentionally unavailable in Docket Discord
+# channels. Docket owns durable reminders and routes them through daily threads.
+platform_toolsets:
+  discord:
+    - browser
+    - clarify
+    - code_execution
+    - computer_use
+    - delegation
+    - file
+    - image_gen
+    - memory
+    - session_search
+    - skills
+    - terminal
+    - todo
+    - tts
+    - vision
+    - web
+
 discord:
   require_mention: true
   thread_require_mention: false

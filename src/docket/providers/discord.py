@@ -238,22 +238,39 @@ class FakeDiscordProjectionAdapter:
 
     def post_calendar_reminder(self, payload: dict[str, Any]) -> dict[str, Any]:
         self._check_request(payload)
+        thread_matches = [
+            thread
+            for (guild_id, channel_id, _local_date), thread in self.backend.threads.items()
+            if guild_id == payload["guild_id"]
+            and channel_id == payload["parent_channel_id"]
+            and thread["thread_id"] == payload["thread_id"]
+        ]
+        if len(thread_matches) != 1:
+            raise DiscordProjectionError(
+                "stored_thread_binding_mismatch", "Reminder thread binding changed"
+            )
         key = str(payload["notification_id"])
         created = key not in self.backend.notification_messages
         if created:
             self.backend.notification_messages[key] = {
                 "message_id": self.backend.snowflake(),
+                "thread_id": payload["thread_id"],
                 "render_sha256": payload["render_sha256"],
                 "render": copy.deepcopy(payload["render"]),
             }
         message = self.backend.notification_messages[key]
+        if message["thread_id"] != payload["thread_id"]:
+            raise DiscordProjectionError(
+                "reminder_target_changed", "Reminder target changed"
+            )
         message["render_sha256"] = payload["render_sha256"]
         message["render"] = copy.deepcopy(payload["render"])
         result = {
             "request_id": payload["request_id"],
             "notification_id": key,
             "guild_id": payload["guild_id"],
-            "channel_id": payload["channel_id"],
+            "parent_channel_id": payload["parent_channel_id"],
+            "thread_id": payload["thread_id"],
             "message_id": message["message_id"],
             "render_sha256": message["render_sha256"],
             "created": created,

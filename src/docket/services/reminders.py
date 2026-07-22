@@ -170,6 +170,7 @@ def materialize_reminders(
                 ):
                     changed += 1
                 selected.calendar_event_id = event.id
+                selected.daily_thread_id = None
                 selected.event_start_key = start_key
                 selected.scheduled_for = scheduled_for
                 selected.status = next_status
@@ -197,7 +198,6 @@ def serialize_rule(rule: ReminderRule) -> dict[str, Any]:
         "scope": rule.scope,
         "provider_event_id": rule.provider_event_id,
         "lead_seconds": rule.lead_seconds,
-        "destination_channel_id": rule.destination_channel_id,
         "enabled": rule.enabled,
         "version": rule.version,
     }
@@ -281,7 +281,12 @@ class ReminderRuleService:
 
     def set(self, request: SetReminderRuleInput) -> ReminderRuleResult:
         validate_configured_discord_source(request.source, request.actor_id)
-        payload = request.model_dump(mode="json")
+        payload = {
+            **request.model_dump(mode="json"),
+            # Preserve hashes for pre-0007 requests whose optional model-visible
+            # destination was omitted and therefore canonicalized as null.
+            "destination_channel_id": None,
+        }
         command, replay = self._start_command(
             request_key=request.request_key,
             operation_name="set_reminder_rule",
@@ -291,14 +296,7 @@ class ReminderRuleService:
         if replay is not None:
             return replay
         self._target(request.account_id, request.calendar_id)
-        destination = (
-            request.destination_channel_id or self.settings.effective_reminder_channel_id()
-        )
-        if destination != self.settings.effective_reminder_channel_id():
-            raise DocketError(
-                code="reminder_destination_not_allowed",
-                message="Reminder rules may target only the configured reminder channel.",
-            )
+        queue_channel_id = self.settings.queue_channel_id
         if request.scope == "event":
             exists = self.session.scalar(
                 select(CalendarEventCache.id).where(
@@ -334,7 +332,7 @@ class ReminderRuleService:
             rule.scope = request.scope
             rule.provider_event_id = request.provider_event_id
             rule.lead_seconds = request.lead_seconds
-            rule.destination_channel_id = destination
+            rule.queue_channel_id = queue_channel_id
             rule.enabled = True
             rule.version += 1
             disposition = "updated"
@@ -346,7 +344,7 @@ class ReminderRuleService:
                     ReminderRule.scope == request.scope,
                     ReminderRule.provider_event_id == request.provider_event_id,
                     ReminderRule.lead_seconds == request.lead_seconds,
-                    ReminderRule.destination_channel_id == destination,
+                    ReminderRule.queue_channel_id == queue_channel_id,
                     ReminderRule.enabled.is_(True),
                 )
             )
@@ -357,7 +355,7 @@ class ReminderRuleService:
                     scope=request.scope,
                     provider_event_id=request.provider_event_id,
                     lead_seconds=request.lead_seconds,
-                    destination_channel_id=destination,
+                    queue_channel_id=queue_channel_id,
                     enabled=True,
                     created_by_actor_id=request.actor_id,
                 )
@@ -477,6 +475,21 @@ class ReminderDispatcher:
                 notification.status = "cancelled"
                 notification.last_error_code = "calendar_event_cancelled"
                 return True
+            if rule.queue_channel_id != self.settings.queue_channel_id:
+                notification.status = "failed"
+                notification.last_error_code = "reminder_queue_binding_changed"
+                session.add(
+                    AuditEvent(
+                        event_type="calendar_notification.missed",
+                        entity_type="scheduled_notification",
+                        entity_id=notification.id,
+                        actor_type="docket",
+                        actor_id=None,
+                        request_id=None,
+                        data={"error_code": "reminder_queue_binding_changed"},
+                    )
+                )
+                return True
             event_start = _event_start(event, self.settings.timezone)
             if event_start is None or event_start <= now:
                 notification.status = "failed"
@@ -497,6 +510,9 @@ class ReminderDispatcher:
                 f"calendar-reminder:{rule.id}:{notification.provider_event_id}:"
                 f"{notification.event_start_key}"
             )
+            target_local_date = _aware(notification.scheduled_for).astimezone(
+                ZoneInfo(self.settings.timezone)
+            ).date()
             outbox = session.scalar(select(OutboxEvent).where(OutboxEvent.deduplication_key == key))
             if outbox is None:
                 outbox = OutboxEvent(
@@ -504,11 +520,19 @@ class ReminderDispatcher:
                     aggregate_type="scheduled_notification",
                     aggregate_id=notification.id,
                     deduplication_key=key,
-                    payload={"scheduled_notification_id": str(notification.id)},
+                    payload={
+                        "scheduled_notification_id": str(notification.id),
+                        "target_local_date": target_local_date.isoformat(),
+                    },
                     status=OutboxStatus.PENDING.value,
                 )
                 session.add(outbox)
                 session.flush()
+            else:
+                outbox.payload = {
+                    **outbox.payload,
+                    "target_local_date": target_local_date.isoformat(),
+                }
             notification.outbox_event_id = outbox.id
             notification.status = "delivering"
             session.add(

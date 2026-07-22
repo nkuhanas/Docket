@@ -31,6 +31,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 _COMMAND = re.compile(r"^/?docket\s+(approve|reject)\s+([A-Za-z0-9-]{8,32})\s*$", re.I)
+_GENERIC_DELIVERY_COMMAND = re.compile(r"^/(?:hermes\s+)?(?:sethome|cron)\b", re.I)
 _DISCORD_ID = re.compile(r"^[0-9]{17,20}$")
 _PROJECTION_PATH = re.compile(r"^/internal/docket/discord/projections/([0-9a-fA-F-]{36})$")
 _THREAD_LIFECYCLE_PATH = re.compile(
@@ -120,16 +121,32 @@ def _is_exact_context(*, source: object | None, actor: str, guild: str, channel:
     )
 
 
-def _is_configured_queue(source: object | None) -> bool:
-    """Return whether an event came from the dedicated Discord control queue."""
+def _is_channel_surface(source: object | None, channel: str) -> bool:
     if source is None:
         return False
-    queue_channel = os.environ.get("DOCKET_QUEUE_CHANNEL_ID", "")
+    chat_id = _source_value(source, "chat_id", "channel_id")
+    parent_id = _source_value(source, "parent_chat_id", "parent_channel_id")
     return (
         _source_value(source, "platform").casefold() == "discord"
-        and bool(queue_channel)
-        and _source_value(source, "chat_id", "channel_id") == queue_channel
+        and bool(channel)
+        and channel in {chat_id, parent_id}
     )
+
+
+def _is_configured_queue(source: object | None) -> bool:
+    """Return whether an event came from the queue root or one of its threads."""
+    return _is_channel_surface(source, os.environ.get("DOCKET_QUEUE_CHANNEL_ID", ""))
+
+
+def _is_configured_system(source: object | None) -> bool:
+    return _is_channel_surface(source, os.environ.get("DOCKET_SYSTEM_CHANNEL_ID", ""))
+
+
+def _is_configured_chat_child(source: object | None) -> bool:
+    chat_channel = os.environ.get("DOCKET_CHAT_CHANNEL_ID", "")
+    return _is_channel_surface(source, chat_channel) and _source_value(
+        source, "chat_id", "channel_id"
+    ) != chat_channel
 
 
 def _rewrite_with_source_context(event: object) -> dict[str, str] | None:
@@ -179,18 +196,30 @@ def _rewrite_with_source_context(event: object) -> dict[str, str] | None:
 
 def _pre_gateway_dispatch(event: object, **_kwargs: object) -> dict[str, str] | None:
     text = str(getattr(event, "text", ""))
+    source = getattr(event, "source", None)
+    if _is_configured_system(source):
+        logger.warning("Dropped message from Docket system surface")
+        return {"action": "skip", "reason": "docket-system-output-only"}
+    if _is_configured_chat_child(source):
+        logger.warning("Dropped message from child of Docket chat ingress")
+        return {"action": "skip", "reason": "docket-chat-root-only"}
+    if _GENERIC_DELIVERY_COMMAND.match(text.strip()) and (
+        _is_channel_surface(source, os.environ.get("DOCKET_CHAT_CHANNEL_ID", ""))
+        or _is_configured_queue(source)
+    ):
+        logger.warning("Dropped generic scheduled-delivery command from Docket surface")
+        return {"action": "skip", "reason": "docket-generic-delivery-disabled"}
     match = _COMMAND.fullmatch(text.strip())
     if match is None:
         # The queue is configured as a free-response channel so that Discord
         # delivers ordinary control messages without a bot mention. Keep it a
         # control-only surface: malformed commands and conversation never reach
         # Hermes authorization, sessions, or the model.
-        if _is_configured_queue(getattr(event, "source", None)):
+        if _is_configured_queue(source):
             logger.warning("Dropped non-command message from Docket control queue")
             return {"action": "skip", "reason": "invalid-docket-control"}
         return _rewrite_with_source_context(event)
 
-    source = getattr(event, "source", None)
     allowed_actor = os.environ.get("DOCKET_OPERATOR_DISCORD_USER_ID", "")
     allowed_guild = os.environ.get("DOCKET_DISCORD_GUILD_ID", "")
     allowed_channel = os.environ.get("DOCKET_QUEUE_CHANNEL_ID", "")
@@ -313,22 +342,6 @@ def _validate_system_target(guild_id: object, channel_id: object) -> tuple[str, 
     ):
         raise PluginAPIError(
             "discord_target_not_allowed", "Target is not the configured Docket system channel", 403
-        )
-    return guild, channel
-
-
-def _validate_reminder_target(guild_id: object, channel_id: object) -> tuple[str, str]:
-    guild = _require_snowflake(guild_id, "guild_id")
-    channel = _require_snowflake(channel_id, "channel_id")
-    expected_guild = os.environ.get("DOCKET_DISCORD_GUILD_ID", "")
-    expected_channel = os.environ.get("DOCKET_REMINDER_CHANNEL_ID") or os.environ.get(
-        "DOCKET_CHAT_CHANNEL_ID", ""
-    )
-    if not hmac.compare_digest(guild, expected_guild) or not hmac.compare_digest(
-        channel, expected_channel
-    ):
-        raise PluginAPIError(
-            "discord_target_not_allowed", "Target is not the configured reminder channel", 403
         )
     return guild, channel
 
@@ -852,9 +865,10 @@ async def _post_calendar_reminder(payload: dict[str, Any]) -> dict[str, Any]:
         raise PluginAPIError(
             "invalid_calendar_reminder", "notification_id must be a UUID", 422
         ) from exc
-    guild_id, channel_id = _validate_reminder_target(
-        payload.get("guild_id"), payload.get("channel_id")
+    guild_id, parent_channel_id = _validate_target(
+        payload.get("guild_id"), payload.get("parent_channel_id")
     )
+    thread_id = _require_snowflake(payload.get("thread_id"), "thread_id")
     model = payload.get("render")
     if not isinstance(model, dict) or set(model) != {
         "summary",
@@ -893,13 +907,24 @@ async def _post_calendar_reminder(payload: dict[str, Any]) -> dict[str, Any]:
         raise PluginAPIError("invalid_calendar_reminder", "Reminder render digest differs", 422)
     _loop, _adapter, client = _discord_runtime()
     try:
-        channel = await client.fetch_channel(int(channel_id))
+        thread = await client.fetch_channel(int(thread_id))
     except discord.NotFound as exc:
         raise PluginAPIError(
-            "reminder_channel_not_found", "Reminder channel was not found"
+            "thread_not_found", "Reminder daily thread was not found"
         ) from exc
-    if not isinstance(channel, discord.TextChannel) or str(channel.guild.id) != guild_id:
-        raise PluginAPIError("invalid_reminder_channel", "Configured reminder channel is invalid")
+    if (
+        not isinstance(thread, discord.Thread)
+        or str(thread.guild.id) != guild_id
+        or str(thread.parent_id) != parent_channel_id
+        or thread.owner_id != getattr(getattr(client, "user", None), "id", None)
+    ):
+        raise PluginAPIError(
+            "stored_thread_binding_mismatch", "Reminder daily thread binding changed"
+        )
+    if thread.archived:
+        thread = await thread.edit(
+            archived=False, locked=False, reason="Docket reminder delivery"
+        )
     marker = f"docket-calendar-reminder:{notification_id}"
     footer = f"{marker} | render:{render_sha256}"
     title = "Late calendar reminder" if render["late"] else "Calendar reminder"
@@ -917,7 +942,7 @@ async def _post_calendar_reminder(payload: dict[str, Any]) -> dict[str, Any]:
     embed.set_footer(text=footer)
     bot_id = getattr(getattr(client, "user", None), "id", None)
     matches = []
-    async for candidate in channel.history(limit=None, oldest_first=True):
+    async for candidate in thread.history(limit=None, oldest_first=True):
         if marker in _message_marker(candidate):
             matches.append(candidate)
     if len(matches) > 1 or any(candidate.author.id != bot_id for candidate in matches):
@@ -928,7 +953,7 @@ async def _post_calendar_reminder(payload: dict[str, Any]) -> dict[str, Any]:
     message = matches[0] if matches else None
     created = message is None
     if message is None:
-        message = await channel.send(
+        message = await thread.send(
             embed=embed,
             allowed_mentions=discord.AllowedMentions.none(),
             silent=False,
@@ -943,7 +968,8 @@ async def _post_calendar_reminder(payload: dict[str, Any]) -> dict[str, Any]:
         "request_id": request_id,
         "notification_id": notification_id,
         "guild_id": guild_id,
-        "channel_id": channel_id,
+        "parent_channel_id": parent_channel_id,
+        "thread_id": str(thread.id),
         "message_id": str(message.id),
         "render_sha256": render_sha256,
         "created": created,
@@ -1226,7 +1252,18 @@ def _start_projection_server() -> None:
     ).start()
 
 
+def _validate_channel_lanes() -> None:
+    channel_ids = {
+        os.environ.get("DOCKET_CHAT_CHANNEL_ID", ""),
+        os.environ.get("DOCKET_QUEUE_CHANNEL_ID", ""),
+        os.environ.get("DOCKET_SYSTEM_CHANNEL_ID", ""),
+    }
+    if len(channel_ids) != 3 or any(_DISCORD_ID.fullmatch(value) is None for value in channel_ids):
+        raise RuntimeError("Docket chat, queue, and system channel IDs must be distinct snowflakes")
+
+
 def register(ctx: object) -> None:
+    _validate_channel_lanes()
     ctx.register_hook("pre_gateway_dispatch", _pre_gateway_dispatch)
     _start_projection_server()
     skills_dir = Path(__file__).parent / "skills"

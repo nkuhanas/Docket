@@ -367,7 +367,7 @@ class ReminderRule(TimestampMixin, Base):
     scope: Mapped[str] = mapped_column(String(16), nullable=False)
     provider_event_id: Mapped[str | None] = mapped_column(String(1024))
     lead_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
-    destination_channel_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    queue_channel_id: Mapped[str] = mapped_column(String(64), nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     created_by_actor_id: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -395,6 +395,9 @@ class ScheduledNotification(TimestampMixin, Base):
     )
     calendar_event_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("calendar_event_cache.id", ondelete="SET NULL")
+    )
+    daily_thread_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("discord_daily_threads.id", ondelete="RESTRICT"), index=True
     )
     provider_event_id: Mapped[str] = mapped_column(String(1024), nullable=False)
     event_start_key: Mapped[str] = mapped_column(String(255), nullable=False)

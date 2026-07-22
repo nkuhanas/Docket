@@ -24,7 +24,6 @@ class SetReminderRuleInput(StrictModel):
     scope: ReminderScope
     provider_event_id: str | None = Field(default=None, min_length=1, max_length=1024)
     lead_seconds: int = Field(ge=0, le=2_678_400)
-    destination_channel_id: DiscordId | None = None
     request_key: DiscordRequestKey
     source: RecordSourceInput
     actor_type: Literal["hermes"] = "hermes"

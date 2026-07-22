@@ -104,6 +104,73 @@ def test_non_command_queue_message_is_dropped_before_model(plugin_module, monkey
 
 
 @pytest.mark.adversarial
+def test_non_command_daily_thread_message_is_dropped_before_model(
+    plugin_module, monkeypatch
+) -> None:
+    monkeypatch.setenv("DOCKET_QUEUE_CHANNEL_ID", "queue")
+    event = SimpleNamespace(
+        text="please explain this card",
+        message_id="message",
+        source=SimpleNamespace(
+            platform="discord",
+            user_id="operator",
+            guild_id="guild",
+            chat_id="thread",
+            parent_chat_id="queue",
+        ),
+    )
+
+    assert plugin_module._pre_gateway_dispatch(event) == {
+        "action": "skip",
+        "reason": "invalid-docket-control",
+    }
+
+
+@pytest.mark.adversarial
+def test_system_surface_is_output_only(plugin_module, monkeypatch) -> None:
+    monkeypatch.setenv("DOCKET_SYSTEM_CHANNEL_ID", "system")
+    event = SimpleNamespace(
+        text="@Hermes explain this alert",
+        message_id="message",
+        source=SimpleNamespace(
+            platform="discord",
+            user_id="operator",
+            guild_id="guild",
+            chat_id="system",
+        ),
+    )
+
+    assert plugin_module._pre_gateway_dispatch(event) == {
+        "action": "skip",
+        "reason": "docket-system-output-only",
+    }
+
+
+@pytest.mark.adversarial
+@pytest.mark.parametrize("command", ["/sethome", "/hermes sethome", "/cron list"])
+def test_generic_delivery_commands_are_blocked_in_chat(
+    plugin_module, monkeypatch, command: str
+) -> None:
+    monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", "chat")
+    monkeypatch.setenv("DOCKET_QUEUE_CHANNEL_ID", "queue")
+    event = SimpleNamespace(
+        text=command,
+        message_id="message",
+        source=SimpleNamespace(
+            platform="discord",
+            user_id="operator",
+            guild_id="guild",
+            chat_id="chat",
+        ),
+    )
+
+    assert plugin_module._pre_gateway_dispatch(event) == {
+        "action": "skip",
+        "reason": "docket-generic-delivery-disabled",
+    }
+
+
+@pytest.mark.adversarial
 @pytest.mark.parametrize(
     ("guild_id", "channel_id"),
     [("", "queue"), ("other-guild", "queue"), ("guild", "other-channel")],
@@ -302,17 +369,13 @@ def test_system_alert_target_is_separately_allowlisted(plugin_module, monkeypatc
     assert rejected.value.code == "discord_target_not_allowed"
 
 
-def test_reminder_target_is_restricted_to_configured_channel(plugin_module, monkeypatch) -> None:
-    guild = "111111111111111111"
-    reminder = "555555555555555555"
-    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+def test_plugin_rejects_aliased_channel_lanes(plugin_module, monkeypatch) -> None:
     monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", "222222222222222222")
-    monkeypatch.setenv("DOCKET_REMINDER_CHANNEL_ID", reminder)
+    monkeypatch.setenv("DOCKET_QUEUE_CHANNEL_ID", "222222222222222222")
+    monkeypatch.setenv("DOCKET_SYSTEM_CHANNEL_ID", "333333333333333333")
 
-    assert plugin_module._validate_reminder_target(guild, reminder) == (guild, reminder)
-    with pytest.raises(plugin_module.PluginAPIError) as rejected:
-        plugin_module._validate_reminder_target(guild, "333333333333333333")
-    assert rejected.value.code == "discord_target_not_allowed"
+    with pytest.raises(RuntimeError, match="must be distinct"):
+        plugin_module._validate_channel_lanes()
 
 
 def test_failed_item_can_render_one_canonical_ignore_control(plugin_module, monkeypatch) -> None:

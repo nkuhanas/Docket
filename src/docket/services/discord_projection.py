@@ -106,6 +106,26 @@ class DiscordProjectionRunner:
     def _thread_name(local_date: date) -> str:
         return f"{local_date.isoformat()} — {local_date.strftime('%A')}"
 
+    def _daily_thread_row(self, session: Session, local_date: date) -> DiscordDailyThread:
+        daily_thread = session.scalar(
+            select(DiscordDailyThread).where(
+                DiscordDailyThread.guild_id == self.settings.discord_guild_id,
+                DiscordDailyThread.channel_id == self.settings.queue_channel_id,
+                DiscordDailyThread.local_date == local_date,
+            )
+        )
+        if daily_thread is None:
+            daily_thread = DiscordDailyThread(
+                guild_id=self.settings.discord_guild_id,
+                channel_id=self.settings.queue_channel_id,
+                local_date=local_date,
+                thread_name=self._thread_name(local_date),
+                status="pending",
+            )
+            session.add(daily_thread)
+            session.flush()
+        return daily_thread
+
     def _ensure_local_rows(
         self, event_id: uuid.UUID, lease_token: uuid.UUID
     ) -> tuple[uuid.UUID, uuid.UUID]:
@@ -131,23 +151,7 @@ class DiscordProjectionRunner:
                 raise DiscordProjectionError(
                     "invalid_projection_date", "Projection target date is invalid"
                 ) from exc
-            daily_thread = session.scalar(
-                select(DiscordDailyThread).where(
-                    DiscordDailyThread.guild_id == self.settings.discord_guild_id,
-                    DiscordDailyThread.channel_id == self.settings.queue_channel_id,
-                    DiscordDailyThread.local_date == local_date,
-                )
-            )
-            if daily_thread is None:
-                daily_thread = DiscordDailyThread(
-                    guild_id=self.settings.discord_guild_id,
-                    channel_id=self.settings.queue_channel_id,
-                    local_date=local_date,
-                    thread_name=self._thread_name(local_date),
-                    status="pending",
-                )
-                session.add(daily_thread)
-                session.flush()
+            daily_thread = self._daily_thread_row(session, local_date)
             requested_projection = event.payload.get("projection_id")
             projection = (
                 session.get(DiscordProjection, uuid.UUID(str(requested_projection)))
@@ -184,6 +188,63 @@ class DiscordProjectionRunner:
                 "target_local_date": local_date.isoformat(),
             }
             return daily_thread.id, projection.id
+
+    def _ensure_notification_thread(
+        self, event_id: uuid.UUID, lease_token: uuid.UUID
+    ) -> uuid.UUID:
+        with self.session_factory.begin() as session:
+            outbox = session.get(OutboxEvent, event_id)
+            if (
+                outbox is None
+                or outbox.status != OutboxStatus.DELIVERING.value
+                or outbox.lease_token != lease_token
+            ):
+                raise DiscordProjectionError("delivery_lease_lost", "Outbox lease was lost")
+            notification = session.get(ScheduledNotification, outbox.aggregate_id)
+            if notification is None or notification.status != "delivering":
+                raise DiscordProjectionError(
+                    "notification_not_delivering", "Calendar notification is not deliverable"
+                )
+            scheduled_date = _aware(notification.scheduled_for).astimezone(
+                ZoneInfo(self.settings.timezone)
+            ).date()
+            requested_date = outbox.payload.get("target_local_date")
+            try:
+                local_date = (
+                    date.fromisoformat(str(requested_date))
+                    if requested_date is not None
+                    else scheduled_date
+                )
+            except ValueError as exc:
+                raise DiscordProjectionError(
+                    "invalid_projection_date", "Reminder target date is invalid"
+                ) from exc
+            if local_date != scheduled_date:
+                raise DiscordProjectionError(
+                    "reminder_target_changed", "Reminder due-date thread binding changed"
+                )
+            daily_thread = (
+                session.get(DiscordDailyThread, notification.daily_thread_id)
+                if notification.daily_thread_id is not None
+                else None
+            )
+            if daily_thread is not None and (
+                daily_thread.guild_id != self.settings.discord_guild_id
+                or daily_thread.channel_id != self.settings.queue_channel_id
+                or daily_thread.local_date != local_date
+            ):
+                raise DiscordProjectionError(
+                    "reminder_target_changed", "Stored reminder thread binding changed"
+                )
+            if daily_thread is None:
+                daily_thread = self._daily_thread_row(session, local_date)
+                notification.daily_thread_id = daily_thread.id
+            outbox.payload = {
+                **outbox.payload,
+                "daily_thread_id": str(daily_thread.id),
+                "target_local_date": local_date.isoformat(),
+            }
+            return daily_thread.id
 
     def _thread_request(
         self,
@@ -783,7 +844,10 @@ class DiscordProjectionRunner:
             event.last_error_code = None
 
     def _notification_request(
-        self, event_id: uuid.UUID, lease_token: uuid.UUID
+        self,
+        event_id: uuid.UUID,
+        lease_token: uuid.UUID,
+        daily_thread_id: uuid.UUID,
     ) -> dict[str, Any] | None:
         with self.session_factory() as session:
             outbox = session.get(OutboxEvent, event_id)
@@ -798,12 +862,21 @@ class DiscordProjectionRunner:
                 if notification.calendar_event_id is not None
                 else None
             )
+            daily_thread = session.get(DiscordDailyThread, daily_thread_id)
             if rule is None or not rule.enabled or event is None or event.status == "cancelled":
                 return None
-            if rule.destination_channel_id != self.settings.effective_reminder_channel_id():
+            if (
+                daily_thread is None
+                or notification.daily_thread_id != daily_thread.id
+                or daily_thread.thread_id is None
+            ):
+                raise DiscordProjectionError(
+                    "reminder_thread_missing", "Reminder daily-thread state is missing"
+                )
+            if rule.queue_channel_id != self.settings.queue_channel_id:
                 raise DiscordProjectionError(
                     "reminder_destination_not_allowed",
-                    "Reminder target no longer matches configured policy",
+                    "Reminder queue parent no longer matches configured policy",
                 )
             if event.is_all_day:
                 start_value = event.start_date.isoformat() if event.start_date else ""
@@ -833,7 +906,8 @@ class DiscordProjectionRunner:
                 "request_id": str(outbox.id),
                 "notification_id": str(notification.id),
                 "guild_id": self.settings.discord_guild_id,
-                "channel_id": rule.destination_channel_id,
+                "parent_channel_id": daily_thread.channel_id,
+                "thread_id": daily_thread.thread_id,
                 "render_sha256": sha256_json(render),
                 "render": render,
             }
@@ -851,7 +925,8 @@ class DiscordProjectionRunner:
                 "request_id",
                 "notification_id",
                 "guild_id",
-                "channel_id",
+                "parent_channel_id",
+                "thread_id",
                 "render_sha256",
             )
         )
@@ -885,11 +960,18 @@ class DiscordProjectionRunner:
                     request_id=None,
                     data={
                         "discord_message_id": str(ack["message_id"]),
+                        "parent_channel_id": str(ack["parent_channel_id"]),
+                        "thread_id": str(ack["thread_id"]),
                         "attempt_count": outbox.attempt_count,
                     },
                 )
             )
-            outbox.payload = {**outbox.payload, "discord_message_id": str(ack["message_id"])}
+            outbox.payload = {
+                **outbox.payload,
+                "parent_channel_id": str(ack["parent_channel_id"]),
+                "thread_id": str(ack["thread_id"]),
+                "discord_message_id": str(ack["message_id"]),
+            }
             outbox.status = OutboxStatus.DELIVERED.value
             outbox.lease_token = None
             outbox.leased_until = None
@@ -1055,7 +1137,15 @@ class DiscordProjectionRunner:
                 alert_ack = self.adapter.post_system_alert(alert_request)
                 self._accept_system_alert_ack(event_id, lease_token, alert_request, alert_ack)
             elif event_type == "discord.calendar_reminder.requested":
-                notification_request = self._notification_request(event_id, lease_token)
+                daily_thread_id = self._ensure_notification_thread(event_id, lease_token)
+                thread_request = self._thread_request(event_id, lease_token, daily_thread_id)
+                thread_ack = self.adapter.ensure_thread(thread_request)
+                self._accept_thread_ack(
+                    event_id, lease_token, daily_thread_id, thread_request, thread_ack
+                )
+                notification_request = self._notification_request(
+                    event_id, lease_token, daily_thread_id
+                )
                 if notification_request is None:
                     self._cancel_notification_delivery(event_id, lease_token)
                 else:

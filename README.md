@@ -145,9 +145,10 @@ snapshot calls require `DOCKET_CALENDAR_READS_ENABLED=true`. Approved Calendar
 mutations remain separately gated by `DOCKET_EXTERNAL_WRITES_ENABLED=true`.
 
 Reminder rules are created only by an explicit operator request. Delivery uses
-a bounded deterministic embed in `DOCKET_REMINDER_CHANNEL_ID`, which defaults
-to the configured Docket chat channel. Rules cannot act as an arbitrary message
-send surface.
+a bounded deterministic embed in the reminder due date's ISO thread under
+`DOCKET_QUEUE_CHANNEL_ID`. Docket creates, finds, or unarchives the thread and
+binds the acknowledgement to its parent, thread, and message IDs. Rules cannot
+choose a Discord destination or act as an arbitrary message-send surface.
 
 ## Hermes pin
 

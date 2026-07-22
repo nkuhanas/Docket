@@ -132,6 +132,8 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
     reminder_description = " ".join((reminder.description or "").split())
     assert "cannot send arbitrary immediate text" in reminder_description
     assert "never infers a standing rule" in reminder_description
+    assert "due-date ISO thread" in reminder_description
     reminder_properties = reminder.inputSchema["properties"]
     assert reminder_properties["scope"]["enum"] == ["calendar", "event"]
     assert reminder_properties["request_key"]["pattern"].startswith("^discord:")
+    assert "destination_channel_id" not in reminder_properties

@@ -43,6 +43,15 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
     assert "lifecycle_version" in {
         column["name"] for column in inspect(engine).get_columns("discord_daily_threads")
     }
+    assert "queue_channel_id" in {
+        column["name"] for column in inspect(engine).get_columns("reminder_rules")
+    }
+    assert "destination_channel_id" not in {
+        column["name"] for column in inspect(engine).get_columns("reminder_rules")
+    }
+    assert "daily_thread_id" in {
+        column["name"] for column in inspect(engine).get_columns("scheduled_notifications")
+    }
 
     command.downgrade(config, "base")
     assert "records" not in inspect(engine).get_table_names()

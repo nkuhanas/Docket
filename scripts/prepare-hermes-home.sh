@@ -36,6 +36,13 @@ for value in "$operator_id" "$guild_id" "$chat_channel_id" "$queue_channel_id" "
     esac
 done
 
+if [ "$chat_channel_id" = "$queue_channel_id" ] || \
+   [ "$chat_channel_id" = "$system_channel_id" ] || \
+   [ "$queue_channel_id" = "$system_channel_id" ]; then
+    echo "Docket chat, queue, and system channel IDs must be distinct." >&2
+    exit 1
+fi
+
 required="discord_bot_token docket_to_hermes_token hermes_to_docket_token"
 for name in $required; do
     if [ ! -s "$CREDENTIALS_DIR/$name" ]; then

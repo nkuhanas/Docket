@@ -1,15 +1,18 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
 
 from docket.config import get_settings
 from docket.models import (
+    Account,
     Action,
     DiscordDailyThread,
     DiscordProjection,
     OutboxEvent,
     QueueItem,
+    ReminderRule,
+    ScheduledNotification,
 )
 from docket.providers.discord import FakeDiscordBackend, FakeDiscordProjectionAdapter
 from docket.services.discord_projection import DiscordProjectionRunner
@@ -219,3 +222,59 @@ def test_rollover_resumes_due_snooze_once_at_local_seven(session_factory) -> Non
             "ignore_queue_item",
         }
         assert len(projections) == 1
+
+
+@pytest.mark.integration
+def test_archive_waits_for_reminder_delivery_bound_to_daily_thread(session_factory) -> None:
+    settings = get_settings()
+    now = datetime(2026, 7, 23, 15, tzinfo=UTC)
+    with session_factory.begin() as session:
+        account = Account(
+            provider="google",
+            external_account_id="archive-reminder",
+            display_name="Archive reminder account",
+            capabilities=["calendar_read"],
+            enabled=True,
+        )
+        daily_thread = DiscordDailyThread(
+            guild_id=settings.discord_guild_id,
+            channel_id=settings.queue_channel_id,
+            local_date=date(2026, 7, 22),
+            thread_name="2026-07-22 — Wednesday",
+            thread_id="777777777777777777",
+            status="active",
+        )
+        session.add_all([account, daily_thread])
+        session.flush()
+        rule = ReminderRule(
+            account_id=account.id,
+            calendar_id=settings.google_calendar_id,
+            scope="event",
+            provider_event_id="archive-event",
+            lead_seconds=300,
+            queue_channel_id=settings.queue_channel_id,
+            created_by_actor_id=settings.operator_discord_user_id,
+        )
+        session.add(rule)
+        session.flush()
+        notification = ScheduledNotification(
+            reminder_rule_id=rule.id,
+            daily_thread_id=daily_thread.id,
+            provider_event_id="archive-event",
+            event_start_key="2026-07-22T15:05:00+00:00",
+            scheduled_for=now - timedelta(days=1),
+            status="delivering",
+        )
+        session.add(notification)
+        session.flush()
+        notification_id = notification.id
+
+    rollover = RolloverService(session_factory, settings)
+    assert rollover.maintain_archives(now) == 0
+
+    with session_factory.begin() as session:
+        notification = session.get(ScheduledNotification, notification_id)
+        assert notification is not None
+        notification.status = "delivered"
+
+    assert rollover.maintain_archives(now) == 1

@@ -351,15 +351,15 @@ def docket_set_reminder_rule(
     source: RecordSourceInput,
     actor_id: DiscordId,
     provider_event_id: CalendarId | None = None,
-    destination_channel_id: DiscordId | None = None,
     rule_id: uuid.UUID | None = None,
     expected_version: int | None = None,
 ) -> dict[str, Any]:
     """Create or update an explicit deterministic Calendar reminder rule.
 
-    The destination is restricted to Docket's configured reminder channel. This local,
-    audited write schedules future deterministic notifications; it cannot send arbitrary
-    immediate text and never infers a standing rule from conversation or source content.
+    Docket routes delivery to the due-date ISO thread under its configured queue; the
+    model cannot select a Discord destination. This local, audited write schedules
+    future deterministic notifications, cannot send arbitrary immediate text, and never
+    infers a standing rule from conversation or source content.
     """
     try:
         request = SetReminderRuleInput(
@@ -370,7 +370,6 @@ def docket_set_reminder_rule(
             scope=scope,
             provider_event_id=provider_event_id,
             lead_seconds=lead_seconds,
-            destination_channel_id=destination_channel_id,
             request_key=request_key,
             source=source,
             actor_id=actor_id,

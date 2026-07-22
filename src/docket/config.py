@@ -94,7 +94,6 @@ class Settings(BaseSettings):
     chat_channel_id: str = Field(default="000000000000000003", alias="DOCKET_CHAT_CHANNEL_ID")
     queue_channel_id: str = Field(default="000000000000000004", alias="DOCKET_QUEUE_CHANNEL_ID")
     system_channel_id: str = Field(default="000000000000000005", alias="DOCKET_SYSTEM_CHANNEL_ID")
-    reminder_channel_id: str | None = Field(default=None, alias="DOCKET_REMINDER_CHANNEL_ID")
 
     docket_to_hermes_token_file: Path = Field(
         default=Path("secrets/smoke/docket_to_hermes_token"),
@@ -126,6 +125,13 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def protect_production(self) -> "Settings":
+        channel_ids = {
+            self.chat_channel_id,
+            self.queue_channel_id,
+            self.system_channel_id,
+        }
+        if len(channel_ids) != 3:
+            raise ValueError("Docket chat, queue, and system channel IDs must be distinct")
         if self.environment is Environment.PRODUCTION:
             if self.auto_create_schema:
                 raise ValueError("DOCKET_AUTO_CREATE_SCHEMA must be false in production")
@@ -135,7 +141,6 @@ class Settings(BaseSettings):
                 self.chat_channel_id,
                 self.queue_channel_id,
                 self.system_channel_id,
-                self.effective_reminder_channel_id(),
             ):
                 if identifier.startswith("000000"):
                     raise ValueError("Production cannot use smoke Discord identifiers")
@@ -160,9 +165,6 @@ class Settings(BaseSettings):
 
     def google_oauth_status(self) -> GoogleOAuthStatus:
         return authorized_user_file_status(self.google_oauth_token_file)
-
-    def effective_reminder_channel_id(self) -> str:
-        return self.reminder_channel_id or self.chat_channel_id
 
 
 @lru_cache(maxsize=1)

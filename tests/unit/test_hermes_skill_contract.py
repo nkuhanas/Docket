@@ -6,7 +6,7 @@ SKILL_PATH = Path(
 
 
 def test_manual_intent_skill_requires_button_first_approval_guidance() -> None:
-    skill = SKILL_PATH.read_text(encoding="utf-8")
+    skill = " ".join(SKILL_PATH.read_text(encoding="utf-8").split())
 
     assert "card's **Approve** or **Reject** button" in skill
     assert "operator-runbook-only break-glass mechanism" in skill
@@ -26,5 +26,15 @@ def test_manual_intent_skill_preserves_calendar_freshness_and_explicit_reminders
     assert "Never describe stale or uncovered cache state as current" in skill
     assert "only when the user explicitly asks for a standing" in skill
     assert "not model-authored text" in skill
-    assert "reminder_destination_not_allowed" in skill
+    assert "accepts no Discord destination" in skill
+    assert "ISO thread" in skill
     assert "never search past sessions for a rule UUID or version" in skill
+
+
+def test_manual_intent_skill_keeps_durable_output_out_of_chat() -> None:
+    skill = " ".join(SKILL_PATH.read_text(encoding="utf-8").split())
+
+    assert "request/response ingress" in skill
+    assert "Never duplicate a proposal body" in skill
+    assert "do not duplicate that preview in chat" in skill
+    assert "Do not start a background terminal process" in skill

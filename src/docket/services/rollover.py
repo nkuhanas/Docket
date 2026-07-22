@@ -29,6 +29,7 @@ from docket.models import (
     OutboxEvent,
     QueueItem,
     Record,
+    ScheduledNotification,
 )
 from docket.models.base import utc_now
 from docket.security import issue_short_code, short_code_sha256
@@ -486,6 +487,16 @@ class RolloverService:
                     else None
                 )
                 if pending is not None:
+                    continue
+                pending_reminder = session.scalar(
+                    select(ScheduledNotification.id)
+                    .where(
+                        ScheduledNotification.daily_thread_id == daily_thread.id,
+                        ScheduledNotification.status == "delivering",
+                    )
+                    .limit(1)
+                )
+                if pending_reminder is not None:
                     continue
                 already_pending = session.scalar(
                     select(OutboxEvent.id)

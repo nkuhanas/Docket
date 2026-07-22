@@ -13,6 +13,7 @@ from docket.models import (
     AuditEvent,
     CalendarEventCache,
     CalendarSyncState,
+    DiscordDailyThread,
     OutboxEvent,
     ReminderRule,
     ScheduledNotification,
@@ -590,7 +591,6 @@ def test_reminder_rule_is_idempotent_versioned_disabled_and_audited(session_fact
                 "scope": "event",
                 "provider_event_id": "rule-event",
                 "lead_seconds": 600,
-                "destination_channel_id": settings.effective_reminder_channel_id(),
                 "enabled": False,
                 "version": 3,
             }
@@ -700,9 +700,94 @@ def test_due_reminder_survives_lost_ack_without_duplicate_discord_message(
             .where(ReminderRule.id == rule_id)
         )
         assert notification is not None and notification.status == "delivered"
+        daily_thread = session.get(DiscordDailyThread, notification.daily_thread_id)
+        assert daily_thread is not None
+        assert daily_thread.channel_id == settings.queue_channel_id
+        assert daily_thread.thread_id == next(iter(backend.notification_messages.values()))[
+            "thread_id"
+        ]
         assert notification.attempt_count == 2
         assert notification.discord_message_id is not None
         assert len(backend.notification_messages) == 1
+
+
+@pytest.mark.integration
+def test_reminder_crossing_midnight_uses_due_date_thread_and_unarchives(
+    session_factory,
+) -> None:
+    settings = get_settings().model_copy(update={"calendar_reads_enabled": True})
+    account_id = _account(session_factory)
+    event_start = datetime(2026, 7, 23, 7, 3, tzinfo=UTC)  # 00:03 PDT
+    generation = uuid.uuid4()
+    with session_factory.begin() as session:
+        event = CalendarEventCache(
+            account_id=account_id,
+            calendar_id=settings.google_calendar_id,
+            provider_event_id="midnight-event",
+            snapshot_generation=generation,
+            status="confirmed",
+            summary="Cross-midnight reminder",
+            is_all_day=False,
+            start_at=event_start,
+            end_at=event_start + timedelta(minutes=15),
+            timezone="America/Los_Angeles",
+            synced_at=datetime(2026, 7, 22, 6, 45, tzinfo=UTC),
+        )
+        session.add(event)
+    message_id = "777777777777777777"
+    with session_factory.begin() as session:
+        result = ReminderRuleService(session, settings).set(
+            SetReminderRuleInput(
+                account_id=account_id,
+                calendar_id=settings.google_calendar_id,
+                scope="event",
+                provider_event_id="midnight-event",
+                lead_seconds=300,
+                request_key=_request_key(message_id),
+                source=_source(message_id),
+                actor_id=settings.operator_discord_user_id,
+            )
+        )
+
+    assert ReminderDispatcher(
+        session_factory,
+        settings,
+        clock=lambda: datetime(2026, 7, 23, 6, 58, 1, tzinfo=UTC),
+    ).run_due_once()
+    backend = FakeDiscordBackend()
+    thread_key = (
+        settings.discord_guild_id,
+        settings.queue_channel_id,
+        "2026-07-22",
+    )
+    backend.threads[thread_key] = {
+        "thread_id": backend.snowflake(),
+        "name": "2026-07-22 — Wednesday",
+        "archived": True,
+        "auto_archive_minutes": 10080,
+    }
+    assert DiscordProjectionRunner(
+        session_factory,
+        FakeDiscordProjectionAdapter(backend),
+        settings,
+    ).run_due_once()
+
+    with session_factory() as session:
+        notification = session.scalar(
+            select(ScheduledNotification).where(
+                ScheduledNotification.reminder_rule_id == result.rule_id
+            )
+        )
+        assert notification is not None and notification.status == "delivered"
+        daily_thread = session.get(DiscordDailyThread, notification.daily_thread_id)
+        assert daily_thread is not None
+        assert daily_thread.local_date == date(2026, 7, 22)
+        assert daily_thread.channel_id == settings.queue_channel_id
+        assert backend.threads[thread_key]["archived"] is False
+        outbox = session.get(OutboxEvent, notification.outbox_event_id)
+        assert outbox is not None
+        assert outbox.payload["target_local_date"] == "2026-07-22"
+        assert outbox.payload["thread_id"] == daily_thread.thread_id
 
 
 @pytest.mark.integration
@@ -823,7 +908,7 @@ def test_all_day_reminder_uses_event_timezone_across_dst(session_factory) -> Non
             scope="event",
             provider_event_id=event.provider_event_id,
             lead_seconds=3600,
-            destination_channel_id=settings.effective_reminder_channel_id(),
+            queue_channel_id=settings.queue_channel_id,
             enabled=True,
             created_by_actor_id=settings.operator_discord_user_id,
         )

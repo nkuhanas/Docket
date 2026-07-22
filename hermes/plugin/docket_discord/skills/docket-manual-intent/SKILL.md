@@ -53,6 +53,14 @@ This skill is repository-managed and mounted read-only in the pinned runtime.
 Do not try to patch it with `skill_manage`; report any missing rule so it can be
 reviewed, tested, and committed at the source.
 
+`#docket-chat` is request/response ingress, not an operational output feed.
+Keep the final response concise and correlated to the current request. Never
+duplicate a proposal body, persistent controls, queue card, reminder, daily
+summary, system alert, cron result, or other durable projection in chat; point
+to the authoritative Docket queue card when one exists.
+Complete Docket requests synchronously. Do not start a background terminal
+process or asynchronous delegation whose later completion would re-enter chat.
+
 Academic terms always use `record_type: term`, never `academic_term` or another
 alias. Use canonical identity fields `institution` and `term_name`. Term data
 uses exactly `institution`, `term_name`, `start_date`, `end_date`, `timezone`,
@@ -85,11 +93,12 @@ read the course's current version. Call `docket_list_accounts` to select the
 explicit enabled Google account. Call
 `docket_propose_action` only when the user explicitly asked for the Calendar
 write. Select the calendar ID returned by `docket_list_accounts`; never
-substitute another target. Docket derives the risk, exact
-schedule, preview, hashes, and approval expiry. If a proposal succeeds, show
-the immutable preview and explain that Docket is publishing a persistent card
-to today's ISO-dated thread under the configured queue. Tell the operator to use
-that card's **Approve** or **Reject** button. Do not instruct or suggest that the
+substitute another target. Docket derives the risk, exact schedule, preview,
+hashes, and approval expiry. If a proposal succeeds, acknowledge it briefly and
+explain that Docket is publishing the authoritative preview and controls to
+today's ISO-dated thread under the configured queue; do not duplicate that
+preview in chat. Tell the operator to use that card's **Approve** or **Reject**
+button. Do not instruct or suggest that the
 operator type an approval/rejection code, slash command, or conversational
 assent. Typed codes are an operator-runbook-only break-glass mechanism and are
 intentionally absent from the model-facing proposal result.
@@ -108,9 +117,9 @@ notification rule. Read existing canonical rules with
 `docket_list_reminder_rules` before an update or disable; never search past
 sessions for a rule UUID or version. Use `docket_set_reminder_rule` with a new
 trusted intent index, the configured account/calendar, a calendar-wide or
-event-specific scope, and a concrete lead time. Omit the destination unless the
-configured reminder channel returned by policy is already known; never try
-another channel after `reminder_destination_not_allowed`. Use
+event-specific scope, and a concrete lead time. The tool accepts no Discord
+destination: Docket binds the queue parent and routes delivery to the ISO thread
+for the reminder's Los Angeles due date. Use
 `docket_disable_reminder_rule` only for an explicit disable request and the
 rule's current version. Reminder delivery is a deterministic Docket worker
 consequence, not model-authored text, an immediate send tool, or an external

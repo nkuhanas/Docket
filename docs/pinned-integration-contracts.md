@@ -48,7 +48,7 @@ on every request. Docket's callback uses the independent
 
 Hermes performs overlapping plugin discovery during this pin's startup. Each
 discovery pass imports an isolated plugin module, so module globals alone cannot
-prevent a transient second bind. Plugin `0.5.0` starts the private HTTP server
+prevent a transient second bind. Plugin `0.6.0` starts the private HTTP server
 under a background supervisor: an `EADDRINUSE` defers that copy without failing
 plugin registration, and it retries if the process that temporarily owned the
 port exits. Healthy startup may contain one `startup deferred` line, followed
@@ -68,9 +68,10 @@ Pinned outbound assumptions to revalidate:
   initial response before the authenticated Docket callback and follow-up.
 * message history and embed footer text are available for stable marker
   recovery after an acknowledgement is lost.
-* configured-channel reminder posts can recover by the stable
-  `docket-calendar-reminder:<notification UUID>` footer without enabling
-  mentions, components, arbitrary content, or arbitrary destinations.
+* due-date daily-thread reminder posts can recover by the stable
+  `docket-calendar-reminder:<notification UUID>` footer after verifying the
+  configured queue parent and bot-owned thread, without enabling mentions,
+  components, arbitrary content, or arbitrary destinations.
 
 The hook is invoked before ordinary gateway authorization. Therefore the plugin
 must perform its own exact actor/guild/channel check and fail closed for control
@@ -88,8 +89,14 @@ Discord channel admission happens inside the pinned Discord adapter before it
 constructs the event passed to this hook. Because `require_mention` is enabled,
 the dedicated Docket queue must also be a `free_response_channels` and
 `no_thread_channels` entry. It remains in `allowed_channels`. The plugin treats
-that channel as control-only and skips every message that is not an exact
-approval or rejection command, so queue conversation cannot reach the model.
+the root and every child daily thread as control-only and skips every message
+that is not an exact root approval or rejection command, so queue conversation
+cannot reach the model. It also drops ordinary system-channel input and child
+threads under Docket chat. `/sethome` and generic `/cron` commands fail closed
+on Docket surfaces; the Discord toolset omits generic cron creation, and tool
+progress is logged rather than posted to chat. Background-process notifications
+are disabled, and the prepared Hermes environment has no Discord home-channel
+binding.
 
 The current deployment does not register a native Docket Discord application
 command. Persistent Approve/Reject components on the projected card are the
@@ -277,7 +284,9 @@ client: bounded cache lookup, redacted sync status, bounded canonical reminder-r
 listing, explicit reminder-rule set, and explicit reminder-rule disable. The list
 tool supplies rule UUIDs and current versions after session compaction, avoiding a
 past-session search. Their generated schemas cap lookup windows, result counts,
-filters, lead times, destinations, source context, and optimistic rule versions.
+filters, lead times, source context, and optimistic rule versions. Reminder
+destinations are absent from the model schema; Docket binds the queue parent and
+the due-date daily thread internally.
 The active and template allowlists are synchronized by
 `scripts/prepare-hermes-home.sh`, but an existing Hermes session still requires
 `/reload-mcp` after deployment.

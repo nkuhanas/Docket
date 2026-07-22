@@ -114,13 +114,13 @@ Run the Hermes plugin-list probe only after the gateway log reports that Discord
 is connected and the gateway is running. Do not parallelize it with a Hermes
 restart: this pinned CLI imports user plugins, whose registration has the side
 effect of binding the private projection port. A startup-time probe can contend
-with the gateway on port 8787. Plugin `0.5.0` retries that bind, but avoiding the
+with the gateway on port 8787. Plugin `0.6.0` retries that bind, but avoiding the
 race keeps startup and diagnostics unambiguous.
 
 Expected results:
 
 * PostgreSQL and Docket are healthy; Hermes and SearXNG are running.
-* `docket-discord` `0.5.0` is `enabled`.
+* `docket-discord` `0.6.0` is `enabled`.
 * Hermes connects to `http://docket:8000/mcp/` and discovers exactly seventeen
   tools, including `docket_store_record`, `docket_propose_action`,
   `docket_list_queue_items`, `docket_snooze_queue_item`, and
@@ -168,7 +168,7 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Operation is `reconciliation_required` | Inspect attempt error and provider correlation; never force a create retry | Timeout/crash may have reached Google, or reconciliation found conflicting matches |
 | Update creates a second event | Stop external calls and compare action type, link, idempotency key, and external event ID | Update was proposed as create, link was missing, or execution contract regressed |
 | Calendar lookup is empty or stale | Inspect `calendar_sync_states`, its covered window, and the prior cache generation before changing credentials | Read gate disabled, sync due/leased, OAuth failure, partial page walk, or requested range outside the cache |
-| Reminder does not arrive | Inspect rule version, event cache identity, scheduled row, notification outbox, and plugin `0.5.0` logs | Rule disabled, event moved/cancelled, stale event already began, wrong configured reminder channel, or Discord retry |
+| Reminder does not arrive | Inspect rule version, event cache identity, scheduled row, bound daily thread, notification outbox, and plugin `0.6.0` logs | Rule disabled, event moved/cancelled, stale event already began, queue binding changed, thread ensure failed, or Discord retry |
 | Duplicate reminder appears | Stop retries and compare notification ID, event-start key, outbox dedupe key, and `docket-calendar-reminder:<uuid>` footer marker | Marker collision, manual copy, lost binding, or plugin idempotency regression |
 
 ## Missing trusted Discord context
@@ -372,7 +372,7 @@ from discord_projections order by created_at desc limit 20;'
 First failure points:
 
 * `discord_transport_error` or `discord_runtime_unavailable`: verify Hermes is
-  running, plugin `0.5.0` is enabled, port 8787 is exposed only internally, and
+  running, plugin `0.6.0` is enabled, port 8787 is exposed only internally, and
   Hermes was recreated after Compose environment changes. The default ten
   attempts cover ordinary Hermes startup; do not reduce the window without
   measuring the pinned runtime's initialization time.
@@ -403,7 +403,7 @@ print("projection listener reachable")'
 Hermes plugin edits require a gateway restart. `/reload-mcp` is still required
 for MCP tool/schema changes, but it does not reload this Python plugin.
 
-The pinned Hermes runtime performs overlapping plugin discovery. Plugin `0.5.0`
+The pinned Hermes runtime performs overlapping plugin discovery. Plugin `0.6.0`
 therefore starts port 8787 under a retrying supervisor: one discovery pass may
 log that startup is deferred because the port is in use, but plugin loading must
 still succeed and one listener must remain reachable. A warning that the plugin
@@ -557,16 +557,28 @@ Hermes will fail to read its mounted files even though the paths exist. Check
 numeric ownership and container UID before loosening permissions; do not solve
 the problem with world-readable secrets.
 
-`scripts/prepare-hermes-home.sh` preserves operator-managed Hermes settings:
+`scripts/prepare-hermes-home.sh` preserves unrelated operator-managed Hermes settings:
 
 * it creates `.runtime/hermes/config.yaml` from the template only when the
   active file does not already exist;
-* it synchronizes only Docket's managed MCP tool allowlist on every run;
+* it synchronizes Docket's managed MCP tool allowlist, the Discord platform
+  toolset without generic cron delivery, and the four quiet-output display keys
+  on every run;
 * it rewrites `.runtime/hermes/.env` on every run.
 
-Other template changes remain deliberately non-destructive. Diff them
-explicitly before applying, restart Hermes after active-config changes, and
-send `/reload-mcp` in existing sessions after a tool/schema change.
+Other template changes remain deliberately non-destructive. The sync preserves
+unmanaged display keys, the CLI toolset (including CLI cron), and other active
+configuration. Diff template changes explicitly before applying, restart Hermes
+after active-config changes, and send `/reload-mcp` in existing sessions after a
+tool/schema change.
+
+Preparation rewrites the ignored Hermes `.env` from the credential files and
+does not carry forward `DISCORD_HOME_CHANNEL`. On Docket's Discord surface,
+background-process notifications are disabled and `/sethome` is rejected in
+chat, queue, and system lanes. If chat starts receiving unsolicited output,
+first check the effective home-channel variables, the four managed display
+keys, and `hermes cron list --all`; do not treat chat as a generic delivery
+target.
 
 ## Calendar cache and reminder recovery
 
@@ -581,10 +593,10 @@ select provider_event_id, status, is_all_day, start_at, start_date,
        recurring_event_id, synced_at
 from calendar_event_cache order by coalesce(start_at, start_date::timestamp)
 limit 50;
-select id, scope, provider_event_id, lead_seconds, enabled, version
+select id, scope, provider_event_id, lead_seconds, queue_channel_id, enabled, version
 from reminder_rules order by updated_at desc limit 20;
 select id, reminder_rule_id, provider_event_id, event_start_key,
-       scheduled_for, status, attempt_count, last_error_code
+       scheduled_for, daily_thread_id, status, attempt_count, last_error_code
 from scheduled_notifications order by scheduled_for desc limit 50;'
 ```
 
@@ -602,7 +614,8 @@ First failure points:
   had begun. Docket intentionally did not emit a misleading on-time reminder.
 * A notification in `delivering` is coupled to its outbox row. Recover/retry the
   outbox; do not create a second notification or post a manual copy.
-* A reminder delivery retry searches the configured channel for the exact
+* A reminder delivery retry verifies or unarchives the bound daily thread, then
+  searches that thread for the exact
   `docket-calendar-reminder:<notification UUID>` footer. A foreign or duplicate
   marker is a security failure, not a reason to pick one arbitrarily.
 

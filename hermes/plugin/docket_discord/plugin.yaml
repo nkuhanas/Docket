@@ -1,5 +1,5 @@
 name: docket-discord
-version: 0.5.0
+version: 0.6.0
 description: Trusted Discord provenance, projection, and approval bridge for Docket
 provides_hooks:
   - pre_gateway_dispatch
@@ -27,9 +27,6 @@ requires_env:
     secret: false
   - name: DOCKET_SYSTEM_CHANNEL_ID
     description: The only Discord channel allowed to receive Docket system alerts
-    secret: false
-  - name: DOCKET_REMINDER_CHANNEL_ID
-    description: The only Discord channel allowed to receive deterministic reminders
     secret: false
   - name: DOCKET_PLUGIN_BIND
     description: Private Compose listener address for outbound projection requests
