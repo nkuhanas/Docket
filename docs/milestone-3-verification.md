@@ -51,12 +51,23 @@ requeued without resetting its attempt count, and attempt six archived the
 same stored Discord thread. Final live state contained one active current-day
 thread, one archived prior-day thread, and only delivered Discord outbox events.
 
-## Remaining operator smoke
+## Live operator smoke
 
-Hermes caches MCP tools in the active session. Send `/reload-mcp` before the
-Milestone 3 smoke and confirm that twelve Docket tools are reported. Then use a
-fresh synthetic queue item to verify one real Snooze or Ignore button, that the
-card refreshes without active sibling controls, and that the same interaction
-cannot be replayed. A later day boundary can verify live carryover; automated
-tests already cover restart, stale-control, archival, and projection-failure
-cases without risking a real provider write.
+After `/reload-mcp`, Hermes reported the expected twelve Docket tools. A
+provider-safe synthetic item was projected into the current ISO-day thread as
+Discord message `1529421083315404871`. The operator pressed **Ignore** once.
+Docket accepted exactly one authenticated `discord_local_action` command and
+one plugin-attributed `queue_item.ignored` audit event. The canonical item moved
+from `pending` version 1 to `ignored` version 2 with resolution
+`operator_ignored`.
+
+The original projection and its refresh both delivered on their first attempt.
+The same Discord message advanced to projection version 2; its Ignore action
+succeeded and its sibling Snooze action became `superseded`, so the refreshed
+card has no current controls. No provider operation was created, and external
+calls remained disabled throughout the smoke.
+
+A later day boundary can add live evidence for carryover. Automated tests
+already cover interaction replay, copied-card and forged-context rejection,
+restart stability, stale-control retirement, archival, carryover, and
+projection-failure handling without risking a real provider write.
