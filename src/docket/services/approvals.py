@@ -22,13 +22,15 @@ from docket.models import (
     ActionRevision,
     Approval,
     AuditEvent,
+    DiscordDailyThread,
+    DiscordProjection,
     Operation,
     OutboxEvent,
     QueueItem,
     Record,
 )
 from docket.models.base import utc_now
-from docket.security import short_code_sha256, verify_approval_token
+from docket.security import short_code_sha256, verify_projection_approval_token
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -42,16 +44,28 @@ class ApprovalService:
     @staticmethod
     def _validate_context(request: ApprovalResponse) -> None:
         settings = get_settings()
-        expected = (
-            settings.operator_discord_user_id,
-            settings.discord_guild_id,
-            settings.queue_channel_id,
-        )
-        actual = (request.discord_user_id, request.guild_id, request.channel_id)
-        if actual != expected:
+        if (
+            request.discord_user_id != settings.operator_discord_user_id
+            or request.guild_id != settings.discord_guild_id
+        ):
             raise DocketError(
                 code="invalid_approval_context",
                 message="Approval response did not come from the configured Discord context.",
+            )
+        if request.short_code is not None:
+            if request.channel_id != settings.queue_channel_id:
+                raise DocketError(
+                    code="invalid_approval_context",
+                    message="Fallback approval did not come from the configured queue channel.",
+                )
+            return
+        if (
+            request.parent_channel_id != settings.queue_channel_id
+            or request.channel_id == settings.queue_channel_id
+        ):
+            raise DocketError(
+                code="invalid_approval_context",
+                message="Button approval did not come from a configured queue thread.",
             )
 
     def _resolve(self, request: ApprovalResponse) -> Approval:
@@ -78,12 +92,14 @@ class ApprovalService:
                 code="approval_not_found", message="Approval reference was not found."
             )
         if request.approval_token is not None:
+            assert request.projection_id is not None
             signing_key = get_settings().read_secret(
                 get_settings().interaction_signing_key_file
             ).encode()
-            if not verify_approval_token(
+            if not verify_projection_approval_token(
                 request.approval_token,
                 approval_id=approval.id,
+                projection_id=request.projection_id,
                 expires_at=approval.expires_at,
                 signing_key=signing_key,
             ):
@@ -92,6 +108,38 @@ class ApprovalService:
                     message="The approval token is invalid for this approval.",
                 )
         return approval
+
+    def _validate_projection_context(
+        self, request: ApprovalResponse, approval: Approval, queue_item: QueueItem
+    ) -> None:
+        if request.short_code is not None:
+            return
+        assert request.projection_id is not None
+        projection = self.session.get(DiscordProjection, request.projection_id)
+        if (
+            projection is None
+            or projection.queue_item_id != queue_item.id
+            or projection.status != "delivered"
+            or projection.message_id != request.message_id
+            or approval.control_projection_id != projection.id
+        ):
+            raise DocketError(
+                code="invalid_approval_projection",
+                message="The interaction is not bound to the active delivered approval card.",
+            )
+        daily_thread = self.session.get(DiscordDailyThread, projection.daily_thread_id)
+        settings = get_settings()
+        if (
+            daily_thread is None
+            or daily_thread.guild_id != request.guild_id
+            or daily_thread.channel_id != request.parent_channel_id
+            or daily_thread.channel_id != settings.queue_channel_id
+            or daily_thread.thread_id != request.channel_id
+        ):
+            raise DocketError(
+                code="invalid_approval_projection",
+                message="The interaction thread does not match the stored projection context.",
+            )
 
     def _load_bound_state(
         self, approval: Approval
@@ -207,6 +255,7 @@ class ApprovalService:
         self._validate_context(request)
         approval = self._resolve(request)
         revision, action, queue_item = self._load_bound_state(approval)
+        self._validate_projection_context(request, approval, queue_item)
         if approval.authorized_user_id != request.discord_user_id:
             raise DocketError(
                 code="unauthorized_approval_actor",
@@ -250,6 +299,8 @@ class ApprovalService:
         approval.response_user_id = request.discord_user_id
         approval.response_guild_id = request.guild_id
         approval.response_channel_id = request.channel_id
+        approval.response_parent_channel_id = request.parent_channel_id
+        approval.response_projection_id = request.projection_id
         approval.response_message_id = request.message_id
         approval.discord_interaction_id = request.discord_interaction_id
 

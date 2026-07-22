@@ -1,11 +1,12 @@
 # Docket
 
 Docket is a durable authorization and state layer for personal operations. This
-repository currently implements the Milestone 0-2 path: term/course persistence,
+repository currently implements the Milestone 0-2.5 path: term/course persistence,
 typed Calendar proposals, immutable previews, authenticated one-time approvals,
 durable operations and attempts, Google Calendar create/update/reconciliation,
-audit history, and Hermes integration. Detailed implementation specifications
-are maintained privately and excluded from Git.
+audit history, durable Discord daily-thread/card projection, and Hermes
+integration. Detailed implementation specifications are maintained privately
+and excluded from Git.
 
 ## Operational documentation
 
@@ -131,9 +132,8 @@ never load the production OAuth credential or calendar ID.
 ## Hermes pin
 
 * Release tag: `v2026.7.20`
-* Source commit: `c7d08de287556b3d339df336b180a39d4980ebd7`
-* Image: `nousresearch/hermes-agent:v2026.7.20`
+* Image revision: `3ef6bbd201263d354fd83ec55b3c306ded2eb72a`
+* Image: `nousresearch/hermes-agent:v2026.7.20@sha256:f7b35053268f532f98955195c909f15a230470fbcbdacaa9fdecb95707dad04a`
 
-The tag, commit, image, MCP support, plugin discovery, and
-`pre_gateway_dispatch` hook were verified against official Hermes sources on
-2026-07-21.
+The tag, image identity, MCP support, plugin discovery, and pinned gateway seams
+were verified against the deployed Hermes image on 2026-07-22.

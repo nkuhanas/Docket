@@ -16,6 +16,7 @@ from docket.models.core import (
     Record,
     RecordSource,
 )
+from docket.models.discord import DiscordDailyThread, DiscordProjection
 
 __all__ = [
     "Account",
@@ -26,6 +27,8 @@ __all__ = [
     "Base",
     "CalendarLink",
     "CommandRequest",
+    "DiscordDailyThread",
+    "DiscordProjection",
     "ExecutionAttempt",
     "Operation",
     "OutboxEvent",

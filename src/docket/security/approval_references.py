@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 _TOKEN_VERSION = 1
+_PROJECTION_TOKEN_VERSION = 2
 _MAC_BYTES = 16
 _SHORT_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 
@@ -23,6 +24,59 @@ def issue_approval_token(approval_id: UUID, expires_at: datetime, signing_key: b
     payload = _token_payload(approval_id, expires_at)
     signature = hmac.digest(signing_key, b"docket-approval-token-v1\x00" + payload, "sha256")
     return base64.urlsafe_b64encode(payload + signature[:_MAC_BYTES]).rstrip(b"=").decode()
+
+
+def _projection_token_payload(
+    approval_id: UUID, projection_id: UUID, expires_at: datetime
+) -> bytes:
+    return (
+        bytes([_PROJECTION_TOKEN_VERSION])
+        + approval_id.bytes
+        + projection_id.bytes
+        + _timestamp(expires_at).to_bytes(8, "big")
+    )
+
+
+def issue_projection_approval_token(
+    approval_id: UUID,
+    projection_id: UUID,
+    expires_at: datetime,
+    signing_key: bytes,
+) -> str:
+    payload = _projection_token_payload(approval_id, projection_id, expires_at)
+    signature = hmac.digest(
+        signing_key, b"docket-projection-approval-token-v2\x00" + payload, "sha256"
+    )
+    return base64.urlsafe_b64encode(payload + signature[:_MAC_BYTES]).rstrip(b"=").decode()
+
+
+def verify_projection_approval_token(
+    token: str,
+    *,
+    approval_id: UUID,
+    projection_id: UUID,
+    expires_at: datetime,
+    signing_key: bytes,
+) -> bool:
+    try:
+        raw = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
+    except (ValueError, UnicodeEncodeError):
+        return False
+    canonical_token = base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+    if not hmac.compare_digest(token, canonical_token):
+        return False
+    expected_payload = _projection_token_payload(approval_id, projection_id, expires_at)
+    if len(raw) != len(expected_payload) + _MAC_BYTES:
+        return False
+    payload, supplied_mac = raw[:-_MAC_BYTES], raw[-_MAC_BYTES:]
+    expected_mac = hmac.digest(
+        signing_key,
+        b"docket-projection-approval-token-v2\x00" + expected_payload,
+        "sha256",
+    )[:_MAC_BYTES]
+    return hmac.compare_digest(payload, expected_payload) and hmac.compare_digest(
+        supplied_mac, expected_mac
+    )
 
 
 def verify_approval_token(

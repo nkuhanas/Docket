@@ -15,6 +15,8 @@ class DiscordContext(InternalModel):
     discord_user_id: str = Field(min_length=1, max_length=64)
     guild_id: str = Field(min_length=1, max_length=64)
     channel_id: str = Field(min_length=1, max_length=64)
+    parent_channel_id: str | None = Field(default=None, min_length=1, max_length=64)
+    projection_id: UUID | None = None
     message_id: str = Field(min_length=1, max_length=64)
     responded_at: datetime
 
@@ -31,6 +33,18 @@ class ApprovalResponse(DiscordContext):
             raise ValueError("Exactly one of approval_token and short_code is required")
         if self.approval_token is not None and self.approval_id is None:
             raise ValueError("approval_id is required with approval_token")
+        if self.approval_token is not None and (
+            self.parent_channel_id is None or self.projection_id is None
+        ):
+            raise ValueError("parent_channel_id and projection_id are required with approval_token")
+        if self.short_code is not None and (
+            self.approval_id is not None
+            or self.parent_channel_id is not None
+            or self.projection_id is not None
+        ):
+            raise ValueError(
+                "fallback responses omit approval_id, parent_channel_id, and projection_id"
+            )
         return self
 
 

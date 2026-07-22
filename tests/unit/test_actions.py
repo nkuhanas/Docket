@@ -15,14 +15,18 @@ from docket.models import (
     Action,
     ActionRevision,
     Approval,
+    DiscordDailyThread,
+    DiscordProjection,
     Operation,
     OutboxEvent,
     QueueItem,
     Record,
 )
+from docket.providers.discord import FakeDiscordBackend, FakeDiscordProjectionAdapter
 from docket.schemas.actions import ProposeActionInput
 from docket.services.actions import ActionService
 from docket.services.approvals import ApprovalService
+from docket.services.discord_projection import DiscordProjectionRunner
 
 OPERATOR_ID = "000000000000000001"
 GUILD_ID = "000000000000000002"
@@ -238,3 +242,116 @@ def test_forged_context_and_changed_target_cannot_consume_approval(session: Sess
             approval_response(proposal.short_code, interaction_id="interaction-stale")
         )
     assert stale.value.code == "target_version_changed"
+
+
+def test_projection_retry_restart_and_exact_button_context(session_factory) -> None:
+    settings = get_settings()
+    with session_factory.begin() as session:
+        course, account = action_fixture(session)
+        proposal = ActionService(session).propose(proposal_request(course, account))
+
+    backend = FakeDiscordBackend()
+    first_adapter = FakeDiscordProjectionAdapter(backend)
+    first_adapter.discard_next_projection_ack = True
+    first_runner = DiscordProjectionRunner(session_factory, first_adapter, settings)
+    assert first_runner.run_due_once()
+    assert len(backend.threads) == 1
+    assert len(backend.messages) == 1
+
+    with session_factory.begin() as session:
+        outbox = session.scalar(
+            select(OutboxEvent).where(OutboxEvent.event_type == "discord.projection.requested")
+        )
+        assert outbox is not None
+        assert outbox.status == "pending"
+        outbox.next_attempt_at = None
+
+    # A new adapter instance models a Hermes plugin restart. The fake Discord
+    # backend persists, so marker recovery must return the same thread/card.
+    restarted = FakeDiscordProjectionAdapter(backend)
+    second_runner = DiscordProjectionRunner(session_factory, restarted, settings)
+    assert second_runner.run_due_once()
+    assert len(backend.threads) == 1
+    assert len(backend.messages) == 1
+
+    with session_factory() as session:
+        daily_thread = session.scalar(select(DiscordDailyThread))
+        projection = session.scalar(select(DiscordProjection))
+        approval = session.get(Approval, proposal.approval_id)
+        outbox = session.scalar(
+            select(OutboxEvent).where(OutboxEvent.event_type == "discord.projection.requested")
+        )
+        assert daily_thread is not None and projection is not None and approval is not None
+        assert outbox is not None and outbox.status == "delivered"
+        assert projection.status == "delivered"
+        assert approval.control_projection_id == projection.id
+        assert projection.message_id is not None and daily_thread.thread_id is not None
+        control = backend.messages[str(projection.id)]["controls"][0]
+
+    forged = ApprovalResponse(
+        request_id=uuid.uuid4(),
+        discord_interaction_id="button-forged",
+        approval_id=proposal.approval_id,
+        approval_token=control["token"],
+        short_code=None,
+        decision="approve",
+        discord_user_id=settings.operator_discord_user_id,
+        guild_id=settings.discord_guild_id,
+        channel_id=daily_thread.thread_id,
+        parent_channel_id=settings.queue_channel_id,
+        projection_id=projection.id,
+        message_id="99999999999999999",
+        responded_at=datetime.now(UTC),
+    )
+    with session_factory.begin() as session, pytest.raises(DocketError) as rejected:
+        ApprovalService(session).respond(forged)
+    assert rejected.value.code == "invalid_approval_projection"
+
+    exact = forged.model_copy(
+        update={
+            "request_id": uuid.uuid4(),
+            "discord_interaction_id": "button-exact",
+            "message_id": projection.message_id,
+        }
+    )
+    with session_factory.begin() as session:
+        result = ApprovalService(session).respond(exact)
+    assert result["ok"] is True
+    assert result["operation_id"] is not None
+
+
+def test_fake_thread_ensure_and_archive_are_idempotent() -> None:
+    settings = get_settings()
+    backend = FakeDiscordBackend()
+    adapter = FakeDiscordProjectionAdapter(backend)
+    daily_thread_id = uuid.uuid4()
+    payload = {
+        "request_id": str(uuid.uuid4()),
+        "daily_thread_id": str(daily_thread_id),
+        "known_thread_id": None,
+        "guild_id": settings.discord_guild_id,
+        "channel_id": settings.queue_channel_id,
+        "local_date": "2026-07-21",
+        "name": "2026-07-21 — Tuesday",
+        "thread_type": "public_thread",
+        "auto_archive_minutes": 10080,
+    }
+    first = adapter.ensure_thread(payload)
+    second = adapter.ensure_thread({**payload, "request_id": str(uuid.uuid4())})
+    assert first["thread_id"] == second["thread_id"]
+    assert first["created"] is True
+    assert second["created"] is False
+
+    lifecycle = {
+        "request_id": str(uuid.uuid4()),
+        "guild_id": settings.discord_guild_id,
+        "parent_channel_id": settings.queue_channel_id,
+        "thread_id": first["thread_id"],
+        "desired_state": "archived",
+    }
+    archived = adapter.set_thread_lifecycle(daily_thread_id, lifecycle)
+    replayed = adapter.set_thread_lifecycle(
+        daily_thread_id, {**lifecycle, "request_id": str(uuid.uuid4())}
+    )
+    assert archived["archived"] is True
+    assert replayed["archived"] is True

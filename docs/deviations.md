@@ -1,5 +1,38 @@
 # Specification deviations
 
+## 2026-07-22 — Retain Discord Administrator during the staging spike
+
+The Milestone 2.5 specification calls for proving the exact channel permission
+set without granting Administrator. The operator explicitly accepted a
+high-speed staging shortcut: the existing Hermes/Yuuka application currently
+retains server-wide Administrator while the outbound thread, embed, and button
+capability is closed.
+
+This does not weaken Docket's application checks. The plugin still allowlists
+one guild and queue, accepts only a private service token, derives thread names
+and components, forbids arbitrary target channels, and Docket validates the
+actual actor, guild, parent, thread, projection, and message before consuming an
+approval. It does mean the live spike does **not** prove least-privilege Discord
+deployment. Remove Administrator and re-run the capability suite with View
+Channel, Send Messages, Create Public Threads, Send Messages in Threads, Manage
+Threads, Read Message History, and Embed Links before calling the deployment
+production-hardened.
+
+## 2026-07-22 — Use a pinned private Hermes runtime seam for outbound Discord
+
+Hermes `v2026.7.20` exposes `pre_gateway_dispatch` to user plugins but does not
+publish a lifecycle hook or public outbound Discord plugin API. The Docket
+plugin therefore uses the pinned runtime's module-level gateway weak reference,
+`GatewayRunner.adapters`, `_gateway_loop`, and the Discord adapter's `_client`.
+It starts a private token-authenticated listener on the Compose network and
+schedules bounded Discord operations onto the gateway loop.
+
+No Hermes core file is patched and no second bot identity is introduced. This
+is nevertheless a private compatibility seam: any Hermes upgrade must re-run
+thread create/find/archive, post/edit, restart recovery, and persistent-button
+tests before deployment. Failure to locate the weak reference, live adapter,
+event loop, or client fails closed with `discord_runtime_unavailable`.
+
 ## 2026-07-21 — Preauthorize the Google Workspace bundle
 
 Operator direction expands initial Google OAuth authorization beyond the
@@ -40,7 +73,7 @@ recurrence, and Docket correlation. It excludes attendee data, creator email,
 HTML links, descriptions, credentials, and arbitrary provider response fields.
 It is updated only in the same transaction that confirms operation success.
 
-## 2026-07-21 — Use an ordinary Discord approval message
+## 2026-07-21 — Keep an ordinary Discord approval fallback
 
 The private specification's `/docket approve <short-code>` fallback assumes a
 registered Discord application command or a gateway path that admits arbitrary
@@ -56,5 +89,7 @@ exact operator/guild/channel tuple, and calls Docket's authenticated internal
 approval endpoint. Approval remains outside the model-visible MCP surface.
 
 The plugin still parses a leading slash when delivered for forward
-compatibility. Native slash commands or buttons remain deferred until Docket
-has an explicitly registered Discord application interaction surface.
+compatibility. Milestone 2.5 adds persistent message buttons through the pinned
+Discord client listener; it does not register a `/docket` application command.
+The ordinary message remains the non-model recovery path if a card or component
+cannot be used.

@@ -154,6 +154,9 @@ class Approval(TimestampMixin, Base):
     )
     interaction_token_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     short_code_sha256: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    control_projection_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("discord_projections.id", name="fk_approvals_control_projection")
+    )
     authorized_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     requested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
@@ -163,6 +166,10 @@ class Approval(TimestampMixin, Base):
     response_user_id: Mapped[str | None] = mapped_column(String(64))
     response_guild_id: Mapped[str | None] = mapped_column(String(64))
     response_channel_id: Mapped[str | None] = mapped_column(String(64))
+    response_parent_channel_id: Mapped[str | None] = mapped_column(String(64))
+    response_projection_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("discord_projections.id", name="fk_approvals_response_projection")
+    )
     response_message_id: Mapped[str | None] = mapped_column(String(64))
     discord_interaction_id: Mapped[str | None] = mapped_column(String(255), unique=True)
     response_note: Mapped[str | None] = mapped_column(String(1000))

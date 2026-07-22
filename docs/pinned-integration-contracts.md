@@ -9,7 +9,8 @@ the candidate container's real classes and one live Discord message.
 
 | Component | Current pin | Reproducibility caveat |
 | --- | --- | --- |
-| Hermes Agent | release/image tag `v2026.7.20`; recorded source commit `c7d08de287556b3d339df336b180a39d4980ebd7` | The source commit is documentation; Compose does not prove the tagged image was built from it. The image is tag-pinned, not digest-pinned. |
+| Hermes Agent | tag `v2026.7.20`; deployed and configured image digest `sha256:f7b35053268f532f98955195c909f15a230470fbcbdacaa9fdecb95707dad04a`; OCI revision label `3ef6bbd201263d354fd83ec55b3c306ded2eb72a` | The digest is the runtime pin. `HERMES_SOURCE_COMMIT` mirrors the OCI revision for traceability but still has no enforcement role. |
+| discord.py inside Hermes | `2.7.1` | Docket relies on public-thread, embed, view, raw interaction, and archived-history behavior from this bundled version. |
 | MCP Python SDK / FastMCP | `mcp==1.28.1`, locked in `uv.lock` | Python package is exact, but transport and schema behavior also depend on the application mount and Hermes adapter. |
 | Docket Python base | `python:3.12-slim` | Minor line is pinned, image digest is not; future rebuilds can receive a different base image. |
 | PostgreSQL | `postgres:16.9-bookworm` | Version tag is pinned, image digest is not; persistent-volume semantics survive image replacement. |
@@ -32,6 +33,34 @@ traceability marker only.
 The Docket plugin depends on the user-plugin loader and the
 `pre_gateway_dispatch` hook in Hermes `v2026.7.20`.
 
+Milestone 2.5 also depends on a private outbound seam in that exact image. The
+plugin resolves `gateway.run._gateway_runner_ref()`, selects the Discord adapter
+from `GatewayRunner.adapters`, schedules work on `GatewayRunner._gateway_loop`,
+and uses the adapter's `_client` (`discord.ext.commands.Bot`). Hermes exposes no
+documented user-plugin lifecycle or outbound Discord service API in this pin.
+There is no Hermes core patch; the read-only user plugin owns a private HTTP
+listener and raw `on_interaction` listener instead.
+
+The listener binds to `0.0.0.0:8787` inside the Hermes container but is only
+`expose`d on the Compose network. It authenticates `DOCKET_TO_HERMES_TOKEN_FILE`
+on every request. Docket's callback uses the independent
+`HERMES_TO_DOCKET_TOKEN_FILE`. Neither port nor token is model-visible.
+
+Pinned outbound assumptions to revalidate:
+
+* `TextChannel.create_thread(..., type=ChannelType.public_thread)` creates the
+  explicit standard public thread without a starter message.
+* `TextChannel.threads` plus `archived_threads(private=False)` can find the
+  exact active or archived daily thread.
+* `Thread.edit(archived=False, locked=False)` restores an archived thread.
+* a `View(timeout=None)` sends literal components, while a raw
+  `on_interaction` listener continues to receive their custom IDs after a
+  gateway restart even though the original View object is gone.
+* `Interaction.response.defer(ephemeral=True, thinking=True)` supplies the
+  initial response before the authenticated Docket callback and follow-up.
+* message history and embed footer text are available for stable marker
+  recovery after an acknowledgement is lost.
+
 The hook is invoked before ordinary gateway authorization. Therefore the plugin
 must perform its own exact actor/guild/channel check and fail closed for control
 commands. On an authorized ordinary Docket-chat message it returns:
@@ -52,7 +81,7 @@ that channel as control-only and skips every message that is not an exact
 approval or rejection command, so queue conversation cannot reach the model.
 
 The current deployment does not register a native Docket Discord application
-command. Its reliable operator fallback is an ordinary message:
+command. Its reliable operator fallback remains an ordinary message:
 
 ```text
 docket approve SHORT-CODE
@@ -60,9 +89,9 @@ docket reject SHORT-CODE
 ```
 
 The hook accepts a leading slash for compatibility if Discord delivers it as an
-ordinary message, but user guidance must not depend on `/docket`. A native
-slash command or button requires an explicit Discord application registration
-and a separate interaction spike.
+ordinary message, but user guidance must not depend on `/docket`. Projection
+buttons use message components and the raw interaction listener described
+above; they do not imply that a native slash command was registered.
 
 The real current event shape is:
 

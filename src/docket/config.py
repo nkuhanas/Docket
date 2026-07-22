@@ -33,8 +33,18 @@ class Settings(BaseSettings):
     reconciliation_poll_seconds: float = Field(
         default=300.0, alias="DOCKET_RECONCILIATION_POLL_SECONDS"
     )
-    stale_lease_poll_seconds: float = Field(
-        default=60.0, alias="DOCKET_STALE_LEASE_POLL_SECONDS"
+    stale_lease_poll_seconds: float = Field(default=60.0, alias="DOCKET_STALE_LEASE_POLL_SECONDS")
+    discord_projection_enabled: bool = Field(
+        default=False, alias="DOCKET_DISCORD_PROJECTION_ENABLED"
+    )
+    discord_projection_url: str = Field(
+        default="http://hermes:8787", alias="DOCKET_DISCORD_PROJECTION_URL"
+    )
+    discord_projection_poll_seconds: float = Field(
+        default=5.0, alias="DOCKET_DISCORD_PROJECTION_POLL_SECONDS"
+    )
+    discord_projection_lease_seconds: int = Field(
+        default=30, alias="DOCKET_DISCORD_PROJECTION_LEASE_SECONDS"
     )
 
     operator_discord_user_id: str = Field(
@@ -66,9 +76,7 @@ class Settings(BaseSettings):
         alias="GOOGLE_OAUTH_TOKEN_FILE",
     )
     google_calendar_id: str = Field(default="docket-smoke-calendar", alias="GOOGLE_CALENDAR_ID")
-    google_account_external_id: str = Field(
-        default="primary", alias="GOOGLE_ACCOUNT_EXTERNAL_ID"
-    )
+    google_account_external_id: str = Field(default="primary", alias="GOOGLE_ACCOUNT_EXTERNAL_ID")
 
     @field_validator("log_level")
     @classmethod

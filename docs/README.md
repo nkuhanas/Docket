@@ -9,6 +9,8 @@ Start here when operating or changing the deployed stack:
   upgrades.
 * [Specification deviations](deviations.md) — accepted differences from the
   private implementation specification and their compensating controls.
+* [Milestone 2.5 verification](milestone-2.5-verification.md) — pinned runtime,
+  automated evidence, live Discord transcript, and the remaining operator gate.
 
 These notes describe the current pinned stack. They are not a substitute for
 the specification or migrations. When behavior and documentation disagree,

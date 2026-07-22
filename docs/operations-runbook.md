@@ -36,10 +36,11 @@ A Calendar write succeeds only through this durable sequence:
    ID, and trusted Discord source.
 2. Docket derives the executable parameters, risk, preview, hashes, target
    versions, short code, and expiry. No provider call occurs here.
-3. The operator sends the plain message `docket approve <short-code>` in the
-   configured queue channel. The trusted plugin calls the internal approval
-   route; ordinary MCP tools cannot approve. The current deployment has no
-   registered Docket Discord application command, so do not rely on `/docket`.
+3. Docket projects the immutable preview into the ISO-dated public thread under
+   the configured queue. The operator presses Approve/Reject there, or sends the
+   plain fallback `docket approve <short-code>` in the root queue. The trusted
+   plugin calls the internal approval route; ordinary MCP tools cannot approve.
+   The deployment has no registered `/docket` application command.
 4. Docket consumes the approval once and commits a pending logical operation.
 5. The worker persists an execution attempt and a call-started marker before
    contacting Calendar. Confirmed success commits the event link and state
@@ -98,6 +99,9 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Proposal returns `action_unavailable` | Inspect the named stable meeting and missing-fields detail | Incomplete dates, local times, timezone, or no selected weekday in range |
 | Proposal returns `calendar_not_allowed` | Compare the exact ID returned by `docket_list_accounts` with `GOOGLE_CALENDAR_ID` | Display name or different calendar substituted for the configured opaque ID |
 | Approval message is ignored | Use plain `docket approve CODE`; verify queue is both allowed and free-response | Discord mention gate dropped ingress, plugin context gate failed, or code expired |
+| No daily thread/card appears | Inspect projection outbox status, then the private plugin listener and Hermes logs | Hermes not recreated after plugin/env change, private listener unavailable, Discord permission/API failure, or retry backoff |
+| Duplicate daily thread or card | Stop retries and inspect exact name/owner or footer-marker collisions | Archived lookup drift, manually copied marker, lost binding, or plugin concurrency regression |
+| Button says the control is unauthorized/stale | Compare stored control projection with actual parent/thread/message and actor | Copied/old card, wrong operator, changed thread parent, projection refresh, or callback drift |
 | Approval is consumed but no Calendar link appears | Inspect operation status, next attempt, attempts, and worker log | Worker stopped, provider failure, backoff, or reconciliation required |
 | Operation is `reconciliation_required` | Inspect attempt error and provider correlation; never force a create retry | Timeout/crash may have reached Google, or reconciliation found conflicting matches |
 | Update creates a second event | Stop external calls and compare action type, link, idempotency key, and external event ID | Update was proposed as create, link was missing, or execution contract regressed |
@@ -253,6 +257,51 @@ are null, with no operation, means the callback never arrived. Check the queue
 channel lists and plugin load before investigating the worker or Calendar. If
 `expires_at` has passed, create a fresh proposal after fixing ingress; never
 manually advance the expired row.
+
+## Discord projection or button failure
+
+Projection delivery is a durable outbox path. A successful card has all three
+layers committed: a delivered `outbox_events` row, an active
+`discord_daily_threads` row with the actual Discord thread ID, and a delivered
+`discord_projections` row with the actual bot-authored message ID. A pending
+approval additionally points `control_projection_id` at that delivered card.
+
+Inspect bounded state without printing card bodies or tokens:
+
+```bash
+sudo docker compose exec -T postgres psql -U docket -d docket -x -c '
+select id, event_type, status, attempt_count, next_attempt_at, last_error_code
+from outbox_events where event_type like '''discord.%'''
+order by created_at desc limit 20;
+select id, local_date, thread_name, thread_id, status, auto_archive_minutes,
+       last_verified_at, last_error_code
+from discord_daily_threads order by local_date desc limit 10;
+select id, queue_item_id, daily_thread_id, projection_version, message_id,
+       status, last_error_code
+from discord_projections order by created_at desc limit 20;'
+```
+
+First failure points:
+
+* `discord_transport_error` or `discord_runtime_unavailable`: verify Hermes is
+  running, plugin `0.3.0` is enabled, port 8787 is exposed only internally, and
+  Hermes was recreated after Compose environment changes.
+* `daily_thread_name_conflict`: inspect exact active and archived matches under
+  the configured parent. Do not rename/adopt a foreign-owned collision or
+  delete evidence merely to unblock delivery.
+* `stored_thread_binding_mismatch`: the stored Discord ID changed parent, name,
+  type, or owner. Fail closed and investigate manual Discord changes.
+* `projection_marker_conflict`: more than one card, or a non-bot card, contains
+  the stable `docket-projection:<uuid>` footer marker. Do not choose one
+  arbitrarily.
+* `invalid_discord_ack`: the plugin response did not echo request, target, or
+  digest bindings. Treat this as a compatibility/security failure.
+* a button callback with no response fields: confirm the raw interaction
+  listener was installed after restart, then inspect Hermes logs. Buttons defer
+  first and report success only after Docket commits.
+
+Hermes plugin edits require a gateway restart. `/reload-mcp` is still required
+for MCP tool/schema changes, but it does not reload this Python plugin.
 
 ## Schema or tool mismatch
 

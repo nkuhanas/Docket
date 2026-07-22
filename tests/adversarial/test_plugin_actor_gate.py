@@ -1,9 +1,13 @@
 import importlib.util
+import uuid
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+from docket.security import issue_projection_approval_token
 
 PLUGIN_PATH = Path("hermes/plugin/docket_discord/__init__.py")
 
@@ -226,3 +230,46 @@ def test_session_commands_are_not_rewritten(plugin_module, monkeypatch) -> None:
     )
 
     assert plugin_module._pre_gateway_dispatch(event) is None
+
+
+@pytest.mark.adversarial
+def test_outbound_listener_requires_independent_exact_bearer(
+    plugin_module, monkeypatch
+) -> None:
+    monkeypatch.setattr(plugin_module, "_read_outbound_token", lambda: "expected-token")
+    authorized = SimpleNamespace(headers={"Authorization": "Bearer expected-token"})
+    wrong = SimpleNamespace(headers={"Authorization": "Bearer expected-token-extra"})
+    missing = SimpleNamespace(headers={})
+
+    assert plugin_module._PluginRequestHandler._authorized(authorized) is True
+    assert plugin_module._PluginRequestHandler._authorized(wrong) is False
+    assert plugin_module._PluginRequestHandler._authorized(missing) is False
+
+
+@pytest.mark.adversarial
+def test_outbound_target_cannot_escape_configured_queue(plugin_module, monkeypatch) -> None:
+    guild = "111111111111111111"
+    queue = "222222222222222222"
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_QUEUE_CHANNEL_ID", queue)
+
+    assert plugin_module._validate_target(guild, queue) == (guild, queue)
+    with pytest.raises(plugin_module.PluginAPIError) as rejected:
+        plugin_module._validate_target(guild, "333333333333333333")
+    assert rejected.value.code == "discord_target_not_allowed"
+
+
+@pytest.mark.adversarial
+def test_plugin_decodes_only_projection_bound_v2_control(plugin_module) -> None:
+    approval_id = uuid.uuid4()
+    projection_id = uuid.uuid4()
+    token = issue_projection_approval_token(
+        approval_id,
+        projection_id,
+        datetime.now(UTC) + timedelta(minutes=15),
+        b"test-signing-key",
+    )
+
+    assert plugin_module._decode_control(token) == (approval_id, projection_id)
+    with pytest.raises(plugin_module.PluginAPIError):
+        plugin_module._decode_control("not-a-projection-token")

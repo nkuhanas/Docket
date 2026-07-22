@@ -1,6 +1,6 @@
 name: docket-discord
-version: 0.2.0
-description: Trusted Discord source-provenance and approval bridge for Docket
+version: 0.3.0
+description: Trusted Discord provenance, projection, and approval bridge for Docket
 provides_hooks:
   - pre_gateway_dispatch
 requires_env:
@@ -9,6 +9,9 @@ requires_env:
     secret: false
   - name: HERMES_TO_DOCKET_TOKEN_FILE
     description: Mounted service-token file used only by the trusted callback path
+    secret: true
+  - name: DOCKET_TO_HERMES_TOKEN_FILE
+    description: Mounted service-token file for Docket projection requests
     secret: true
   - name: DOCKET_OPERATOR_DISCORD_USER_ID
     description: The only Discord user allowed to submit Docket control commands
@@ -21,4 +24,10 @@ requires_env:
     secret: false
   - name: DOCKET_QUEUE_CHANNEL_ID
     description: The only Discord channel allowed to submit Docket control commands
+    secret: false
+  - name: DOCKET_PLUGIN_BIND
+    description: Private Compose listener address for outbound projection requests
+    secret: false
+  - name: DOCKET_PLUGIN_PORT
+    description: Private Compose listener port for outbound projection requests
     secret: false

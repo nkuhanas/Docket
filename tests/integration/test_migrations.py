@@ -30,6 +30,8 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
         "outbox_events",
         "queue_items",
         "audit_events",
+        "discord_daily_threads",
+        "discord_projections",
     }.issubset(set(inspect(engine).get_table_names()))
     assert "synced_snapshot" in {
         column["name"] for column in inspect(engine).get_columns("calendar_links")

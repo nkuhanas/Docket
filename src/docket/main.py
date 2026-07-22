@@ -19,9 +19,11 @@ from docket.database import (
 )
 from docket.internal_api import router as internal_router
 from docket.mcp import mcp
+from docket.providers.discord import HttpDiscordProjectionAdapter
 from docket.providers.google import FakeCalendarProvider, FakeGoogleProvider
 from docket.providers.google.calendar import GoogleCalendarProvider
 from docket.services.accounts import AccountService
+from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.operations import OperationRunner
 from docket.worker import WorkerRuntime
 
@@ -45,12 +47,26 @@ calendar_provider = (
     if settings.external_calls_enabled
     else FakeCalendarProvider()
 )
+discord_projection_runner = (
+    DiscordProjectionRunner(
+        get_session_factory(),
+        HttpDiscordProjectionAdapter(
+            settings.discord_projection_url, settings.docket_to_hermes_token()
+        ),
+        settings,
+        lease_seconds=settings.discord_projection_lease_seconds,
+    )
+    if settings.discord_projection_enabled
+    else None
+)
 worker = WorkerRuntime(
     settings.worker_heartbeat_seconds,
     OperationRunner(get_session_factory(), calendar_provider),
     operation_poll_seconds=settings.operation_poll_seconds,
     reconciliation_poll_seconds=settings.reconciliation_poll_seconds,
     stale_lease_poll_seconds=settings.stale_lease_poll_seconds,
+    discord_projection_runner=discord_projection_runner,
+    discord_projection_poll_seconds=settings.discord_projection_poll_seconds,
 )
 
 
