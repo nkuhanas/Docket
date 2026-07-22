@@ -115,9 +115,11 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
     calendar_lookup = tools["docket_list_calendar_events"]
     lookup_description = " ".join((calendar_lookup.description or "").split())
     assert "maximum is 31 days" in lookup_description
+    assert "do not use a terminal or another clock" in lookup_description
     assert "never expose descriptions, attendees, conference data" in lookup_description
     lookup_properties = calendar_lookup.inputSchema["properties"]
     assert lookup_properties["freshness"]["enum"] == ["prefer_cache", "require_fresh"]
+    assert lookup_properties["relative_day"]["anyOf"][0]["enum"] == ["today", "tomorrow"]
     assert lookup_properties["limit"]["maximum"] == 100
 
     list_rules = tools["docket_list_reminder_rules"]

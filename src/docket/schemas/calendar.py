@@ -13,6 +13,7 @@ from docket.schemas.records import (
 )
 
 CalendarFreshness = Literal["prefer_cache", "require_fresh"]
+CalendarRelativeDay = Literal["today", "tomorrow"]
 ReminderScope = Literal["calendar", "event"]
 
 
@@ -68,14 +69,21 @@ class ReminderRuleResult(StrictModel):
 class CalendarLookupInput(StrictModel):
     account_id: UUID
     calendar_id: str = Field(min_length=1, max_length=1024)
-    start: datetime
-    end: datetime
+    start: datetime | None = None
+    end: datetime | None = None
+    relative_day: CalendarRelativeDay | None = None
     text_filter: str | None = Field(default=None, max_length=200)
     limit: int = Field(default=100, ge=1, le=100)
     freshness: CalendarFreshness = "prefer_cache"
 
     @model_validator(mode="after")
     def validate_bounds(self) -> "CalendarLookupInput":
+        if self.relative_day is not None and (self.start is not None or self.end is not None):
+            raise ValueError("relative_day cannot be combined with explicit start or end bounds")
+        if (self.start is None) != (self.end is None):
+            raise ValueError("Calendar lookup start and end must be supplied together")
+        if self.start is None or self.end is None:
+            return self
         if self.start.tzinfo is None or self.end.tzinfo is None:
             raise ValueError("Calendar lookup bounds must include timezones")
         if self.end <= self.start:

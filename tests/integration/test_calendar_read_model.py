@@ -25,7 +25,11 @@ from docket.providers.discord import (
 )
 from docket.providers.google.calendar import CalendarSnapshotEvent, CalendarSnapshotPage
 from docket.providers.google.fake_calendar import FakeCalendarProvider
-from docket.schemas.calendar import DisableReminderRuleInput, SetReminderRuleInput
+from docket.schemas.calendar import (
+    CalendarLookupInput,
+    DisableReminderRuleInput,
+    SetReminderRuleInput,
+)
 from docket.schemas.records import RecordSourceInput
 from docket.services.calendar_sync import CalendarReadService, CalendarSyncService
 from docket.services.discord_projection import DiscordProjectionRunner
@@ -266,6 +270,7 @@ def test_indexed_lookup_is_bounded_redacted_and_reports_staleness(session_factor
     ]
     assert result["freshness"]["stale"] is False
     assert result["freshness"]["covered"] is True
+    assert result["range_resolution"]["mode"] == "explicit"
     assert not {
         "description",
         "attendees",
@@ -277,6 +282,161 @@ def test_indexed_lookup_is_bounded_redacted_and_reports_staleness(session_factor
     stale = read.get_sync_status(account_id, settings.google_calendar_id)
     assert stale["stale"] is True
     assert "snapshot_generation" not in stale
+
+
+@pytest.mark.integration
+def test_lookup_without_range_preserves_rolling_seven_day_default(session_factory) -> None:
+    base = datetime(2026, 7, 22, 22, 15, tzinfo=UTC)
+    settings = get_settings().model_copy(update={"calendar_reads_enabled": False})
+    account_id = _account(session_factory)
+    provider = FakeCalendarProvider()
+    sync = CalendarSyncService(session_factory, provider, settings, clock=lambda: base)
+    read = CalendarReadService(session_factory, sync, settings, clock=lambda: base)
+
+    result = read.list_events(
+        account_id=account_id,
+        calendar_id=settings.google_calendar_id,
+        start=None,
+        end=None,
+        text_filter=None,
+        limit=100,
+        freshness="prefer_cache",
+    )
+
+    assert result["range_start"] == base.isoformat()
+    assert result["range_end"] == (base + timedelta(days=7)).isoformat()
+    assert result["range_resolution"] == {
+        "mode": "default",
+        "relative_day": None,
+        "local_date": None,
+        "timezone": "America/Los_Angeles",
+        "as_of": base.isoformat(),
+    }
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("as_of", "relative_day", "expected_date", "expected_start", "expected_end"),
+    [
+        (
+            datetime(2026, 3, 8, 7, 59, 59, tzinfo=UTC),
+            "today",
+            "2026-03-07",
+            "2026-03-07T08:00:00+00:00",
+            "2026-03-08T08:00:00+00:00",
+        ),
+        (
+            datetime(2026, 3, 8, 8, 0, tzinfo=UTC),
+            "today",
+            "2026-03-08",
+            "2026-03-08T08:00:00+00:00",
+            "2026-03-09T07:00:00+00:00",
+        ),
+        (
+            datetime(2026, 11, 1, 7, 0, tzinfo=UTC),
+            "today",
+            "2026-11-01",
+            "2026-11-01T07:00:00+00:00",
+            "2026-11-02T08:00:00+00:00",
+        ),
+        (
+            datetime(2026, 11, 1, 7, 0, tzinfo=UTC),
+            "tomorrow",
+            "2026-11-02",
+            "2026-11-02T08:00:00+00:00",
+            "2026-11-03T08:00:00+00:00",
+        ),
+    ],
+)
+def test_relative_day_lookup_resolves_local_midnights_across_dst(
+    session_factory,
+    as_of: datetime,
+    relative_day: str,
+    expected_date: str,
+    expected_start: str,
+    expected_end: str,
+) -> None:
+    settings = get_settings().model_copy(update={"calendar_reads_enabled": False})
+    account_id = _account(session_factory)
+    provider = FakeCalendarProvider()
+    sync = CalendarSyncService(session_factory, provider, settings, clock=lambda: as_of)
+    read = CalendarReadService(session_factory, sync, settings, clock=lambda: as_of)
+
+    result = read.list_events(
+        account_id=account_id,
+        calendar_id=settings.google_calendar_id,
+        start=None,
+        end=None,
+        relative_day=relative_day,
+        text_filter=None,
+        limit=100,
+        freshness="prefer_cache",
+    )
+
+    assert result["range_start"] == expected_start
+    assert result["range_end"] == expected_end
+    assert result["range_resolution"] == {
+        "mode": "relative_day",
+        "relative_day": relative_day,
+        "local_date": expected_date,
+        "timezone": "America/Los_Angeles",
+        "as_of": as_of.isoformat(),
+    }
+
+
+@pytest.mark.integration
+def test_relative_day_lookup_captures_request_clock_once_before_midnight(
+    session_factory,
+) -> None:
+    before_midnight = datetime(2026, 7, 22, 6, 59, 59, 999999, tzinfo=UTC)
+    settings = get_settings().model_copy(update={"calendar_reads_enabled": False})
+    account_id = _account(session_factory)
+    provider = FakeCalendarProvider()
+    sync = CalendarSyncService(session_factory, provider, settings, clock=lambda: before_midnight)
+    calls = 0
+
+    def request_clock() -> datetime:
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise AssertionError("Calendar lookup read the request clock more than once")
+        return before_midnight
+
+    read = CalendarReadService(session_factory, sync, settings, clock=request_clock)
+    result = read.list_events(
+        account_id=account_id,
+        calendar_id=settings.google_calendar_id,
+        start=None,
+        end=None,
+        relative_day="tomorrow",
+        text_filter=None,
+        limit=100,
+        freshness="prefer_cache",
+    )
+
+    assert calls == 1
+    assert result["range_resolution"]["local_date"] == "2026-07-22"
+    assert result["range_start"] == "2026-07-22T07:00:00+00:00"
+    assert result["range_end"] == "2026-07-23T07:00:00+00:00"
+
+
+def test_calendar_lookup_rejects_mixed_or_partial_ranges() -> None:
+    common = {
+        "account_id": uuid.uuid4(),
+        "calendar_id": "calendar@example.com",
+    }
+    with pytest.raises(ValueError, match="cannot be combined"):
+        CalendarLookupInput(
+            **common,
+            relative_day="today",
+            start=datetime(2026, 7, 22, tzinfo=UTC),
+            end=datetime(2026, 7, 23, tzinfo=UTC),
+        )
+    with pytest.raises(ValueError, match="must be supplied together"):
+        CalendarLookupInput(
+            **common,
+            start=datetime(2026, 7, 22, tzinfo=UTC),
+        )
 
 
 @pytest.mark.integration

@@ -107,6 +107,12 @@ reports a succeeded operation.
 
 For Calendar lookup questions, select the configured account and calendar with
 `docket_list_accounts`, then use `docket_list_calendar_events`. Use
+`relative_day="today"` or `relative_day="tomorrow"` for those local-day
+requests and omit `start` and `end`; Docket's returned `range_resolution` is
+the authoritative date, timezone, and clock instant. Never call the terminal,
+another time tool, or session history to calculate Calendar lookup bounds.
+Use explicit timezone-aware `start` and `end` together only when the requested
+interval is not one of those relative days. Use
 `prefer_cache` unless the user explicitly needs a freshly synchronized answer
 or the returned state is stale and freshness matters. Never describe stale or
 uncovered cache state as current. `require_fresh` remains a bounded Docket-owned

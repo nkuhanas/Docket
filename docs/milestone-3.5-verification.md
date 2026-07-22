@@ -31,7 +31,7 @@ The final local gate completed with:
 
 ```text
 uv run pytest -q
-139 passed, 1 third-party Starlette deprecation warning
+146 passed, 1 third-party Starlette deprecation warning
 
 uv run ruff check .
 All checks passed!
@@ -45,6 +45,10 @@ The suite specifically proves:
 * a complete paginated snapshot promotes atomically;
 * a second-page failure retains the prior complete generation and reports stale;
 * timed and all-day lookups are bounded, indexed, redacted, and freshness-labelled;
+* relative `today`/`tomorrow` lookups sample the Docket request clock once and
+  resolve independent local midnights across 23- and 25-hour DST days;
+* mixed relative/explicit and partial explicit lookup ranges fail validation;
+* the omitted-range lookup retains its rolling seven-day default;
 * malformed provider pages, duplicate event identities, and page-token loops fail closed;
 * a repeatedly failing account cannot starve another enabled Calendar sync target;
 * enabling real reads does not select a real write provider;
@@ -111,6 +115,13 @@ The Docket startup log showed the transactional `0006 -> 0007` migration and no
 worker, provider, or plugin startup error. PostgreSQL reported `queue_channel_id`
 and `daily_thread_id`, no legacy destination column, and zero enabled reminder
 rules. The Calendar cache remained current while external writes remained off.
+
+A follow-up deployment on the same date exposed `relative_day` as the closed
+`today`/`tomorrow` enum on the existing seventeen-tool surface. A live read-only
+lookup resolved `today` to local date `2026-07-22` and the exact UTC interval
+`2026-07-22T07:00:00+00:00` through `2026-07-23T07:00:00+00:00`; the response
+reported `America/Los_Angeles`, a server `as_of` instant, current freshness, and
+covered cache state. Calendar reads remained enabled and external writes false.
 
 `/health/smoke-provider` returned the fake Google adapter with external calls
 false. An authenticated malformed request to the new private Hermes notification

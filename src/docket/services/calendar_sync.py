@@ -514,7 +514,9 @@ class CalendarReadService:
         self.clock = clock
 
     def _status(self, state: CalendarSyncState | None) -> dict[str, Any]:
-        now = _aware(self.clock()).astimezone(UTC)
+        return self._status_at(state, _aware(self.clock()).astimezone(UTC))
+
+    def _status_at(self, state: CalendarSyncState | None, now: datetime) -> dict[str, Any]:
         stale = (
             state is None
             or state.last_success_at is None
@@ -557,12 +559,46 @@ class CalendarReadService:
         *,
         account_id: uuid.UUID,
         calendar_id: str,
-        start: datetime,
-        end: datetime,
+        start: datetime | None,
+        end: datetime | None,
+        relative_day: str | None = None,
         text_filter: str | None,
         limit: int,
         freshness: str,
     ) -> dict[str, Any]:
+        as_of = _aware(self.clock()).astimezone(UTC)
+        zone = ZoneInfo(self.settings.timezone)
+        if relative_day is not None:
+            if relative_day not in {"today", "tomorrow"}:
+                raise DocketError(
+                    code="invalid_relative_day",
+                    message="Calendar relative day must be today or tomorrow.",
+                )
+            if start is not None or end is not None:
+                raise DocketError(
+                    code="invalid_calendar_range",
+                    message="Calendar relative day cannot be combined with explicit bounds.",
+                )
+            local_date = as_of.astimezone(zone).date()
+            if relative_day == "tomorrow":
+                local_date += timedelta(days=1)
+            start = datetime.combine(local_date, datetime_time.min, tzinfo=zone)
+            end = datetime.combine(local_date + timedelta(days=1), datetime_time.min, tzinfo=zone)
+            range_mode = "relative_day"
+        elif start is None and end is None:
+            start = as_of
+            end = as_of + timedelta(days=7)
+            local_date = None
+            range_mode = "default"
+        elif start is None or end is None:
+            raise DocketError(
+                code="invalid_calendar_range",
+                message="Calendar lookup start and end must be supplied together.",
+            )
+        else:
+            local_date = None
+            range_mode = "explicit"
+
         if start.tzinfo is None or end.tzinfo is None or end <= start:
             raise DocketError(
                 code="invalid_calendar_range",
@@ -592,7 +628,6 @@ class CalendarReadService:
 
         start_utc = start.astimezone(UTC)
         end_utc = end.astimezone(UTC)
-        zone = ZoneInfo(self.settings.timezone)
         start_date = start.astimezone(zone).date()
         end_local = end.astimezone(zone)
         end_date = end_local.date()
@@ -660,7 +695,7 @@ class CalendarReadService:
                 }
                 for row in rows[:limit]
             ]
-            status = self._status(state)
+            status = self._status_at(state, as_of)
             covered = bool(
                 state is not None
                 and state.snapshot_generation is not None
@@ -673,6 +708,13 @@ class CalendarReadService:
                 "calendar_id": calendar_id,
                 "range_start": start_utc.isoformat(),
                 "range_end": end_utc.isoformat(),
+                "range_resolution": {
+                    "mode": range_mode,
+                    "relative_day": relative_day,
+                    "local_date": local_date.isoformat() if local_date is not None else None,
+                    "timezone": self.settings.timezone,
+                    "as_of": as_of.isoformat(),
+                },
                 "events": result,
                 "freshness": {**status, "covered": covered},
                 "refresh_pending": bool(

@@ -11,6 +11,8 @@ archival recovery, and durable system-channel failure reporting. Detailed
 implementation specifications are maintained privately and excluded from Git.
 Milestone 3.5 adds a bounded, atomically promoted Calendar read model, freshness
 reporting, explicit reminder rules, and deterministic deduplicated Discord reminders.
+Calendar lookups resolve `today` and `tomorrow` inside Docket's configured
+timezone, so Hermes does not need terminal access to derive local-day bounds.
 
 ## Operational documentation
 
@@ -143,6 +145,10 @@ client. The cache retains the last complete generation when pagination or
 authorization fails, and every lookup reports coverage and freshness. Real
 snapshot calls require `DOCKET_CALENDAR_READS_ENABLED=true`. Approved Calendar
 mutations remain separately gated by `DOCKET_EXTERNAL_WRITES_ENABLED=true`.
+The existing lookup accepts an explicit timezone-aware interval, a Docket-owned
+`today`/`tomorrow` relative day, or no interval for its rolling seven-day
+default. Relative results include the resolved local date, timezone, and server
+`as_of` instant.
 
 Reminder rules are created only by an explicit operator request. Delivery uses
 a bounded deterministic embed in the reminder due date's ISO thread under

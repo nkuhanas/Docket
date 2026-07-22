@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime
 from typing import Annotated, Any
 
 from mcp.server.fastmcp import FastMCP
@@ -20,6 +20,7 @@ from docket.schemas.actions import (
 from docket.schemas.calendar import (
     CalendarFreshness,
     CalendarLookupInput,
+    CalendarRelativeDay,
     DisableReminderRuleInput,
     ReminderScope,
     SetReminderRuleInput,
@@ -263,25 +264,29 @@ def docket_list_calendar_events(
     calendar_id: CalendarId,
     start: datetime | None = None,
     end: datetime | None = None,
+    relative_day: CalendarRelativeDay | None = None,
     text_filter: CalendarTextFilter | None = None,
     limit: CalendarLimit = 100,
     freshness: CalendarFreshness = "prefer_cache",
 ) -> dict[str, Any]:
     """Read a bounded, redacted time range from Docket's Calendar cache.
 
-    The default range is now through seven days and the maximum is 31 days. Results
-    include cache freshness and never expose descriptions, attendees, conference data,
-    credentials, or a raw Google client. ``require_fresh`` may wait up to ten seconds for
-    Docket's full bounded snapshot; it never promotes a partial requested subrange.
+    Supply both timezone-aware ``start`` and ``end``, or set ``relative_day`` to
+    ``today`` or ``tomorrow``. Docket resolves relative days once in its configured
+    timezone and returns the authoritative local date, timezone, and ``as_of`` instant;
+    do not use a terminal or another clock to derive these bounds. With no range input,
+    the default is now through seven days. The maximum is 31 days. Results include cache
+    freshness and never expose descriptions, attendees, conference data, credentials,
+    or a raw Google client. ``require_fresh`` may wait up to ten seconds for Docket's
+    full bounded snapshot; it never promotes a partial requested subrange.
     """
     try:
-        range_start = start or datetime.now(UTC)
-        range_end = end or (range_start + timedelta(days=7))
         request = CalendarLookupInput(
             account_id=account_id,
             calendar_id=calendar_id,
-            start=range_start,
-            end=range_end,
+            start=start,
+            end=end,
+            relative_day=relative_day,
             text_filter=text_filter,
             limit=limit,
             freshness=freshness,
@@ -291,6 +296,7 @@ def docket_list_calendar_events(
             calendar_id=request.calendar_id,
             start=request.start,
             end=request.end,
+            relative_day=request.relative_day,
             text_filter=request.text_filter,
             limit=request.limit,
             freshness=request.freshness,

@@ -289,6 +289,14 @@ past-session search. Their generated schemas cap lookup windows, result counts,
 filters, lead times, source context, and optimistic rule versions. Reminder
 destinations are absent from the model schema; Docket binds the queue parent and
 the due-date daily thread internally.
+For local-day Calendar questions, that same lookup accepts only the closed
+`today`/`tomorrow` vocabulary. Docket samples its request clock once, resolves
+both local midnights in `DOCKET_TIMEZONE`, and returns the resolved date,
+timezone, and `as_of` instant. This is deliberately part of the existing read
+tool rather than a generic model-visible clock: Hermes must not invoke a terminal
+to manufacture lookup bounds. Explicit timezone-aware start/end pairs and the
+no-range rolling seven-day default remain separate modes; mixed relative and
+explicit ranges are rejected.
 The active and template allowlists are synchronized by
 `scripts/prepare-hermes-home.sh`, but an existing Hermes session still requires
 `/reload-mcp` after deployment.
