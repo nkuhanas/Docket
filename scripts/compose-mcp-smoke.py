@@ -16,6 +16,9 @@ EXPECTED_TOOLS = {
     "docket_search_records",
     "docket_update_record",
     "docket_archive_record",
+    "docket_list_accounts",
+    "docket_propose_action",
+    "docket_get_action",
 }
 
 
