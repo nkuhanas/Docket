@@ -5,13 +5,15 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import structlog
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from docket.config import Settings
 from docket.domain.canonical import sha256_json
-from docket.domain.enums import ApprovalStatus, OutboxStatus
+from docket.domain.enums import ApprovalStatus, OutboxStatus, RiskClass
 from docket.models import (
+    Account,
     Action,
     ActionRevision,
     Approval,
@@ -22,12 +24,21 @@ from docket.models import (
 )
 from docket.models.base import utc_now
 from docket.providers.discord import DiscordProjectionAdapter, DiscordProjectionError
-from docket.security import issue_projection_approval_token
+from docket.security import issue_projection_approval_token, issue_projection_local_action_token
+from docket.services.queue import ensure_local_actions
 
 _SUPPORTED_EVENTS = {
     "discord.projection.requested",
     "discord.projection.refresh_requested",
+    "discord.thread.ensure_requested",
+    "discord.thread.lifecycle_requested",
+    "discord.system_alert.requested",
 }
+_PROJECTION_EVENTS = {
+    "discord.projection.requested",
+    "discord.projection.refresh_requested",
+}
+logger = structlog.get_logger(__name__)
 
 
 def _aware(value: datetime) -> datetime:
@@ -104,7 +115,17 @@ class DiscordProjectionRunner:
             queue_item = session.get(QueueItem, event.aggregate_id)
             if queue_item is None:
                 raise DiscordProjectionError("queue_item_missing", "Queue item is missing")
-            local_date = self._local_date(queue_item, self.settings)
+            requested_date = event.payload.get("target_local_date")
+            try:
+                local_date = (
+                    date.fromisoformat(str(requested_date))
+                    if requested_date is not None
+                    else self._local_date(queue_item, self.settings)
+                )
+            except ValueError as exc:
+                raise DiscordProjectionError(
+                    "invalid_projection_date", "Projection target date is invalid"
+                ) from exc
             daily_thread = session.scalar(
                 select(DiscordDailyThread).where(
                     DiscordDailyThread.guild_id == self.settings.discord_guild_id,
@@ -122,12 +143,26 @@ class DiscordProjectionRunner:
                 )
                 session.add(daily_thread)
                 session.flush()
-            projection = session.scalar(
-                select(DiscordProjection).where(
-                    DiscordProjection.queue_item_id == queue_item.id,
-                    DiscordProjection.daily_thread_id == daily_thread.id,
-                )
+            requested_projection = event.payload.get("projection_id")
+            projection = (
+                session.get(DiscordProjection, uuid.UUID(str(requested_projection)))
+                if requested_projection is not None
+                else None
             )
+            if projection is not None and (
+                projection.queue_item_id != queue_item.id
+                or projection.daily_thread_id != daily_thread.id
+            ):
+                raise DiscordProjectionError(
+                    "projection_target_changed", "Projection target binding changed"
+                )
+            if projection is None:
+                projection = session.scalar(
+                    select(DiscordProjection).where(
+                        DiscordProjection.queue_item_id == queue_item.id,
+                        DiscordProjection.daily_thread_id == daily_thread.id,
+                    )
+                )
             if projection is None:
                 projection = DiscordProjection(
                     queue_item_id=queue_item.id,
@@ -138,6 +173,11 @@ class DiscordProjectionRunner:
                 )
                 session.add(projection)
                 session.flush()
+            event.payload = {
+                **event.payload,
+                "projection_id": str(projection.id),
+                "target_local_date": local_date.isoformat(),
+            }
             return daily_thread.id, projection.id
 
     def _thread_request(
@@ -162,6 +202,21 @@ class DiscordProjectionRunner:
                 "thread_type": "public_thread",
                 "auto_archive_minutes": 10080,
             }
+
+    def _complete_event(self, event_id: uuid.UUID, lease_token: uuid.UUID) -> None:
+        with self.session_factory.begin() as session:
+            event = session.get(OutboxEvent, event_id)
+            if (
+                event is None
+                or event.status != OutboxStatus.DELIVERING.value
+                or event.lease_token != lease_token
+            ):
+                raise DiscordProjectionError("delivery_lease_lost", "Outbox lease was lost")
+            event.status = OutboxStatus.DELIVERED.value
+            event.lease_token = None
+            event.leased_until = None
+            event.next_attempt_at = None
+            event.last_error_code = None
 
     def _accept_thread_ack(
         self,
@@ -220,12 +275,49 @@ class DiscordProjectionRunner:
         action: Action | None,
         revision: ActionRevision | None,
         approval: Approval | None,
+        local_revisions: list[tuple[Action, ActionRevision]],
+        account_label: str | None,
         projection_id: uuid.UUID,
+        projection_date: date,
+        latest_date: date,
     ) -> tuple[dict[str, Any], list[dict[str, Any]], str, str]:
         fields: list[dict[str, Any]] = [
             {"name": "Status", "value": queue_item.status, "inline": True},
             {"name": "Priority", "value": queue_item.priority, "inline": True},
+            {"name": "Queue date", "value": projection_date.isoformat(), "inline": True},
+            {"name": "Category", "value": queue_item.category, "inline": True},
+            {
+                "name": "Source",
+                "value": (
+                    "Ingested source"
+                    if queue_item.primary_source_item_id is not None
+                    else (
+                        "Manual Discord request"
+                        if queue_item.deduplication_key.startswith("manual_action:")
+                        else "Docket system"
+                    )
+                ),
+                "inline": True,
+            },
         ]
+        if queue_item.received_at is not None:
+            fields.append(
+                {
+                    "name": "Received",
+                    "value": _aware(queue_item.received_at).astimezone(UTC).isoformat(),
+                    "inline": False,
+                }
+            )
+        if projection_date < latest_date:
+            fields.append(
+                {
+                    "name": "Carried forward",
+                    "value": latest_date.isoformat(),
+                    "inline": True,
+                }
+            )
+        if account_label is not None:
+            fields.append({"name": "Account", "value": account_label, "inline": False})
         if revision is not None:
             preview = revision.preview
             course = preview.get("course", {})
@@ -249,6 +341,24 @@ class DiscordProjectionRunner:
                         "inline": False,
                     }
                 )
+            target = preview.get("target", {})
+            if isinstance(target, dict) and target.get("calendar_id"):
+                fields.append(
+                    {
+                        "name": "Calendar",
+                        "value": str(target["calendar_id"]),
+                        "inline": False,
+                    }
+                )
+            record = preview.get("record", {})
+            if isinstance(record, dict) and record.get("version") is not None:
+                fields.append(
+                    {
+                        "name": "Record version",
+                        "value": str(record["version"]),
+                        "inline": True,
+                    }
+                )
             fields.append(
                 {
                     "name": "Action",
@@ -262,6 +372,7 @@ class DiscordProjectionRunner:
             and action is not None
             and approval.status == ApprovalStatus.PENDING.value
             and action.status == "approval_pending"
+            and projection_date == latest_date
         ):
             signing_key = self.settings.read_secret(
                 self.settings.interaction_signing_key_file
@@ -292,9 +403,44 @@ class DiscordProjectionRunner:
                     "inline": False,
                 }
             )
+        elif projection_date == latest_date and local_revisions:
+            signing_key = self.settings.read_secret(
+                self.settings.interaction_signing_key_file
+            ).encode()
+            local_midnight = datetime.combine(
+                projection_date,
+                datetime.min.time(),
+                tzinfo=ZoneInfo(self.settings.timezone),
+            )
+            expires_at = local_midnight + timedelta(
+                hours=self.settings.daily_rollover_hour,
+                seconds=self.settings.local_action_ttl_seconds,
+            )
+            for local_action, local_revision in local_revisions:
+                token = issue_projection_local_action_token(
+                    local_revision.id,
+                    projection_id,
+                    queue_item.version,
+                    expires_at,
+                    signing_key,
+                )
+                controls.append(
+                    {
+                        "kind": "local_action",
+                        "action_type": local_revision.action_type,
+                        "label": (
+                            "Snooze until tomorrow"
+                            if local_revision.action_type == "snooze_queue_item"
+                            else "Ignore"
+                        ),
+                        "action_id": str(local_action.id),
+                        "action_revision_id": str(local_revision.id),
+                        "token": token,
+                    }
+                )
         embed = {
             "title": self._bounded(queue_item.title, 256),
-            "description": queue_item.summary,
+            "description": self._bounded(queue_item.summary, 4096),
             "fields": fields,
             "color": 0xD6A756,
         }
@@ -322,22 +468,69 @@ class DiscordProjectionRunner:
             queue_item = session.get(QueueItem, projection.queue_item_id)
             if queue_item is None:
                 raise DiscordProjectionError("queue_item_missing", "Queue item is missing")
-            action = session.scalar(select(Action).where(Action.queue_item_id == queue_item.id))
-            revision = None
-            approval = None
-            if action is not None:
-                revision = session.scalar(
+            latest_date = session.scalar(
+                select(DiscordDailyThread.local_date)
+                .join(
+                    DiscordProjection,
+                    DiscordProjection.daily_thread_id == DiscordDailyThread.id,
+                )
+                .where(DiscordProjection.queue_item_id == queue_item.id)
+                .order_by(DiscordDailyThread.local_date.desc())
+                .limit(1)
+            )
+            if latest_date is None:
+                latest_date = daily_thread.local_date
+            ensure_local_actions(
+                session,
+                queue_item,
+                projection_date=latest_date,
+            )
+            actions = session.scalars(
+                select(Action)
+                .where(Action.queue_item_id == queue_item.id)
+                .order_by(Action.display_order, Action.id)
+            ).all()
+            action: Action | None = None
+            revision: ActionRevision | None = None
+            approval: Approval | None = None
+            local_revisions: list[tuple[Action, ActionRevision]] = []
+            account_label: str | None = None
+            for candidate in actions:
+                candidate_revision = session.scalar(
                     select(ActionRevision).where(
-                        ActionRevision.action_id == action.id,
-                        ActionRevision.revision == action.current_revision,
+                        ActionRevision.action_id == candidate.id,
+                        ActionRevision.revision == candidate.current_revision,
                     )
                 )
-                if revision is not None:
+                if candidate_revision is None:
+                    continue
+                if candidate_revision.risk_class == RiskClass.LOCAL_WRITE.value:
+                    if candidate.status == "available":
+                        local_revisions.append((candidate, candidate_revision))
+                    continue
+                if action is None:
+                    action = candidate
+                    revision = candidate_revision
                     approval = session.scalar(
-                        select(Approval).where(Approval.action_revision_id == revision.id)
+                        select(Approval).where(Approval.action_revision_id == candidate_revision.id)
                     )
+                    account = session.get(Account, candidate_revision.account_id)
+                    if account is not None:
+                        account_label = (
+                            account.display_name
+                            or account.email_address
+                            or account.external_account_id
+                        )
             embed, controls, render_sha256, component_sha256 = self._render(
-                queue_item, action, revision, approval, projection.id
+                queue_item,
+                action,
+                revision,
+                approval,
+                local_revisions,
+                account_label,
+                projection.id,
+                daily_thread.local_date,
+                latest_date,
             )
             changed = (
                 projection.render_sha256 != render_sha256
@@ -400,39 +593,247 @@ class DiscordProjectionRunner:
             projection.message_id = str(ack["message_id"])
             projection.status = "delivered"
             projection.last_error_code = None
-            action = session.scalar(
-                select(Action).where(Action.queue_item_id == projection.queue_item_id)
-            )
-            revision = (
-                session.scalar(
-                    select(ActionRevision).where(
-                        ActionRevision.action_id == action.id,
-                        ActionRevision.revision == action.current_revision,
-                    )
+            approval = session.scalar(
+                select(Approval)
+                .join(ActionRevision, ActionRevision.id == Approval.action_revision_id)
+                .join(Action, Action.id == ActionRevision.action_id)
+                .where(
+                    Action.queue_item_id == projection.queue_item_id,
+                    ActionRevision.revision == Action.current_revision,
                 )
-                if action is not None
-                else None
+                .order_by(Action.display_order, Approval.created_at.desc())
+                .limit(1)
             )
-            approval = (
-                session.scalar(
-                    select(Approval).where(Approval.action_revision_id == revision.id)
+            newest_projection = session.scalar(
+                select(DiscordProjection)
+                .join(
+                    DiscordDailyThread,
+                    DiscordDailyThread.id == DiscordProjection.daily_thread_id,
                 )
-                if revision is not None
-                else None
+                .where(DiscordProjection.queue_item_id == projection.queue_item_id)
+                .order_by(DiscordDailyThread.local_date.desc())
+                .limit(1)
             )
-            if approval is not None and approval.status == ApprovalStatus.PENDING.value:
+            if (
+                approval is not None
+                and approval.status == ApprovalStatus.PENDING.value
+                and newest_projection is not None
+                and newest_projection.id == projection.id
+            ):
+                previous_projection_id = approval.control_projection_id
                 approval.control_projection_id = projection.id
-            elif approval is not None:
+                if previous_projection_id is not None and previous_projection_id != projection.id:
+                    approval.interaction_token_version += 1
+                    previous = session.get(DiscordProjection, previous_projection_id)
+                    previous_thread = (
+                        session.get(DiscordDailyThread, previous.daily_thread_id)
+                        if previous is not None
+                        else None
+                    )
+                    if previous is not None and previous_thread is not None:
+                        session.add(
+                            OutboxEvent(
+                                event_type="discord.projection.refresh_requested",
+                                aggregate_type="queue_item",
+                                aggregate_id=projection.queue_item_id,
+                                deduplication_key=(
+                                    f"discord_projection:{projection.queue_item_id}:handoff:"
+                                    f"{previous.id}:{projection.id}"
+                                ),
+                                payload={
+                                    "queue_item_id": str(projection.queue_item_id),
+                                    "projection_id": str(previous.id),
+                                    "target_local_date": previous_thread.local_date.isoformat(),
+                                    "reason": "control_handoff",
+                                },
+                                status=OutboxStatus.PENDING.value,
+                            )
+                        )
+            elif approval is not None and approval.status != ApprovalStatus.PENDING.value:
                 approval.control_projection_id = None
             event.status = OutboxStatus.DELIVERED.value
             event.lease_token = None
             event.leased_until = None
             event.last_error_code = None
 
+    def _lifecycle_request(
+        self, event_id: uuid.UUID, lease_token: uuid.UUID
+    ) -> tuple[uuid.UUID, dict[str, Any]]:
+        with self.session_factory() as session:
+            event = session.get(OutboxEvent, event_id)
+            if event is None or event.lease_token != lease_token:
+                raise DiscordProjectionError("delivery_lease_lost", "Outbox lease was lost")
+            daily_thread = session.get(DiscordDailyThread, event.aggregate_id)
+            desired_state = event.payload.get("desired_state")
+            if daily_thread is None or daily_thread.thread_id is None:
+                raise DiscordProjectionError("thread_not_found", "Daily thread is unavailable")
+            if desired_state not in {"active", "archived"}:
+                raise DiscordProjectionError(
+                    "invalid_lifecycle_state", "Thread lifecycle target is invalid"
+                )
+            return daily_thread.id, {
+                "request_id": str(event.id),
+                "daily_thread_id": str(daily_thread.id),
+                "guild_id": daily_thread.guild_id,
+                "parent_channel_id": daily_thread.channel_id,
+                "thread_id": daily_thread.thread_id,
+                "desired_state": desired_state,
+            }
+
+    def _accept_lifecycle_ack(
+        self,
+        event_id: uuid.UUID,
+        lease_token: uuid.UUID,
+        daily_thread_id: uuid.UUID,
+        request: dict[str, Any],
+        ack: dict[str, Any],
+    ) -> None:
+        desired_archived = request["desired_state"] == "archived"
+        if (
+            ack.get("request_id") != request["request_id"]
+            or ack.get("daily_thread_id") != request["daily_thread_id"]
+            or ack.get("thread_id") != request["thread_id"]
+            or ack.get("archived") is not desired_archived
+        ):
+            raise DiscordProjectionError(
+                "invalid_discord_ack", "Lifecycle acknowledgement did not echo its binding"
+            )
+        with self.session_factory.begin() as session:
+            event = session.get(OutboxEvent, event_id)
+            daily_thread = session.get(DiscordDailyThread, daily_thread_id)
+            if (
+                event is None
+                or event.status != OutboxStatus.DELIVERING.value
+                or event.lease_token != lease_token
+                or daily_thread is None
+            ):
+                raise DiscordProjectionError("delivery_lease_lost", "Outbox lease was lost")
+            daily_thread.status = "archived" if desired_archived else "active"
+            daily_thread.archived_at = utc_now() if desired_archived else None
+            daily_thread.last_verified_at = _verified_at(ack["verified_at"])
+            daily_thread.last_error_code = None
+            event.status = OutboxStatus.DELIVERED.value
+            event.lease_token = None
+            event.leased_until = None
+            event.next_attempt_at = None
+            event.last_error_code = None
+
+    def _system_alert_request(self, event_id: uuid.UUID, lease_token: uuid.UUID) -> dict[str, Any]:
+        with self.session_factory() as session:
+            event = session.get(OutboxEvent, event_id)
+            if event is None or event.lease_token != lease_token:
+                raise DiscordProjectionError("delivery_lease_lost", "Outbox lease was lost")
+            title = self._bounded(str(event.payload.get("title", "Docket system alert")), 256)
+            summary = self._bounded(str(event.payload.get("summary", "Docket work failed")), 2000)
+            error_code = self._bounded(str(event.payload.get("error_code", "unknown")), 128)
+            render = {
+                "title": title,
+                "summary": summary,
+                "error_code": error_code,
+                "occurred_at": str(event.payload.get("occurred_at", event.created_at.isoformat())),
+            }
+            return {
+                "request_id": str(event.id),
+                "alert_id": str(event.aggregate_id),
+                "guild_id": self.settings.discord_guild_id,
+                "channel_id": self.settings.system_channel_id,
+                "render_sha256": sha256_json(render),
+                **render,
+            }
+
+    def _accept_system_alert_ack(
+        self,
+        event_id: uuid.UUID,
+        lease_token: uuid.UUID,
+        request: dict[str, Any],
+        ack: dict[str, Any],
+    ) -> None:
+        exact = all(
+            ack.get(field) == request[field]
+            for field in (
+                "request_id",
+                "alert_id",
+                "guild_id",
+                "channel_id",
+                "render_sha256",
+            )
+        )
+        if not exact or not str(ack.get("message_id", "")).isdigit():
+            raise DiscordProjectionError(
+                "invalid_discord_ack", "System alert acknowledgement did not echo its binding"
+            )
+        with self.session_factory.begin() as session:
+            event = session.get(OutboxEvent, event_id)
+            if (
+                event is None
+                or event.status != OutboxStatus.DELIVERING.value
+                or event.lease_token != lease_token
+            ):
+                raise DiscordProjectionError("delivery_lease_lost", "Outbox lease was lost")
+            event.payload = {**event.payload, "discord_message_id": str(ack["message_id"])}
+            event.status = OutboxStatus.DELIVERED.value
+            event.lease_token = None
+            event.leased_until = None
+            event.next_attempt_at = None
+            event.last_error_code = None
+
     def _retry(self, event_id: uuid.UUID, lease_token: uuid.UUID, code: str) -> None:
         with self.session_factory.begin() as session:
             event = session.get(OutboxEvent, event_id)
             if event is None or event.lease_token != lease_token:
+                return
+            if (
+                event.attempt_count >= self.settings.discord_projection_max_attempts
+                and event.event_type != "discord.system_alert.requested"
+            ):
+                event.status = OutboxStatus.FAILED.value
+                event.lease_token = None
+                event.leased_until = None
+                event.next_attempt_at = None
+                event.last_error_code = code[:128]
+                if event.event_type in _PROJECTION_EVENTS:
+                    projection_id = event.payload.get("projection_id")
+                    try:
+                        projection = (
+                            session.get(DiscordProjection, uuid.UUID(str(projection_id)))
+                            if projection_id is not None
+                            else None
+                        )
+                    except ValueError:
+                        projection = None
+                    if projection is not None:
+                        projection.status = "failed"
+                        projection.last_error_code = code[:128]
+                elif event.aggregate_type == "discord_daily_thread":
+                    daily_thread = session.get(DiscordDailyThread, event.aggregate_id)
+                    if daily_thread is not None:
+                        daily_thread.status = "failed"
+                        daily_thread.last_error_code = code[:128]
+                alert_key = f"discord_system_alert:projection_failure:{event.id}"
+                if (
+                    session.scalar(
+                        select(OutboxEvent).where(OutboxEvent.deduplication_key == alert_key)
+                    )
+                    is None
+                ):
+                    session.add(
+                        OutboxEvent(
+                            event_type="discord.system_alert.requested",
+                            aggregate_type="outbox_event",
+                            aggregate_id=event.id,
+                            deduplication_key=alert_key,
+                            payload={
+                                "title": "Docket Discord projection failure",
+                                "summary": (
+                                    "A durable Discord queue delivery exhausted its retry "
+                                    "budget. Canonical Docket state remains intact."
+                                ),
+                                "error_code": code[:128],
+                                "occurred_at": utc_now().isoformat(),
+                            },
+                            status=OutboxStatus.PENDING.value,
+                        )
+                    )
                 return
             event.status = OutboxStatus.PENDING.value
             event.lease_token = None
@@ -447,22 +848,72 @@ class DiscordProjectionRunner:
             return False
         event_id, lease_token = leased
         try:
-            daily_thread_id, projection_id = self._ensure_local_rows(event_id, lease_token)
-            thread_request = self._thread_request(event_id, lease_token, daily_thread_id)
-            thread_ack = self.adapter.ensure_thread(thread_request)
-            self._accept_thread_ack(
-                event_id, lease_token, daily_thread_id, thread_request, thread_ack
-            )
-            projection_request = self._projection_request(
-                event_id, lease_token, daily_thread_id, projection_id
-            )
-            projection_ack = self.adapter.put_projection(projection_id, projection_request)
-            self._accept_projection_ack(
-                event_id, lease_token, projection_id, projection_request, projection_ack
-            )
+            with self.session_factory() as session:
+                event = session.get(OutboxEvent, event_id)
+                if event is None or event.lease_token != lease_token:
+                    raise DiscordProjectionError("delivery_lease_lost", "Outbox lease was lost")
+                event_type = event.event_type
+                aggregate_id = event.aggregate_id
+            if event_type in _PROJECTION_EVENTS:
+                daily_thread_id, projection_id = self._ensure_local_rows(event_id, lease_token)
+                thread_request = self._thread_request(event_id, lease_token, daily_thread_id)
+                thread_ack = self.adapter.ensure_thread(thread_request)
+                self._accept_thread_ack(
+                    event_id, lease_token, daily_thread_id, thread_request, thread_ack
+                )
+                projection_request = self._projection_request(
+                    event_id, lease_token, daily_thread_id, projection_id
+                )
+                projection_ack = self.adapter.put_projection(projection_id, projection_request)
+                self._accept_projection_ack(
+                    event_id,
+                    lease_token,
+                    projection_id,
+                    projection_request,
+                    projection_ack,
+                )
+            elif event_type == "discord.thread.ensure_requested":
+                thread_request = self._thread_request(event_id, lease_token, aggregate_id)
+                thread_ack = self.adapter.ensure_thread(thread_request)
+                self._accept_thread_ack(
+                    event_id, lease_token, aggregate_id, thread_request, thread_ack
+                )
+                self._complete_event(event_id, lease_token)
+            elif event_type == "discord.thread.lifecycle_requested":
+                daily_thread_id, lifecycle_request = self._lifecycle_request(event_id, lease_token)
+                lifecycle_ack = self.adapter.set_thread_lifecycle(
+                    daily_thread_id, lifecycle_request
+                )
+                self._accept_lifecycle_ack(
+                    event_id,
+                    lease_token,
+                    daily_thread_id,
+                    lifecycle_request,
+                    lifecycle_ack,
+                )
+            elif event_type == "discord.system_alert.requested":
+                alert_request = self._system_alert_request(event_id, lease_token)
+                alert_ack = self.adapter.post_system_alert(alert_request)
+                self._accept_system_alert_ack(event_id, lease_token, alert_request, alert_ack)
+            else:
+                raise DiscordProjectionError(
+                    "unsupported_outbox_event", "Discord outbox event is unsupported"
+                )
         except DiscordProjectionError as exc:
+            logger.warning(
+                "discord_outbox_delivery_failed",
+                entity_type="outbox_event",
+                entity_id=str(event_id),
+                error_code=exc.code,
+            )
             self._retry(event_id, lease_token, exc.code)
         except Exception:
+            logger.exception(
+                "discord_outbox_delivery_failed",
+                entity_type="outbox_event",
+                entity_id=str(event_id),
+                error_code="unexpected_projection_error",
+            )
             self._retry(event_id, lease_token, "unexpected_projection_error")
         return True
 

@@ -46,6 +46,17 @@ class Settings(BaseSettings):
     discord_projection_lease_seconds: int = Field(
         default=30, alias="DOCKET_DISCORD_PROJECTION_LEASE_SECONDS"
     )
+    discord_projection_max_attempts: int = Field(
+        default=10, ge=1, alias="DOCKET_DISCORD_PROJECTION_MAX_ATTEMPTS"
+    )
+    approval_ttl_seconds: int = Field(default=86400, ge=60, alias="DOCKET_APPROVAL_TTL_SECONDS")
+    daily_rollover_poll_seconds: float = Field(
+        default=60.0, gt=0, alias="DOCKET_DAILY_ROLLOVER_POLL_SECONDS"
+    )
+    daily_rollover_hour: int = Field(default=7, ge=0, le=23, alias="DOCKET_DAILY_ROLLOVER_HOUR")
+    local_action_ttl_seconds: int = Field(
+        default=86400, ge=60, alias="DOCKET_LOCAL_ACTION_TTL_SECONDS"
+    )
 
     operator_discord_user_id: str = Field(
         default="000000000000000001", alias="DOCKET_OPERATOR_DISCORD_USER_ID"

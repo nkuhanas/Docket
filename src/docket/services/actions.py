@@ -35,6 +35,7 @@ from docket.policy import get_action_definition
 from docket.schemas.actions import ProposalResult, ProposeActionInput
 from docket.schemas.records import CourseData, CourseMeeting
 from docket.security import issue_approval_token, issue_short_code, short_code_sha256
+from docket.services.queue import queue_projection_date
 from docket.services.source_context import validate_configured_discord_source
 
 _WEEKDAYS = {"MO": 0, "TU": 1, "WE": 2, "TH": 3, "FR": 4, "SA": 5, "SU": 6}
@@ -301,7 +302,7 @@ class ActionService:
         self.session.flush()
 
         now = utc_now()
-        expires_at = now + timedelta(seconds=definition.approval_ttl_seconds)
+        expires_at = now + timedelta(seconds=get_settings().approval_ttl_seconds)
         approval_id = uuid.uuid4()
         signing_key = get_settings().read_secret(
             get_settings().interaction_signing_key_file
@@ -333,6 +334,9 @@ class ActionService:
                     "short_code": short_code,
                     "expires_at": expires_at.isoformat(),
                     "preview": preview,
+                    "target_local_date": queue_projection_date(
+                        queue_item, get_settings()
+                    ).isoformat(),
                 },
                 status=OutboxStatus.PENDING.value,
             )

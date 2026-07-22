@@ -26,6 +26,8 @@ class DiscordProjectionAdapter(Protocol):
         self, projection_id: uuid.UUID, payload: dict[str, Any]
     ) -> dict[str, Any]: ...
 
+    def post_system_alert(self, payload: dict[str, Any]) -> dict[str, Any]: ...
+
 
 class HttpDiscordProjectionAdapter:
     def __init__(self, base_url: str, token: str, *, timeout_seconds: float = 20.0) -> None:
@@ -83,11 +85,15 @@ class HttpDiscordProjectionAdapter:
             "PUT", f"/internal/docket/discord/projections/{projection_id}", payload
         )
 
+    def post_system_alert(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/internal/docket/discord/system-alerts", payload)
+
 
 @dataclass
 class FakeDiscordBackend:
     threads: dict[tuple[str, str, str], dict[str, Any]] = field(default_factory=dict)
     messages: dict[str, dict[str, Any]] = field(default_factory=dict)
+    system_messages: dict[str, dict[str, Any]] = field(default_factory=dict)
     next_snowflake: int = 10000000000000000
 
     def snowflake(self) -> str:
@@ -172,6 +178,7 @@ class FakeDiscordProjectionAdapter:
                 "thread_id": payload["thread_id"],
                 "render_sha256": payload["render_sha256"],
                 "component_sha256": payload["component_sha256"],
+                "embed": copy.deepcopy(payload["embed"]),
                 "controls": copy.deepcopy(payload["controls"]),
             }
         else:
@@ -182,6 +189,7 @@ class FakeDiscordProjectionAdapter:
                 )
             message["render_sha256"] = payload["render_sha256"]
             message["component_sha256"] = payload["component_sha256"]
+            message["embed"] = copy.deepcopy(payload["embed"])
             message["controls"] = copy.deepcopy(payload["controls"])
         message = self.backend.messages[key]
         result = {
@@ -199,3 +207,24 @@ class FakeDiscordProjectionAdapter:
             self.discard_next_projection_ack = False
             raise DiscordProjectionError("discarded_ack", "Projection acknowledgement discarded")
         return copy.deepcopy(result)
+
+    def post_system_alert(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._check_request(payload)
+        key = str(payload["alert_id"])
+        created = key not in self.backend.system_messages
+        if created:
+            self.backend.system_messages[key] = {
+                "message_id": self.backend.snowflake(),
+                "render_sha256": payload["render_sha256"],
+            }
+        message = self.backend.system_messages[key]
+        message["render_sha256"] = payload["render_sha256"]
+        return {
+            "request_id": payload["request_id"],
+            "alert_id": key,
+            "guild_id": payload["guild_id"],
+            "channel_id": payload["channel_id"],
+            "message_id": message["message_id"],
+            "render_sha256": message["render_sha256"],
+            "created": created,
+        }

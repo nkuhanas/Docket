@@ -37,6 +37,7 @@ class DiscordDailyThread(TimestampMixin, Base):
     thread_id: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
     auto_archive_minutes: Mapped[int | None] = mapped_column(Integer)
+    lifecycle_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error_code: Mapped[str | None] = mapped_column(String(128))

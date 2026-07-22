@@ -51,3 +51,9 @@ class ApprovalResponse(DiscordContext):
 class LocalActionResponse(DiscordContext):
     action_revision_id: UUID
     action_token: str = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def require_projection_context(self) -> "LocalActionResponse":
+        if self.parent_channel_id is None or self.projection_id is None:
+            raise ValueError("parent_channel_id and projection_id are required")
+        return self

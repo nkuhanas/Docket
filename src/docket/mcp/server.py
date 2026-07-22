@@ -1,4 +1,5 @@
 import uuid
+from datetime import date, datetime
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -13,6 +14,12 @@ from docket.schemas.actions import (
     CalendarMeetingActionParameters,
     ProposalResult,
     ProposeActionInput,
+)
+from docket.schemas.queue import (
+    IgnoreQueueItemInput,
+    QueuePriority,
+    QueueStatus,
+    SnoozeQueueItemInput,
 )
 from docket.schemas.records import (
     ArchiveRecordInput,
@@ -31,6 +38,7 @@ from docket.schemas.records import (
 )
 from docket.services.accounts import AccountService
 from docket.services.actions import ActionService
+from docket.services.queue import QueueService
 from docket.services.records import RecordService, serialize_record
 
 mcp = FastMCP(
@@ -72,9 +80,7 @@ def _model_proposal_result(result: ProposalResult) -> dict[str, Any]:
         "kind": "discord_button_card",
         "location": "today's ISO-dated thread under the configured Docket queue",
         "delivery_status": result.projection_status,
-        "operator_instruction": (
-            "Use the Approve or Reject button on the projected Docket card."
-        ),
+        "operator_instruction": ("Use the Approve or Reject button on the projected Docket card."),
         "typed_code_policy": "break_glass_only_not_for_agent_guidance",
     }
     return payload
@@ -225,6 +231,104 @@ def docket_list_accounts() -> dict[str, Any]:
                     for account in accounts
                 ],
             }
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_list_queue_items(
+    status: QueueStatus | None = None,
+    category: str | None = None,
+    local_date: date | None = None,
+    priority: QueuePriority | None = None,
+    source_item_id: uuid.UUID | None = None,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """List bounded canonical queue state; Discord cards are only projections of it."""
+    try:
+        with session_scope() as session:
+            items = QueueService(session).list(
+                status=status,
+                category=category,
+                local_date=local_date,
+                priority=priority,
+                source_item_id=source_item_id,
+                limit=limit,
+            )
+            return {"ok": True, "queue_items": items}
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_get_queue_item(queue_item_id: str) -> dict[str, Any]:
+    """Get canonical queue state, lifecycle fields, and dated projection identities."""
+    try:
+        with session_scope() as session:
+            return {
+                "ok": True,
+                "queue_item": QueueService(session).get(uuid.UUID(queue_item_id)),
+            }
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_snooze_queue_item(
+    queue_item_id: str,
+    expected_version: int,
+    request_key: DiscordRequestKey,
+    source: RecordSourceInput,
+    actor_id: DiscordId,
+    reason: str,
+    snoozed_until: datetime | None = None,
+    snooze_local_date: date | None = None,
+) -> dict[str, Any]:
+    """Snooze one pending item using optimistic locking and an explicit wake time.
+
+    A local-date wake occurs at the configured 07:00 Los Angeles rollover. The
+    operation is local and idempotent; it never mutates Gmail or Calendar.
+    """
+    try:
+        request = SnoozeQueueItemInput(
+            queue_item_id=uuid.UUID(queue_item_id),
+            expected_version=expected_version,
+            request_key=request_key,
+            source=source,
+            actor_id=actor_id,
+            reason=reason,
+            snoozed_until=snoozed_until,
+            snooze_local_date=snooze_local_date,
+        )
+        with session_scope() as session:
+            result = QueueService(session).snooze(request)
+            return {"ok": True, **result.model_dump(mode="json", exclude_none=True)}
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_ignore_queue_item(
+    queue_item_id: str,
+    expected_version: int,
+    request_key: DiscordRequestKey,
+    source: RecordSourceInput,
+    actor_id: DiscordId,
+    reason: str,
+) -> dict[str, Any]:
+    """Ignore one pending or failed queue item locally without mutating its source."""
+    try:
+        request = IgnoreQueueItemInput(
+            queue_item_id=uuid.UUID(queue_item_id),
+            expected_version=expected_version,
+            request_key=request_key,
+            source=source,
+            actor_id=actor_id,
+            reason=reason,
+        )
+        with session_scope() as session:
+            result = QueueService(session).ignore(request)
+            return {"ok": True, **result.model_dump(mode="json", exclude_none=True)}
     except Exception as exc:
         return _error(exc)
 

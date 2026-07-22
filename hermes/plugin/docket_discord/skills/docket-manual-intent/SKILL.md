@@ -98,3 +98,14 @@ reports a succeeded operation.
 
 External actions are proposals only. Never represent conversational assent as a
 Docket approval and never call a raw provider mutation.
+
+For queue-management requests, read canonical state with
+`docket_list_queue_items` or `docket_get_queue_item`. An explicit user request
+to defer a pending item may call `docket_snooze_queue_item` with either an exact
+timezone-aware instant or a local date; a local date resumes at Docket's 07:00
+Los Angeles rollover. An explicit user request to dismiss a pending or failed
+item may call `docket_ignore_queue_item`. Use the trusted source context and a
+new intent index for either write. These are local Docket transitions: never
+claim they archived, marked read, or otherwise changed the source provider.
+The queue card's signed **Snooze until tomorrow** and **Ignore** buttons are the
+normal direct-interaction equivalents and do not invoke Hermes.

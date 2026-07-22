@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import errno
+import hashlib
 import hmac
 import json
 import logging
@@ -34,9 +36,10 @@ _PROJECTION_PATH = re.compile(r"^/internal/docket/discord/projections/([0-9a-fA-
 _THREAD_LIFECYCLE_PATH = re.compile(
     r"^/internal/docket/discord/threads/([0-9a-fA-F-]{36})/lifecycle$"
 )
-_CONTROL_ID = re.compile(r"^dkt:([ar]):([A-Za-z0-9_-]{70,90})$")
+_CONTROL_ID = re.compile(r"^dkt:([arl]):([A-Za-z0-9_-]{70,90})$")
 _MAX_REQUEST_BYTES = 65536
 _SERVER: ThreadingHTTPServer | None = None
+_SERVER_STARTING = False
 _LISTENER_CLIENT_ID: int | None = None
 _OPERATION_LOCKS: dict[str, threading.Lock] = {}
 _OPERATION_LOCKS_GUARD = threading.Lock()
@@ -300,6 +303,20 @@ def _validate_target(guild_id: object, channel_id: object) -> tuple[str, str]:
     return guild, channel
 
 
+def _validate_system_target(guild_id: object, channel_id: object) -> tuple[str, str]:
+    guild = _require_snowflake(guild_id, "guild_id")
+    channel = _require_snowflake(channel_id, "channel_id")
+    expected_guild = os.environ.get("DOCKET_DISCORD_GUILD_ID", "")
+    expected_channel = os.environ.get("DOCKET_SYSTEM_CHANNEL_ID", "")
+    if not hmac.compare_digest(guild, expected_guild) or not hmac.compare_digest(
+        channel, expected_channel
+    ):
+        raise PluginAPIError(
+            "discord_target_not_allowed", "Target is not the configured Docket system channel", 403
+        )
+    return guild, channel
+
+
 async def _fetch_queue(client: object, guild_id: str, channel_id: str) -> object:
     import discord
 
@@ -492,6 +509,16 @@ def _decode_control(token: str) -> tuple[uuid.UUID, uuid.UUID]:
         raise PluginAPIError("invalid_control", "Approval control token is invalid", 422) from exc
 
 
+def _decode_local_control(token: str) -> tuple[uuid.UUID, uuid.UUID]:
+    try:
+        raw = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
+        if len(raw) != 61 or raw[0] != 3:
+            raise ValueError
+        return uuid.UUID(bytes=raw[1:17]), uuid.UUID(bytes=raw[17:33])
+    except (ValueError, UnicodeEncodeError) as exc:
+        raise PluginAPIError("invalid_control", "Local control token is invalid", 422) from exc
+
+
 def _render_embed(
     projection_id: uuid.UUID, payload: dict[str, Any]
 ) -> tuple[object, object | None]:
@@ -530,50 +557,102 @@ def _render_embed(
         raise PluginAPIError("invalid_embed", "Embed aggregate size exceeds its bound", 422)
 
     controls = payload.get("controls", [])
-    if not isinstance(controls, list) or len(controls) not in {0, 2}:
-        raise PluginAPIError("invalid_control", "Control set must be empty or Approve/Reject", 422)
+    if not isinstance(controls, list) or len(controls) not in {0, 1, 2}:
+        raise PluginAPIError(
+            "invalid_control", "Control set must be empty or canonical", 422
+        )
     view = None
     if controls:
-        decisions: set[str] = set()
-        approval_ids: set[uuid.UUID] = set()
-        tokens: set[str] = set()
         view = discord.ui.View(timeout=None)
-        for control in controls:
-            if not isinstance(control, dict) or set(control) != {
-                "kind",
-                "decision",
-                "label",
-                "approval_id",
-                "token",
-            }:
-                raise PluginAPIError("invalid_control", "Control descriptor is invalid", 422)
-            decision = str(control["decision"])
-            if control["kind"] != "approval" or decision not in {"approve", "reject"}:
-                raise PluginAPIError("invalid_control", "Control type is not allowed", 422)
-            approval_id = uuid.UUID(str(control["approval_id"]))
-            token = str(control["token"])
-            token_approval, token_projection = _decode_control(token)
-            if token_approval != approval_id or token_projection != projection_id:
-                raise PluginAPIError("invalid_control", "Control binding does not match", 422)
-            decisions.add(decision)
-            approval_ids.add(approval_id)
-            tokens.add(token)
-            label = "Approve" if decision == "approve" else "Reject"
-            if control["label"] != label:
-                raise PluginAPIError("invalid_control", "Control label is not canonical", 422)
-            view.add_item(
-                discord.ui.Button(
-                    label=label,
-                    style=(
-                        discord.ButtonStyle.success
-                        if decision == "approve"
-                        else discord.ButtonStyle.danger
-                    ),
-                    custom_id=f"dkt:{decision[0]}:{token}",
+        kinds = {str(control.get("kind")) for control in controls if isinstance(control, dict)}
+        if kinds == {"approval"}:
+            decisions: set[str] = set()
+            approval_ids: set[uuid.UUID] = set()
+            tokens: set[str] = set()
+            for control in controls:
+                if not isinstance(control, dict) or set(control) != {
+                    "kind",
+                    "decision",
+                    "label",
+                    "approval_id",
+                    "token",
+                }:
+                    raise PluginAPIError("invalid_control", "Control descriptor is invalid", 422)
+                decision = str(control["decision"])
+                if decision not in {"approve", "reject"}:
+                    raise PluginAPIError("invalid_control", "Control type is not allowed", 422)
+                approval_id = uuid.UUID(str(control["approval_id"]))
+                token = str(control["token"])
+                token_approval, token_projection = _decode_control(token)
+                if token_approval != approval_id or token_projection != projection_id:
+                    raise PluginAPIError("invalid_control", "Control binding does not match", 422)
+                decisions.add(decision)
+                approval_ids.add(approval_id)
+                tokens.add(token)
+                label = "Approve" if decision == "approve" else "Reject"
+                if control["label"] != label:
+                    raise PluginAPIError("invalid_control", "Control label is not canonical", 422)
+                view.add_item(
+                    discord.ui.Button(
+                        label=label,
+                        style=(
+                            discord.ButtonStyle.success
+                            if decision == "approve"
+                            else discord.ButtonStyle.danger
+                        ),
+                        custom_id=f"dkt:{decision[0]}:{token}",
+                    )
                 )
-            )
-        if decisions != {"approve", "reject"} or len(approval_ids) != 1 or len(tokens) != 1:
-            raise PluginAPIError("invalid_control", "Control pair is inconsistent", 422)
+            if decisions != {"approve", "reject"} or len(approval_ids) != 1 or len(tokens) != 1:
+                raise PluginAPIError("invalid_control", "Approval pair is inconsistent", 422)
+        elif kinds == {"local_action"}:
+            action_types: set[str] = set()
+            for control in controls:
+                if not isinstance(control, dict) or set(control) != {
+                    "kind",
+                    "action_type",
+                    "label",
+                    "action_id",
+                    "action_revision_id",
+                    "token",
+                }:
+                    raise PluginAPIError("invalid_control", "Control descriptor is invalid", 422)
+                action_type = str(control["action_type"])
+                labels = {
+                    "snooze_queue_item": "Snooze until tomorrow",
+                    "ignore_queue_item": "Ignore",
+                }
+                if action_type not in labels or control["label"] != labels[action_type]:
+                    raise PluginAPIError("invalid_control", "Local control is not canonical", 422)
+                uuid.UUID(str(control["action_id"]))
+                revision_id = uuid.UUID(str(control["action_revision_id"]))
+                token = str(control["token"])
+                token_revision, token_projection = _decode_local_control(token)
+                if token_revision != revision_id or token_projection != projection_id:
+                    raise PluginAPIError("invalid_control", "Local control binding differs", 422)
+                action_types.add(action_type)
+                view.add_item(
+                    discord.ui.Button(
+                        label=labels[action_type],
+                        style=(
+                            discord.ButtonStyle.secondary
+                            if action_type == "snooze_queue_item"
+                            else discord.ButtonStyle.danger
+                        ),
+                        custom_id=f"dkt:l:{token}",
+                    )
+                )
+            if (
+                action_types
+                not in (
+                    {"ignore_queue_item"},
+                    {"snooze_queue_item", "ignore_queue_item"},
+                )
+                or len(action_types) != len(controls)
+            ):
+                raise PluginAPIError("invalid_control", "Local control set is inconsistent", 422)
+        else:
+            raise PluginAPIError("invalid_control", "Mixed control kinds are forbidden", 422)
     footer = (
         f"docket-projection:{projection_id} | "
         f"render:{int(payload['projection_version'])}:{payload['render_sha256']} | "
@@ -679,9 +758,84 @@ async def _put_projection(projection_id: uuid.UUID, payload: dict[str, Any]) -> 
     }
 
 
-def _post_button_response(payload: dict[str, Any]) -> dict[str, Any]:
+async def _post_system_alert(payload: dict[str, Any]) -> dict[str, Any]:
+    import discord
+
+    request_id = _require_request_id(payload)
+    try:
+        alert_id = str(uuid.UUID(str(payload["alert_id"])))
+    except (KeyError, ValueError) as exc:
+        raise PluginAPIError("invalid_system_alert", "alert_id must be a UUID", 422) from exc
+    guild_id, channel_id = _validate_system_target(
+        payload.get("guild_id"), payload.get("channel_id")
+    )
+    render = {
+        "title": _safe_text(payload.get("title"), 256, "title"),
+        "summary": _safe_text(payload.get("summary"), 2000, "summary"),
+        "error_code": _safe_text(payload.get("error_code"), 128, "error_code"),
+        "occurred_at": _safe_text(payload.get("occurred_at"), 64, "occurred_at"),
+    }
+    calculated = hashlib.sha256(
+        json.dumps(render, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
+    render_sha256 = str(payload.get("render_sha256", ""))
+    if not hmac.compare_digest(calculated, render_sha256):
+        raise PluginAPIError("invalid_system_alert", "System alert digest differs", 422)
+    _loop, _adapter, client = _discord_runtime()
+    try:
+        channel = await client.fetch_channel(int(channel_id))
+    except discord.NotFound as exc:
+        raise PluginAPIError("system_channel_not_found", "System channel was not found") from exc
+    if not isinstance(channel, discord.TextChannel) or str(channel.guild.id) != guild_id:
+        raise PluginAPIError("invalid_system_channel", "Configured system channel is invalid")
+    marker = f"docket-system-alert:{alert_id}"
+    footer = f"{marker} | render:{render_sha256}"
+    embed = discord.Embed(
+        title=_escaped(render["title"], 256),
+        description=_escaped(render["summary"], 2000),
+        color=0xC94F4F,
+    )
+    embed.add_field(name="Error code", value=_escaped(render["error_code"], 128), inline=True)
+    embed.add_field(name="Detected", value=_escaped(render["occurred_at"], 64), inline=True)
+    embed.set_footer(text=footer)
+    bot_id = getattr(getattr(client, "user", None), "id", None)
+    matches = []
+    async for candidate in channel.history(limit=None, oldest_first=True):
+        if marker in _message_marker(candidate):
+            matches.append(candidate)
+    if len(matches) > 1 or any(candidate.author.id != bot_id for candidate in matches):
+        raise PluginAPIError(
+            "system_alert_marker_conflict", "System alert marker is foreign-owned or ambiguous"
+        )
+    message = matches[0] if matches else None
+    created = message is None
+    if message is None:
+        message = await channel.send(
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions.none(),
+            silent=True,
+        )
+    elif _message_marker(message) != footer:
+        message = await message.edit(
+            content=None,
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    return {
+        "request_id": request_id,
+        "alert_id": alert_id,
+        "guild_id": guild_id,
+        "channel_id": channel_id,
+        "message_id": str(message.id),
+        "render_sha256": render_sha256,
+        "created": created,
+    }
+
+
+def _post_button_response(payload: dict[str, Any], *, local_action: bool = False) -> dict[str, Any]:
+    endpoint = "local-action-responses" if local_action else "approval-responses"
     request = urllib.request.Request(
-        f"{os.environ['DOCKET_INTERNAL_URL'].rstrip('/')}/internal/v1/discord/approval-responses",
+        f"{os.environ['DOCKET_INTERNAL_URL'].rstrip('/')}/internal/v1/discord/{endpoint}",
         data=json.dumps(payload).encode(),
         headers={
             "Authorization": f"Bearer {_read_token()}",
@@ -716,7 +870,12 @@ async def _on_docket_interaction(interaction: object) -> None:
     try:
         await interaction.response.defer(ephemeral=True, thinking=True)
         token = match.group(2)
-        approval_id, projection_id = _decode_control(token)
+        local_action = match.group(1) == "l"
+        if local_action:
+            action_revision_id, projection_id = _decode_local_control(token)
+            approval_id = None
+        else:
+            approval_id, projection_id = _decode_control(token)
         guild_id, queue_channel_id, operator_id = _configured_identity()
         channel = interaction.channel
         parent_id = getattr(channel, "parent_id", None)
@@ -732,13 +891,9 @@ async def _on_docket_interaction(interaction: object) -> None:
                 "unauthorized_interaction", "This Docket control is not authorized", 403
             )
         decision = "approve" if match.group(1) == "a" else "reject"
-        payload = {
+        context = {
             "request_id": str(uuid.uuid4()),
             "discord_interaction_id": str(interaction.id),
-            "approval_id": str(approval_id),
-            "approval_token": token,
-            "short_code": None,
-            "decision": decision,
             "discord_user_id": str(interaction.user.id),
             "guild_id": str(interaction.guild_id),
             "channel_id": str(interaction.channel_id),
@@ -747,15 +902,35 @@ async def _on_docket_interaction(interaction: object) -> None:
             "message_id": str(message.id),
             "responded_at": datetime.now(UTC).isoformat(),
         }
-        result = await asyncio.to_thread(_post_button_response, payload)
-        operation = result.get("operation_id")
-        acknowledgement = (
-            "Approved — queued for execution"
-            if decision == "approve"
-            else "Rejected — no external action queued"
-        )
-        if operation:
-            acknowledgement += f" ({str(operation)[:8]})"
+        if local_action:
+            payload = {
+                **context,
+                "action_revision_id": str(action_revision_id),
+                "action_token": token,
+            }
+            result = await asyncio.to_thread(_post_button_response, payload, local_action=True)
+            acknowledgement = (
+                "Snoozed until the next daily rollover"
+                if result.get("action_type") == "snooze_queue_item"
+                else "Ignored"
+            )
+        else:
+            payload = {
+                **context,
+                "approval_id": str(approval_id),
+                "approval_token": token,
+                "short_code": None,
+                "decision": decision,
+            }
+            result = await asyncio.to_thread(_post_button_response, payload)
+            operation = result.get("operation_id")
+            acknowledgement = (
+                "Approved — queued for execution"
+                if decision == "approve"
+                else "Rejected — no external action queued"
+            )
+            if operation:
+                acknowledgement += f" ({str(operation)[:8]})"
         await interaction.followup.send(acknowledgement, ephemeral=True)
     except PluginAPIError as exc:
         logger.warning("Docket button interaction failed: %s", exc.code)
@@ -783,7 +958,7 @@ async def _install_interaction_listener() -> dict[str, Any]:
 
 
 class _PluginRequestHandler(BaseHTTPRequestHandler):
-    server_version = "DocketHermesBridge/0.3"
+    server_version = "DocketHermesBridge/0.4"
 
     def log_message(self, format: str, *args: object) -> None:
         logger.debug("Docket plugin HTTP: " + format, *args)
@@ -833,6 +1008,9 @@ class _PluginRequestHandler(BaseHTTPRequestHandler):
                 )
                 with lock:
                     result = _run_on_discord(_ensure_thread(payload))
+            elif method == "POST" and self.path == "/internal/docket/discord/system-alerts":
+                with _operation_lock(f"system-alert:{payload.get('alert_id')}"):
+                    result = _run_on_discord(_post_system_alert(payload))
             elif method == "PUT" and (match := _THREAD_LIFECYCLE_PATH.fullmatch(self.path)):
                 daily_thread_id = uuid.UUID(match.group(1))
                 result = _run_on_discord(_set_thread_lifecycle(daily_thread_id, payload))
@@ -872,18 +1050,59 @@ def _listener_monitor() -> None:
         time.sleep(2)
 
 
-def _start_projection_server() -> None:
+def _projection_server_supervisor(bind: str, port: int) -> None:
+    """Keep the private listener alive across Hermes' overlapping plugin discovery."""
     global _SERVER
-    if _SERVER is not None or not os.environ.get("DOCKET_PLUGIN_BIND"):
+    deferred_logged = False
+    while True:
+        try:
+            server = ThreadingHTTPServer((bind, port), _PluginRequestHandler)
+        except OSError as exc:
+            if exc.errno == errno.EADDRINUSE:
+                if not deferred_logged:
+                    logger.info(
+                        "Docket projection listener startup deferred; %s:%s is in use",
+                        bind,
+                        port,
+                    )
+                    deferred_logged = True
+            else:
+                logger.exception("Docket projection listener bind failed")
+            time.sleep(2)
+            continue
+
+        _SERVER = server
+        deferred_logged = False
+        threading.Thread(
+            target=_listener_monitor,
+            name="docket-interaction-listener",
+            daemon=True,
+        ).start()
+        logger.info("Started private Docket projection listener on %s:%s", bind, port)
+        try:
+            server.serve_forever(poll_interval=0.5)
+        except Exception:
+            logger.exception("Docket projection listener stopped unexpectedly")
+        finally:
+            server.server_close()
+            if _SERVER is server:
+                _SERVER = None
+        time.sleep(2)
+
+
+def _start_projection_server() -> None:
+    global _SERVER_STARTING
+    if _SERVER is not None or _SERVER_STARTING or not os.environ.get("DOCKET_PLUGIN_BIND"):
         return
     bind = os.environ["DOCKET_PLUGIN_BIND"]
     port = int(os.environ.get("DOCKET_PLUGIN_PORT", "8787"))
-    _SERVER = ThreadingHTTPServer((bind, port), _PluginRequestHandler)
-    threading.Thread(target=_SERVER.serve_forever, name="docket-plugin-http", daemon=True).start()
+    _SERVER_STARTING = True
     threading.Thread(
-        target=_listener_monitor, name="docket-interaction-listener", daemon=True
+        target=_projection_server_supervisor,
+        args=(bind, port),
+        name="docket-plugin-http",
+        daemon=True,
     ).start()
-    logger.info("Started private Docket projection listener on %s:%s", bind, port)
 
 
 def register(ctx: object) -> None:

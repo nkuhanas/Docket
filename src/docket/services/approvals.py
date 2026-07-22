@@ -224,10 +224,15 @@ class ApprovalService:
             select(OutboxEvent).where(
                 OutboxEvent.aggregate_type == "queue_item",
                 OutboxEvent.aggregate_id == queue_item.id,
-                OutboxEvent.event_type == "discord.projection.requested",
+                OutboxEvent.event_type.in_(
+                    (
+                        "discord.projection.requested",
+                        "discord.projection.refresh_requested",
+                    )
+                ),
             )
         )
-        if projection is None or projection.payload.get("approval_id") != str(approval.id):
+        if projection is None:
             raise DocketError(
                 code="approval_projection_missing",
                 message="The approval does not have a matching projection request.",

@@ -25,6 +25,7 @@ from docket.providers.google.calendar import GoogleCalendarProvider
 from docket.services.accounts import AccountService
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.operations import OperationRunner
+from docket.services.rollover import RolloverService
 from docket.worker import WorkerRuntime
 
 
@@ -67,6 +68,8 @@ worker = WorkerRuntime(
     stale_lease_poll_seconds=settings.stale_lease_poll_seconds,
     discord_projection_runner=discord_projection_runner,
     discord_projection_poll_seconds=settings.discord_projection_poll_seconds,
+    rollover_service=RolloverService(get_session_factory(), settings),
+    rollover_poll_seconds=settings.daily_rollover_poll_seconds,
 )
 
 

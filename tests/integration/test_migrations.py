@@ -36,6 +36,9 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
     assert "synced_snapshot" in {
         column["name"] for column in inspect(engine).get_columns("calendar_links")
     }
+    assert "lifecycle_version" in {
+        column["name"] for column in inspect(engine).get_columns("discord_daily_threads")
+    }
 
     command.downgrade(config, "base")
     assert "records" not in inspect(engine).get_table_names()

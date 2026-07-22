@@ -1,5 +1,6 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from pydantic import ValidationError
@@ -27,6 +28,7 @@ from docket.schemas.actions import ProposeActionInput
 from docket.services.actions import ActionService
 from docket.services.approvals import ApprovalService
 from docket.services.discord_projection import DiscordProjectionRunner
+from docket.services.rollover import RolloverService
 
 OPERATOR_ID = "000000000000000001"
 GUILD_ID = "000000000000000002"
@@ -286,7 +288,13 @@ def test_projection_retry_restart_and_exact_button_context(session_factory) -> N
         assert projection.status == "delivered"
         assert approval.control_projection_id == projection.id
         assert projection.message_id is not None and daily_thread.thread_id is not None
-        control = backend.messages[str(projection.id)]["controls"][0]
+        projected = backend.messages[str(projection.id)]
+        fields = {field["name"]: field["value"] for field in projected["embed"]["fields"]}
+        assert fields["Source"] == "Manual Discord request"
+        assert fields["Account"] == "primary"
+        assert fields["Calendar"] == settings.google_calendar_id
+        assert fields["Record version"] == "1"
+        control = projected["controls"][0]
 
     forged = ApprovalResponse(
         request_id=uuid.uuid4(),
@@ -355,3 +363,174 @@ def test_fake_thread_ensure_and_archive_are_idempotent() -> None:
     )
     assert archived["archived"] is True
     assert replayed["archived"] is True
+
+
+def test_carryover_moves_approval_control_after_new_card_ack(session_factory) -> None:
+    settings = get_settings()
+    with session_factory.begin() as session:
+        course, account = action_fixture(session)
+        proposal = ActionService(session).propose(proposal_request(course, account))
+        approval = session.get(Approval, proposal.approval_id)
+        assert approval is not None
+        approval.expires_at += timedelta(days=2)
+
+    backend = FakeDiscordBackend()
+    runner = DiscordProjectionRunner(
+        session_factory, FakeDiscordProjectionAdapter(backend), settings
+    )
+    assert runner.run_due_once()
+    with session_factory() as session:
+        old_projection = session.scalar(select(DiscordProjection))
+        assert old_projection is not None
+        old_control = backend.messages[str(old_projection.id)]["controls"][0]
+        old_message_id = old_projection.message_id
+        old_thread = session.get(DiscordDailyThread, old_projection.daily_thread_id)
+        assert old_thread is not None
+        next_date = old_thread.local_date + timedelta(days=1)
+
+    rollover_at = datetime.combine(
+        next_date,
+        time(hour=settings.daily_rollover_hour, minute=5),
+        tzinfo=ZoneInfo(settings.timezone),
+    ).astimezone(UTC)
+    rollover = RolloverService(session_factory, settings)
+    assert rollover.run_due_once(rollover_at)
+    while runner.run_due_once():
+        pass
+
+    with session_factory() as session:
+        rows = session.execute(
+            select(DiscordProjection, DiscordDailyThread)
+            .join(
+                DiscordDailyThread,
+                DiscordDailyThread.id == DiscordProjection.daily_thread_id,
+            )
+            .where(DiscordProjection.queue_item_id == proposal.queue_item_id)
+            .order_by(DiscordDailyThread.local_date)
+        ).all()
+        assert len(rows) == 2
+        old_projection, old_thread = rows[0]
+        current_projection, current_thread = rows[1]
+        approval = session.get(Approval, proposal.approval_id)
+        assert approval is not None
+        assert approval.control_projection_id == current_projection.id
+        assert approval.interaction_token_version == 2
+        assert backend.messages[str(old_projection.id)]["controls"] == []
+        current_control = backend.messages[str(current_projection.id)]["controls"][0]
+
+    stale = ApprovalResponse(
+        request_id=uuid.uuid4(),
+        discord_interaction_id="carryover-stale",
+        approval_id=proposal.approval_id,
+        approval_token=old_control["token"],
+        short_code=None,
+        decision="approve",
+        discord_user_id=settings.operator_discord_user_id,
+        guild_id=settings.discord_guild_id,
+        channel_id=old_thread.thread_id,
+        parent_channel_id=settings.queue_channel_id,
+        projection_id=old_projection.id,
+        message_id=old_message_id,
+        responded_at=datetime.now(UTC),
+    )
+    with session_factory.begin() as session, pytest.raises(DocketError) as rejected:
+        ApprovalService(session).respond(stale)
+    assert rejected.value.code == "invalid_approval_projection"
+
+    exact = stale.model_copy(
+        update={
+            "request_id": uuid.uuid4(),
+            "discord_interaction_id": "carryover-current",
+            "approval_token": current_control["token"],
+            "channel_id": current_thread.thread_id,
+            "projection_id": current_projection.id,
+            "message_id": current_projection.message_id,
+        }
+    )
+    with session_factory.begin() as session:
+        result = ApprovalService(session).respond(exact)
+    assert result["operation_status"] == "pending"
+
+
+def test_rollover_renews_expired_approval_only_against_current_targets(
+    session_factory,
+) -> None:
+    settings = get_settings()
+    local_now = datetime.now(UTC).astimezone(ZoneInfo(settings.timezone))
+    next_date = local_now.date() + timedelta(days=1)
+    rollover_at = datetime.combine(
+        next_date,
+        time(hour=settings.daily_rollover_hour, minute=5),
+        tzinfo=ZoneInfo(settings.timezone),
+    ).astimezone(UTC)
+    with session_factory.begin() as session:
+        course, account = action_fixture(session)
+        proposal = ActionService(session).propose(proposal_request(course, account))
+        approval = session.get(Approval, proposal.approval_id)
+        assert approval is not None
+        approval.expires_at = rollover_at - timedelta(seconds=1)
+
+    rollover = RolloverService(session_factory, settings)
+    assert rollover.run_due_once(rollover_at)
+
+    with session_factory() as session:
+        action = session.get(Action, proposal.action_id)
+        queue_item = session.get(QueueItem, proposal.queue_item_id)
+        approvals = session.scalars(
+            select(Approval)
+            .join(ActionRevision, ActionRevision.id == Approval.action_revision_id)
+            .where(ActionRevision.action_id == proposal.action_id)
+            .order_by(Approval.created_at)
+        ).all()
+        current_revision = session.scalar(
+            select(ActionRevision).where(
+                ActionRevision.action_id == proposal.action_id,
+                ActionRevision.revision == 2,
+            )
+        )
+
+        assert action is not None and action.current_revision == 2
+        assert action.status == "approval_pending"
+        assert queue_item is not None and queue_item.status == "awaiting_approval"
+        assert [approval.status for approval in approvals] == ["expired", "pending"]
+        assert current_revision is not None
+        assert current_revision.target_versions["queue_item"] == {
+            "id": str(queue_item.id),
+            "version": queue_item.version,
+        }
+
+
+def test_rollover_does_not_renew_expired_approval_after_record_changes(
+    session_factory,
+) -> None:
+    settings = get_settings()
+    local_now = datetime.now(UTC).astimezone(ZoneInfo(settings.timezone))
+    next_date = local_now.date() + timedelta(days=1)
+    rollover_at = datetime.combine(
+        next_date,
+        time(hour=settings.daily_rollover_hour, minute=5),
+        tzinfo=ZoneInfo(settings.timezone),
+    ).astimezone(UTC)
+    with session_factory.begin() as session:
+        course, account = action_fixture(session)
+        proposal = ActionService(session).propose(proposal_request(course, account))
+        approval = session.get(Approval, proposal.approval_id)
+        assert approval is not None
+        approval.expires_at = rollover_at - timedelta(seconds=1)
+        course.version += 1
+
+    assert RolloverService(session_factory, settings).run_due_once(rollover_at)
+
+    with session_factory() as session:
+        action = session.get(Action, proposal.action_id)
+        queue_item = session.get(QueueItem, proposal.queue_item_id)
+        approvals = session.scalars(
+            select(Approval)
+            .join(ActionRevision, ActionRevision.id == Approval.action_revision_id)
+            .where(ActionRevision.action_id == proposal.action_id)
+        ).all()
+
+        assert action is not None and action.current_revision == 1
+        assert action.status == "expired"
+        assert queue_item is not None and queue_item.status == "pending"
+        assert len(approvals) == 1 and approvals[0].status == "expired"

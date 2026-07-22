@@ -6,6 +6,7 @@ import structlog
 
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.operations import OperationRunner
+from docket.services.rollover import RolloverService
 
 logger = structlog.get_logger(__name__)
 
@@ -21,6 +22,8 @@ class WorkerRuntime:
         stale_lease_poll_seconds: float,
         discord_projection_runner: DiscordProjectionRunner | None = None,
         discord_projection_poll_seconds: float = 5.0,
+        rollover_service: RolloverService | None = None,
+        rollover_poll_seconds: float = 60.0,
     ) -> None:
         self.heartbeat_seconds = heartbeat_seconds
         self.operation_runner = operation_runner
@@ -29,6 +32,8 @@ class WorkerRuntime:
         self.stale_lease_poll_seconds = stale_lease_poll_seconds
         self.discord_projection_runner = discord_projection_runner
         self.discord_projection_poll_seconds = discord_projection_poll_seconds
+        self.rollover_service = rollover_service
+        self.rollover_poll_seconds = rollover_poll_seconds
         self.last_heartbeat: datetime | None = None
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -51,6 +56,7 @@ class WorkerRuntime:
         next_reconciliation = 0.0
         next_recovery = 0.0
         next_discord_projection = 0.0
+        next_rollover = 0.0
         while not self._stop.is_set():
             self.last_heartbeat = datetime.now(UTC)
             now = time.monotonic()
@@ -71,6 +77,11 @@ class WorkerRuntime:
                 if self.discord_projection_runner is not None and now >= next_discord_projection:
                     await asyncio.to_thread(self.discord_projection_runner.run_due_once)
                     next_discord_projection = now + self.discord_projection_poll_seconds
+                if self.rollover_service is not None and now >= next_rollover:
+                    await asyncio.to_thread(self.rollover_service.expire_due_approvals)
+                    await asyncio.to_thread(self.rollover_service.run_due_once)
+                    await asyncio.to_thread(self.rollover_service.maintain_archives)
+                    next_rollover = now + self.rollover_poll_seconds
             except Exception:
                 logger.exception("worker_iteration_failed")
             try:
