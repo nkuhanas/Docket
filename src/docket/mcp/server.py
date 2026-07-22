@@ -86,7 +86,7 @@ def docket_remember_record(
         )
         with session_scope() as session:
             result = RecordService(session).remember(request)
-            return {"ok": True, **result.model_dump(mode="json")}
+            return {"ok": True, **result.model_dump(mode="json", exclude_none=True)}
     except Exception as exc:
         return _error(exc)
 
@@ -149,7 +149,7 @@ def docket_update_record(
         )
         with session_scope() as session:
             result = RecordService(session).update(request)
-            return {"ok": True, **result.model_dump(mode="json")}
+            return {"ok": True, **result.model_dump(mode="json", exclude_none=True)}
     except Exception as exc:
         return _error(exc)
 
@@ -173,7 +173,7 @@ def docket_archive_record(
         )
         with session_scope() as session:
             result = RecordService(session).archive(request)
-            return {"ok": True, **result.model_dump(mode="json")}
+            return {"ok": True, **result.model_dump(mode="json", exclude_none=True)}
     except Exception as exc:
         return _error(exc)
 

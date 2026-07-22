@@ -30,8 +30,11 @@ For manual Discord input:
    source type, source object ID, and metadata exactly. Never derive IDs from
    server/channel names and never invent a missing ID.
 5. When `docket_remember_record` returns `matched_existing`, treat that as a
-   successful persistence result: Docket matched the canonical record and
-   attached the current Discord source. Do not replace this call with a read.
+   successful persistence result only because Docket verified material equality,
+   matched the canonical record, and attached the current Discord source. Use
+   the canonical `record` snapshot in the result; do not replace this call with
+   a read. A `record_conflict` means no source provenance was attached and must
+   not be described as stored.
 6. Say that a fact was stored or confirmed only after the remember call returns
    `ok: true`. If trusted gateway context is missing or the call fails, say that
    no write occurred instead of implying success.
@@ -68,8 +71,10 @@ a new course and proposal uses course `0` and proposal `1`; and a proposal-only
 request uses proposal `0`. Never reuse one operation's request key for another
 operation. Store newly requested records before proposing the external action.
 
-Before a Calendar proposal, read the course's current version and call
-`docket_list_accounts` to select the explicit enabled Google account. Call
+Before a Calendar proposal, use the canonical record snapshot returned by an
+immediately preceding successful remember call for the same course; otherwise
+read the course's current version. Call `docket_list_accounts` to select the
+explicit enabled Google account. Call
 `docket_propose_action` only when the user explicitly asked for the Calendar
 write. Select the calendar ID returned by `docket_list_accounts`; never
 substitute another target. Docket derives the risk, exact

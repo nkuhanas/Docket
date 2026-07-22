@@ -20,11 +20,43 @@ class DocketError(Exception):
 
 
 class IdempotencyConflict(DocketError):
-    def __init__(self, request_key: str) -> None:
+    def __init__(
+        self,
+        request_key: str,
+        *,
+        existing_operation: str | None = None,
+        attempted_operation: str | None = None,
+    ) -> None:
+        details = {"request_key": request_key}
+        if existing_operation is not None:
+            details["existing_operation"] = existing_operation
+        if attempted_operation is not None:
+            details["attempted_operation"] = attempted_operation
         super().__init__(
             code="idempotency_conflict",
             message="The request key was already used with different input.",
-            details={"request_key": request_key},
+            details=details,
+        )
+
+
+class RecordConflict(DocketError):
+    def __init__(
+        self,
+        record_id: str,
+        version: int,
+        differing_fields: list[str],
+    ) -> None:
+        super().__init__(
+            code="record_conflict",
+            message=(
+                "The canonical identity already exists with different data; "
+                "no source provenance was attached."
+            ),
+            details={
+                "record_id": record_id,
+                "current_version": version,
+                "differing_fields": differing_fields,
+            },
         )
 
 

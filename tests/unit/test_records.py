@@ -3,8 +3,13 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from docket.domain.errors import DocketError, IdempotencyConflict, VersionConflict
-from docket.models import AuditEvent, Record
+from docket.domain.errors import (
+    DocketError,
+    IdempotencyConflict,
+    RecordConflict,
+    VersionConflict,
+)
+from docket.models import AuditEvent, Record, RecordSource
 from docket.schemas.records import (
     ArchiveRecordInput,
     CourseData,
@@ -108,6 +113,10 @@ def test_remember_and_replay_are_idempotent(session: Session) -> None:
     assert first.record_id == second.record_id
     assert first.disposition == "created"
     assert second.disposition == "replayed_request"
+    assert first.record is not None
+    assert first.record["data"]["term_name"] == "Fall 2026"
+    assert second.record is not None
+    assert second.record["record_id"] == str(first.record_id)
     assert len(list(session.scalars(select(Record)))) == 1
 
 
@@ -119,6 +128,47 @@ def test_new_request_matches_canonical_record(session: Session) -> None:
 
     assert first.record_id == second.record_id
     assert second.disposition == "matched_existing"
+    assert second.record is not None
+    assert second.record["version"] == 1
+
+
+def test_new_request_with_conflicting_canonical_data_is_rejected(session: Session) -> None:
+    service = RecordService(session)
+    service.remember(remember_term_request())
+    session.commit()
+    changed = remember_term_request(message_id="222222222222222222")
+    assert isinstance(changed.data, TermData)
+    changed.data.end_date = changed.data.end_date.replace(day=18) if changed.data.end_date else None
+
+    with pytest.raises(RecordConflict) as raised:
+        service.remember(changed)
+
+    assert raised.value.code == "record_conflict"
+    assert raised.value.details is not None
+    assert raised.value.details["differing_fields"] == ["end_date"]
+    session.rollback()
+    assert len(list(session.scalars(select(RecordSource)))) == 1
+
+
+def test_search_matches_terms_across_title_and_canonical_key(session: Session) -> None:
+    service = RecordService(session)
+    request = remember_term_request()
+    assert isinstance(request.data, TermData)
+    request.canonical_identity.institution = (
+        "California Polytechnic State University, San Luis Obispo"
+    )
+    request.data.institution = "California Polytechnic State University, San Luis Obispo"
+    request.title = "Cal Poly San Luis Obispo — Fall 2026"
+    created = service.remember(request)
+
+    matches = service.search(
+        record_type="term",
+        query=(
+            "California Polytechnic State University San Luis Obispo Fall 2026"
+        ),
+    )
+
+    assert [record.id for record in matches] == [created.record_id]
 
 
 def test_course_record_references_term_and_derives_date_bounds(session: Session) -> None:
@@ -167,8 +217,12 @@ def test_reusing_request_key_with_different_input_fails(session: Session) -> Non
     changed = remember_term_request()
     changed.title = "Different"
 
-    with pytest.raises(IdempotencyConflict):
+    with pytest.raises(IdempotencyConflict) as raised:
         service.remember(changed)
+
+    assert raised.value.details is not None
+    assert raised.value.details["existing_operation"] == "docket_remember_record"
+    assert raised.value.details["attempted_operation"] == "docket_remember_record"
 
 
 def test_optimistic_update_and_archive(session: Session) -> None:

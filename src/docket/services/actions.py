@@ -95,7 +95,11 @@ class ActionService:
                 existing.operation_name != "docket_propose_action"
                 or existing.input_sha256 != input_sha256
             ):
-                raise IdempotencyConflict(request.request_key)
+                raise IdempotencyConflict(
+                    request.request_key,
+                    existing_operation=existing.operation_name,
+                    attempted_operation="docket_propose_action",
+                )
             if existing.status == CommandStatus.SUCCEEDED.value and existing.result is not None:
                 return existing, _replayed_proposal(existing.result)
             raise DocketError(

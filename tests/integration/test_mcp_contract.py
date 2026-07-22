@@ -43,6 +43,10 @@ async def test_record_and_milestone_two_scaffold_tools_are_exposed() -> None:
     assert definitions["TermData"]["required"] == ["institution", "term_name"]
     assert definitions["CourseData"]["additionalProperties"] is False
     assert definitions["CourseData"]["required"] == ["term_record_id", "course_code"]
+    meetings_schema = definitions["CourseData"]["properties"]["meetings"]
+    assert "stable descriptive meeting ID" in meetings_schema["description"]
+    assert meetings_schema["examples"][0]["lecture-fr-1"]["days"] == ["FR"]
+    assert meetings_schema["patternProperties"]
     assert definitions["CourseMeeting"]["additionalProperties"] is False
     assert definitions["CourseMeeting"]["properties"]["days"]["items"]["enum"] == [
         "MO",

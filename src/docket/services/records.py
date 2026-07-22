@@ -1,13 +1,20 @@
+import re
 import uuid
 from datetime import date
 from typing import Any, cast
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, or_, select
 from sqlalchemy.orm import Session
 
 from docket.domain.canonical import canonical_record_key, sha256_json
 from docket.domain.enums import CommandStatus, RecordStatus
-from docket.domain.errors import DocketError, IdempotencyConflict, RecordNotFound, VersionConflict
+from docket.domain.errors import (
+    DocketError,
+    IdempotencyConflict,
+    RecordConflict,
+    RecordNotFound,
+    VersionConflict,
+)
 from docket.models import AuditEvent, CommandRequest, Record, RecordSource
 from docket.models.base import utc_now
 from docket.schemas.records import (
@@ -51,6 +58,21 @@ def _replayed(result: dict[str, Any]) -> RecordResult:
     return RecordResult.model_validate(replayed)
 
 
+def _differing_fields(current: Any, requested: Any, prefix: str = "") -> list[str]:
+    if isinstance(current, dict) and isinstance(requested, dict):
+        differences: list[str] = []
+        for key in sorted(set(current) | set(requested)):
+            path = f"{prefix}.{key}" if prefix else key
+            if key not in current or key not in requested:
+                differences.append(path)
+                continue
+            differences.extend(_differing_fields(current[key], requested[key], path))
+        return differences
+    if current != requested:
+        return [prefix or "data"]
+    return []
+
+
 class RecordService:
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -70,7 +92,11 @@ class RecordService:
         )
         if existing is not None:
             if existing.operation_name != operation_name or existing.input_sha256 != input_sha256:
-                raise IdempotencyConflict(request_key)
+                raise IdempotencyConflict(
+                    request_key,
+                    existing_operation=existing.operation_name,
+                    attempted_operation=operation_name,
+                )
             if existing.status == CommandStatus.SUCCEEDED.value and existing.result is not None:
                 return existing, _replayed(existing.result)
             raise DocketError(
@@ -148,6 +174,9 @@ class RecordService:
             actor_id=request.actor_id,
         )
         if replay is not None:
+            record = self.session.get(Record, replay.record_id)
+            if record is not None:
+                replay.record = serialize_record(record)
             return replay
 
         canonical_identity = request.canonical_identity.model_dump(mode="json")
@@ -180,6 +209,14 @@ class RecordService:
             self.session.add(record)
             self.session.flush()
             disposition = "created"
+        else:
+            differing_fields = _differing_fields(record.data, normalized_data)
+            if differing_fields:
+                raise RecordConflict(
+                    str(record.id),
+                    record.version,
+                    differing_fields,
+                )
 
         source = request.source
         self.session.add(
@@ -214,6 +251,7 @@ class RecordService:
             version=record.version,
             disposition=cast(Any, disposition),
             request_id=command.id,
+            record=serialize_record(record),
         )
         self._finish_command(command, result)
         return result
@@ -238,7 +276,14 @@ class RecordService:
         if status:
             statement = statement.where(Record.status == status.value)
         if query:
-            statement = statement.where(Record.title.ilike(f"%{query}%"))
+            terms = re.findall(r"[A-Za-z0-9]+", query)
+            if not terms:
+                return []
+            for term in terms[:32]:
+                pattern = f"%{term}%"
+                statement = statement.where(
+                    or_(Record.title.ilike(pattern), Record.canonical_key.ilike(pattern))
+                )
         statement = statement.order_by(Record.updated_at.desc()).limit(min(max(limit, 1), 100))
         return list(self.session.scalars(statement))
 

@@ -145,7 +145,30 @@ class CourseData(StrictModel):
     course_title: str | None = Field(default=None, max_length=512)
     section: str | None = Field(default=None, min_length=1, max_length=64)
     instructor: str | None = Field(default=None, max_length=255)
-    meetings: dict[MeetingId, CourseMeeting] = Field(default_factory=dict, max_length=32)
+    meetings: dict[MeetingId, CourseMeeting] = Field(
+        default_factory=dict,
+        max_length=32,
+        description=(
+            "Object keyed by a stable descriptive meeting ID. Each value follows the "
+            "CourseMeeting schema; do not use array indexes as keys."
+        ),
+        json_schema_extra={
+            "examples": [
+                {
+                    "lecture-fr-1": {
+                        "meeting_type": "lecture",
+                        "days": ["FR"],
+                        "start_time": "09:00:00",
+                        "end_time": "09:50:00",
+                        "location": "Building 1, Room 101",
+                        "start_date": "2026-08-24",
+                        "end_date": "2026-12-18",
+                        "timezone": "America/Los_Angeles",
+                    }
+                }
+            ]
+        },
+    )
     notes: str | None = None
 
 
@@ -204,3 +227,4 @@ class RecordResult(StrictModel):
     version: int
     disposition: Literal["created", "matched_existing", "replayed_request", "updated", "archived"]
     request_id: UUID
+    record: dict[str, Any] | None = None
