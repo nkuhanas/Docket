@@ -70,24 +70,41 @@ used the stable footer marker `docket-projection:<projection-uuid>` with separat
 full render and component digests. Replays increased only the outbox attempt
 counter; the stored Discord thread and message IDs did not change.
 
-## Remaining operator interaction
+## Live persistent-button evidence
 
-The recovered historical card represented an already-consumed fake-Calendar
-action, so it correctly rendered without live approval controls. The final
-button portion of the live gate requires one fresh pending fake-adapter proposal
-and the configured operator pressing its Approve or Reject button after a Hermes
-restart. Record the redacted callback fields and post-commit ephemeral response
-here when that interaction is complete.
+After the recorded Hermes restart, the configured operator created a fresh
+test-only `DKT 998 BUTTON` proposal and pressed its Reject component. Docket's
+authenticated callback committed at `2026-07-22T07:36:58Z`. The redacted
+database comparison proved:
 
-Until that click is recorded, the automated exact-context gate is complete and
-the live thread/embed/archive/restart gate is complete, but the live persistent
-button callback gate remains open. Milestone 3 must not begin.
+```text
+response actor == approval authorized actor       true
+response guild == stored daily-thread guild       true
+response channel == stored Discord thread         true
+response parent == configured root queue          true
+response projection == delivered projection       true
+response message == stored projected card         true
+unique Discord interaction ID persisted           true
+```
+
+The callback returned HTTP 200 with no Hermes interaction exception. In the
+same transaction, the approval and action became `rejected`, the queue item
+became `completed` with `approval_rejected`, an `approval.rejected` audit event
+captured the immutable parameter and preview hashes, and no operation was
+created. The refresh outbox event then delivered successfully to the same
+message, advanced the projection to version 2, removed the active
+`control_projection_id`, and rendered an empty component set. Both initial and
+refresh projection events were delivered once.
+
+This closes the Milestone 2.5 gate end to end. Milestone 3 may begin when
+selected as the next coding assignment.
 
 ## Permission deviation
 
 The application currently has Discord Administrator by explicit operator choice
-for the staging spike. Therefore this run demonstrates API capability, not the
-specification's least-privilege deployment. The intended narrow set remains
-View Channel, Send Messages, Create Public Threads, Send Messages in Threads,
-Manage Threads, Read Message History, and Embed Links. Removing Administrator
-and re-running this transcript is a production-hardening task.
+for high-speed staging. The server is treated as a reconstructible projection,
+so least-privilege permission reduction is not a condition of this gate. The
+application-level target, token, provenance, and approval checks remain active.
+If the deployment model later changes, the narrower permission set can be
+revisited as hardening rather than retroactively weakening this capability
+result.

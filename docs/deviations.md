@@ -1,22 +1,22 @@
 # Specification deviations
 
-## 2026-07-22 — Retain Discord Administrator during the staging spike
+## 2026-07-22 — Retain Discord Administrator for Yuuka
 
 The Milestone 2.5 specification calls for proving the exact channel permission
-set without granting Administrator. The operator explicitly accepted a
-high-speed staging shortcut: the existing Hermes/Yuuka application currently
-retains server-wide Administrator while the outbound thread, embed, and button
-capability is closed.
+set without granting Administrator. The operator explicitly chose to retain
+server-wide Administrator for the existing Hermes/Yuuka application. The
+Discord server is treated as a reconstructible projection rather than a source
+of canonical state, and the cost of constraining permissions is not justified
+by the current high-speed staging threat model.
 
 This does not weaken Docket's application checks. The plugin still allowlists
 one guild and queue, accepts only a private service token, derives thread names
 and components, forbids arbitrary target channels, and Docket validates the
 actual actor, guild, parent, thread, projection, and message before consuming an
-approval. It does mean the live spike does **not** prove least-privilege Discord
-deployment. Remove Administrator and re-run the capability suite with View
-Channel, Send Messages, Create Public Threads, Send Messages in Threads, Manage
-Threads, Read Message History, and Embed Links before calling the deployment
-production-hardened.
+approval. Administrator is therefore an accepted deployment choice, not an open
+Milestone 2.5 failure or an assumed operational-security deficit. Revisit the
+permission model only if Discord becomes canonical, additional users or bots
+enter the trust boundary, or the operator changes the threat model.
 
 ## 2026-07-22 — Use a pinned private Hermes runtime seam for outbound Discord
 

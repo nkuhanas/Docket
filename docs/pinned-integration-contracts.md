@@ -141,6 +141,12 @@ read-only bind mount from `hermes/plugin/docket_discord`. The manual Docket
 skill is separately mounted into `/opt/data/skills/docket-manual-intent` so it
 appears in ordinary skill discovery.
 
+That separate skill mount is also read-only. If Hermes invokes `skill_manage`
+against it, the atomic temporary-file write fails with `EROFS`; this is expected
+and does not mean plugin discovery or Docket persistence failed. Repository
+edits, followed by a Hermes restart, are the authoritative update path for this
+skill.
+
 Use this as the first discovery check:
 
 ```bash

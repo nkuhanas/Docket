@@ -94,6 +94,7 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | `/mcp` returns 307 or the client fails during initialization | Use `/mcp/` with the trailing slash | Pinned FastMCP mount-path behavior |
 | Docket is unhealthy after changing the database password | Check whether the PostgreSQL volume predates the new password | Compose environment changed but the existing database role did not |
 | Plugin or skill edit appears ignored | Restart Hermes, run `/reload-mcp` when MCP changed, and begin a new Discord turn | Bind-mounted file changed, but Python hook/skill/tool registration is cached |
+| `skill_manage` reports a read-only `.SKILL.md.tmp` path | Edit the repository-owned skill on the host and restart Hermes | Docket's mounted manual skill is intentionally read-only inside Hermes; model-driven self-edit is not the update path |
 | Docket Python edit appears ignored | Rebuild and recreate Docket | Application source is copied into the image, not bind-mounted |
 | Correct record is returned but no new provenance exists | Inspect `record_sources` and `record.matched` audit evidence | Read path passed; remember path did not |
 | Proposal returns `action_unavailable` | Inspect the named stable meeting and missing-fields detail | Incomplete dates, local times, timezone, or no selected weekday in range |
