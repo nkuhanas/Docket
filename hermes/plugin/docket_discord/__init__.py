@@ -1,8 +1,10 @@
 """Trusted Hermes gateway bridge for Docket control messages.
 
 The bridge intentionally uses ``pre_gateway_dispatch`` instead of a model tool.
-Hermes v2026.7.20 supplies the normalized source actor on this hook. Button and
-native-interaction handling remain capability-gated until a live Discord spike.
+Hermes v2026.7.20 supplies the normalized source actor on this hook. The primary
+approval syntax is a plain ``docket approve|reject CODE`` message because no
+native Docket Discord application command is registered. Leading-slash messages
+remain accepted when the Discord client delivers them as ordinary messages.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-_COMMAND = re.compile(r"^/docket\s+(approve|reject)\s+([A-Za-z0-9-]{8,32})\s*$", re.I)
+_COMMAND = re.compile(r"^/?docket\s+(approve|reject)\s+([A-Za-z0-9-]{8,32})\s*$", re.I)
 _DISCORD_ID = re.compile(r"^[0-9]{17,20}$")
 
 
@@ -89,6 +91,18 @@ def _is_exact_context(
     )
 
 
+def _is_configured_queue(source: object | None) -> bool:
+    """Return whether an event came from the dedicated Discord control queue."""
+    if source is None:
+        return False
+    queue_channel = os.environ.get("DOCKET_QUEUE_CHANNEL_ID", "")
+    return (
+        _source_value(source, "platform").casefold() == "discord"
+        and bool(queue_channel)
+        and _source_value(source, "chat_id", "channel_id") == queue_channel
+    )
+
+
 def _rewrite_with_source_context(event: object) -> dict[str, str] | None:
     source = getattr(event, "source", None)
     actor = os.environ.get("DOCKET_OPERATOR_DISCORD_USER_ID", "")
@@ -138,6 +152,13 @@ def _pre_gateway_dispatch(event: object, **_kwargs: object) -> dict[str, str] | 
     text = str(getattr(event, "text", ""))
     match = _COMMAND.fullmatch(text.strip())
     if match is None:
+        # The queue is configured as a free-response channel so that Discord
+        # delivers ordinary control messages without a bot mention. Keep it a
+        # control-only surface: malformed commands and conversation never reach
+        # Hermes authorization, sessions, or the model.
+        if _is_configured_queue(getattr(event, "source", None)):
+            logger.warning("Dropped non-command message from Docket control queue")
+            return {"action": "skip", "reason": "invalid-docket-control"}
         return _rewrite_with_source_context(event)
 
     source = getattr(event, "source", None)

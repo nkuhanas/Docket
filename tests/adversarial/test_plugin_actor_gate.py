@@ -50,7 +50,10 @@ def test_unauthorized_actor_is_dropped_before_model(plugin_module, monkeypatch) 
 
 
 @pytest.mark.adversarial
-def test_authorized_control_is_handled_without_model(plugin_module, monkeypatch) -> None:
+@pytest.mark.parametrize("prefix", ["", "/"])
+def test_authorized_control_is_handled_without_model(
+    plugin_module, monkeypatch, prefix: str
+) -> None:
     monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", "operator")
     monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", "guild")
     monkeypatch.setenv("DOCKET_QUEUE_CHANNEL_ID", "queue")
@@ -61,7 +64,7 @@ def test_authorized_control_is_handled_without_model(plugin_module, monkeypatch)
 
     monkeypatch.setattr(plugin_module, "_post_decision", fake_post)
     event = SimpleNamespace(
-        text="/docket reject ABCDEFGH",
+        text=f"{prefix}docket reject ABCDEFGH",
         message_id="message",
         source=SimpleNamespace(
             platform="discord",
@@ -74,6 +77,27 @@ def test_authorized_control_is_handled_without_model(plugin_module, monkeypatch)
     result = plugin_module._pre_gateway_dispatch(event)
     assert result == {"action": "skip", "reason": "docket-control-handled"}
     assert captured["decision"] == "reject"
+
+
+@pytest.mark.adversarial
+def test_non_command_queue_message_is_dropped_before_model(
+    plugin_module, monkeypatch
+) -> None:
+    monkeypatch.setenv("DOCKET_QUEUE_CHANNEL_ID", "queue")
+    event = SimpleNamespace(
+        text="please approve whatever is pending",
+        message_id="message",
+        source=SimpleNamespace(
+            platform="discord",
+            user_id="operator",
+            guild_id="guild",
+            chat_id="queue",
+        ),
+    )
+
+    result = plugin_module._pre_gateway_dispatch(event)
+
+    assert result == {"action": "skip", "reason": "invalid-docket-control"}
 
 
 @pytest.mark.adversarial

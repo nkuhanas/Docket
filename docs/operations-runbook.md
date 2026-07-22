@@ -36,9 +36,10 @@ A Calendar write succeeds only through this durable sequence:
    ID, and trusted Discord source.
 2. Docket derives the executable parameters, risk, preview, hashes, target
    versions, short code, and expiry. No provider call occurs here.
-3. The operator enters `/docket approve <short-code>` in the configured queue
-   channel. The trusted plugin calls the internal approval route; ordinary MCP
-   tools cannot approve.
+3. The operator sends the plain message `docket approve <short-code>` in the
+   configured queue channel. The trusted plugin calls the internal approval
+   route; ordinary MCP tools cannot approve. The current deployment has no
+   registered Docket Discord application command, so do not rely on `/docket`.
 4. Docket consumes the approval once and commits a pending logical operation.
 5. The worker persists an execution attempt and a call-started marker before
    contacting Calendar. Confirmed success commits the event link and state
@@ -70,6 +71,12 @@ Expected results:
   `docket_get_action`.
 * Logs contain no startup, plugin-load, MCP-authentication, or migration error.
 
+After an MCP tool, schema, or allowlist change, send `/reload-mcp` in the active
+Hermes Discord session before testing. A healthy `hermes mcp test docket` checks
+server discovery, but the already-running conversation can retain its prior
+tool registry until this command is used. This was required in the first live
+Milestone 2 smoke.
+
 `hermes mcp test` proves discovery and prints abbreviated descriptions. It does
 not prove that the full generated input schema reached the model. Use the
 contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
@@ -85,12 +92,12 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | MCP returns `invalid_source_context` | Compare operator, guild, and chat IDs at both containers | Plugin context and Docket settings disagree |
 | `/mcp` returns 307 or the client fails during initialization | Use `/mcp/` with the trailing slash | Pinned FastMCP mount-path behavior |
 | Docket is unhealthy after changing the database password | Check whether the PostgreSQL volume predates the new password | Compose environment changed but the existing database role did not |
-| Plugin or skill edit appears ignored | Restart Hermes and begin a new Discord turn | Bind-mounted file changed, but Python hook/skill registration is cached |
+| Plugin or skill edit appears ignored | Restart Hermes, run `/reload-mcp` when MCP changed, and begin a new Discord turn | Bind-mounted file changed, but Python hook/skill/tool registration is cached |
 | Docket Python edit appears ignored | Rebuild and recreate Docket | Application source is copied into the image, not bind-mounted |
 | Correct record is returned but no new provenance exists | Inspect `record_sources` and `record.matched` audit evidence | Read path passed; remember path did not |
 | Proposal returns `action_unavailable` | Inspect the named stable meeting and missing-fields detail | Incomplete dates, local times, timezone, or no selected weekday in range |
 | Proposal returns `calendar_not_allowed` | Compare the exact ID returned by `docket_list_accounts` with `GOOGLE_CALENDAR_ID` | Display name or different calendar substituted for the configured opaque ID |
-| `/docket approve` is ignored or rejected | Verify the command was sent in the configured queue channel by the configured operator | Plugin context gate, stale/incorrect short code, or expired approval |
+| Approval message is ignored | Use plain `docket approve CODE`; verify queue is both allowed and free-response | Discord mention gate dropped ingress, plugin context gate failed, or code expired |
 | Approval is consumed but no Calendar link appears | Inspect operation status, next attempt, attempts, and worker log | Worker stopped, provider failure, backoff, or reconciliation required |
 | Operation is `reconciliation_required` | Inspect attempt error and provider correlation; never force a create retry | Timeout/crash may have reached Google, or reconciliation found conflicting matches |
 | Update creates a second event | Stop external calls and compare action type, link, idempotency key, and external event ID | Update was proposed as create, link was missing, or execution contract regressed |
@@ -201,6 +208,52 @@ uv run pytest tests/unit/test_records.py -k 'replay or canonical'
 For a live replay, record the source, audit, and command counts before and after
 calling the captured payload. All counts must remain unchanged.
 
+## Approval message not received
+
+Discord channel admission occurs before Hermes constructs a `MessageEvent`, so
+it also occurs before the Docket `pre_gateway_dispatch` hook. In the current
+pin, an unmentioned ordinary message in a mention-required channel disappears
+without a Docket callback. The dedicated queue must therefore be present in all
+three active Discord lists:
+
+```text
+allowed_channels
+free_response_channels
+no_thread_channels
+```
+
+The plugin makes that free-response exception safe by dropping every queue
+message except an exact `docket approve CODE` or `docket reject CODE`, then
+checking the configured operator, guild, and channel before calling Docket. A
+queue message never belongs in a model session.
+
+When a decision appears inert, inspect the action graph by action UUID:
+
+```bash
+sudo docker compose exec -T postgres psql -U docket -d docket -x -c '
+select a.id as action_id, a.status as action_status,
+       p.id as approval_id, p.status as approval_status, p.expires_at,
+       p.discord_interaction_id, p.response_message_id,
+       p.consumed_operation_id
+from actions a
+join action_revisions r on r.action_id = a.id
+left join approvals p on p.action_revision_id = r.id
+where a.id = '\''ACTION_UUID'\''
+order by r.revision desc;
+select id, status, operation_type, attempt_count, last_error_code
+from operations
+where action_revision_id in (
+  select id from action_revisions where action_id = '\''ACTION_UUID'\''
+)
+order by created_at desc;'
+```
+
+`approval_pending` plus a pending approval whose interaction and response fields
+are null, with no operation, means the callback never arrived. Check the queue
+channel lists and plugin load before investigating the worker or Calendar. If
+`expires_at` has passed, create a fresh proposal after fixing ingress; never
+manually advance the expired row.
+
 ## Schema or tool mismatch
 
 Docket's MCP JSON schema is generated at runtime by FastMCP from the Python
@@ -270,7 +323,7 @@ valid bearer is necessary but not sufficient for a remember operation.
 | Root `.env` value used by Docket or Hermes | Recreate affected containers | Restart preserves the old container environment |
 | `DOCKET_CREDENTIALS_DIR` | Recreate affected containers | Compose must replace the mount source |
 | Secret file contents at the same mounted path | Restart the consumer unless the code path is documented as rereading every call | Providers/settings may cache state |
-| MCP tool name/signature | Rebuild Docket, update both Hermes configs and skill, recreate/restart Hermes | Server schema and client allowlist must move atomically |
+| MCP tool name/signature | Rebuild Docket, update both Hermes configs and skill, recreate/restart Hermes, then send `/reload-mcp` in active sessions | Server schema, client allowlist, and session tool registry must move atomically |
 | Hermes or MCP pin | Follow the full upgrade checklist | Internal event/schema adapter contracts may change |
 
 After any lifecycle action, rerun the first five checks.

@@ -39,3 +39,22 @@ The snapshot is a bounded, normalized subset: summary, location, start/end,
 recurrence, and Docket correlation. It excludes attendee data, creator email,
 HTML links, descriptions, credentials, and arbitrary provider response fields.
 It is updated only in the same transaction that confirms operation success.
+
+## 2026-07-21 — Use an ordinary Discord approval message
+
+The private specification's `/docket approve <short-code>` fallback assumes a
+registered Discord application command or a gateway path that admits arbitrary
+slash-like channel messages. The deployed server has no Docket Discord
+application registration, and Hermes `v2026.7.20` applies channel mention
+admission before the Docket plugin hook.
+
+The operational syntax is therefore the plain queue message
+`docket approve <short-code>` or `docket reject <short-code>`. The queue is an
+allowed, free-response, no-thread channel so the adapter delivers that message.
+The trusted plugin then drops every non-command queue message, verifies the
+exact operator/guild/channel tuple, and calls Docket's authenticated internal
+approval endpoint. Approval remains outside the model-visible MCP surface.
+
+The plugin still parses a leading slash when delivered for forward
+compatibility. Native slash commands or buttons remain deferred until Docket
+has an explicitly registered Discord application interaction surface.

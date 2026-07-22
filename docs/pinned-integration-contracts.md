@@ -44,6 +44,26 @@ Hermes then replaces the immutable event with `dataclasses.replace` and sends
 the rewritten text to the agent. Slash/session commands are intentionally not
 rewritten with Docket source context.
 
+Discord channel admission happens inside the pinned Discord adapter before it
+constructs the event passed to this hook. Because `require_mention` is enabled,
+the dedicated Docket queue must also be a `free_response_channels` and
+`no_thread_channels` entry. It remains in `allowed_channels`. The plugin treats
+that channel as control-only and skips every message that is not an exact
+approval or rejection command, so queue conversation cannot reach the model.
+
+The current deployment does not register a native Docket Discord application
+command. Its reliable operator fallback is an ordinary message:
+
+```text
+docket approve SHORT-CODE
+docket reject SHORT-CODE
+```
+
+The hook accepts a leading slash for compatibility if Discord delivers it as an
+ordinary message, but user guidance must not depend on `/docket`. A native
+slash command or button requires an explicit Discord application registration
+and a separate interaction spike.
+
 The real current event shape is:
 
 ```text
@@ -178,6 +198,10 @@ Consequences:
 * A generated-schema regression test is required after signature changes.
 * A provider/Hermes upgrade can alter schema normalization even when Docket's
   generated schema is unchanged.
+* Existing Discord sessions cache the discovered tool surface. After changing
+  tools, schemas, or the allowlist, `/reload-mcp` is required in the active
+  session even when `hermes mcp test docket` already reports the new server
+  contract.
 
 The model-facing persistence tool is intentionally named
 `docket_remember_record`, not `docket_create_record`. Its operation records a

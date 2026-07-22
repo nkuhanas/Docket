@@ -63,10 +63,12 @@ Before a Calendar proposal, read the course's current version and call
 write. Select the calendar ID returned by `docket_list_accounts`; never
 substitute another target. Docket derives the risk, exact
 schedule, preview, hashes, and approval expiry. If a proposal succeeds, show
-the immutable preview and short code, then instruct the operator to enter
-`/docket approve <short-code>` or `/docket reject <short-code>` in the configured
-Docket queue channel. Do not describe the provider write as complete until
-`docket_get_action` reports a succeeded operation.
+the immutable preview and short code, then instruct the operator to send the
+plain message `docket approve <short-code>` or `docket reject <short-code>` in
+the configured Docket queue channel. Do not prefix this fallback with `/`:
+there is no registered Docket Discord application command in the current pin.
+Do not describe the provider write as complete until `docket_get_action`
+reports a succeeded operation.
 
 External actions are proposals only. Never represent conversational assent as a
 Docket approval and never call a raw provider mutation.
