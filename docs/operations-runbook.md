@@ -75,6 +75,13 @@ sudo docker compose exec -T hermes hermes mcp test docket
 sudo docker compose logs --since=15m --no-color hermes docket | tail -300
 ```
 
+Run the Hermes plugin-list probe only after the gateway log reports that Discord
+is connected and the gateway is running. Do not parallelize it with a Hermes
+restart: this pinned CLI imports user plugins, whose registration has the side
+effect of binding the private projection port. A startup-time probe can contend
+with the gateway on port 8787 and leave the restarted gateway without its
+listener until a clean Hermes restart.
+
 Expected results:
 
 * PostgreSQL and Docket are healthy; Hermes and SearXNG are running.
@@ -107,6 +114,7 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Docket is unhealthy after changing the database password | Check whether the PostgreSQL volume predates the new password | Compose environment changed but the existing database role did not |
 | Plugin or skill edit appears ignored | Restart Hermes, run `/reload-mcp` when MCP changed, and begin a new Discord turn | Bind-mounted file changed, but Python hook/skill/tool registration is cached |
 | `skill_manage` reports a read-only `.SKILL.md.tmp` path | Edit the repository-owned skill on the host and restart Hermes | Docket's mounted manual skill is intentionally read-only inside Hermes; model-driven self-edit is not the update path |
+| Plugin list logs `Address already in use` or projection listener is unreachable after restart | Stop running plugin probes, restart only Hermes, then verify port 8787 before further CLI inspection | Pinned plugin registration and a concurrent diagnostic process contended for the private listener |
 | Docket Python edit appears ignored | Rebuild and recreate Docket | Application source is copied into the image, not bind-mounted |
 | Correct record is returned but no new provenance exists | Inspect `record_sources` and `record.matched` audit evidence | Read path passed; store path did not |
 | Proposal returns `action_unavailable` | Inspect the named stable meeting and missing-fields detail | Incomplete dates, local times, timezone, or no selected weekday in range |
@@ -314,6 +322,16 @@ First failure points:
 * a button callback with no response fields: confirm the raw interaction
   listener was installed after restart, then inspect Hermes logs. Buttons defer
   first and report success only after Docket commits.
+
+Verify the private listener without sending a projection or reading a token:
+
+```bash
+sudo docker compose exec -T hermes python -c '
+import socket
+s = socket.create_connection(("127.0.0.1", 8787), timeout=2)
+s.close()
+print("projection listener reachable")'
+```
 
 Hermes plugin edits require a gateway restart. `/reload-mcp` is still required
 for MCP tool/schema changes, but it does not reload this Python plugin.

@@ -155,7 +155,9 @@ sudo docker compose exec -T hermes \
 ```
 
 An enabled listing proves discovery, not that an actual event satisfied the
-plugin's exact context gate.
+plugin's exact context gate. Run it only after the gateway has finished starting;
+the pinned CLI imports the plugin, and registration binds port 8787. Running this
+probe concurrently with gateway startup can contend for that private listener.
 
 ## Active configuration versus templates
 
