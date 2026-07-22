@@ -819,9 +819,7 @@ class DiscordProjectionRunner:
                     if event.end_at is not None
                     else ""
                 )
-            nominal = notification.scheduled_for
-            created_at = notification.created_at
-            late = _aware(created_at) > _aware(nominal) + timedelta(seconds=1)
+            late = notification.last_error_code == "late_calendar_refresh"
             render = {
                 "summary": self._bounded(event.summary or "Calendar event", 512),
                 "location": self._bounded(event.location, 1000) if event.location else None,

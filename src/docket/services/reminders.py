@@ -117,7 +117,9 @@ def materialize_reminders(
             if event_start is None or start_key is None:
                 continue
             desired.add((event.provider_event_id, start_key))
-            scheduled_for = event_start - timedelta(seconds=rule.lead_seconds)
+            nominal_schedule = event_start - timedelta(seconds=rule.lead_seconds)
+            late = nominal_schedule < now
+            scheduled_for = max(nominal_schedule, now)
             same = next(
                 (
                     item
@@ -145,9 +147,15 @@ def materialize_reminders(
                     calendar_event_id=event.id,
                     provider_event_id=event.provider_event_id,
                     event_start_key=start_key,
-                    scheduled_for=max(scheduled_for, now),
+                    scheduled_for=scheduled_for,
                     status="failed" if missed else "pending",
-                    last_error_code="missed_stale_calendar" if missed else None,
+                    last_error_code=(
+                        "missed_stale_calendar"
+                        if missed
+                        else "late_calendar_refresh"
+                        if late
+                        else None
+                    ),
                 )
                 session.add(selected)
                 existing.append(selected)
@@ -156,16 +164,22 @@ def materialize_reminders(
                 next_status = "failed" if missed else "pending"
                 if (
                     selected.event_start_key != start_key
-                    or selected.scheduled_for != max(scheduled_for, now)
+                    or selected.scheduled_for != scheduled_for
                     or selected.calendar_event_id != event.id
                     or selected.status != next_status
                 ):
                     changed += 1
                 selected.calendar_event_id = event.id
                 selected.event_start_key = start_key
-                selected.scheduled_for = max(scheduled_for, now)
+                selected.scheduled_for = scheduled_for
                 selected.status = next_status
-                selected.last_error_code = "missed_stale_calendar" if missed else None
+                selected.last_error_code = (
+                    "missed_stale_calendar"
+                    if missed
+                    else "late_calendar_refresh"
+                    if late
+                    else None
+                )
 
         for notification in existing:
             identity = (notification.provider_event_id, notification.event_start_key)

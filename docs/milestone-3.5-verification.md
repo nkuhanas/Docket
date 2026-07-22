@@ -31,7 +31,7 @@ The final local gate completed with:
 
 ```text
 uv run pytest -q
-122 passed, 1 third-party Starlette deprecation warning
+125 passed, 1 third-party Starlette deprecation warning
 
 uv run ruff check .
 All checks passed!
@@ -49,6 +49,10 @@ The suite specifically proves:
 * enabling real reads does not select a real write provider;
 * successful Docket-created events are transactionally reflected in the cache;
 * event movement reschedules a pending reminder and event removal cancels it;
+* recurring-series rules follow instances, provider cancellation tombstones cancel
+  pending notifications, and late refreshes render visibly late reminders;
+* reminder commands replay idempotently, reject stale versions, cancel on disable,
+  and preserve created/updated/disabled audit evidence;
 * all-day reminder timing follows the configured timezone across DST;
 * a lost Discord acknowledgement followed by a new runner instance produces one
   reminder message, not two;

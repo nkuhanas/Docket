@@ -7,8 +7,10 @@ import pytest
 from sqlalchemy import select
 
 from docket.config import get_settings
+from docket.domain.errors import VersionConflict
 from docket.models import (
     Account,
+    AuditEvent,
     CalendarEventCache,
     CalendarSyncState,
     OutboxEvent,
@@ -18,7 +20,7 @@ from docket.models import (
 from docket.providers.discord import FakeDiscordBackend, FakeDiscordProjectionAdapter
 from docket.providers.google.calendar import CalendarSnapshotEvent, CalendarSnapshotPage
 from docket.providers.google.fake_calendar import FakeCalendarProvider
-from docket.schemas.calendar import SetReminderRuleInput
+from docket.schemas.calendar import DisableReminderRuleInput, SetReminderRuleInput
 from docket.schemas.records import RecordSourceInput
 from docket.services.calendar_sync import CalendarReadService, CalendarSyncService
 from docket.services.discord_projection import DiscordProjectionRunner
@@ -385,6 +387,195 @@ def test_event_change_reschedules_then_cancellation_cancels_one_notification(
         cancelled = session.get(ScheduledNotification, original_id)
         assert cancelled is not None and cancelled.status == "cancelled"
         assert cancelled.last_error_code == "calendar_event_removed"
+
+
+@pytest.mark.integration
+def test_recurring_series_rule_tracks_cancelled_provider_tombstone(session_factory) -> None:
+    base = datetime.now(UTC).replace(microsecond=0)
+    settings = get_settings().model_copy(update={"calendar_reads_enabled": True})
+    account_id = _account(session_factory)
+    provider = FakeCalendarProvider()
+    instance = CalendarSnapshotEvent(
+        provider_event_id="series-instance",
+        recurring_event_id="series-master",
+        status="confirmed",
+        summary="Recurring office hours",
+        location="Building 14",
+        is_all_day=False,
+        start_at=base + timedelta(hours=4),
+        end_at=base + timedelta(hours=5),
+        timezone="America/Los_Angeles",
+    )
+    provider.put_snapshot_event(instance)
+    sync = CalendarSyncService(session_factory, provider, settings, clock=lambda: base)
+    assert sync.sync_target(account_id, settings.google_calendar_id, force=True)
+
+    message_id = "666666666666666666"
+    with session_factory.begin() as session:
+        result = ReminderRuleService(session, settings).set(
+            SetReminderRuleInput(
+                account_id=account_id,
+                calendar_id=settings.google_calendar_id,
+                scope="event",
+                provider_event_id="series-master",
+                lead_seconds=1800,
+                request_key=_request_key(message_id),
+                source=_source(message_id),
+                actor_id=settings.operator_discord_user_id,
+            )
+        )
+        rule_id = result.rule_id
+
+    provider.put_snapshot_event(
+        CalendarSnapshotEvent(
+            provider_event_id=instance.provider_event_id,
+            recurring_event_id=instance.recurring_event_id,
+            status="cancelled",
+            summary=None,
+            location=None,
+            is_all_day=False,
+            start_at=instance.start_at,
+            end_at=instance.end_at,
+            timezone=instance.timezone,
+        )
+    )
+    assert sync.sync_target(account_id, settings.google_calendar_id, force=True)
+
+    with session_factory() as session:
+        cached = session.scalar(select(CalendarEventCache))
+        notification = session.scalar(
+            select(ScheduledNotification).where(ScheduledNotification.reminder_rule_id == rule_id)
+        )
+        assert cached is not None and cached.status == "cancelled"
+        assert notification is not None and notification.status == "cancelled"
+        assert notification.last_error_code == "calendar_event_cancelled"
+
+
+@pytest.mark.integration
+def test_reminder_rule_is_idempotent_versioned_disabled_and_audited(session_factory) -> None:
+    base = datetime.now(UTC).replace(microsecond=0)
+    settings = get_settings().model_copy(update={"calendar_reads_enabled": True})
+    account_id = _account(session_factory)
+    provider = FakeCalendarProvider()
+    provider.put_snapshot_event(_timed("rule-event", base + timedelta(hours=2)))
+    sync = CalendarSyncService(session_factory, provider, settings, clock=lambda: base)
+    assert sync.sync_target(account_id, settings.google_calendar_id, force=True)
+
+    create_message = "555555555555555555"
+    create = SetReminderRuleInput(
+        account_id=account_id,
+        calendar_id=settings.google_calendar_id,
+        scope="event",
+        provider_event_id="rule-event",
+        lead_seconds=900,
+        request_key=_request_key(create_message),
+        source=_source(create_message),
+        actor_id=settings.operator_discord_user_id,
+    )
+    with session_factory.begin() as session:
+        created = ReminderRuleService(session, settings).set(create)
+        replayed = ReminderRuleService(session, settings).set(create)
+        assert replayed.rule_id == created.rule_id
+        assert replayed.disposition == "replayed_request"
+
+    update_message = "444444444444444444"
+    update = SetReminderRuleInput(
+        rule_id=created.rule_id,
+        expected_version=1,
+        account_id=account_id,
+        calendar_id=settings.google_calendar_id,
+        scope="event",
+        provider_event_id="rule-event",
+        lead_seconds=600,
+        request_key=_request_key(update_message),
+        source=_source(update_message),
+        actor_id=settings.operator_discord_user_id,
+    )
+    with session_factory.begin() as session:
+        updated = ReminderRuleService(session, settings).set(update)
+        assert updated.version == 2
+
+    stale_message = "333333333333333333"
+    stale_update = update.model_copy(
+        update={
+            "request_key": _request_key(stale_message),
+            "source": _source(stale_message),
+        }
+    )
+    with pytest.raises(VersionConflict), session_factory.begin() as session:
+        ReminderRuleService(session, settings).set(stale_update)
+
+    disable_message = "222222222222222222"
+    with session_factory.begin() as session:
+        disabled = ReminderRuleService(session, settings).disable(
+            DisableReminderRuleInput(
+                rule_id=created.rule_id,
+                expected_version=2,
+                request_key=_request_key(disable_message),
+                source=_source(disable_message),
+                actor_id=settings.operator_discord_user_id,
+                reason="Milestone smoke complete",
+            )
+        )
+        assert disabled.version == 3
+        assert disabled.enabled is False
+
+    with session_factory() as session:
+        rules = session.scalars(select(ReminderRule)).all()
+        notifications = session.scalars(select(ScheduledNotification)).all()
+        audit_types = set(
+            session.scalars(
+                select(AuditEvent.event_type).where(
+                    AuditEvent.entity_type == "reminder_rule",
+                    AuditEvent.entity_id == created.rule_id,
+                )
+            ).all()
+        )
+        assert len(rules) == 1
+        assert all(item.status == "cancelled" for item in notifications)
+        assert audit_types == {
+            "reminder_rule.created",
+            "reminder_rule.updated",
+            "reminder_rule.disabled",
+        }
+
+
+@pytest.mark.integration
+def test_late_calendar_refresh_produces_visibly_late_reminder(session_factory) -> None:
+    base = datetime.now(UTC).replace(microsecond=0)
+    settings = get_settings().model_copy(update={"calendar_reads_enabled": True})
+    account_id = _account(session_factory)
+    provider = FakeCalendarProvider()
+    provider.put_snapshot_event(_timed("late-event", base + timedelta(minutes=5)))
+    sync = CalendarSyncService(session_factory, provider, settings, clock=lambda: base)
+    assert sync.sync_target(account_id, settings.google_calendar_id, force=True)
+
+    message_id = "111111111111111111"
+    with session_factory.begin() as session:
+        ReminderRuleService(session, settings).set(
+            SetReminderRuleInput(
+                account_id=account_id,
+                calendar_id=settings.google_calendar_id,
+                scope="event",
+                provider_event_id="late-event",
+                lead_seconds=600,
+                request_key=_request_key(message_id),
+                source=_source(message_id),
+                actor_id=settings.operator_discord_user_id,
+            )
+        )
+
+    dispatcher = ReminderDispatcher(
+        session_factory, settings, clock=lambda: base + timedelta(seconds=1)
+    )
+    assert dispatcher.run_due_once()
+    backend = FakeDiscordBackend()
+    assert DiscordProjectionRunner(
+        session_factory, FakeDiscordProjectionAdapter(backend), settings
+    ).run_due_once()
+
+    message = next(iter(backend.notification_messages.values()))
+    assert message["render"]["late"] is True
 
 
 @pytest.mark.integration
