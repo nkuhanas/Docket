@@ -172,7 +172,7 @@ class CourseData(StrictModel):
     notes: str | None = None
 
 
-class RememberRecordInput(StrictModel):
+class StoreRecordInput(StrictModel):
     record_type: RecordType
     canonical_identity: TermIdentity | CourseIdentity | GenericIdentity
     title: str = Field(min_length=1, max_length=512)
@@ -183,7 +183,7 @@ class RememberRecordInput(StrictModel):
     actor_id: DiscordId
 
     @model_validator(mode="after")
-    def record_and_source_shapes_match(self) -> "RememberRecordInput":
+    def record_and_source_shapes_match(self) -> "StoreRecordInput":
         if self.record_type == "term":
             if not isinstance(self.canonical_identity, TermIdentity) or not isinstance(
                 self.data, TermData

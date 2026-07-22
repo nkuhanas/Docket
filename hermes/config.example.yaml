@@ -40,7 +40,7 @@ mcp_servers:
       enabled: false
     tools:
       include:
-        - docket_remember_record
+        - docket_store_record
         - docket_get_record
         - docket_search_records
         - docket_update_record

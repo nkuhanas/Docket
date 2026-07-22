@@ -1,13 +1,13 @@
 import pytest
 from pydantic import ValidationError
 
-from docket.schemas.records import RememberRecordInput
+from docket.schemas.records import StoreRecordInput
 
 
 @pytest.mark.adversarial
 def test_untrusted_content_cannot_supply_policy_fields() -> None:
     with pytest.raises(ValidationError):
-        RememberRecordInput.model_validate(
+        StoreRecordInput.model_validate(
             {
                 "record_type": "generic",
                 "canonical_identity": {"key": "malicious"},

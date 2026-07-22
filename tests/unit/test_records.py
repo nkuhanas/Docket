@@ -9,12 +9,12 @@ from docket.domain.errors import (
     RecordConflict,
     VersionConflict,
 )
-from docket.models import AuditEvent, Record, RecordSource
+from docket.models import AuditEvent, CommandRequest, Record, RecordSource
 from docket.schemas.records import (
     ArchiveRecordInput,
     CourseData,
     RecordSourceInput,
-    RememberRecordInput,
+    StoreRecordInput,
     TermData,
     UpdateRecordInput,
 )
@@ -26,11 +26,11 @@ CHAT_CHANNEL_ID = "000000000000000003"
 MESSAGE_ID = "111111111111111111"
 
 
-def remember_term_request(
+def store_term_request(
     *, message_id: str = MESSAGE_ID, intent_index: int = 0
-) -> RememberRecordInput:
+) -> StoreRecordInput:
     request_key = f"discord:{GUILD_ID}:{CHAT_CHANNEL_ID}:{message_id}:{intent_index}"
-    return RememberRecordInput(
+    return StoreRecordInput(
         record_type="term",
         canonical_identity={"institution": "Cal Poly", "term_name": "Fall 2026"},
         title="Fall 2026",
@@ -58,9 +58,9 @@ def remember_term_request(
     )
 
 
-def remember_course_request(term_record_id: object) -> RememberRecordInput:
+def store_course_request(term_record_id: object) -> StoreRecordInput:
     request_key = f"discord:{GUILD_ID}:{CHAT_CHANNEL_ID}:{MESSAGE_ID}:1"
-    return RememberRecordInput(
+    return StoreRecordInput(
         record_type="course",
         canonical_identity={
             "term_record_id": term_record_id,
@@ -104,11 +104,11 @@ def remember_course_request(term_record_id: object) -> RememberRecordInput:
     )
 
 
-def test_remember_and_replay_are_idempotent(session: Session) -> None:
+def test_store_and_replay_are_idempotent(session: Session) -> None:
     service = RecordService(session)
-    first = service.remember(remember_term_request())
+    first = service.store(store_term_request())
     session.commit()
-    second = service.remember(remember_term_request())
+    second = service.store(store_term_request())
 
     assert first.record_id == second.record_id
     assert first.disposition == "created"
@@ -120,11 +120,28 @@ def test_remember_and_replay_are_idempotent(session: Session) -> None:
     assert len(list(session.scalars(select(Record)))) == 1
 
 
+def test_store_replays_historical_remember_operation_name(session: Session) -> None:
+    service = RecordService(session)
+    first = service.store(store_term_request())
+    session.flush()
+    command = session.scalar(
+        select(CommandRequest).where(CommandRequest.request_key == store_term_request().request_key)
+    )
+    assert command is not None
+    command.operation_name = "docket_remember_record"
+    session.commit()
+
+    replay = service.store(store_term_request())
+
+    assert replay.record_id == first.record_id
+    assert replay.disposition == "replayed_request"
+
+
 def test_new_request_matches_canonical_record(session: Session) -> None:
     service = RecordService(session)
-    first = service.remember(remember_term_request())
+    first = service.store(store_term_request())
     session.commit()
-    second = service.remember(remember_term_request(message_id="222222222222222222"))
+    second = service.store(store_term_request(message_id="222222222222222222"))
 
     assert first.record_id == second.record_id
     assert second.disposition == "matched_existing"
@@ -134,14 +151,14 @@ def test_new_request_matches_canonical_record(session: Session) -> None:
 
 def test_new_request_with_conflicting_canonical_data_is_rejected(session: Session) -> None:
     service = RecordService(session)
-    service.remember(remember_term_request())
+    service.store(store_term_request())
     session.commit()
-    changed = remember_term_request(message_id="222222222222222222")
+    changed = store_term_request(message_id="222222222222222222")
     assert isinstance(changed.data, TermData)
     changed.data.end_date = changed.data.end_date.replace(day=18) if changed.data.end_date else None
 
     with pytest.raises(RecordConflict) as raised:
-        service.remember(changed)
+        service.store(changed)
 
     assert raised.value.code == "record_conflict"
     assert raised.value.details is not None
@@ -152,14 +169,14 @@ def test_new_request_with_conflicting_canonical_data_is_rejected(session: Sessio
 
 def test_search_matches_terms_across_title_and_canonical_key(session: Session) -> None:
     service = RecordService(session)
-    request = remember_term_request()
+    request = store_term_request()
     assert isinstance(request.data, TermData)
     request.canonical_identity.institution = (
         "California Polytechnic State University, San Luis Obispo"
     )
     request.data.institution = "California Polytechnic State University, San Luis Obispo"
     request.title = "Cal Poly San Luis Obispo — Fall 2026"
-    created = service.remember(request)
+    created = service.store(request)
 
     matches = service.search(
         record_type="term",
@@ -173,8 +190,8 @@ def test_search_matches_terms_across_title_and_canonical_key(session: Session) -
 
 def test_course_record_references_term_and_derives_date_bounds(session: Session) -> None:
     service = RecordService(session)
-    term = service.remember(remember_term_request())
-    course = service.remember(remember_course_request(term.record_id))
+    term = service.store(store_term_request())
+    course = service.store(store_course_request(term.record_id))
     session.flush()
 
     stored = session.get(Record, course.record_id)
@@ -187,12 +204,12 @@ def test_course_record_references_term_and_derives_date_bounds(session: Session)
 
 def test_incomplete_course_is_storable(session: Session) -> None:
     service = RecordService(session)
-    term = service.remember(remember_term_request())
-    request = remember_course_request(term.record_id)
+    term = service.store(store_term_request())
+    request = store_course_request(term.record_id)
     assert isinstance(request.data, CourseData)
     request.data.meetings = {}
 
-    result = service.remember(request)
+    result = service.store(request)
     stored = session.get(Record, result.record_id)
 
     assert stored is not None
@@ -202,32 +219,32 @@ def test_incomplete_course_is_storable(session: Session) -> None:
 
 def test_course_requires_existing_active_term(session: Session) -> None:
     service = RecordService(session)
-    request = remember_course_request("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+    request = store_course_request("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 
     with pytest.raises(DocketError) as raised:
-        service.remember(request)
+        service.store(request)
 
     assert raised.value.code == "invalid_term_reference"
 
 
 def test_reusing_request_key_with_different_input_fails(session: Session) -> None:
     service = RecordService(session)
-    service.remember(remember_term_request())
+    service.store(store_term_request())
     session.commit()
-    changed = remember_term_request()
+    changed = store_term_request()
     changed.title = "Different"
 
     with pytest.raises(IdempotencyConflict) as raised:
-        service.remember(changed)
+        service.store(changed)
 
     assert raised.value.details is not None
-    assert raised.value.details["existing_operation"] == "docket_remember_record"
-    assert raised.value.details["attempted_operation"] == "docket_remember_record"
+    assert raised.value.details["existing_operation"] == "docket_store_record"
+    assert raised.value.details["attempted_operation"] == "docket_store_record"
 
 
 def test_optimistic_update_and_archive(session: Session) -> None:
     service = RecordService(session)
-    created = service.remember(remember_term_request())
+    created = service.store(store_term_request())
     session.commit()
     updated = service.update(
         UpdateRecordInput(
@@ -260,10 +277,10 @@ def test_optimistic_update_and_archive(session: Session) -> None:
 
 def test_audit_stores_hash_not_record_body(session: Session) -> None:
     secret_text = "private body must not enter audit"
-    request = remember_term_request()
+    request = store_term_request()
     assert isinstance(request.data, TermData)
     request.data.notes = secret_text
-    RecordService(session).remember(request)
+    RecordService(session).store(request)
     session.flush()
     event = session.scalar(select(AuditEvent))
 
@@ -273,21 +290,21 @@ def test_audit_stores_hash_not_record_body(session: Session) -> None:
 
 
 def test_unknown_tool_fields_are_rejected() -> None:
-    payload = remember_term_request().model_dump(mode="json")
+    payload = store_term_request().model_dump(mode="json")
     payload["risk_class"] = "read_only"
     with pytest.raises(ValidationError):
-        RememberRecordInput.model_validate(payload)
+        StoreRecordInput.model_validate(payload)
 
 
 def test_unsupported_record_alias_is_rejected() -> None:
-    payload = remember_term_request().model_dump(mode="json")
+    payload = store_term_request().model_dump(mode="json")
     payload["record_type"] = "academic_term"
     with pytest.raises(ValidationError, match="record_type"):
-        RememberRecordInput.model_validate(payload)
+        StoreRecordInput.model_validate(payload)
 
 
 def test_term_cannot_fall_back_to_generic_data() -> None:
-    payload = remember_term_request().model_dump(mode="json")
+    payload = store_term_request().model_dump(mode="json")
     payload["data"] = {
         "institution": "Cal Poly",
         "term": "Fall 2026",
@@ -295,7 +312,7 @@ def test_term_cannot_fall_back_to_generic_data() -> None:
         "end_date": "2026-12-18",
     }
     with pytest.raises(ValidationError, match="TermData"):
-        RememberRecordInput.model_validate(payload)
+        StoreRecordInput.model_validate(payload)
 
 
 def test_course_meeting_rejects_duplicate_days_and_unstable_ids() -> None:
@@ -326,7 +343,7 @@ def test_course_meeting_rejects_duplicate_days_and_unstable_ids() -> None:
 
 def test_update_cannot_change_canonical_identity(session: Session) -> None:
     service = RecordService(session)
-    created = service.remember(remember_term_request())
+    created = service.store(store_term_request())
 
     with pytest.raises(DocketError) as raised:
         service.update(
@@ -347,22 +364,22 @@ def test_update_cannot_change_canonical_identity(session: Session) -> None:
 
 
 def test_discord_request_key_must_match_source_metadata() -> None:
-    payload = remember_term_request().model_dump(mode="json")
+    payload = store_term_request().model_dump(mode="json")
     payload["request_key"] = (
         f"discord:{GUILD_ID}:{CHAT_CHANNEL_ID}:333333333333333333:0"
     )
     with pytest.raises(ValidationError, match="request_key"):
-        RememberRecordInput.model_validate(payload)
+        StoreRecordInput.model_validate(payload)
 
 
 def test_discord_source_must_match_configured_operator_context(session: Session) -> None:
-    request = remember_term_request()
+    request = store_term_request()
     request.source.metadata.guild_id = "999999999999999999"
     request.request_key = (
         f"discord:999999999999999999:{CHAT_CHANNEL_ID}:{MESSAGE_ID}:0"
     )
 
     with pytest.raises(DocketError) as raised:
-        RecordService(session).remember(request)
+        RecordService(session).store(request)
 
     assert raised.value.code == "invalid_source_context"

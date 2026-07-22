@@ -9,7 +9,7 @@ async def test_record_and_milestone_two_scaffold_tools_are_exposed() -> None:
     tools = {tool.name: tool for tool in await mcp.list_tools()}
     names = set(tools)
     assert names == {
-        "docket_remember_record",
+        "docket_store_record",
         "docket_get_record",
         "docket_search_records",
         "docket_update_record",
@@ -21,21 +21,23 @@ async def test_record_and_milestone_two_scaffold_tools_are_exposed() -> None:
     assert not names.intersection(
         {"record_approval", "consume_approval", "execute_action", "raw_gmail_modify"}
     )
-    remember_description = " ".join(
-        (tools["docket_remember_record"].description or "").split()
+    store_description = " ".join(
+        (tools["docket_store_record"].description or "").split()
     )
-    assert "not Hermes memory" in remember_description
-    assert "even when search found" in remember_description
-    assert "attaching the current source provenance" in remember_description
+    assert "not Hermes memory" in store_description
+    assert "even when search found" in store_description
+    assert "attaching the current source provenance" in store_description
+    assert "record_conflict" in store_description
+    assert "docket_update_record" in store_description
     search_description = " ".join(
         (tools["docket_search_records"].description or "").split()
     )
     assert "before answering operational facts" in search_description
-    assert "Never claim a remember/store request succeeded" in search_description
+    assert "Never claim a store/save/remember request succeeded" in search_description
 
-    remember_schema = tools["docket_remember_record"].inputSchema
-    properties = remember_schema["properties"]
-    definitions = remember_schema["$defs"]
+    store_schema = tools["docket_store_record"].inputSchema
+    properties = store_schema["properties"]
+    definitions = store_schema["$defs"]
     assert properties["record_type"]["enum"] == ["term", "course", "generic"]
     assert properties["request_key"]["pattern"].startswith("^discord:")
     assert properties["actor_id"]["pattern"] == "^[0-9]{17,20}$"

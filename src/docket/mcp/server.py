@@ -23,7 +23,7 @@ from docket.schemas.records import (
     GenericRecordData,
     RecordSourceInput,
     RecordType,
-    RememberRecordInput,
+    StoreRecordInput,
     TermData,
     TermIdentity,
     UpdateRecordInput,
@@ -59,7 +59,7 @@ def _error(exc: Exception) -> dict[str, Any]:
 
 
 @mcp.tool()
-def docket_remember_record(
+def docket_store_record(
     record_type: RecordType,
     canonical_identity: TermIdentity | CourseIdentity | GenericIdentity,
     title: str,
@@ -68,14 +68,16 @@ def docket_remember_record(
     source: RecordSourceInput,
     actor_id: DiscordId,
 ) -> dict[str, Any]:
-    """Persist an explicit remember/store request in Docket, not Hermes memory.
+    """Store an explicit source-backed assertion in Docket, not Hermes memory.
 
-    Always call this for the current trusted Discord source even when search found the
-    canonical record. Existing records return ``matched_existing`` while attaching the
-    current source provenance; search/get calls alone do not persist that provenance.
+    Always call this for a current trusted Discord store/save/remember request, even when
+    search found the canonical record. Materially equal existing records return
+    ``matched_existing`` while attaching the current source provenance. Different data
+    returns ``record_conflict`` without attaching provenance; use ``docket_update_record``
+    for an authorized replacement. Search/get calls alone never persist provenance.
     """
     try:
-        request = RememberRecordInput(
+        request = StoreRecordInput(
             record_type=record_type,
             canonical_identity=canonical_identity,
             title=title,
@@ -85,7 +87,7 @@ def docket_remember_record(
             actor_id=actor_id,
         )
         with session_scope() as session:
-            result = RecordService(session).remember(request)
+            result = RecordService(session).store(request)
             return {"ok": True, **result.model_dump(mode="json", exclude_none=True)}
     except Exception as exc:
         return _error(exc)
@@ -111,8 +113,8 @@ def docket_search_records(
 ) -> dict[str, Any]:
     """Search exact canonical Docket records before answering operational facts.
 
-    This tool is read-only. Never claim a remember/store request succeeded from search
-    results alone; call ``docket_remember_record`` with the current trusted source.
+    This tool is read-only. Never claim a store/save/remember request succeeded from
+    search results alone; call ``docket_store_record`` with the current trusted source.
     """
     try:
         record_status = RecordStatus(status)

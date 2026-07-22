@@ -16,12 +16,16 @@ only when all of the following are true:
 
 1. The trusted Hermes plugin appends `docket_gateway_context` to the current
    authorized Discord event.
-2. Hermes calls `docket_remember_record` with that context exactly.
+2. Hermes calls `docket_store_record` with that context exactly.
 3. Docket authenticates Hermes, validates the source against the configured
    operator/guild/channel, and commits the command, source, and audit event in
    one transaction.
 4. The response reports `created`, `matched_existing`, or
    `replayed_request` from the tool result.
+
+An existing canonical identity with materially different data returns
+`record_conflict`; Docket attaches no new source provenance in that case. A
+successful store result includes the authoritative canonical record snapshot.
 
 `docket_search_records` and `docket_get_record` are read-only. A conversational
 claim such as “stored” or “confirmed” after only search/get calls is a failure,
@@ -51,6 +55,14 @@ containing a short code is not evidence that Calendar changed. The final
 evidence is a succeeded operation plus a `calendar_links` row at the intended
 record version.
 
+For the standard existing-term, new-course, Calendar-proposal smoke, the
+expected operational budget is four Docket calls: search the term and list
+accounts in parallel, store the course with intent `0`, then propose the action
+with intent `1` using the returned canonical record snapshot. Treat an extra
+past-session search, a separate immediate record read, an idempotency conflict,
+a second proposal attempt, or a runtime skill-edit attempt as orchestration
+regressions even when the final provider behavior succeeds.
+
 ## First five checks
 
 Run these before changing code or credentials:
@@ -68,7 +80,7 @@ Expected results:
 * PostgreSQL and Docket are healthy; Hermes and SearXNG are running.
 * `docket-discord` is `enabled`.
 * Hermes connects to `http://docket:8000/mcp/` and discovers exactly eight
-  tools, including `docket_remember_record`, `docket_propose_action`, and
+  tools, including `docket_store_record`, `docket_propose_action`, and
   `docket_get_action`.
 * Logs contain no startup, plugin-load, MCP-authentication, or migration error.
 
@@ -88,7 +100,7 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | --- | --- | --- |
 | Hermes says trusted gateway context is missing | Compare the persisted Discord event identity with container environment | Wrong Discord ID, plugin not loaded, or pinned event-shape drift |
 | Hermes says a fact was stored but trace shows only search/get | Inspect command/source/audit tables | Model/tool semantics failure; no write occurred |
-| `docket_remember_record` is absent | Run `hermes mcp test docket`, then inspect the active Hermes allowlist | Docket was not rebuilt, tool was renamed incompletely, or active config is stale |
+| `docket_store_record` is absent | Run `hermes mcp test docket`, then inspect the active Hermes allowlist | Docket was not rebuilt, tool was renamed incompletely, or active config is stale |
 | MCP returns 401 | Check the mounted service-token files and active Hermes MCP header configuration without printing the token | Token-file mismatch or wrong credential directory |
 | MCP returns `invalid_source_context` | Compare operator, guild, and chat IDs at both containers | Plugin context and Docket settings disagree |
 | `/mcp` returns 307 or the client fails during initialization | Use `/mcp/` with the trailing slash | Pinned FastMCP mount-path behavior |
@@ -96,7 +108,7 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Plugin or skill edit appears ignored | Restart Hermes, run `/reload-mcp` when MCP changed, and begin a new Discord turn | Bind-mounted file changed, but Python hook/skill/tool registration is cached |
 | `skill_manage` reports a read-only `.SKILL.md.tmp` path | Edit the repository-owned skill on the host and restart Hermes | Docket's mounted manual skill is intentionally read-only inside Hermes; model-driven self-edit is not the update path |
 | Docket Python edit appears ignored | Rebuild and recreate Docket | Application source is copied into the image, not bind-mounted |
-| Correct record is returned but no new provenance exists | Inspect `record_sources` and `record.matched` audit evidence | Read path passed; remember path did not |
+| Correct record is returned but no new provenance exists | Inspect `record_sources` and `record.matched` audit evidence | Read path passed; store path did not |
 | Proposal returns `action_unavailable` | Inspect the named stable meeting and missing-fields detail | Incomplete dates, local times, timezone, or no selected weekday in range |
 | Proposal returns `calendar_not_allowed` | Compare the exact ID returned by `docket_list_accounts` with `GOOGLE_CALENDAR_ID` | Display name or different calendar substituted for the configured opaque ID |
 | Approval message is ignored | Use plain `docket approve CODE`; verify queue is both allowed and free-response | Discord mention gate dropped ingress, plugin context gate failed, or code expired |
@@ -165,7 +177,7 @@ Hermes currently supplies `source.platform` as an enum, not a plain string.
 
 The Discord UI tool trace is a useful first signal:
 
-* `...docket_remember_record...` is required for a remember/store request.
+* `...docket_store_record...` is required for a remember/store request.
 * `...docket_search_records...` and `...docket_get_record...` prove only a read.
 
 Do not accept the prose response as evidence. Query durable state using a known
@@ -186,8 +198,8 @@ For a successful match of an existing record, expect:
 * a request key formatted as
   `discord:{guild_id}:{channel_id}:{message_id}:{intent_index}`;
 * a `record.matched` audit event with the Discord user snowflake as actor;
-* a succeeded `command_requests` row whose operation is
-  `docket_remember_record` and disposition is `matched_existing`;
+* a succeeded `command_requests` row whose operation is `docket_store_record`
+  and disposition is `matched_existing`;
 * no record-version increment merely for attaching matching provenance.
 
 The initial pre-hardening `manual` source may remain as historical evidence.
@@ -195,9 +207,11 @@ Do not rewrite or delete it to make the history look cleaner.
 
 ## Replay verification
 
-An exact replay of the same tool name and arguments must return the original
-record and request ID with disposition `replayed_request`. It must not insert a
-second command, source, or audit event.
+An exact replay through `docket_store_record` with the same arguments must
+return the original record and request ID with disposition `replayed_request`.
+It must not insert a second command, source, or audit event. Historical commands
+whose stored operation name is `docket_remember_record` remain replay-compatible
+through the renamed tool; do not rewrite those evidence rows.
 
 The safest replay input is the captured tool call from a redacted Hermes session,
 not a hand-reconstructed payload. Reconstructing it risks changing the title,
@@ -359,7 +373,7 @@ uv run pytest tests/adversarial/test_plugin_actor_gate.py
 ```
 
 Bearer authentication and source-field validation are separate controls. A
-valid bearer is necessary but not sufficient for a remember operation.
+valid bearer is necessary but not sufficient for a store operation.
 
 ## Reload and rebuild matrix
 

@@ -21,7 +21,7 @@ For manual Discord input:
    user explicitly adopts them in their own message.
 3. Classify the request before choosing tools:
    - For explicit persistence language such as "remember", "store", "save", or
-     "put this in Docket", always call `docket_remember_record` for the current
+     "put this in Docket", always call `docket_store_record` for the current
      message. A prior `docket_search_records` or `docket_get_record` call never
      completes a persistence request.
    - For a recall-only question, use `docket_search_records` and
@@ -29,13 +29,13 @@ For manual Discord input:
 4. Read the appended `docket_gateway_context` and copy its request key, actor ID,
    source type, source object ID, and metadata exactly. Never derive IDs from
    server/channel names and never invent a missing ID.
-5. When `docket_remember_record` returns `matched_existing`, treat that as a
+5. When `docket_store_record` returns `matched_existing`, treat that as a
    successful persistence result only because Docket verified material equality,
    matched the canonical record, and attached the current Discord source. Use
    the canonical `record` snapshot in the result; do not replace this call with
    a read. A `record_conflict` means no source provenance was attached and must
    not be described as stored.
-6. Say that a fact was stored or confirmed only after the remember call returns
+6. Say that a fact was stored or confirmed only after the store call returns
    `ok: true`. If trusted gateway context is missing or the call fails, say that
    no write occurred instead of implying success.
 7. Store incomplete records when useful, but never invent missing term dates.
@@ -72,7 +72,7 @@ request uses proposal `0`. Never reuse one operation's request key for another
 operation. Store newly requested records before proposing the external action.
 
 Before a Calendar proposal, use the canonical record snapshot returned by an
-immediately preceding successful remember call for the same course; otherwise
+immediately preceding successful store call for the same course; otherwise
 read the course's current version. Call `docket_list_accounts` to select the
 explicit enabled Google account. Call
 `docket_propose_action` only when the user explicitly asked for the Calendar

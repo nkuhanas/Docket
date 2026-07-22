@@ -11,7 +11,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 EXPECTED_TOOLS = {
-    "docket_remember_record",
+    "docket_store_record",
     "docket_get_record",
     "docket_search_records",
     "docket_update_record",
@@ -55,8 +55,8 @@ async def smoke() -> None:
                 names = {tool.name for tool in tools.tools}
                 assert names == EXPECTED_TOOLS, names
 
-                remembered = await session.call_tool(
-                    "docket_remember_record",
+                stored = await session.call_tool(
+                    "docket_store_record",
                     {
                         "record_type": "term",
                         "canonical_identity": {
@@ -90,7 +90,7 @@ async def smoke() -> None:
                         "actor_id": "000000000000000001",
                     },
                 )
-                assert not remembered.isError, remembered
+                assert not stored.isError, stored
 
                 searched = await session.call_tool(
                     "docket_search_records",

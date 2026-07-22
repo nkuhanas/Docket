@@ -21,7 +21,7 @@ from docket.schemas.records import (
     ArchiveRecordInput,
     CourseData,
     RecordResult,
-    RememberRecordInput,
+    StoreRecordInput,
     TermData,
     UpdateRecordInput,
 )
@@ -85,13 +85,20 @@ class RecordService:
         payload: dict[str, Any],
         actor_type: str,
         actor_id: str | None,
+        compatible_operation_names: frozenset[str] | None = None,
     ) -> tuple[CommandRequest, RecordResult | None]:
         input_sha256 = sha256_json(payload)
         existing = self.session.scalar(
             select(CommandRequest).where(CommandRequest.request_key == request_key)
         )
         if existing is not None:
-            if existing.operation_name != operation_name or existing.input_sha256 != input_sha256:
+            accepted_operation_names = compatible_operation_names or frozenset(
+                {operation_name}
+            )
+            if (
+                existing.operation_name not in accepted_operation_names
+                or existing.input_sha256 != input_sha256
+            ):
                 raise IdempotencyConflict(
                     request_key,
                     existing_operation=existing.operation_name,
@@ -163,12 +170,15 @@ class RecordService:
                 message="Canonical identity must match the validated record data.",
             )
 
-    def remember(self, request: RememberRecordInput) -> RecordResult:
+    def store(self, request: StoreRecordInput) -> RecordResult:
         validate_configured_discord_source(request.source, request.actor_id)
         payload = request.model_dump(mode="json")
         command, replay = self._start_command(
             request_key=request.request_key,
-            operation_name="docket_remember_record",
+            operation_name="docket_store_record",
+            compatible_operation_names=frozenset(
+                {"docket_remember_record", "docket_store_record"}
+            ),
             payload=payload,
             actor_type=request.actor_type,
             actor_id=request.actor_id,

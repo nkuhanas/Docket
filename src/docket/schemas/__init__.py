@@ -5,7 +5,7 @@ from docket.schemas.records import (
     CourseMeeting,
     RecordResult,
     RecordSourceInput,
-    RememberRecordInput,
+    StoreRecordInput,
     TermData,
     UpdateRecordInput,
 )
@@ -17,7 +17,7 @@ __all__ = [
     "CourseMeeting",
     "RecordResult",
     "RecordSourceInput",
-    "RememberRecordInput",
+    "StoreRecordInput",
     "TermData",
     "UpdateRecordInput",
 ]

@@ -9,7 +9,7 @@ from docket.internal_api.schemas import ApprovalResponse
 from docket.models import Account, CalendarLink, Operation, Record
 from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.schemas.actions import ProposeActionInput
-from docket.schemas.records import RecordSourceInput, RememberRecordInput, UpdateRecordInput
+from docket.schemas.records import RecordSourceInput, StoreRecordInput, UpdateRecordInput
 from docket.services.actions import ActionService
 from docket.services.approvals import ApprovalService
 from docket.services.operations import OperationRunner
@@ -87,8 +87,8 @@ def test_schedule_is_stored_approved_created_once_and_modified_in_place(
     initial_message = "111111111111111111"
     with session_factory.begin() as session:
         records = RecordService(session)
-        term = records.remember(
-            RememberRecordInput(
+        term = records.store(
+            StoreRecordInput(
                 record_type="term",
                 canonical_identity={
                     "institution": "California Polytechnic State University, San Luis Obispo",
@@ -110,8 +110,8 @@ def test_schedule_is_stored_approved_created_once_and_modified_in_place(
                 actor_id=settings.operator_discord_user_id,
             )
         )
-        course = records.remember(
-            RememberRecordInput(
+        course = records.store(
+            StoreRecordInput(
                 record_type="course",
                 canonical_identity={
                     "term_record_id": term.record_id,

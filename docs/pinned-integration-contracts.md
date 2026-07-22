@@ -238,11 +238,14 @@ Consequences:
   session even when `hermes mcp test docket` already reports the new server
   contract.
 
-The model-facing persistence tool is intentionally named
-`docket_remember_record`, not `docket_create_record`. Its operation records a
-source-backed assertion: create when absent, match when present, and attach the
-current provenance in either case. The earlier create-oriented name caused the
-model to use read tools when a canonical record already existed.
+The model-facing persistence tool is intentionally named `docket_store_record`,
+not `docket_create_record`. Its operation stores a source-backed assertion:
+create when absent, or match materially equal canonical data and attach current
+provenance. A canonical identity with different data returns `record_conflict`
+without attaching provenance; replacement remains an explicit update. The
+earlier create-oriented name caused the model to use read tools when a canonical
+record already existed, while the retired `docket_remember_record` name blurred
+natural-language intent with the tool's persistence responsibility.
 
 Calendar proposals are also generated from strict Pydantic input. The model
 supplies a stable meeting ID, exact record version, account UUID, and calendar
@@ -316,13 +319,19 @@ sensitive even though secrets should not be present.
 
 ## Record matching and idempotency semantics
 
-`docket_remember_record` has two related but distinct deduplication paths:
+`docket_store_record` has two related but distinct deduplication paths:
 
 * Same request key and same complete payload: return the prior result as
   `replayed_request` without new durable rows.
-* New Discord request key resolving to the same canonical identity: return
-  `matched_existing` and attach a new source/audit event without incrementing
-  the record version.
+* New Discord request key resolving to the same canonical identity and
+  materially equal normalized data: return `matched_existing` and attach a new
+  source/audit event without incrementing the record version.
+
+A new request with the same canonical identity but different normalized data
+returns `record_conflict` and attaches no provenance. Historical command rows
+retain the operation name `docket_remember_record`; the store service accepts
+that name only as a replay-compatible predecessor and writes
+`docket_store_record` for new commands.
 
 Reusing a request key with any different hashed input is an idempotency
 conflict. For that reason, live replay tests should reuse captured tool
