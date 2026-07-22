@@ -266,3 +266,4 @@ class CalendarLink(TimestampMixin, Base):
     provider_etag: Mapped[str | None] = mapped_column(String(1024))
     provider_correlation: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     last_synced_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    synced_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)

@@ -1,14 +1,29 @@
 import asyncio
+import time
 from datetime import UTC, datetime
 
 import structlog
+
+from docket.services.operations import OperationRunner
 
 logger = structlog.get_logger(__name__)
 
 
 class WorkerRuntime:
-    def __init__(self, heartbeat_seconds: float) -> None:
+    def __init__(
+        self,
+        heartbeat_seconds: float,
+        operation_runner: OperationRunner,
+        *,
+        operation_poll_seconds: float,
+        reconciliation_poll_seconds: float,
+        stale_lease_poll_seconds: float,
+    ) -> None:
         self.heartbeat_seconds = heartbeat_seconds
+        self.operation_runner = operation_runner
+        self.operation_poll_seconds = operation_poll_seconds
+        self.reconciliation_poll_seconds = reconciliation_poll_seconds
+        self.stale_lease_poll_seconds = stale_lease_poll_seconds
         self.last_heartbeat: datetime | None = None
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -26,9 +41,25 @@ class WorkerRuntime:
             self._task = None
 
     async def _run(self) -> None:
-        logger.info("worker_started", mode="scaffold")
+        logger.info("worker_started", mode="calendar-operations")
+        next_operation = 0.0
+        next_reconciliation = 0.0
+        next_recovery = 0.0
         while not self._stop.is_set():
             self.last_heartbeat = datetime.now(UTC)
+            now = time.monotonic()
+            try:
+                if now >= next_operation:
+                    await asyncio.to_thread(self.operation_runner.run_due_once)
+                    next_operation = now + self.operation_poll_seconds
+                if now >= next_reconciliation:
+                    await asyncio.to_thread(self.operation_runner.reconcile_once)
+                    next_reconciliation = now + self.reconciliation_poll_seconds
+                if now >= next_recovery:
+                    await asyncio.to_thread(self.operation_runner.recover_expired_leases)
+                    next_recovery = now + self.stale_lease_poll_seconds
+            except Exception:
+                logger.exception("worker_iteration_failed")
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=self.heartbeat_seconds)
             except TimeoutError:

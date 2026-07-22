@@ -11,11 +11,18 @@ from sqlalchemy import text
 from starlette.requests import Request
 
 from docket.config import Settings, get_settings
-from docket.database import configure_database, create_schema_for_smoke, session_scope
+from docket.database import (
+    configure_database,
+    create_schema_for_smoke,
+    get_session_factory,
+    session_scope,
+)
 from docket.internal_api import router as internal_router
 from docket.mcp import mcp
-from docket.providers.google import FakeGoogleProvider
+from docket.providers.google import FakeCalendarProvider, FakeGoogleProvider
+from docket.providers.google.calendar import GoogleCalendarProvider
 from docket.services.accounts import AccountService
+from docket.services.operations import OperationRunner
 from docket.worker import WorkerRuntime
 
 
@@ -33,7 +40,18 @@ def configure_logging(settings: Settings) -> None:
 settings = get_settings()
 configure_logging(settings)
 configure_database(settings.database_url)
-worker = WorkerRuntime(settings.worker_heartbeat_seconds)
+calendar_provider = (
+    GoogleCalendarProvider(str(settings.google_oauth_token_file))
+    if settings.external_calls_enabled
+    else FakeCalendarProvider()
+)
+worker = WorkerRuntime(
+    settings.worker_heartbeat_seconds,
+    OperationRunner(get_session_factory(), calendar_provider),
+    operation_poll_seconds=settings.operation_poll_seconds,
+    reconciliation_poll_seconds=settings.reconciliation_poll_seconds,
+    stale_lease_poll_seconds=settings.stale_lease_poll_seconds,
+)
 
 
 @asynccontextmanager

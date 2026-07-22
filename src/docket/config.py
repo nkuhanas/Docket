@@ -29,6 +29,13 @@ class Settings(BaseSettings):
     auto_create_schema: bool = Field(default=False, alias="DOCKET_AUTO_CREATE_SCHEMA")
     log_level: str = Field(default="INFO", alias="DOCKET_LOG_LEVEL")
     worker_heartbeat_seconds: float = Field(default=1.0, alias="DOCKET_WORKER_HEARTBEAT_SECONDS")
+    operation_poll_seconds: float = Field(default=5.0, alias="DOCKET_OPERATION_POLL_SECONDS")
+    reconciliation_poll_seconds: float = Field(
+        default=300.0, alias="DOCKET_RECONCILIATION_POLL_SECONDS"
+    )
+    stale_lease_poll_seconds: float = Field(
+        default=60.0, alias="DOCKET_STALE_LEASE_POLL_SECONDS"
+    )
 
     operator_discord_user_id: str = Field(
         default="000000000000000001", alias="DOCKET_OPERATOR_DISCORD_USER_ID"

@@ -225,6 +225,7 @@ class ActionService:
         if link is not None:
             parameters["calendar_link_id"] = str(link.id)
             parameters["external_event_id"] = link.external_event_id
+            parameters["provider_etag"] = link.provider_etag
         parameters_sha256 = sha256_json(parameters)
         preview: dict[str, Any] = {
             "action_type": request.action_type,
@@ -245,6 +246,7 @@ class ActionService:
             preview["before"] = {
                 "external_event_id": link.external_event_id,
                 "last_synced_version": link.last_synced_version,
+                "schedule": link.synced_snapshot,
             }
             preview["after"] = schedule
         preview_sha256 = sha256_json(preview)

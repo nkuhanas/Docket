@@ -147,6 +147,7 @@ def test_calendar_link_target_is_unique(session: Session) -> None:
         "account_id": account.id,
         "calendar_id": "calendar@group.calendar.google.com",
         "last_synced_version": 1,
+        "synced_snapshot": {},
     }
     session.add_all(
         [
