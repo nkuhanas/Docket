@@ -75,13 +75,33 @@ Hermes plugin `0.5.0` adds the private reminder-notification route and the stabl
 
 ## Deployment evidence
 
-Record the following after rebuilding with both external gates disabled:
+The committed image was rebuilt and Docket and Hermes were recreated with both
+external gates disabled. The deployment reported:
 
-* Alembic head and Docket readiness payload;
-* Docket/Hermes container health and startup logs;
-* active Hermes allowlist equality with the sixteen-tool template;
-* `hermes mcp test docket` discovery; and
-* fake-provider Compose smoke results.
+```text
+Alembic: 0006 (head)
+Docket: healthy
+PostgreSQL: healthy
+SearXNG: healthy
+Hermes gateway: connected to Discord
+Hermes Docket plugin: enabled, version 0.5.0
+MCP discovery: connected, 16 tools
+calendar_reads_enabled: false
+external_writes_enabled: false
+google_oauth: configured
+```
+
+The active ignored Hermes config contained the exact sixteen-tool template
+allowlist. The Docket startup log showed the transactional `0005 -> 0006`
+migration and no worker, provider, or plugin startup error. All four new table
+counts were zero before the live gate, and PostgreSQL reported the expected
+timed-event, all-day, generation, and notification-due indexes.
+
+`/health/smoke-provider` returned the fake Google adapter with external calls
+false. An authenticated malformed request to the new private Hermes notification
+route reached its schema boundary and returned `invalid_request_id`; it did not
+post to Discord. This proves routing and Docket-to-Hermes authentication without
+manufacturing a reminder or contacting Google.
 
 Do not infer live Google or Discord reminder success from automated evidence.
 
