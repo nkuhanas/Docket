@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from docket.config import get_settings
 from docket.internal_api.schemas import ApprovalResponse
-from docket.models import Account, CalendarLink, Operation, Record
+from docket.models import Account, CalendarEventCache, CalendarLink, Operation, Record
 from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.schemas.actions import ProposeActionInput
 from docket.schemas.records import RecordSourceInput, StoreRecordInput, UpdateRecordInput
@@ -167,7 +167,13 @@ def test_schedule_is_stored_approved_created_once_and_modified_in_place(
     OperationRunner(session_factory, provider).run_due_once()
     with session_factory() as session:
         link = session.scalar(select(CalendarLink))
+        cached_event = session.scalar(select(CalendarEventCache))
         assert link is not None
+        assert cached_event is not None
+        assert cached_event.account_id == account.id
+        assert cached_event.calendar_id == settings.google_calendar_id
+        assert cached_event.provider_event_id == link.external_event_id
+        assert cached_event.summary == "CSC 101 - Fundamentals of Computer Science"
         original_event_id = link.external_event_id
         assert len(provider.events) == 1
 

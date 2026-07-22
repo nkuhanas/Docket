@@ -17,10 +17,14 @@ from docket.models import (
     Action,
     ActionRevision,
     Approval,
+    AuditEvent,
+    CalendarEventCache,
     DiscordDailyThread,
     DiscordProjection,
     OutboxEvent,
     QueueItem,
+    ReminderRule,
+    ScheduledNotification,
 )
 from docket.models.base import utc_now
 from docket.providers.discord import DiscordProjectionAdapter, DiscordProjectionError
@@ -33,6 +37,7 @@ _SUPPORTED_EVENTS = {
     "discord.thread.ensure_requested",
     "discord.thread.lifecycle_requested",
     "discord.system_alert.requested",
+    "discord.calendar_reminder.requested",
 }
 _PROJECTION_EVENTS = {
     "discord.projection.requested",
@@ -777,6 +782,137 @@ class DiscordProjectionRunner:
             event.next_attempt_at = None
             event.last_error_code = None
 
+    def _notification_request(
+        self, event_id: uuid.UUID, lease_token: uuid.UUID
+    ) -> dict[str, Any] | None:
+        with self.session_factory() as session:
+            outbox = session.get(OutboxEvent, event_id)
+            if outbox is None or outbox.lease_token != lease_token:
+                raise DiscordProjectionError("delivery_lease_lost", "Outbox lease was lost")
+            notification = session.get(ScheduledNotification, outbox.aggregate_id)
+            if notification is None or notification.status != "delivering":
+                return None
+            rule = session.get(ReminderRule, notification.reminder_rule_id)
+            event = (
+                session.get(CalendarEventCache, notification.calendar_event_id)
+                if notification.calendar_event_id is not None
+                else None
+            )
+            if rule is None or not rule.enabled or event is None or event.status == "cancelled":
+                return None
+            if rule.destination_channel_id != self.settings.effective_reminder_channel_id():
+                raise DiscordProjectionError(
+                    "reminder_destination_not_allowed",
+                    "Reminder target no longer matches configured policy",
+                )
+            if event.is_all_day:
+                start_value = event.start_date.isoformat() if event.start_date else ""
+                end_value = event.end_date.isoformat() if event.end_date else ""
+            else:
+                start_value = (
+                    _aware(event.start_at).astimezone(UTC).isoformat()
+                    if event.start_at is not None
+                    else ""
+                )
+                end_value = (
+                    _aware(event.end_at).astimezone(UTC).isoformat()
+                    if event.end_at is not None
+                    else ""
+                )
+            nominal = notification.scheduled_for
+            created_at = notification.created_at
+            late = _aware(created_at) > _aware(nominal) + timedelta(seconds=1)
+            render = {
+                "summary": self._bounded(event.summary or "Calendar event", 512),
+                "location": self._bounded(event.location, 1000) if event.location else None,
+                "start": start_value,
+                "end": end_value,
+                "is_all_day": event.is_all_day,
+                "timezone": event.timezone or self.settings.timezone,
+                "late": late,
+            }
+            return {
+                "request_id": str(outbox.id),
+                "notification_id": str(notification.id),
+                "guild_id": self.settings.discord_guild_id,
+                "channel_id": rule.destination_channel_id,
+                "render_sha256": sha256_json(render),
+                "render": render,
+            }
+
+    def _accept_notification_ack(
+        self,
+        event_id: uuid.UUID,
+        lease_token: uuid.UUID,
+        request: dict[str, Any],
+        ack: dict[str, Any],
+    ) -> None:
+        exact = all(
+            ack.get(field) == request[field]
+            for field in (
+                "request_id",
+                "notification_id",
+                "guild_id",
+                "channel_id",
+                "render_sha256",
+            )
+        )
+        if not exact or not str(ack.get("message_id", "")).isdigit():
+            raise DiscordProjectionError(
+                "invalid_discord_ack", "Reminder acknowledgement did not echo its binding"
+            )
+        with self.session_factory.begin() as session:
+            outbox = session.get(OutboxEvent, event_id)
+            notification = session.get(
+                ScheduledNotification, uuid.UUID(str(request["notification_id"]))
+            )
+            if (
+                outbox is None
+                or outbox.status != OutboxStatus.DELIVERING.value
+                or outbox.lease_token != lease_token
+                or notification is None
+            ):
+                raise DiscordProjectionError("delivery_lease_lost", "Outbox lease was lost")
+            notification.status = "delivered"
+            notification.discord_message_id = str(ack["message_id"])
+            notification.attempt_count = outbox.attempt_count
+            notification.last_error_code = None
+            session.add(
+                AuditEvent(
+                    event_type="calendar_notification.delivered",
+                    entity_type="scheduled_notification",
+                    entity_id=notification.id,
+                    actor_type="docket",
+                    actor_id=None,
+                    request_id=None,
+                    data={
+                        "discord_message_id": str(ack["message_id"]),
+                        "attempt_count": outbox.attempt_count,
+                    },
+                )
+            )
+            outbox.payload = {**outbox.payload, "discord_message_id": str(ack["message_id"])}
+            outbox.status = OutboxStatus.DELIVERED.value
+            outbox.lease_token = None
+            outbox.leased_until = None
+            outbox.next_attempt_at = None
+            outbox.last_error_code = None
+
+    def _cancel_notification_delivery(self, event_id: uuid.UUID, lease_token: uuid.UUID) -> None:
+        with self.session_factory.begin() as session:
+            outbox = session.get(OutboxEvent, event_id)
+            if outbox is None or outbox.lease_token != lease_token:
+                return
+            notification = session.get(ScheduledNotification, outbox.aggregate_id)
+            if notification is not None and notification.status == "delivering":
+                notification.status = "cancelled"
+                notification.last_error_code = "notification_no_longer_current"
+            outbox.status = OutboxStatus.FAILED.value
+            outbox.lease_token = None
+            outbox.leased_until = None
+            outbox.next_attempt_at = None
+            outbox.last_error_code = "notification_no_longer_current"
+
     def _retry(self, event_id: uuid.UUID, lease_token: uuid.UUID, code: str) -> None:
         with self.session_factory.begin() as session:
             event = session.get(OutboxEvent, event_id)
@@ -809,6 +945,23 @@ class DiscordProjectionRunner:
                     if daily_thread is not None:
                         daily_thread.status = "failed"
                         daily_thread.last_error_code = code[:128]
+                elif event.event_type == "discord.calendar_reminder.requested":
+                    notification = session.get(ScheduledNotification, event.aggregate_id)
+                    if notification is not None:
+                        notification.status = "failed"
+                        notification.attempt_count = event.attempt_count
+                        notification.last_error_code = code[:128]
+                        session.add(
+                            AuditEvent(
+                                event_type="calendar_notification.failed",
+                                entity_type="scheduled_notification",
+                                entity_id=notification.id,
+                                actor_type="docket",
+                                actor_id=None,
+                                request_id=None,
+                                data={"error_code": code[:128]},
+                            )
+                        )
                 alert_key = f"discord_system_alert:projection_failure:{event.id}"
                 if (
                     session.scalar(
@@ -816,6 +969,7 @@ class DiscordProjectionRunner:
                     )
                     is None
                 ):
+                    reminder_failure = event.event_type == "discord.calendar_reminder.requested"
                     session.add(
                         OutboxEvent(
                             event_type="discord.system_alert.requested",
@@ -823,9 +977,16 @@ class DiscordProjectionRunner:
                             aggregate_id=event.id,
                             deduplication_key=alert_key,
                             payload={
-                                "title": "Docket Discord projection failure",
+                                "title": (
+                                    "Docket Calendar reminder delivery failure"
+                                    if reminder_failure
+                                    else "Docket Discord projection failure"
+                                ),
                                 "summary": (
-                                    "A durable Discord queue delivery exhausted its retry "
+                                    "A durable Calendar reminder exhausted its Discord retry "
+                                    "budget. Its canonical notification state is preserved."
+                                    if reminder_failure
+                                    else "A durable Discord queue delivery exhausted its retry "
                                     "budget. Canonical Docket state remains intact."
                                 ),
                                 "error_code": code[:128],
@@ -895,6 +1056,15 @@ class DiscordProjectionRunner:
                 alert_request = self._system_alert_request(event_id, lease_token)
                 alert_ack = self.adapter.post_system_alert(alert_request)
                 self._accept_system_alert_ack(event_id, lease_token, alert_request, alert_ack)
+            elif event_type == "discord.calendar_reminder.requested":
+                notification_request = self._notification_request(event_id, lease_token)
+                if notification_request is None:
+                    self._cancel_notification_delivery(event_id, lease_token)
+                else:
+                    notification_ack = self.adapter.post_calendar_reminder(notification_request)
+                    self._accept_notification_ack(
+                        event_id, lease_token, notification_request, notification_ack
+                    )
             else:
                 raise DiscordProjectionError(
                     "unsupported_outbox_event", "Discord outbox event is unsupported"

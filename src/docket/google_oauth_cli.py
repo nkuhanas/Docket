@@ -95,5 +95,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     print(f"Google OAuth token written securely to {token_file}")
     print(f"Granted scope count: {len(scopes)}")
-    print("Docket external calls remain controlled by DOCKET_EXTERNAL_CALLS_ENABLED.")
+    print(
+        "Docket Calendar reads and writes remain controlled independently by "
+        "DOCKET_CALENDAR_READS_ENABLED and DOCKET_EXTERNAL_WRITES_ENABLED."
+    )
     return 0

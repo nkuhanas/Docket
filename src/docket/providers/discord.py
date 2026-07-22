@@ -28,6 +28,8 @@ class DiscordProjectionAdapter(Protocol):
 
     def post_system_alert(self, payload: dict[str, Any]) -> dict[str, Any]: ...
 
+    def post_calendar_reminder(self, payload: dict[str, Any]) -> dict[str, Any]: ...
+
 
 class HttpDiscordProjectionAdapter:
     def __init__(self, base_url: str, token: str, *, timeout_seconds: float = 20.0) -> None:
@@ -88,12 +90,16 @@ class HttpDiscordProjectionAdapter:
     def post_system_alert(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/internal/docket/discord/system-alerts", payload)
 
+    def post_calendar_reminder(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/internal/docket/discord/notifications", payload)
+
 
 @dataclass
 class FakeDiscordBackend:
     threads: dict[tuple[str, str, str], dict[str, Any]] = field(default_factory=dict)
     messages: dict[str, dict[str, Any]] = field(default_factory=dict)
     system_messages: dict[str, dict[str, Any]] = field(default_factory=dict)
+    notification_messages: dict[str, dict[str, Any]] = field(default_factory=dict)
     next_snowflake: int = 10000000000000000
 
     def snowflake(self) -> str:
@@ -108,6 +114,7 @@ class FakeDiscordProjectionAdapter:
         self.backend = backend or FakeDiscordBackend()
         self.discard_next_thread_ack = False
         self.discard_next_projection_ack = False
+        self.discard_next_notification_ack = False
 
     @staticmethod
     def _check_request(payload: dict[str, Any]) -> None:
@@ -228,3 +235,30 @@ class FakeDiscordProjectionAdapter:
             "render_sha256": message["render_sha256"],
             "created": created,
         }
+
+    def post_calendar_reminder(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._check_request(payload)
+        key = str(payload["notification_id"])
+        created = key not in self.backend.notification_messages
+        if created:
+            self.backend.notification_messages[key] = {
+                "message_id": self.backend.snowflake(),
+                "render_sha256": payload["render_sha256"],
+                "render": copy.deepcopy(payload["render"]),
+            }
+        message = self.backend.notification_messages[key]
+        message["render_sha256"] = payload["render_sha256"]
+        message["render"] = copy.deepcopy(payload["render"])
+        result = {
+            "request_id": payload["request_id"],
+            "notification_id": key,
+            "guild_id": payload["guild_id"],
+            "channel_id": payload["channel_id"],
+            "message_id": message["message_id"],
+            "render_sha256": message["render_sha256"],
+            "created": created,
+        }
+        if self.discard_next_notification_ack:
+            self.discard_next_notification_ack = False
+            raise DiscordProjectionError("discarded_ack", "Notification acknowledgement discarded")
+        return copy.deepcopy(result)

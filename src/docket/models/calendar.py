@@ -4,6 +4,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -132,8 +133,7 @@ class Approval(TimestampMixin, Base):
     __tablename__ = "approvals"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending', 'approved', 'consumed', 'rejected', 'expired', "
-            "'superseded')",
+            "status IN ('pending', 'approved', 'consumed', 'rejected', 'expired', 'superseded')",
             name="ck_approvals_status",
         ),
         Index(
@@ -182,8 +182,7 @@ class Operation(TimestampMixin, Base):
     __tablename__ = "operations"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending', 'running', 'succeeded', 'failed', "
-            "'reconciliation_required')",
+            "status IN ('pending', 'running', 'succeeded', 'failed', 'reconciliation_required')",
             name="ck_operations_status",
         ),
     )
@@ -274,3 +273,136 @@ class CalendarLink(TimestampMixin, Base):
     provider_correlation: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     last_synced_version: Mapped[int] = mapped_column(Integer, nullable=False)
     synced_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+
+
+class CalendarSyncState(TimestampMixin, Base):
+    __tablename__ = "calendar_sync_states"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'syncing', 'current', 'stale', 'failed')",
+            name="ck_calendar_sync_states_status",
+        ),
+        UniqueConstraint("account_id", "calendar_id", name="uq_calendar_sync_states_target"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("accounts.id", ondelete="RESTRICT"), nullable=False
+    )
+    calendar_id: Mapped[str] = mapped_column(String(1024), nullable=False)
+    window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    snapshot_generation: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(128))
+    lease_token: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    leased_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class CalendarEventCache(TimestampMixin, Base):
+    __tablename__ = "calendar_event_cache"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('confirmed', 'tentative', 'cancelled')",
+            name="ck_calendar_event_cache_status",
+        ),
+        UniqueConstraint(
+            "account_id",
+            "calendar_id",
+            "provider_event_id",
+            name="uq_calendar_event_cache_provider_event",
+        ),
+        Index("ix_calendar_event_cache_timed", "account_id", "calendar_id", "start_at"),
+        Index("ix_calendar_event_cache_all_day", "account_id", "calendar_id", "start_date"),
+        Index(
+            "ix_calendar_event_cache_generation",
+            "account_id",
+            "calendar_id",
+            "snapshot_generation",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("accounts.id", ondelete="RESTRICT"), nullable=False
+    )
+    calendar_id: Mapped[str] = mapped_column(String(1024), nullable=False)
+    provider_event_id: Mapped[str] = mapped_column(String(1024), nullable=False)
+    snapshot_generation: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    recurring_event_id: Mapped[str | None] = mapped_column(String(1024))
+    original_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    summary: Mapped[str | None] = mapped_column(String(512))
+    location: Mapped[str | None] = mapped_column(String(1000))
+    is_all_day: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    start_date: Mapped[date | None] = mapped_column(Date)
+    end_date: Mapped[date | None] = mapped_column(Date)
+    timezone: Mapped[str | None] = mapped_column(String(128))
+    provider_etag: Mapped[str | None] = mapped_column(String(1024))
+    provider_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ReminderRule(TimestampMixin, Base):
+    __tablename__ = "reminder_rules"
+    __table_args__ = (
+        CheckConstraint("scope IN ('calendar', 'event')", name="ck_reminder_rules_scope"),
+        CheckConstraint(
+            "(scope = 'calendar' AND provider_event_id IS NULL) OR "
+            "(scope = 'event' AND provider_event_id IS NOT NULL)",
+            name="ck_reminder_rules_scope_event",
+        ),
+        CheckConstraint("lead_seconds >= 0", name="ck_reminder_rules_lead_seconds"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("accounts.id", ondelete="RESTRICT"), nullable=False
+    )
+    calendar_id: Mapped[str] = mapped_column(String(1024), nullable=False)
+    scope: Mapped[str] = mapped_column(String(16), nullable=False)
+    provider_event_id: Mapped[str | None] = mapped_column(String(1024))
+    lead_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    destination_channel_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_by_actor_id: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class ScheduledNotification(TimestampMixin, Base):
+    __tablename__ = "scheduled_notifications"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'delivering', 'delivered', 'cancelled', 'failed')",
+            name="ck_scheduled_notifications_status",
+        ),
+        UniqueConstraint(
+            "reminder_rule_id",
+            "provider_event_id",
+            "event_start_key",
+            name="uq_scheduled_notifications_occurrence",
+        ),
+        Index("ix_scheduled_notifications_due", "status", "scheduled_for"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    reminder_rule_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("reminder_rules.id", ondelete="RESTRICT"), nullable=False
+    )
+    calendar_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("calendar_event_cache.id", ondelete="SET NULL")
+    )
+    provider_event_id: Mapped[str] = mapped_column(String(1024), nullable=False)
+    event_start_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    scheduled_for: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
+    outbox_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("outbox_events.id", ondelete="RESTRICT")
+    )
+    discord_message_id: Mapped[str | None] = mapped_column(String(64))
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_error_code: Mapped[str | None] = mapped_column(String(128))

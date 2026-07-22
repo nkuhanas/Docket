@@ -1,19 +1,28 @@
 import uuid
-from datetime import date, datetime
-from typing import Any
+from datetime import UTC, date, datetime, timedelta
+from typing import Annotated, Any
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from pydantic import Field
 
 from docket.config import get_settings
-from docket.database import session_scope
+from docket.database import get_session_factory, session_scope
 from docket.domain.enums import RecordStatus
 from docket.domain.errors import DocketError
+from docket.providers.google.runtime import get_calendar_read_provider
 from docket.schemas.actions import (
     CalendarActionType,
     CalendarMeetingActionParameters,
     ProposalResult,
     ProposeActionInput,
+)
+from docket.schemas.calendar import (
+    CalendarFreshness,
+    CalendarLookupInput,
+    DisableReminderRuleInput,
+    ReminderScope,
+    SetReminderRuleInput,
 )
 from docket.schemas.queue import (
     IgnoreQueueItemInput,
@@ -38,8 +47,10 @@ from docket.schemas.records import (
 )
 from docket.services.accounts import AccountService
 from docket.services.actions import ActionService
+from docket.services.calendar_sync import CalendarReadService, CalendarSyncService
 from docket.services.queue import QueueService
 from docket.services.records import RecordService, serialize_record
+from docket.services.reminders import ReminderRuleService
 
 mcp = FastMCP(
     "docket",
@@ -56,6 +67,11 @@ mcp = FastMCP(
         ],
     ),
 )
+
+CalendarId = Annotated[str, Field(min_length=1, max_length=1024)]
+CalendarLimit = Annotated[int, Field(ge=1, le=100)]
+CalendarTextFilter = Annotated[str, Field(max_length=200)]
+ReminderLeadSeconds = Annotated[int, Field(ge=0, le=2_678_400)]
 
 
 def _error(exc: Exception) -> dict[str, Any]:
@@ -231,6 +247,141 @@ def docket_list_accounts() -> dict[str, Any]:
                     for account in accounts
                 ],
             }
+    except Exception as exc:
+        return _error(exc)
+
+
+def _calendar_read_service() -> CalendarReadService:
+    settings = get_settings()
+    sync = CalendarSyncService(get_session_factory(), get_calendar_read_provider(), settings)
+    return CalendarReadService(get_session_factory(), sync, settings)
+
+
+@mcp.tool()
+def docket_list_calendar_events(
+    account_id: uuid.UUID,
+    calendar_id: CalendarId,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    text_filter: CalendarTextFilter | None = None,
+    limit: CalendarLimit = 100,
+    freshness: CalendarFreshness = "prefer_cache",
+) -> dict[str, Any]:
+    """Read a bounded, redacted time range from Docket's Calendar cache.
+
+    The default range is now through seven days and the maximum is 31 days. Results
+    include cache freshness and never expose descriptions, attendees, conference data,
+    credentials, or a raw Google client. ``require_fresh`` may wait up to ten seconds for
+    Docket's full bounded snapshot; it never promotes a partial requested subrange.
+    """
+    try:
+        range_start = start or datetime.now(UTC)
+        range_end = end or (range_start + timedelta(days=7))
+        request = CalendarLookupInput(
+            account_id=account_id,
+            calendar_id=calendar_id,
+            start=range_start,
+            end=range_end,
+            text_filter=text_filter,
+            limit=limit,
+            freshness=freshness,
+        )
+        result = _calendar_read_service().list_events(
+            account_id=request.account_id,
+            calendar_id=request.calendar_id,
+            start=request.start,
+            end=request.end,
+            text_filter=request.text_filter,
+            limit=request.limit,
+            freshness=request.freshness,
+        )
+        return {"ok": True, **result}
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_get_calendar_sync_status(
+    account_id: uuid.UUID, calendar_id: CalendarId
+) -> dict[str, Any]:
+    """Return bounded Calendar-cache coverage, freshness, and a stable sync error code.
+
+    This read never exposes credentials, provider cursors, or snapshot-generation IDs.
+    """
+    try:
+        result = _calendar_read_service().get_sync_status(account_id, calendar_id)
+        return {"ok": True, "calendar_sync": result}
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_set_reminder_rule(
+    account_id: uuid.UUID,
+    calendar_id: CalendarId,
+    scope: ReminderScope,
+    lead_seconds: ReminderLeadSeconds,
+    request_key: DiscordRequestKey,
+    source: RecordSourceInput,
+    actor_id: DiscordId,
+    provider_event_id: CalendarId | None = None,
+    destination_channel_id: DiscordId | None = None,
+    rule_id: uuid.UUID | None = None,
+    expected_version: int | None = None,
+) -> dict[str, Any]:
+    """Create or update an explicit deterministic Calendar reminder rule.
+
+    The destination is restricted to Docket's configured reminder channel. This local,
+    audited write schedules future deterministic notifications; it cannot send arbitrary
+    immediate text and never infers a standing rule from conversation or source content.
+    """
+    try:
+        request = SetReminderRuleInput(
+            rule_id=rule_id,
+            expected_version=expected_version,
+            account_id=account_id,
+            calendar_id=calendar_id,
+            scope=scope,
+            provider_event_id=provider_event_id,
+            lead_seconds=lead_seconds,
+            destination_channel_id=destination_channel_id,
+            request_key=request_key,
+            source=source,
+            actor_id=actor_id,
+        )
+        with session_scope() as session:
+            result = ReminderRuleService(session).set(request)
+            return {"ok": True, **result.model_dump(mode="json")}
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_disable_reminder_rule(
+    rule_id: uuid.UUID,
+    expected_version: int,
+    request_key: DiscordRequestKey,
+    source: RecordSourceInput,
+    actor_id: DiscordId,
+    reason: str,
+) -> dict[str, Any]:
+    """Disable one explicit reminder rule using optimistic locking and idempotency.
+
+    Pending notifications for the rule are cancelled locally; this cannot delete or
+    modify the corresponding Google Calendar event.
+    """
+    try:
+        request = DisableReminderRuleInput(
+            rule_id=rule_id,
+            expected_version=expected_version,
+            request_key=request_key,
+            source=source,
+            actor_id=actor_id,
+            reason=reason,
+        )
+        with session_scope() as session:
+            result = ReminderRuleService(session).disable(request)
+            return {"ok": True, **result.model_dump(mode="json")}
     except Exception as exc:
         return _error(exc)
 

@@ -4,6 +4,8 @@ from docket.providers.google.calendar import (
     CalendarEventRequest,
     CalendarEventResult,
     CalendarProviderError,
+    CalendarSnapshotEvent,
+    CalendarSnapshotPage,
     CalendarUnknownOutcome,
 )
 
@@ -15,6 +17,10 @@ class FakeCalendarProvider:
         self.events: dict[str, CalendarEventResult] = {}
         self.next_create_outcome = "success"
         self.next_update_outcome = "success"
+        self.snapshot_events: dict[str, CalendarSnapshotEvent] = {}
+        self.snapshot_page_size = 2500
+        self.fail_snapshot_page: int | None = None
+        self.snapshot_calls = 0
 
     @staticmethod
     def _result(request: CalendarEventRequest, event_id: str) -> CalendarEventResult:
@@ -72,3 +78,36 @@ class FakeCalendarProvider:
     def add_correlation_duplicate(self, request: CalendarEventRequest) -> None:
         result = self._result(request, f"fake-event-{uuid.uuid4()}")
         self.events[result.external_event_id] = result
+
+    def put_snapshot_event(self, event: CalendarSnapshotEvent) -> None:
+        self.snapshot_events[event.provider_event_id] = event
+
+    def remove_snapshot_event(self, provider_event_id: str) -> None:
+        self.snapshot_events.pop(provider_event_id, None)
+
+    def list_events_page(
+        self,
+        *,
+        calendar_id: str,
+        time_min: object,
+        time_max: object,
+        page_token: str | None,
+    ) -> CalendarSnapshotPage:
+        del calendar_id, time_min, time_max
+        self.snapshot_calls += 1
+        page_number = int(page_token or "0")
+        if self.fail_snapshot_page == page_number:
+            raise CalendarProviderError(
+                "fake_snapshot_failure",
+                "Injected Calendar snapshot page failure.",
+                transient=True,
+            )
+        ordered = sorted(self.snapshot_events.values(), key=lambda item: item.provider_event_id)
+        start = page_number * self.snapshot_page_size
+        end = start + self.snapshot_page_size
+        next_token = str(page_number + 1) if end < len(ordered) else None
+        return CalendarSnapshotPage(
+            events=tuple(ordered[start:end]),
+            next_page_token=next_token,
+            provider_request_id=f"fake-snapshot-{self.snapshot_calls}",
+        )

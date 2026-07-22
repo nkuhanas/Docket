@@ -3,6 +3,7 @@ import json
 import httpx
 import pytest
 
+from docket.config import get_settings
 from docket.providers.google.calendar import (
     CalendarEventRequest,
     CalendarProviderError,
@@ -11,6 +12,11 @@ from docket.providers.google.calendar import (
     event_matches_request,
     normalize_event_body,
 )
+from docket.providers.google.factory import (
+    build_calendar_read_provider,
+    build_calendar_write_provider,
+)
+from docket.providers.google.fake_calendar import FakeCalendarProvider
 
 
 def event_request() -> CalendarEventRequest:
@@ -113,3 +119,12 @@ def test_normalization_drops_unneeded_google_response_fields() -> None:
     assert "htmlLink" not in snapshot
     assert "creator" not in snapshot
     assert snapshot == request.snapshot()
+
+
+def test_real_calendar_reads_do_not_enable_provider_writes() -> None:
+    settings = get_settings().model_copy(
+        update={"calendar_reads_enabled": True, "external_writes_enabled": False}
+    )
+
+    assert isinstance(build_calendar_read_provider(settings), GoogleCalendarProvider)
+    assert isinstance(build_calendar_write_provider(settings), FakeCalendarProvider)

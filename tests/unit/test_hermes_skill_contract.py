@@ -18,3 +18,12 @@ def test_manual_intent_skill_forbids_conflict_data_laundering() -> None:
 
     assert "Never fetch the canonical record, copy its data" in skill
     assert "merely to manufacture `matched_existing`" in skill
+
+
+def test_manual_intent_skill_preserves_calendar_freshness_and_explicit_reminders() -> None:
+    skill = " ".join(SKILL_PATH.read_text(encoding="utf-8").split())
+
+    assert "Never describe stale or uncovered cache state as current" in skill
+    assert "only when the user explicitly asks for a standing" in skill
+    assert "not model-authored text" in skill
+    assert "reminder_destination_not_allowed" in skill

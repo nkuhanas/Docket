@@ -2,6 +2,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -19,7 +20,9 @@ from docket.models import (
     Action,
     ActionRevision,
     AuditEvent,
+    CalendarEventCache,
     CalendarLink,
+    CalendarSyncState,
     ExecutionAttempt,
     Operation,
     OutboxEvent,
@@ -167,6 +170,98 @@ class OperationRunner:
             attempt.provider_request_id = f"call-started:{claim.lease_token}"
 
     @staticmethod
+    def _upsert_calendar_cache(
+        session: Session,
+        operation: Operation,
+        result: CalendarEventResult,
+    ) -> None:
+        revision, _action, _queue_item = OperationRunner._bound_entities(session, operation)
+        parameters = revision.parameters
+        calendar_id = str(parameters["calendar_id"])
+        state = session.scalar(
+            select(CalendarSyncState).where(
+                CalendarSyncState.account_id == operation.account_id,
+                CalendarSyncState.calendar_id == calendar_id,
+            )
+        )
+        generation = (
+            state.snapshot_generation
+            if state is not None and state.snapshot_generation is not None
+            else uuid.uuid5(uuid.NAMESPACE_URL, f"calendar-write:{operation.id}")
+        )
+        snapshot = result.snapshot
+        start = snapshot.get("start")
+        end = snapshot.get("end")
+        if (
+            not isinstance(start, dict)
+            or not isinstance(end, dict)
+            or not isinstance(start.get("dateTime"), str)
+            or not isinstance(end.get("dateTime"), str)
+            or not isinstance(start.get("timeZone"), str)
+        ):
+            raise DocketError(
+                code="calendar_cache_invalid_write_result",
+                message="Calendar write result could not be normalized into the local cache.",
+            )
+        timezone_value = start.get("timeZone")
+        assert isinstance(timezone_value, str)
+        timezone = timezone_value
+        try:
+            zone = ZoneInfo(timezone)
+            start_at = (
+                datetime.fromisoformat(start["dateTime"]).replace(tzinfo=zone).astimezone(UTC)
+            )
+            end_timezone_value = end.get("timeZone")
+            end_timezone = end_timezone_value if isinstance(end_timezone_value, str) else timezone
+            end_at = (
+                datetime.fromisoformat(end["dateTime"])
+                .replace(tzinfo=ZoneInfo(end_timezone))
+                .astimezone(UTC)
+            )
+        except (ValueError, TypeError) as exc:
+            raise DocketError(
+                code="calendar_cache_invalid_write_result",
+                message="Calendar write result contained invalid local time data.",
+            ) from exc
+        row = session.scalar(
+            select(CalendarEventCache).where(
+                CalendarEventCache.account_id == operation.account_id,
+                CalendarEventCache.calendar_id == calendar_id,
+                CalendarEventCache.provider_event_id == result.external_event_id,
+            )
+        )
+        now = utc_now()
+        if row is None:
+            row = CalendarEventCache(
+                account_id=operation.account_id,
+                calendar_id=calendar_id,
+                provider_event_id=result.external_event_id,
+                snapshot_generation=generation,
+                status="confirmed",
+                is_all_day=False,
+                synced_at=now,
+            )
+            session.add(row)
+        row.snapshot_generation = generation
+        row.status = "confirmed"
+        summary = snapshot.get("summary")
+        location = snapshot.get("location")
+        row.summary = summary[:512] if isinstance(summary, str) and summary else None
+        row.location = location[:1000] if isinstance(location, str) and location else None
+        row.is_all_day = False
+        row.start_at = start_at
+        row.end_at = end_at
+        row.start_date = None
+        row.end_date = None
+        row.timezone = timezone
+        row.provider_etag = result.provider_etag
+        row.synced_at = now
+        session.flush()
+        from docket.services.reminders import materialize_reminders
+
+        materialize_reminders(session, now=now)
+
+    @staticmethod
     def _apply_success(
         session: Session,
         operation: Operation,
@@ -211,6 +306,7 @@ class OperationRunner:
             link.provider_correlation = operation.provider_correlation
             link.last_synced_version = int(parameters["record_version"])
             link.synced_snapshot = result.snapshot
+        OperationRunner._upsert_calendar_cache(session, operation, result)
         attempt.status = AttemptStatus.SUCCEEDED.value
         attempt.provider_request_id = result.provider_request_id or attempt.provider_request_id
         attempt.response_summary = {
@@ -302,7 +398,7 @@ class OperationRunner:
             elif error.transient and operation.attempt_count < self.max_attempts:
                 operation.status = OperationStatus.PENDING.value
                 operation.next_attempt_at = now + timedelta(
-                    seconds=min(300, 2 ** operation.attempt_count)
+                    seconds=min(300, 2**operation.attempt_count)
                 )
                 action.status = ActionStatus.READY.value
             else:
@@ -413,9 +509,7 @@ class OperationRunner:
             queue_item.status = QueueItemStatus.EXECUTING.value
             queue_item.version += 1
 
-    def _finish_reconciliation_conflict(
-        self, claim: ClaimedOperation, *, match_count: int
-    ) -> None:
+    def _finish_reconciliation_conflict(self, claim: ClaimedOperation, *, match_count: int) -> None:
         with self.session_factory.begin() as session:
             operation = session.get(Operation, claim.operation_id)
             attempt = session.get(ExecutionAttempt, claim.attempt_id)
@@ -471,9 +565,7 @@ class OperationRunner:
             if age.total_seconds() >= self.consistency_window_seconds:
                 self._finish_reconciliation_no_match(claim)
             else:
-                remaining = max(
-                    1, self.consistency_window_seconds - int(age.total_seconds())
-                )
+                remaining = max(1, self.consistency_window_seconds - int(age.total_seconds()))
                 self._defer_reconciliation(
                     claim,
                     error_code="calendar_consistency_window",

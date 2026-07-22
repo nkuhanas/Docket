@@ -3,10 +3,14 @@ from docket.models.calendar import (
     Action,
     ActionRevision,
     Approval,
+    CalendarEventCache,
     CalendarLink,
+    CalendarSyncState,
     ExecutionAttempt,
     Operation,
     QueueItem,
+    ReminderRule,
+    ScheduledNotification,
 )
 from docket.models.core import (
     Account,
@@ -25,7 +29,9 @@ __all__ = [
     "Approval",
     "AuditEvent",
     "Base",
+    "CalendarEventCache",
     "CalendarLink",
+    "CalendarSyncState",
     "CommandRequest",
     "DiscordDailyThread",
     "DiscordProjection",
@@ -35,4 +41,6 @@ __all__ = [
     "QueueItem",
     "Record",
     "RecordSource",
+    "ReminderRule",
+    "ScheduledNotification",
 ]

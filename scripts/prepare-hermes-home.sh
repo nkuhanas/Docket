@@ -64,6 +64,8 @@ if [ ! -e "$HERMES_HOME_DIR/config.yaml" ]; then
         "$ROOT/hermes/config.example.yaml" > "$config_tmp"
     mv "$config_tmp" "$HERMES_HOME_DIR/config.yaml"
 fi
+python3 "$ROOT/scripts/sync_hermes_docket_config.py" \
+    "$HERMES_HOME_DIR/config.yaml" "$ROOT/hermes/config.example.yaml"
 
 {
     echo "DISCORD_BOT_TOKEN=$(head -n 1 "$CREDENTIALS_DIR/discord_bot_token")"

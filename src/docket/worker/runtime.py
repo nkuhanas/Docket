@@ -4,8 +4,10 @@ from datetime import UTC, datetime
 
 import structlog
 
+from docket.services.calendar_sync import CalendarSyncService
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.operations import OperationRunner
+from docket.services.reminders import ReminderDispatcher
 from docket.services.rollover import RolloverService
 
 logger = structlog.get_logger(__name__)
@@ -24,6 +26,10 @@ class WorkerRuntime:
         discord_projection_poll_seconds: float = 5.0,
         rollover_service: RolloverService | None = None,
         rollover_poll_seconds: float = 60.0,
+        calendar_sync_service: CalendarSyncService | None = None,
+        calendar_sync_poll_seconds: float = 60.0,
+        reminder_dispatcher: ReminderDispatcher | None = None,
+        reminder_dispatch_poll_seconds: float = 30.0,
     ) -> None:
         self.heartbeat_seconds = heartbeat_seconds
         self.operation_runner = operation_runner
@@ -34,6 +40,10 @@ class WorkerRuntime:
         self.discord_projection_poll_seconds = discord_projection_poll_seconds
         self.rollover_service = rollover_service
         self.rollover_poll_seconds = rollover_poll_seconds
+        self.calendar_sync_service = calendar_sync_service
+        self.calendar_sync_poll_seconds = calendar_sync_poll_seconds
+        self.reminder_dispatcher = reminder_dispatcher
+        self.reminder_dispatch_poll_seconds = reminder_dispatch_poll_seconds
         self.last_heartbeat: datetime | None = None
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -57,6 +67,8 @@ class WorkerRuntime:
         next_recovery = 0.0
         next_discord_projection = 0.0
         next_rollover = 0.0
+        next_calendar_sync = 0.0
+        next_reminder_dispatch = 0.0
         while not self._stop.is_set():
             self.last_heartbeat = datetime.now(UTC)
             now = time.monotonic()
@@ -73,6 +85,8 @@ class WorkerRuntime:
                         await asyncio.to_thread(
                             self.discord_projection_runner.recover_expired_leases
                         )
+                    if self.calendar_sync_service is not None:
+                        await asyncio.to_thread(self.calendar_sync_service.recover_expired_leases)
                     next_recovery = now + self.stale_lease_poll_seconds
                 if self.discord_projection_runner is not None and now >= next_discord_projection:
                     await asyncio.to_thread(self.discord_projection_runner.run_due_once)
@@ -82,6 +96,13 @@ class WorkerRuntime:
                     await asyncio.to_thread(self.rollover_service.run_due_once)
                     await asyncio.to_thread(self.rollover_service.maintain_archives)
                     next_rollover = now + self.rollover_poll_seconds
+                if self.calendar_sync_service is not None and now >= next_calendar_sync:
+                    await asyncio.to_thread(self.calendar_sync_service.run_due_once)
+                    await asyncio.to_thread(self.calendar_sync_service.evaluate_staleness)
+                    next_calendar_sync = now + self.calendar_sync_poll_seconds
+                if self.reminder_dispatcher is not None and now >= next_reminder_dispatch:
+                    await asyncio.to_thread(self.reminder_dispatcher.run_due_once)
+                    next_reminder_dispatch = now + self.reminder_dispatch_poll_seconds
             except Exception:
                 logger.exception("worker_iteration_failed")
             try:

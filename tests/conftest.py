@@ -13,7 +13,8 @@ os.environ.update(
     {
         "DOCKET_ENVIRONMENT": "test",
         "DOCKET_DATABASE_URL": f"sqlite+pysqlite:///{ROOT / '.runtime/test-bootstrap.db'}",
-        "DOCKET_EXTERNAL_CALLS_ENABLED": "false",
+        "DOCKET_CALENDAR_READS_ENABLED": "false",
+        "DOCKET_EXTERNAL_WRITES_ENABLED": "false",
         "DOCKET_AUTO_CREATE_SCHEMA": "false",
         "DOCKET_OPERATOR_DISCORD_USER_ID": "000000000000000001",
         "DOCKET_DISCORD_GUILD_ID": "000000000000000002",

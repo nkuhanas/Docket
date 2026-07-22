@@ -65,5 +65,6 @@ def test_internal_api_and_mcp_require_distinct_tokens(session_factory) -> None:
 
         ready = client.get("/health/ready")
         assert ready.status_code == 200
-        assert ready.json()["external_calls_enabled"] is False
+        assert ready.json()["calendar_reads_enabled"] is False
+        assert ready.json()["external_writes_enabled"] is False
         assert ready.json()["google_oauth"] == "dummy"

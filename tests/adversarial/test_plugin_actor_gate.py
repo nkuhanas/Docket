@@ -302,9 +302,20 @@ def test_system_alert_target_is_separately_allowlisted(plugin_module, monkeypatc
     assert rejected.value.code == "discord_target_not_allowed"
 
 
-def test_failed_item_can_render_one_canonical_ignore_control(
-    plugin_module, monkeypatch
-) -> None:
+def test_reminder_target_is_restricted_to_configured_channel(plugin_module, monkeypatch) -> None:
+    guild = "111111111111111111"
+    reminder = "555555555555555555"
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", "222222222222222222")
+    monkeypatch.setenv("DOCKET_REMINDER_CHANNEL_ID", reminder)
+
+    assert plugin_module._validate_reminder_target(guild, reminder) == (guild, reminder)
+    with pytest.raises(plugin_module.PluginAPIError) as rejected:
+        plugin_module._validate_reminder_target(guild, "333333333333333333")
+    assert rejected.value.code == "discord_target_not_allowed"
+
+
+def test_failed_item_can_render_one_canonical_ignore_control(plugin_module, monkeypatch) -> None:
     class FakeEmbed:
         def __init__(self, **_kwargs) -> None:
             self.footer = None

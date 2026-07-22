@@ -25,7 +25,8 @@ class Settings(BaseSettings):
         alias="DOCKET_DATABASE_URL",
     )
     timezone: str = Field(default="America/Los_Angeles", alias="DOCKET_TIMEZONE")
-    external_calls_enabled: bool = Field(default=False, alias="DOCKET_EXTERNAL_CALLS_ENABLED")
+    calendar_reads_enabled: bool = Field(default=False, alias="DOCKET_CALENDAR_READS_ENABLED")
+    external_writes_enabled: bool = Field(default=False, alias="DOCKET_EXTERNAL_WRITES_ENABLED")
     auto_create_schema: bool = Field(default=False, alias="DOCKET_AUTO_CREATE_SCHEMA")
     log_level: str = Field(default="INFO", alias="DOCKET_LOG_LEVEL")
     worker_heartbeat_seconds: float = Field(default=1.0, alias="DOCKET_WORKER_HEARTBEAT_SECONDS")
@@ -57,6 +58,34 @@ class Settings(BaseSettings):
     local_action_ttl_seconds: int = Field(
         default=86400, ge=60, alias="DOCKET_LOCAL_ACTION_TTL_SECONDS"
     )
+    calendar_sync_poll_seconds: float = Field(
+        default=60.0, gt=0, alias="DOCKET_CALENDAR_SYNC_POLL_SECONDS"
+    )
+    calendar_sync_interval_seconds: int = Field(
+        default=300, ge=30, alias="DOCKET_CALENDAR_SYNC_INTERVAL_SECONDS"
+    )
+    calendar_sync_lease_seconds: int = Field(
+        default=120, ge=30, alias="DOCKET_CALENDAR_SYNC_LEASE_SECONDS"
+    )
+    calendar_sync_past_days: int = Field(
+        default=30, ge=0, le=366, alias="DOCKET_CALENDAR_SYNC_PAST_DAYS"
+    )
+    calendar_sync_future_days: int = Field(
+        default=400, ge=1, le=730, alias="DOCKET_CALENDAR_SYNC_FUTURE_DAYS"
+    )
+    calendar_stale_seconds: int = Field(default=900, ge=60, alias="DOCKET_CALENDAR_STALE_SECONDS")
+    calendar_snapshot_max_pages: int = Field(
+        default=100, ge=1, le=1000, alias="DOCKET_CALENDAR_SNAPSHOT_MAX_PAGES"
+    )
+    calendar_snapshot_max_events: int = Field(
+        default=10000, ge=1, le=100000, alias="DOCKET_CALENDAR_SNAPSHOT_MAX_EVENTS"
+    )
+    calendar_require_fresh_wait_seconds: float = Field(
+        default=10.0, gt=0, le=10, alias="DOCKET_CALENDAR_REQUIRE_FRESH_WAIT_SECONDS"
+    )
+    reminder_dispatch_interval_seconds: float = Field(
+        default=30.0, gt=0, alias="DOCKET_REMINDER_DISPATCH_INTERVAL_SECONDS"
+    )
 
     operator_discord_user_id: str = Field(
         default="000000000000000001", alias="DOCKET_OPERATOR_DISCORD_USER_ID"
@@ -65,6 +94,7 @@ class Settings(BaseSettings):
     chat_channel_id: str = Field(default="000000000000000003", alias="DOCKET_CHAT_CHANNEL_ID")
     queue_channel_id: str = Field(default="000000000000000004", alias="DOCKET_QUEUE_CHANNEL_ID")
     system_channel_id: str = Field(default="000000000000000005", alias="DOCKET_SYSTEM_CHANNEL_ID")
+    reminder_channel_id: str | None = Field(default=None, alias="DOCKET_REMINDER_CHANNEL_ID")
 
     docket_to_hermes_token_file: Path = Field(
         default=Path("secrets/smoke/docket_to_hermes_token"),
@@ -105,6 +135,7 @@ class Settings(BaseSettings):
                 self.chat_channel_id,
                 self.queue_channel_id,
                 self.system_channel_id,
+                self.effective_reminder_channel_id(),
             ):
                 if identifier.startswith("000000"):
                     raise ValueError("Production cannot use smoke Discord identifiers")
@@ -129,6 +160,9 @@ class Settings(BaseSettings):
 
     def google_oauth_status(self) -> GoogleOAuthStatus:
         return authorized_user_file_status(self.google_oauth_token_file)
+
+    def effective_reminder_channel_id(self) -> str:
+        return self.reminder_channel_id or self.chat_channel_id
 
 
 @lru_cache(maxsize=1)

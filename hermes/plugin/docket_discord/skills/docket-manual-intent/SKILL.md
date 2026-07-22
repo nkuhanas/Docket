@@ -96,6 +96,23 @@ intentionally absent from the model-facing proposal result.
 Do not describe the provider write as complete until `docket_get_action`
 reports a succeeded operation.
 
+For Calendar lookup questions, select the configured account and calendar with
+`docket_list_accounts`, then use `docket_list_calendar_events`. Use
+`prefer_cache` unless the user explicitly needs a freshly synchronized answer
+or the returned state is stale and freshness matters. Never describe stale or
+uncovered cache state as current. `require_fresh` remains a bounded Docket-owned
+refresh and does not grant raw Google access.
+
+Create or change a reminder only when the user explicitly asks for a standing
+notification rule. Use `docket_set_reminder_rule` with a new trusted intent
+index, the configured account/calendar, a calendar-wide or event-specific
+scope, and a concrete lead time. Omit the destination unless the configured
+reminder channel returned by policy is already known; never try another channel
+after `reminder_destination_not_allowed`. Use `docket_disable_reminder_rule`
+only for an explicit disable request and the rule's current version. Reminder
+delivery is a deterministic Docket worker consequence, not model-authored text,
+an immediate send tool, or an external Calendar mutation.
+
 External actions are proposals only. Never represent conversational assent as a
 Docket approval and never call a raw provider mutation.
 

@@ -317,6 +317,22 @@ def _validate_system_target(guild_id: object, channel_id: object) -> tuple[str, 
     return guild, channel
 
 
+def _validate_reminder_target(guild_id: object, channel_id: object) -> tuple[str, str]:
+    guild = _require_snowflake(guild_id, "guild_id")
+    channel = _require_snowflake(channel_id, "channel_id")
+    expected_guild = os.environ.get("DOCKET_DISCORD_GUILD_ID", "")
+    expected_channel = os.environ.get("DOCKET_REMINDER_CHANNEL_ID") or os.environ.get(
+        "DOCKET_CHAT_CHANNEL_ID", ""
+    )
+    if not hmac.compare_digest(guild, expected_guild) or not hmac.compare_digest(
+        channel, expected_channel
+    ):
+        raise PluginAPIError(
+            "discord_target_not_allowed", "Target is not the configured reminder channel", 403
+        )
+    return guild, channel
+
+
 async def _fetch_queue(client: object, guild_id: str, channel_id: str) -> object:
     import discord
 
@@ -558,9 +574,7 @@ def _render_embed(
 
     controls = payload.get("controls", [])
     if not isinstance(controls, list) or len(controls) not in {0, 1, 2}:
-        raise PluginAPIError(
-            "invalid_control", "Control set must be empty or canonical", 422
-        )
+        raise PluginAPIError("invalid_control", "Control set must be empty or canonical", 422)
     view = None
     if controls:
         view = discord.ui.View(timeout=None)
@@ -642,14 +656,10 @@ def _render_embed(
                         custom_id=f"dkt:l:{token}",
                     )
                 )
-            if (
-                action_types
-                not in (
-                    {"ignore_queue_item"},
-                    {"snooze_queue_item", "ignore_queue_item"},
-                )
-                or len(action_types) != len(controls)
-            ):
+            if action_types not in (
+                {"ignore_queue_item"},
+                {"snooze_queue_item", "ignore_queue_item"},
+            ) or len(action_types) != len(controls):
                 raise PluginAPIError("invalid_control", "Local control set is inconsistent", 422)
         else:
             raise PluginAPIError("invalid_control", "Mixed control kinds are forbidden", 422)
@@ -824,6 +834,114 @@ async def _post_system_alert(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "request_id": request_id,
         "alert_id": alert_id,
+        "guild_id": guild_id,
+        "channel_id": channel_id,
+        "message_id": str(message.id),
+        "render_sha256": render_sha256,
+        "created": created,
+    }
+
+
+async def _post_calendar_reminder(payload: dict[str, Any]) -> dict[str, Any]:
+    import discord
+
+    request_id = _require_request_id(payload)
+    try:
+        notification_id = str(uuid.UUID(str(payload["notification_id"])))
+    except (KeyError, ValueError) as exc:
+        raise PluginAPIError(
+            "invalid_calendar_reminder", "notification_id must be a UUID", 422
+        ) from exc
+    guild_id, channel_id = _validate_reminder_target(
+        payload.get("guild_id"), payload.get("channel_id")
+    )
+    model = payload.get("render")
+    if not isinstance(model, dict) or set(model) != {
+        "summary",
+        "location",
+        "start",
+        "end",
+        "is_all_day",
+        "timezone",
+        "late",
+    }:
+        raise PluginAPIError(
+            "invalid_calendar_reminder", "Reminder render model is not canonical", 422
+        )
+    summary = _safe_text(model.get("summary"), 512, "summary")
+    location_value = model.get("location")
+    location = _safe_text(location_value, 1000, "location") if location_value is not None else None
+    start = _safe_text(model.get("start"), 64, "start")
+    end = _safe_text(model.get("end"), 64, "end")
+    timezone = _safe_text(model.get("timezone"), 128, "timezone")
+    if not isinstance(model.get("is_all_day"), bool) or not isinstance(model.get("late"), bool):
+        raise PluginAPIError("invalid_calendar_reminder", "Reminder flags must be booleans", 422)
+    render = {
+        "summary": summary,
+        "location": location,
+        "start": start,
+        "end": end,
+        "is_all_day": model["is_all_day"],
+        "timezone": timezone,
+        "late": model["late"],
+    }
+    calculated = hashlib.sha256(
+        json.dumps(render, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
+    render_sha256 = str(payload.get("render_sha256", ""))
+    if not hmac.compare_digest(calculated, render_sha256):
+        raise PluginAPIError("invalid_calendar_reminder", "Reminder render digest differs", 422)
+    _loop, _adapter, client = _discord_runtime()
+    try:
+        channel = await client.fetch_channel(int(channel_id))
+    except discord.NotFound as exc:
+        raise PluginAPIError(
+            "reminder_channel_not_found", "Reminder channel was not found"
+        ) from exc
+    if not isinstance(channel, discord.TextChannel) or str(channel.guild.id) != guild_id:
+        raise PluginAPIError("invalid_reminder_channel", "Configured reminder channel is invalid")
+    marker = f"docket-calendar-reminder:{notification_id}"
+    footer = f"{marker} | render:{render_sha256}"
+    title = "Late calendar reminder" if render["late"] else "Calendar reminder"
+    embed = discord.Embed(
+        title=title,
+        description=_escaped(summary, 512),
+        color=0x4F8CC9 if not render["late"] else 0xD6A756,
+    )
+    embed.add_field(name="Start", value=_escaped(start, 64), inline=False)
+    embed.add_field(name="End", value=_escaped(end, 64), inline=False)
+    embed.add_field(name="Timezone", value=_escaped(timezone, 128), inline=True)
+    embed.add_field(name="All day", value="Yes" if render["is_all_day"] else "No", inline=True)
+    if location is not None:
+        embed.add_field(name="Location", value=_escaped(location, 1000), inline=False)
+    embed.set_footer(text=footer)
+    bot_id = getattr(getattr(client, "user", None), "id", None)
+    matches = []
+    async for candidate in channel.history(limit=None, oldest_first=True):
+        if marker in _message_marker(candidate):
+            matches.append(candidate)
+    if len(matches) > 1 or any(candidate.author.id != bot_id for candidate in matches):
+        raise PluginAPIError(
+            "calendar_reminder_marker_conflict",
+            "Reminder marker is foreign-owned or ambiguous",
+        )
+    message = matches[0] if matches else None
+    created = message is None
+    if message is None:
+        message = await channel.send(
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions.none(),
+            silent=False,
+        )
+    elif _message_marker(message) != footer:
+        message = await message.edit(
+            content=None,
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    return {
+        "request_id": request_id,
+        "notification_id": notification_id,
         "guild_id": guild_id,
         "channel_id": channel_id,
         "message_id": str(message.id),
@@ -1011,6 +1129,9 @@ class _PluginRequestHandler(BaseHTTPRequestHandler):
             elif method == "POST" and self.path == "/internal/docket/discord/system-alerts":
                 with _operation_lock(f"system-alert:{payload.get('alert_id')}"):
                     result = _run_on_discord(_post_system_alert(payload))
+            elif method == "POST" and self.path == "/internal/docket/discord/notifications":
+                with _operation_lock(f"calendar-reminder:{payload.get('notification_id')}"):
+                    result = _run_on_discord(_post_calendar_reminder(payload))
             elif method == "PUT" and (match := _THREAD_LIFECYCLE_PATH.fullmatch(self.path)):
                 daily_thread_id = uuid.UUID(match.group(1))
                 result = _run_on_discord(_set_thread_lifecycle(daily_thread_id, payload))

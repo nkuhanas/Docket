@@ -1,13 +1,14 @@
 import hmac
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import Any
 
 import structlog
 import uvicorn
 from fastapi import FastAPI, Response
 from fastapi.responses import JSONResponse
-from sqlalchemy import text
+from sqlalchemy import select, text
 from starlette.requests import Request
 
 from docket.config import Settings, get_settings
@@ -19,12 +20,19 @@ from docket.database import (
 )
 from docket.internal_api import router as internal_router
 from docket.mcp import mcp
+from docket.models import CalendarSyncState
 from docket.providers.discord import HttpDiscordProjectionAdapter
-from docket.providers.google import FakeCalendarProvider, FakeGoogleProvider
-from docket.providers.google.calendar import GoogleCalendarProvider
+from docket.providers.google import FakeGoogleProvider
+from docket.providers.google.factory import (
+    build_calendar_read_provider,
+    build_calendar_write_provider,
+)
+from docket.providers.google.runtime import configure_calendar_read_provider
 from docket.services.accounts import AccountService
+from docket.services.calendar_sync import CalendarSyncService
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.operations import OperationRunner
+from docket.services.reminders import ReminderDispatcher
 from docket.services.rollover import RolloverService
 from docket.worker import WorkerRuntime
 
@@ -43,11 +51,10 @@ def configure_logging(settings: Settings) -> None:
 settings = get_settings()
 configure_logging(settings)
 configure_database(settings.database_url)
-calendar_provider = (
-    GoogleCalendarProvider(str(settings.google_oauth_token_file))
-    if settings.external_calls_enabled
-    else FakeCalendarProvider()
-)
+calendar_write_provider = build_calendar_write_provider(settings)
+calendar_read_provider = build_calendar_read_provider(settings)
+configure_calendar_read_provider(calendar_read_provider)
+calendar_sync_service = CalendarSyncService(get_session_factory(), calendar_read_provider, settings)
 discord_projection_runner = (
     DiscordProjectionRunner(
         get_session_factory(),
@@ -62,7 +69,7 @@ discord_projection_runner = (
 )
 worker = WorkerRuntime(
     settings.worker_heartbeat_seconds,
-    OperationRunner(get_session_factory(), calendar_provider),
+    OperationRunner(get_session_factory(), calendar_write_provider),
     operation_poll_seconds=settings.operation_poll_seconds,
     reconciliation_poll_seconds=settings.reconciliation_poll_seconds,
     stale_lease_poll_seconds=settings.stale_lease_poll_seconds,
@@ -70,6 +77,10 @@ worker = WorkerRuntime(
     discord_projection_poll_seconds=settings.discord_projection_poll_seconds,
     rollover_service=RolloverService(get_session_factory(), settings),
     rollover_poll_seconds=settings.daily_rollover_poll_seconds,
+    calendar_sync_service=(calendar_sync_service if settings.calendar_reads_enabled else None),
+    calendar_sync_poll_seconds=settings.calendar_sync_poll_seconds,
+    reminder_dispatcher=ReminderDispatcher(get_session_factory(), settings),
+    reminder_dispatch_poll_seconds=settings.reminder_dispatch_interval_seconds,
 )
 
 
@@ -120,23 +131,66 @@ def health_live() -> dict[str, Any]:
 def health_ready(response: Response) -> dict[str, Any]:
     with session_scope() as session:
         session.execute(text("SELECT 1"))
+        sync_states = session.scalars(
+            select(CalendarSyncState).order_by(
+                CalendarSyncState.account_id, CalendarSyncState.calendar_id
+            )
+        ).all()
     google_oauth = settings.google_oauth_status()
-    if settings.external_calls_enabled and google_oauth != "configured":
+    if (
+        settings.external_writes_enabled or settings.calendar_reads_enabled
+    ) and google_oauth != "configured":
         response.status_code = 503
+    now = datetime.now(UTC)
+    sync_detail = [
+        {
+            "account_id": str(state.account_id),
+            "calendar_id": state.calendar_id,
+            "status": state.status,
+            "window_start": state.window_start.isoformat(),
+            "window_end": state.window_end.isoformat(),
+            "last_attempt_at": (
+                state.last_attempt_at.isoformat() if state.last_attempt_at else None
+            ),
+            "last_success_at": (
+                state.last_success_at.isoformat() if state.last_success_at else None
+            ),
+            "stale": (
+                state.last_success_at is None
+                or (
+                    now
+                    - (
+                        state.last_success_at.replace(tzinfo=UTC)
+                        if state.last_success_at.tzinfo is None
+                        else state.last_success_at.astimezone(UTC)
+                    )
+                ).total_seconds()
+                > settings.calendar_stale_seconds
+                or state.status != "current"
+            ),
+            "last_error_code": state.last_error_code,
+        }
+        for state in sync_states
+    ]
+    calendar_degraded = settings.calendar_reads_enabled and (
+        not sync_detail or any(bool(item["stale"]) for item in sync_detail)
+    )
     return {
-        "status": "ok",
+        "status": "degraded" if calendar_degraded else "ok",
         "database": "ready",
         "worker": "ready" if worker.is_healthy() else "starting",
         "credential_mode": settings.credential_mode(),
         "google_oauth": google_oauth,
-        "external_calls_enabled": settings.external_calls_enabled,
+        "calendar_reads_enabled": settings.calendar_reads_enabled,
+        "external_writes_enabled": settings.external_writes_enabled,
+        "calendar_sync": sync_detail,
     }
 
 
 @app.get("/health/smoke-provider")
 def health_smoke_provider() -> dict[str, Any]:
-    if settings.external_calls_enabled:
-        return {"status": "disabled", "reason": "fake provider unavailable with external calls"}
+    if settings.external_writes_enabled:
+        return {"status": "disabled", "reason": "fake provider unavailable with external writes"}
     return {"status": "ok", **FakeGoogleProvider().smoke_status()}
 
 

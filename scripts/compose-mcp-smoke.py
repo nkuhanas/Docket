@@ -41,7 +41,8 @@ async def smoke() -> None:
         assert body["status"] == "ok"
         assert body["credential_mode"] == "dummy"
         assert body["google_oauth"] == "dummy"
-        assert body["external_calls_enabled"] is False
+        assert body["calendar_reads_enabled"] is False
+        assert body["external_writes_enabled"] is False
 
         provider = await client.get(f"{base_url}/health/smoke-provider")
         provider.raise_for_status()
