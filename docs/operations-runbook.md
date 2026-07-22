@@ -68,7 +68,36 @@ data, and retry the store under a new intent index. That sequence falsely binds
 the current Discord source to assertions found only in Docket. Stop and request
 an explicit update decision instead.
 
-## First five checks
+## Queue operational invariant
+
+Discord threads and cards are projections; `queue_items`, typed actions,
+approvals, commands, and outbox rows are canonical. At or after 07:00 in
+`DOCKET_TIMEZONE`, Docket runs one durable rollover command per local ISO date:
+
+1. Create or recover exactly one `YYYY-MM-DD — Weekday` public thread under the
+   configured queue channel.
+2. Resume due snoozes, carry each unresolved item once, and add one daily
+   summary. Unique command and projection keys make a restart a replay, not a
+   duplicate.
+3. Put controls only on the newest projection. Historical cards are refreshed
+   without controls; an approval binding moves only after the new projection
+   is acknowledged.
+4. Archive past threads only after their card writes are no longer pending. A
+   later historical refresh may unarchive, edit, and then rearchive the same
+   stored thread rather than create a replacement.
+
+Snooze and Ignore are local writes. Their button tokens bind the immutable
+action revision, exact projection, queue version, and expiry; the callback also
+binds the operator, guild, queue parent, thread, and message. A copied, stale,
+expired, replayed, or cross-card control must fail without changing state.
+Snoozing to a local date wakes at the configured rollover hour with timezone
+rules applied on that date.
+
+Projection exhaustion never rolls back canonical state. The failed outbox row
+remains evidence and creates one deduplicated, bounded alert in the separately
+allowlisted Docket system channel.
+
+## First checks
 
 Run these before changing code or credentials:
 
@@ -77,23 +106,25 @@ sudo docker compose ps
 curl -fsS http://127.0.0.1:8000/health/ready
 sudo docker compose exec -T hermes hermes plugins list --plain --no-bundled
 sudo docker compose exec -T hermes hermes mcp test docket
-sudo docker compose logs --since=15m --no-color hermes docket | tail -300
+sudo docker compose logs --since=15m --no-color docket | tail -300
+tail -300 .runtime/hermes/logs/agent.log
 ```
 
 Run the Hermes plugin-list probe only after the gateway log reports that Discord
 is connected and the gateway is running. Do not parallelize it with a Hermes
 restart: this pinned CLI imports user plugins, whose registration has the side
 effect of binding the private projection port. A startup-time probe can contend
-with the gateway on port 8787 and leave the restarted gateway without its
-listener until a clean Hermes restart.
+with the gateway on port 8787. Plugin `0.4.0` retries that bind, but avoiding the
+race keeps startup and diagnostics unambiguous.
 
 Expected results:
 
 * PostgreSQL and Docket are healthy; Hermes and SearXNG are running.
-* `docket-discord` is `enabled`.
-* Hermes connects to `http://docket:8000/mcp/` and discovers exactly eight
-  tools, including `docket_store_record`, `docket_propose_action`, and
-  `docket_get_action`.
+* `docket-discord` `0.4.0` is `enabled`.
+* Hermes connects to `http://docket:8000/mcp/` and discovers exactly twelve
+  tools, including `docket_store_record`, `docket_propose_action`,
+  `docket_list_queue_items`, `docket_snooze_queue_item`, and
+  `docket_ignore_queue_item`.
 * Logs contain no startup, plugin-load, MCP-authentication, or migration error.
 
 After an MCP tool, schema, or allowlist change, send `/reload-mcp` in the active
@@ -119,15 +150,19 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Docket is unhealthy after changing the database password | Check whether the PostgreSQL volume predates the new password | Compose environment changed but the existing database role did not |
 | Plugin or skill edit appears ignored | Restart Hermes, run `/reload-mcp` when MCP changed, and begin a new Discord turn | Bind-mounted file changed, but Python hook/skill/tool registration is cached |
 | `skill_manage` reports a read-only `.SKILL.md.tmp` path | Edit the repository-owned skill on the host and restart Hermes | Docket's mounted manual skill is intentionally read-only inside Hermes; model-driven self-edit is not the update path |
-| Plugin list logs `Address already in use` or projection listener is unreachable after restart | Stop running plugin probes, restart only Hermes, then verify port 8787 before further CLI inspection | Pinned plugin registration and a concurrent diagnostic process contended for the private listener |
+| Plugin load fails with `Address already in use` or projection listener is unreachable after restart | Stop running plugin probes, restart only Hermes, then verify port 8787 before further CLI inspection | Pinned plugin registration or a concurrent diagnostic process bypassed the retrying listener supervisor |
 | Docket Python edit appears ignored | Rebuild and recreate Docket | Application source is copied into the image, not bind-mounted |
 | Correct record is returned but no new provenance exists | Inspect `record_sources` and `record.matched` audit evidence | Read path passed; store path did not |
 | Proposal returns `action_unavailable` | Inspect the named stable meeting and missing-fields detail | Incomplete dates, local times, timezone, or no selected weekday in range |
 | Proposal returns `calendar_not_allowed` | Compare the exact ID returned by `docket_list_accounts` with `GOOGLE_CALENDAR_ID` | Display name or different calendar substituted for the configured opaque ID |
 | Approval message is ignored | Use plain `docket approve CODE`; verify queue is both allowed and free-response | Discord mention gate dropped ingress, plugin context gate failed, or code expired |
 | No daily thread/card appears | Inspect projection outbox status, then the private plugin listener and Hermes logs | Hermes not recreated after plugin/env change, private listener unavailable, Discord permission/API failure, or retry backoff |
+| No rollover occurs after 07:00 local | Inspect `system:daily_rollover:ISO-DATE`, worker heartbeat, timezone, and rollover hour | Worker unavailable, wrong timezone/hour, or a prior command already owns the date |
 | Duplicate daily thread or card | Stop retries and inspect exact name/owner or footer-marker collisions | Archived lookup drift, manually copied marker, lost binding, or plugin concurrency regression |
 | Button says the control is unauthorized/stale | Compare stored control projection with actual parent/thread/message and actor | Copied/old card, wrong operator, changed thread parent, projection refresh, or callback drift |
+| Snoozed item does not return | Compare `snoozed_until`, `snooze_local_date`, local timezone, and the day's rollover audit | Wake time has not arrived, rollover did not run, or the item was resolved separately |
+| Past daily thread remains active | Check pending card outbox rows before its lifecycle event | Archival is intentionally waiting for projection convergence, or lifecycle delivery failed |
+| Canonical state exists but Discord never receives it | Inspect the exhausted projection and its deduplicated system-alert outbox event | Projection delivery exhausted; canonical ingestion correctly survived |
 | Hermes appears stuck on a Docket tool label | Confirm the tool's completion time, then find the following provider-request start/completion pair in `agent.log` | The MCP call may already be complete while the next model stream is stalled; the UI retains the last tool label |
 | Approval is consumed but no Calendar link appears | Inspect operation status, next attempt, attempts, and worker log | Worker stopped, provider failure, backoff, or reconciliation required |
 | Operation is `reconciliation_required` | Inspect attempt error and provider correlation; never force a create retry | Timeout/crash may have reached Google, or reconciliation found conflicting matches |
@@ -334,8 +369,10 @@ from discord_projections order by created_at desc limit 20;'
 First failure points:
 
 * `discord_transport_error` or `discord_runtime_unavailable`: verify Hermes is
-  running, plugin `0.3.0` is enabled, port 8787 is exposed only internally, and
-  Hermes was recreated after Compose environment changes.
+  running, plugin `0.4.0` is enabled, port 8787 is exposed only internally, and
+  Hermes was recreated after Compose environment changes. The default ten
+  attempts cover ordinary Hermes startup; do not reduce the window without
+  measuring the pinned runtime's initialization time.
 * `daily_thread_name_conflict`: inspect exact active and archived matches under
   the configured parent. Do not rename/adopt a foreign-owned collision or
   delete evidence merely to unblock delivery.
@@ -362,6 +399,51 @@ print("projection listener reachable")'
 
 Hermes plugin edits require a gateway restart. `/reload-mcp` is still required
 for MCP tool/schema changes, but it does not reload this Python plugin.
+
+The pinned Hermes runtime performs overlapping plugin discovery. Plugin `0.4.0`
+therefore starts port 8787 under a retrying supervisor: one discovery pass may
+log that startup is deferred because the port is in use, but plugin loading must
+still succeed and one listener must remain reachable. A warning that the plugin
+itself failed to load, or a refused connection after the gateway is running, is
+not healthy.
+
+## Daily rollover and queue recovery
+
+Inspect a specific local day without reading projection bodies or control
+tokens:
+
+```bash
+sudo docker compose exec -T postgres psql -U docket -d docket -x -c '
+select id, status, result, completed_at
+from command_requests
+where request_key = '''system:daily_rollover:YYYY-MM-DD''';
+select id, local_date, thread_name, thread_id, status, lifecycle_version,
+       archived_at, last_error_code
+from discord_daily_threads
+order by local_date desc limit 10;
+select queue_item_id, daily_thread_id, projection_version, message_id, status,
+       last_error_code
+from discord_projections
+order by created_at desc limit 30;'
+```
+
+For one item, use `docket_get_queue_item`; its `projection_dates` list should
+contain no more than one projection for a given ISO date.
+`docket_list_queue_items` can filter by canonical status, category, priority,
+projection date, or exact primary source-item UUID. These reads do not consume
+an intent index.
+
+If a rollover command succeeded but delivery is pending, leave the canonical
+command alone and investigate the outbox. Never delete the command to make the
+day run again. Once transport is repaired, reset only a specifically diagnosed
+failed outbox row to `pending`, retain its `attempt_count`, clear its lease and
+last error, and let the worker converge it. Record the intervention. Do not
+requeue an event whose error indicates a binding or marker conflict.
+
+The normal startup order is Hermes listener first, then Docket. This is an
+optimization rather than a correctness requirement: delivery retries are
+durable, and terminal exhaustion emits one system alert. The current default is
+`DOCKET_DISCORD_PROJECTION_MAX_ATTEMPTS=10` with capped exponential backoff.
 
 ## Schema or tool mismatch
 
@@ -435,7 +517,7 @@ valid bearer is necessary but not sufficient for a store operation.
 | MCP tool name/signature | Rebuild Docket, update both Hermes configs and skill, recreate/restart Hermes, then send `/reload-mcp` in active sessions | Server schema, client allowlist, and session tool registry must move atomically |
 | Hermes or MCP pin | Follow the full upgrade checklist | Internal event/schema adapter contracts may change |
 
-After any lifecycle action, rerun the first five checks.
+After any lifecycle action, rerun the first checks.
 
 ## Environment mode and credential bootstrap
 
@@ -608,6 +690,16 @@ uv run mypy
 sudo docker compose ps
 sudo docker compose exec -T hermes hermes plugins list --plain --no-bundled
 sudo docker compose exec -T hermes hermes mcp test docket
+```
+
+For Milestone 3 queue/lifecycle changes, also run:
+
+```bash
+uv run pytest \
+  tests/unit/test_queue_lifecycle.py \
+  tests/integration/test_queue_rollover.py \
+  tests/integration/test_system_alerts.py \
+  tests/adversarial/test_plugin_actor_gate.py
 ```
 
 For changes to manual Discord persistence, additionally require one real

@@ -46,6 +46,14 @@ The listener binds to `0.0.0.0:8787` inside the Hermes container but is only
 on every request. Docket's callback uses the independent
 `HERMES_TO_DOCKET_TOKEN_FILE`. Neither port nor token is model-visible.
 
+Hermes performs overlapping plugin discovery during this pin's startup. Each
+discovery pass imports an isolated plugin module, so module globals alone cannot
+prevent a transient second bind. Plugin `0.4.0` starts the private HTTP server
+under a background supervisor: an `EADDRINUSE` defers that copy without failing
+plugin registration, and it retries if the process that temporarily owned the
+port exits. Healthy startup may contain one `startup deferred` line, followed
+by one reachable listener and no `Failed to load plugin 'docket-discord'` line.
+
 Pinned outbound assumptions to revalidate:
 
 * `TextChannel.create_thread(..., type=ChannelType.public_thread)` creates the

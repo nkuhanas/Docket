@@ -1,12 +1,14 @@
 # Docket
 
 Docket is a durable authorization and state layer for personal operations. This
-repository currently implements the Milestone 0-2.5 path: term/course persistence,
+repository currently implements the Milestone 0-3 path: term/course persistence,
 typed Calendar proposals, immutable previews, authenticated one-time approvals,
 durable operations and attempts, Google Calendar create/update/reconciliation,
 audit history, durable Discord daily-thread/card projection, and Hermes
-integration. Detailed implementation specifications are maintained privately
-and excluded from Git.
+integration. Milestone 3 adds canonical queue reads and local transitions,
+07:00 local daily rollover, carryover with one current control surface, thread
+archival recovery, and durable system-channel failure reporting. Detailed
+implementation specifications are maintained privately and excluded from Git.
 
 ## Operational documentation
 

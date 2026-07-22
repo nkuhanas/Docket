@@ -11,6 +11,8 @@ Start here when operating or changing the deployed stack:
   private implementation specification and their compensating controls.
 * [Milestone 2.5 verification](milestone-2.5-verification.md) — pinned runtime,
   automated evidence, live Discord transcript, and the remaining operator gate.
+* [Milestone 3 verification](milestone-3-verification.md) — daily rollover,
+  queue controls, archival recovery, system alerts, and the live-smoke boundary.
 
 These notes describe the current pinned stack. They are not a substitute for
 the specification or migrations. When behavior and documentation disagree,
