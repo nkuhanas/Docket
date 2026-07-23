@@ -1,8 +1,6 @@
 from pathlib import Path
 
-SKILL_PATH = Path(
-    "hermes/plugin/docket_discord/skills/docket-manual-intent/SKILL.md"
-)
+SKILL_PATH = Path("hermes/plugin/docket_discord/skills/docket-manual-intent/SKILL.md")
 
 
 def test_manual_intent_skill_requires_button_first_approval_guidance() -> None:
@@ -39,3 +37,17 @@ def test_manual_intent_skill_keeps_durable_output_out_of_chat() -> None:
     assert "Never duplicate a proposal body" in skill
     assert "do not duplicate that preview in chat" in skill
     assert "Do not start a background terminal process" in skill
+
+
+def test_manual_intent_skill_uses_one_atomic_schedule_flow() -> None:
+    skill = " ".join(SKILL_PATH.read_text(encoding="utf-8").split())
+
+    assert "Call `docket_store_term_schedule` exactly once" in skill
+    assert "Never loop over `docket_store_record` per term or course" in skill
+    assert "call `docket_propose_term_schedule` exactly once" in skill
+    assert "do not wait for a second “propose it” prompt" in skill
+    assert "ask one consolidated clarification question" in skill
+    assert "one aggregate proposal" in skill
+    assert "Under `off`, never propose" in skill
+    assert "Under `explicit_only`, propose only" in skill
+    assert "Cancellation is always explicit" in skill
