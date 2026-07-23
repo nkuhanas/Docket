@@ -23,13 +23,18 @@ from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.services.operations import OperationRunner
 
 
-def schedule(*, days: list[str] | None = None, start_time: str = "10:30:00") -> dict:
+def schedule(
+    *,
+    days: list[str] | None = None,
+    start_time: str = "10:30:00",
+    end_time: str = "11:50:00",
+) -> dict:
     meeting_days = days or ["MO", "WE"]
     return {
         "meeting_type": "lecture",
         "days": meeting_days,
         "start_time": start_time,
-        "end_time": "11:50:00",
+        "end_time": end_time,
         "location": "Building 14",
         "start_date": "2026-08-24",
         "end_date": "2026-12-18",
@@ -264,7 +269,11 @@ def test_calendar_update_modifies_linked_event_in_place(session_factory) -> None
             account=account,
             operation_type="calendar_update_meeting",
             record_version=2,
-            event_schedule=schedule(days=["WE"], start_time="12:30:00"),
+            event_schedule=schedule(
+                days=["WE"],
+                start_time="12:30:00",
+                end_time="13:50:00",
+            ),
             external_event_id=link.external_event_id,
             provider_etag=link.provider_etag,
         )

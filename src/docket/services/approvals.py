@@ -22,6 +22,7 @@ from docket.models import (
     ActionRevision,
     Approval,
     AuditEvent,
+    CalendarEventCache,
     DiscordDailyThread,
     DiscordProjection,
     Operation,
@@ -198,21 +199,46 @@ class ApprovalService:
                 code="target_calendar_changed",
                 message="The approved target is no longer the configured Docket calendar.",
             )
-        record_target = revision.target_versions.get("record", {})
         queue_target = revision.target_versions.get("queue_item", {})
-        try:
-            record_id = uuid.UUID(str(record_target.get("id")))
-        except ValueError as exc:
-            raise DocketError(
-                code="approval_binding_mismatch",
-                message="The action contains an invalid target record binding.",
-            ) from exc
-        record = self.session.get(Record, record_id)
-        if record is None or record.version != record_target.get("version"):
-            raise DocketError(
-                code="target_version_changed",
-                message="The target record changed after the approval preview was created.",
+        record_target = revision.target_versions.get("record")
+        if record_target is not None:
+            try:
+                record_id = uuid.UUID(str(record_target.get("id")))
+            except (AttributeError, ValueError) as exc:
+                raise DocketError(
+                    code="approval_binding_mismatch",
+                    message="The action contains an invalid target record binding.",
+                ) from exc
+            record = self.session.get(Record, record_id)
+            if record is None or record.version != record_target.get("version"):
+                raise DocketError(
+                    code="target_version_changed",
+                    message="The target record changed after the approval preview was created.",
+                )
+        calendar_target = revision.target_versions.get("calendar_snapshot")
+        if isinstance(calendar_target, dict) and calendar_target.get(
+            "provider_event_id"
+        ) is not None:
+            event = self.session.scalar(
+                select(CalendarEventCache).where(
+                    CalendarEventCache.account_id == revision.account_id,
+                    CalendarEventCache.calendar_id
+                    == revision.parameters.get("calendar_id"),
+                    CalendarEventCache.provider_event_id
+                    == calendar_target["provider_event_id"],
+                )
             )
+            if (
+                event is None
+                or event.status == "cancelled"
+                or event.provider_etag != calendar_target.get("provider_etag")
+                or event.has_attendees
+                or event.organizer_is_self is False
+            ):
+                raise DocketError(
+                    code="target_version_changed",
+                    message="The Calendar event changed after the approval preview was created.",
+                )
         if str(queue_item.id) != queue_target.get("id") or queue_item.version != queue_target.get(
             "version"
         ):
@@ -250,6 +276,28 @@ class ApprovalService:
             return (
                 f"calendar:update:{revision.account_id}:{parameters['external_event_id']}:"
                 f"{parameters['record_version']}:{revision.preview_sha256}"
+            )
+        if revision.action_type == "calendar_create_event":
+            return (
+                f"calendar:create-event:{revision.account_id}:"
+                f"{parameters['logical_key']}:{revision.parameters_sha256}"
+            )
+        if revision.action_type == "calendar_update_event":
+            return (
+                f"calendar:update-event:{revision.account_id}:"
+                f"{parameters['external_event_id']}:{parameters.get('provider_etag')}:"
+                f"{revision.preview_sha256}"
+            )
+        if revision.action_type == "calendar_update_reminders":
+            return (
+                f"calendar:update-reminders:{revision.account_id}:"
+                f"{parameters['external_event_id']}:{parameters.get('provider_etag')}:"
+                f"{parameters['reminder_plan_sha256']}"
+            )
+        if revision.action_type == "calendar_cancel_event":
+            return (
+                f"calendar:cancel-event:{revision.account_id}:"
+                f"{parameters['external_event_id']}:{parameters.get('provider_etag')}"
             )
         raise DocketError(
             code="invalid_approval_state",

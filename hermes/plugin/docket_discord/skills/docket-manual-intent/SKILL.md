@@ -87,18 +87,30 @@ a new course and proposal uses course `0` and proposal `1`; and a proposal-only
 request uses proposal `0`. Never reuse one operation's request key for another
 operation. Store newly requested records before proposing the external action.
 
-Before a Calendar proposal, use the canonical record snapshot returned by an
-immediately preceding successful store call for the same course; otherwise
-read the course's current version. Call `docket_list_accounts` to select the
-explicit enabled Google account. Call
-`docket_propose_action` only when the user explicitly asked for the Calendar
-write. Select the calendar ID returned by `docket_list_accounts`; never
-substitute another target. Docket derives the risk, exact schedule, preview,
-hashes, and approval expiry. If a proposal succeeds, acknowledge it briefly and
-explain that Docket is publishing the authoritative preview and controls to
-today's ISO-dated thread under the configured queue; do not duplicate that
-preview in chat. Tell the operator to use that card's **Approve** or **Reject**
-button. Do not instruct or suggest that the
+Before a course-meeting Calendar proposal, use the canonical record snapshot
+returned by an immediately preceding successful store call for the same course;
+otherwise read the course's current version. Call `docket_list_accounts` to
+select the explicit enabled Google account and use only the returned configured
+calendar ID. Use `docket_propose_action` for a stored course meeting.
+
+Use `docket_propose_calendar_event` for a standalone create, complete
+replacement update, unified reminder change, or explicit cancellation. Supply
+the complete generated discriminated proposal schema; never synthesize raw
+Google event JSON or RRULE text. A complete current trusted request may be
+proposed in the same turn when `docket_get_calendar_profile` reports
+`proposal_mode: suggest`. Omitted create reminders use the profile default;
+explicit reminder leads replace the entire plan, and an empty lead list disables
+both Google popup and Docket daily-thread delivery. Never infer priority:
+initial proposals use normal priority unless Docket can verify an explicit
+operator value, and non-default changes belong on the authenticated card
+control.
+
+Docket derives risk, freshness, exact target state, conflicts, preview, hashes,
+and approval expiry. If a proposal succeeds, acknowledge it briefly and explain
+that Docket is publishing the authoritative preview and controls to today's
+ISO-dated thread under the configured queue; do not duplicate that preview in
+chat. Tell the operator to use that card's **Approve** or **Reject** button. Do
+not instruct or suggest that the
 operator type an approval/rejection code, slash command, or conversational
 assent. Typed codes are an operator-runbook-only break-glass mechanism and are
 intentionally absent from the model-facing proposal result.
@@ -122,18 +134,14 @@ acceptable. Never describe stale or uncovered cache state as current.
 `require_fresh` remains a bounded Docket-owned refresh and does not grant raw
 Google access.
 
-Create or change a reminder only when the user explicitly asks for a standing
-notification rule. Read existing canonical rules with
-`docket_list_reminder_rules` before an update or disable; never search past
-sessions for a rule UUID or version. Use `docket_set_reminder_rule` with a new
-trusted intent index, the configured account/calendar, a calendar-wide or
-event-specific scope, and a concrete lead time. The tool accepts no Discord
-destination: Docket binds the queue parent and routes delivery to the ISO thread
-for the reminder's Los Angeles due date. Use
-`docket_disable_reminder_rule` only for an explicit disable request and the
-rule's current version. Reminder delivery is a deterministic Docket worker
-consequence, not model-authored text, an immediate send tool, or an external
-Calendar mutation.
+Create, replace, or disable reminders only through the `reminders`
+discriminator of `docket_propose_calendar_event`. Read underlying canonical
+projection rules with `docket_list_reminder_rules` for diagnosis; never search
+past sessions for a rule UUID or version. There is no model-visible direct rule
+write or disable tool. Docket owns one approved reminder plan and projects it to
+both Google popup and the ISO thread for the reminder's Los Angeles due date.
+Reminder delivery is a deterministic Docket worker consequence, not
+model-authored text, an immediate send tool, or an independent local-only rule.
 
 External actions are proposals only. Never represent conversational assent as a
 Docket approval and never call a raw provider mutation.

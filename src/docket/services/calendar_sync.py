@@ -19,6 +19,7 @@ from docket.domain.errors import DocketError
 from docket.models import (
     Account,
     CalendarEventCache,
+    CalendarLink,
     CalendarSyncState,
     OutboxEvent,
     ScheduledNotification,
@@ -280,6 +281,15 @@ class CalendarSyncService:
                     )
                 ).all()
             }
+            links = {
+                row.external_event_id: row
+                for row in session.scalars(
+                    select(CalendarLink).where(
+                        CalendarLink.account_id == state.account_id,
+                        CalendarLink.calendar_id == state.calendar_id,
+                    )
+                ).all()
+            }
             seen: set[str] = set()
             for event in events:
                 seen.add(event.provider_event_id)
@@ -307,6 +317,24 @@ class CalendarSyncService:
                 row.start_date = event.start_date
                 row.end_date = event.end_date
                 row.timezone = event.timezone
+                row.has_attendees = event.has_attendees
+                row.organizer_is_self = event.organizer_is_self
+                link = links.get(event.provider_event_id)
+                if link is None and event.recurring_event_id is not None:
+                    link = links.get(event.recurring_event_id)
+                if link is None:
+                    row.recurrence_kind = event.recurrence_kind
+                    row.system_tags = list(event.system_tags)
+                    row.operator_tags = []
+                    row.priority = "normal"
+                    row.priority_basis = "default"
+                else:
+                    row.recurrence_kind = link.recurrence_kind
+                    row.system_tags = list(link.system_tags)
+                    row.operator_tags = list(link.operator_tags)
+                    row.priority = link.priority
+                    row.priority_basis = link.priority_basis
+                row.provider_reminders = dict(event.provider_reminders or {})
                 row.provider_etag = event.provider_etag
                 row.provider_updated_at = event.provider_updated_at
                 row.synced_at = now

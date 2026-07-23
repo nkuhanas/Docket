@@ -74,9 +74,10 @@ mcp_servers:
         - docket_list_accounts
         - docket_list_calendar_events
         - docket_get_calendar_sync_status
+        - docket_get_calendar_profile
+        - docket_set_calendar_profile
         - docket_list_reminder_rules
-        - docket_set_reminder_rule
-        - docket_disable_reminder_rule
+        - docket_propose_calendar_event
         - docket_list_queue_items
         - docket_get_queue_item
         - docket_snooze_queue_item

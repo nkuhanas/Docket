@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from docket.config import get_settings
 from docket.domain.enums import (
     ActionStatus,
     AttemptKind,
@@ -22,11 +23,13 @@ from docket.models import (
     AuditEvent,
     CalendarEventCache,
     CalendarLink,
+    CalendarReminderPlan,
     CalendarSyncState,
     ExecutionAttempt,
     Operation,
     OutboxEvent,
     QueueItem,
+    ReminderRule,
 )
 from docket.models.base import utc_now
 from docket.providers.google.calendar import (
@@ -53,13 +56,33 @@ class ClaimedOperation:
     parameters: dict[str, Any]
 
     def calendar_request(self) -> CalendarEventRequest:
+        event = self.parameters.get("event")
+        event_spec = dict(event) if isinstance(event, dict) else None
+        provider_before = self.parameters.get("provider_before")
+        before = dict(provider_before) if isinstance(provider_before, dict) else {}
+        summary = (
+            str(event_spec["title"])
+            if event_spec is not None
+            else str(self.parameters.get("summary") or before.get("summary") or "Docket event")
+        )
+        schedule = self.parameters.get("schedule")
+        reminder_plan = self.parameters.get("reminder_plan")
         return CalendarEventRequest(
             calendar_id=str(self.parameters["calendar_id"]),
             provider_correlation=self.provider_correlation,
-            summary=str(self.parameters["summary"]),
-            schedule=dict(self.parameters["schedule"]),
+            summary=summary,
+            schedule=dict(schedule) if isinstance(schedule, dict) else None,
             external_event_id=self.parameters.get("external_event_id"),
             provider_etag=self.parameters.get("provider_etag"),
+            event_spec=event_spec,
+            reminder_plan=(
+                dict(reminder_plan) if isinstance(reminder_plan, dict) else None
+            ),
+            logical_key=self.parameters.get("logical_key"),
+            priority=str(self.parameters.get("priority", "normal")),
+            priority_basis=str(self.parameters.get("priority_basis", "default")),
+            reminder_plan_sha256=self.parameters.get("reminder_plan_sha256"),
+            operation_type=self.operation_type,
         )
 
 
@@ -192,32 +215,61 @@ class OperationRunner:
         snapshot = result.snapshot
         start = snapshot.get("start")
         end = snapshot.get("end")
-        if (
-            not isinstance(start, dict)
-            or not isinstance(end, dict)
-            or not isinstance(start.get("dateTime"), str)
-            or not isinstance(end.get("dateTime"), str)
-            or not isinstance(start.get("timeZone"), str)
-        ):
+        if not isinstance(start, dict) or not isinstance(end, dict):
             raise DocketError(
                 code="calendar_cache_invalid_write_result",
                 message="Calendar write result could not be normalized into the local cache.",
             )
-        timezone_value = start.get("timeZone")
-        assert isinstance(timezone_value, str)
-        timezone = timezone_value
+        is_all_day = isinstance(start.get("date"), str)
+        start_at: datetime | None = None
+        end_at: datetime | None = None
+        start_date: Any = None
+        end_date: Any = None
+        timezone: str | None = None
         try:
-            zone = ZoneInfo(timezone)
-            start_at = (
-                datetime.fromisoformat(start["dateTime"]).replace(tzinfo=zone).astimezone(UTC)
-            )
-            end_timezone_value = end.get("timeZone")
-            end_timezone = end_timezone_value if isinstance(end_timezone_value, str) else timezone
-            end_at = (
-                datetime.fromisoformat(end["dateTime"])
-                .replace(tzinfo=ZoneInfo(end_timezone))
-                .astimezone(UTC)
-            )
+            if is_all_day:
+                if not isinstance(end.get("date"), str):
+                    raise ValueError
+                from datetime import date as calendar_date
+
+                start_date = calendar_date.fromisoformat(str(start["date"]))
+                end_date = calendar_date.fromisoformat(str(end["date"]))
+                event = parameters.get("event")
+                timing = event.get("timing") if isinstance(event, dict) else None
+                timezone = (
+                    str(timing.get("timezone"))
+                    if isinstance(timing, dict) and timing.get("timezone")
+                    else get_settings().timezone
+                )
+                if end_date <= start_date:
+                    raise ValueError
+            else:
+                if (
+                    not isinstance(start.get("dateTime"), str)
+                    or not isinstance(end.get("dateTime"), str)
+                    or not isinstance(start.get("timeZone"), str)
+                ):
+                    raise ValueError
+                timezone = str(start["timeZone"])
+                zone = ZoneInfo(timezone)
+                start_at = (
+                    datetime.fromisoformat(str(start["dateTime"]))
+                    .replace(tzinfo=zone)
+                    .astimezone(UTC)
+                )
+                end_timezone_value = end.get("timeZone")
+                end_timezone = (
+                    end_timezone_value
+                    if isinstance(end_timezone_value, str)
+                    else timezone
+                )
+                end_at = (
+                    datetime.fromisoformat(str(end["dateTime"]))
+                    .replace(tzinfo=ZoneInfo(end_timezone))
+                    .astimezone(UTC)
+                )
+                if end_at <= start_at:
+                    raise ValueError
         except (ValueError, TypeError) as exc:
             raise DocketError(
                 code="calendar_cache_invalid_write_result",
@@ -248,18 +300,133 @@ class OperationRunner:
         location = snapshot.get("location")
         row.summary = summary[:512] if isinstance(summary, str) and summary else None
         row.location = location[:1000] if isinstance(location, str) and location else None
-        row.is_all_day = False
+        row.is_all_day = is_all_day
         row.start_at = start_at
         row.end_at = end_at
-        row.start_date = None
-        row.end_date = None
+        row.start_date = start_date
+        row.end_date = end_date
         row.timezone = timezone
+        event = parameters.get("event")
+        classification = revision.preview.get("classification", {})
+        if isinstance(classification, dict):
+            row.recurrence_kind = str(
+                classification.get("recurrence_kind", "one_time")
+            )
+            row.system_tags = list(classification.get("system_tags", []))
+            row.operator_tags = list(classification.get("operator_tags", []))
+            row.priority = str(classification.get("priority", "normal"))
+            row.priority_basis = str(
+                classification.get("priority_basis", "default")
+            )
+        elif isinstance(event, dict):
+            row.recurrence_kind = "recurring" if event.get("recurrence") else "one_time"
+        row.has_attendees = False
+        row.organizer_is_self = True
+        reminders = snapshot.get("reminders")
+        row.provider_reminders = dict(reminders) if isinstance(reminders, dict) else {}
         row.provider_etag = result.provider_etag
         row.synced_at = now
         session.flush()
+
+    @staticmethod
+    def _activate_reminder_plan(
+        session: Session,
+        operation: Operation,
+        result: CalendarEventResult,
+    ) -> None:
+        revision, _action, _queue_item = OperationRunner._bound_entities(
+            session, operation
+        )
+        plan = revision.parameters.get("reminder_plan")
+        if not isinstance(plan, dict):
+            return
+        desired_leads = {int(value) for value in plan.get("lead_seconds", [])}
+        rules = list(
+            session.scalars(
+                select(ReminderRule).where(
+                    ReminderRule.account_id == operation.account_id,
+                    ReminderRule.calendar_id == revision.parameters["calendar_id"],
+                    ReminderRule.scope == "event",
+                    ReminderRule.provider_event_id == result.external_event_id,
+                    ReminderRule.source_kind == "canonical_plan",
+                )
+            )
+        )
+        selected: dict[int, ReminderRule] = {}
+        for rule in rules:
+            if rule.lead_seconds in desired_leads and rule.lead_seconds not in selected:
+                selected[rule.lead_seconds] = rule
+                if not rule.enabled:
+                    rule.enabled = True
+                    rule.version += 1
+            elif rule.enabled:
+                rule.enabled = False
+                rule.version += 1
+        for lead_seconds in sorted(desired_leads):
+            if lead_seconds not in selected:
+                rule = ReminderRule(
+                    account_id=operation.account_id,
+                    calendar_id=str(revision.parameters["calendar_id"]),
+                    scope="event",
+                    provider_event_id=result.external_event_id,
+                    lead_seconds=lead_seconds,
+                    queue_channel_id=get_settings().queue_channel_id,
+                    source_kind="canonical_plan",
+                    enabled=True,
+                    created_by_actor_id=(
+                        revision.created_by_actor_id
+                        or get_settings().operator_discord_user_id
+                    ),
+                )
+                session.add(rule)
+                session.flush()
+                selected[lead_seconds] = rule
+        now = utc_now()
+        plans = session.scalars(
+            select(CalendarReminderPlan).where(
+                CalendarReminderPlan.action_revision_id == revision.id
+            )
+        ).all()
+        for planned in plans:
+            matched_rule = selected.get(planned.lead_seconds)
+            if matched_rule is None:
+                planned.status = "cancelled"
+                continue
+            planned.reminder_rule_id = matched_rule.id
+            planned.status = "activated"
+            planned.provider_applied_at = now
         from docket.services.reminders import materialize_reminders
 
-        materialize_reminders(session, now=now)
+        materialize_reminders(
+            session,
+            now=now,
+            rule_ids={rule.id for rule in rules} | {rule.id for rule in selected.values()},
+        )
+
+    @staticmethod
+    def _apply_cancelled_cache(
+        session: Session,
+        operation: Operation,
+        result: CalendarEventResult,
+    ) -> None:
+        revision, _action, _queue_item = OperationRunner._bound_entities(
+            session, operation
+        )
+        row = session.scalar(
+            select(CalendarEventCache).where(
+                CalendarEventCache.account_id == operation.account_id,
+                CalendarEventCache.calendar_id == revision.parameters["calendar_id"],
+                CalendarEventCache.provider_event_id == result.external_event_id,
+            )
+        )
+        if row is not None:
+            row.status = "cancelled"
+            row.provider_etag = None
+            row.provider_reminders = {
+                "useDefault": False,
+                "overrides": [],
+            }
+            row.synced_at = utc_now()
 
     @staticmethod
     def _apply_success(
@@ -270,43 +437,131 @@ class OperationRunner:
     ) -> None:
         revision, action, queue_item = OperationRunner._bound_entities(session, operation)
         parameters = revision.parameters
-        link = session.scalar(
-            select(CalendarLink).where(
-                CalendarLink.record_id == uuid.UUID(str(parameters["record_id"])),
-                CalendarLink.meeting_id == parameters["meeting_id"],
-                CalendarLink.account_id == operation.account_id,
-                CalendarLink.calendar_id == parameters["calendar_id"],
-            )
-        )
-        if link is None:
-            link = CalendarLink(
-                record_id=uuid.UUID(str(parameters["record_id"])),
-                meeting_id=str(parameters["meeting_id"]),
-                account_id=operation.account_id,
-                calendar_id=str(parameters["calendar_id"]),
-                external_event_id=result.external_event_id,
-                provider_etag=result.provider_etag,
-                provider_correlation=operation.provider_correlation,
-                last_synced_version=int(parameters["record_version"]),
-                synced_snapshot=result.snapshot,
-            )
-            session.add(link)
-            session.flush()
-        else:
-            if (
-                operation.operation_type == "calendar_update_meeting"
-                and link.external_event_id != result.external_event_id
-            ):
-                raise DocketError(
-                    code="calendar_link_conflict",
-                    message="Calendar update returned a different external event ID.",
+        meeting_action = operation.operation_type in {
+            "calendar_create_meeting",
+            "calendar_update_meeting",
+        }
+        if meeting_action:
+            link = session.scalar(
+                select(CalendarLink).where(
+                    CalendarLink.record_id
+                    == uuid.UUID(str(parameters["record_id"])),
+                    CalendarLink.meeting_id == parameters["meeting_id"],
+                    CalendarLink.account_id == operation.account_id,
+                    CalendarLink.calendar_id == parameters["calendar_id"],
                 )
-            link.external_event_id = result.external_event_id
-            link.provider_etag = result.provider_etag
-            link.provider_correlation = operation.provider_correlation
-            link.last_synced_version = int(parameters["record_version"])
-            link.synced_snapshot = result.snapshot
-        OperationRunner._upsert_calendar_cache(session, operation, result)
+            )
+        else:
+            link = session.scalar(
+                select(CalendarLink).where(
+                    CalendarLink.account_id == operation.account_id,
+                    CalendarLink.calendar_id == parameters["calendar_id"],
+                    CalendarLink.logical_key == parameters["logical_key"],
+                )
+            )
+        if operation.operation_type == "calendar_cancel_event":
+            if link is not None:
+                link.provider_etag = None
+                link.provider_correlation = operation.provider_correlation
+                link.reminder_plan_sha256 = parameters.get(
+                    "reminder_plan_sha256"
+                )
+                link.synced_snapshot = result.snapshot
+            OperationRunner._apply_cancelled_cache(session, operation, result)
+            OperationRunner._activate_reminder_plan(session, operation, result)
+        else:
+            if link is None:
+                classification = revision.preview.get("classification", {})
+                if not isinstance(classification, dict):
+                    classification = {}
+                link = CalendarLink(
+                    record_id=(
+                        uuid.UUID(str(parameters["record_id"]))
+                        if meeting_action
+                        else None
+                    ),
+                    meeting_id=(
+                        str(parameters["meeting_id"]) if meeting_action else None
+                    ),
+                    origin_kind=(
+                        "course_meeting"
+                        if meeting_action
+                        else "standalone"
+                        if operation.operation_type == "calendar_create_event"
+                        else "adopted_provider_event"
+                    ),
+                    logical_key=(
+                        f"course:{parameters['record_id']}:{parameters['meeting_id']}"
+                        if meeting_action
+                        else str(parameters["logical_key"])
+                    ),
+                    account_id=operation.account_id,
+                    calendar_id=str(parameters["calendar_id"]),
+                    external_event_id=result.external_event_id,
+                    provider_etag=result.provider_etag,
+                    provider_correlation=operation.provider_correlation,
+                    last_synced_version=(
+                        int(parameters["record_version"])
+                        if meeting_action
+                        else revision.revision
+                    ),
+                    recurrence_kind=str(
+                        classification.get(
+                            "recurrence_kind",
+                            "recurring" if meeting_action else "one_time",
+                        )
+                    ),
+                    system_tags=list(
+                        classification.get(
+                            "system_tags",
+                            ["recurring", "timed", "course_meeting"]
+                            if meeting_action
+                            else [],
+                        )
+                    ),
+                    operator_tags=list(
+                        classification.get("operator_tags", [])
+                    ),
+                    priority=str(parameters.get("priority", "normal")),
+                    priority_basis=str(
+                        parameters.get("priority_basis", "default")
+                    ),
+                    reminder_plan_sha256=parameters.get(
+                        "reminder_plan_sha256"
+                    ),
+                    synced_snapshot=result.snapshot,
+                )
+                session.add(link)
+                session.flush()
+            else:
+                if (
+                    operation.operation_type
+                    in {
+                        "calendar_update_meeting",
+                        "calendar_update_event",
+                        "calendar_update_reminders",
+                    }
+                    and link.external_event_id != result.external_event_id
+                ):
+                    raise DocketError(
+                        code="calendar_link_conflict",
+                        message="Calendar update returned a different external event ID.",
+                    )
+                link.external_event_id = result.external_event_id
+                link.provider_etag = result.provider_etag
+                link.provider_correlation = operation.provider_correlation
+                link.last_synced_version = (
+                    int(parameters["record_version"])
+                    if meeting_action
+                    else revision.revision
+                )
+                link.synced_snapshot = result.snapshot
+                if parameters.get("reminder_plan_sha256") is not None:
+                    link.reminder_plan_sha256 = parameters[
+                        "reminder_plan_sha256"
+                    ]
+            OperationRunner._upsert_calendar_cache(session, operation, result)
+            OperationRunner._activate_reminder_plan(session, operation, result)
         attempt.status = AttemptStatus.SUCCEEDED.value
         attempt.provider_request_id = result.provider_request_id or attempt.provider_request_id
         attempt.response_summary = {
@@ -319,16 +574,22 @@ class OperationRunner:
         operation.leased_until = None
         operation.next_attempt_at = None
         operation.result = {
-            "calendar_link_id": str(link.id),
+            "calendar_link_id": str(link.id) if link is not None else None,
             "external_event_id": result.external_event_id,
-            "record_version": int(parameters["record_version"]),
+            "record_version": (
+                int(parameters["record_version"]) if meeting_action else None
+            ),
         }
         operation.last_error_code = None
         operation.last_error_message = None
         action.status = ActionStatus.SUCCEEDED.value
         queue_item.status = QueueItemStatus.COMPLETED.value
         queue_item.resolved_at = utc_now()
-        queue_item.resolution_code = "calendar_synchronized"
+        queue_item.resolution_code = (
+            "calendar_cancelled"
+            if operation.operation_type == "calendar_cancel_event"
+            else "calendar_synchronized"
+        )
         queue_item.version += 1
         session.add(
             AuditEvent(
@@ -415,10 +676,19 @@ class OperationRunner:
         self.mark_provider_call_started(claim)
         request = claim.calendar_request()
         try:
-            if claim.operation_type == "calendar_create_meeting":
+            if claim.operation_type in {
+                "calendar_create_meeting",
+                "calendar_create_event",
+            }:
                 result = self.provider.create_event(request)
-            elif claim.operation_type == "calendar_update_meeting":
+            elif claim.operation_type in {
+                "calendar_update_meeting",
+                "calendar_update_event",
+                "calendar_update_reminders",
+            }:
                 result = self.provider.update_event(request)
+            elif claim.operation_type == "calendar_cancel_event":
+                result = self.provider.cancel_event(request)
             else:
                 raise CalendarProviderError(
                     "unsupported_operation",
@@ -547,17 +817,66 @@ class OperationRunner:
             return False
         request = claim.calendar_request()
         try:
-            matches = self.provider.find_by_correlation(request)
+            if claim.operation_type in {
+                "calendar_create_meeting",
+                "calendar_create_event",
+            }:
+                matches = self.provider.find_by_correlation(request)
+            else:
+                current = self.provider.get_event(request)
+                matches = [current] if current is not None else []
         except CalendarProviderError as exc:
             if exc.transient:
                 self._defer_reconciliation(claim, error_code=exc.code, delay_seconds=8)
             else:
                 self._finish_reconciliation_conflict(claim, match_count=-1)
             return True
+        if claim.operation_type == "calendar_cancel_event":
+            if not matches or matches[0].snapshot.get("status") == "cancelled":
+                cancelled = (
+                    matches[0]
+                    if matches
+                    else CalendarEventResult(
+                        external_event_id=str(request.external_event_id),
+                        provider_etag=None,
+                        provider_request_id=None,
+                        snapshot={**request.snapshot(), "status": "cancelled"},
+                    )
+                )
+                self.finish_success(claim, cancelled)
+                return True
+            current = matches[0]
+            if current.provider_etag != request.provider_etag:
+                self._finish_reconciliation_conflict(claim, match_count=1)
+                return True
+            with self.session_factory() as session:
+                operation = session.get(Operation, claim.operation_id)
+                assert operation is not None
+                age = utc_now() - _as_utc(operation.updated_at)
+            if age.total_seconds() >= self.consistency_window_seconds:
+                self._finish_reconciliation_no_match(claim)
+            else:
+                remaining = max(
+                    1,
+                    self.consistency_window_seconds - int(age.total_seconds()),
+                )
+                self._defer_reconciliation(
+                    claim,
+                    error_code="calendar_consistency_window",
+                    delay_seconds=remaining,
+                )
+            return True
         exact = [match for match in matches if event_matches_request(match, request)]
         if len(matches) == 1 and len(exact) == 1:
             self.finish_success(claim, exact[0])
         elif len(matches) == 0:
+            if claim.operation_type in {
+                "calendar_update_meeting",
+                "calendar_update_event",
+                "calendar_update_reminders",
+            }:
+                self._finish_reconciliation_conflict(claim, match_count=0)
+                return True
             with self.session_factory() as session:
                 operation = session.get(Operation, claim.operation_id)
                 assert operation is not None

@@ -271,6 +271,24 @@ class CalendarProfileInput(StrictModel):
         return self
 
 
+class SetCalendarProfileInput(CalendarProfileInput):
+    expected_version: int = Field(ge=1)
+    request_key: DiscordRequestKey
+    source: RecordSourceInput
+    actor_type: Literal["hermes"] = "hermes"
+    actor_id: DiscordId
+
+    @model_validator(mode="after")
+    def request_matches_source(self) -> "SetCalendarProfileInput":
+        validate_discord_request_fields(self.request_key, self.source, self.actor_id)
+        return self
+
+
+class CalendarProfileResult(CalendarProfileInput):
+    operator_user_id: DiscordId
+    version: int = Field(ge=1)
+
+
 class SetReminderRuleInput(StrictModel):
     rule_id: UUID | None = None
     expected_version: int | None = Field(default=None, ge=1)

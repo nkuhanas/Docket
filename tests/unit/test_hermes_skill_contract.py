@@ -24,9 +24,10 @@ def test_manual_intent_skill_preserves_calendar_freshness_and_explicit_reminders
     skill = " ".join(SKILL_PATH.read_text(encoding="utf-8").split())
 
     assert "Never describe stale or uncovered cache state as current" in skill
-    assert "only when the user explicitly asks for a standing" in skill
+    assert "only through the `reminders` discriminator" in skill
     assert "not model-authored text" in skill
-    assert "accepts no Discord destination" in skill
+    assert "no model-visible direct rule write or disable tool" in skill
+    assert "both Google popup and the ISO thread" in skill
     assert "ISO thread" in skill
     assert "never search past sessions for a rule UUID or version" in skill
 

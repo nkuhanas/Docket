@@ -17,18 +17,42 @@ class FakeCalendarProvider:
         self.events: dict[str, CalendarEventResult] = {}
         self.next_create_outcome = "success"
         self.next_update_outcome = "success"
+        self.next_cancel_outcome = "success"
         self.snapshot_events: dict[str, CalendarSnapshotEvent] = {}
         self.snapshot_page_size = 2500
         self.fail_snapshot_page: int | None = None
         self.snapshot_calls = 0
 
     @staticmethod
-    def _result(request: CalendarEventRequest, event_id: str) -> CalendarEventResult:
+    def _result(
+        request: CalendarEventRequest,
+        event_id: str,
+        previous: CalendarEventResult | None = None,
+    ) -> CalendarEventResult:
+        snapshot = request.snapshot()
+        if (
+            previous is not None
+            and request.operation_type == "calendar_update_reminders"
+        ):
+            snapshot = {
+                **previous.snapshot,
+                "reminders": snapshot["reminders"],
+                "docket_correlation": snapshot["docket_correlation"],
+                "docket_reminder_plan_sha256": snapshot[
+                    "docket_reminder_plan_sha256"
+                ],
+            }
+        elif (
+            previous is not None
+            and request.operation_type == "calendar_update_event"
+            and request.reminder_plan is None
+        ):
+            snapshot["reminders"] = previous.snapshot["reminders"]
         return CalendarEventResult(
             external_event_id=event_id,
             provider_etag=f'"fake-{uuid.uuid4()}"',
             provider_request_id=str(uuid.uuid4()),
-            snapshot=request.snapshot(),
+            snapshot=snapshot,
         )
 
     def create_event(self, request: CalendarEventRequest) -> CalendarEventResult:
@@ -61,11 +85,50 @@ class FakeCalendarProvider:
             raise CalendarProviderError(
                 "fake_not_found", "Fake Calendar event was not found.", transient=False
             )
-        result = self._result(request, request.external_event_id)
+        result = self._result(
+            request,
+            request.external_event_id,
+            previous=self.events[request.external_event_id],
+        )
         self.events[result.external_event_id] = result
         if outcome == "unknown_after_write":
             raise CalendarUnknownOutcome("Injected unknown outcome after Calendar update.")
         return result
+
+    def cancel_event(self, request: CalendarEventRequest) -> CalendarEventResult:
+        outcome, self.next_cancel_outcome = self.next_cancel_outcome, "success"
+        if outcome == "transient":
+            raise CalendarProviderError(
+                "fake_transient", "Injected transient Calendar failure.", transient=True
+            )
+        if outcome == "permanent":
+            raise CalendarProviderError(
+                "fake_permanent", "Injected permanent Calendar failure.", transient=False
+            )
+        if request.external_event_id is None:
+            raise CalendarProviderError(
+                "fake_not_found", "Fake Calendar event was not found.", transient=False
+            )
+        previous = self.events.pop(request.external_event_id, None)
+        result = CalendarEventResult(
+            external_event_id=request.external_event_id,
+            provider_etag=None,
+            provider_request_id=str(uuid.uuid4()),
+            snapshot={
+                **(previous.snapshot if previous is not None else request.snapshot()),
+                "status": "cancelled",
+            },
+        )
+        if outcome == "unknown_after_write":
+            raise CalendarUnknownOutcome(
+                "Injected unknown outcome after Calendar cancellation."
+            )
+        return result
+
+    def get_event(self, request: CalendarEventRequest) -> CalendarEventResult | None:
+        if request.external_event_id is None:
+            return None
+        return self.events.get(request.external_event_id)
 
     def find_by_correlation(self, request: CalendarEventRequest) -> list[CalendarEventResult]:
         correlation = request.provider_correlation

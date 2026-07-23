@@ -77,6 +77,7 @@ class OperationStatus(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
     SUCCEEDED = "succeeded"
+    PARTIAL_FAILED = "partial_failed"
     FAILED = "failed"
     RECONCILIATION_REQUIRED = "reconciliation_required"
 

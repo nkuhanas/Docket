@@ -128,3 +128,97 @@ def test_real_calendar_reads_do_not_enable_provider_writes() -> None:
 
     assert isinstance(build_calendar_read_provider(settings), GoogleCalendarProvider)
     assert isinstance(build_calendar_write_provider(settings), FakeCalendarProvider)
+
+
+def test_standalone_event_compiles_recurrence_exceptions_and_popup_plan() -> None:
+    request = CalendarEventRequest(
+        calendar_id="calendar@group.calendar.google.com",
+        provider_correlation="22222222-2222-4222-8222-222222222222",
+        summary="Check my email",
+        event_spec={
+            "title": "Check my email",
+            "timing": {
+                "kind": "timed",
+                "start_local": "2026-07-30T12:00:00",
+                "end_local": "2026-07-30T12:15:00",
+                "timezone": "America/Los_Angeles",
+                "fold": None,
+            },
+            "location": "Desk",
+            "notes": "Private operator note",
+            "operator_tags": ["email"],
+            "priority": "normal",
+            "recurrence": {
+                "frequency": "weekly",
+                "interval": 1,
+                "weekdays": ["TH"],
+                "month_days": [],
+                "count": 4,
+                "until_date": None,
+                "excluded_dates": ["2026-08-06"],
+                "additional_dates": ["2026-08-07"],
+            },
+            "reminder_plan": None,
+        },
+        reminder_plan={
+            "delivery_channels": ["google_popup", "docket_queue"],
+            "lead_seconds": [300, 600],
+        },
+        logical_key="standalone:request-1",
+        reminder_plan_sha256="a" * 64,
+        operation_type="calendar_create_event",
+    )
+
+    body = request.event_body()
+
+    assert body["start"] == {
+        "dateTime": "2026-07-30T12:00:00",
+        "timeZone": "America/Los_Angeles",
+    }
+    assert body["recurrence"] == [
+        "RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=TH;COUNT=4",
+        "EXDATE;TZID=America/Los_Angeles:20260806T120000",
+        "RDATE;TZID=America/Los_Angeles:20260807T120000",
+    ]
+    assert body["reminders"] == {
+        "useDefault": False,
+        "overrides": [
+            {"method": "popup", "minutes": 5},
+            {"method": "popup", "minutes": 10},
+        ],
+    }
+    assert body["extendedProperties"]["private"]["docket_logical_key"] == (
+        "standalone:request-1"
+    )
+    assert "description" not in request.snapshot()
+
+
+def test_all_day_event_uses_exclusive_google_dates() -> None:
+    request = CalendarEventRequest(
+        calendar_id="calendar@group.calendar.google.com",
+        provider_correlation="33333333-3333-4333-8333-333333333333",
+        summary="Conference",
+        event_spec={
+            "title": "Conference",
+            "timing": {
+                "kind": "all_day",
+                "start_date": "2026-08-10",
+                "end_date": "2026-08-12",
+                "timezone": "America/Los_Angeles",
+            },
+            "location": None,
+            "notes": None,
+            "operator_tags": [],
+            "priority": "normal",
+            "recurrence": None,
+            "reminder_plan": None,
+        },
+        reminder_plan={"lead_seconds": []},
+        operation_type="calendar_create_event",
+    )
+
+    body = request.event_body()
+
+    assert body["start"] == {"date": "2026-08-10"}
+    assert body["end"] == {"date": "2026-08-12"}
+    assert body["reminders"] == {"useDefault": False, "overrides": []}

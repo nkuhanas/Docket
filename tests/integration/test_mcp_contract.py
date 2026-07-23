@@ -20,9 +20,10 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
         "docket_list_accounts",
         "docket_list_calendar_events",
         "docket_get_calendar_sync_status",
+        "docket_get_calendar_profile",
+        "docket_set_calendar_profile",
         "docket_list_reminder_rules",
-        "docket_set_reminder_rule",
-        "docket_disable_reminder_rule",
+        "docket_propose_calendar_event",
         "docket_list_queue_items",
         "docket_get_queue_item",
         "docket_snooze_queue_item",
@@ -133,12 +134,30 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
     list_rules_properties = list_rules.inputSchema["properties"]
     assert list_rules_properties["limit"]["maximum"] == 100
 
-    reminder = tools["docket_set_reminder_rule"]
-    reminder_description = " ".join((reminder.description or "").split())
-    assert "cannot send arbitrary immediate text" in reminder_description
-    assert "never infers a standing rule" in reminder_description
-    assert "due-date ISO thread" in reminder_description
-    reminder_properties = reminder.inputSchema["properties"]
-    assert reminder_properties["scope"]["enum"] == ["calendar", "event"]
-    assert reminder_properties["request_key"]["pattern"].startswith("^discord:")
-    assert "destination_channel_id" not in reminder_properties
+    calendar_proposal = tools["docket_propose_calendar_event"]
+    calendar_proposal_description = " ".join(
+        (calendar_proposal.description or "").split()
+    )
+    assert "create, update, reminder change, or cancellation" in (
+        calendar_proposal_description
+    )
+    assert "both Google popup and Docket's due-date ISO queue thread" in (
+        calendar_proposal_description
+    )
+    assert "never mutates Google Calendar" in calendar_proposal_description
+    calendar_proposal_properties = calendar_proposal.inputSchema["properties"]
+    assert calendar_proposal_properties["request_key"]["pattern"].startswith(
+        "^discord:"
+    )
+    proposal_definition = calendar_proposal_properties["proposal"]
+    assert proposal_definition["discriminator"]["propertyName"] == "kind"
+
+    set_profile = tools["docket_set_calendar_profile"]
+    set_profile_description = " ".join((set_profile.description or "").split())
+    assert "cannot split Google and Docket delivery" in set_profile_description
+    profile_definition = set_profile.inputSchema["$defs"]["CalendarProfileInput"]
+    assert profile_definition["properties"]["proposal_mode"]["enum"] == [
+        "explicit_only",
+        "suggest",
+        "off",
+    ]

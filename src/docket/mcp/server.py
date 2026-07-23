@@ -13,17 +13,18 @@ from docket.domain.errors import DocketError
 from docket.providers.google.runtime import get_calendar_read_provider
 from docket.schemas.actions import (
     CalendarActionType,
+    CalendarEventProposal,
     CalendarMeetingActionParameters,
     ProposalResult,
     ProposeActionInput,
+    ProposeCalendarEventInput,
 )
 from docket.schemas.calendar import (
     CalendarFreshness,
     CalendarLookupInput,
+    CalendarProfileInput,
     CalendarRelativeDay,
-    DisableReminderRuleInput,
-    ReminderScope,
-    SetReminderRuleInput,
+    SetCalendarProfileInput,
 )
 from docket.schemas.queue import (
     IgnoreQueueItemInput,
@@ -48,6 +49,8 @@ from docket.schemas.records import (
 )
 from docket.services.accounts import AccountService
 from docket.services.actions import ActionService
+from docket.services.calendar_actions import CalendarActionService
+from docket.services.calendar_profile import CalendarProfileService
 from docket.services.calendar_sync import CalendarReadService, CalendarSyncService
 from docket.services.queue import QueueService
 from docket.services.records import RecordService, serialize_record
@@ -72,7 +75,6 @@ mcp = FastMCP(
 CalendarId = Annotated[str, Field(min_length=1, max_length=1024)]
 CalendarLimit = Annotated[int, Field(ge=1, le=100)]
 CalendarTextFilter = Annotated[str, Field(max_length=200)]
-ReminderLeadSeconds = Annotated[int, Field(ge=0, le=2_678_400)]
 
 
 def _error(exc: Exception) -> dict[str, Any]:
@@ -326,6 +328,51 @@ def docket_get_calendar_sync_status(
 
 
 @mcp.tool()
+def docket_get_calendar_profile() -> dict[str, Any]:
+    """Read Docket's Calendar proposal and unified-reminder defaults.
+
+    The profile is local policy only: it cannot select a provider target, approve an
+    action, or grant a provider write. Reminder delivery always includes both Google
+    popup and the Docket daily queue thread.
+    """
+    try:
+        with session_scope() as session:
+            profile = CalendarProfileService(session).get()
+            return {"ok": True, "calendar_profile": profile.model_dump(mode="json")}
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_set_calendar_profile(
+    profile: CalendarProfileInput,
+    expected_version: int,
+    request_key: DiscordRequestKey,
+    source: RecordSourceInput,
+    actor_id: DiscordId,
+) -> dict[str, Any]:
+    """Update local Calendar proposal policy from current trusted Discord context.
+
+    This audited optimistic-locking write changes only proposal mode, conflict policy,
+    and the canonical reminder defaults. It cannot split Google and Docket delivery,
+    choose a different calendar, approve a proposal, or contact Google Calendar.
+    """
+    try:
+        request = SetCalendarProfileInput(
+            **profile.model_dump(),
+            expected_version=expected_version,
+            request_key=request_key,
+            source=source,
+            actor_id=actor_id,
+        )
+        with session_scope() as session:
+            result = CalendarProfileService(session).set(request)
+            return {"ok": True, "calendar_profile": result.model_dump(mode="json")}
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
 def docket_list_reminder_rules(
     account_id: uuid.UUID,
     calendar_id: CalendarId,
@@ -352,71 +399,44 @@ def docket_list_reminder_rules(
 
 
 @mcp.tool()
-def docket_set_reminder_rule(
+def docket_propose_calendar_event(
     account_id: uuid.UUID,
     calendar_id: CalendarId,
-    scope: ReminderScope,
-    lead_seconds: ReminderLeadSeconds,
+    proposal: CalendarEventProposal,
     request_key: DiscordRequestKey,
     source: RecordSourceInput,
     actor_id: DiscordId,
-    provider_event_id: CalendarId | None = None,
-    rule_id: uuid.UUID | None = None,
-    expected_version: int | None = None,
 ) -> dict[str, Any]:
-    """Create or update an explicit deterministic Calendar reminder rule.
+    """Propose one standalone Calendar create, update, reminder change, or cancellation.
 
-    Docket routes delivery to the due-date ISO thread under its configured queue; the
-    model cannot select a Discord destination. This local, audited write schedules
-    future deterministic notifications, cannot send arbitrary immediate text, and never
-    infers a standing rule from conversation or source content.
+    Docket refreshes its complete bounded Calendar snapshot, resolves exact existing
+    targets, rejects unsafe attendee-bearing events, detects overlaps, applies the
+    stored proposal profile, and derives an immutable approval preview. Reminder plans
+    always project to both Google popup and Docket's due-date ISO queue thread; an empty
+    lead list disables both. The result is only a persistent Discord proposal card.
+    This tool never records approval and never mutates Google Calendar.
     """
     try:
-        request = SetReminderRuleInput(
-            rule_id=rule_id,
-            expected_version=expected_version,
+        _calendar_read_service().list_events(
             account_id=account_id,
             calendar_id=calendar_id,
-            scope=scope,
-            provider_event_id=provider_event_id,
-            lead_seconds=lead_seconds,
+            start=None,
+            end=None,
+            text_filter=None,
+            limit=1,
+            freshness="require_fresh",
+        )
+        request = ProposeCalendarEventInput(
+            account_id=account_id,
+            calendar_id=calendar_id,
+            proposal=proposal,
             request_key=request_key,
             source=source,
             actor_id=actor_id,
         )
         with session_scope() as session:
-            result = ReminderRuleService(session).set(request)
-            return {"ok": True, **result.model_dump(mode="json")}
-    except Exception as exc:
-        return _error(exc)
-
-
-@mcp.tool()
-def docket_disable_reminder_rule(
-    rule_id: uuid.UUID,
-    expected_version: int,
-    request_key: DiscordRequestKey,
-    source: RecordSourceInput,
-    actor_id: DiscordId,
-    reason: str,
-) -> dict[str, Any]:
-    """Disable one explicit reminder rule using optimistic locking and idempotency.
-
-    Pending notifications for the rule are cancelled locally; this cannot delete or
-    modify the corresponding Google Calendar event.
-    """
-    try:
-        request = DisableReminderRuleInput(
-            rule_id=rule_id,
-            expected_version=expected_version,
-            request_key=request_key,
-            source=source,
-            actor_id=actor_id,
-            reason=reason,
-        )
-        with session_scope() as session:
-            result = ReminderRuleService(session).disable(request)
-            return {"ok": True, **result.model_dump(mode="json")}
+            result = CalendarActionService(session).propose(request)
+            return {"ok": True, **_model_proposal_result(result)}
     except Exception as exc:
         return _error(exc)
 
