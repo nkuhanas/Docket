@@ -281,14 +281,14 @@ for break-glass operations but is removed from the model-facing MCP result,
 which instead supplies button-card guidance. No model-visible tool records
 approval or directly calls Google.
 
-Calendar lookups add five model-visible tools without exposing a provider
-client: bounded cache lookup, redacted sync status, bounded canonical reminder-rule
-listing, explicit reminder-rule set, and explicit reminder-rule disable. The list
-tool supplies rule UUIDs and current versions after session compaction, avoiding a
-past-session search. Their generated schemas cap lookup windows, result counts,
-filters, lead times, source context, and optimistic rule versions. Reminder
-destinations are absent from the model schema; Docket binds the queue parent and
-the due-date daily thread internally.
+Calendar lookups and control do not expose a provider client. Bounded cache
+lookup, redacted sync status, profile reads/writes, canonical reminder-rule
+listing, standalone proposals, and aggregate term-schedule proposals all use
+generated typed schemas. Reminder mutations exist only inside an approved
+Calendar proposal; there is no model-visible direct rule-write/disable tool.
+The rule list supplies current canonical identities for diagnosis after session
+compaction, avoiding a past-session search. Reminder destinations are fixed:
+Docket binds Google popup plus the due-date queue thread internally.
 For local-day Calendar questions, that same lookup accepts only the closed
 `today`/`tomorrow` vocabulary. Docket samples its request clock once, resolves
 both local midnights in `DOCKET_TIMEZONE`, and returns the resolved date,
@@ -306,6 +306,23 @@ when that bounded lag is acceptable.
 The active and template allowlists are synchronized by
 `scripts/prepare-hermes-home.sh`, but an existing Hermes session still requires
 `/reload-mcp` after deployment.
+
+`docket_store_term_schedule` deliberately accepts one discriminated existing
+or new term plus 1-50 courses. Its generated schema must preserve the nested
+meeting map, exclusions, additional occurrences, and exact 50-item compiled
+bound. It performs one atomic local transaction and returns an immutable
+manifest snapshot. `docket_propose_term_schedule` accepts that snapshot,
+configured account/calendar, optional unified reminder plan, and a second
+trusted request key. Omitted reminders must remain optional in the generated
+MCP schema. The proposal compiles one parent operation and independent durable
+items only after one approval; Hermes must not synthesize per-course calls.
+
+The Discord plugin understands proposal-control token fields by compact numeric
+codes shared with Docket. Adding a token field requires changing both maps.
+Codes currently cover priority, reminder preset, refresh, edit, review page,
+and snooze. A server-only code produces a valid-looking card that the pinned
+plugin rejects, so the adversarial plugin contract and one live button/select
+smoke are mandatory after changes.
 
 ## Google Calendar REST contract
 

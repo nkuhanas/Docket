@@ -121,10 +121,10 @@ Expected results:
 
 * PostgreSQL and Docket are healthy; Hermes and SearXNG are running.
 * `docket-discord` `0.6.0` is `enabled`.
-* Hermes connects to `http://docket:8000/mcp/` and discovers exactly seventeen
-  tools, including `docket_store_record`, `docket_propose_action`,
-  `docket_list_queue_items`, `docket_snooze_queue_item`, and
-  `docket_ignore_queue_item`, plus the five Calendar read/reminder tools.
+* Hermes connects to `http://docket:8000/mcp/` and discovers exactly twenty
+  tools, including `docket_store_term_schedule`,
+  `docket_propose_term_schedule`, `docket_store_record`,
+  `docket_propose_calendar_event`, and the Calendar/queue read tools.
 * Logs contain no startup, plugin-load, MCP-authentication, or migration error.
 
 After an MCP tool, schema, or allowlist change, send `/reload-mcp` in the active
@@ -155,6 +155,10 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Correct record is returned but no new provenance exists | Inspect `record_sources` and `record.matched` audit evidence | Read path passed; store path did not |
 | Proposal returns `action_unavailable` | Inspect the named stable meeting and missing-fields detail | Incomplete dates, local times, timezone, or no selected weekday in range |
 | Proposal returns `calendar_not_allowed` | Compare the exact ID returned by `docket_list_accounts` with `GOOGLE_CALENDAR_ID` | Display name or different calendar substituted for the configured opaque ID |
+| Complete schedule produces per-course stores/cards | Inspect the active skill and MCP registry, then run `/reload-mcp` | Hermes cached the pre-aggregate workflow or the new tools are absent from its allowlist |
+| Schedule proposal returns `calendar_schedule_outside_fresh_window` | Compare the term/meeting bounds with `calendar_sync_states.window_start/window_end` | The fresh complete Calendar snapshot does not cover the whole proposed schedule |
+| Schedule batch is `partial_failed` | Inspect the parent result and only its failed `operation_items`; do not replay succeeded siblings | One or more provider items failed definitively after other items succeeded |
+| Schedule batch is `reconciliation_required` | Inspect the uncertain item, its attempts, and provider correlation (`operation_items.id`) | A provider call may have succeeded without a durable acknowledgement |
 | Approval button appears inert | Inspect the stored projection/message binding and interaction listener before using any break-glass code | Stale/copied card, wrong parent or actor, listener unavailable, token expired, or action already resolved |
 | No daily thread/card appears | Inspect projection outbox status, then the private plugin listener and Hermes logs | Hermes not recreated after plugin/env change, private listener unavailable, Discord permission/API failure, or retry backoff |
 | No rollover occurs after 07:00 local | Inspect `system:daily_rollover:ISO-DATE`, worker heartbeat, timezone, and rollover hour | Worker unavailable, wrong timezone/hour, or a prior command already owns the date |
@@ -280,6 +284,42 @@ uv run pytest tests/unit/test_records.py -k 'replay or canonical'
 
 For a live replay, record the source, audit, and command counts before and after
 calling the captured payload. All counts must remain unchanged.
+
+## Complete term-schedule and batch verification
+
+A complete trusted schedule is two model-visible writes, not one write per
+course:
+
+1. `docket_store_term_schedule` atomically stores or matches the term and every
+   course, attaches the same Discord source request to each record, and returns
+   one immutable `schedule_snapshot_id`.
+2. `docket_propose_term_schedule` binds that snapshot, the configured account
+   and calendar, fresh conflict state, and one unified reminder plan into one
+   aggregate card.
+
+The normal intent-index suffixes are `:0` for the store and `:1` for the
+proposal. Account, profile, search, and get calls are reads and consume no
+index. A course conflict must roll back the entire store: no new record,
+provenance, command, or snapshot from that request may remain.
+
+After approval, inspect the parent and item ledger without printing private
+event content:
+
+```bash
+sudo docker compose exec -T postgres sh -lc \
+  'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -x \
+    -c "select id, operation_type, status, result from operations where id = '\''OPERATION_UUID'\'';" \
+    -c "select item_key, item_type, status, attempt_count, last_error_code from operation_items where operation_id = '\''OPERATION_UUID'\'' order by item_key;" \
+    -c "select operation_item_id, attempt_number, kind, status, error_code from execution_attempts where operation_id = '\''OPERATION_UUID'\'' order by operation_item_id, attempt_number;"'
+```
+
+Expect one item per recurrence series or exceptional one-time occurrence.
+Successful items are terminal and must never be reset to pending during a
+restart or partial-failure recovery. `partial_failed` means at least one item
+succeeded and at least one failed; `reconciliation_required` means at least one
+provider outcome is still uncertain. Use the card's Review items/failures
+control for the bounded operator view. Never rerun the whole schedule to repair
+one failed item without a new immutable proposal and approval.
 
 ## Approval message not received
 
@@ -770,6 +810,21 @@ uv run pytest \
   tests/integration/test_calendar_read_model.py \
   tests/adversarial/test_plugin_actor_gate.py
 ```
+
+For Milestone 3.6 Calendar control and aggregate schedules, also run:
+
+```bash
+uv run pytest \
+  tests/integration/test_standalone_calendar_operations.py \
+  tests/integration/test_term_schedules.py \
+  tests/integration/test_mcp_contract.py \
+  tests/integration/test_migrations.py \
+  tests/adversarial/test_plugin_actor_gate.py
+```
+
+After deploying a tool/schema or skill change, restart the affected services,
+run `hermes mcp test docket`, and send `/reload-mcp` in the active Discord
+session before any live schedule smoke.
 
 For changes to manual Discord persistence, additionally require one real
 Discord remember request, durable source/audit/command evidence, an exact
