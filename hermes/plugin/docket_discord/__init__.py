@@ -731,7 +731,9 @@ def _render_embed(
             ) or len(action_types) != len(controls):
                 raise PluginAPIError("invalid_control", "Local control set is inconsistent", 422)
         if "string_select" in kinds:
-            if "local_action" in kinds or not kinds.issubset({"approval", "string_select"}):
+            if "local_action" in kinds or not kinds.issubset(
+                {"approval", "string_select", "proposal_action"}
+            ):
                 raise PluginAPIError("invalid_control", "Control kinds are incompatible", 422)
             rows: set[int] = set()
             custom_ids: set[str] = set()

@@ -481,12 +481,16 @@ def test_plugin_accepts_only_bound_schedule_review_pages(plugin_module, monkeypa
             self.value = kwargs["value"]
             self.default = kwargs["default"]
 
+    class FakeButton:
+        def __init__(self, **kwargs) -> None:
+            self.custom_id = kwargs["custom_id"]
+
     fake_discord = SimpleNamespace(
         Embed=FakeEmbed,
         ButtonStyle=SimpleNamespace(success=1, danger=2, secondary=3),
         ui=SimpleNamespace(
             View=FakeView,
-            Button=object,
+            Button=FakeButton,
             Select=FakeSelect,
         ),
         SelectOption=FakeSelectOption,
@@ -496,13 +500,28 @@ def test_plugin_accepts_only_bound_schedule_review_pages(plugin_module, monkeypa
         ),
     )
     monkeypatch.setitem(sys.modules, "discord", fake_discord)
+    approval_id = uuid.uuid4()
     revision_id = uuid.uuid4()
     projection_id = uuid.uuid4()
+    expires_at = datetime.now(UTC) + timedelta(days=1)
+    approval_token = issue_projection_approval_token(
+        approval_id,
+        projection_id,
+        expires_at,
+        b"test-signing-key",
+    )
     token = issue_projection_proposal_control_token(
         revision_id,
         projection_id,
         "review_page",
-        datetime.now(UTC) + timedelta(days=1),
+        expires_at,
+        b"test-signing-key",
+    )
+    snooze_token = issue_projection_proposal_control_token(
+        revision_id,
+        projection_id,
+        "snooze",
+        expires_at,
         b"test-signing-key",
     )
     _embed, view = plugin_module._render_embed(
@@ -515,6 +534,19 @@ def test_plugin_accepts_only_bound_schedule_review_pages(plugin_module, monkeypa
                 "color": 1,
             },
             "controls": [
+                {
+                    "kind": "approval",
+                    "decision": decision,
+                    "label": label,
+                    "approval_id": str(approval_id),
+                    "token": approval_token,
+                }
+                for decision, label in (
+                    ("approve", "Approve"),
+                    ("reject", "Reject"),
+                )
+            ]
+            + [
                 {
                     "kind": "string_select",
                     "field": "review_page",
@@ -533,7 +565,15 @@ def test_plugin_accepts_only_bound_schedule_review_pages(plugin_module, monkeypa
                         }
                         for page in range(1, 6)
                     ],
-                }
+                },
+                {
+                    "kind": "proposal_action",
+                    "transition": "proposal_snooze",
+                    "label": "Snooze until tomorrow",
+                    "row": 4,
+                    "action_revision_id": str(revision_id),
+                    "token": snooze_token,
+                },
             ],
             "projection_version": 1,
             "render_sha256": "a" * 64,
@@ -541,12 +581,13 @@ def test_plugin_accepts_only_bound_schedule_review_pages(plugin_module, monkeypa
         },
     )
 
-    assert len(view.items) == 1
-    assert view.items[0].custom_id == f"dkt:p:{token}"
-    assert [option.value for option in view.items[0].options] == [
+    assert len(view.items) == 4
+    assert view.items[2].custom_id == f"dkt:p:{token}"
+    assert [option.value for option in view.items[2].options] == [
         "1",
         "2",
         "3",
         "4",
         "5",
     ]
+    assert view.items[3].custom_id == f"dkt:p:{snooze_token}"
