@@ -179,6 +179,19 @@ one pending approval, one projection, and one Discord card; no replacement
 proposal or thread was created. External writes remained disabled, so this is
 projection evidence only, not provider-execution evidence.
 
+The first rendered one-page review menu then exposed a separate Discord
+component semantic defect: Page 1 was marked as the current default, so choosing
+the only option produced no state change and no interaction. There were no
+Hermes callback logs and no Docket local-action request. Commit `6e3a091`
+renders schedule-review selects with every option initially unselected, retains
+one selected default for actual editable fields, and covers the complete
+ephemeral `proposal_review_page` dispatch. The full suite passed with 187 tests.
+Docket and Hermes were rebuilt with external writes disabled, and durable
+repair outbox event `aceee5f9-e7c0-4eae-a03e-04ce2823332f` refreshed the
+existing projection and Discord message in one attempt. Projection
+`20bfb771-26a9-4238-8736-fa154f0915e9` advanced from version 1 to 2 without
+creating a proposal, approval, thread, or message.
+
 The remaining operator-present gate is:
 
 1. inspect every immutable item through Review items, approve once, and verify
