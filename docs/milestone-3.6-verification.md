@@ -1,8 +1,8 @@
 # Milestone 3.6 verification
 
-This record covers the Full Calendar control closure release candidate prepared
-on 2026-07-22. The private implementation specification remains outside this
-repository. Automated evidence is complete; deployment and operator-present
+This record covers the Full Calendar control closure release deployed on
+2026-07-22. The private implementation specification remains outside this
+repository. Automated and deployment evidence is complete; operator-present
 Google/Discord smokes are intentionally still pending.
 
 ## Migration and identity contract
@@ -136,39 +136,45 @@ If server-verifiable source classification becomes required, the next design
 step is a gateway-issued, Docket-verifiable source assertion that binds a
 bounded message digest and adopted span before any proposal tool runs.
 
-## Deployment state and remaining live gate
+## Deployment evidence and remaining live gate
 
-At verification time the existing stack remained healthy and intentionally
-unmodified:
+The committed Docket image was rebuilt and Docket and Hermes were recreated.
+Docket startup applied `0007 -> 0008 -> 0009` transactionally against the
+existing PostgreSQL volume. The resulting deployment reported:
 
 ```text
 PostgreSQL: healthy
 Docket: healthy
-Hermes: running
+Hermes gateway: connected to Discord as Yuuka
+Docket Discord plugin: enabled, version 0.6.0
 SearXNG: healthy
-deployed Alembic revision: 0007
+deployed Docket image: sha256:fa297eae549c58bcca4d45759403925b590b0d845c60d8377ccc5c87f3374220
+deployed Alembic revision: 0009 (head)
 Calendar cache: current
+enabled legacy reminder rules: 0
+legacy reminder gate: clear
 external writes: disabled
+live MCP discovery: connected, 20 tools
 ```
 
-The release candidate has not been rebuilt, migrated, or loaded into Hermes.
-That avoids an unreviewed provider mutation and makes the remaining gate
-explicit:
+`hermes mcp test docket` discovered exactly the managed 20-tool surface,
+including `docket_store_term_schedule`, `docket_propose_term_schedule`,
+`docket_get_calendar_profile`, and `docket_propose_calendar_event`. The
+repository-managed Hermes configuration and skill were synchronized before
+recreation. No provider mutation occurred during deployment.
 
-1. rebuild/recreate Docket and Hermes, allowing Docket startup to apply
-   migrations `0008` and `0009`;
-2. verify production readiness and zero enabled `legacy_explicit` rules;
-3. confirm `hermes mcp test docket` discovers exactly 20 allowlisted tools,
-   then send `/reload-mcp` in the active Discord session;
-4. submit one disposable complete two-course schedule and observe exactly one
+The remaining operator-present gate is:
+
+1. send `/reload-mcp` in the active Discord session;
+2. submit one disposable complete two-course schedule and observe exactly one
    aggregate card in today's ISO queue thread;
-5. inspect every immutable item through Review items, approve once, and verify
+3. inspect every immutable item through Review items, approve once, and verify
    the expected Calendar series, ten-minute Google popups, activated Docket
    rules, and no output in chat or the queue root;
-6. repeat the same proposal from a new Discord message before approval in a
+4. repeat the same proposal from a new Discord message before approval in a
    separate harmless smoke and verify Docket points to the existing card rather
    than projecting a second one; and
-7. remove the disposable events through typed, separately approved Docket
+5. remove the disposable events through typed, separately approved Docket
    cancellation proposals.
 
 No live gate result should be inferred from the automated fake-provider suite.
