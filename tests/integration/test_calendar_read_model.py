@@ -7,11 +7,13 @@ import pytest
 from sqlalchemy import select
 
 from docket.config import get_settings
+from docket.domain.canonical import sha256_json
 from docket.domain.errors import VersionConflict
 from docket.models import (
     Account,
     AuditEvent,
     CalendarEventCache,
+    CalendarLink,
     CalendarSyncState,
     DiscordDailyThread,
     OutboxEvent,
@@ -153,6 +155,123 @@ def test_paginated_snapshot_promotes_atomically_and_partial_failure_preserves_pr
             ("event-a", "A2"),
             ("event-c", "C1"),
         ]
+
+
+@pytest.mark.integration
+def test_calendar_lookup_reports_tags_priority_and_dual_projection_reminder_state(
+    session_factory,
+) -> None:
+    base = datetime(2026, 7, 22, 14, tzinfo=UTC)
+    settings = get_settings().model_copy(update={"calendar_reads_enabled": True})
+    account_id = _account(session_factory)
+    provider = FakeCalendarProvider()
+    provider.put_snapshot_event(
+        CalendarSnapshotEvent(
+            provider_event_id="classified-event",
+            status="confirmed",
+            summary="Classified event",
+            location="Desk",
+            is_all_day=False,
+            start_at=base + timedelta(hours=2),
+            end_at=base + timedelta(hours=3),
+            timezone="America/Los_Angeles",
+            provider_reminders={
+                "useDefault": False,
+                "overrides": [{"method": "popup", "minutes": 10}],
+            },
+            provider_etag='"classified"',
+        )
+    )
+    sync = CalendarSyncService(session_factory, provider, settings, clock=lambda: base)
+    read = CalendarReadService(session_factory, sync, settings, clock=lambda: base)
+    assert sync.sync_target(account_id, settings.google_calendar_id, force=True)
+
+    def lookup() -> dict:
+        return read.list_events(
+            account_id=account_id,
+            calendar_id=settings.google_calendar_id,
+            start=base,
+            end=base + timedelta(days=1),
+            text_filter=None,
+            limit=100,
+            freshness="prefer_cache",
+        )["events"][0]
+
+    external = lookup()
+    assert external["recurrence_kind"] == "one_time"
+    assert external["system_tags"] == ["one_time", "timed", "external"]
+    assert external["operator_tags"] == []
+    assert external["priority"] == "normal"
+    assert external["priority_basis"] == "default"
+    assert external["reminder_plan"]["state"] == "external_unmanaged"
+
+    plan = {
+        "delivery_channels": ["google_popup", "docket_queue"],
+        "lead_seconds": [600],
+    }
+    with session_factory.begin() as session:
+        session.add(
+            CalendarLink(
+                record_id=None,
+                meeting_id=None,
+                origin_kind="standalone",
+                logical_key="standalone:classified",
+                account_id=account_id,
+                calendar_id=settings.google_calendar_id,
+                external_event_id="classified-event",
+                provider_etag='"classified"',
+                provider_correlation="classified-correlation",
+                last_synced_version=1,
+                recurrence_kind="one_time",
+                system_tags=["one_time", "timed", "standalone"],
+                operator_tags=["focused"],
+                priority="high",
+                priority_basis="explicit_operator",
+                reminder_plan_sha256=sha256_json(plan),
+                synced_snapshot={},
+            )
+        )
+        session.add(
+            ReminderRule(
+                account_id=account_id,
+                calendar_id=settings.google_calendar_id,
+                scope="event",
+                provider_event_id="classified-event",
+                lead_seconds=600,
+                queue_channel_id=settings.queue_channel_id,
+                source_kind="canonical_plan",
+                enabled=True,
+                created_by_actor_id=settings.operator_discord_user_id,
+            )
+        )
+        cached = session.scalar(select(CalendarEventCache))
+        assert cached is not None
+        cached.system_tags = ["one_time", "timed", "standalone"]
+        cached.operator_tags = ["focused"]
+        cached.priority = "high"
+        cached.priority_basis = "explicit_operator"
+
+    synchronized = lookup()
+    assert synchronized["system_tags"] == ["one_time", "timed", "standalone"]
+    assert synchronized["operator_tags"] == ["focused"]
+    assert synchronized["priority"] == "high"
+    assert synchronized["priority_basis"] == "explicit_operator"
+    assert synchronized["reminder_plan"] == {
+        "state": "synchronized",
+        "canonical_lead_seconds": [600],
+        "delivery_channels": ["google_popup", "docket_queue"],
+        "provider_use_default": False,
+        "provider_popup_lead_seconds": [600],
+    }
+
+    with session_factory.begin() as session:
+        cached = session.scalar(select(CalendarEventCache))
+        assert cached is not None
+        cached.provider_reminders = {
+            "useDefault": False,
+            "overrides": [{"method": "popup", "minutes": 5}],
+        }
+    assert lookup()["reminder_plan"]["state"] == "drifted"
 
 
 @pytest.mark.integration

@@ -14,6 +14,7 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from docket.config import Settings, get_settings
+from docket.domain.canonical import sha256_json
 from docket.domain.enums import OutboxStatus
 from docket.domain.errors import DocketError
 from docket.models import (
@@ -22,6 +23,7 @@ from docket.models import (
     CalendarLink,
     CalendarSyncState,
     OutboxEvent,
+    ReminderRule,
     ScheduledNotification,
 )
 from docket.models.base import utc_now
@@ -40,6 +42,76 @@ def _aware(value: datetime) -> datetime:
 
 def _iso(value: datetime | None) -> str | None:
     return _aware(value).astimezone(UTC).isoformat() if value is not None else None
+
+
+def _provider_popup_leads(reminders: dict[str, Any]) -> tuple[bool, list[int]]:
+    use_default = bool(reminders.get("useDefault"))
+    overrides = reminders.get("overrides", [])
+    if not isinstance(overrides, list):
+        overrides = []
+    leads = sorted(
+        {
+            int(item["minutes"]) * 60
+            for item in overrides
+            if isinstance(item, dict)
+            and item.get("method") == "popup"
+            and isinstance(item.get("minutes"), int)
+            and 0 <= int(item["minutes"]) <= 40_320
+        }
+    )
+    return use_default, leads
+
+
+def _normalized_reminder_state(
+    row: CalendarEventCache,
+    link: CalendarLink | None,
+    rules: list[ReminderRule],
+) -> dict[str, Any]:
+    use_default, provider_leads = _provider_popup_leads(row.provider_reminders)
+    enabled = [rule for rule in rules if rule.enabled]
+    canonical_leads = sorted(
+        {
+            rule.lead_seconds
+            for rule in enabled
+            if rule.source_kind == "canonical_plan"
+        }
+    )
+    has_noncanonical = any(
+        rule.source_kind != "canonical_plan" for rule in enabled
+    )
+    expected_plan = {
+        "delivery_channels": ["google_popup", "docket_queue"],
+        "lead_seconds": canonical_leads,
+    }
+    if link is not None and link.reminder_plan_sha256 is not None:
+        synchronized = (
+            not use_default
+            and not has_noncanonical
+            and provider_leads == canonical_leads
+            and sha256_json(expected_plan) == link.reminder_plan_sha256
+        )
+        state = "synchronized" if synchronized else "drifted"
+    elif enabled:
+        state = "drifted"
+    elif use_default or provider_leads:
+        state = "external_unmanaged"
+    else:
+        state = "none"
+    return {
+        "state": state,
+        "canonical_lead_seconds": (
+            canonical_leads
+            if link is not None and link.reminder_plan_sha256 is not None
+            else []
+        ),
+        "delivery_channels": (
+            ["google_popup", "docket_queue"]
+            if link is not None and link.reminder_plan_sha256 is not None
+            else []
+        ),
+        "provider_use_default": use_default,
+        "provider_popup_lead_seconds": provider_leads,
+    }
 
 
 class CalendarSyncService:
@@ -324,7 +396,11 @@ class CalendarSyncService:
                     link = links.get(event.recurring_event_id)
                 if link is None:
                     row.recurrence_kind = event.recurrence_kind
-                    row.system_tags = list(event.system_tags)
+                    row.system_tags = list(event.system_tags) or [
+                        event.recurrence_kind,
+                        "all_day" if event.is_all_day else "timed",
+                        "external",
+                    ]
                     row.operator_tags = []
                     row.priority = "normal"
                     row.priority_basis = "default"
@@ -707,6 +783,35 @@ class CalendarReadService:
                     row.provider_event_id,
                 )
             )
+            event_ids = {
+                value
+                for row in rows[:limit]
+                for value in (row.provider_event_id, row.recurring_event_id)
+                if value is not None
+            }
+            links = list(
+                session.scalars(
+                    select(CalendarLink).where(
+                        CalendarLink.account_id == account_id,
+                        CalendarLink.calendar_id == calendar_id,
+                        CalendarLink.external_event_id.in_(event_ids),
+                    )
+                )
+            )
+            links_by_event = {link.external_event_id: link for link in links}
+            rules = list(
+                session.scalars(
+                    select(ReminderRule).where(
+                        ReminderRule.account_id == account_id,
+                        ReminderRule.calendar_id == calendar_id,
+                        ReminderRule.provider_event_id.in_(event_ids),
+                    )
+                )
+            )
+            rules_by_event: dict[str, list[ReminderRule]] = {}
+            for rule in rules:
+                if rule.provider_event_id is not None:
+                    rules_by_event.setdefault(rule.provider_event_id, []).append(rule)
             result = [
                 {
                     "provider_event_id": row.provider_event_id,
@@ -731,6 +836,28 @@ class CalendarReadService:
                     "start_date": row.start_date.isoformat() if row.start_date else None,
                     "end_date": row.end_date.isoformat() if row.end_date else None,
                     "timezone": row.timezone,
+                    "recurrence_kind": row.recurrence_kind,
+                    "system_tags": list(row.system_tags),
+                    "operator_tags": list(row.operator_tags),
+                    "priority": row.priority,
+                    "priority_basis": row.priority_basis,
+                    "reminder_plan": _normalized_reminder_state(
+                        row,
+                        links_by_event.get(row.provider_event_id)
+                        or (
+                            links_by_event.get(row.recurring_event_id)
+                            if row.recurring_event_id is not None
+                            else None
+                        ),
+                        [
+                            *rules_by_event.get(row.provider_event_id, []),
+                            *(
+                                rules_by_event.get(row.recurring_event_id, [])
+                                if row.recurring_event_id is not None
+                                else []
+                            ),
+                        ],
+                    ),
                 }
                 for row in rows[:limit]
             ]
