@@ -540,7 +540,10 @@ class DiscordProjectionRunner:
                 "description": (
                     f"Review immutable items {(page - 1) * 10 + 1}-{min(page * 10, raw_count)}"
                 ),
-                "default": page == 1,
+                # This select is an action menu, not an editable field. Leaving
+                # every option unselected ensures that choosing page 1 emits a
+                # Discord interaction even when it is the only page.
+                "default": False,
             }
             for page in range(1, page_count + 1)
         ]

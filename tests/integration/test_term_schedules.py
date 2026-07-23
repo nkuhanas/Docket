@@ -465,6 +465,7 @@ def test_aggregate_card_exposes_read_only_manifest_review_without_revision_churn
             control for control in projected["controls"] if control.get("field") == "review_page"
         )
         assert [option["value"] for option in review["options"]] == ["1"]
+        assert not any(option["default"] for option in review["options"])
         assert len(projected["embed"]["fields"]) <= 25
         projection_id = projection.id
         message_id = projection.message_id

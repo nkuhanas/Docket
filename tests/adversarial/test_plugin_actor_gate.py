@@ -561,7 +561,7 @@ def test_plugin_accepts_only_bound_schedule_review_pages(plugin_module, monkeypa
                             "label": f"Page {page} of 5",
                             "value": str(page),
                             "description": f"Review immutable page {page}",
-                            "default": page == 1,
+                            "default": False,
                         }
                         for page in range(1, 6)
                     ],
@@ -590,4 +590,84 @@ def test_plugin_accepts_only_bound_schedule_review_pages(plugin_module, monkeypa
         "4",
         "5",
     ]
+    assert not any(option.default for option in view.items[2].options)
     assert view.items[3].custom_id == f"dkt:p:{snooze_token}"
+
+
+@pytest.mark.asyncio
+async def test_schedule_review_select_returns_ephemeral_manifest(
+    plugin_module, monkeypatch
+) -> None:
+    actor = "111111111111111111"
+    guild = "222222222222222222"
+    queue = "333333333333333333"
+    thread_id = "444444444444444444"
+    message_id = "555555555555555555"
+    revision_id = uuid.uuid4()
+    projection_id = uuid.uuid4()
+    token = issue_projection_proposal_control_token(
+        revision_id,
+        projection_id,
+        "review_page",
+        datetime.now(UTC) + timedelta(days=1),
+        b"test-signing-key",
+    )
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_QUEUE_CHANNEL_ID", queue)
+
+    class FakeThread:
+        parent_id = int(queue)
+
+    class FakeResponse:
+        def __init__(self) -> None:
+            self.done = False
+
+        async def defer(self, **kwargs) -> None:
+            assert kwargs == {"ephemeral": True, "thinking": True}
+            self.done = True
+
+        def is_done(self) -> bool:
+            return self.done
+
+    class FakeFollowup:
+        def __init__(self) -> None:
+            self.sent: list[tuple[str, bool]] = []
+
+        async def send(self, content: str, *, ephemeral: bool) -> None:
+            self.sent.append((content, ephemeral))
+
+    fake_discord = SimpleNamespace(Thread=FakeThread)
+    monkeypatch.setitem(sys.modules, "discord", fake_discord)
+    captured: dict[str, object] = {}
+
+    def fake_post(payload, *, local_action=False):
+        captured.update(payload)
+        assert local_action is True
+        return {"content": "**Schedule items · page 1/1 · 2 total**\n• Item one\n• Item two"}
+
+    monkeypatch.setattr(plugin_module, "_post_button_response", fake_post)
+    response = FakeResponse()
+    followup = FakeFollowup()
+    interaction = SimpleNamespace(
+        id=666666666666666666,
+        data={"custom_id": f"dkt:p:{token}", "values": ["1"]},
+        user=SimpleNamespace(id=int(actor)),
+        guild_id=int(guild),
+        channel_id=int(thread_id),
+        channel=FakeThread(),
+        message=SimpleNamespace(id=int(message_id)),
+        response=response,
+        followup=followup,
+    )
+
+    await plugin_module._on_docket_interaction(interaction)
+
+    assert captured["transition"] == "proposal_review_page"
+    assert captured["field"] == "review_page"
+    assert captured["value"] == "1"
+    assert captured["action_revision_id"] == str(revision_id)
+    assert captured["projection_id"] == str(projection_id)
+    assert followup.sent == [
+        ("**Schedule items · page 1/1 · 2 total**\n• Item one\n• Item two", True)
+    ]

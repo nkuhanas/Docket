@@ -810,9 +810,16 @@ def _render_embed(
                             default=default,
                         )
                     )
-                if defaults != 1:
+                expected_defaults = 0 if field == "review_page" else 1
+                if defaults != expected_defaults:
                     raise PluginAPIError(
-                        "invalid_control", "Select must identify one current value", 422
+                        "invalid_control",
+                        (
+                            "Review selects must start unselected"
+                            if field == "review_page"
+                            else "Select must identify one current value"
+                        ),
+                        422,
                     )
                 view.add_item(
                     discord.ui.Select(
