@@ -1025,8 +1025,13 @@ def test_due_reminder_survives_lost_ack_without_duplicate_discord_message(
 @pytest.mark.integration
 def test_reminder_crossing_midnight_uses_due_date_thread_and_unarchives(
     session_factory,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = get_settings().model_copy(update={"calendar_reads_enabled": True})
+    monkeypatch.setattr(
+        "docket.services.reminders.utc_now",
+        lambda: datetime(2026, 7, 23, 6, 50, tzinfo=UTC),
+    )
     account_id = _account(session_factory)
     event_start = datetime(2026, 7, 23, 7, 3, tzinfo=UTC)  # 00:03 PDT
     generation = uuid.uuid4()
