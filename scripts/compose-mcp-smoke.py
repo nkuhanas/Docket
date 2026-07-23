@@ -12,6 +12,7 @@ from mcp.client.streamable_http import streamable_http_client
 
 EXPECTED_TOOLS = {
     "docket_store_record",
+    "docket_store_term_schedule",
     "docket_get_record",
     "docket_search_records",
     "docket_update_record",
@@ -23,6 +24,7 @@ EXPECTED_TOOLS = {
     "docket_set_calendar_profile",
     "docket_list_reminder_rules",
     "docket_propose_calendar_event",
+    "docket_propose_term_schedule",
     "docket_list_queue_items",
     "docket_get_queue_item",
     "docket_snooze_queue_item",
@@ -84,8 +86,7 @@ async def smoke() -> None:
                             "notes": "Dummy Compose smoke record",
                         },
                         "request_key": (
-                            "discord:000000000000000002:000000000000000003:"
-                            "999999999999999999:0"
+                            "discord:000000000000000002:000000000000000003:999999999999999999:0"
                         ),
                         "source": {
                             "source_type": "discord_message",

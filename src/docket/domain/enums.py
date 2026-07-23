@@ -57,6 +57,7 @@ class ActionStatus(StrEnum):
     READY = "ready"
     EXECUTING = "executing"
     SUCCEEDED = "succeeded"
+    PARTIAL_FAILED = "partial_failed"
     REJECTED = "rejected"
     EXPIRED = "expired"
     SUPERSEDED = "superseded"

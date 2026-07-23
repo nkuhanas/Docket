@@ -59,7 +59,7 @@ class LocalActionResponse(DiscordContext):
         "proposal_snooze",
         "proposal_review_page",
     ] = "local_action"
-    field: Literal["priority", "reminder_preset"] | None = None
+    field: Literal["priority", "reminder_preset", "review_page"] | None = None
     value: str | None = Field(default=None, min_length=1, max_length=64)
     modal_values: dict[str, str] | None = None
 
@@ -71,8 +71,15 @@ class LocalActionResponse(DiscordContext):
             if self.field is not None or self.value is not None or self.modal_values is not None:
                 raise ValueError("ordinary local actions omit proposal-control values")
         elif self.transition == "proposal_field_change":
-            if self.field is None or self.value is None or self.modal_values is not None:
+            if (
+                self.field not in {"priority", "reminder_preset"}
+                or self.value is None
+                or self.modal_values is not None
+            ):
                 raise ValueError("proposal field changes require exactly field and value")
+        elif self.transition == "proposal_review_page":
+            if self.field != "review_page" or self.value is None or self.modal_values is not None:
+                raise ValueError("proposal review paging requires the review_page field and value")
         elif self.transition == "proposal_edit":
             if (
                 self.modal_values is None
@@ -86,10 +93,7 @@ class LocalActionResponse(DiscordContext):
             if not 1 <= len(self.modal_values) <= 5:
                 raise ValueError("proposal edits accept from one through five modal fields")
             if any(
-                not key
-                or len(key) > 64
-                or not value
-                or len(value) > 1000
+                not key or len(key) > 64 or not value or len(value) > 1000
                 for key, value in self.modal_values.items()
             ):
                 raise ValueError("proposal edit modal values exceed their bounds")

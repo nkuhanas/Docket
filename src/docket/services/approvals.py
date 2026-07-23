@@ -23,9 +23,13 @@ from docket.models import (
     Approval,
     AuditEvent,
     CalendarEventCache,
+    CalendarReminderPlan,
+    CalendarScheduleSnapshot,
+    CalendarSyncState,
     DiscordDailyThread,
     DiscordProjection,
     Operation,
+    OperationItem,
     OutboxEvent,
     QueueItem,
     Record,
@@ -94,9 +98,9 @@ class ApprovalService:
             )
         if request.approval_token is not None:
             assert request.projection_id is not None
-            signing_key = get_settings().read_secret(
-                get_settings().interaction_signing_key_file
-            ).encode()
+            signing_key = (
+                get_settings().read_secret(get_settings().interaction_signing_key_file).encode()
+            )
             if not verify_projection_approval_token(
                 request.approval_token,
                 approval_id=approval.id,
@@ -142,9 +146,7 @@ class ApprovalService:
                 message="The interaction thread does not match the stored projection context.",
             )
 
-    def _load_bound_state(
-        self, approval: Approval
-    ) -> tuple[ActionRevision, Action, QueueItem]:
+    def _load_bound_state(self, approval: Approval) -> tuple[ActionRevision, Action, QueueItem]:
         revision = self.session.get(ActionRevision, approval.action_revision_id)
         if revision is None:
             raise DocketError(code="invalid_approval_state", message="Action revision is missing.")
@@ -176,9 +178,10 @@ class ApprovalService:
                 code="approval_superseded",
                 message="The approval is not for the current pending action revision.",
             )
-        if sha256_json(revision.parameters) != revision.parameters_sha256 or sha256_json(
-            revision.preview
-        ) != revision.preview_sha256:
+        if (
+            sha256_json(revision.parameters) != revision.parameters_sha256
+            or sha256_json(revision.preview) != revision.preview_sha256
+        ):
             raise DocketError(
                 code="approval_binding_mismatch",
                 message="The immutable action hashes no longer match their stored content.",
@@ -216,16 +219,38 @@ class ApprovalService:
                     message="The target record changed after the approval preview was created.",
                 )
         calendar_target = revision.target_versions.get("calendar_snapshot")
-        if isinstance(calendar_target, dict) and calendar_target.get(
-            "provider_event_id"
-        ) is not None:
+        if isinstance(calendar_target, dict):
+            sync_state = self.session.scalar(
+                select(CalendarSyncState).where(
+                    CalendarSyncState.account_id == revision.account_id,
+                    CalendarSyncState.calendar_id == revision.parameters.get("calendar_id"),
+                )
+            )
+            if (
+                sync_state is None
+                or sync_state.status != "current"
+                or sync_state.last_success_at is None
+                or _as_utc(sync_state.last_success_at).isoformat()
+                != calendar_target.get("last_success_at")
+                or (utc_now() - _as_utc(sync_state.last_success_at)).total_seconds()
+                > get_settings().calendar_stale_seconds
+            ):
+                raise DocketError(
+                    code="target_version_changed",
+                    message=(
+                        "The complete Calendar snapshot changed or became stale "
+                        "after the approval preview was created."
+                    ),
+                )
+        if (
+            isinstance(calendar_target, dict)
+            and calendar_target.get("provider_event_id") is not None
+        ):
             event = self.session.scalar(
                 select(CalendarEventCache).where(
                     CalendarEventCache.account_id == revision.account_id,
-                    CalendarEventCache.calendar_id
-                    == revision.parameters.get("calendar_id"),
-                    CalendarEventCache.provider_event_id
-                    == calendar_target["provider_event_id"],
+                    CalendarEventCache.calendar_id == revision.parameters.get("calendar_id"),
+                    CalendarEventCache.provider_event_id == calendar_target["provider_event_id"],
                 )
             )
             if (
@@ -239,6 +264,51 @@ class ApprovalService:
                     code="target_version_changed",
                     message="The Calendar event changed after the approval preview was created.",
                 )
+        schedule_target = revision.target_versions.get("schedule_snapshot")
+        if isinstance(schedule_target, dict):
+            try:
+                snapshot_id = uuid.UUID(str(schedule_target.get("id")))
+            except ValueError as exc:
+                raise DocketError(
+                    code="approval_binding_mismatch",
+                    message="The schedule snapshot binding is invalid.",
+                ) from exc
+            snapshot = self.session.get(CalendarScheduleSnapshot, snapshot_id)
+            if (
+                snapshot is None
+                or snapshot.manifest_sha256 != schedule_target.get("manifest_sha256")
+                or sha256_json(snapshot.manifest) != snapshot.manifest_sha256
+            ):
+                raise DocketError(
+                    code="target_version_changed",
+                    message="The bound schedule snapshot changed after proposal.",
+                )
+            term = self.session.get(Record, snapshot.term_record_id)
+            if term is None or term.version != snapshot.term_record_version:
+                raise DocketError(
+                    code="target_version_changed",
+                    message="The bound term changed after proposal.",
+                )
+            for item in snapshot.manifest.get("items", []):
+                if not isinstance(item, dict):
+                    raise DocketError(
+                        code="approval_binding_mismatch",
+                        message="The schedule manifest contains an invalid item.",
+                    )
+                try:
+                    record_id = uuid.UUID(str(item["course_record_id"]))
+                    record_version = int(item["course_record_version"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise DocketError(
+                        code="approval_binding_mismatch",
+                        message="The schedule manifest contains an invalid record binding.",
+                    ) from exc
+                record = self.session.get(Record, record_id)
+                if record is None or record.version != record_version:
+                    raise DocketError(
+                        code="target_version_changed",
+                        message="A bound course changed after proposal.",
+                    )
         if str(queue_item.id) != queue_target.get("id") or queue_item.version != queue_target.get(
             "version"
         ):
@@ -299,6 +369,12 @@ class ApprovalService:
                 f"calendar:cancel-event:{revision.account_id}:"
                 f"{parameters['external_event_id']}:{parameters.get('provider_etag')}"
             )
+        if revision.action_type == "calendar_apply_term_schedule":
+            return (
+                f"calendar:apply-schedule:{revision.account_id}:"
+                f"{parameters['schedule_snapshot_id']}:"
+                f"{parameters['manifest_sha256']}"
+            )
         raise DocketError(
             code="invalid_approval_state",
             message="The approved action has no external operation handler.",
@@ -320,6 +396,13 @@ class ApprovalService:
             action.status = ActionStatus.EXPIRED.value
             queue_item.status = QueueItemStatus.PENDING.value
             queue_item.version += 1
+            for plan in self.session.scalars(
+                select(CalendarReminderPlan).where(
+                    CalendarReminderPlan.action_revision_id == revision.id,
+                    CalendarReminderPlan.status.in_(("planned", "reconciliation_required")),
+                )
+            ):
+                plan.status = "cancelled"
             self.session.add(
                 AuditEvent(
                     event_type="approval.expired",
@@ -358,6 +441,7 @@ class ApprovalService:
         approval.discord_interaction_id = request.discord_interaction_id
 
         operation: Operation | None = None
+        batch_all_no_op = False
         if request.decision == "reject":
             approval.status = ApprovalStatus.REJECTED.value
             action.status = ActionStatus.REJECTED.value
@@ -365,6 +449,13 @@ class ApprovalService:
             queue_item.resolved_at = now
             queue_item.resolution_code = "approval_rejected"
             queue_item.version += 1
+            for plan in self.session.scalars(
+                select(CalendarReminderPlan).where(
+                    CalendarReminderPlan.action_revision_id == revision.id,
+                    CalendarReminderPlan.status.in_(("planned", "reconciliation_required")),
+                )
+            ):
+                plan.status = "cancelled"
             event_type = "approval.rejected"
         else:
             idempotency_key = self._idempotency_key(revision)
@@ -386,10 +477,60 @@ class ApprovalService:
                 )
                 self.session.add(operation)
                 self.session.flush()
+                if revision.action_type == "calendar_apply_term_schedule":
+                    batch_items = list(revision.parameters["items"])
+                    for manifest_item in revision.parameters["items"]:
+                        item_key = str(manifest_item["item_key"])
+                        parameters = dict(manifest_item["parameters"])
+                        parameters["operation_type"] = manifest_item["operation_type"]
+                        parameters_sha256 = sha256_json(parameters)
+                        no_op = manifest_item["operation_type"] == "calendar_no_op"
+                        self.session.add(
+                            OperationItem(
+                                operation_id=operation.id,
+                                item_key=item_key,
+                                item_type=str(manifest_item["operation_type"]),
+                                idempotency_key=(
+                                    f"calendar:schedule-item:{operation.id}:"
+                                    f"{item_key}:{parameters_sha256}"
+                                ),
+                                parameters=parameters,
+                                parameters_sha256=parameters_sha256,
+                                status="succeeded" if no_op else "pending",
+                                next_attempt_at=None if no_op else now,
+                                result={"disposition": "no_op"} if no_op else None,
+                            )
+                        )
+                    batch_all_no_op = all(
+                        item["operation_type"] == "calendar_no_op" for item in batch_items
+                    )
+                    if batch_all_no_op:
+                        operation.status = OperationStatus.SUCCEEDED.value
+                        operation.next_attempt_at = None
+                        operation.result = {
+                            "item_count": len(batch_items),
+                            "counts": {
+                                "pending": 0,
+                                "running": 0,
+                                "succeeded": len(batch_items),
+                                "failed": 0,
+                                "reconciliation_required": 0,
+                            },
+                            "failures": [],
+                        }
             approval.status = ApprovalStatus.CONSUMED.value
             approval.consumed_operation_id = operation.id
-            action.status = ActionStatus.READY.value
-            queue_item.status = QueueItemStatus.EXECUTING.value
+            action.status = (
+                ActionStatus.SUCCEEDED.value if batch_all_no_op else ActionStatus.READY.value
+            )
+            queue_item.status = (
+                QueueItemStatus.COMPLETED.value
+                if batch_all_no_op
+                else QueueItemStatus.EXECUTING.value
+            )
+            if batch_all_no_op:
+                queue_item.resolved_at = now
+                queue_item.resolution_code = "calendar_schedule_synchronized"
             queue_item.version += 1
             event_type = "approval.consumed"
 
@@ -417,8 +558,7 @@ class ApprovalService:
                 aggregate_type="queue_item",
                 aggregate_id=queue_item.id,
                 deduplication_key=(
-                    f"discord_projection:{queue_item.id}:approval:{approval.id}:"
-                    f"{request.decision}"
+                    f"discord_projection:{queue_item.id}:approval:{approval.id}:{request.decision}"
                 ),
                 payload={
                     "queue_item_id": str(queue_item.id),

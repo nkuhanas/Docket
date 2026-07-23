@@ -102,6 +102,21 @@ MeetingId = Annotated[
 ]
 
 
+class AdditionalCourseOccurrence(StrictModel):
+    occurrence_id: MeetingId
+    date: date
+    start_time: time
+    end_time: time
+    location: str | None = Field(default=None, max_length=512)
+    out_of_term_confirmed: bool = False
+
+    @model_validator(mode="after")
+    def time_is_ordered(self) -> "AdditionalCourseOccurrence":
+        if self.end_time <= self.start_time:
+            raise ValueError("additional occurrence end_time must be after start_time")
+        return self
+
+
 class CourseMeeting(StrictModel):
     meeting_type: str = Field(min_length=1, max_length=64)
     days: list[MeetingDay] = Field(min_length=1, max_length=7)
@@ -111,6 +126,11 @@ class CourseMeeting(StrictModel):
     start_date: date | None = None
     end_date: date | None = None
     timezone: str | None = Field(default=None, min_length=1, max_length=255)
+    excluded_dates: list[date] = Field(default_factory=list, max_length=100)
+    additional_occurrences: list[AdditionalCourseOccurrence] = Field(
+        default_factory=list,
+        max_length=100,
+    )
 
     @field_validator("days")
     @classmethod
@@ -136,6 +156,18 @@ class CourseMeeting(StrictModel):
             raise ValueError("end_time must be after start_time")
         if self.start_date and self.end_date and self.end_date < self.start_date:
             raise ValueError("end_date must not be before start_date")
+        if len(self.excluded_dates) != len(set(self.excluded_dates)):
+            raise ValueError("excluded_dates must be unique")
+        if self.start_date is not None and self.end_date is not None and any(
+            value < self.start_date or value > self.end_date
+            for value in self.excluded_dates
+        ):
+            raise ValueError("excluded dates must fall within the meeting range")
+        occurrence_ids = [
+            occurrence.occurrence_id for occurrence in self.additional_occurrences
+        ]
+        if len(occurrence_ids) != len(set(occurrence_ids)):
+            raise ValueError("additional occurrence IDs must be unique")
         return self
 
 
@@ -170,6 +202,77 @@ class CourseData(StrictModel):
         },
     )
     notes: str | None = None
+
+
+class ExistingScheduleTerm(StrictModel):
+    kind: Literal["existing"]
+    record_id: UUID
+    expected_version: int = Field(ge=1)
+
+
+class NewScheduleTerm(StrictModel):
+    kind: Literal["new"]
+    canonical_identity: TermIdentity
+    title: str = Field(min_length=1, max_length=512)
+    data: TermData
+
+    @model_validator(mode="after")
+    def term_is_complete(self) -> "NewScheduleTerm":
+        if self.data.start_date is None or self.data.end_date is None:
+            raise ValueError("a complete schedule requires term start and end dates")
+        return self
+
+
+ScheduleTerm = Annotated[
+    ExistingScheduleTerm | NewScheduleTerm,
+    Field(discriminator="kind"),
+]
+
+
+class TermScheduleCourse(StrictModel):
+    course_code: str = Field(min_length=1, max_length=64)
+    course_title: str | None = Field(default=None, max_length=512)
+    section: str | None = Field(default=None, min_length=1, max_length=64)
+    instructor: str | None = Field(default=None, max_length=255)
+    meetings: dict[MeetingId, CourseMeeting] = Field(min_length=1, max_length=32)
+    notes: str | None = None
+
+
+class StoreTermScheduleInput(StrictModel):
+    term: ScheduleTerm
+    courses: list[TermScheduleCourse] = Field(min_length=1, max_length=50)
+    request_key: DiscordRequestKey
+    source: RecordSourceInput
+    actor_type: Literal["hermes"] = "hermes"
+    actor_id: DiscordId
+
+    @model_validator(mode="after")
+    def schedule_is_bounded_and_source_bound(self) -> "StoreTermScheduleInput":
+        identities = [
+            (course.course_code.casefold(), (course.section or "").casefold())
+            for course in self.courses
+        ]
+        if len(identities) != len(set(identities)):
+            raise ValueError("course code/section identities must be unique")
+        item_count = sum(
+            1 + len(meeting.additional_occurrences)
+            for course in self.courses
+            for meeting in course.meetings.values()
+        )
+        if not 1 <= item_count <= 50:
+            raise ValueError("a complete schedule must compile to from 1 through 50 items")
+        validate_discord_request_fields(self.request_key, self.source, self.actor_id)
+        return self
+
+
+class TermScheduleStoreResult(StrictModel):
+    request_id: UUID
+    disposition: Literal["stored", "replayed_request"]
+    schedule_snapshot_id: UUID
+    manifest_sha256: str
+    item_count: int
+    term_record: dict[str, Any]
+    course_records: list[dict[str, Any]]
 
 
 class StoreRecordInput(StrictModel):

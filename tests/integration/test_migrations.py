@@ -65,6 +65,16 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
     assert "operation_item_id" in {
         column["name"] for column in inspect(engine).get_columns("execution_attempts")
     }
+    assert {
+        tuple(constraint["column_names"])
+        for constraint in inspect(engine).get_unique_constraints("record_sources")
+    } == {("record_id", "source_request_key")}
+    action_status = next(
+        constraint
+        for constraint in inspect(engine).get_check_constraints("actions")
+        if constraint["name"] == "ck_actions_status"
+    )
+    assert "partial_failed" in str(action_status["sqltext"])
 
     command.downgrade(config, "base")
     assert "records" not in inspect(engine).get_table_names()

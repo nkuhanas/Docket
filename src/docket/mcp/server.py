@@ -18,12 +18,14 @@ from docket.schemas.actions import (
     ProposalResult,
     ProposeActionInput,
     ProposeCalendarEventInput,
+    ProposeTermScheduleInput,
 )
 from docket.schemas.calendar import (
     CalendarFreshness,
     CalendarLookupInput,
     CalendarProfileInput,
     CalendarRelativeDay,
+    CalendarReminderPlanInput,
     SetCalendarProfileInput,
 )
 from docket.schemas.queue import (
@@ -42,9 +44,12 @@ from docket.schemas.records import (
     GenericRecordData,
     RecordSourceInput,
     RecordType,
+    ScheduleTerm,
     StoreRecordInput,
+    StoreTermScheduleInput,
     TermData,
     TermIdentity,
+    TermScheduleCourse,
     UpdateRecordInput,
 )
 from docket.services.accounts import AccountService
@@ -55,6 +60,8 @@ from docket.services.calendar_sync import CalendarReadService, CalendarSyncServi
 from docket.services.queue import QueueService
 from docket.services.records import RecordService, serialize_record
 from docket.services.reminders import ReminderRuleService
+from docket.services.schedule_actions import TermScheduleActionService
+from docket.services.schedules import TermScheduleService
 
 mcp = FastMCP(
     "docket",
@@ -137,6 +144,42 @@ def docket_store_record(
         with session_scope() as session:
             result = RecordService(session).store(request)
             return {"ok": True, **result.model_dump(mode="json", exclude_none=True)}
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_store_term_schedule(
+    term: ScheduleTerm,
+    courses: Annotated[
+        list[TermScheduleCourse],
+        Field(min_length=1, max_length=50),
+    ],
+    request_key: DiscordRequestKey,
+    source: RecordSourceInput,
+    actor_id: DiscordId,
+) -> dict[str, Any]:
+    """Atomically store one complete trusted term schedule and immutable manifest.
+
+    Use this once—not one record call per class—after the configured operator supplies
+    or explicitly adopts a complete schedule. ``term`` may bind an exact existing term
+    record/version or define a complete new term. The request accepts 1-50 courses and
+    at most 50 compiled meeting/exception items. Any canonical conflict rolls back every
+    new record and every source attachment. Success returns all canonical records plus a
+    ``schedule_snapshot_id`` for exactly one aggregate Calendar proposal. This local
+    write does not contact Google or create an approval by itself.
+    """
+    try:
+        request = StoreTermScheduleInput(
+            term=term,
+            courses=courses,
+            request_key=request_key,
+            source=source,
+            actor_id=actor_id,
+        )
+        with session_scope() as session:
+            result = TermScheduleService(session).store(request)
+            return {"ok": True, **result.model_dump(mode="json")}
     except Exception as exc:
         return _error(exc)
 
@@ -436,6 +479,54 @@ def docket_propose_calendar_event(
         )
         with session_scope() as session:
             result = CalendarActionService(session).propose(request)
+            return {"ok": True, **_model_proposal_result(result)}
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_propose_term_schedule(
+    schedule_snapshot_id: uuid.UUID,
+    account_id: uuid.UUID,
+    calendar_id: CalendarId,
+    request_key: DiscordRequestKey,
+    source: RecordSourceInput,
+    actor_id: DiscordId,
+    reminder_plan: CalendarReminderPlanInput | None = None,
+) -> dict[str, Any]:
+    """Create one immutable approval proposal for a complete stored term schedule.
+
+    Call this exactly once with the ``schedule_snapshot_id`` returned by
+    ``docket_store_term_schedule`` when the Calendar profile permits suggestion. Docket
+    refreshes the configured calendar, verifies every bound record version, compiles at
+    most 50 create/update/no-op ledger items, detects conflicts, and applies one reminder
+    plan to both Google popup and Docket queue delivery. Omit ``reminder_plan`` for the
+    profile's default ten-minute plan. This returns one aggregate Discord review card and
+    performs no provider mutation until its one explicit approval.
+    """
+    try:
+        _calendar_read_service().list_events(
+            account_id=account_id,
+            calendar_id=calendar_id,
+            start=None,
+            end=None,
+            text_filter=None,
+            limit=1,
+            freshness="require_fresh",
+        )
+        request = ProposeTermScheduleInput.model_validate(
+            {
+                "schedule_snapshot_id": schedule_snapshot_id,
+                "account_id": account_id,
+                "calendar_id": calendar_id,
+                "reminder_plan": reminder_plan,
+                "request_key": request_key,
+                "source": source,
+                "actor_id": actor_id,
+            }
+        )
+        with session_scope() as session:
+            result = TermScheduleActionService(session).propose(request)
             return {"ok": True, **_model_proposal_result(result)}
     except Exception as exc:
         return _error(exc)

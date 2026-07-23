@@ -110,6 +110,22 @@ class ProposeCalendarEventInput(StrictModel):
         return self
 
 
+class ProposeTermScheduleInput(StrictModel):
+    schedule_snapshot_id: UUID
+    account_id: UUID
+    calendar_id: str = Field(min_length=1, max_length=1024)
+    reminder_plan: CalendarReminderPlanInput | None = None
+    request_key: DiscordRequestKey
+    source: RecordSourceInput
+    actor_type: Literal["hermes"] = "hermes"
+    actor_id: DiscordId
+
+    @model_validator(mode="after")
+    def request_matches_source(self) -> "ProposeTermScheduleInput":
+        validate_discord_request_fields(self.request_key, self.source, self.actor_id)
+        return self
+
+
 class ProposalResult(StrictModel):
     request_id: UUID
     disposition: Literal["proposed", "replayed_request"]

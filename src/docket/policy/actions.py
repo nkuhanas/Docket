@@ -66,6 +66,13 @@ ACTION_REGISTRY: dict[str, ActionDefinition] = {
             requires_account=True,
         ),
         ActionDefinition(
+            "calendar_apply_term_schedule",
+            RiskClass.BULK,
+            "google_calendar",
+            ActionAvailability.ENABLED,
+            requires_account=True,
+        ),
+        ActionDefinition(
             "gmail_archive_message",
             RiskClass.EXTERNAL_PRIVATE_WRITE,
             "gmail",

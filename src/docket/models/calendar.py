@@ -73,7 +73,7 @@ class Action(TimestampMixin, Base):
         ),
         CheckConstraint(
             "status IN ('available', 'approval_pending', 'ready', 'executing', "
-            "'succeeded', 'rejected', 'expired', 'superseded', 'failed', "
+            "'succeeded', 'partial_failed', 'rejected', 'expired', 'superseded', 'failed', "
             "'reconciliation_required')",
             name="ck_actions_status",
         ),
@@ -310,9 +310,7 @@ class CalendarLink(TimestampMixin, Base):
         ForeignKey("records.id", ondelete="RESTRICT")
     )
     meeting_id: Mapped[str | None] = mapped_column(String(128))
-    origin_kind: Mapped[str] = mapped_column(
-        String(32), default="course_meeting", nullable=False
-    )
+    origin_kind: Mapped[str] = mapped_column(String(32), default="course_meeting", nullable=False)
     logical_key: Mapped[str] = mapped_column(
         String(512), default=_calendar_link_logical_key, nullable=False
     )
@@ -324,9 +322,7 @@ class CalendarLink(TimestampMixin, Base):
     provider_etag: Mapped[str | None] = mapped_column(String(1024))
     provider_correlation: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     last_synced_version: Mapped[int] = mapped_column(Integer, nullable=False)
-    recurrence_kind: Mapped[str] = mapped_column(
-        String(16), default="recurring", nullable=False
-    )
+    recurrence_kind: Mapped[str] = mapped_column(String(16), default="recurring", nullable=False)
     system_tags: Mapped[list[str]] = mapped_column(
         JSON, default=lambda: ["recurring", "timed", "course_meeting"], nullable=False
     )
@@ -363,12 +359,20 @@ class CalendarScheduleSnapshot(TimestampMixin, Base):
     item_count: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
+@event.listens_for(CalendarScheduleSnapshot, "before_update")
+def _reject_calendar_schedule_snapshot_update(
+    _mapper: Mapper[CalendarScheduleSnapshot],
+    _connection: Connection,
+    _target: CalendarScheduleSnapshot,
+) -> None:
+    raise ValueError("Calendar schedule snapshots are immutable")
+
+
 class OperationItem(TimestampMixin, Base):
     __tablename__ = "operation_items"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending', 'running', 'succeeded', 'failed', "
-            "'reconciliation_required')",
+            "status IN ('pending', 'running', 'succeeded', 'failed', 'reconciliation_required')",
             name="ck_operation_items_status",
         ),
         UniqueConstraint("operation_id", "item_key", name="uq_operation_items_operation_key"),
@@ -509,9 +513,7 @@ class ReminderRule(TimestampMixin, Base):
     provider_event_id: Mapped[str | None] = mapped_column(String(1024))
     lead_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
     queue_channel_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    source_kind: Mapped[str] = mapped_column(
-        String(32), default="legacy_explicit", nullable=False
-    )
+    source_kind: Mapped[str] = mapped_column(String(32), default="legacy_explicit", nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     created_by_actor_id: Mapped[str] = mapped_column(String(64), nullable=False)

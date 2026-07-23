@@ -209,7 +209,7 @@ class RecordService:
             record = Record(
                 record_type=request.record_type,
                 canonical_key=canonical_key,
-                schema_version=1,
+                schema_version=2 if request.record_type == "course" else 1,
                 title=request.title,
                 data=normalized_data,
                 valid_from_date=valid_from,
@@ -317,6 +317,8 @@ class RecordService:
         self._validate_record_identity(record.record_type, record.canonical_key, normalized_data)
         previous_hash = sha256_json(record.data)
         record.data = normalized_data
+        if record.record_type == "course":
+            record.schema_version = 2
         record.valid_from_date = valid_from
         record.valid_until_date = valid_until
         record.version += 1

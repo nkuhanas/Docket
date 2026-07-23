@@ -64,6 +64,13 @@ class Record(TimestampMixin, Base):
 
 class RecordSource(Base):
     __tablename__ = "record_sources"
+    __table_args__ = (
+        UniqueConstraint(
+            "record_id",
+            "source_request_key",
+            name="uq_record_sources_record_request",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     record_id: Mapped[uuid.UUID] = mapped_column(
@@ -74,7 +81,7 @@ class RecordSource(Base):
         ForeignKey("accounts.id", ondelete="RESTRICT")
     )
     source_object_id: Mapped[str | None] = mapped_column(String(255))
-    source_request_key: Mapped[str] = mapped_column(String(512), unique=True, nullable=False)
+    source_request_key: Mapped[str] = mapped_column(String(512), nullable=False)
     source_version: Mapped[str | None] = mapped_column(String(255))
     observed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False

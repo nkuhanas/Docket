@@ -32,6 +32,7 @@ class CalendarEventRequest:
     priority: str = "normal"
     priority_basis: str = "default"
     reminder_plan_sha256: str | None = None
+    origin_kind: str | None = None
     operation_type: str = "calendar_create_meeting"
 
     def event_body(self) -> dict[str, Any]:
@@ -44,7 +45,12 @@ class CalendarEventRequest:
         private = {
             "docket_correlation": self.provider_correlation,
             "docket_origin_kind": (
-                "course_meeting" if self.schedule is not None else "standalone"
+                self.origin_kind
+                or (
+                    "course_meeting"
+                    if self.schedule is not None
+                    else "standalone"
+                )
             ),
             "docket_priority": self.priority,
             "docket_priority_basis": self.priority_basis,

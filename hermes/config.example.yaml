@@ -67,6 +67,7 @@ mcp_servers:
     tools:
       include:
         - docket_store_record
+        - docket_store_term_schedule
         - docket_get_record
         - docket_search_records
         - docket_update_record
@@ -78,6 +79,7 @@ mcp_servers:
         - docket_set_calendar_profile
         - docket_list_reminder_rules
         - docket_propose_calendar_event
+        - docket_propose_term_schedule
         - docket_list_queue_items
         - docket_get_queue_item
         - docket_snooze_queue_item

@@ -8,7 +8,7 @@ import structlog
 import uvicorn
 from fastapi import FastAPI, Response
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from starlette.requests import Request
 
 from docket.config import Settings, get_settings
@@ -20,7 +20,7 @@ from docket.database import (
 )
 from docket.internal_api import router as internal_router
 from docket.mcp import mcp
-from docket.models import CalendarSyncState
+from docket.models import CalendarSyncState, ReminderRule
 from docket.providers.discord import HttpDiscordProjectionAdapter
 from docket.providers.google import FakeGoogleProvider
 from docket.providers.google.factory import (
@@ -136,6 +136,17 @@ def health_ready(response: Response) -> dict[str, Any]:
                 CalendarSyncState.account_id, CalendarSyncState.calendar_id
             )
         ).all()
+        enabled_legacy_rule_count = int(
+            session.scalar(
+                select(func.count())
+                .select_from(ReminderRule)
+                .where(
+                    ReminderRule.source_kind == "legacy_explicit",
+                    ReminderRule.enabled.is_(True),
+                )
+            )
+            or 0
+        )
     google_oauth = settings.google_oauth_status()
     if (
         settings.external_writes_enabled or settings.calendar_reads_enabled
@@ -175,14 +186,21 @@ def health_ready(response: Response) -> dict[str, Any]:
     calendar_degraded = settings.calendar_reads_enabled and (
         not sync_detail or any(bool(item["stale"]) for item in sync_detail)
     )
+    legacy_rule_gate_blocked = (
+        settings.environment.value == "production" and enabled_legacy_rule_count > 0
+    )
+    if legacy_rule_gate_blocked:
+        response.status_code = 503
     return {
-        "status": "degraded" if calendar_degraded else "ok",
+        "status": ("degraded" if calendar_degraded or legacy_rule_gate_blocked else "ok"),
         "database": "ready",
         "worker": "ready" if worker.is_healthy() else "starting",
         "credential_mode": settings.credential_mode(),
         "google_oauth": google_oauth,
         "calendar_reads_enabled": settings.calendar_reads_enabled,
         "external_writes_enabled": settings.external_writes_enabled,
+        "enabled_legacy_reminder_rules": enabled_legacy_rule_count,
+        "legacy_reminder_gate": ("blocked" if legacy_rule_gate_blocked else "clear"),
         "calendar_sync": sync_detail,
     }
 

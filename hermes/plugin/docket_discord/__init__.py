@@ -144,9 +144,10 @@ def _is_configured_system(source: object | None) -> bool:
 
 def _is_configured_chat_child(source: object | None) -> bool:
     chat_channel = os.environ.get("DOCKET_CHAT_CHANNEL_ID", "")
-    return _is_channel_surface(source, chat_channel) and _source_value(
-        source, "chat_id", "channel_id"
-    ) != chat_channel
+    return (
+        _is_channel_surface(source, chat_channel)
+        and _source_value(source, "chat_id", "channel_id") != chat_channel
+    )
 
 
 def _rewrite_with_source_context(event: object) -> dict[str, str] | None:
@@ -555,6 +556,7 @@ def _decode_proposal_control(token: str) -> tuple[uuid.UUID, uuid.UUID, str]:
         3: "refresh",
         4: "edit",
         5: "review_page",
+        6: "snooze",
     }
     try:
         raw = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
@@ -566,9 +568,7 @@ def _decode_proposal_control(token: str) -> tuple[uuid.UUID, uuid.UUID, str]:
             fields[raw[33]],
         )
     except (ValueError, UnicodeEncodeError) as exc:
-        raise PluginAPIError(
-            "invalid_control", "Proposal control token is invalid", 422
-        ) from exc
+        raise PluginAPIError("invalid_control", "Proposal control token is invalid", 422) from exc
 
 
 def _render_embed(
@@ -604,11 +604,7 @@ def _render_embed(
     except ValueError as exc:
         raise PluginAPIError("invalid_embed", "Embed timestamp is invalid", 422) from exc
     footer_value = model.get("footer")
-    footer_context = (
-        ""
-        if footer_value is None
-        else _safe_text(footer_value, 512, "footer")
-    )
+    footer_context = "" if footer_value is None else _safe_text(footer_value, 512, "footer")
     embed = discord.Embed(
         title=escaped_title,
         description=escaped_description,
@@ -735,9 +731,7 @@ def _render_embed(
             ) or len(action_types) != len(controls):
                 raise PluginAPIError("invalid_control", "Local control set is inconsistent", 422)
         if "string_select" in kinds:
-            if "local_action" in kinds or not kinds.issubset(
-                {"approval", "string_select"}
-            ):
+            if "local_action" in kinds or not kinds.issubset({"approval", "string_select"}):
                 raise PluginAPIError("invalid_control", "Control kinds are incompatible", 422)
             rows: set[int] = set()
             custom_ids: set[str] = set()
@@ -757,43 +751,33 @@ def _render_embed(
                     "token",
                     "options",
                 }:
-                    raise PluginAPIError(
-                        "invalid_control", "Select descriptor is invalid", 422
-                    )
+                    raise PluginAPIError("invalid_control", "Select descriptor is invalid", 422)
                 field = str(control["field"])
-                if field not in {"priority", "reminder_preset"}:
-                    raise PluginAPIError(
-                        "invalid_control", "Select field is not allowlisted", 422
-                    )
+                if field not in {
+                    "priority",
+                    "reminder_preset",
+                    "review_page",
+                }:
+                    raise PluginAPIError("invalid_control", "Select field is not allowlisted", 422)
                 row = int(control["row"])
                 if row not in {1, 2, 3, 4} or row in rows:
-                    raise PluginAPIError(
-                        "invalid_control", "Select action row is invalid", 422
-                    )
+                    raise PluginAPIError("invalid_control", "Select action row is invalid", 422)
                 rows.add(row)
                 if int(control["min_values"]) != 1 or int(control["max_values"]) != 1:
                     raise PluginAPIError(
                         "invalid_control", "Select must choose exactly one value", 422
                     )
                 token = str(control["token"])
-                _revision, token_projection, token_field = _decode_proposal_control(
-                    token
-                )
+                _revision, token_projection, token_field = _decode_proposal_control(token)
                 if token_projection != projection_id or token_field != field:
-                    raise PluginAPIError(
-                        "invalid_control", "Select binding does not match", 422
-                    )
+                    raise PluginAPIError("invalid_control", "Select binding does not match", 422)
                 custom_id = f"dkt:p:{token}"
                 if custom_id in custom_ids:
-                    raise PluginAPIError(
-                        "invalid_control", "Select custom ID is duplicated", 422
-                    )
+                    raise PluginAPIError("invalid_control", "Select custom ID is duplicated", 422)
                 custom_ids.add(custom_id)
                 options = control["options"]
                 if not isinstance(options, list) or not 1 <= len(options) <= 25:
-                    raise PluginAPIError(
-                        "invalid_control", "Select option count is invalid", 422
-                    )
+                    raise PluginAPIError("invalid_control", "Select option count is invalid", 422)
                 rendered_options = []
                 defaults = 0
                 for option in options:
@@ -803,9 +787,7 @@ def _render_embed(
                         "description",
                         "default",
                     }:
-                        raise PluginAPIError(
-                            "invalid_control", "Select option is invalid", 422
-                        )
+                        raise PluginAPIError("invalid_control", "Select option is invalid", 422)
                     default = bool(option["default"])
                     defaults += int(default)
                     rendered_options.append(
@@ -883,19 +865,13 @@ def _render_embed(
                     "proposal_snooze": "snooze",
                 }
                 if transition not in labels or control["label"] != labels[transition]:
-                    raise PluginAPIError(
-                        "invalid_control", "Proposal action is not canonical", 422
-                    )
+                    raise PluginAPIError("invalid_control", "Proposal action is not canonical", 422)
                 expected_row = 4 if transition == "proposal_snooze" else 3
                 if int(control["row"]) != expected_row:
-                    raise PluginAPIError(
-                        "invalid_control", "Proposal action row is invalid", 422
-                    )
+                    raise PluginAPIError("invalid_control", "Proposal action row is invalid", 422)
                 revision_id = uuid.UUID(str(control["action_revision_id"]))
                 token = str(control["token"])
-                token_revision, token_projection, token_field = (
-                    _decode_proposal_control(token)
-                )
+                token_revision, token_projection, token_field = _decode_proposal_control(token)
                 if (
                     token_revision != revision_id
                     or token_projection != projection_id
@@ -917,16 +893,11 @@ def _render_embed(
                 [
                     item
                     for item in controls
-                    if isinstance(item, dict)
-                    and item.get("kind") == "proposal_action"
+                    if isinstance(item, dict) and item.get("kind") == "proposal_action"
                 ]
             ):
-                raise PluginAPIError(
-                    "invalid_control", "Proposal actions are duplicated", 422
-                )
-        if not kinds.issubset(
-            {"approval", "local_action", "string_select", "proposal_action"}
-        ):
+                raise PluginAPIError("invalid_control", "Proposal actions are duplicated", 422)
+        if not kinds.issubset({"approval", "local_action", "string_select", "proposal_action"}):
             raise PluginAPIError("invalid_control", "Control kind is not allowed", 422)
     context_prefix = f"{_escaped(footer_context, 512)} | " if footer_context else ""
     footer = (
@@ -1162,9 +1133,7 @@ async def _post_calendar_reminder(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         thread = await client.fetch_channel(int(thread_id))
     except discord.NotFound as exc:
-        raise PluginAPIError(
-            "thread_not_found", "Reminder daily thread was not found"
-        ) from exc
+        raise PluginAPIError("thread_not_found", "Reminder daily thread was not found") from exc
     if (
         not isinstance(thread, discord.Thread)
         or str(thread.guild.id) != guild_id
@@ -1175,9 +1144,7 @@ async def _post_calendar_reminder(payload: dict[str, Any]) -> dict[str, Any]:
             "stored_thread_binding_mismatch", "Reminder daily thread binding changed"
         )
     if thread.archived:
-        thread = await thread.edit(
-            archived=False, locked=False, reason="Docket reminder delivery"
-        )
+        thread = await thread.edit(archived=False, locked=False, reason="Docket reminder delivery")
     marker = f"docket-calendar-reminder:{notification_id}"
     footer = f"{marker} | render:{render_sha256}"
     title = "Late calendar reminder" if render["late"] else "Calendar reminder"
@@ -1309,9 +1276,7 @@ async def _open_custom_reminder_modal(
                         "reminder_leads_minutes": str(self.leads.value),
                     },
                 }
-                result = await asyncio.to_thread(
-                    _post_button_response, payload, local_action=True
-                )
+                result = await asyncio.to_thread(_post_button_response, payload, local_action=True)
                 await modal_interaction.followup.send(
                     "Updated reminders to "
                     f"{result.get('value')}; a new approval revision is being projected",
@@ -1322,9 +1287,7 @@ async def _open_custom_reminder_modal(
                 if modal_interaction.response.is_done():
                     await modal_interaction.followup.send(str(exc), ephemeral=True)
                 else:
-                    await modal_interaction.response.send_message(
-                        str(exc), ephemeral=True
-                    )
+                    await modal_interaction.response.send_message(str(exc), ephemeral=True)
             except Exception:
                 logger.exception("Unexpected Docket reminder modal failure")
                 if modal_interaction.response.is_done():
@@ -1430,9 +1393,7 @@ async def _open_event_edit_modal(
                     "transition": "proposal_edit",
                     "modal_values": values,
                 }
-                result = await asyncio.to_thread(
-                    _post_button_response, payload, local_action=True
-                )
+                result = await asyncio.to_thread(_post_button_response, payload, local_action=True)
                 await modal_interaction.followup.send(
                     "Proposal edited; revision "
                     f"{result.get('revision')} is being projected for fresh approval",
@@ -1443,9 +1404,7 @@ async def _open_event_edit_modal(
                 if modal_interaction.response.is_done():
                     await modal_interaction.followup.send(str(exc), ephemeral=True)
                 else:
-                    await modal_interaction.response.send_message(
-                        str(exc), ephemeral=True
-                    )
+                    await modal_interaction.response.send_message(str(exc), ephemeral=True)
             except Exception:
                 logger.exception("Unexpected Docket proposal modal failure")
                 if modal_interaction.response.is_done():
@@ -1477,9 +1436,7 @@ async def _on_docket_interaction(interaction: object) -> None:
             approval_id = None
             proposal_field = None
         elif proposal_control:
-            action_revision_id, projection_id, proposal_field = (
-                _decode_proposal_control(token)
-            )
+            action_revision_id, projection_id, proposal_field = _decode_proposal_control(token)
             approval_id = None
         else:
             approval_id, projection_id = _decode_control(token)
@@ -1524,7 +1481,7 @@ async def _on_docket_interaction(interaction: object) -> None:
             if proposal_field not in {"refresh", "snooze"}:
                 values = data.get("values", []) if isinstance(data, dict) else []
                 if (
-                    proposal_field not in {"priority", "reminder_preset"}
+                    proposal_field not in {"priority", "reminder_preset", "review_page"}
                     or not isinstance(values, list)
                     or len(values) != 1
                 ):
@@ -1534,10 +1491,7 @@ async def _on_docket_interaction(interaction: object) -> None:
                         422,
                     )
                 proposal_value = str(values[0])
-                if (
-                    proposal_field == "reminder_preset"
-                    and proposal_value == "custom"
-                ):
+                if proposal_field == "reminder_preset" and proposal_value == "custom":
                     await _open_custom_reminder_modal(
                         interaction,
                         action_revision_id=action_revision_id,
@@ -1567,10 +1521,18 @@ async def _on_docket_interaction(interaction: object) -> None:
                     "action_revision_id": str(action_revision_id),
                     "action_token": token,
                     "transition": (
-                        "proposal_refresh"
-                        if proposal_field == "refresh"
-                        else "proposal_snooze"
+                        "proposal_refresh" if proposal_field == "refresh" else "proposal_snooze"
                     ),
+                }
+            elif proposal_field == "review_page":
+                assert proposal_value is not None
+                payload = {
+                    **context,
+                    "action_revision_id": str(action_revision_id),
+                    "action_token": token,
+                    "transition": "proposal_review_page",
+                    "field": "review_page",
+                    "value": proposal_value,
                 }
             else:
                 assert proposal_value is not None
@@ -1582,11 +1544,11 @@ async def _on_docket_interaction(interaction: object) -> None:
                     "field": proposal_field,
                     "value": proposal_value,
                 }
-            result = await asyncio.to_thread(
-                _post_button_response, payload, local_action=True
-            )
+            result = await asyncio.to_thread(_post_button_response, payload, local_action=True)
             acknowledgement = (
-                (
+                str(result.get("content"))
+                if proposal_field == "review_page"
+                else (
                     "Calendar state refreshed; "
                     f"proposal revision {result.get('revision')} is current"
                     if proposal_field == "refresh"

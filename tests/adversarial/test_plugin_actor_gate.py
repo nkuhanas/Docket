@@ -8,7 +8,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from docket.security import issue_projection_approval_token, issue_projection_local_action_token
+from docket.security import (
+    issue_projection_approval_token,
+    issue_projection_local_action_token,
+    issue_projection_proposal_control_token,
+)
 
 PLUGIN_PATH = Path("hermes/plugin/docket_discord/__init__.py")
 
@@ -447,3 +451,102 @@ def test_failed_item_can_render_one_canonical_ignore_control(plugin_module, monk
 
     assert len(view.items) == 1
     assert view.items[0].custom_id == f"dkt:l:{token}"
+
+
+def test_plugin_accepts_only_bound_schedule_review_pages(plugin_module, monkeypatch) -> None:
+    class FakeEmbed:
+        def __init__(self, **_kwargs) -> None:
+            self.footer = None
+
+        def add_field(self, **_kwargs) -> None:
+            return None
+
+        def set_footer(self, **kwargs) -> None:
+            self.footer = SimpleNamespace(text=kwargs["text"])
+
+    class FakeView:
+        def __init__(self, **_kwargs) -> None:
+            self.items = []
+
+        def add_item(self, item) -> None:
+            self.items.append(item)
+
+    class FakeSelect:
+        def __init__(self, **kwargs) -> None:
+            self.custom_id = kwargs["custom_id"]
+            self.options = kwargs["options"]
+
+    class FakeSelectOption:
+        def __init__(self, **kwargs) -> None:
+            self.value = kwargs["value"]
+            self.default = kwargs["default"]
+
+    fake_discord = SimpleNamespace(
+        Embed=FakeEmbed,
+        ButtonStyle=SimpleNamespace(success=1, danger=2, secondary=3),
+        ui=SimpleNamespace(
+            View=FakeView,
+            Button=object,
+            Select=FakeSelect,
+        ),
+        SelectOption=FakeSelectOption,
+        utils=SimpleNamespace(
+            escape_mentions=lambda value: value,
+            escape_markdown=lambda value: value,
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "discord", fake_discord)
+    revision_id = uuid.uuid4()
+    projection_id = uuid.uuid4()
+    token = issue_projection_proposal_control_token(
+        revision_id,
+        projection_id,
+        "review_page",
+        datetime.now(UTC) + timedelta(days=1),
+        b"test-signing-key",
+    )
+    _embed, view = plugin_module._render_embed(
+        projection_id,
+        {
+            "embed": {
+                "title": "Apply schedule",
+                "description": "Review one immutable aggregate.",
+                "fields": [],
+                "color": 1,
+            },
+            "controls": [
+                {
+                    "kind": "string_select",
+                    "field": "review_page",
+                    "label": "Review items",
+                    "placeholder": "Review schedule items",
+                    "row": 1,
+                    "min_values": 1,
+                    "max_values": 1,
+                    "token": token,
+                    "options": [
+                        {
+                            "label": f"Page {page} of 5",
+                            "value": str(page),
+                            "description": f"Review immutable page {page}",
+                            "default": page == 1,
+                        }
+                        for page in range(1, 6)
+                    ],
+                }
+            ],
+            "projection_version": 1,
+            "render_sha256": "a" * 64,
+            "component_sha256": "b" * 64,
+        },
+    )
+
+    assert len(view.items) == 1
+    assert view.items[0].custom_id == f"dkt:p:{token}"
+    assert [option.value for option in view.items[0].options] == [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+    ]

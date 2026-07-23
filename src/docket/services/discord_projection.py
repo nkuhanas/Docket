@@ -21,6 +21,7 @@ from docket.models import (
     CalendarEventCache,
     DiscordDailyThread,
     DiscordProjection,
+    Operation,
     OutboxEvent,
     QueueItem,
     ReminderRule,
@@ -193,9 +194,7 @@ class DiscordProjectionRunner:
             }
             return daily_thread.id, projection.id
 
-    def _ensure_notification_thread(
-        self, event_id: uuid.UUID, lease_token: uuid.UUID
-    ) -> uuid.UUID:
+    def _ensure_notification_thread(self, event_id: uuid.UUID, lease_token: uuid.UUID) -> uuid.UUID:
         with self.session_factory.begin() as session:
             outbox = session.get(OutboxEvent, event_id)
             if (
@@ -209,9 +208,11 @@ class DiscordProjectionRunner:
                 raise DiscordProjectionError(
                     "notification_not_delivering", "Calendar notification is not deliverable"
                 )
-            scheduled_date = _aware(notification.scheduled_for).astimezone(
-                ZoneInfo(self.settings.timezone)
-            ).date()
+            scheduled_date = (
+                _aware(notification.scheduled_for)
+                .astimezone(ZoneInfo(self.settings.timezone))
+                .date()
+            )
             requested_date = outbox.payload.get("target_local_date")
             try:
                 local_date = (
@@ -377,9 +378,7 @@ class DiscordProjectionRunner:
             return (
                 "Disabled"
                 if not minutes
-                else ", ".join(
-                    f"{value} minute{'s' if value != 1 else ''}" for value in minutes
-                )
+                else ", ".join(f"{value} minute{'s' if value != 1 else ''}" for value in minutes)
             )
         leads = plan.get("lead_seconds", [])
         if not isinstance(leads, list):
@@ -388,8 +387,7 @@ class DiscordProjectionRunner:
             "Disabled"
             if not leads
             else ", ".join(
-                f"{int(value) // 60} minute{'s' if int(value) != 60 else ''}"
-                for value in leads
+                f"{int(value) // 60} minute{'s' if int(value) != 60 else ''}" for value in leads
             )
         )
         return f"{lead_text}\nGoogle popup + Docket daily thread"
@@ -418,6 +416,16 @@ class DiscordProjectionRunner:
         projection_id: uuid.UUID,
         signing_key: bytes,
     ) -> list[dict[str, Any]]:
+        if revision.action_type == "calendar_apply_term_schedule":
+            return [
+                DiscordProjectionRunner._schedule_review_select(
+                    revision,
+                    projection_id,
+                    approval.expires_at,
+                    signing_key,
+                    include_failures=False,
+                )
+            ]
         if revision.action_type not in {
             "calendar_create_event",
             "calendar_update_event",
@@ -509,12 +517,69 @@ class DiscordProjectionRunner:
         )
         return controls
 
+    @staticmethod
+    def _schedule_review_select(
+        revision: ActionRevision,
+        projection_id: uuid.UUID,
+        expires_at: datetime,
+        signing_key: bytes,
+        *,
+        include_failures: bool,
+    ) -> dict[str, Any]:
+        raw_count = revision.preview.get("item_count")
+        if not isinstance(raw_count, int) or not 1 <= raw_count <= 50:
+            raise DiscordProjectionError(
+                "invalid_schedule_preview",
+                "Schedule preview item count is outside its bound",
+            )
+        page_count = (raw_count + 9) // 10
+        options = [
+            {
+                "label": f"Page {page} of {page_count}",
+                "value": str(page),
+                "description": (
+                    f"Review immutable items {(page - 1) * 10 + 1}-{min(page * 10, raw_count)}"
+                ),
+                "default": page == 1,
+            }
+            for page in range(1, page_count + 1)
+        ]
+        if include_failures:
+            options.append(
+                {
+                    "label": "View failures",
+                    "value": "failures",
+                    "description": "Review failed or reconciliation-required items",
+                    "default": False,
+                }
+            )
+        return {
+            "kind": "string_select",
+            "field": "review_page",
+            "label": "Review items",
+            "placeholder": (
+                "Review items or view failures" if include_failures else "Review schedule items"
+            ),
+            "row": 1,
+            "min_values": 1,
+            "max_values": 1,
+            "token": issue_projection_proposal_control_token(
+                revision.id,
+                projection_id,
+                "review_page",
+                expires_at,
+                signing_key,
+            ),
+            "options": options,
+        }
+
     def _render(
         self,
         queue_item: QueueItem,
         action: Action | None,
         revision: ActionRevision | None,
         approval: Approval | None,
+        operation: Operation | None,
         local_revisions: list[tuple[Action, ActionRevision]],
         account_label: str | None,
         projection_id: uuid.UUID,
@@ -604,6 +669,80 @@ class DiscordProjectionRunner:
                     {
                         "name": "Reminder plan",
                         "value": self._reminder_text(preview.get("reminder_plan")),
+                        "inline": False,
+                    }
+                )
+            if revision.action_type == "calendar_apply_term_schedule":
+                term = preview.get("term")
+                if isinstance(term, dict):
+                    fields.append(
+                        {
+                            "name": "Term",
+                            "value": (
+                                f"{term.get('term_name', 'Unnamed term')}\n"
+                                f"{term.get('institution', 'Unknown institution')}\n"
+                                f"{term.get('start_date', '?')} through "
+                                f"{term.get('end_date', '?')} · "
+                                f"{term.get('timezone', '?')}"
+                            ),
+                            "inline": False,
+                        }
+                    )
+                counts = preview.get("counts")
+                if isinstance(counts, dict):
+                    fields.append(
+                        {
+                            "name": "Batch",
+                            "value": (
+                                f"{preview.get('item_count', '?')} immutable items · "
+                                f"{counts.get('create', 0)} create · "
+                                f"{counts.get('update', 0)} update · "
+                                f"{counts.get('no_op', 0)} already synchronized"
+                            ),
+                            "inline": False,
+                        }
+                    )
+                fields.append(
+                    {
+                        "name": "Classification",
+                        "value": (
+                            "Per item: recurring or one_time · timed · "
+                            "course_meeting · normal/default"
+                        ),
+                        "inline": False,
+                    }
+                )
+                fields.append(
+                    {
+                        "name": "Manifest",
+                        "value": str(preview.get("manifest_sha256", "unknown"))[:16],
+                        "inline": True,
+                    }
+                )
+                freshness = preview.get("freshness")
+                if isinstance(freshness, dict):
+                    fields.append(
+                        {
+                            "name": "Conflict freshness",
+                            "value": str(freshness.get("last_success_at", "unknown")),
+                            "inline": False,
+                        }
+                    )
+            if operation is not None:
+                result = operation.result
+                result_counts = result.get("counts") if isinstance(result, dict) else None
+                value = operation.status
+                if isinstance(result_counts, dict):
+                    value += (
+                        f"\n{result_counts.get('succeeded', 0)} succeeded · "
+                        f"{result_counts.get('failed', 0)} failed · "
+                        f"{result_counts.get('reconciliation_required', 0)} uncertain · "
+                        f"{result_counts.get('pending', 0)} pending"
+                    )
+                fields.append(
+                    {
+                        "name": "Execution",
+                        "value": value,
                         "inline": False,
                     }
                 )
@@ -789,6 +928,38 @@ class DiscordProjectionRunner:
                     "inline": False,
                 }
             )
+        elif (
+            projection_date == latest_date
+            and revision is not None
+            and revision.action_type == "calendar_apply_term_schedule"
+            and operation is not None
+        ):
+            signing_key = self.settings.read_secret(
+                self.settings.interaction_signing_key_file
+            ).encode()
+            local_midnight = datetime.combine(
+                projection_date,
+                datetime.min.time(),
+                tzinfo=ZoneInfo(self.settings.timezone),
+            )
+            expires_at = local_midnight + timedelta(
+                hours=self.settings.daily_rollover_hour,
+                seconds=self.settings.local_action_ttl_seconds,
+            )
+            controls = [
+                self._schedule_review_select(
+                    revision,
+                    projection_id,
+                    expires_at,
+                    signing_key,
+                    include_failures=operation.status
+                    in {
+                        "partial_failed",
+                        "reconciliation_required",
+                        "failed",
+                    },
+                )
+            ]
         elif projection_date == latest_date and local_revisions:
             signing_key = self.settings.read_secret(
                 self.settings.interaction_signing_key_file
@@ -834,6 +1005,14 @@ class DiscordProjectionRunner:
                     "inline": False,
                 }
             )
+        fields = [
+            {
+                "name": self._bounded(str(field["name"]), 256),
+                "value": self._bounded(str(field["value"]), 1024),
+                "inline": bool(field.get("inline", False)),
+            }
+            for field in fields[:25]
+        ]
         embed = {
             "title": self._bounded(queue_item.title, 256),
             "description": self._bounded(
@@ -841,17 +1020,15 @@ class DiscordProjectionRunner:
                     f"{queue_item.summary}\n\n"
                     "Review the immutable proposal below. No provider write occurs "
                     "until approval."
-                    if approval is not None
-                    and approval.status == ApprovalStatus.PENDING.value
+                    if approval is not None and approval.status == ApprovalStatus.PENDING.value
                     else queue_item.summary
                 ),
                 4096,
             ),
-            "fields": fields[:25],
+            "fields": fields,
             "color": (
                 0xC0392B
-                if revision is not None
-                and revision.action_type == "calendar_cancel_event"
+                if revision is not None and revision.action_type == "calendar_cancel_event"
                 else 0xD6A756
             ),
             "timestamp": (
@@ -918,6 +1095,7 @@ class DiscordProjectionRunner:
             action: Action | None = None
             revision: ActionRevision | None = None
             approval: Approval | None = None
+            operation: Operation | None = None
             local_revisions: list[tuple[Action, ActionRevision]] = []
             account_label: str | None = None
             for candidate in actions:
@@ -939,6 +1117,12 @@ class DiscordProjectionRunner:
                     approval = session.scalar(
                         select(Approval).where(Approval.action_revision_id == candidate_revision.id)
                     )
+                    operation = session.scalar(
+                        select(Operation)
+                        .where(Operation.action_revision_id == candidate_revision.id)
+                        .order_by(Operation.created_at.desc())
+                        .limit(1)
+                    )
                     account = session.get(Account, candidate_revision.account_id)
                     if account is not None:
                         account_label = (
@@ -951,6 +1135,7 @@ class DiscordProjectionRunner:
                 action,
                 revision,
                 approval,
+                operation,
                 local_revisions,
                 account_label,
                 projection.id,
