@@ -24,6 +24,9 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
         "calendar_links",
         "calendar_sync_states",
         "calendar_event_cache",
+        "calendar_profiles",
+        "calendar_reminder_plans",
+        "calendar_schedule_snapshots",
         "reminder_rules",
         "scheduled_notifications",
         "records",
@@ -31,6 +34,7 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
         "command_requests",
         "execution_attempts",
         "operations",
+        "operation_items",
         "outbox_events",
         "queue_items",
         "audit_events",
@@ -51,6 +55,15 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
     }
     assert "daily_thread_id" in {
         column["name"] for column in inspect(engine).get_columns("scheduled_notifications")
+    }
+    assert "logical_key" in {
+        column["name"] for column in inspect(engine).get_columns("calendar_links")
+    }
+    assert "provider_reminders" in {
+        column["name"] for column in inspect(engine).get_columns("calendar_event_cache")
+    }
+    assert "operation_item_id" in {
+        column["name"] for column in inspect(engine).get_columns("execution_attempts")
     }
 
     command.downgrade(config, "base")
