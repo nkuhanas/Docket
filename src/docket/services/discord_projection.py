@@ -28,7 +28,11 @@ from docket.models import (
 )
 from docket.models.base import utc_now
 from docket.providers.discord import DiscordProjectionAdapter, DiscordProjectionError
-from docket.security import issue_projection_approval_token, issue_projection_local_action_token
+from docket.security import (
+    issue_projection_approval_token,
+    issue_projection_local_action_token,
+    issue_projection_proposal_control_token,
+)
 from docket.services.queue import ensure_local_actions
 
 _SUPPORTED_EVENTS = {
@@ -335,6 +339,176 @@ class DiscordProjectionRunner:
     def _bounded(value: str, maximum: int) -> str:
         return value if len(value) <= maximum else value[: maximum - 1] + "…"
 
+    @staticmethod
+    def _standalone_timing(event: dict[str, Any]) -> str:
+        timing = event.get("timing", {})
+        if not isinstance(timing, dict):
+            return "Unknown"
+        if timing.get("kind") == "all_day":
+            return (
+                f"All day · {timing.get('start_date', '?')} through "
+                f"{timing.get('end_date', '?')} (exclusive)\n"
+                f"{timing.get('timezone', '?')}"
+            )
+        return (
+            f"{timing.get('start_local', '?')} through {timing.get('end_local', '?')}\n"
+            f"{timing.get('timezone', '?')}"
+        )
+
+    @staticmethod
+    def _reminder_text(plan: object) -> str:
+        if not isinstance(plan, dict):
+            return "Preserve current provider reminders"
+        if "useDefault" in plan or "overrides" in plan:
+            if bool(plan.get("useDefault")):
+                return "Provider calendar defaults"
+            overrides = plan.get("overrides", [])
+            if not isinstance(overrides, list):
+                overrides = []
+            minutes = sorted(
+                {
+                    int(item["minutes"])
+                    for item in overrides
+                    if isinstance(item, dict)
+                    and item.get("method") == "popup"
+                    and isinstance(item.get("minutes"), int)
+                }
+            )
+            return (
+                "Disabled"
+                if not minutes
+                else ", ".join(
+                    f"{value} minute{'s' if value != 1 else ''}" for value in minutes
+                )
+            )
+        leads = plan.get("lead_seconds", [])
+        if not isinstance(leads, list):
+            leads = []
+        lead_text = (
+            "Disabled"
+            if not leads
+            else ", ".join(
+                f"{int(value) // 60} minute{'s' if int(value) != 60 else ''}"
+                for value in leads
+            )
+        )
+        return f"{lead_text}\nGoogle popup + Docket daily thread"
+
+    @staticmethod
+    def _reminder_selected(plan: object) -> str:
+        if not isinstance(plan, dict):
+            return "custom"
+        leads = plan.get("lead_seconds")
+        presets = {
+            (): "none",
+            (300,): "5m",
+            (600,): "10m",
+            (900,): "15m",
+            (1800,): "30m",
+            (3600,): "1h",
+        }
+        if not isinstance(leads, list):
+            return "custom"
+        return presets.get(tuple(int(value) for value in leads), "custom")
+
+    @staticmethod
+    def _proposal_selects(
+        revision: ActionRevision,
+        approval: Approval,
+        projection_id: uuid.UUID,
+        signing_key: bytes,
+    ) -> list[dict[str, Any]]:
+        if revision.action_type not in {
+            "calendar_create_event",
+            "calendar_update_event",
+            "calendar_update_reminders",
+        }:
+            return []
+        controls: list[dict[str, Any]] = []
+        classification = revision.preview.get("classification", {})
+        if revision.action_type in {
+            "calendar_create_event",
+            "calendar_update_event",
+        }:
+            selected_priority = (
+                str(classification.get("priority", "normal"))
+                if isinstance(classification, dict)
+                else "normal"
+            )
+            token = issue_projection_proposal_control_token(
+                revision.id,
+                projection_id,
+                "priority",
+                approval.expires_at,
+                signing_key,
+            )
+            controls.append(
+                {
+                    "kind": "string_select",
+                    "field": "priority",
+                    "label": "Priority",
+                    "placeholder": "Priority",
+                    "row": 1,
+                    "min_values": 1,
+                    "max_values": 1,
+                    "token": token,
+                    "options": [
+                        {
+                            "label": label,
+                            "value": value,
+                            "description": f"Set Docket priority to {label.lower()}",
+                            "default": value == selected_priority,
+                        }
+                        for label, value in (
+                            ("Low", "low"),
+                            ("Normal", "normal"),
+                            ("High", "high"),
+                            ("Urgent", "urgent"),
+                        )
+                    ],
+                }
+            )
+        selected_reminder = DiscordProjectionRunner._reminder_selected(
+            revision.preview.get("reminder_plan")
+        )
+        token = issue_projection_proposal_control_token(
+            revision.id,
+            projection_id,
+            "reminder_preset",
+            approval.expires_at,
+            signing_key,
+        )
+        controls.append(
+            {
+                "kind": "string_select",
+                "field": "reminder_preset",
+                "label": "Reminder",
+                "placeholder": "Reminder",
+                "row": 2,
+                "min_values": 1,
+                "max_values": 1,
+                "token": token,
+                "options": [
+                    {
+                        "label": label,
+                        "value": value,
+                        "description": description,
+                        "default": value == selected_reminder,
+                    }
+                    for label, value, description in (
+                        ("None", "none", "Disable both reminder projections"),
+                        ("5 minutes", "5m", "Google popup and Docket thread"),
+                        ("10 minutes", "10m", "Google popup and Docket thread"),
+                        ("15 minutes", "15m", "Google popup and Docket thread"),
+                        ("30 minutes", "30m", "Google popup and Docket thread"),
+                        ("1 hour", "1h", "Google popup and Docket thread"),
+                        ("Custom…", "custom", "Open the bounded reminder editor"),
+                    )
+                ],
+            }
+        )
+        return controls
+
     def _render(
         self,
         queue_item: QueueItem,
@@ -386,6 +560,84 @@ class DiscordProjectionRunner:
             fields.append({"name": "Account", "value": account_label, "inline": False})
         if revision is not None:
             preview = revision.preview
+            standalone = preview.get("event")
+            if isinstance(standalone, dict):
+                fields.append(
+                    {
+                        "name": "When",
+                        "value": self._standalone_timing(standalone),
+                        "inline": False,
+                    }
+                )
+                fields.append(
+                    {
+                        "name": "Where",
+                        "value": str(standalone.get("location") or "No location"),
+                        "inline": False,
+                    }
+                )
+            classification = preview.get("classification")
+            if isinstance(classification, dict):
+                tags = [
+                    *classification.get("system_tags", []),
+                    *classification.get("operator_tags", []),
+                ]
+                fields.append(
+                    {
+                        "name": "Recurrence / tags",
+                        "value": ", ".join(str(value) for value in tags) or "None",
+                        "inline": False,
+                    }
+                )
+                fields.append(
+                    {
+                        "name": "Priority basis",
+                        "value": (
+                            f"{classification.get('priority', 'normal')} · "
+                            f"{classification.get('priority_basis', 'default')}"
+                        ),
+                        "inline": True,
+                    }
+                )
+            if "reminder_plan" in preview:
+                fields.append(
+                    {
+                        "name": "Reminder plan",
+                        "value": self._reminder_text(preview.get("reminder_plan")),
+                        "inline": False,
+                    }
+                )
+            conflicts = preview.get("conflicts")
+            if isinstance(conflicts, list):
+                conflict_text = (
+                    "Clear — no exact overlaps in the fresh snapshot"
+                    if not conflicts
+                    else "\n".join(
+                        f"{item.get('summary') or 'Untitled'} · {item.get('start_at')}"
+                        for item in conflicts[:5]
+                        if isinstance(item, dict)
+                    )
+                )
+                fields.append(
+                    {
+                        "name": "Conflicts",
+                        "value": conflict_text or "Advisory overlap detected",
+                        "inline": False,
+                    }
+                )
+            before = preview.get("before")
+            if isinstance(before, dict):
+                fields.append(
+                    {
+                        "name": "Before",
+                        "value": (
+                            f"{before.get('summary') or 'Untitled'}\n"
+                            f"ETag: {before.get('provider_etag') or 'none'}\n"
+                            f"Reminders: {self._reminder_text(before.get('provider_reminders'))}"
+                        ),
+                        "inline": False,
+                    }
+                )
             course = preview.get("course", {})
             course_label = " · ".join(
                 str(value)
@@ -438,6 +690,7 @@ class DiscordProjectionRunner:
             and action is not None
             and approval.status == ApprovalStatus.PENDING.value
             and action.status == "approval_pending"
+            and queue_item.status == "awaiting_approval"
             and projection_date == latest_date
         ):
             signing_key = self.settings.read_secret(
@@ -462,6 +715,73 @@ class DiscordProjectionRunner:
                     "token": token,
                 },
             ]
+            if revision is not None:
+                controls.extend(
+                    self._proposal_selects(
+                        revision,
+                        approval,
+                        projection_id,
+                        signing_key,
+                    )
+                )
+                if revision.action_type in {
+                    "calendar_create_event",
+                    "calendar_update_event",
+                }:
+                    controls.append(
+                        {
+                            "kind": "proposal_action",
+                            "transition": "proposal_edit",
+                            "label": "Edit",
+                            "row": 3,
+                            "action_revision_id": str(revision.id),
+                            "token": issue_projection_proposal_control_token(
+                                revision.id,
+                                projection_id,
+                                "edit",
+                                approval.expires_at,
+                                signing_key,
+                            ),
+                        }
+                    )
+                controls.append(
+                    {
+                        "kind": "proposal_action",
+                        "transition": "proposal_snooze",
+                        "label": "Snooze until tomorrow",
+                        "row": 4,
+                        "action_revision_id": str(revision.id),
+                        "token": issue_projection_proposal_control_token(
+                            revision.id,
+                            projection_id,
+                            "snooze",
+                            approval.expires_at,
+                            signing_key,
+                        ),
+                    }
+                )
+                if revision.action_type in {
+                    "calendar_create_event",
+                    "calendar_update_event",
+                    "calendar_update_reminders",
+                    "calendar_cancel_event",
+                }:
+                    controls.append(
+                        {
+                            "kind": "proposal_action",
+                            "transition": "proposal_refresh",
+                            "label": "Refresh",
+                            "row": 3,
+                            "action_revision_id": str(revision.id),
+                            "token": issue_projection_proposal_control_token(
+                                revision.id,
+                                projection_id,
+                                "refresh",
+                                approval.expires_at,
+                                signing_key,
+                            ),
+                        }
+                    )
             fields.append(
                 {
                     "name": "Approval expires",
@@ -504,11 +824,50 @@ class DiscordProjectionRunner:
                         "token": token,
                     }
                 )
+        if queue_item.status == "snoozed" and queue_item.snoozed_until is not None:
+            fields.append(
+                {
+                    "name": "Snoozed until",
+                    "value": _aware(queue_item.snoozed_until)
+                    .astimezone(ZoneInfo(self.settings.timezone))
+                    .isoformat(),
+                    "inline": False,
+                }
+            )
         embed = {
             "title": self._bounded(queue_item.title, 256),
-            "description": self._bounded(queue_item.summary, 4096),
-            "fields": fields,
-            "color": 0xD6A756,
+            "description": self._bounded(
+                (
+                    f"{queue_item.summary}\n\n"
+                    "Review the immutable proposal below. No provider write occurs "
+                    "until approval."
+                    if approval is not None
+                    and approval.status == ApprovalStatus.PENDING.value
+                    else queue_item.summary
+                ),
+                4096,
+            ),
+            "fields": fields[:25],
+            "color": (
+                0xC0392B
+                if revision is not None
+                and revision.action_type == "calendar_cancel_event"
+                else 0xD6A756
+            ),
+            "timestamp": (
+                _aware(revision.created_at).astimezone(UTC).isoformat()
+                if revision is not None
+                else _aware(queue_item.created_at).astimezone(UTC).isoformat()
+            ),
+            "footer": self._bounded(
+                (
+                    f"revision {revision.revision} · {str(revision.id)[:8]} · "
+                    f"expires {_aware(approval.expires_at).astimezone(UTC).isoformat()}"
+                    if revision is not None and approval is not None
+                    else f"queue {str(queue_item.id)[:8]}"
+                ),
+                512,
+            ),
         }
         return embed, controls, sha256_json(embed), sha256_json(controls)
 

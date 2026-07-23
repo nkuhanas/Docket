@@ -51,9 +51,48 @@ class ApprovalResponse(DiscordContext):
 class LocalActionResponse(DiscordContext):
     action_revision_id: UUID
     action_token: str = Field(min_length=1, max_length=100)
+    transition: Literal[
+        "local_action",
+        "proposal_refresh",
+        "proposal_edit",
+        "proposal_field_change",
+        "proposal_snooze",
+        "proposal_review_page",
+    ] = "local_action"
+    field: Literal["priority", "reminder_preset"] | None = None
+    value: str | None = Field(default=None, min_length=1, max_length=64)
+    modal_values: dict[str, str] | None = None
 
     @model_validator(mode="after")
     def require_projection_context(self) -> "LocalActionResponse":
         if self.parent_channel_id is None or self.projection_id is None:
             raise ValueError("parent_channel_id and projection_id are required")
+        if self.transition == "local_action":
+            if self.field is not None or self.value is not None or self.modal_values is not None:
+                raise ValueError("ordinary local actions omit proposal-control values")
+        elif self.transition == "proposal_field_change":
+            if self.field is None or self.value is None or self.modal_values is not None:
+                raise ValueError("proposal field changes require exactly field and value")
+        elif self.transition == "proposal_edit":
+            if (
+                self.modal_values is None
+                or self.field not in {None, "reminder_preset"}
+                or self.value is not None
+            ):
+                raise ValueError(
+                    "proposal edits require bounded modal_values and an optional "
+                    "allowlisted field binding"
+                )
+            if not 1 <= len(self.modal_values) <= 5:
+                raise ValueError("proposal edits accept from one through five modal fields")
+            if any(
+                not key
+                or len(key) > 64
+                or not value
+                or len(value) > 1000
+                for key, value in self.modal_values.items()
+            ):
+                raise ValueError("proposal edit modal values exceed their bounds")
+        elif self.field is not None or self.value is not None or self.modal_values is not None:
+            raise ValueError("this proposal control does not accept field values")
         return self

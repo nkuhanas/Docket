@@ -7,8 +7,18 @@ from uuid import UUID
 _TOKEN_VERSION = 1
 _PROJECTION_TOKEN_VERSION = 2
 _LOCAL_ACTION_TOKEN_VERSION = 3
+_PROPOSAL_CONTROL_TOKEN_VERSION = 4
 _MAC_BYTES = 16
 _SHORT_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+_PROPOSAL_FIELDS = {
+    "priority": 1,
+    "reminder_preset": 2,
+    "refresh": 3,
+    "edit": 4,
+    "review_page": 5,
+    "snooze": 6,
+}
+_PROPOSAL_FIELD_NAMES = {value: key for key, value in _PROPOSAL_FIELDS.items()}
 
 
 def _timestamp(value: datetime) -> int:
@@ -164,6 +174,111 @@ def verify_projection_local_action_token(
         decoded_revision == action_revision_id
         and decoded_projection == projection_id
         and decoded_version == queue_version
+        and decoded_expiry == expires_at.astimezone(UTC).replace(microsecond=0)
+        and hmac.compare_digest(payload, expected_payload)
+        and hmac.compare_digest(supplied_mac, expected_mac)
+    )
+
+
+def _proposal_control_token_payload(
+    action_revision_id: UUID,
+    projection_id: UUID,
+    field: str,
+    expires_at: datetime,
+) -> bytes:
+    try:
+        field_code = _PROPOSAL_FIELDS[field]
+    except KeyError as exc:
+        raise ValueError("unknown proposal control field") from exc
+    return (
+        bytes([_PROPOSAL_CONTROL_TOKEN_VERSION])
+        + action_revision_id.bytes
+        + projection_id.bytes
+        + bytes([field_code])
+        + _timestamp(expires_at).to_bytes(8, "big")
+    )
+
+
+def issue_projection_proposal_control_token(
+    action_revision_id: UUID,
+    projection_id: UUID,
+    field: str,
+    expires_at: datetime,
+    signing_key: bytes,
+) -> str:
+    payload = _proposal_control_token_payload(
+        action_revision_id,
+        projection_id,
+        field,
+        expires_at,
+    )
+    signature = hmac.digest(
+        signing_key,
+        b"docket-projection-proposal-control-token-v1\x00" + payload,
+        "sha256",
+    )
+    return base64.urlsafe_b64encode(payload + signature[:_MAC_BYTES]).rstrip(
+        b"="
+    ).decode()
+
+
+def decode_projection_proposal_control_token(
+    token: str,
+) -> tuple[UUID, UUID, str, datetime] | None:
+    try:
+        raw = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
+    except (ValueError, UnicodeEncodeError):
+        return None
+    canonical_token = base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+    payload_length = 1 + 16 + 16 + 1 + 8
+    if (
+        not hmac.compare_digest(token, canonical_token)
+        or len(raw) != payload_length + _MAC_BYTES
+        or raw[0] != _PROPOSAL_CONTROL_TOKEN_VERSION
+    ):
+        return None
+    field = _PROPOSAL_FIELD_NAMES.get(raw[33])
+    if field is None:
+        return None
+    payload = raw[:payload_length]
+    return (
+        UUID(bytes=payload[1:17]),
+        UUID(bytes=payload[17:33]),
+        field,
+        datetime.fromtimestamp(int.from_bytes(payload[34:42], "big"), tz=UTC),
+    )
+
+
+def verify_projection_proposal_control_token(
+    token: str,
+    *,
+    action_revision_id: UUID,
+    projection_id: UUID,
+    field: str,
+    expires_at: datetime,
+    signing_key: bytes,
+) -> bool:
+    decoded = decode_projection_proposal_control_token(token)
+    if decoded is None:
+        return False
+    decoded_revision, decoded_projection, decoded_field, decoded_expiry = decoded
+    expected_payload = _proposal_control_token_payload(
+        action_revision_id,
+        projection_id,
+        field,
+        expires_at,
+    )
+    raw = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
+    payload, supplied_mac = raw[:-_MAC_BYTES], raw[-_MAC_BYTES:]
+    expected_mac = hmac.digest(
+        signing_key,
+        b"docket-projection-proposal-control-token-v1\x00" + expected_payload,
+        "sha256",
+    )[:_MAC_BYTES]
+    return (
+        decoded_revision == action_revision_id
+        and decoded_projection == projection_id
+        and decoded_field == field
         and decoded_expiry == expires_at.astimezone(UTC).replace(microsecond=0)
         and hmac.compare_digest(payload, expected_payload)
         and hmac.compare_digest(supplied_mac, expected_mac)

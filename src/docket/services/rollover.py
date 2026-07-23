@@ -397,11 +397,30 @@ class RolloverService:
                 )
             ).all()
             for item in snoozed:
-                item.status = QueueItemStatus.PENDING.value
+                pending_approval = session.scalar(
+                    select(Approval.id)
+                    .join(
+                        ActionRevision,
+                        ActionRevision.id == Approval.action_revision_id,
+                    )
+                    .join(Action, Action.id == ActionRevision.action_id)
+                    .where(
+                        Action.queue_item_id == item.id,
+                        ActionRevision.revision == Action.current_revision,
+                        Approval.status == ApprovalStatus.PENDING.value,
+                    )
+                    .limit(1)
+                )
+                item.status = (
+                    QueueItemStatus.AWAITING_APPROVAL.value
+                    if pending_approval is not None
+                    else QueueItemStatus.PENDING.value
+                )
                 item.snoozed_until = None
                 item.snooze_local_date = None
-                item.version += 1
-                ensure_local_actions(session, item, projection_date=local_date)
+                if pending_approval is None:
+                    item.version += 1
+                    ensure_local_actions(session, item, projection_date=local_date)
                 session.add(
                     AuditEvent(
                         event_type="queue_item.resumed",

@@ -1,27 +1,39 @@
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from docket.config import get_settings
-from docket.internal_api.schemas import ApprovalResponse
+from docket.domain.errors import DocketError
+from docket.internal_api.schemas import ApprovalResponse, LocalActionResponse
 from docket.models import (
     Account,
+    Action,
+    ActionRevision,
+    Approval,
     CalendarEventCache,
     CalendarLink,
     CalendarReminderPlan,
     CalendarSyncState,
+    DiscordDailyThread,
+    DiscordProjection,
     Operation,
+    QueueItem,
     ReminderRule,
     ScheduledNotification,
 )
+from docket.providers.discord import FakeDiscordBackend, FakeDiscordProjectionAdapter
 from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.schemas.actions import ProposeCalendarEventInput
 from docket.services.approvals import ApprovalService
 from docket.services.calendar_actions import CalendarActionService
+from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.operations import OperationRunner
+from docket.services.proposal_controls import ProposalControlService
+from docket.services.rollover import RolloverService
 
 
 def _source(message_id: str, intent_index: int = 0) -> dict:
@@ -295,3 +307,438 @@ def test_reminder_disable_and_cancellation_converge_both_projections(
         assert event is not None and event.status == "cancelled"
         assert operation is not None and operation.status == "succeeded"
         assert provider_event_id not in provider.events
+
+
+@pytest.mark.integration
+def test_proposal_selects_and_custom_modal_replace_the_revision_in_place(
+    session_factory: sessionmaker[Session],
+) -> None:
+    settings = get_settings()
+    with session_factory.begin() as session:
+        account = _seed_target(session)
+        proposed = CalendarActionService(session).propose(
+            _create_request(account, "777777777777777777")
+        )
+
+    backend = FakeDiscordBackend()
+    runner = DiscordProjectionRunner(
+        session_factory,
+        FakeDiscordProjectionAdapter(backend),
+        settings,
+    )
+    assert runner.run_due_once() is True
+    with session_factory() as session:
+        projection = session.scalar(select(DiscordProjection))
+        thread = session.scalar(select(DiscordDailyThread))
+        assert projection is not None and thread is not None
+        assert projection.message_id is not None and thread.thread_id is not None
+        projection_id = projection.id
+        message_id = projection.message_id
+        thread_id = thread.thread_id
+        controls = backend.messages[str(projection.id)]["controls"]
+        assert [control["kind"] for control in controls] == [
+            "approval",
+            "approval",
+            "string_select",
+            "string_select",
+            "proposal_action",
+            "proposal_action",
+            "proposal_action",
+        ]
+        priority_control = next(
+            control for control in controls if control.get("field") == "priority"
+        )
+        assert len(f"dkt:p:{priority_control['token']}") <= 100
+        assert [option["value"] for option in priority_control["options"]] == [
+            "low",
+            "normal",
+            "high",
+            "urgent",
+        ]
+        assert next(
+            option["value"]
+            for option in priority_control["options"]
+            if option["default"]
+        ) == "normal"
+
+    priority_response = LocalActionResponse(
+        request_id=uuid.uuid4(),
+        discord_interaction_id="proposal-priority-high",
+        discord_user_id=settings.operator_discord_user_id,
+        guild_id=settings.discord_guild_id,
+        channel_id=thread_id,
+        parent_channel_id=settings.queue_channel_id,
+        projection_id=projection_id,
+        message_id=message_id,
+        responded_at=datetime.now(UTC),
+        action_revision_id=proposed.action_revision_id,
+        action_token=priority_control["token"],
+        transition="proposal_field_change",
+        field="priority",
+        value="high",
+    )
+    with session_factory.begin() as session:
+        changed = ProposalControlService(session).respond(priority_response)
+        assert changed["revision"] == 2
+    while runner.run_due_once():
+        pass
+
+    with session_factory() as session:
+        action = session.get(Action, proposed.action_id)
+        old_approval = session.get(Approval, proposed.approval_id)
+        revisions = list(
+            session.scalars(
+                select(ActionRevision)
+                .where(ActionRevision.action_id == proposed.action_id)
+                .order_by(ActionRevision.revision)
+            )
+        )
+        plans = list(
+            session.scalars(
+                select(CalendarReminderPlan).order_by(
+                    CalendarReminderPlan.action_revision_id,
+                    CalendarReminderPlan.lead_seconds,
+                )
+            )
+        )
+        assert action is not None and action.current_revision == 2
+        assert old_approval is not None and old_approval.status == "superseded"
+        assert revisions[1].parameters["priority"] == "high"
+        assert revisions[1].parameters["priority_basis"] == "explicit_operator"
+        assert revisions[1].preview["classification"]["priority"] == "high"
+        assert sorted(
+            plan.status
+            for plan in plans
+            if plan.action_revision_id == revisions[0].id
+        ) == ["cancelled", "cancelled"]
+        assert sorted(
+            plan.status
+            for plan in plans
+            if plan.action_revision_id == revisions[1].id
+        ) == ["planned", "planned"]
+        assert session.scalar(select(Operation)) is None
+        projected = backend.messages[str(projection_id)]
+        assert projected["message_id"] == message_id
+        controls = projected["controls"]
+        refreshed_priority = next(
+            control for control in controls if control.get("field") == "priority"
+        )
+        assert next(
+            option["value"]
+            for option in refreshed_priority["options"]
+            if option["default"]
+        ) == "high"
+        reminder_control = next(
+            control
+            for control in controls
+            if control.get("field") == "reminder_preset"
+        )
+        current_revision_id = revisions[1].id
+
+    with session_factory.begin() as session, pytest.raises(DocketError) as rejected:
+        ProposalControlService(session).respond(
+            priority_response.model_copy(
+                update={
+                    "request_id": uuid.uuid4(),
+                    "discord_interaction_id": "proposal-stale-priority",
+                }
+            )
+        )
+    assert rejected.value.code == "stale_proposal_control"
+
+    custom_response = LocalActionResponse(
+        request_id=uuid.uuid4(),
+        discord_interaction_id="proposal-custom-reminders",
+        discord_user_id=settings.operator_discord_user_id,
+        guild_id=settings.discord_guild_id,
+        channel_id=thread_id,
+        parent_channel_id=settings.queue_channel_id,
+        projection_id=projection_id,
+        message_id=message_id,
+        responded_at=datetime.now(UTC),
+        action_revision_id=current_revision_id,
+        action_token=reminder_control["token"],
+        transition="proposal_edit",
+        field="reminder_preset",
+        modal_values={"reminder_leads_minutes": "5, 15"},
+    )
+    with session_factory.begin() as session:
+        edited = ProposalControlService(session).respond(custom_response)
+        assert edited["revision"] == 3
+    while runner.run_due_once():
+        pass
+
+    with session_factory() as session:
+        action = session.get(Action, proposed.action_id)
+        assert action is not None and action.current_revision == 3
+        current = session.scalar(
+            select(ActionRevision).where(
+                ActionRevision.action_id == proposed.action_id,
+                ActionRevision.revision == 3,
+            )
+        )
+        assert current is not None
+        assert current.parameters["reminder_plan"]["lead_seconds"] == [300, 900]
+        current_plans = list(
+            session.scalars(
+                select(CalendarReminderPlan)
+                .where(CalendarReminderPlan.action_revision_id == current.id)
+                .order_by(CalendarReminderPlan.lead_seconds)
+            )
+        )
+        assert [plan.lead_seconds for plan in current_plans] == [300, 900]
+        assert all(plan.status == "planned" for plan in current_plans)
+        assert backend.messages[str(projection_id)]["message_id"] == message_id
+
+
+@pytest.mark.integration
+def test_refresh_rebinds_conflicts_and_edit_modal_replaces_typed_fields(
+    session_factory: sessionmaker[Session],
+) -> None:
+    settings = get_settings()
+    with session_factory.begin() as session:
+        account = _seed_target(session)
+        account_id = account.id
+        proposed = CalendarActionService(session).propose(
+            _create_request(account, "888888888888888888")
+        )
+    backend = FakeDiscordBackend()
+    runner = DiscordProjectionRunner(
+        session_factory,
+        FakeDiscordProjectionAdapter(backend),
+        settings,
+    )
+    assert runner.run_due_once() is True
+    with session_factory() as session:
+        projection = session.scalar(select(DiscordProjection))
+        thread = session.scalar(select(DiscordDailyThread))
+        assert projection is not None and thread is not None
+        assert projection.message_id is not None and thread.thread_id is not None
+        projection_id = projection.id
+        message_id = projection.message_id
+        thread_id = thread.thread_id
+        controls = backend.messages[str(projection.id)]["controls"]
+        refresh_control = next(
+            control
+            for control in controls
+            if control.get("transition") == "proposal_refresh"
+        )
+
+    refresh_request = LocalActionResponse(
+        request_id=uuid.uuid4(),
+        discord_interaction_id="proposal-refresh",
+        discord_user_id=settings.operator_discord_user_id,
+        guild_id=settings.discord_guild_id,
+        channel_id=thread_id,
+        parent_channel_id=settings.queue_channel_id,
+        projection_id=projection_id,
+        message_id=message_id,
+        responded_at=datetime.now(UTC),
+        action_revision_id=proposed.action_revision_id,
+        action_token=refresh_control["token"],
+        transition="proposal_refresh",
+    )
+    with session_factory() as session:
+        assert ProposalControlService(session).prepare_refresh(refresh_request) == (
+            account_id,
+            settings.google_calendar_id,
+        )
+    refresh_started = datetime.now(UTC)
+    with session_factory.begin() as session:
+        state = session.scalar(
+            select(CalendarSyncState).where(
+                CalendarSyncState.account_id == account_id
+            )
+        )
+        assert state is not None
+        generation = uuid.uuid4()
+        state.snapshot_generation = generation
+        state.last_attempt_at = refresh_started + timedelta(seconds=1)
+        state.last_success_at = refresh_started + timedelta(seconds=1)
+        state.status = "current"
+        session.add(
+            CalendarEventCache(
+                account_id=account_id,
+                calendar_id=settings.google_calendar_id,
+                provider_event_id="fresh-conflict",
+                snapshot_generation=generation,
+                status="confirmed",
+                summary="Existing appointment",
+                location="Elsewhere",
+                is_all_day=False,
+                start_at=datetime(2026, 7, 30, 19, 5, tzinfo=UTC),
+                end_at=datetime(2026, 7, 30, 19, 20, tzinfo=UTC),
+                timezone="America/Los_Angeles",
+                recurrence_kind="one_time",
+                system_tags=["one_time", "timed", "external"],
+                operator_tags=[],
+                priority="normal",
+                priority_basis="default",
+                provider_reminders={},
+                provider_etag='"fresh"',
+                synced_at=refresh_started + timedelta(seconds=1),
+            )
+        )
+    with session_factory.begin() as session:
+        refreshed = ProposalControlService(session).respond(
+            refresh_request,
+            refresh_started_at=refresh_started,
+        )
+        assert refreshed["revision"] == 2
+    while runner.run_due_once():
+        pass
+    with session_factory() as session:
+        revision = session.scalar(
+            select(ActionRevision).where(
+                ActionRevision.action_id == proposed.action_id,
+                ActionRevision.revision == 2,
+            )
+        )
+        assert revision is not None
+        assert revision.preview["conflicts"][0]["provider_event_id"] == "fresh-conflict"
+        controls = backend.messages[str(projection_id)]["controls"]
+        edit_control = next(
+            control
+            for control in controls
+            if control.get("transition") == "proposal_edit"
+        )
+
+    edit_request = LocalActionResponse(
+        request_id=uuid.uuid4(),
+        discord_interaction_id="proposal-generic-edit",
+        discord_user_id=settings.operator_discord_user_id,
+        guild_id=settings.discord_guild_id,
+        channel_id=thread_id,
+        parent_channel_id=settings.queue_channel_id,
+        projection_id=projection_id,
+        message_id=message_id,
+        responded_at=datetime.now(UTC),
+        action_revision_id=uuid.UUID(str(refreshed["action_revision_id"])),
+        action_token=edit_control["token"],
+        transition="proposal_edit",
+        modal_values={
+            "title": "Check priority inbox",
+            "location": "[clear]",
+            "operator_tags": "email, focused",
+        },
+    )
+    with session_factory.begin() as session:
+        edited = ProposalControlService(session).respond(edit_request)
+        assert edited["revision"] == 3
+    with session_factory() as session:
+        current = session.scalar(
+            select(ActionRevision).where(
+                ActionRevision.action_id == proposed.action_id,
+                ActionRevision.revision == 3,
+            )
+        )
+        assert current is not None
+        assert current.parameters["event"]["title"] == "Check priority inbox"
+        assert current.parameters["event"]["location"] is None
+        assert current.parameters["event"]["operator_tags"] == ["email", "focused"]
+        assert current.preview["classification"]["operator_tags"] == [
+            "email",
+            "focused",
+        ]
+        assert session.scalar(select(Operation)) is None
+
+
+@pytest.mark.integration
+def test_proposal_snooze_defers_the_fresh_approval_without_provider_work(
+    session_factory: sessionmaker[Session],
+) -> None:
+    settings = get_settings()
+    with session_factory.begin() as session:
+        account = _seed_target(session)
+        proposed = CalendarActionService(session).propose(
+            _create_request(account, "999999999999999999")
+        )
+    backend = FakeDiscordBackend()
+    runner = DiscordProjectionRunner(
+        session_factory,
+        FakeDiscordProjectionAdapter(backend),
+        settings,
+    )
+    assert runner.run_due_once() is True
+    with session_factory() as session:
+        projection = session.scalar(select(DiscordProjection))
+        thread = session.scalar(select(DiscordDailyThread))
+        assert projection is not None and thread is not None
+        assert projection.message_id is not None and thread.thread_id is not None
+        old_projection_id = projection.id
+        old_message_id = projection.message_id
+        snooze = next(
+            control
+            for control in backend.messages[str(projection.id)]["controls"]
+            if control.get("transition") == "proposal_snooze"
+        )
+    response = LocalActionResponse(
+        request_id=uuid.uuid4(),
+        discord_interaction_id="proposal-snooze",
+        discord_user_id=settings.operator_discord_user_id,
+        guild_id=settings.discord_guild_id,
+        channel_id=thread.thread_id,
+        parent_channel_id=settings.queue_channel_id,
+        projection_id=projection.id,
+        message_id=projection.message_id,
+        responded_at=datetime.now(UTC),
+        action_revision_id=proposed.action_revision_id,
+        action_token=snooze["token"],
+        transition="proposal_snooze",
+    )
+    with session_factory.begin() as session:
+        snoozed = ProposalControlService(session).respond(response)
+        assert snoozed["queue_status"] == "snoozed"
+        target_date = datetime.fromisoformat(
+            str(snoozed["snooze_local_date"])
+        ).date()
+    while runner.run_due_once():
+        pass
+    with session_factory.begin() as session:
+        action = session.get(Action, proposed.action_id)
+        queue = session.get(QueueItem, proposed.queue_item_id)
+        assert action is not None and queue is not None
+        assert action.current_revision == 2
+        assert queue.status == "snoozed"
+        assert backend.messages[str(old_projection_id)]["message_id"] == old_message_id
+        assert backend.messages[str(old_projection_id)]["controls"] == []
+        approval = session.scalar(
+            select(Approval)
+            .join(ActionRevision, ActionRevision.id == Approval.action_revision_id)
+            .where(
+                ActionRevision.action_id == proposed.action_id,
+                Approval.status == "pending",
+            )
+        )
+        assert approval is not None
+        approval.expires_at = datetime.combine(
+            target_date + timedelta(days=1),
+            time(hour=7),
+            tzinfo=ZoneInfo(settings.timezone),
+        ).astimezone(UTC)
+        assert session.scalar(select(Operation)) is None
+
+    rollover_at = datetime.combine(
+        target_date,
+        time(hour=settings.daily_rollover_hour, minute=5),
+        tzinfo=ZoneInfo(settings.timezone),
+    ).astimezone(UTC)
+    assert RolloverService(session_factory, settings).run_due_once(rollover_at)
+    while runner.run_due_once():
+        pass
+    with session_factory() as session:
+        queue = session.get(QueueItem, proposed.queue_item_id)
+        projections = list(
+            session.scalars(
+                select(DiscordProjection).where(
+                    DiscordProjection.queue_item_id == proposed.queue_item_id
+                )
+            )
+        )
+        assert queue is not None and queue.status == "awaiting_approval"
+        assert len(projections) == 2
+        newest = next(item for item in projections if item.id != old_projection_id)
+        assert any(
+            control["kind"] == "approval"
+            for control in backend.messages[str(newest.id)]["controls"]
+        )

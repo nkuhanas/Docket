@@ -3,14 +3,17 @@ from datetime import UTC, datetime, timedelta
 
 from docket.security import (
     decode_projection_local_action_token,
+    decode_projection_proposal_control_token,
     issue_approval_token,
     issue_projection_approval_token,
     issue_projection_local_action_token,
+    issue_projection_proposal_control_token,
     issue_short_code,
     short_code_sha256,
     verify_approval_token,
     verify_projection_approval_token,
     verify_projection_local_action_token,
+    verify_projection_proposal_control_token,
 )
 
 
@@ -109,6 +112,43 @@ def test_local_action_token_binds_revision_projection_version_and_expiry() -> No
         action_revision_id=revision_id,
         projection_id=projection_id,
         queue_version=8,
+        expires_at=expires_at,
+        signing_key=b"test-signing-key",
+    )
+
+
+def test_proposal_control_token_binds_field_and_fits_custom_id() -> None:
+    revision_id = uuid.uuid4()
+    projection_id = uuid.uuid4()
+    expires_at = datetime.now(UTC).replace(microsecond=0) + timedelta(minutes=15)
+    token = issue_projection_proposal_control_token(
+        revision_id,
+        projection_id,
+        "priority",
+        expires_at,
+        b"test-signing-key",
+    )
+
+    assert len(f"dkt:p:{token}") <= 100
+    assert decode_projection_proposal_control_token(token) == (
+        revision_id,
+        projection_id,
+        "priority",
+        expires_at,
+    )
+    assert verify_projection_proposal_control_token(
+        token,
+        action_revision_id=revision_id,
+        projection_id=projection_id,
+        field="priority",
+        expires_at=expires_at,
+        signing_key=b"test-signing-key",
+    )
+    assert not verify_projection_proposal_control_token(
+        token,
+        action_revision_id=revision_id,
+        projection_id=projection_id,
+        field="reminder_preset",
         expires_at=expires_at,
         signing_key=b"test-signing-key",
     )
