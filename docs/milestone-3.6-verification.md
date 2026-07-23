@@ -163,18 +163,31 @@ including `docket_store_term_schedule`, `docket_propose_term_schedule`,
 repository-managed Hermes configuration and skill were synchronized before
 recreation. No provider mutation occurred during deployment.
 
+The first operator aggregate-card smoke exposed one pinned-plugin validation
+defect after successful storage/proposal and daily-thread creation. Docket's
+single projection outbox row repeatedly received HTTP 422 `invalid_control`
+because the plugin allowed approval plus a string select and separately allowed
+proposal-action buttons, but its string-select branch did not allow all three
+valid kinds together. Commit `fa57387` admits the exact deterministic
+Approve/Reject + Review items + Snooze combination and adds an adversarial
+regression for it.
+
+Hermes was recreated with that fix. The same outbox event then ensured the same
+stored daily thread and delivered the original projection on attempt 10 with
+HTTP 200. The resulting state contained one schedule queue item, one action,
+one pending approval, one projection, and one Discord card; no replacement
+proposal or thread was created. External writes remained disabled, so this is
+projection evidence only, not provider-execution evidence.
+
 The remaining operator-present gate is:
 
-1. send `/reload-mcp` in the active Discord session;
-2. submit one disposable complete two-course schedule and observe exactly one
-   aggregate card in today's ISO queue thread;
-3. inspect every immutable item through Review items, approve once, and verify
+1. inspect every immutable item through Review items, approve once, and verify
    the expected Calendar series, ten-minute Google popups, activated Docket
    rules, and no output in chat or the queue root;
-4. repeat the same proposal from a new Discord message before approval in a
+2. repeat the same proposal from a new Discord message before approval in a
    separate harmless smoke and verify Docket points to the existing card rather
    than projecting a second one; and
-5. remove the disposable events through typed, separately approved Docket
+3. remove the disposable events through typed, separately approved Docket
    cancellation proposals.
 
 No live gate result should be inferred from the automated fake-provider suite.
