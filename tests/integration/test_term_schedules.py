@@ -13,6 +13,8 @@ from docket.models import (
     Account,
     Action,
     ActionRevision,
+    Approval,
+    AuditEvent,
     CalendarReminderPlan,
     CalendarScheduleSnapshot,
     CalendarSyncState,
@@ -21,6 +23,8 @@ from docket.models import (
     DiscordProjection,
     Operation,
     OperationItem,
+    OutboxEvent,
+    QueueItem,
     Record,
     RecordSource,
     ReminderRule,
@@ -397,6 +401,40 @@ def test_complete_snapshot_produces_one_bulk_proposal_with_one_unified_plan(
         replay = TermScheduleActionService(session).propose(request)
     assert replay.disposition == "replayed_request"
     assert replay.action_id == proposed.action_id
+
+    duplicate_message_id = "367777777777777777"
+    duplicate_request = request.model_copy(
+        update={
+            "request_key": _request_key(duplicate_message_id),
+            "source": request.source.model_copy(
+                update={
+                    "source_object_id": duplicate_message_id,
+                    "metadata": request.source.metadata.model_copy(
+                        update={"message_id": duplicate_message_id}
+                    ),
+                }
+            ),
+        }
+    )
+    with session_factory.begin() as session:
+        duplicate = TermScheduleActionService(session).propose(duplicate_request)
+        assert duplicate.disposition == "matched_existing"
+        assert duplicate.request_id != proposed.request_id
+        assert duplicate.queue_item_id == proposed.queue_item_id
+        assert duplicate.action_id == proposed.action_id
+        assert duplicate.approval_id == proposed.approval_id
+        assert session.scalar(select(func.count()).select_from(QueueItem)) == 1
+        assert session.scalar(select(func.count()).select_from(Action)) == 1
+        assert session.scalar(select(func.count()).select_from(Approval)) == 1
+        assert session.scalar(select(func.count()).select_from(OutboxEvent)) == 1
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(AuditEvent)
+                .where(AuditEvent.event_type == "action.duplicate_suppressed")
+            )
+            == 1
+        )
 
 
 @pytest.mark.integration

@@ -44,6 +44,7 @@ from docket.services.calendar_actions import (
     _occurrence_intervals,
 )
 from docket.services.calendar_profile import CalendarProfileService
+from docket.services.proposal_dedup import find_materially_identical_pending_proposal
 from docket.services.queue import queue_projection_date
 from docket.services.source_context import validate_configured_discord_source
 
@@ -455,10 +456,58 @@ class TermScheduleActionService:
             },
         }
         parameters_sha256 = sha256_json(parameters)
+        material_fingerprint = sha256_json(
+            {
+                "action_type": "calendar_apply_term_schedule",
+                "account_id": str(account.id),
+                "calendar_id": request.calendar_id,
+                "manifest_sha256": snapshot.manifest_sha256,
+                "reminder_plan_sha256": sha256_json(reminder_plan),
+                "targets": [
+                    {
+                        "item_key": item["item_key"],
+                        "effect": item["effect"],
+                        "external_event_id": item["parameters"].get(
+                            "external_event_id"
+                        ),
+                        "provider_etag": item["parameters"].get("provider_etag"),
+                    }
+                    for item in items
+                ],
+            }
+        )
         preview_sha256 = sha256_json(preview)
+        now = utc_now()
+        matched = find_materially_identical_pending_proposal(
+            self.session,
+            category="calendar_schedule",
+            material_fingerprint=material_fingerprint,
+            now=now,
+        )
+        if matched is not None:
+            result = matched.model_copy(update={"request_id": command.id})
+            self.session.add(
+                AuditEvent(
+                    event_type="action.duplicate_suppressed",
+                    entity_type="action",
+                    entity_id=result.action_id,
+                    actor_type=request.actor_type,
+                    actor_id=request.actor_id,
+                    request_id=command.id,
+                    data={
+                        "material_fingerprint": material_fingerprint,
+                        "matched_queue_item_id": str(result.queue_item_id),
+                    },
+                )
+            )
+            command.status = CommandStatus.SUCCEEDED.value
+            command.result = result.model_dump(mode="json")
+            command.completed_at = now
+            return result
+
         queue_item = QueueItem(
             deduplication_key=f"manual_action:{request.request_key}",
-            material_fingerprint=parameters_sha256,
+            material_fingerprint=material_fingerprint,
             category="calendar_schedule",
             title=(f"Apply {snapshot.manifest['term']['term_name']} schedule ({len(items)} items)")[
                 :512
@@ -521,7 +570,6 @@ class TermScheduleActionService:
                         status="planned",
                     )
                 )
-        now = utc_now()
         expires_at = now + timedelta(seconds=self.settings.approval_ttl_seconds)
         approval_id = uuid.uuid4()
         signing_key = self.settings.read_secret(self.settings.interaction_signing_key_file).encode()

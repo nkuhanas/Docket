@@ -128,7 +128,7 @@ class ProposeTermScheduleInput(StrictModel):
 
 class ProposalResult(StrictModel):
     request_id: UUID
-    disposition: Literal["proposed", "replayed_request"]
+    disposition: Literal["proposed", "matched_existing", "replayed_request"]
     queue_item_id: UUID
     action_id: UUID
     action_revision_id: UUID

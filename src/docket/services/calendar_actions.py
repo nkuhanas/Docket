@@ -50,6 +50,7 @@ from docket.schemas.calendar import (
 )
 from docket.security import issue_approval_token, issue_short_code, short_code_sha256
 from docket.services.calendar_profile import CalendarProfileService
+from docket.services.proposal_dedup import find_materially_identical_pending_proposal
 from docket.services.queue import queue_projection_date
 from docket.services.source_context import validate_configured_discord_source
 
@@ -535,6 +536,24 @@ class CalendarActionService:
                 }
             )
         parameters_sha256 = sha256_json(parameters)
+        material_fingerprint = sha256_json(
+            {
+                "action_type": action_type,
+                "account_id": str(account.id),
+                "calendar_id": request.calendar_id,
+                "event": event_payload,
+                "reminder_plan": plan_payload,
+                "reminder_plan_sha256": plan_sha256,
+                "reminder_disposition": parameters.get("reminder_disposition"),
+                "priority": priority,
+                "priority_basis": priority_basis,
+                "external_event_id": (
+                    target.provider_event_id if target is not None else None
+                ),
+                "provider_etag": target.provider_etag if target is not None else None,
+                "reason": parameters.get("reason"),
+            }
+        )
         preview: dict[str, Any] = {
             "action_type": action_type,
             "target": {
@@ -578,9 +597,35 @@ class CalendarActionService:
             preview["reason"] = proposal.reason
         preview_sha256 = sha256_json(preview)
 
+        now = utc_now()
+        matched = find_materially_identical_pending_proposal(
+            self.session,
+            category="calendar_change",
+            material_fingerprint=material_fingerprint,
+            now=now,
+        )
+        if matched is not None:
+            result = matched.model_copy(update={"request_id": command.id})
+            self.session.add(
+                AuditEvent(
+                    event_type="action.duplicate_suppressed",
+                    entity_type="action",
+                    entity_id=result.action_id,
+                    actor_type=request.actor_type,
+                    actor_id=request.actor_id,
+                    request_id=command.id,
+                    data={
+                        "material_fingerprint": material_fingerprint,
+                        "matched_queue_item_id": str(result.queue_item_id),
+                    },
+                )
+            )
+            self._finish_command(command, result)
+            return result
+
         queue_item = QueueItem(
             deduplication_key=f"manual_action:{request.request_key}",
-            material_fingerprint=parameters_sha256,
+            material_fingerprint=material_fingerprint,
             category="calendar_change",
             title=self._queue_title(action_type, event, target),
             summary=self._queue_summary(action_type, event, target),
@@ -636,7 +681,6 @@ class CalendarActionService:
                     )
                 )
 
-        now = utc_now()
         expires_at = now + timedelta(seconds=get_settings().approval_ttl_seconds)
         approval_id = uuid.uuid4()
         signing_key = get_settings().read_secret(

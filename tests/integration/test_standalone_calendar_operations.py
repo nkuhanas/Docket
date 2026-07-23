@@ -3,7 +3,7 @@ from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from docket.config import get_settings
@@ -14,13 +14,16 @@ from docket.models import (
     Action,
     ActionRevision,
     Approval,
+    AuditEvent,
     CalendarEventCache,
     CalendarLink,
     CalendarReminderPlan,
     CalendarSyncState,
+    CommandRequest,
     DiscordDailyThread,
     DiscordProjection,
     Operation,
+    OutboxEvent,
     QueueItem,
     ReminderRule,
     ScheduledNotification,
@@ -158,6 +161,42 @@ def _event_request(
             "actor_id": settings.operator_discord_user_id,
         }
     )
+
+
+@pytest.mark.integration
+def test_materially_identical_pending_standalone_proposal_is_suppressed(
+    session_factory: sessionmaker[Session],
+) -> None:
+    with session_factory.begin() as session:
+        account = _seed_target(session)
+        first = CalendarActionService(session).propose(
+            _create_request(account, "322222222222222222")
+        )
+        second = CalendarActionService(session).propose(
+            _create_request(account, "323333333333333333")
+        )
+
+        assert first.disposition == "proposed"
+        assert second.disposition == "matched_existing"
+        assert second.request_id != first.request_id
+        assert second.queue_item_id == first.queue_item_id
+        assert second.action_id == first.action_id
+        assert second.action_revision_id == first.action_revision_id
+        assert second.approval_id == first.approval_id
+        assert second.short_code == first.short_code
+        assert session.scalar(select(func.count()).select_from(QueueItem)) == 1
+        assert session.scalar(select(func.count()).select_from(Action)) == 1
+        assert session.scalar(select(func.count()).select_from(Approval)) == 1
+        assert session.scalar(select(func.count()).select_from(OutboxEvent)) == 1
+        assert session.scalar(select(func.count()).select_from(CommandRequest)) == 2
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(AuditEvent)
+                .where(AuditEvent.event_type == "action.duplicate_suppressed")
+            )
+            == 1
+        )
 
 
 @pytest.mark.integration
