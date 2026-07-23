@@ -148,7 +148,9 @@ mutations remain separately gated by `DOCKET_EXTERNAL_WRITES_ENABLED=true`.
 The existing lookup accepts an explicit timezone-aware interval, a Docket-owned
 `today`/`tomorrow` relative day, or no interval for its rolling seven-day
 default. Relative results include the resolved local date, timezone, and server
-`as_of` instant.
+`as_of` instant. Timed events include configured-local timestamps for direct
+display. Current-day list/find requests use a bounded fresh refresh so a newly
+created provider event is not hidden until the next periodic sync.
 
 Reminder rules are created only by an explicit operator request. Delivery uses
 a bounded deterministic embed in the reminder due date's ISO thread under

@@ -689,6 +689,17 @@ class CalendarReadService:
                     "is_all_day": row.is_all_day,
                     "start_at": _iso(row.start_at),
                     "end_at": _iso(row.end_at),
+                    "start_local": (
+                        _aware(row.start_at).astimezone(zone).isoformat()
+                        if row.start_at is not None
+                        else None
+                    ),
+                    "end_local": (
+                        _aware(row.end_at).astimezone(zone).isoformat()
+                        if row.end_at is not None
+                        else None
+                    ),
+                    "local_timezone": self.settings.timezone,
                     "start_date": row.start_date.isoformat() if row.start_date else None,
                     "end_date": row.end_date.isoformat() if row.end_date else None,
                     "timezone": row.timezone,

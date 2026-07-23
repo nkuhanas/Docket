@@ -116,6 +116,9 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
     lookup_description = " ".join((calendar_lookup.description or "").split())
     assert "maximum is 31 days" in lookup_description
     assert "do not use a terminal or another clock" in lookup_description
+    assert "never call a terminal to convert event times" in lookup_description
+    assert "Use ``require_fresh`` for direct current" in lookup_description
+    assert "newly added provider event" in lookup_description
     assert "never expose descriptions, attendees, conference data" in lookup_description
     lookup_properties = calendar_lookup.inputSchema["properties"]
     assert lookup_properties["freshness"]["enum"] == ["prefer_cache", "require_fresh"]

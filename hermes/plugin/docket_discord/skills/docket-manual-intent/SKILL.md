@@ -112,11 +112,15 @@ requests and omit `start` and `end`; Docket's returned `range_resolution` is
 the authoritative date, timezone, and clock instant. Never call the terminal,
 another time tool, or session history to calculate Calendar lookup bounds.
 Use explicit timezone-aware `start` and `end` together only when the requested
-interval is not one of those relative days. Use
-`prefer_cache` unless the user explicitly needs a freshly synchronized answer
-or the returned state is stale and freshness matters. Never describe stale or
-uncovered cache state as current. `require_fresh` remains a bounded Docket-owned
-refresh and does not grant raw Google access.
+interval is not one of those relative days. Timed events already return
+`start_local`, `end_local`, and `local_timezone`; use those fields directly and
+never call the terminal or another time tool to convert them for display.
+Use `require_fresh` for a direct current, today, or tomorrow list/find request,
+because a healthy `prefer_cache` result may still predate a provider event by
+one synchronization interval. Use `prefer_cache` only when that bounded lag is
+acceptable. Never describe stale or uncovered cache state as current.
+`require_fresh` remains a bounded Docket-owned refresh and does not grant raw
+Google access.
 
 Create or change a reminder only when the user explicitly asks for a standing
 notification rule. Read existing canonical rules with

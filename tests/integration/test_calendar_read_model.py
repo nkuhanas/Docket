@@ -271,6 +271,13 @@ def test_indexed_lookup_is_bounded_redacted_and_reports_staleness(session_factor
     assert result["freshness"]["stale"] is False
     assert result["freshness"]["covered"] is True
     assert result["range_resolution"]["mode"] == "explicit"
+    assert result["events"][0]["start_at"] == "2026-07-22T16:00:00+00:00"
+    assert result["events"][0]["end_at"] == "2026-07-22T17:00:00+00:00"
+    assert result["events"][0]["start_local"] == "2026-07-22T09:00:00-07:00"
+    assert result["events"][0]["end_local"] == "2026-07-22T10:00:00-07:00"
+    assert result["events"][0]["local_timezone"] == "America/Los_Angeles"
+    assert result["events"][1]["start_local"] is None
+    assert result["events"][1]["end_local"] is None
     assert not {
         "description",
         "attendees",
@@ -282,6 +289,31 @@ def test_indexed_lookup_is_bounded_redacted_and_reports_staleness(session_factor
     stale = read.get_sync_status(account_id, settings.google_calendar_id)
     assert stale["stale"] is True
     assert "snapshot_generation" not in stale
+
+
+@pytest.mark.integration
+def test_local_event_timestamps_use_the_correct_dst_fold(session_factory) -> None:
+    base = datetime(2026, 11, 1, 7, tzinfo=UTC)
+    settings = get_settings().model_copy(update={"calendar_reads_enabled": True})
+    account_id = _account(session_factory)
+    provider = FakeCalendarProvider()
+    provider.put_snapshot_event(_timed("fold", datetime(2026, 11, 1, 9, 30, tzinfo=UTC)))
+    sync = CalendarSyncService(session_factory, provider, settings, clock=lambda: base)
+    read = CalendarReadService(session_factory, sync, settings, clock=lambda: base)
+    assert sync.sync_target(account_id, settings.google_calendar_id, force=True)
+
+    result = read.list_events(
+        account_id=account_id,
+        calendar_id=settings.google_calendar_id,
+        start=datetime(2026, 11, 1, 7, tzinfo=UTC),
+        end=datetime(2026, 11, 2, 8, tzinfo=UTC),
+        text_filter=None,
+        limit=100,
+        freshness="prefer_cache",
+    )
+
+    assert result["events"][0]["start_local"] == "2026-11-01T01:30:00-08:00"
+    assert result["events"][0]["end_local"] == "2026-11-01T02:30:00-08:00"
 
 
 @pytest.mark.integration

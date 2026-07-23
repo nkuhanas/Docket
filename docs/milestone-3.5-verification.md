@@ -31,7 +31,7 @@ The final local gate completed with:
 
 ```text
 uv run pytest -q
-146 passed, 1 third-party Starlette deprecation warning
+147 passed, 1 third-party Starlette deprecation warning
 
 uv run ruff check .
 All checks passed!
@@ -49,6 +49,8 @@ The suite specifically proves:
   resolve independent local midnights across 23- and 25-hour DST days;
 * mixed relative/explicit and partial explicit lookup ranges fail validation;
 * the omitted-range lookup retains its rolling seven-day default;
+* timed results include configured-local timestamps with the correct offset
+  through the repeated hour at the daylight-saving fall-back transition;
 * malformed provider pages, duplicate event identities, and page-token loops fail closed;
 * a repeatedly failing account cannot starve another enabled Calendar sync target;
 * enabling real reads does not select a real write provider;
@@ -122,6 +124,12 @@ lookup resolved `today` to local date `2026-07-22` and the exact UTC interval
 `2026-07-22T07:00:00+00:00` through `2026-07-23T07:00:00+00:00`; the response
 reported `America/Los_Angeles`, a server `as_of` instant, current freshness, and
 covered cache state. Calendar reads remained enabled and external writes false.
+After adding direct display fields, an authenticated live `require_fresh` lookup
+returned both expected events from the provider-backed snapshot with
+`start_local`/`end_local` values at `-07:00` and
+`local_timezone=America/Los_Angeles`. The MCP description instructed current-day
+queries to refresh and the surface remained exactly seventeen tools. Hermes was
+recreated and reconnected to Discord with its private projection listener active.
 
 `/health/smoke-provider` returned the fake Google adapter with external calls
 false. An authenticated malformed request to the new private Hermes notification

@@ -274,8 +274,12 @@ def docket_list_calendar_events(
     Supply both timezone-aware ``start`` and ``end``, or set ``relative_day`` to
     ``today`` or ``tomorrow``. Docket resolves relative days once in its configured
     timezone and returns the authoritative local date, timezone, and ``as_of`` instant;
-    do not use a terminal or another clock to derive these bounds. With no range input,
-    the default is now through seven days. The maximum is 31 days. Results include cache
+    do not use a terminal or another clock to derive these bounds. Timed events include
+    ``start_local`` and ``end_local`` in that configured timezone; use them directly and
+    never call a terminal to convert event times. With no range input, the default is now
+    through seven days. The maximum is 31 days. Use ``require_fresh`` for direct current,
+    today, or tomorrow list/find requests because a healthy cache can still predate a
+    newly added provider event by one synchronization interval. Results include cache
     freshness and never expose descriptions, attendees, conference data, credentials,
     or a raw Google client. ``require_fresh`` may wait up to ten seconds for Docket's
     full bounded snapshot; it never promotes a partial requested subrange.

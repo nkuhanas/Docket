@@ -294,9 +294,15 @@ For local-day Calendar questions, that same lookup accepts only the closed
 both local midnights in `DOCKET_TIMEZONE`, and returns the resolved date,
 timezone, and `as_of` instant. This is deliberately part of the existing read
 tool rather than a generic model-visible clock: Hermes must not invoke a terminal
-to manufacture lookup bounds. Explicit timezone-aware start/end pairs and the
-no-range rolling seven-day default remain separate modes; mixed relative and
-explicit ranges are rejected.
+to manufacture lookup bounds or convert result timestamps. Each timed event
+retains its UTC `start_at`/`end_at` pair and adds `start_local`/`end_local` plus
+the configured `local_timezone`, including the correct offset across DST.
+Explicit timezone-aware start/end pairs and the no-range rolling seven-day
+default remain separate modes; mixed relative and explicit ranges are rejected.
+A direct current/today/tomorrow list or find uses `require_fresh`: the normal
+five-minute synchronization interval can leave a healthy, covered cache behind
+a provider event created seconds earlier. `prefer_cache` remains correct only
+when that bounded lag is acceptable.
 The active and template allowlists are synchronized by
 `scripts/prepare-hermes-home.sh`, but an existing Hermes session still requires
 `/reload-mcp` after deployment.
