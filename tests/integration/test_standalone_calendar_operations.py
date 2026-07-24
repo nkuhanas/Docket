@@ -207,9 +207,7 @@ def test_standalone_create_executes_with_unified_reminder_plan(
     with session_factory.begin() as session:
         account = _seed_target(session)
         account_id = account.id
-        proposal = CalendarActionService(session).propose(
-            _create_request(account, message_id)
-        )
+        proposal = CalendarActionService(session).propose(_create_request(account, message_id))
         operation_id = _approve(
             session,
             short_code=proposal.short_code,
@@ -225,11 +223,7 @@ def test_standalone_create_executes_with_unified_reminder_plan(
         link = session.scalar(select(CalendarLink))
         event = session.scalar(select(CalendarEventCache))
         plans = list(session.scalars(select(CalendarReminderPlan)))
-        rules = list(
-            session.scalars(
-                select(ReminderRule).order_by(ReminderRule.lead_seconds)
-            )
-        )
+        rules = list(session.scalars(select(ReminderRule).order_by(ReminderRule.lead_seconds)))
         notifications = list(session.scalars(select(ScheduledNotification)))
 
         assert operation is not None and operation.status == "succeeded"
@@ -253,6 +247,124 @@ def test_standalone_create_executes_with_unified_reminder_plan(
         provider_event = provider.events[link.external_event_id]
         assert provider_event.snapshot["reminders"] == event.provider_reminders
         assert "description" not in provider_event.snapshot
+
+
+@pytest.mark.integration
+def test_update_card_prioritizes_operator_changes_and_terminal_state(
+    session_factory: sessionmaker[Session],
+) -> None:
+    settings = get_settings()
+    backend = FakeDiscordBackend()
+    projection_runner = DiscordProjectionRunner(
+        session_factory,
+        FakeDiscordProjectionAdapter(backend),
+        settings,
+    )
+    provider = FakeCalendarProvider()
+    operation_runner = OperationRunner(session_factory, provider)
+
+    with session_factory.begin() as session:
+        account = _seed_target(session)
+        account_id = account.id
+        created = CalendarActionService(session).propose(
+            _create_request(account, "343333333333333333")
+        )
+    while projection_runner.run_due_once():
+        pass
+    with session_factory.begin() as session:
+        _approve(
+            session,
+            short_code=created.short_code,
+            interaction_id="operator-card-create-approval",
+        )
+    assert operation_runner.run_due_once() is True
+    while projection_runner.run_due_once():
+        pass
+
+    with session_factory.begin() as session:
+        account = session.get(Account, account_id)
+        event = session.scalar(select(CalendarEventCache))
+        assert account is not None and event is not None
+        updated = CalendarActionService(session).propose(
+            _event_request(
+                account,
+                "353333333333333333",
+                {
+                    "kind": "update",
+                    "provider_event_id": event.provider_event_id,
+                    "replacement": {
+                        "title": "Check my email",
+                        "timing": {
+                            "kind": "timed",
+                            "start_local": "2026-07-30T12:30:00",
+                            "end_local": "2026-07-30T12:45:00",
+                            "timezone": "America/Los_Angeles",
+                        },
+                        "location": "Desk",
+                        "notes": "Operator-authored private note",
+                        "operator_tags": ["email"],
+                        "priority": "normal",
+                    },
+                    "reminder_disposition": "replace",
+                    "reminder_plan": {"lead_seconds": [300]},
+                },
+            )
+        )
+    while projection_runner.run_due_once():
+        pass
+
+    with session_factory() as session:
+        projection = session.scalar(
+            select(DiscordProjection).where(
+                DiscordProjection.view_action_revision_id == updated.action_revision_id
+            )
+        )
+        assert projection is not None and projection.message_id is not None
+        projection_id = projection.id
+        message_id = projection.message_id
+        projected = backend.messages[str(projection.id)]
+        fields = {field["name"]: field["value"] for field in projected["embed"]["fields"]}
+        assert projected["embed"]["title"] == "Review event update"
+        assert projected["embed"]["description"] == (
+            "Check my email\nReview the details below. Nothing changes until you approve."
+        )
+        assert fields["When"] == ("Thu, Jul 30, 2026 · 12:30 PM to 12:45 PM\nAmerica/Los_Angeles")
+        assert fields["Changes"] == (
+            "Time: Thu, Jul 30, 2026 · 12:00 PM to 12:15 PM → "
+            "Thu, Jul 30, 2026 · 12:30 PM to 12:45 PM\n"
+            "Reminders: 5 minutes, 10 minutes → 5 minutes"
+        )
+        assert fields["Details"] == "One-time · Normal priority\nTags: email"
+        assert fields["Notifications"] == ("5 minutes\nGoogle Calendar popup + Docket daily thread")
+        assert fields["Conflicts"] == "None found"
+
+    with session_factory.begin() as session:
+        _approve(
+            session,
+            short_code=updated.short_code,
+            interaction_id="operator-card-update-approval",
+        )
+    assert operation_runner.run_due_once() is True
+    while projection_runner.run_due_once():
+        pass
+
+    projected = backend.messages[str(projection_id)]
+    fields = {field["name"]: field["value"] for field in projected["embed"]["fields"]}
+    assert projected["message_id"] == message_id
+    assert projected["embed"]["title"] == "Event updated"
+    assert projected["embed"]["description"] == (
+        "Check my email\nCompleted on your configured Docket calendar."
+    )
+    assert projected["embed"]["color"] == 0x3BA55D
+    assert fields["Changes"].endswith("Reminders: 5 minutes, 10 minutes → 5 minutes")
+    assert {
+        "Status",
+        "Calendar",
+        "Execution",
+        "Effect",
+        "Before",
+        "Conflicts",
+    }.isdisjoint(fields)
 
 
 @pytest.mark.integration
@@ -340,8 +452,7 @@ def test_reminder_disable_and_cancellation_converge_both_projections(
     with session_factory() as session:
         event = session.scalar(select(CalendarEventCache))
         operation = session.scalar(
-            select(Operation)
-            .where(Operation.operation_type == "calendar_cancel_event")
+            select(Operation).where(Operation.operation_type == "calendar_cancel_event")
         )
         assert event is not None and event.status == "cancelled"
         assert operation is not None and operation.status == "succeeded"
@@ -375,25 +486,25 @@ def test_proposal_selects_and_custom_modal_replace_the_revision_in_place(
         message_id = projection.message_id
         thread_id = thread.thread_id
         projected = backend.messages[str(projection.id)]
-        fields = {
-            field["name"]: field["value"] for field in projected["embed"]["fields"]
-        }
-        assert projected["embed"]["title"] == "Create event · Check my email"
+        fields = {field["name"]: field["value"] for field in projected["embed"]["fields"]}
+        assert projected["embed"]["title"] == "Review new event"
         assert projected["embed"]["description"] == (
-            "Review this Calendar change. Nothing is written until you approve."
+            "Check my email\nReview the details below. Nothing changes until you approve."
         )
-        assert fields["Status"] == "Awaiting approval"
-        assert fields["Calendar"] == "Configured Docket calendar"
-        assert fields["When"] == (
-            "Thu, Jul 30, 2026 · 12:00 PM to 12:15 PM\nAmerica/Los_Angeles"
-        )
+        assert fields["When"] == ("Thu, Jul 30, 2026 · 12:00 PM to 12:15 PM\nAmerica/Los_Angeles")
         assert fields["Where"] == "Desk"
-        assert fields["Type & tags"] == "One-time · email"
-        assert fields["Reminder plan"] == (
-            "5 minutes, 10 minutes\nGoogle popup + Docket daily thread"
+        assert fields["Details"] == "One-time · Normal priority\nTags: email"
+        assert fields["Notifications"] == (
+            "5 minutes, 10 minutes\nGoogle Calendar popup + Docket daily thread"
         )
         assert fields["Conflicts"] == "None found"
-        assert fields["Effect"] == "Create event"
+        assert {
+            "Status",
+            "Calendar",
+            "Execution",
+            "Effect",
+            "Before",
+        }.isdisjoint(fields)
         serialized_embed = str(projected["embed"])
         for internal_value in (
             settings.google_calendar_id,
@@ -425,11 +536,10 @@ def test_proposal_selects_and_custom_modal_replace_the_revision_in_place(
             "high",
             "urgent",
         ]
-        assert next(
-            option["value"]
-            for option in priority_control["options"]
-            if option["default"]
-        ) == "normal"
+        assert (
+            next(option["value"] for option in priority_control["options"] if option["default"])
+            == "normal"
+        )
 
     priority_response = LocalActionResponse(
         request_id=uuid.uuid4(),
@@ -477,14 +587,10 @@ def test_proposal_selects_and_custom_modal_replace_the_revision_in_place(
         assert revisions[1].parameters["priority_basis"] == "explicit_operator"
         assert revisions[1].preview["classification"]["priority"] == "high"
         assert sorted(
-            plan.status
-            for plan in plans
-            if plan.action_revision_id == revisions[0].id
+            plan.status for plan in plans if plan.action_revision_id == revisions[0].id
         ) == ["cancelled", "cancelled"]
         assert sorted(
-            plan.status
-            for plan in plans
-            if plan.action_revision_id == revisions[1].id
+            plan.status for plan in plans if plan.action_revision_id == revisions[1].id
         ) == ["planned", "planned"]
         assert session.scalar(select(Operation)) is None
         projected = backend.messages[str(projection_id)]
@@ -493,15 +599,12 @@ def test_proposal_selects_and_custom_modal_replace_the_revision_in_place(
         refreshed_priority = next(
             control for control in controls if control.get("field") == "priority"
         )
-        assert next(
-            option["value"]
-            for option in refreshed_priority["options"]
-            if option["default"]
-        ) == "high"
+        assert (
+            next(option["value"] for option in refreshed_priority["options"] if option["default"])
+            == "high"
+        )
         reminder_control = next(
-            control
-            for control in controls
-            if control.get("field") == "reminder_preset"
+            control for control in controls if control.get("field") == "reminder_preset"
         )
         current_revision_id = revisions[1].id
 
@@ -589,9 +692,7 @@ def test_refresh_rebinds_conflicts_and_edit_modal_replaces_typed_fields(
         thread_id = thread.thread_id
         controls = backend.messages[str(projection.id)]["controls"]
         refresh_control = next(
-            control
-            for control in controls
-            if control.get("transition") == "proposal_refresh"
+            control for control in controls if control.get("transition") == "proposal_refresh"
         )
 
     refresh_request = LocalActionResponse(
@@ -616,9 +717,7 @@ def test_refresh_rebinds_conflicts_and_edit_modal_replaces_typed_fields(
     refresh_started = datetime.now(UTC)
     with session_factory.begin() as session:
         state = session.scalar(
-            select(CalendarSyncState).where(
-                CalendarSyncState.account_id == account_id
-            )
+            select(CalendarSyncState).where(CalendarSyncState.account_id == account_id)
         )
         assert state is not None
         generation = uuid.uuid4()
@@ -668,9 +767,7 @@ def test_refresh_rebinds_conflicts_and_edit_modal_replaces_typed_fields(
         assert revision.preview["conflicts"][0]["provider_event_id"] == "fresh-conflict"
         controls = backend.messages[str(projection_id)]["controls"]
         edit_control = next(
-            control
-            for control in controls
-            if control.get("transition") == "proposal_edit"
+            control for control in controls if control.get("transition") == "proposal_edit"
         )
 
     edit_request = LocalActionResponse(
@@ -759,9 +856,7 @@ def test_proposal_snooze_defers_the_fresh_approval_without_provider_work(
     with session_factory.begin() as session:
         snoozed = ProposalControlService(session).respond(response)
         assert snoozed["queue_status"] == "snoozed"
-        target_date = datetime.fromisoformat(
-            str(snoozed["snooze_local_date"])
-        ).date()
+        target_date = datetime.fromisoformat(str(snoozed["snooze_local_date"])).date()
     while runner.run_due_once():
         pass
     with session_factory.begin() as session:

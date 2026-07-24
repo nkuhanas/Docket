@@ -281,9 +281,7 @@ def test_production_write_gate_leaves_approval_pending(
             "external_writes_enabled": False,
         }
     )
-    monkeypatch.setattr(
-        "docket.services.approvals.get_settings", lambda: production_settings
-    )
+    monkeypatch.setattr("docket.services.approvals.get_settings", lambda: production_settings)
 
     with pytest.raises(DocketError) as blocked:
         ApprovalService(session).respond(
@@ -346,10 +344,18 @@ def test_projection_retry_restart_and_exact_button_context(session_factory) -> N
         assert projection.message_id is not None and daily_thread.thread_id is not None
         projected = backend.messages[str(projection.id)]
         fields = {field["name"]: field["value"] for field in projected["embed"]["fields"]}
-        assert fields["Status"] == "Awaiting approval"
-        assert fields["Calendar"] == "Configured Docket calendar"
-        assert fields["Effect"] == "Create course meeting"
+        assert projected["embed"]["title"] == "Review new course meeting"
+        assert projected["embed"]["description"] == (
+            "CSC 101 · 01\nReview the details below. Nothing changes until you approve."
+        )
+        assert fields["Course"] == "CSC 101 · 01 · Fundamentals of Computer Science"
+        assert fields["Proposed schedule"].startswith("Mon, Wed · 10:30 AM to 11:50 AM")
         assert {
+            "Status",
+            "Calendar",
+            "Execution",
+            "Effect",
+            "Before",
             "Source",
             "Account",
             "Record version",
