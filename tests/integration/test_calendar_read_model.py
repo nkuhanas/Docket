@@ -1004,6 +1004,14 @@ def test_due_reminder_survives_lost_ack_without_duplicate_discord_message(
     )
     assert restarted.run_due_once()
 
+    rendered = next(iter(backend.notification_messages.values()))["render"]
+    start_epoch = int((base + timedelta(minutes=5)).timestamp())
+    end_epoch = int((base + timedelta(minutes=65)).timestamp())
+    assert rendered["start"] == f"<t:{start_epoch}:F> · <t:{start_epoch}:R>"
+    assert rendered["end"] == f"<t:{end_epoch}:F>"
+    assert rendered["timezone"] == "America/Los_Angeles"
+    assert rendered["is_all_day"] is False
+
     with session_factory() as session:
         notification = session.scalar(
             select(ScheduledNotification)

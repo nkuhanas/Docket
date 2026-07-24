@@ -390,6 +390,37 @@ def test_system_alert_target_is_separately_allowlisted(plugin_module, monkeypatc
     assert rejected.value.code == "discord_target_not_allowed"
 
 
+def test_reminder_fields_localize_instants_but_preserve_all_day_dates(
+    plugin_module,
+) -> None:
+    timed = plugin_module._calendar_reminder_fields(
+        {
+            "start": "<t:1785439800:F> · <t:1785439800:R>",
+            "end": "<t:1785440700:F>",
+            "timezone": "America/Los_Angeles",
+            "is_all_day": False,
+        }
+    )
+    assert timed == [
+        ("Starts", "<t:1785439800:F> · <t:1785439800:R>", False),
+        ("Ends", "<t:1785440700:F>", False),
+    ]
+
+    all_day = plugin_module._calendar_reminder_fields(
+        {
+            "start": "2026-07-30",
+            "end": "2026-07-31",
+            "timezone": "America/Los_Angeles",
+            "is_all_day": True,
+        }
+    )
+    assert all_day == [
+        ("Start date", "2026-07-30", True),
+        ("End date (exclusive)", "2026-07-31", True),
+        ("Calendar timezone", "America/Los_Angeles", False),
+    ]
+
+
 def test_plugin_rejects_aliased_channel_lanes(plugin_module, monkeypatch) -> None:
     monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", "222222222222222222")
     monkeypatch.setenv("DOCKET_QUEUE_CHANNEL_ID", "222222222222222222")

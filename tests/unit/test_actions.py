@@ -399,6 +399,9 @@ def test_projection_retry_restart_and_exact_button_context(session_factory) -> N
     action_log = backend.system_logs[str(proposal.action_id)]
     log_message_id = action_log["message_id"]
     assert action_log["render"]["status"] == "queued"
+    assert action_log["render"]["occurred_at"].startswith("<t:")
+    assert ":F> · <t:" in action_log["render"]["occurred_at"]
+    assert action_log["render"]["occurred_at"].endswith(":R>")
     assert "calendar_id" not in str(action_log["render"])
     assert "record_version" not in str(action_log["render"])
 

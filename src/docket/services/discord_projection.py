@@ -393,12 +393,33 @@ class DiscordProjectionRunner:
         }
         return labels.get(value, value.replace("_", " ").title())
 
-    def _timestamp_label(self, value: datetime) -> str:
-        local = _aware(value).astimezone(ZoneInfo(self.settings.timezone))
+    @staticmethod
+    def _discord_timestamp(value: datetime, style: str = "F") -> str:
+        if style not in {"t", "T", "d", "D", "f", "F", "s", "S", "R"}:
+            raise ValueError("unsupported Discord timestamp style")
+        seconds = int(_aware(value).astimezone(UTC).timestamp())
+        return f"<t:{seconds}:{style}>"
+
+    @staticmethod
+    def _discord_timestamp_value(value: object, style: str = "F") -> str:
+        if isinstance(value, datetime):
+            parsed = value
+        else:
+            try:
+                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            except ValueError:
+                return str(value or "Unknown")
+        return DiscordProjectionRunner._discord_timestamp(parsed, style)
+
+    @staticmethod
+    def _discord_timestamp_pair(value: object) -> str:
         return (
-            f"{local.strftime('%a, %b')} {local.day}, {local.year} · "
-            f"{local.strftime('%I:%M %p').lstrip('0')}"
+            f"{DiscordProjectionRunner._discord_timestamp_value(value, 'F')} · "
+            f"{DiscordProjectionRunner._discord_timestamp_value(value, 'R')}"
         )
+
+    def _timestamp_label(self, value: datetime) -> str:
+        return self._discord_timestamp_pair(value)
 
     @staticmethod
     def _action_label(value: str) -> str:
@@ -415,27 +436,54 @@ class DiscordProjectionRunner:
 
     @staticmethod
     def _standalone_timing(event: dict[str, Any]) -> str:
-        value, timezone = DiscordProjectionRunner._standalone_timing_parts(event)
-        return f"{value}\n{timezone}"
-
-    @staticmethod
-    def _standalone_timing_parts(event: dict[str, Any]) -> tuple[str, str]:
         timing = event.get("timing", {})
         if not isinstance(timing, dict):
-            return "Unknown", "Unknown timezone"
+            return "Unknown"
+        if timing.get("kind") == "all_day":
+            return DiscordProjectionRunner._standalone_timing_manual(event)
+        bounds = DiscordProjectionRunner._standalone_bounds(event)
+        if bounds is None:
+            return "Unknown"
+        start, end = bounds
+        return (
+            f"Starts {DiscordProjectionRunner._discord_timestamp(start, 'F')}\n"
+            f"Ends {DiscordProjectionRunner._discord_timestamp(end, 'F')}"
+        )
+
+    @staticmethod
+    def _standalone_bounds(event: dict[str, Any]) -> tuple[datetime, datetime] | None:
+        timing = event.get("timing", {})
+        if not isinstance(timing, dict) or timing.get("kind") == "all_day":
+            return None
+        try:
+            start = datetime.fromisoformat(str(timing.get("start_local")))
+            end = datetime.fromisoformat(str(timing.get("end_local")))
+            zone = ZoneInfo(str(timing.get("timezone")))
+            fold = int(timing.get("fold") or 0)
+        except (TypeError, ValueError, ZoneInfoNotFoundError):
+            return None
+        return (
+            start.replace(tzinfo=zone, fold=fold).astimezone(UTC),
+            end.replace(tzinfo=zone, fold=fold).astimezone(UTC),
+        )
+
+    @staticmethod
+    def _standalone_timing_manual(event: dict[str, Any]) -> str:
+        timing = event.get("timing", {})
+        if not isinstance(timing, dict):
+            return "Unknown"
         timezone = str(timing.get("timezone", "?"))
         if timing.get("kind") == "all_day":
             return (
                 f"All day · {DiscordProjectionRunner._date_label(timing.get('start_date'))} "
                 f"through {DiscordProjectionRunner._date_label(timing.get('end_date'))} "
-                "(end exclusive)",
-                timezone,
+                f"(end exclusive)\nCalendar timezone: {timezone}"
             )
         try:
             start = datetime.fromisoformat(str(timing.get("start_local")))
             end = datetime.fromisoformat(str(timing.get("end_local")))
         except ValueError:
-            return "Unknown", timezone
+            return "Unknown"
         start_date = f"{start.strftime('%a, %b')} {start.day}, {start.year}"
         start_time = start.strftime("%I:%M %p").lstrip("0")
         end_time = end.strftime("%I:%M %p").lstrip("0")
@@ -444,7 +492,21 @@ class DiscordProjectionRunner:
         else:
             end_date = f"{end.strftime('%a, %b')} {end.day}, {end.year}"
             value = f"{start_date} · {start_time} through {end_date} · {end_time}"
-        return value, timezone
+        return f"{value}\n{timezone}"
+
+    @staticmethod
+    def _standalone_timing_compact(event: dict[str, Any]) -> str:
+        timing = event.get("timing", {})
+        if not isinstance(timing, dict) or timing.get("kind") == "all_day":
+            return DiscordProjectionRunner._standalone_timing_manual(event).splitlines()[0]
+        bounds = DiscordProjectionRunner._standalone_bounds(event)
+        if bounds is None:
+            return "Unknown"
+        start, end = bounds
+        return (
+            f"{DiscordProjectionRunner._discord_timestamp(start, 'F')} to "
+            f"{DiscordProjectionRunner._discord_timestamp(end, 't')}"
+        )
 
     def _provider_timing(self, event: dict[str, Any]) -> str:
         timezone_name = str(event.get("timezone") or self.settings.timezone)
@@ -454,20 +516,14 @@ class DiscordProjectionRunner:
                 f"{self._date_label(event.get('end_date'))} (end exclusive)"
             )
         try:
-            zone = ZoneInfo(timezone_name)
+            ZoneInfo(timezone_name)
             start = datetime.fromisoformat(str(event.get("start_at")).replace("Z", "+00:00"))
             end = datetime.fromisoformat(str(event.get("end_at")).replace("Z", "+00:00"))
         except (ValueError, ZoneInfoNotFoundError):
             return "Unknown"
-        start = _aware(start).astimezone(zone)
-        end = _aware(end).astimezone(zone)
-        start_date = f"{start.strftime('%a, %b')} {start.day}, {start.year}"
-        start_time = start.strftime("%I:%M %p").lstrip("0")
-        end_time = end.strftime("%I:%M %p").lstrip("0")
-        if start.date() == end.date():
-            return f"{start_date} · {start_time} to {end_time}"
-        end_date = f"{end.strftime('%a, %b')} {end.day}, {end.year}"
-        return f"{start_date} · {start_time} through {end_date} · {end_time}"
+        start = _aware(start).astimezone(UTC)
+        end = _aware(end).astimezone(UTC)
+        return f"{self._discord_timestamp(start, 'F')} to {self._discord_timestamp(end, 't')}"
 
     @staticmethod
     def _reminder_text(plan: object) -> str:
@@ -527,7 +583,7 @@ class DiscordProjectionRunner:
             if old_title != new_title:
                 changes.append(f"Title: {old_title} → {new_title}")
             old_timing = self._provider_timing(before)
-            new_timing, _timezone = self._standalone_timing_parts(event)
+            new_timing = self._standalone_timing_compact(event)
             if old_timing != new_timing:
                 changes.append(f"Time: {old_timing} → {new_timing}")
             old_location = str(before.get("location") or "No location")
@@ -760,7 +816,7 @@ class DiscordProjectionRunner:
                 f"{item.get('effect', 'unknown')} · "
                 f"{classification.get('recurrence', 'timed')}\n"
                 f"{event.get('title', 'Untitled')}\n"
-                f"{self._standalone_timing(event)}\n"
+                f"{self._standalone_timing_manual(event)}\n"
                 f"{event.get('location') or 'No location'} · "
                 f"{conflict_count} conflict{'s' if conflict_count != 1 else ''}"
             ),
@@ -864,7 +920,7 @@ class DiscordProjectionRunner:
             fields.append(
                 {
                     "name": "Received",
-                    "value": _aware(queue_item.received_at).astimezone(UTC).isoformat(),
+                    "value": self._timestamp_label(queue_item.received_at),
                     "inline": False,
                 }
             )
@@ -995,7 +1051,8 @@ class DiscordProjectionRunner:
                     "None found"
                     if not conflicts
                     else "\n".join(
-                        f"{item.get('summary') or 'Untitled'} · {item.get('start_at')}"
+                        f"{item.get('summary') or 'Untitled'} · "
+                        f"{self._discord_timestamp_value(item.get('start_at'), 'F')}"
                         for item in conflicts[:5]
                         if isinstance(item, dict)
                     )
@@ -1486,9 +1543,7 @@ class DiscordProjectionRunner:
             fields.append(
                 {
                     "name": "Snoozed until",
-                    "value": _aware(queue_item.snoozed_until)
-                    .astimezone(ZoneInfo(self.settings.timezone))
-                    .isoformat(),
+                    "value": self._timestamp_label(queue_item.snoozed_until),
                     "inline": False,
                 }
             )
@@ -1929,11 +1984,15 @@ class DiscordProjectionRunner:
             title = self._bounded(str(event.payload.get("title", "Docket system alert")), 256)
             summary = self._bounded(str(event.payload.get("summary", "Docket work failed")), 2000)
             error_code = self._bounded(str(event.payload.get("error_code", "unknown")), 128)
+            occurred_at = event.payload.get("occurred_at", event.created_at.isoformat())
             render = {
                 "title": title,
                 "summary": summary,
                 "error_code": error_code,
-                "occurred_at": str(event.payload.get("occurred_at", event.created_at.isoformat())),
+                "occurred_at": self._bounded(
+                    self._discord_timestamp_pair(occurred_at),
+                    64,
+                ),
             }
             return {
                 "request_id": str(event.id),
@@ -1990,13 +2049,17 @@ class DiscordProjectionRunner:
                 raise DiscordProjectionError("invalid_system_log", "System log severity is invalid")
             status = self._bounded(str(event.payload.get("status", "unknown")), 64)
             subsystem = self._bounded(str(event.payload.get("subsystem", "Docket")), 64)
+            occurred_at = event.payload.get("occurred_at", event.created_at.isoformat())
             render = {
                 "title": self._bounded(str(event.payload.get("title", "Docket update")), 256),
                 "summary": self._bounded(str(event.payload.get("summary", "")), 2000),
                 "status": status,
                 "severity": severity,
                 "subsystem": subsystem,
-                "occurred_at": str(event.payload.get("occurred_at", event.created_at.isoformat())),
+                "occurred_at": self._bounded(
+                    self._discord_timestamp_pair(occurred_at),
+                    64,
+                ),
             }
             return {
                 "request_id": str(event.id),
@@ -2083,12 +2146,12 @@ class DiscordProjectionRunner:
                 end_value = event.end_date.isoformat() if event.end_date else ""
             else:
                 start_value = (
-                    _aware(event.start_at).astimezone(UTC).isoformat()
+                    self._discord_timestamp_pair(event.start_at)
                     if event.start_at is not None
                     else ""
                 )
                 end_value = (
-                    _aware(event.end_at).astimezone(UTC).isoformat()
+                    self._discord_timestamp(event.end_at, "F")
                     if event.end_at is not None
                     else ""
                 )

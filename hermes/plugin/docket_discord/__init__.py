@@ -529,6 +529,19 @@ def _escaped(value: str, maximum: int) -> str:
     return escaped
 
 
+def _calendar_reminder_fields(render: dict[str, Any]) -> list[tuple[str, str, bool]]:
+    if bool(render["is_all_day"]):
+        return [
+            ("Start date", str(render["start"]), True),
+            ("End date (exclusive)", str(render["end"]), True),
+            ("Calendar timezone", str(render["timezone"]), False),
+        ]
+    return [
+        ("Starts", str(render["start"]), False),
+        ("Ends", str(render["end"]), False),
+    ]
+
+
 def _decode_control(token: str) -> tuple[uuid.UUID, uuid.UUID]:
     try:
         raw = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
@@ -1405,16 +1418,23 @@ async def _post_calendar_reminder(payload: dict[str, Any]) -> dict[str, Any]:
         thread = await thread.edit(archived=False, locked=False, reason="Docket reminder delivery")
     marker = f"docket-calendar-reminder:{notification_id}"
     footer = f"{marker} | render:{render_sha256}"
-    title = "Late calendar reminder" if render["late"] else "Calendar reminder"
+    if render["late"]:
+        title = "Late calendar reminder"
+    elif render["is_all_day"]:
+        title = "All-day calendar reminder"
+    else:
+        title = "Calendar reminder"
     embed = discord.Embed(
         title=title,
         description=_escaped(summary, 512),
         color=0x4F8CC9 if not render["late"] else 0xD6A756,
     )
-    embed.add_field(name="Start", value=_escaped(start, 64), inline=False)
-    embed.add_field(name="End", value=_escaped(end, 64), inline=False)
-    embed.add_field(name="Timezone", value=_escaped(timezone, 128), inline=True)
-    embed.add_field(name="All day", value="Yes" if render["is_all_day"] else "No", inline=True)
+    for field_name, field_value, inline in _calendar_reminder_fields(render):
+        embed.add_field(
+            name=field_name,
+            value=_escaped(field_value, 128),
+            inline=inline,
+        )
     if location is not None:
         embed.add_field(name="Location", value=_escaped(location, 1000), inline=False)
     embed.set_footer(text=footer)

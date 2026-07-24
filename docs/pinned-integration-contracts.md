@@ -48,7 +48,7 @@ on every request. Docket's callback uses the independent
 
 Hermes performs overlapping plugin discovery during this pin's startup. Each
 discovery pass imports an isolated plugin module, so module globals alone cannot
-prevent a transient second bind. Plugin `0.8.0` starts the private HTTP server
+prevent a transient second bind. Plugin `0.9.0` starts the private HTTP server
 under a background supervisor: an `EADDRINUSE` defers that copy without failing
 plugin registration, and it retries if the process that temporarily owned the
 port exits. Healthy startup may contain one `startup deferred` line, followed
@@ -73,6 +73,11 @@ Pinned outbound assumptions to revalidate:
   its durable projection outbox. Errors may still use an ephemeral response.
 * message history and embed footer text are available for stable marker
   recovery after an acknowledgement is lost.
+* Discord native timestamp tokens (`<t:UNIX_SECONDS:STYLE>`) survive the
+  plugin's markdown/mention escaping inside embed descriptions and field
+  values. Docket emits them only from canonical concrete instants; date-only
+  all-day events and recurrence definitions retain explicit calendar-date and
+  IANA-timezone text so client-local conversion cannot change their semantics.
 * due-date daily-thread reminder posts can recover by the stable
   `docket-calendar-reminder:<notification UUID>` footer after verifying the
   configured queue parent and bot-owned thread, without enabling mentions,
@@ -81,6 +86,11 @@ Pinned outbound assumptions to revalidate:
   channel and one compact action marker. Later states edit the same bot-owned
   message; raw request/provider payloads and per-item progress never cross this
   seam.
+
+Plugin `0.9.0` renders timed reminder start/end values as Docket-supplied native
+Discord timestamps and omits a redundant timezone field. All-day reminders
+instead render fixed start/end dates plus the Calendar timezone. Timestamp
+tokens do not grant mention authority and `AllowedMentions.none()` remains set.
 
 The current Docket deployment runs one Uvicorn process containing both the
 trusted callback routes and the projection worker. A successful component

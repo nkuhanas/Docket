@@ -163,6 +163,25 @@ def _event_request(
     )
 
 
+def test_all_day_projection_preserves_calendar_date_semantics() -> None:
+    rendered = DiscordProjectionRunner._standalone_timing(
+        {
+            "timing": {
+                "kind": "all_day",
+                "start_date": "2026-07-30",
+                "end_date": "2026-07-31",
+                "timezone": "America/Los_Angeles",
+            }
+        }
+    )
+
+    assert rendered == (
+        "All day · Jul 30, 2026 through Jul 31, 2026 (end exclusive)\n"
+        "Calendar timezone: America/Los_Angeles"
+    )
+    assert "<t:" not in rendered
+
+
 @pytest.mark.integration
 def test_materially_identical_pending_standalone_proposal_is_suppressed(
     session_factory: sessionmaker[Session],
@@ -328,10 +347,13 @@ def test_update_card_prioritizes_operator_changes_and_terminal_state(
         assert projected["embed"]["description"] == (
             "Check my email\nReview the details below. Nothing changes until you approve."
         )
-        assert fields["When"] == ("Thu, Jul 30, 2026 · 12:30 PM to 12:45 PM\nAmerica/Los_Angeles")
+        assert fields["When"] == (
+            "Starts <t:1785439800:F>\n"
+            "Ends <t:1785440700:F>"
+        )
         assert fields["Changes"] == (
-            "Time: Thu, Jul 30, 2026 · 12:00 PM to 12:15 PM → "
-            "Thu, Jul 30, 2026 · 12:30 PM to 12:45 PM\n"
+            "Time: <t:1785438000:F> to <t:1785438900:t> → "
+            "<t:1785439800:F> to <t:1785440700:t>\n"
             "Reminders: 5 minutes, 10 minutes → 5 minutes"
         )
         assert fields["Details"] == "One-time · Normal priority\nTags: email"
@@ -491,7 +513,10 @@ def test_proposal_selects_and_custom_modal_replace_the_revision_in_place(
         assert projected["embed"]["description"] == (
             "Check my email\nReview the details below. Nothing changes until you approve."
         )
-        assert fields["When"] == ("Thu, Jul 30, 2026 · 12:00 PM to 12:15 PM\nAmerica/Los_Angeles")
+        assert fields["When"] == (
+            "Starts <t:1785438000:F>\n"
+            "Ends <t:1785438900:F>"
+        )
         assert fields["Where"] == "Desk"
         assert fields["Details"] == "One-time · Normal priority\nTags: email"
         assert fields["Notifications"] == (
