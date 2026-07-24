@@ -57,6 +57,14 @@ retained Discord message `1529747285901049939`, advanced projection version
 `reviewed_through_page=0`. No proposal, approval, thread, message, operation,
 or provider event was created by the repair.
 
+An authenticated read of that exact Discord message confirmed one enabled
+button labeled **Begin review**, compact custom-ID prefix `dkt:n`, no
+Approve/Reject components, and footer bindings for projection version 3 and
+projection `20bfb771-26a9-4238-8736-fa154f0915e9`. Docket still had zero
+`proposal_review_navigate` commands/audits at that point, so this proves the
+deployed summary surface but does not substitute for the operator callback
+gate below.
+
 ## Operator-present gate
 
 On that existing card:
