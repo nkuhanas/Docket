@@ -1776,7 +1776,7 @@ async def _install_interaction_listener() -> dict[str, Any]:
 
 
 class _PluginRequestHandler(BaseHTTPRequestHandler):
-    server_version = "DocketHermesBridge/0.4"
+    server_version = "DocketHermesBridge/0.5"
 
     def log_message(self, format: str, *args: object) -> None:
         logger.debug("Docket plugin HTTP: " + format, *args)
