@@ -28,6 +28,8 @@ class DiscordProjectionAdapter(Protocol):
 
     def post_system_alert(self, payload: dict[str, Any]) -> dict[str, Any]: ...
 
+    def post_system_log(self, payload: dict[str, Any]) -> dict[str, Any]: ...
+
     def post_calendar_reminder(self, payload: dict[str, Any]) -> dict[str, Any]: ...
 
 
@@ -90,6 +92,9 @@ class HttpDiscordProjectionAdapter:
     def post_system_alert(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/internal/docket/discord/system-alerts", payload)
 
+    def post_system_log(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/internal/docket/discord/system-logs", payload)
+
     def post_calendar_reminder(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/internal/docket/discord/notifications", payload)
 
@@ -99,6 +104,7 @@ class FakeDiscordBackend:
     threads: dict[tuple[str, str, str], dict[str, Any]] = field(default_factory=dict)
     messages: dict[str, dict[str, Any]] = field(default_factory=dict)
     system_messages: dict[str, dict[str, Any]] = field(default_factory=dict)
+    system_logs: dict[str, dict[str, Any]] = field(default_factory=dict)
     notification_messages: dict[str, dict[str, Any]] = field(default_factory=dict)
     next_snowflake: int = 10000000000000000
 
@@ -229,6 +235,29 @@ class FakeDiscordProjectionAdapter:
         return {
             "request_id": payload["request_id"],
             "alert_id": key,
+            "guild_id": payload["guild_id"],
+            "channel_id": payload["channel_id"],
+            "message_id": message["message_id"],
+            "render_sha256": message["render_sha256"],
+            "created": created,
+        }
+
+    def post_system_log(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._check_request(payload)
+        key = str(payload["log_id"])
+        created = key not in self.backend.system_logs
+        if created:
+            self.backend.system_logs[key] = {
+                "message_id": self.backend.snowflake(),
+                "render_sha256": payload["render_sha256"],
+                "render": copy.deepcopy(payload["render"]),
+            }
+        message = self.backend.system_logs[key]
+        message["render_sha256"] = payload["render_sha256"]
+        message["render"] = copy.deepcopy(payload["render"])
+        return {
+            "request_id": payload["request_id"],
+            "log_id": key,
             "guild_id": payload["guild_id"],
             "channel_id": payload["channel_id"],
             "message_id": message["message_id"],

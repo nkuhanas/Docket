@@ -25,10 +25,12 @@ from docket.models import (
     Record,
 )
 from docket.providers.discord import FakeDiscordBackend, FakeDiscordProjectionAdapter
+from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.schemas.actions import ProposeActionInput
 from docket.services.actions import ActionService
 from docket.services.approvals import ApprovalService
 from docket.services.discord_projection import DiscordProjectionRunner
+from docket.services.operations import OperationRunner
 from docket.services.rollover import RolloverService
 
 OPERATOR_ID = "000000000000000001"
@@ -344,10 +346,16 @@ def test_projection_retry_restart_and_exact_button_context(session_factory) -> N
         assert projection.message_id is not None and daily_thread.thread_id is not None
         projected = backend.messages[str(projection.id)]
         fields = {field["name"]: field["value"] for field in projected["embed"]["fields"]}
-        assert fields["Source"] == "Manual Discord request"
-        assert fields["Account"] == "primary"
-        assert fields["Calendar"] == settings.google_calendar_id
-        assert fields["Record version"] == "1"
+        assert fields["Status"] == "Awaiting approval"
+        assert fields["Calendar"] == "Configured Docket calendar"
+        assert fields["Effect"] == "Create course meeting"
+        assert {
+            "Source",
+            "Account",
+            "Record version",
+            "Action",
+            "Priority basis",
+        }.isdisjoint(fields)
         control = projected["controls"][0]
 
     forged = ApprovalResponse(
@@ -380,6 +388,21 @@ def test_projection_retry_restart_and_exact_button_context(session_factory) -> N
         result = ApprovalService(session).respond(exact)
     assert result["ok"] is True
     assert result["operation_id"] is not None
+    while second_runner.run_due_once():
+        pass
+    action_log = backend.system_logs[str(proposal.action_id)]
+    log_message_id = action_log["message_id"]
+    assert action_log["render"]["status"] == "queued"
+    assert "calendar_id" not in str(action_log["render"])
+    assert "record_version" not in str(action_log["render"])
+
+    assert OperationRunner(session_factory, FakeCalendarProvider()).run_due_once()
+    while second_runner.run_due_once():
+        pass
+    action_log = backend.system_logs[str(proposal.action_id)]
+    assert action_log["message_id"] == log_message_id
+    assert action_log["render"]["status"] == "succeeded"
+    assert action_log["render"]["title"] == "Calendar change completed"
 
 
 def test_fake_thread_ensure_and_archive_are_idempotent() -> None:

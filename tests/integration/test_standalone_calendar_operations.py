@@ -374,7 +374,38 @@ def test_proposal_selects_and_custom_modal_replace_the_revision_in_place(
         projection_id = projection.id
         message_id = projection.message_id
         thread_id = thread.thread_id
-        controls = backend.messages[str(projection.id)]["controls"]
+        projected = backend.messages[str(projection.id)]
+        fields = {
+            field["name"]: field["value"] for field in projected["embed"]["fields"]
+        }
+        assert projected["embed"]["title"] == "Create event · Check my email"
+        assert projected["embed"]["description"] == (
+            "Review this Calendar change. Nothing is written until you approve."
+        )
+        assert fields["Status"] == "Awaiting approval"
+        assert fields["Calendar"] == "Configured Docket calendar"
+        assert fields["When"] == (
+            "Thu, Jul 30, 2026 · 12:00 PM to 12:15 PM\nAmerica/Los_Angeles"
+        )
+        assert fields["Where"] == "Desk"
+        assert fields["Type & tags"] == "One-time · email"
+        assert fields["Reminder plan"] == (
+            "5 minutes, 10 minutes\nGoogle popup + Docket daily thread"
+        )
+        assert fields["Conflicts"] == "None found"
+        assert fields["Effect"] == "Create event"
+        serialized_embed = str(projected["embed"])
+        for internal_value in (
+            settings.google_calendar_id,
+            "calendar_create_event",
+            "provider_etag",
+            "parameters_sha256",
+            "preview_sha256",
+            "last_success_at",
+            str(proposed.action_revision_id),
+        ):
+            assert internal_value not in serialized_embed
+        controls = projected["controls"]
         assert [control["kind"] for control in controls] == [
             "approval",
             "approval",

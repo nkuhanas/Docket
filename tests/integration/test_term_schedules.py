@@ -565,7 +565,7 @@ def test_aggregate_card_persists_review_then_exposes_decision_without_revision_c
         assert projection.projection_version == initial_version + 1
         projected = backend.messages[str(projection.id)]
         assert any(
-            field["name"] == "Immutable schedule review" for field in projected["embed"]["fields"]
+            field["name"] == "Schedule review" for field in projected["embed"]["fields"]
         )
         assert [control["label"] for control in projected["controls"]] == [
             "Back to summary",

@@ -42,6 +42,7 @@ from docket.providers.google.calendar import (
     CalendarUnknownOutcome,
     event_matches_request,
 )
+from docket.services.operational_logs import enqueue_action_system_log
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -689,11 +690,19 @@ class OperationRunner:
                 status=OutboxStatus.PENDING.value,
             )
         )
+        enqueue_action_system_log(
+            session,
+            action=action,
+            revision=revision,
+            state="succeeded",
+            result=operation.result,
+        )
 
     @staticmethod
     def _update_batch_parent(session: Session, operation: Operation) -> None:
         """Derive the aggregate state exclusively from its durable item ledger."""
-        _revision, action, queue_item = OperationRunner._bound_entities(session, operation)
+        revision, action, queue_item = OperationRunner._bound_entities(session, operation)
+        previous_status = operation.status
         items = list(
             session.scalars(
                 select(OperationItem)
@@ -772,6 +781,19 @@ class OperationRunner:
             queue_item.resolved_at = utc_now()
             queue_item.resolution_code = "calendar_schedule_synchronized"
         queue_item.version += 1
+        if operation.status != previous_status and operation.status in {
+            OperationStatus.SUCCEEDED.value,
+            OperationStatus.PARTIAL_FAILED.value,
+            OperationStatus.FAILED.value,
+            OperationStatus.RECONCILIATION_REQUIRED.value,
+        }:
+            enqueue_action_system_log(
+                session,
+                action=action,
+                revision=revision,
+                state=operation.status,
+                result=operation.result,
+            )
 
     @staticmethod
     def _apply_batch_item_success(
@@ -1090,6 +1112,17 @@ class OperationRunner:
                 ):
                     plan.status = plan_status
             queue_item.version += 1
+            if operation.status in {
+                OperationStatus.FAILED.value,
+                OperationStatus.RECONCILIATION_REQUIRED.value,
+            }:
+                enqueue_action_system_log(
+                    session,
+                    action=action,
+                    revision=revision,
+                    state=operation.status,
+                    result=operation.result,
+                )
 
     def run_due_once(self) -> bool:
         claim = self.claim_due()

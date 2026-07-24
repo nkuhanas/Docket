@@ -1055,11 +1055,10 @@ def _render_embed(
             }
         ):
             raise PluginAPIError("invalid_control", "Control kind is not allowed", 422)
-    context_prefix = f"{_escaped(footer_context, 512)} | " if footer_context else ""
+    projection_ref = base64.urlsafe_b64encode(projection_id.bytes).decode().rstrip("=")
+    context_prefix = f"{_escaped(footer_context, 384)} · " if footer_context else ""
     footer = (
-        f"{context_prefix}docket-projection:{projection_id} | "
-        f"render:{int(payload['projection_version'])}:{payload['render_sha256']} | "
-        f"components:{payload['component_sha256']}"
+        f"{context_prefix}ref {projection_ref} · v{int(payload['projection_version'])}"
     )
     embed.set_footer(text=footer)
     return embed, view
@@ -1090,7 +1089,7 @@ async def _put_projection(projection_id: uuid.UUID, payload: dict[str, Any]) -> 
         raise PluginAPIError("invalid_projection", "Projection digest is invalid", 422)
     embed, view = _render_embed(projection_id, payload)
     desired_footer = str(embed.footer.text)
-    marker = f"docket-projection:{projection_id}"
+    marker = f"ref {base64.urlsafe_b64encode(projection_id.bytes).decode().rstrip('=')}"
     _loop, _adapter, client = _discord_runtime()
     try:
         thread = await client.fetch_channel(int(thread_id))
@@ -1227,6 +1226,109 @@ async def _post_system_alert(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "request_id": request_id,
         "alert_id": alert_id,
+        "guild_id": guild_id,
+        "channel_id": channel_id,
+        "message_id": str(message.id),
+        "render_sha256": render_sha256,
+        "created": created,
+    }
+
+
+async def _post_system_log(payload: dict[str, Any]) -> dict[str, Any]:
+    import discord
+
+    request_id = _require_request_id(payload)
+    try:
+        log_id = str(uuid.UUID(str(payload["log_id"])))
+    except (KeyError, ValueError) as exc:
+        raise PluginAPIError("invalid_system_log", "log_id must be a UUID", 422) from exc
+    guild_id, channel_id = _validate_system_target(
+        payload.get("guild_id"), payload.get("channel_id")
+    )
+    raw_render = payload.get("render")
+    if not isinstance(raw_render, dict):
+        raise PluginAPIError("invalid_system_log", "render must be an object", 422)
+    severity = _safe_text(raw_render.get("severity"), 16, "severity")
+    if severity not in {"info", "notice", "success", "warning", "error"}:
+        raise PluginAPIError("invalid_system_log", "severity is invalid", 422)
+    render = {
+        "title": _safe_text(raw_render.get("title"), 256, "title"),
+        "summary": _safe_text(raw_render.get("summary"), 2000, "summary"),
+        "status": _safe_text(raw_render.get("status"), 64, "status"),
+        "severity": severity,
+        "subsystem": _safe_text(raw_render.get("subsystem"), 64, "subsystem"),
+        "occurred_at": _safe_text(raw_render.get("occurred_at"), 64, "occurred_at"),
+    }
+    calculated = hashlib.sha256(
+        json.dumps(render, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
+    render_sha256 = str(payload.get("render_sha256", ""))
+    if not hmac.compare_digest(calculated, render_sha256):
+        raise PluginAPIError("invalid_system_log", "System log digest differs", 422)
+    _loop, _adapter, client = _discord_runtime()
+    try:
+        channel = await client.fetch_channel(int(channel_id))
+    except discord.NotFound as exc:
+        raise PluginAPIError("system_channel_not_found", "System channel was not found") from exc
+    if not isinstance(channel, discord.TextChannel) or str(channel.guild.id) != guild_id:
+        raise PluginAPIError("invalid_system_channel", "Configured system channel is invalid")
+    log_ref = base64.urlsafe_b64encode(uuid.UUID(log_id).bytes).decode().rstrip("=")
+    marker = f"ref {log_ref}"
+    footer = f"Docket system · {marker}"
+    colors = {
+        "info": 0x5B8DEF,
+        "notice": 0x8E7CC3,
+        "success": 0x3BA55D,
+        "warning": 0xD6A756,
+        "error": 0xC94F4F,
+    }
+    embed = discord.Embed(
+        title=_escaped(render["title"], 256),
+        description=_escaped(render["summary"], 2000),
+        color=colors[severity],
+    )
+    embed.add_field(
+        name="Status",
+        value=_escaped(render["status"].replace("_", " ").title(), 64),
+        inline=True,
+    )
+    embed.add_field(
+        name="Subsystem",
+        value=_escaped(render["subsystem"], 64),
+        inline=True,
+    )
+    embed.add_field(
+        name="Updated",
+        value=_escaped(render["occurred_at"], 64),
+        inline=False,
+    )
+    embed.set_footer(text=footer)
+    bot_id = getattr(getattr(client, "user", None), "id", None)
+    matches = []
+    async for candidate in channel.history(limit=None, oldest_first=True):
+        if marker in _message_marker(candidate):
+            matches.append(candidate)
+    if len(matches) > 1 or any(candidate.author.id != bot_id for candidate in matches):
+        raise PluginAPIError(
+            "system_log_marker_conflict", "System log marker is foreign-owned or ambiguous"
+        )
+    message = matches[0] if matches else None
+    created = message is None
+    if message is None:
+        message = await channel.send(
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions.none(),
+            silent=True,
+        )
+    else:
+        message = await message.edit(
+            content=None,
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    return {
+        "request_id": request_id,
+        "log_id": log_id,
         "guild_id": guild_id,
         "channel_id": channel_id,
         "message_id": str(message.id),
@@ -1829,6 +1931,9 @@ class _PluginRequestHandler(BaseHTTPRequestHandler):
             elif method == "POST" and self.path == "/internal/docket/discord/system-alerts":
                 with _operation_lock(f"system-alert:{payload.get('alert_id')}"):
                     result = _run_on_discord(_post_system_alert(payload))
+            elif method == "POST" and self.path == "/internal/docket/discord/system-logs":
+                with _operation_lock(f"system-log:{payload.get('log_id')}"):
+                    result = _run_on_discord(_post_system_log(payload))
             elif method == "POST" and self.path == "/internal/docket/discord/notifications":
                 with _operation_lock(f"calendar-reminder:{payload.get('notification_id')}"):
                     result = _run_on_discord(_post_calendar_reminder(payload))

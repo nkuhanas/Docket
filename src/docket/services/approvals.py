@@ -40,6 +40,7 @@ from docket.security import (
     verify_projection_approval_token,
     verify_projection_decision_approval_token,
 )
+from docket.services.operational_logs import enqueue_action_system_log
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -620,6 +621,20 @@ class ApprovalService:
                 },
                 status=OutboxStatus.PENDING.value,
             )
+        )
+        enqueue_action_system_log(
+            self.session,
+            action=action,
+            revision=revision,
+            state=(
+                "rejected"
+                if request.decision == "reject"
+                else "succeeded"
+                if batch_all_no_op
+                else "queued"
+            ),
+            occurred_at=now,
+            result=operation.result if operation is not None else None,
         )
         return {
             "ok": True,

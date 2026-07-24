@@ -468,6 +468,9 @@ def test_failed_item_can_render_one_canonical_ignore_control(plugin_module, monk
 
     assert len(view.items) == 1
     assert view.items[0].custom_id == f"dkt:l:{token}"
+    assert "ref " in _embed.footer
+    assert "render:" not in _embed.footer
+    assert "components:" not in _embed.footer
 
 
 def test_plugin_accepts_only_bound_persistent_review_navigation(plugin_module, monkeypatch) -> None:

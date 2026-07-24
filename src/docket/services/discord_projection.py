@@ -44,6 +44,7 @@ _SUPPORTED_EVENTS = {
     "discord.thread.ensure_requested",
     "discord.thread.lifecycle_requested",
     "discord.system_alert.requested",
+    "discord.system_log.requested",
     "discord.calendar_reminder.requested",
 }
 _PROJECTION_EVENTS = {
@@ -336,12 +337,29 @@ class DiscordProjectionRunner:
 
     @staticmethod
     def _schedule_text(schedule: dict[str, Any]) -> str:
-        days = ", ".join(str(day) for day in schedule.get("days", []))
-        times = f"{schedule.get('start_time', '?')}-{schedule.get('end_time', '?')}"
-        dates = f"{schedule.get('start_date', '?')} through {schedule.get('end_date', '?')}"
+        day_labels = {
+            "MO": "Mon",
+            "TU": "Tue",
+            "WE": "Wed",
+            "TH": "Thu",
+            "FR": "Fri",
+            "SA": "Sat",
+            "SU": "Sun",
+        }
+        days = ", ".join(
+            day_labels.get(str(day), str(day)) for day in schedule.get("days", [])
+        )
+        times = (
+            f"{DiscordProjectionRunner._clock_label(schedule.get('start_time'))} to "
+            f"{DiscordProjectionRunner._clock_label(schedule.get('end_time'))}"
+        )
+        dates = (
+            f"{DiscordProjectionRunner._date_label(schedule.get('start_date'))} to "
+            f"{DiscordProjectionRunner._date_label(schedule.get('end_date'))}"
+        )
         timezone = str(schedule.get("timezone", ""))
         location = schedule.get("location")
-        parts = [f"{days} · {times}", dates, timezone]
+        parts = [f"{days} · {times}", f"{dates} · {timezone}"]
         if location:
             parts.append(str(location))
         return "\n".join(parts)
@@ -351,20 +369,78 @@ class DiscordProjectionRunner:
         return value if len(value) <= maximum else value[: maximum - 1] + "…"
 
     @staticmethod
+    def _date_label(value: object) -> str:
+        try:
+            parsed = date.fromisoformat(str(value))
+        except ValueError:
+            return str(value or "?")
+        return f"{parsed.strftime('%b')} {parsed.day}, {parsed.year}"
+
+    @staticmethod
+    def _clock_label(value: object) -> str:
+        try:
+            parsed = datetime.strptime(str(value), "%H:%M:%S")
+        except ValueError:
+            return str(value or "?")
+        return parsed.strftime("%I:%M %p").lstrip("0")
+
+    @staticmethod
+    def _status_label(value: str) -> str:
+        labels = {
+            "awaiting_approval": "Awaiting approval",
+            "executing": "In progress",
+            "completed": "Completed",
+            "reconciliation_required": "Needs reconciliation",
+            "partial_failed": "Partially completed",
+        }
+        return labels.get(value, value.replace("_", " ").title())
+
+    def _timestamp_label(self, value: datetime) -> str:
+        local = _aware(value).astimezone(ZoneInfo(self.settings.timezone))
+        return (
+            f"{local.strftime('%a, %b')} {local.day}, {local.year} · "
+            f"{local.strftime('%I:%M %p').lstrip('0')}"
+        )
+
+    @staticmethod
+    def _action_label(value: str) -> str:
+        labels = {
+            "calendar_create_meeting": "Create course meeting",
+            "calendar_update_meeting": "Update course meeting",
+            "calendar_create_event": "Create event",
+            "calendar_update_event": "Update event",
+            "calendar_update_reminders": "Update reminders",
+            "calendar_cancel_event": "Cancel event",
+            "calendar_apply_term_schedule": "Apply term schedule",
+        }
+        return labels.get(value, value.replace("_", " ").title())
+
+    @staticmethod
     def _standalone_timing(event: dict[str, Any]) -> str:
         timing = event.get("timing", {})
         if not isinstance(timing, dict):
             return "Unknown"
         if timing.get("kind") == "all_day":
             return (
-                f"All day · {timing.get('start_date', '?')} through "
-                f"{timing.get('end_date', '?')} (exclusive)\n"
+                f"All day · {DiscordProjectionRunner._date_label(timing.get('start_date'))} "
+                f"through {DiscordProjectionRunner._date_label(timing.get('end_date'))} "
+                "(end exclusive)\n"
                 f"{timing.get('timezone', '?')}"
             )
-        return (
-            f"{timing.get('start_local', '?')} through {timing.get('end_local', '?')}\n"
-            f"{timing.get('timezone', '?')}"
-        )
+        try:
+            start = datetime.fromisoformat(str(timing.get("start_local")))
+            end = datetime.fromisoformat(str(timing.get("end_local")))
+        except ValueError:
+            return "Unknown"
+        start_date = f"{start.strftime('%a, %b')} {start.day}, {start.year}"
+        start_time = start.strftime("%I:%M %p").lstrip("0")
+        end_time = end.strftime("%I:%M %p").lstrip("0")
+        if start.date() == end.date():
+            value = f"{start_date} · {start_time} to {end_time}"
+        else:
+            end_date = f"{end.strftime('%a, %b')} {end.day}, {end.year}"
+            value = f"{start_date} · {start_time} through {end_date} · {end_time}"
+        return f"{value}\n{timing.get('timezone', '?')}"
 
     @staticmethod
     def _reminder_text(plan: object) -> str:
@@ -617,26 +693,52 @@ class DiscordProjectionRunner:
         projection_date: date,
         latest_date: date,
     ) -> tuple[dict[str, Any], list[dict[str, Any]], str, str]:
+        calendar_action = revision is not None and revision.action_type.startswith("calendar_")
         fields: list[dict[str, Any]] = [
-            {"name": "Status", "value": queue_item.status, "inline": True},
-            {"name": "Priority", "value": queue_item.priority, "inline": True},
-            {"name": "Queue date", "value": projection_date.isoformat(), "inline": True},
-            {"name": "Category", "value": queue_item.category, "inline": True},
             {
-                "name": "Source",
-                "value": (
-                    "Ingested source"
-                    if queue_item.primary_source_item_id is not None
-                    else (
-                        "Manual Discord request"
-                        if queue_item.deduplication_key.startswith("manual_action:")
-                        else "Docket system"
-                    )
-                ),
+                "name": "Status",
+                "value": self._status_label(queue_item.status),
+                "inline": True,
+            },
+            {
+                "name": "Priority",
+                "value": queue_item.priority.title(),
                 "inline": True,
             },
         ]
-        if queue_item.received_at is not None:
+        if calendar_action:
+            fields.append(
+                {
+                    "name": "Calendar",
+                    "value": "Configured Docket calendar",
+                    "inline": True,
+                }
+            )
+        else:
+            fields.extend(
+                [
+                    {
+                        "name": "Queue date",
+                        "value": projection_date.isoformat(),
+                        "inline": True,
+                    },
+                    {"name": "Category", "value": queue_item.category, "inline": True},
+                    {
+                        "name": "Source",
+                        "value": (
+                            "Ingested source"
+                            if queue_item.primary_source_item_id is not None
+                            else (
+                                "Manual Discord request"
+                                if queue_item.deduplication_key.startswith("manual_action:")
+                                else "Docket system"
+                            )
+                        ),
+                        "inline": True,
+                    },
+                ]
+            )
+        if not calendar_action and queue_item.received_at is not None:
             fields.append(
                 {
                     "name": "Received",
@@ -652,7 +754,7 @@ class DiscordProjectionRunner:
                     "inline": True,
                 }
             )
-        if account_label is not None:
+        if not calendar_action and account_label is not None:
             fields.append({"name": "Account", "value": account_label, "inline": False})
         base_fields = list(fields)
         if revision is not None:
@@ -666,34 +768,30 @@ class DiscordProjectionRunner:
                         "inline": False,
                     }
                 )
-                fields.append(
-                    {
-                        "name": "Where",
-                        "value": str(standalone.get("location") or "No location"),
-                        "inline": False,
-                    }
-                )
+                if standalone.get("location"):
+                    fields.append(
+                        {
+                            "name": "Where",
+                            "value": str(standalone["location"]),
+                            "inline": False,
+                        }
+                    )
             classification = preview.get("classification")
             if isinstance(classification, dict):
-                tags = [
-                    *classification.get("system_tags", []),
-                    *classification.get("operator_tags", []),
-                ]
-                fields.append(
-                    {
-                        "name": "Recurrence / tags",
-                        "value": ", ".join(str(value) for value in tags) or "None",
-                        "inline": False,
-                    }
+                recurrence = str(
+                    classification.get("recurrence_kind")
+                    or classification.get("recurrence")
+                    or "one_time"
                 )
+                tags = [str(value) for value in classification.get("operator_tags", [])]
+                type_text = "Recurring" if recurrence == "recurring" else "One-time"
+                if tags:
+                    type_text += f" · {', '.join(tags)}"
                 fields.append(
                     {
-                        "name": "Priority basis",
-                        "value": (
-                            f"{classification.get('priority', 'normal')} · "
-                            f"{classification.get('priority_basis', 'default')}"
-                        ),
-                        "inline": True,
+                        "name": "Type & tags",
+                        "value": type_text,
+                        "inline": False,
                     }
                 )
             if "reminder_plan" in preview:
@@ -726,7 +824,7 @@ class DiscordProjectionRunner:
                         {
                             "name": "Batch",
                             "value": (
-                                f"{preview.get('item_count', '?')} immutable items · "
+                                f"{preview.get('item_count', '?')} calendar changes · "
                                 f"{counts.get('create', 0)} create · "
                                 f"{counts.get('update', 0)} update · "
                                 f"{counts.get('no_op', 0)} already synchronized"
@@ -734,36 +832,10 @@ class DiscordProjectionRunner:
                             "inline": False,
                         }
                     )
-                fields.append(
-                    {
-                        "name": "Classification",
-                        "value": (
-                            "Per item: recurring or one_time · timed · "
-                            "course_meeting · normal/default"
-                        ),
-                        "inline": False,
-                    }
-                )
-                fields.append(
-                    {
-                        "name": "Manifest",
-                        "value": str(preview.get("manifest_sha256", "unknown"))[:16],
-                        "inline": True,
-                    }
-                )
-                freshness = preview.get("freshness")
-                if isinstance(freshness, dict):
-                    fields.append(
-                        {
-                            "name": "Conflict freshness",
-                            "value": str(freshness.get("last_success_at", "unknown")),
-                            "inline": False,
-                        }
-                    )
             if operation is not None:
                 result = operation.result
                 result_counts = result.get("counts") if isinstance(result, dict) else None
-                value = operation.status
+                value = self._status_label(operation.status)
                 if isinstance(result_counts, dict):
                     value += (
                         f"\n{result_counts.get('succeeded', 0)} succeeded · "
@@ -779,9 +851,12 @@ class DiscordProjectionRunner:
                     }
                 )
             conflicts = preview.get("conflicts")
-            if isinstance(conflicts, list):
+            if isinstance(conflicts, list) and (
+                bool(conflicts)
+                or (approval is not None and approval.status == ApprovalStatus.PENDING.value)
+            ):
                 conflict_text = (
-                    "Clear — no exact overlaps in the fresh snapshot"
+                    "None found"
                     if not conflicts
                     else "\n".join(
                         f"{item.get('summary') or 'Untitled'} · {item.get('start_at')}"
@@ -803,7 +878,6 @@ class DiscordProjectionRunner:
                         "name": "Before",
                         "value": (
                             f"{before.get('summary') or 'Untitled'}\n"
-                            f"ETag: {before.get('provider_etag') or 'none'}\n"
                             f"Reminders: {self._reminder_text(before.get('provider_reminders'))}"
                         ),
                         "inline": False,
@@ -830,28 +904,10 @@ class DiscordProjectionRunner:
                         "inline": False,
                     }
                 )
-            target = preview.get("target", {})
-            if isinstance(target, dict) and target.get("calendar_id"):
-                fields.append(
-                    {
-                        "name": "Calendar",
-                        "value": str(target["calendar_id"]),
-                        "inline": False,
-                    }
-                )
-            record = preview.get("record", {})
-            if isinstance(record, dict) and record.get("version") is not None:
-                fields.append(
-                    {
-                        "name": "Record version",
-                        "value": str(record["version"]),
-                        "inline": True,
-                    }
-                )
             fields.append(
                 {
-                    "name": "Action",
-                    "value": revision.action_type,
+                    "name": "Effect",
+                    "value": self._action_label(revision.action_type),
                     "inline": True,
                 }
             )
@@ -879,12 +935,11 @@ class DiscordProjectionRunner:
                     fields = [
                         *base_fields,
                         {
-                            "name": "Immutable schedule review",
+                            "name": "Schedule review",
                             "value": (
-                                f"Page {page} of {page_count} · items "
+                                f"Page {page} of {page_count} · changes "
                                 f"{start + 1}-{start + len(page_items)} of "
-                                f"{revision.preview.get('item_count')}\n"
-                                f"Manifest {str(revision.preview.get('manifest_sha256'))[:16]}"
+                                f"{revision.preview.get('item_count')}"
                             ),
                             "inline": False,
                         },
@@ -898,7 +953,7 @@ class DiscordProjectionRunner:
                         {
                             "name": "Review complete",
                             "value": (
-                                f"All {revision.preview.get('item_count')} immutable items "
+                                f"All {revision.preview.get('item_count')} calendar changes "
                                 f"reviewed across {page_count} page"
                                 f"{'s' if page_count != 1 else ''}. "
                                 "Approve or reject the bound schedule below."
@@ -966,8 +1021,7 @@ class DiscordProjectionRunner:
                                 "name": f"{index}. {label or item_key}",
                                 "value": (
                                     f"{failure.get('status', 'failed')} · "
-                                    f"{failure.get('error_code') or 'unknown_error'}\n"
-                                    f"{item_key}"
+                                    f"{failure.get('error_code') or 'unknown_error'}"
                                 ),
                                 "inline": False,
                             }
@@ -1194,7 +1248,7 @@ class DiscordProjectionRunner:
             fields.append(
                 {
                     "name": "Approval expires",
-                    "value": _aware(approval.expires_at).astimezone(UTC).isoformat(),
+                    "value": self._timestamp_label(approval.expires_at),
                     "inline": False,
                 }
             )
@@ -1321,18 +1375,43 @@ class DiscordProjectionRunner:
             }
             for field in fields[:25]
         ]
+        display_title = queue_item.title
+        if revision is not None and calendar_action:
+            subject: str | None = None
+            event = revision.preview.get("event")
+            if isinstance(event, dict) and event.get("title"):
+                subject = str(event["title"])
+            course = revision.preview.get("course")
+            if subject is None and isinstance(course, dict):
+                subject = " · ".join(
+                    str(value)
+                    for value in (course.get("course_code"), course.get("section"))
+                    if value
+                )
+            term = revision.preview.get("term")
+            if subject is None and isinstance(term, dict) and term.get("term_name"):
+                subject = str(term["term_name"])
+            display_title = self._action_label(revision.action_type)
+            if subject:
+                display_title = f"{display_title} · {subject}"
+        description = queue_item.summary
+        if approval is not None and approval.status == ApprovalStatus.PENDING.value:
+            description = (
+                "Review this Calendar change. Nothing is written until you approve."
+            )
+        elif action is not None and action.status == "rejected":
+            description = "Rejected. No Calendar change was made."
+        elif operation is not None and operation.status == "succeeded":
+            description = "Completed successfully on your configured Docket calendar."
+        elif operation is not None and operation.status in {
+            "failed",
+            "partial_failed",
+            "reconciliation_required",
+        }:
+            description = "The Calendar operation needs attention. Review the result below."
         embed = {
-            "title": self._bounded(queue_item.title, 256),
-            "description": self._bounded(
-                (
-                    f"{queue_item.summary}\n\n"
-                    "Review the immutable proposal below. No provider write occurs "
-                    "until approval."
-                    if approval is not None and approval.status == ApprovalStatus.PENDING.value
-                    else queue_item.summary
-                ),
-                4096,
-            ),
+            "title": self._bounded(display_title, 256),
+            "description": self._bounded(description, 4096),
             "fields": fields,
             "color": (
                 0xC0392B
@@ -1346,10 +1425,11 @@ class DiscordProjectionRunner:
             ),
             "footer": self._bounded(
                 (
-                    f"revision {revision.revision} · {str(revision.id)[:8]} · "
-                    f"expires {_aware(approval.expires_at).astimezone(UTC).isoformat()}"
-                    if revision is not None and approval is not None
-                    else f"queue {str(queue_item.id)[:8]}"
+                    f"Docket · Revision {revision.revision}"
+                    if revision is not None
+                    and approval is not None
+                    and approval.status == ApprovalStatus.PENDING.value
+                    else "Docket"
                 ),
                 512,
             ),
@@ -1733,6 +1813,71 @@ class DiscordProjectionRunner:
             event.next_attempt_at = None
             event.last_error_code = None
 
+    def _system_log_request(self, event_id: uuid.UUID, lease_token: uuid.UUID) -> dict[str, Any]:
+        with self.session_factory() as session:
+            event = session.get(OutboxEvent, event_id)
+            if event is None or event.lease_token != lease_token:
+                raise DiscordProjectionError("delivery_lease_lost", "Outbox lease was lost")
+            severity = str(event.payload.get("severity", "info"))
+            if severity not in {"info", "notice", "success", "warning", "error"}:
+                raise DiscordProjectionError(
+                    "invalid_system_log", "System log severity is invalid"
+                )
+            status = self._bounded(str(event.payload.get("status", "unknown")), 64)
+            subsystem = self._bounded(str(event.payload.get("subsystem", "Docket")), 64)
+            render = {
+                "title": self._bounded(str(event.payload.get("title", "Docket update")), 256),
+                "summary": self._bounded(str(event.payload.get("summary", "")), 2000),
+                "status": status,
+                "severity": severity,
+                "subsystem": subsystem,
+                "occurred_at": str(event.payload.get("occurred_at", event.created_at.isoformat())),
+            }
+            return {
+                "request_id": str(event.id),
+                "log_id": str(event.aggregate_id),
+                "guild_id": self.settings.discord_guild_id,
+                "channel_id": self.settings.system_channel_id,
+                "render": render,
+                "render_sha256": sha256_json(render),
+            }
+
+    def _accept_system_log_ack(
+        self,
+        event_id: uuid.UUID,
+        lease_token: uuid.UUID,
+        request: dict[str, Any],
+        ack: dict[str, Any],
+    ) -> None:
+        exact = all(
+            ack.get(field) == request[field]
+            for field in (
+                "request_id",
+                "log_id",
+                "guild_id",
+                "channel_id",
+                "render_sha256",
+            )
+        )
+        if not exact or not str(ack.get("message_id", "")).isdigit():
+            raise DiscordProjectionError(
+                "invalid_discord_ack", "System log acknowledgement did not echo its binding"
+            )
+        with self.session_factory.begin() as session:
+            event = session.get(OutboxEvent, event_id)
+            if (
+                event is None
+                or event.status != OutboxStatus.DELIVERING.value
+                or event.lease_token != lease_token
+            ):
+                raise DiscordProjectionError("delivery_lease_lost", "Outbox lease was lost")
+            event.payload = {**event.payload, "discord_message_id": str(ack["message_id"])}
+            event.status = OutboxStatus.DELIVERED.value
+            event.lease_token = None
+            event.leased_until = None
+            event.next_attempt_at = None
+            event.last_error_code = None
+
     def _notification_request(
         self,
         event_id: uuid.UUID,
@@ -2026,6 +2171,10 @@ class DiscordProjectionRunner:
                 alert_request = self._system_alert_request(event_id, lease_token)
                 alert_ack = self.adapter.post_system_alert(alert_request)
                 self._accept_system_alert_ack(event_id, lease_token, alert_request, alert_ack)
+            elif event_type == "discord.system_log.requested":
+                log_request = self._system_log_request(event_id, lease_token)
+                log_ack = self.adapter.post_system_log(log_request)
+                self._accept_system_log_ack(event_id, lease_token, log_request, log_ack)
             elif event_type == "discord.calendar_reminder.requested":
                 daily_thread_id = self._ensure_notification_thread(event_id, lease_token)
                 thread_request = self._thread_request(event_id, lease_token, daily_thread_id)
