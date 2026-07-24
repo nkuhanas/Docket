@@ -103,6 +103,29 @@ relax the exact freshness check. Automated coverage also verifies that Snooze
 replacement revisions retain per-item reminder bindings and that tokens from
 the pre-refresh revision fail closed.
 
+## Schedule Refresh deployment evidence
+
+The correction is recorded in:
+
+* `b358a58 fix(calendar): refresh aggregate schedule proposals`
+* `3237c40 docs(calendar): record schedule refresh recovery`
+
+Verification passed with 191 tests, repository-wide `ruff check`, and strict
+`mypy`. The schedule integration test adds a newly synchronized conflicting
+event before Refresh and confirms that the replacement preview contains it,
+proving full recompilation rather than timestamp-only rebinding. It also proves
+old-token rejection, same-message Summary reset, superseded approval and
+reminder cancellation, and per-item reminder bindings after Refresh and Snooze.
+The pinned plugin test accepts the exact mixed Summary component set.
+
+The committed Docket source was rebuilt and recreated. It became healthy on
+migration `0010`, reported a current complete Calendar cache, zero enabled
+legacy reminder rules, and `external_writes_enabled=false`. Hermes was restarted
+for the mounted skill update, connected to Discord, installed the restart-stable
+interaction listener, listed `docket-discord` `0.7.0` as enabled, and discovered
+all 20 Docket MCP tools. No live proposal or provider mutation was performed
+during deployment verification.
+
 ## Remaining live gate
 
 After deployment, create a fresh harmless schedule proposal with at least one
