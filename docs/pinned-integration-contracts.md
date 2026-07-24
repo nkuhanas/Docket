@@ -78,6 +78,17 @@ Pinned outbound assumptions to revalidate:
   configured queue parent and bot-owned thread, without enabling mentions,
   components, arbitrary content, or arbitrary destinations.
 
+The current Docket deployment runs one Uvicorn process containing both the
+trusted callback routes and the projection worker. A successful component
+callback can therefore signal that process's dedicated projection task
+immediately after commit. This signal is only a latency optimization: the
+leased five-second database poll remains authoritative if it is lost, if the
+worker is restarting, or if a future multi-process deployment commits in a
+different process. Do not remove the poll. A multi-instance deployment that
+requires the same immediate latency must replace the local signal with a
+database-backed notification or equivalent cross-process wake, while retaining
+the outbox lease and polling fallback.
+
 The hook is invoked before ordinary gateway authorization. Therefore the plugin
 must perform its own exact actor/guild/channel check and fail closed for control
 commands. On an authorized ordinary Docket-chat message it returns:

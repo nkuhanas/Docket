@@ -126,18 +126,39 @@ interaction listener, listed `docket-discord` `0.7.0` as enabled, and discovered
 all 20 Docket MCP tools. No live proposal or provider mutation was performed
 during deployment verification.
 
-## Remaining live gate
+## Completed fresh-card UI gate
 
-After deployment, create a fresh harmless schedule proposal with at least one
-recurring series and one exception:
+The operator created the fresh harmless schedule proposal and completed:
 
-1. traverse Summary -> Review -> Decision;
-2. press **Back to review**, then **Continue to decision** again;
-3. press **Refresh** and confirm the same message returns to Summary under a
-   new revision with no Approve/Reject;
-4. verify an old pre-refresh navigation/decision control is stale;
-5. traverse the replacement revision to Decision.
+1. Summary -> Review -> Decision;
+2. Decision -> Back to review -> Decision;
+3. Decision -> Refresh, which superseded revision 1 and reset the same message
+   to Summary under revision 2;
+4. replacement Summary -> Review -> Decision.
 
-Keep external writes disabled for this UI/freshness gate. A separately opted-in
-Calendar mutation smoke may enable writes only after the replacement preview
-and its exact provider effects have been reviewed.
+The seven navigation/refresh commands committed from
+`2026-07-24T21:49:40Z` through `21:50:22Z`. Every navigation command completed
+in 2–3 milliseconds and Refresh's post-sync transaction completed in
+8 milliseconds. The final projection is delivered at Decision with one page
+reviewed, action revision 2, and a pending approval. External writes remained
+disabled and no approval, operation, or provider mutation occurred.
+
+This closes the persistent Summary/Review/Decision, Back, full schedule
+Refresh/reset, and replacement-review UI gate. The remaining Calendar mutation
+gate is separately opted in.
+
+## Button-latency finding
+
+Although the flow was correct, each durable message edit took 1.764–5.185
+seconds after its millisecond transaction, averaging 3.510 seconds. This
+matched the inherited five-second projection polling cadence; authentication,
+state mutation, and token verification were not the bottleneck.
+
+The correction gives Discord projection delivery a dedicated worker task.
+After a trusted approval/local/proposal callback transaction commits, the
+request thread sends a best-effort thread-safe wake and the task drains all due
+rows immediately. Wakes coalesce, never run before commit, and never make the
+request synchronously dependent on Discord. The existing leased five-second
+poll remains the lost-wake/restart fallback. Automated coverage proves
+cross-thread wake, drain/coalescing, polling fallback, commit ordering, no wake
+on rejection, and a harmless wake failure.

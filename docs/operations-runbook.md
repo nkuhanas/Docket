@@ -162,6 +162,7 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Daily thread exists but an aggregate card is absent | Inspect the newest projection outbox row and Hermes response; a repeated HTTP 422 `invalid_control` means the plugin rejected Docket's deterministic component set | Pinned plugin control-kind/token-map drift; reproduce the exact view-specific component set, restart Hermes after the fix, and let the same durable outbox row retry |
 | Schedule card still shows a `Page 1 of N` dropdown or ephemeral item review | Compare the deployed migration/image/plugin with revision `0010` and inspect `discord_projections.view_mode` | Pre-carousel Docket or Hermes code is still active; rebuild/recreate both services and refresh the same durable projection |
 | **Begin review**, **Next**, or **Continue to decision** appears inert | Inspect the plugin callback log, the `proposal_review_navigate` command, projection status/version, and its refresh outbox row; the successful callback intentionally has no ephemeral reply | Listener drift, a stale version-bound token, projection delivery retry, or the active card is still being edited |
+| A button commits but the card changes two to five seconds later | Compare `command_requests.created_at/completed_at` with the matching projection outbox `created_at/updated_at`, then confirm `discord_projection_worker_started` after the deployed restart | Pre-wakeup Docket image, missing post-commit wake registration, a busy/crashed projection task, or delivery falling back to the durable five-second poll |
 | Schedule card is stuck on a review page after a restart or lost acknowledgement | Read `view_mode`, `view_page`, `reviewed_through_page`, and `view_action_revision_id`, then inspect/retry the existing projection refresh outbox row | Durable view state succeeded but the same-message Discord edit was not acknowledged; do not recreate the proposal or card |
 | Approve/Reject appears before every schedule page was traversed | Stop before using the buttons and compare `reviewed_through_page` with the immutable page count | Projection renderer/state invariant regression; schedule button approvals must also fail closed unless the current delivered view is `decision` |
 | Schedule approval reports `target_version_changed` after review | Compare the revision's `calendar_snapshot.last_success_at` with the current sync state, then use the card's **Refresh** control and review the replacement revision from Summary | Calendar sync advanced after compilation; do not relax the exact freshness check, reuse the old approval, or recreate the schedule |
@@ -413,6 +414,16 @@ layers committed: a delivered `outbox_events` row, an active
 `discord_daily_threads` row with the actual Discord thread ID, and a delivered
 `discord_projections` row with the actual bot-authored message ID. A pending
 approval additionally points `control_projection_id` at that delivered card.
+
+Authenticated button state is committed before projection delivery. After a
+successful approval, local action, or proposal-control transaction exits its
+commit scope, the endpoint sends a process-local wake to the dedicated
+projection task. That task drains all currently due Discord outbox rows.
+Multiple wakes may coalesce. The wake is advisory: a failure is logged as
+`discord_projection_wake_failed`, does not change the accepted response, and
+the configured `DOCKET_DISCORD_PROJECTION_POLL_SECONDS` loop remains the
+restart/lost-signal fallback. Do not replace this with a synchronous Discord
+edit inside the request transaction.
 
 Inspect bounded state without printing card bodies or tokens:
 
@@ -833,6 +844,8 @@ For Milestone 3.6 Calendar control and aggregate schedules, also run:
 
 ```bash
 uv run pytest \
+  tests/unit/test_worker_runtime.py \
+  tests/unit/test_internal_projection_wakeup.py \
   tests/integration/test_standalone_calendar_operations.py \
   tests/integration/test_term_schedules.py \
   tests/integration/test_mcp_contract.py \
