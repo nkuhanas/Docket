@@ -1,4 +1,6 @@
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
+from starlette.requests import Request
 
 from docket.config import get_settings
 from docket.database import get_session_factory, session_scope
@@ -12,6 +14,8 @@ from docket.services.calendar_sync import CalendarSyncService
 from docket.services.local_actions import LocalActionService
 from docket.services.proposal_controls import ProposalControlService
 
+logger = structlog.get_logger(__name__)
+
 router = APIRouter(
     prefix="/internal/v1/discord",
     tags=["trusted-internal"],
@@ -19,8 +23,19 @@ router = APIRouter(
 )
 
 
+def _wake_projection_worker(request: Request) -> None:
+    wake = getattr(request.app.state, "wake_discord_projection", None)
+    if not callable(wake):
+        return
+    try:
+        wake()
+    except Exception:
+        # The committed outbox remains authoritative; polling is the fallback.
+        logger.exception("discord_projection_wake_failed")
+
+
 @router.post("/approval-responses")
-def approval_response(payload: ApprovalResponse) -> dict[str, object]:
+def approval_response(request: Request, payload: ApprovalResponse) -> dict[str, object]:
     failure: DocketError | None = None
     result: dict[str, object] | None = None
     with session_scope() as session:
@@ -36,11 +51,12 @@ def approval_response(payload: ApprovalResponse) -> dict[str, object]:
         )
         raise HTTPException(status_code=error_status, detail=failure.as_dict()["error"])
     assert result is not None
+    _wake_projection_worker(request)
     return result
 
 
 @router.post("/local-action-responses")
-def local_action_response(payload: LocalActionResponse) -> dict[str, object]:
+def local_action_response(request: Request, payload: LocalActionResponse) -> dict[str, object]:
     failure: DocketError | None = None
     result: dict[str, object] | None = None
     try:
@@ -53,9 +69,7 @@ def local_action_response(payload: LocalActionResponse) -> dict[str, object]:
                     message="Calendar reads are disabled, so this proposal cannot refresh.",
                 )
             with session_scope() as session:
-                account_id, calendar_id = ProposalControlService(
-                    session
-                ).prepare_refresh(payload)
+                account_id, calendar_id = ProposalControlService(session).prepare_refresh(payload)
             refresh_started_at = utc_now()
             CalendarSyncService(
                 get_session_factory(),
@@ -81,4 +95,5 @@ def local_action_response(payload: LocalActionResponse) -> dict[str, object]:
         )
         raise HTTPException(status_code=error_status, detail=failure.as_dict()["error"])
     assert result is not None
+    _wake_projection_worker(request)
     return result

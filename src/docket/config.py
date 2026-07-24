@@ -42,7 +42,7 @@ class Settings(BaseSettings):
         default="http://hermes:8787", alias="DOCKET_DISCORD_PROJECTION_URL"
     )
     discord_projection_poll_seconds: float = Field(
-        default=5.0, alias="DOCKET_DISCORD_PROJECTION_POLL_SECONDS"
+        default=5.0, gt=0, alias="DOCKET_DISCORD_PROJECTION_POLL_SECONDS"
     )
     discord_projection_lease_seconds: int = Field(
         default=30, alias="DOCKET_DISCORD_PROJECTION_LEASE_SECONDS"

@@ -47,25 +47,90 @@ class WorkerRuntime:
         self.last_heartbeat: datetime | None = None
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
+        self._projection_task: asyncio.Task[None] | None = None
+        self._projection_wake: asyncio.Event | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     async def start(self) -> None:
         if self._task is not None:
             return
         self._stop.clear()
+        self._loop = asyncio.get_running_loop()
+        self._projection_wake = asyncio.Event()
         self._task = asyncio.create_task(self._run(), name="docket-worker-heartbeat")
+        if self.discord_projection_runner is not None:
+            self._projection_task = asyncio.create_task(
+                self._run_discord_projection(),
+                name="docket-discord-projection",
+            )
 
     async def stop(self) -> None:
         self._stop.set()
+        if self._projection_wake is not None:
+            self._projection_wake.set()
         if self._task is not None:
             await self._task
             self._task = None
+        if self._projection_task is not None:
+            await self._projection_task
+            self._projection_task = None
+        self._projection_wake = None
+        self._loop = None
+
+    def wake_discord_projection(self) -> bool:
+        """Wake the local projection loop after a transaction commits an outbox row."""
+        loop = self._loop
+        wake = self._projection_wake
+        if (
+            self.discord_projection_runner is None
+            or loop is None
+            or wake is None
+            or loop.is_closed()
+            or self._stop.is_set()
+        ):
+            return False
+        try:
+            loop.call_soon_threadsafe(wake.set)
+        except RuntimeError:
+            return False
+        return True
+
+    async def _run_discord_projection(self) -> None:
+        runner = self.discord_projection_runner
+        wake = self._projection_wake
+        assert runner is not None
+        assert wake is not None
+        logger.info(
+            "discord_projection_worker_started",
+            poll_seconds=self.discord_projection_poll_seconds,
+        )
+        while not self._stop.is_set():
+            # Clear before draining. A commit that arrives while delivery is in
+            # progress sets the event again and forces another immediate drain.
+            wake.clear()
+            try:
+                while not self._stop.is_set() and await asyncio.to_thread(runner.run_due_once):
+                    pass
+            except Exception:
+                logger.exception("discord_projection_worker_iteration_failed")
+            if self._stop.is_set():
+                break
+            if wake.is_set():
+                continue
+            try:
+                await asyncio.wait_for(
+                    wake.wait(),
+                    timeout=self.discord_projection_poll_seconds,
+                )
+            except TimeoutError:
+                continue
+        logger.info("discord_projection_worker_stopped")
 
     async def _run(self) -> None:
         logger.info("worker_started", mode="calendar-operations")
         next_operation = 0.0
         next_reconciliation = 0.0
         next_recovery = 0.0
-        next_discord_projection = 0.0
         next_rollover = 0.0
         next_calendar_sync = 0.0
         next_reminder_dispatch = 0.0
@@ -88,9 +153,6 @@ class WorkerRuntime:
                     if self.calendar_sync_service is not None:
                         await asyncio.to_thread(self.calendar_sync_service.recover_expired_leases)
                     next_recovery = now + self.stale_lease_poll_seconds
-                if self.discord_projection_runner is not None and now >= next_discord_projection:
-                    await asyncio.to_thread(self.discord_projection_runner.run_due_once)
-                    next_discord_projection = now + self.discord_projection_poll_seconds
                 if self.rollover_service is not None and now >= next_rollover:
                     await asyncio.to_thread(self.rollover_service.expire_due_approvals)
                     await asyncio.to_thread(self.rollover_service.run_due_once)
@@ -112,7 +174,15 @@ class WorkerRuntime:
         logger.info("worker_stopped")
 
     def is_healthy(self) -> bool:
-        if self.last_heartbeat is None:
+        if (
+            self.last_heartbeat is None
+            or self._task is None
+            or self._task.done()
+            or (
+                self.discord_projection_runner is not None
+                and (self._projection_task is None or self._projection_task.done())
+            )
+        ):
             return False
         age = datetime.now(UTC) - self.last_heartbeat
         return age.total_seconds() <= max(5.0, self.heartbeat_seconds * 3)

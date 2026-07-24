@@ -103,6 +103,7 @@ app = FastAPI(
     redoc_url=None,
     lifespan=lifespan,
 )
+app.state.wake_discord_projection = worker.wake_discord_projection
 app.include_router(internal_router)
 app.mount("/mcp", mcp.streamable_http_app())
 
