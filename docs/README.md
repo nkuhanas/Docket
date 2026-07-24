@@ -17,6 +17,9 @@ Start here when operating or changing the deployed stack:
   synchronization, cache freshness, reminder delivery, and the controlled live gate.
 * [Milestone 3.6 verification](milestone-3.6-verification.md) — full Calendar
   control, aggregate term schedules, durable batches, and the pending live gate.
+* [Production Calendar write-gate verification](calendar-write-gate-verification.md)
+  — fail-closed production writes, paused execution, stale rejection, and the
+  deployed pending-card state.
 
 These notes describe the current pinned stack. They are not a substitute for
 the specification or migrations. When behavior and documentation disagree,
