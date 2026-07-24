@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from docket.config import get_settings
 from docket.domain.canonical import canonical_record_key, sha256_json
+from docket.domain.enums import Environment
 from docket.domain.errors import DocketError
 from docket.internal_api.schemas import ApprovalResponse
 from docket.models import (
@@ -244,6 +245,59 @@ def test_forged_context_and_changed_target_cannot_consume_approval(session: Sess
             approval_response(proposal.short_code, interaction_id="interaction-stale")
         )
     assert stale.value.code == "target_version_changed"
+
+
+def test_rejection_closes_current_approval_after_target_changes(session: Session) -> None:
+    course, account = action_fixture(session)
+    proposal = ActionService(session).propose(proposal_request(course, account))
+    course.version += 1
+    response = approval_response(proposal.short_code, interaction_id="interaction-reject-stale")
+    response.decision = "reject"
+
+    result = ApprovalService(session).respond(response)
+    session.flush()
+
+    approval = session.get(Approval, proposal.approval_id)
+    action = session.get(Action, proposal.action_id)
+    queue_item = session.get(QueueItem, proposal.queue_item_id)
+    assert result["approval_status"] == "rejected"
+    assert approval is not None and approval.status == "rejected"
+    assert action is not None and action.status == "rejected"
+    assert queue_item is not None and queue_item.status == "completed"
+    assert session.scalar(select(Operation)) is None
+
+
+def test_production_write_gate_leaves_approval_pending(
+    session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    course, account = action_fixture(session)
+    proposal = ActionService(session).propose(proposal_request(course, account))
+    production_settings = get_settings().model_copy(
+        update={
+            "environment": Environment.PRODUCTION,
+            "external_writes_enabled": False,
+        }
+    )
+    monkeypatch.setattr(
+        "docket.services.approvals.get_settings", lambda: production_settings
+    )
+
+    with pytest.raises(DocketError) as blocked:
+        ApprovalService(session).respond(
+            approval_response(proposal.short_code, interaction_id="interaction-writes-disabled")
+        )
+    session.flush()
+
+    approval = session.get(Approval, proposal.approval_id)
+    action = session.get(Action, proposal.action_id)
+    queue_item = session.get(QueueItem, proposal.queue_item_id)
+    assert blocked.value.code == "external_writes_disabled"
+    assert approval is not None and approval.status == "pending"
+    assert approval.discord_interaction_id is None
+    assert action is not None and action.status == "approval_pending"
+    assert queue_item is not None and queue_item.status == "awaiting_approval"
+    assert session.scalar(select(Operation)) is None
 
 
 def test_projection_retry_restart_and_exact_button_context(session_factory) -> None:

@@ -1136,6 +1136,47 @@ def test_schedule_approval_rejects_changed_calendar_snapshot(
 
 
 @pytest.mark.integration
+def test_schedule_rejection_allows_changed_calendar_snapshot(
+    session_factory: sessionmaker[Session],
+) -> None:
+    proposal, account_id = _store_and_propose(
+        session_factory,
+        store_message_id="469999999999999999",
+        proposal_message_id="470000000000000000",
+    )
+    settings = get_settings()
+    with session_factory.begin() as session:
+        state = session.scalar(
+            select(CalendarSyncState).where(
+                CalendarSyncState.account_id == account_id,
+                CalendarSyncState.calendar_id == settings.google_calendar_id,
+            )
+        )
+        assert state is not None and state.last_success_at is not None
+        state.last_success_at = state.last_success_at + timedelta(seconds=1)
+    with session_factory.begin() as session:
+        result = ApprovalService(session).respond(
+            ApprovalResponse(
+                request_id=uuid.uuid4(),
+                discord_interaction_id="schedule-rejection-stale-calendar",
+                approval_id=None,
+                approval_token=None,
+                short_code=proposal.short_code,
+                decision="reject",
+                discord_user_id=settings.operator_discord_user_id,
+                guild_id=settings.discord_guild_id,
+                channel_id=settings.queue_channel_id,
+                message_id="470000000000000001",
+                responded_at=datetime.now(UTC),
+            )
+        )
+        assert result["approval_status"] == "rejected"
+        assert result["operation_id"] is None
+    with session_factory() as session:
+        assert session.scalar(select(Operation)) is None
+
+
+@pytest.mark.integration
 def test_fifty_item_schedule_survives_restart_and_partial_failure_without_replay(
     session_factory: sessionmaker[Session],
 ) -> None:

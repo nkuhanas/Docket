@@ -166,6 +166,8 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Schedule card is stuck on a review page after a restart or lost acknowledgement | Read `view_mode`, `view_page`, `reviewed_through_page`, and `view_action_revision_id`, then inspect/retry the existing projection refresh outbox row | Durable view state succeeded but the same-message Discord edit was not acknowledged; do not recreate the proposal or card |
 | Approve/Reject appears before every schedule page was traversed | Stop before using the buttons and compare `reviewed_through_page` with the immutable page count | Projection renderer/state invariant regression; schedule button approvals must also fail closed unless the current delivered view is `decision` |
 | Schedule approval reports `target_version_changed` after review | Compare the revision's `calendar_snapshot.last_success_at` with the current sync state, then use the card's **Refresh** control and review the replacement revision from Summary | Calendar sync advanced after compilation; do not relax the exact freshness check, reuse the old approval, or recreate the schedule |
+| Approve reports `external_writes_disabled` | Check `/health/ready` for `calendar_write_mode=disabled`; leave the approval pending until the operator deliberately enables writes and recreates Docket | The production write gate is closed; Docket must not create an operation, consume the approval, or substitute a fake provider |
+| Reject reports Calendar target staleness | Treat this as a regression and inspect the approval validation split | Rejection must validate actor, projection, current immutable revision, hashes, and queue identity, but it must not require mutable Calendar/record/account freshness because it cannot create an external operation |
 | Schedule **Refresh** appears inert or leaves the old revision/view | Inspect the fresh-sync command, `proposal_refresh` command, replacement action revision/approval, cancelled/recreated `calendar_reminder_plans`, and projection refresh outbox row | Fresh sync did not complete after the click, immutable schedule bindings changed, plugin control drift, or the durable same-message edit is retrying |
 | Approval button appears inert | Inspect the stored projection/message binding and interaction listener before using any break-glass code | Stale/copied card, wrong parent or actor, listener unavailable, token expired, or action already resolved |
 | No daily thread/card appears | Inspect projection outbox status, then the private plugin listener and Hermes logs | Hermes not recreated after plugin/env change, private listener unavailable, Discord permission/API failure, or retry backoff |
@@ -722,9 +724,18 @@ name.
 
 `DOCKET_CALENDAR_READS_ENABLED` permits only bounded, paginated snapshots of the
 configured Calendar. `DOCKET_EXTERNAL_WRITES_ENABLED` independently selects the
-real mutation/reconciliation adapter. With writes disabled, approval and
-operation smokes use the stateful in-process fake provider even if real reads
-are enabled; a Calendar lookup can therefore never drain a pending write.
+real mutation/reconciliation adapter. With writes disabled in production,
+Approve returns `external_writes_disabled` while leaving the approval pending,
+the worker does not claim pending or reconciliation operations, and the write
+provider fails closed if invoked unexpectedly. Production never substitutes
+fake external IDs or records fake success. Reject remains available after
+mutable target state advances because it creates no operation.
+
+Stateful fake write execution remains available only in smoke, development, and
+test environments. Real Calendar reads may be enabled alongside those fakes for
+bounded integration tests, but that mixed mode is not a production behavior.
+Changing the production write gate requires container recreation because the
+provider and operation runner mode are selected at process startup.
 
 When either gate is enabled, Docket loads the authorized-user file and refreshes
 an access token in memory. The read-only credential mount is sufficient because

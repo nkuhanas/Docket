@@ -69,7 +69,11 @@ discord_projection_runner = (
 )
 worker = WorkerRuntime(
     settings.worker_heartbeat_seconds,
-    OperationRunner(get_session_factory(), calendar_write_provider),
+    OperationRunner(
+        get_session_factory(),
+        calendar_write_provider,
+        execution_enabled=settings.calendar_write_mode() != "disabled",
+    ),
     operation_poll_seconds=settings.operation_poll_seconds,
     reconciliation_poll_seconds=settings.reconciliation_poll_seconds,
     stale_lease_poll_seconds=settings.stale_lease_poll_seconds,
@@ -200,6 +204,7 @@ def health_ready(response: Response) -> dict[str, Any]:
         "google_oauth": google_oauth,
         "calendar_reads_enabled": settings.calendar_reads_enabled,
         "external_writes_enabled": settings.external_writes_enabled,
+        "calendar_write_mode": settings.calendar_write_mode(),
         "enabled_legacy_reminder_rules": enabled_legacy_rule_count,
         "legacy_reminder_gate": ("blocked" if legacy_rule_gate_blocked else "clear"),
         "calendar_sync": sync_detail,
@@ -208,8 +213,11 @@ def health_ready(response: Response) -> dict[str, Any]:
 
 @app.get("/health/smoke-provider")
 def health_smoke_provider() -> dict[str, Any]:
-    if settings.external_writes_enabled:
-        return {"status": "disabled", "reason": "fake provider unavailable with external writes"}
+    if settings.calendar_write_mode() != "fake":
+        return {
+            "status": "disabled",
+            "reason": "fake provider unavailable in the current Calendar write mode",
+        }
     return {"status": "ok", **FakeGoogleProvider().smoke_status()}
 
 

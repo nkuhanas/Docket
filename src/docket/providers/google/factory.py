@@ -4,13 +4,17 @@ from docket.providers.google.calendar import (
     CalendarReadProvider,
     GoogleCalendarProvider,
 )
+from docket.providers.google.disabled_calendar import DisabledCalendarProvider
 from docket.providers.google.fake_calendar import FakeCalendarProvider
 
 
 def build_calendar_write_provider(settings: Settings) -> CalendarProvider:
-    if settings.external_writes_enabled:
+    mode = settings.calendar_write_mode()
+    if mode == "google":
         return GoogleCalendarProvider(str(settings.google_oauth_token_file))
-    return FakeCalendarProvider()
+    if mode == "fake":
+        return FakeCalendarProvider()
+    return DisabledCalendarProvider()
 
 
 def build_calendar_read_provider(settings: Settings) -> CalendarReadProvider:

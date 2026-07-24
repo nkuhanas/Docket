@@ -188,7 +188,7 @@ class ApprovalService:
             raise DocketError(code="invalid_approval_state", message="Queue item is missing.")
         return revision, action, queue_item
 
-    def _validate_binding(
+    def _validate_invariant_binding(
         self,
         approval: Approval,
         revision: ActionRevision,
@@ -216,6 +216,35 @@ class ApprovalService:
                 code="approval_binding_mismatch",
                 message="The immutable action hashes no longer match their stored content.",
             )
+        queue_target = revision.target_versions.get("queue_item", {})
+        if str(queue_item.id) != queue_target.get("id"):
+            raise DocketError(
+                code="approval_binding_mismatch",
+                message="The approval is not bound to this queue item.",
+            )
+        projection = self.session.scalar(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_type == "queue_item",
+                OutboxEvent.aggregate_id == queue_item.id,
+                OutboxEvent.event_type.in_(
+                    (
+                        "discord.projection.requested",
+                        "discord.projection.refresh_requested",
+                    )
+                ),
+            )
+        )
+        if projection is None:
+            raise DocketError(
+                code="approval_projection_missing",
+                message="The approval does not have a matching projection request.",
+            )
+
+    def _validate_current_targets(
+        self,
+        revision: ActionRevision,
+        queue_item: QueueItem,
+    ) -> None:
         account = self.session.get(Account, revision.account_id)
         if (
             account is None
@@ -339,29 +368,10 @@ class ApprovalService:
                         code="target_version_changed",
                         message="A bound course changed after proposal.",
                     )
-        if str(queue_item.id) != queue_target.get("id") or queue_item.version != queue_target.get(
-            "version"
-        ):
+        if queue_item.version != queue_target.get("version"):
             raise DocketError(
                 code="target_version_changed",
                 message="The queue item changed after the approval preview was created.",
-            )
-        projection = self.session.scalar(
-            select(OutboxEvent).where(
-                OutboxEvent.aggregate_type == "queue_item",
-                OutboxEvent.aggregate_id == queue_item.id,
-                OutboxEvent.event_type.in_(
-                    (
-                        "discord.projection.requested",
-                        "discord.projection.refresh_requested",
-                    )
-                ),
-            )
-        )
-        if projection is None:
-            raise DocketError(
-                code="approval_projection_missing",
-                message="The approval does not have a matching projection request.",
             )
 
     @staticmethod
@@ -460,7 +470,18 @@ class ApprovalService:
                 )
             )
             raise DocketError(code="approval_expired", message="The approval has expired.")
-        self._validate_binding(approval, revision, action, queue_item)
+        self._validate_invariant_binding(approval, revision, action, queue_item)
+        if request.decision == "approve":
+            settings = get_settings()
+            if settings.calendar_write_mode() == "disabled":
+                raise DocketError(
+                    code="external_writes_disabled",
+                    message=(
+                        "External Calendar writes are disabled. "
+                        "The approval remains pending."
+                    ),
+                )
+            self._validate_current_targets(revision, queue_item)
         approval.responded_at = request.responded_at
         approval.response_user_id = request.discord_user_id
         approval.response_guild_id = request.guild_id

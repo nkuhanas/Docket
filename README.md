@@ -33,9 +33,11 @@ The checked-in smoke configuration is intentionally fake:
 * fake Discord and service tokens
 * the Hermes service is behind the optional `hermes` Compose profile
 
-With both gates false, Calendar reads and writes use stateful fake adapters and
-cannot contact Google. The Hermes profile remains opt-in, so the basic smoke
-also cannot contact Discord.
+In smoke, development, and test environments, both false gates select stateful
+fake adapters that cannot contact Google. In production, a false external-write
+gate pauses operation claiming and selects a fail-closed provider; production
+never records fake Calendar success. The Hermes profile remains opt-in, so the
+basic smoke also cannot contact Discord.
 
 ## Quick smoke
 

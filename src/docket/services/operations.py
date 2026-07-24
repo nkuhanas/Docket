@@ -97,12 +97,14 @@ class OperationRunner:
         lease_seconds: int = 60,
         max_attempts: int = 5,
         consistency_window_seconds: int = 30,
+        execution_enabled: bool = True,
     ) -> None:
         self.session_factory = session_factory
         self.provider = provider
         self.lease_seconds = lease_seconds
         self.max_attempts = max_attempts
         self.consistency_window_seconds = consistency_window_seconds
+        self.execution_enabled = execution_enabled
 
     @staticmethod
     def _bound_entities(
@@ -234,12 +236,16 @@ class OperationRunner:
         )
 
     def claim_due(self) -> ClaimedOperation | None:
+        if not self.execution_enabled:
+            return None
         with self.session_factory.begin() as session:
             return self._claim_batch_item(session, reconcile=False) or self._claim(
                 session, reconcile=False
             )
 
     def claim_reconciliation(self) -> ClaimedOperation | None:
+        if not self.execution_enabled:
+            return None
         with self.session_factory.begin() as session:
             return self._claim_batch_item(session, reconcile=True) or self._claim(
                 session, reconcile=True

@@ -4,6 +4,7 @@ import httpx
 import pytest
 
 from docket.config import get_settings
+from docket.domain.enums import Environment
 from docket.providers.google.calendar import (
     CalendarEventRequest,
     CalendarProviderError,
@@ -12,6 +13,7 @@ from docket.providers.google.calendar import (
     event_matches_request,
     normalize_event_body,
 )
+from docket.providers.google.disabled_calendar import DisabledCalendarProvider
 from docket.providers.google.factory import (
     build_calendar_read_provider,
     build_calendar_write_provider,
@@ -128,6 +130,24 @@ def test_real_calendar_reads_do_not_enable_provider_writes() -> None:
 
     assert isinstance(build_calendar_read_provider(settings), GoogleCalendarProvider)
     assert isinstance(build_calendar_write_provider(settings), FakeCalendarProvider)
+
+
+def test_production_without_write_permission_uses_fail_closed_provider() -> None:
+    settings = get_settings().model_copy(
+        update={
+            "environment": Environment.PRODUCTION,
+            "calendar_reads_enabled": True,
+            "external_writes_enabled": False,
+        }
+    )
+
+    provider = build_calendar_write_provider(settings)
+
+    assert settings.calendar_write_mode() == "disabled"
+    assert isinstance(provider, DisabledCalendarProvider)
+    with pytest.raises(CalendarProviderError) as rejected:
+        provider.create_event(event_request())
+    assert rejected.value.code == "external_writes_disabled"
 
 
 def test_standalone_event_compiles_recurrence_exceptions_and_popup_plan() -> None:

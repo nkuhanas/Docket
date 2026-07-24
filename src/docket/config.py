@@ -166,6 +166,13 @@ class Settings(BaseSettings):
     def google_oauth_status(self) -> GoogleOAuthStatus:
         return authorized_user_file_status(self.google_oauth_token_file)
 
+    def calendar_write_mode(self) -> Literal["google", "fake", "disabled"]:
+        if self.external_writes_enabled:
+            return "google"
+        if self.environment is Environment.PRODUCTION:
+            return "disabled"
+        return "fake"
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

@@ -177,6 +177,25 @@ def test_calendar_creation_executes_once_and_links_result(session_factory) -> No
 
 
 @pytest.mark.integration
+def test_disabled_runner_does_not_claim_pending_operation(session_factory) -> None:
+    operation_id = seed_create(session_factory)
+    provider = FakeCalendarProvider()
+    runner = OperationRunner(session_factory, provider, execution_enabled=False)
+
+    assert runner.run_due_once() is False
+    assert runner.reconcile_once() is False
+
+    with session_factory() as session:
+        operation = session.get(Operation, operation_id)
+        assert operation is not None
+        assert operation.status == "pending"
+        assert operation.attempt_count == 0
+        assert session.scalar(select(ExecutionAttempt)) is None
+        assert session.scalar(select(CalendarLink)) is None
+    assert provider.events == {}
+
+
+@pytest.mark.integration
 def test_unknown_create_outcome_reconciles_without_duplicate(session_factory) -> None:
     operation_id = seed_create(session_factory)
     provider = FakeCalendarProvider()
