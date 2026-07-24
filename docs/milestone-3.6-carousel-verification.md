@@ -1,6 +1,6 @@
 # Milestone 3.6 persistent review-carousel verification
 
-Date: 2026-07-23 (America/Los_Angeles)
+Date: 2026-07-24 (America/Los_Angeles)
 
 This closure replaces the schedule card's action-menu/ephemeral review with one
 durable Discord message:
@@ -65,19 +65,56 @@ projection `20bfb771-26a9-4238-8736-fa154f0915e9`. Docket still had zero
 deployed summary surface but does not substitute for the operator callback
 gate below.
 
-## Operator-present gate
+## Operator-present evidence
 
-On that existing card:
+The configured operator used the existing card before it expired:
 
-1. confirm it now shows **Begin review** and no Approve/Reject;
-2. press **Begin review** and confirm the same message displays all three
-   immutable schedule items with **Back to summary** and
-   **Continue to decision**;
-3. press **Continue to decision** and confirm the same message displays
-   Approve, Reject, **Back to review**, and **Snooze until tomorrow**;
-4. press **Back to review** once and confirm the persistent item page returns;
-5. do not approve or reject this pre-existing proposal.
+1. Summary -> schedule review page 1 committed at
+   `2026-07-24T04:28:54Z`, from projection version 3.
+2. Review page 1 -> Decision committed at `2026-07-24T04:29:04Z`, from
+   projection version 4.
 
-After this UI-only gate, create a fresh harmless schedule proposal for the
-separate Calendar-write gate. External writes must remain disabled until that
-fresh proposal and its exact expected provider effects have been reviewed.
+Both commands and `proposal.schedule_review_navigated` audits bind the exact
+configured actor, projection, daily thread, message, action revision, source
+view/page, and target view/page. The same persistent message was edited; no
+ephemeral item response, replacement proposal, approval, operation, or provider
+call was created by traversal.
+
+The operator then closed the view without pressing **Back to review**. The
+approval expired at `2026-07-24T07:05:49Z`, and daily rollover archived the old
+thread and created the next active daily projection. Therefore Summary ->
+Review -> Decision is live-proven, while Decision -> Back remains a required
+fresh-card UI gate. Expiry and rollover correctly prevent the old control from
+being revived.
+
+## Freshness correction discovered during closure
+
+Schedule approvals bind exact `calendar_sync_states.last_success_at`, while the
+Calendar worker may advance that generation during a multi-page review. The
+expired card exposed that an aggregate proposal had no operator recovery path:
+standalone proposals rendered **Refresh**, but schedule Summary/Decision did
+not.
+
+The closure adds schedule **Refresh** to Summary and Decision. It performs a
+new complete Calendar read, recompiles every immutable item/effect/target/
+conflict, creates a replacement revision and approval, recreates reminder plans
+per manifest item, and resets the same persistent card to Summary. It does not
+relax the exact freshness check. Automated coverage also verifies that Snooze
+replacement revisions retain per-item reminder bindings and that tokens from
+the pre-refresh revision fail closed.
+
+## Remaining live gate
+
+After deployment, create a fresh harmless schedule proposal with at least one
+recurring series and one exception:
+
+1. traverse Summary -> Review -> Decision;
+2. press **Back to review**, then **Continue to decision** again;
+3. press **Refresh** and confirm the same message returns to Summary under a
+   new revision with no Approve/Reject;
+4. verify an old pre-refresh navigation/decision control is stale;
+5. traverse the replacement revision to Decision.
+
+Keep external writes disabled for this UI/freshness gate. A separately opted-in
+Calendar mutation smoke may enable writes only after the replacement preview
+and its exact provider effects have been reviewed.

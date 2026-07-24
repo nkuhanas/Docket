@@ -110,6 +110,11 @@ For a complete adopted schedule:
    pages → **Continue to decision**; Approve and Reject appear only on the
    final decision view. Never emit one card per course, reproduce the full
    manifest in chat, or describe the retired review dropdown/ephemeral flow.
+   Summary and Decision also expose **Refresh**. If Calendar freshness changes
+   during review, direct the operator to Refresh that existing card and review
+   its replacement revision from Summary; do not re-store or re-propose the
+   schedule, suggest the old approval, or claim Refresh preserves prior review
+   progress.
 
 The aggregate store is atomic: a canonical conflict means no course, term,
 source provenance, or schedule snapshot from that call was stored. Stop and

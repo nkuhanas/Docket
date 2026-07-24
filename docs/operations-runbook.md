@@ -164,6 +164,8 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | **Begin review**, **Next**, or **Continue to decision** appears inert | Inspect the plugin callback log, the `proposal_review_navigate` command, projection status/version, and its refresh outbox row; the successful callback intentionally has no ephemeral reply | Listener drift, a stale version-bound token, projection delivery retry, or the active card is still being edited |
 | Schedule card is stuck on a review page after a restart or lost acknowledgement | Read `view_mode`, `view_page`, `reviewed_through_page`, and `view_action_revision_id`, then inspect/retry the existing projection refresh outbox row | Durable view state succeeded but the same-message Discord edit was not acknowledged; do not recreate the proposal or card |
 | Approve/Reject appears before every schedule page was traversed | Stop before using the buttons and compare `reviewed_through_page` with the immutable page count | Projection renderer/state invariant regression; schedule button approvals must also fail closed unless the current delivered view is `decision` |
+| Schedule approval reports `target_version_changed` after review | Compare the revision's `calendar_snapshot.last_success_at` with the current sync state, then use the card's **Refresh** control and review the replacement revision from Summary | Calendar sync advanced after compilation; do not relax the exact freshness check, reuse the old approval, or recreate the schedule |
+| Schedule **Refresh** appears inert or leaves the old revision/view | Inspect the fresh-sync command, `proposal_refresh` command, replacement action revision/approval, cancelled/recreated `calendar_reminder_plans`, and projection refresh outbox row | Fresh sync did not complete after the click, immutable schedule bindings changed, plugin control drift, or the durable same-message edit is retrying |
 | Approval button appears inert | Inspect the stored projection/message binding and interaction listener before using any break-glass code | Stale/copied card, wrong parent or actor, listener unavailable, token expired, or action already resolved |
 | No daily thread/card appears | Inspect projection outbox status, then the private plugin listener and Hermes logs | Hermes not recreated after plugin/env change, private listener unavailable, Discord permission/API failure, or retry backoff |
 | No rollover occurs after 07:00 local | Inspect `system:daily_rollover:ISO-DATE`, worker heartbeat, timezone, and rollover hour | Worker unavailable, wrong timezone/hour, or a prior command already owns the date |
@@ -306,6 +308,17 @@ The normal intent-index suffixes are `:0` for the store and `:1` for the
 proposal. Account, profile, search, and get calls are reads and consume no
 index. A course conflict must roll back the entire store: no new record,
 provenance, command, or snapshot from that request may remain.
+
+The aggregate Summary and Decision views expose **Refresh**. Use it when review
+outlives the Calendar generation bound into the proposal. It performs a new
+complete Calendar read, recompiles every immutable schedule item, supersedes
+the approval, and resets the same message to Summary under a new action
+revision. Traverse the replacement review again. Do not retry the old Approve
+button, manually edit freshness state, or weaken the exact
+`last_success_at` approval check. Confirm the replacement revision has one
+planned `calendar_reminder_plans` row for each manifest item and lead, with
+`manifest_item_key` populated; Refresh and Snooze must cancel the superseded
+revision's planned rows and preserve those per-item bindings.
 
 After approval, inspect the parent and item ledger without printing private
 event content:

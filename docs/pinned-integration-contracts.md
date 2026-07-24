@@ -333,6 +333,18 @@ produces a valid-looking card that the pinned plugin rejects, so the
 adversarial plugin contract and one live persistent-navigation/decision smoke
 are mandatory after changes.
 
+Aggregate schedule Summary combines one `review_navigation` **Begin review**
+button with one `proposal_action` **Refresh** button. Decision combines two
+approval buttons, one `review_navigation` **Back to review**, and
+`proposal_action` **Refresh** and **Snooze until tomorrow** buttons. The pinned
+renderer must accept those exact mixed kind/row sets; review pages themselves
+contain navigation only. Schedule Refresh is not the standalone proposal's
+timestamp/target rebind: Docket verifies the immutable schedule snapshot,
+recompiles every item against the newly complete Calendar generation, creates
+a replacement revision/approval and per-item reminder plans, and resets the
+same projection to Summary. Restart Hermes after changing this component
+contract, then exercise both the mixed renderer and a real callback.
+
 ## Google Calendar REST contract
 
 The current adapter uses Calendar API v3 REST endpoints rather than a generated
