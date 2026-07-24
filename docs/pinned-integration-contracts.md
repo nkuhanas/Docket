@@ -65,7 +65,12 @@ Pinned outbound assumptions to revalidate:
   `on_interaction` listener continues to receive their custom IDs after a
   gateway restart even though the original View object is gone.
 * `Interaction.response.defer(ephemeral=True, thinking=True)` supplies the
-  initial response before the authenticated Docket callback and follow-up.
+  initial response before authenticated approval, local-action, and editable
+  proposal callbacks and their follow-up.
+* `Interaction.response.defer()` on a component interaction acknowledges
+  persistent aggregate-review navigation as a deferred message update.
+  Success has no ephemeral follow-up; Docket edits the same bound card through
+  its durable projection outbox. Errors may still use an ephemeral response.
 * message history and embed footer text are available for stable marker
   recovery after an acknowledgement is lost.
 * due-date daily-thread reminder posts can recover by the stable
@@ -317,12 +322,16 @@ trusted request key. Omitted reminders must remain optional in the generated
 MCP schema. The proposal compiles one parent operation and independent durable
 items only after one approval; Hermes must not synthesize per-course calls.
 
-The Discord plugin understands proposal-control token fields by compact numeric
-codes shared with Docket. Adding a token field requires changing both maps.
-Codes currently cover priority, reminder preset, refresh, edit, review page,
-and snooze. A server-only code produces a valid-looking card that the pinned
-plugin rejects, so the adversarial plugin contract and one live button/select
-smoke are mandatory after changes.
+The Discord plugin understands editable proposal-control token fields by
+compact numeric codes shared with Docket. Adding a token field requires
+changing both maps. Codes currently cover priority, reminder preset, refresh,
+edit, and snooze. Aggregate schedule review uses a separate compact navigation
+token bound to revision, projection, projection version, source/target
+view/page, actor, and expiry. Its final approval uses a separate decision token
+bound to the delivered projection version. A server-only code or token version
+produces a valid-looking card that the pinned plugin rejects, so the
+adversarial plugin contract and one live persistent-navigation/decision smoke
+are mandatory after changes.
 
 ## Google Calendar REST contract
 

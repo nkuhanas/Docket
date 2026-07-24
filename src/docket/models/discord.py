@@ -50,6 +50,20 @@ class DiscordProjection(TimestampMixin, Base):
             "status IN ('pending', 'delivered', 'failed')",
             name="ck_discord_projections_status",
         ),
+        CheckConstraint(
+            "view_mode IN ('summary', 'schedule_review', 'decision', 'schedule_failures')",
+            name="ck_discord_projections_view_mode",
+        ),
+        CheckConstraint(
+            "((view_mode IN ('schedule_review', 'schedule_failures') "
+            "AND view_page BETWEEN 1 AND 5) OR "
+            "(view_mode IN ('summary', 'decision') AND view_page IS NULL))",
+            name="ck_discord_projections_view_page",
+        ),
+        CheckConstraint(
+            "reviewed_through_page BETWEEN 0 AND 5",
+            name="ck_discord_projections_reviewed_through_page",
+        ),
         UniqueConstraint(
             "queue_item_id", "daily_thread_id", name="uq_discord_projection_item_thread"
         ),
@@ -68,5 +82,11 @@ class DiscordProjection(TimestampMixin, Base):
     render_schema_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     render_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     component_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    view_action_revision_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("action_revisions.id", ondelete="SET NULL")
+    )
+    view_mode: Mapped[str] = mapped_column(String(32), default="summary", nullable=False)
+    view_page: Mapped[int | None] = mapped_column(Integer)
+    reviewed_through_page: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
     last_error_code: Mapped[str | None] = mapped_column(String(128))

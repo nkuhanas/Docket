@@ -35,7 +35,11 @@ from docket.models import (
     Record,
 )
 from docket.models.base import utc_now
-from docket.security import short_code_sha256, verify_projection_approval_token
+from docket.security import (
+    short_code_sha256,
+    verify_projection_approval_token,
+    verify_projection_decision_approval_token,
+)
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -86,41 +90,36 @@ class ApprovalService:
             )
         if request.short_code is not None:
             approval = self.session.scalar(
-                select(Approval).where(
-                    Approval.short_code_sha256 == short_code_sha256(request.short_code)
-                )
+                select(Approval)
+                .where(Approval.short_code_sha256 == short_code_sha256(request.short_code))
+                .with_for_update()
             )
         else:
-            approval = self.session.get(Approval, request.approval_id)
+            approval = self.session.scalar(
+                select(Approval).where(Approval.id == request.approval_id).with_for_update()
+            )
         if approval is None:
             raise DocketError(
                 code="approval_not_found", message="Approval reference was not found."
             )
-        if request.approval_token is not None:
-            assert request.projection_id is not None
-            signing_key = (
-                get_settings().read_secret(get_settings().interaction_signing_key_file).encode()
-            )
-            if not verify_projection_approval_token(
-                request.approval_token,
-                approval_id=approval.id,
-                projection_id=request.projection_id,
-                expires_at=approval.expires_at,
-                signing_key=signing_key,
-            ):
-                raise DocketError(
-                    code="invalid_approval_token",
-                    message="The approval token is invalid for this approval.",
-                )
         return approval
 
     def _validate_projection_context(
-        self, request: ApprovalResponse, approval: Approval, queue_item: QueueItem
+        self,
+        request: ApprovalResponse,
+        approval: Approval,
+        revision: ActionRevision,
+        queue_item: QueueItem,
     ) -> None:
         if request.short_code is not None:
             return
         assert request.projection_id is not None
-        projection = self.session.get(DiscordProjection, request.projection_id)
+        assert request.approval_token is not None
+        projection = self.session.scalar(
+            select(DiscordProjection)
+            .where(DiscordProjection.id == request.projection_id)
+            .with_for_update()
+        )
         if (
             projection is None
             or projection.queue_item_id != queue_item.id
@@ -144,6 +143,37 @@ class ApprovalService:
             raise DocketError(
                 code="invalid_approval_projection",
                 message="The interaction thread does not match the stored projection context.",
+            )
+        signing_key = settings.read_secret(settings.interaction_signing_key_file).encode()
+        if revision.action_type == "calendar_apply_term_schedule":
+            page_count = (int(revision.preview.get("item_count", 0)) + 9) // 10
+            valid = (
+                projection.view_action_revision_id == revision.id
+                and projection.view_mode == "decision"
+                and projection.view_page is None
+                and page_count >= 1
+                and projection.reviewed_through_page == page_count
+                and verify_projection_decision_approval_token(
+                    request.approval_token,
+                    approval_id=approval.id,
+                    projection_id=projection.id,
+                    projection_version=projection.projection_version,
+                    expires_at=approval.expires_at,
+                    signing_key=signing_key,
+                )
+            )
+        else:
+            valid = verify_projection_approval_token(
+                request.approval_token,
+                approval_id=approval.id,
+                projection_id=projection.id,
+                expires_at=approval.expires_at,
+                signing_key=signing_key,
+            )
+        if not valid:
+            raise DocketError(
+                code="invalid_approval_token",
+                message="The approval token is invalid for the current card view.",
             )
 
     def _load_bound_state(self, approval: Approval) -> tuple[ActionRevision, Action, QueueItem]:
@@ -384,7 +414,7 @@ class ApprovalService:
         self._validate_context(request)
         approval = self._resolve(request)
         revision, action, queue_item = self._load_bound_state(approval)
-        self._validate_projection_context(request, approval, queue_item)
+        self._validate_projection_context(request, approval, revision, queue_item)
         if approval.authorized_user_id != request.discord_user_id:
             raise DocketError(
                 code="unauthorized_approval_actor",

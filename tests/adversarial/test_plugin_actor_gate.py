@@ -10,8 +10,9 @@ import pytest
 
 from docket.security import (
     issue_projection_approval_token,
+    issue_projection_decision_approval_token,
     issue_projection_local_action_token,
-    issue_projection_proposal_control_token,
+    issue_projection_review_navigation_token,
 )
 
 PLUGIN_PATH = Path("hermes/plugin/docket_discord/__init__.py")
@@ -28,6 +29,21 @@ def plugin_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_plugin_accepts_version_bound_schedule_decision_token(plugin_module) -> None:
+    approval_id = uuid.uuid4()
+    projection_id = uuid.uuid4()
+    token = issue_projection_decision_approval_token(
+        approval_id,
+        projection_id,
+        7,
+        datetime.now(UTC) + timedelta(minutes=15),
+        b"test-signing-key",
+    )
+
+    assert plugin_module._CONTROL_ID.fullmatch(f"dkt:a:{token}")
+    assert plugin_module._decode_control(token) == (approval_id, projection_id)
 
 
 @pytest.mark.adversarial
@@ -453,7 +469,7 @@ def test_failed_item_can_render_one_canonical_ignore_control(plugin_module, monk
     assert view.items[0].custom_id == f"dkt:l:{token}"
 
 
-def test_plugin_accepts_only_bound_schedule_review_pages(plugin_module, monkeypatch) -> None:
+def test_plugin_accepts_only_bound_persistent_review_navigation(plugin_module, monkeypatch) -> None:
     class FakeEmbed:
         def __init__(self, **_kwargs) -> None:
             self.footer = None
@@ -471,16 +487,6 @@ def test_plugin_accepts_only_bound_schedule_review_pages(plugin_module, monkeypa
         def add_item(self, item) -> None:
             self.items.append(item)
 
-    class FakeSelect:
-        def __init__(self, **kwargs) -> None:
-            self.custom_id = kwargs["custom_id"]
-            self.options = kwargs["options"]
-
-    class FakeSelectOption:
-        def __init__(self, **kwargs) -> None:
-            self.value = kwargs["value"]
-            self.default = kwargs["default"]
-
     class FakeButton:
         def __init__(self, **kwargs) -> None:
             self.custom_id = kwargs["custom_id"]
@@ -491,38 +497,29 @@ def test_plugin_accepts_only_bound_schedule_review_pages(plugin_module, monkeypa
         ui=SimpleNamespace(
             View=FakeView,
             Button=FakeButton,
-            Select=FakeSelect,
         ),
-        SelectOption=FakeSelectOption,
         utils=SimpleNamespace(
             escape_mentions=lambda value: value,
             escape_markdown=lambda value: value,
         ),
     )
     monkeypatch.setitem(sys.modules, "discord", fake_discord)
-    approval_id = uuid.uuid4()
     revision_id = uuid.uuid4()
     projection_id = uuid.uuid4()
     expires_at = datetime.now(UTC) + timedelta(days=1)
-    approval_token = issue_projection_approval_token(
-        approval_id,
-        projection_id,
-        expires_at,
-        b"test-signing-key",
-    )
-    token = issue_projection_proposal_control_token(
-        revision_id,
-        projection_id,
-        "review_page",
-        expires_at,
-        b"test-signing-key",
-    )
-    snooze_token = issue_projection_proposal_control_token(
-        revision_id,
-        projection_id,
-        "snooze",
-        expires_at,
-        b"test-signing-key",
+    actor = "111111111111111111"
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
+    token = issue_projection_review_navigation_token(
+        action_revision_id=revision_id,
+        projection_id=projection_id,
+        projection_version=3,
+        source_view="summary",
+        source_page=None,
+        target_view="schedule_review",
+        target_page=1,
+        actor_id=actor,
+        expires_at=expires_at,
+        signing_key=b"test-signing-key",
     )
     _embed, view = plugin_module._render_embed(
         projection_id,
@@ -535,67 +532,59 @@ def test_plugin_accepts_only_bound_schedule_review_pages(plugin_module, monkeypa
             },
             "controls": [
                 {
-                    "kind": "approval",
-                    "decision": decision,
-                    "label": label,
-                    "approval_id": str(approval_id),
-                    "token": approval_token,
-                }
-                for decision, label in (
-                    ("approve", "Approve"),
-                    ("reject", "Reject"),
-                )
-            ]
-            + [
-                {
-                    "kind": "string_select",
-                    "field": "review_page",
-                    "label": "Review items",
-                    "placeholder": "Review schedule items",
+                    "kind": "review_navigation",
+                    "transition": "proposal_review_navigate",
+                    "label": "Begin review",
                     "row": 1,
-                    "min_values": 1,
-                    "max_values": 1,
-                    "token": token,
-                    "options": [
-                        {
-                            "label": f"Page {page} of 5",
-                            "value": str(page),
-                            "description": f"Review immutable page {page}",
-                            "default": False,
-                        }
-                        for page in range(1, 6)
-                    ],
-                },
-                {
-                    "kind": "proposal_action",
-                    "transition": "proposal_snooze",
-                    "label": "Snooze until tomorrow",
-                    "row": 4,
                     "action_revision_id": str(revision_id),
-                    "token": snooze_token,
+                    "source_view": "summary",
+                    "source_page": None,
+                    "target_view": "schedule_review",
+                    "target_page": 1,
+                    "token": token,
                 },
             ],
-            "projection_version": 1,
+            "projection_version": 3,
             "render_sha256": "a" * 64,
             "component_sha256": "b" * 64,
         },
     )
 
-    assert len(view.items) == 4
-    assert view.items[2].custom_id == f"dkt:p:{token}"
-    assert [option.value for option in view.items[2].options] == [
-        "1",
-        "2",
-        "3",
-        "4",
-        "5",
-    ]
-    assert not any(option.default for option in view.items[2].options)
-    assert view.items[3].custom_id == f"dkt:p:{snooze_token}"
+    assert len(view.items) == 1
+    assert view.items[0].custom_id == f"dkt:n:{token}"
+    with pytest.raises(plugin_module.PluginAPIError, match="binding does not match"):
+        plugin_module._render_embed(
+            projection_id,
+            {
+                "embed": {
+                    "title": "Apply schedule",
+                    "description": "Review one immutable aggregate.",
+                    "fields": [],
+                    "color": 1,
+                },
+                "controls": [
+                    {
+                        "kind": "review_navigation",
+                        "transition": "proposal_review_navigate",
+                        "label": "Begin review",
+                        "row": 1,
+                        "action_revision_id": str(revision_id),
+                        "source_view": "summary",
+                        "source_page": None,
+                        "target_view": "schedule_review",
+                        "target_page": 2,
+                        "token": token,
+                    }
+                ],
+                "projection_version": 3,
+                "render_sha256": "a" * 64,
+                "component_sha256": "b" * 64,
+            },
+        )
 
 
 @pytest.mark.asyncio
-async def test_schedule_review_select_returns_ephemeral_manifest(
+async def test_schedule_review_navigation_requests_persistent_message_update(
     plugin_module, monkeypatch
 ) -> None:
     actor = "111111111111111111"
@@ -605,12 +594,17 @@ async def test_schedule_review_select_returns_ephemeral_manifest(
     message_id = "555555555555555555"
     revision_id = uuid.uuid4()
     projection_id = uuid.uuid4()
-    token = issue_projection_proposal_control_token(
-        revision_id,
-        projection_id,
-        "review_page",
-        datetime.now(UTC) + timedelta(days=1),
-        b"test-signing-key",
+    token = issue_projection_review_navigation_token(
+        action_revision_id=revision_id,
+        projection_id=projection_id,
+        projection_version=4,
+        source_view="summary",
+        source_page=None,
+        target_view="schedule_review",
+        target_page=1,
+        actor_id=actor,
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+        signing_key=b"test-signing-key",
     )
     monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
     monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
@@ -624,7 +618,7 @@ async def test_schedule_review_select_returns_ephemeral_manifest(
             self.done = False
 
         async def defer(self, **kwargs) -> None:
-            assert kwargs == {"ephemeral": True, "thinking": True}
+            assert kwargs == {}
             self.done = True
 
         def is_done(self) -> bool:
@@ -644,14 +638,14 @@ async def test_schedule_review_select_returns_ephemeral_manifest(
     def fake_post(payload, *, local_action=False):
         captured.update(payload)
         assert local_action is True
-        return {"content": "**Schedule items · page 1/1 · 2 total**\n• Item one\n• Item two"}
+        return {"ok": True}
 
     monkeypatch.setattr(plugin_module, "_post_button_response", fake_post)
     response = FakeResponse()
     followup = FakeFollowup()
     interaction = SimpleNamespace(
         id=666666666666666666,
-        data={"custom_id": f"dkt:p:{token}", "values": ["1"]},
+        data={"custom_id": f"dkt:n:{token}"},
         user=SimpleNamespace(id=int(actor)),
         guild_id=int(guild),
         channel_id=int(thread_id),
@@ -663,11 +657,11 @@ async def test_schedule_review_select_returns_ephemeral_manifest(
 
     await plugin_module._on_docket_interaction(interaction)
 
-    assert captured["transition"] == "proposal_review_page"
-    assert captured["field"] == "review_page"
-    assert captured["value"] == "1"
+    assert captured["transition"] == "proposal_review_navigate"
+    assert captured["source_view"] == "summary"
+    assert captured["source_page"] is None
+    assert captured["target_view"] == "schedule_review"
+    assert captured["target_page"] == 1
     assert captured["action_revision_id"] == str(revision_id)
     assert captured["projection_id"] == str(projection_id)
-    assert followup.sent == [
-        ("**Schedule items · page 1/1 · 2 total**\n• Item one\n• Item two", True)
-    ]
+    assert followup.sent == []

@@ -30,16 +30,18 @@ from docket.models import (
     DiscordDailyThread,
     DiscordProjection,
     Operation,
-    OperationItem,
     OutboxEvent,
     QueueItem,
 )
 from docket.models.base import utc_now
 from docket.security import (
+    ReviewNavigationReference,
     decode_projection_proposal_control_token,
+    decode_projection_review_navigation_token,
     issue_short_code,
     short_code_sha256,
     verify_projection_proposal_control_token,
+    verify_projection_review_navigation_token,
 )
 
 _PRIORITIES = {"low", "normal", "high", "urgent"}
@@ -87,7 +89,11 @@ class ProposalControlService:
                 code="invalid_proposal_control_context",
                 message="Proposal control did not come from the configured queue card.",
             )
-        projection = self.session.get(DiscordProjection, request.projection_id)
+        projection = self.session.scalar(
+            select(DiscordProjection)
+            .where(DiscordProjection.id == request.projection_id)
+            .with_for_update()
+        )
         if (
             projection is None
             or projection.status != "delivered"
@@ -159,7 +165,7 @@ class ProposalControlService:
         assert action is not None
         assert approval is not None
         assert queue_item is not None
-        if request.transition == "proposal_review_page":
+        if request.transition == "proposal_review_navigate":
             if (
                 revision.action_type != "calendar_apply_term_schedule"
                 or (
@@ -193,6 +199,40 @@ class ProposalControlService:
                 code="stale_proposal_control",
                 message="The proposal changed after this control was rendered.",
             )
+        if request.transition == "proposal_review_navigate":
+            decoded_navigation = decode_projection_review_navigation_token(request.action_token)
+            expected_reference = ReviewNavigationReference(
+                action_revision_id=revision.id,
+                projection_id=projection.id,
+                projection_version=projection.projection_version,
+                source_view=str(request.source_view),
+                source_page=request.source_page,
+                target_view=str(request.target_view),
+                target_page=request.target_page,
+                actor_id=str(int(request.discord_user_id)),
+                expires_at=(
+                    decoded_navigation.expires_at if decoded_navigation is not None else utc_now()
+                ),
+            )
+            signing_key = self.settings.read_secret(
+                self.settings.interaction_signing_key_file
+            ).encode()
+            if (
+                decoded_navigation is None
+                or decoded_navigation != expected_reference
+                or utc_now() > decoded_navigation.expires_at
+                or not verify_projection_review_navigation_token(
+                    request.action_token,
+                    reference=expected_reference,
+                    signing_key=signing_key,
+                )
+            ):
+                raise DocketError(
+                    code="invalid_proposal_control_token",
+                    message="Review navigation token does not match the current card.",
+                )
+            return revision, action, approval, queue_item, "review_navigation"
+
         decoded = decode_projection_proposal_control_token(request.action_token)
         if decoded is None:
             raise DocketError(
@@ -231,6 +271,32 @@ class ProposalControlService:
             )
         return revision, action, approval, queue_item, expected_field
 
+    @staticmethod
+    def _command_payload(request: LocalActionResponse) -> dict[str, object]:
+        return request.model_dump(
+            mode="json",
+            exclude={"action_token", "request_id", "responded_at"},
+        )
+
+    def _replay_result(self, request: LocalActionResponse) -> dict[str, object] | None:
+        request_key = f"discord-interaction:{request.discord_interaction_id}"
+        existing = self.session.scalar(
+            select(CommandRequest).where(CommandRequest.request_key == request_key)
+        )
+        if existing is None:
+            return None
+        if existing.input_sha256 != sha256_json(self._command_payload(request)):
+            raise DocketError(
+                code="idempotency_conflict",
+                message="This Discord interaction ID was reused with different input.",
+            )
+        if existing.status == CommandStatus.SUCCEEDED.value and isinstance(existing.result, dict):
+            return dict(existing.result)
+        raise DocketError(
+            code="interaction_replay",
+            message="This Discord interaction is already in progress.",
+        )
+
     def _start_command(self, request: LocalActionResponse) -> CommandRequest:
         request_key = f"discord-interaction:{request.discord_interaction_id}"
         if (
@@ -243,7 +309,7 @@ class ProposalControlService:
                 code="interaction_replay",
                 message="This Discord interaction has already been consumed.",
             )
-        payload = request.model_dump(mode="json", exclude={"action_token"})
+        payload = self._command_payload(request)
         command = CommandRequest(
             request_key=request_key,
             operation_name=request.transition,
@@ -789,40 +855,10 @@ class ProposalControlService:
         command.result = result
         return result
 
-    @staticmethod
-    def _schedule_review_row(
-        item: dict[str, object],
-        effect: str | None,
-        status: str | None = None,
-        error_code: str | None = None,
-    ) -> str:
-        course = " ".join(
-            str(value) for value in (item.get("course_code"), item.get("section")) if value
-        )
-        meeting = str(item.get("meeting_id") or "meeting")
-        exception_id = item.get("exception_id")
-        if exception_id:
-            meeting = f"{meeting} / {exception_id}"
-        event = item.get("event")
-        timing = event.get("timing", {}) if isinstance(event, dict) else {}
-        when = ""
-        if isinstance(timing, dict):
-            if timing.get("kind") == "timed":
-                when = f"{timing.get('start_local', '?')} through {timing.get('end_local', '?')}"
-            elif timing.get("kind") == "all_day":
-                when = f"{timing.get('start_date', '?')} through {timing.get('end_date', '?')}"
-        labels = [value for value in (effect, status, error_code) if value]
-        suffix = f" · {', '.join(labels)}" if labels else ""
-        row = f"• {course or 'Course'} · {meeting} · {when or 'time unavailable'}{suffix}"
-        return row[:350]
-
-    def _review_page(
+    def _schedule_review_state(
         self,
-        request: LocalActionResponse,
         revision: ActionRevision,
-        action: Action,
-        command: CommandRequest,
-    ) -> dict[str, object]:
+    ) -> tuple[CalendarScheduleSnapshot, int]:
         try:
             snapshot_id = uuid.UUID(str(revision.parameters["schedule_snapshot_id"]))
         except (KeyError, ValueError) as exc:
@@ -852,127 +888,180 @@ class ProposalControlService:
                 code="schedule_review_unavailable",
                 message="The immutable schedule snapshot contains an invalid item.",
             )
-        preview_items = revision.preview.get("items", [])
-        effects = {
-            str(item.get("item_key")): str(item.get("effect"))
-            for item in preview_items
-            if isinstance(item, dict)
-            and item.get("item_key") is not None
-            and item.get("effect") is not None
-        }
-        value = request.value
-        assert value is not None
-        result_items: list[dict[str, object]]
-        if value == "failures":
-            operation = self.session.scalar(
-                select(Operation)
-                .where(
-                    Operation.action_revision_id == revision.id,
-                    Operation.operation_type == "calendar_apply_term_schedule",
-                )
-                .order_by(Operation.created_at.desc())
-                .limit(1)
+        if len(items) > 50 or revision.preview.get("item_count") != len(items):
+            raise DocketError(
+                code="schedule_review_unavailable",
+                message="The schedule review count does not match its immutable preview.",
             )
-            if operation is None:
-                raise DocketError(
-                    code="schedule_failures_unavailable",
-                    message="The schedule batch has no execution ledger.",
-                )
-            ledger = list(
-                self.session.scalars(
-                    select(OperationItem)
-                    .where(
-                        OperationItem.operation_id == operation.id,
-                        OperationItem.status.in_(("failed", "reconciliation_required")),
-                    )
-                    .order_by(OperationItem.item_key)
-                )
+        return snapshot, (len(items) + 9) // 10
+
+    def _failure_page_count(self, revision: ActionRevision) -> int:
+        operation = self.session.scalar(
+            select(Operation)
+            .where(
+                Operation.action_revision_id == revision.id,
+                Operation.operation_type == "calendar_apply_term_schedule",
             )
-            if not ledger:
-                raise DocketError(
-                    code="schedule_failures_unavailable",
-                    message="The schedule batch has no failed or uncertain items.",
+            .order_by(Operation.created_at.desc())
+            .limit(1)
+        )
+        failures = (
+            operation.result.get("failures")
+            if operation is not None and isinstance(operation.result, dict)
+            else None
+        )
+        if not isinstance(failures, list) or not failures:
+            raise DocketError(
+                code="schedule_failures_unavailable",
+                message="The schedule batch has no failed or uncertain items.",
+            )
+        return (min(len(failures), 50) + 9) // 10
+
+    def _navigate_review(
+        self,
+        request: LocalActionResponse,
+        revision: ActionRevision,
+        action: Action,
+        queue_item: QueueItem,
+        projection: DiscordProjection,
+        command: CommandRequest,
+    ) -> dict[str, object]:
+        snapshot, review_page_count = self._schedule_review_state(revision)
+        source_view = request.source_view
+        target_view = request.target_view
+        assert source_view is not None and target_view is not None
+        if (
+            projection.view_action_revision_id != revision.id
+            or projection.view_mode != source_view
+            or projection.view_page != request.source_page
+        ):
+            raise DocketError(
+                code="stale_review_navigation",
+                message="The schedule card moved after this navigation control was rendered.",
+            )
+
+        pending = action.status == ActionStatus.APPROVAL_PENDING.value
+        failure_page_count: int | None = None
+        if source_view == "schedule_failures" or target_view == "schedule_failures":
+            failure_page_count = self._failure_page_count(revision)
+
+        legal = False
+        reviewed_through = projection.reviewed_through_page
+        if target_view == "summary" and source_view in {
+            "schedule_review",
+            "decision",
+            "schedule_failures",
+        }:
+            legal = request.target_page is None
+        elif target_view == "schedule_review" and pending:
+            if source_view == "summary":
+                legal = request.target_page == 1
+            elif source_view == "schedule_review":
+                assert request.source_page is not None
+                legal = (
+                    request.target_page is not None
+                    and abs(request.target_page - request.source_page) == 1
+                    and request.target_page <= review_page_count
                 )
-            by_key = {str(item["item_key"]): item for item in items}
-            result_items = [
-                {
-                    "item_key": row.item_key,
-                    "status": row.status,
-                    "error_code": row.last_error_code,
-                }
-                for row in ledger[:10]
-            ]
-            lines = [
-                self._schedule_review_row(
-                    by_key.get(row.item_key, {"item_key": row.item_key}),
-                    effects.get(row.item_key),
-                    row.status,
-                    row.last_error_code,
+            elif source_view == "decision":
+                legal = request.target_page == review_page_count
+            if legal and request.target_page is not None:
+                if source_view == "summary" and request.target_page == 1:
+                    reviewed_through = max(reviewed_through, 1)
+                elif (
+                    source_view == "schedule_review"
+                    and request.source_page is not None
+                    and request.target_page == request.source_page + 1
+                    and request.source_page <= reviewed_through
+                ):
+                    reviewed_through = max(reviewed_through, request.target_page)
+        elif target_view == "decision" and pending:
+            legal = (
+                source_view == "schedule_review"
+                and request.source_page == review_page_count
+                and request.target_page is None
+                and reviewed_through == review_page_count
+            )
+        elif target_view == "schedule_failures" and not pending:
+            assert failure_page_count is not None
+            if source_view == "summary":
+                legal = request.target_page == 1
+            elif source_view == "schedule_failures":
+                assert request.source_page is not None
+                legal = (
+                    request.target_page is not None
+                    and abs(request.target_page - request.source_page) == 1
+                    and request.target_page <= failure_page_count
                 )
-                for row in ledger[:10]
-            ]
-            heading = f"Schedule failures · {len(ledger)} item{'s' if len(ledger) != 1 else ''}"
-            page_value: int | str = "failures"
-            page_count = 1
-        else:
-            if not value.isascii() or not value.isdecimal():
-                raise DocketError(
-                    code="invalid_schedule_review_page",
-                    message="The schedule review page is invalid.",
-                )
-            page = int(value)
-            page_count = (len(items) + 9) // 10
-            if page < 1 or page > page_count or page_count > 5:
-                raise DocketError(
-                    code="invalid_schedule_review_page",
-                    message="The schedule review page is outside the manifest.",
-                )
-            selected = items[(page - 1) * 10 : page * 10]
-            result_items = [
-                {
-                    "item_key": str(item["item_key"]),
-                    "effect": effects.get(str(item["item_key"])),
-                }
-                for item in selected
-            ]
-            lines = [
-                self._schedule_review_row(
-                    item,
-                    effects.get(str(item["item_key"])),
-                )
-                for item in selected
-            ]
-            heading = f"Schedule items · page {page}/{page_count} · {len(items)} total"
-            page_value = page
-        content = f"**{heading}**\n" + "\n".join(lines)
-        content = content[:2000]
+        if not legal:
+            raise DocketError(
+                code="invalid_review_navigation",
+                message="That review transition is not adjacent to the current card view.",
+            )
+
+        projection.view_mode = target_view
+        projection.view_page = request.target_page
+        projection.reviewed_through_page = reviewed_through
+        projection.status = "pending"
+        outbox_id = uuid.uuid4()
+        daily_thread = self.session.get(DiscordDailyThread, projection.daily_thread_id)
+        if daily_thread is None:
+            raise DocketError(
+                code="invalid_proposal_control_projection",
+                message="The schedule projection thread is unavailable.",
+            )
+        self.session.add(
+            OutboxEvent(
+                id=outbox_id,
+                event_type="discord.projection.refresh_requested",
+                aggregate_type="queue_item",
+                aggregate_id=queue_item.id,
+                deduplication_key=(
+                    f"discord_projection:{queue_item.id}:review:{request.discord_interaction_id}"
+                ),
+                payload={
+                    "queue_item_id": str(queue_item.id),
+                    "projection_id": str(projection.id),
+                    "target_local_date": daily_thread.local_date.isoformat(),
+                    "reason": "schedule_review_navigation",
+                },
+                status=OutboxStatus.PENDING.value,
+            )
+        )
         now = utc_now()
         result: dict[str, object] = {
             "ok": True,
             "transition": request.transition,
-            "field": "review_page",
-            "value": page_value,
-            "page_count": page_count,
-            "item_count": len(items),
-            "items": result_items,
-            "content": content,
+            "source_view": source_view,
+            "source_page": request.source_page,
+            "target_view": target_view,
+            "target_page": request.target_page,
+            "review_page_count": review_page_count,
+            "reviewed_through_page": reviewed_through,
             "action_id": str(action.id),
             "action_revision_id": str(revision.id),
+            "projection_id": str(projection.id),
+            "source_projection_version": projection.projection_version,
+            "projection_outbox_id": str(outbox_id),
         }
         command.status = CommandStatus.SUCCEEDED.value
         command.result = result
         command.completed_at = now
         self.session.add(
             AuditEvent(
-                event_type="proposal.schedule_reviewed",
+                event_type="proposal.schedule_review_navigated",
                 entity_type="action",
                 entity_id=action.id,
                 actor_type="plugin",
                 actor_id=request.discord_user_id,
                 request_id=command.id,
                 data={
-                    "page": page_value,
-                    "returned_items": len(result_items),
+                    "projection_id": str(projection.id),
+                    "source_view": source_view,
+                    "source_page": request.source_page,
+                    "target_view": target_view,
+                    "target_page": request.target_page,
+                    "reviewed_through_page": reviewed_through,
                     "manifest_sha256": snapshot.manifest_sha256,
                 },
             )
@@ -985,6 +1074,9 @@ class ProposalControlService:
         *,
         refresh_started_at: datetime | None = None,
     ) -> dict[str, object]:
+        replay = self._replay_result(request)
+        if replay is not None:
+            return replay
         projection = self._projection(request)
         revision, action, approval, queue_item, _field = self._bound_state(request, projection)
         command = self._start_command(request)
@@ -993,14 +1085,14 @@ class ProposalControlService:
             "proposal_edit",
             "proposal_refresh",
             "proposal_snooze",
-            "proposal_review_page",
+            "proposal_review_navigate",
         }:
             raise DocketError(
                 code="proposal_control_unavailable",
                 message="This proposal control transition is not implemented.",
             )
         if (
-            request.transition != "proposal_review_page"
+            request.transition != "proposal_review_navigate"
             and queue_item.status != QueueItemStatus.AWAITING_APPROVAL.value
         ):
             raise DocketError(
@@ -1035,11 +1127,13 @@ class ProposalControlService:
                 queue_item,
                 command,
             )
-        if request.transition == "proposal_review_page":
-            return self._review_page(
+        if request.transition == "proposal_review_navigate":
+            return self._navigate_review(
                 request,
                 revision,
                 action,
+                queue_item,
+                projection,
                 command,
             )
         return self._replace_revision(

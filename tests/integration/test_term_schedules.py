@@ -36,6 +36,10 @@ from docket.providers.discord import (
 from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.schemas.actions import ProposalResult, ProposeTermScheduleInput
 from docket.schemas.records import StoreTermScheduleInput
+from docket.security import (
+    decode_projection_review_navigation_token,
+    issue_projection_approval_token,
+)
 from docket.services.approvals import ApprovalService
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.operations import OperationRunner
@@ -220,6 +224,56 @@ def _approve_schedule(
         )
     )
     return uuid.UUID(result["operation_id"])
+
+
+def _navigate_schedule_card(
+    session_factory: sessionmaker[Session],
+    runner: DiscordProjectionRunner,
+    backend: FakeDiscordBackend,
+    proposal: ProposalResult,
+    *,
+    label: str,
+    interaction_id: str,
+) -> tuple[dict, dict]:
+    settings = get_settings()
+    with session_factory() as session:
+        projection = session.scalar(select(DiscordProjection))
+        thread = session.scalar(select(DiscordDailyThread))
+        assert projection is not None and projection.message_id is not None
+        assert thread is not None and thread.thread_id is not None
+        projected = backend.messages[str(projection.id)]
+        control = next(item for item in projected["controls"] if item.get("label") == label)
+        decoded = decode_projection_review_navigation_token(control["token"])
+        assert decoded is not None
+        assert decoded.projection_version == projection.projection_version
+        assert decoded.actor_id == str(int(settings.operator_discord_user_id))
+        assert decoded.source_view == control["source_view"]
+        assert decoded.source_page == control["source_page"]
+        assert decoded.target_view == control["target_view"]
+        assert decoded.target_page == control["target_page"]
+        request = LocalActionResponse(
+            request_id=uuid.uuid4(),
+            discord_interaction_id=interaction_id,
+            discord_user_id=settings.operator_discord_user_id,
+            guild_id=settings.discord_guild_id,
+            channel_id=thread.thread_id,
+            parent_channel_id=settings.queue_channel_id,
+            projection_id=projection.id,
+            message_id=projection.message_id,
+            responded_at=datetime.now(UTC),
+            action_revision_id=proposal.action_revision_id,
+            action_token=control["token"],
+            transition="proposal_review_navigate",
+            source_view=control["source_view"],
+            source_page=control["source_page"],
+            target_view=control["target_view"],
+            target_page=control["target_page"],
+        )
+    with session_factory.begin() as session:
+        result = ProposalControlService(session).respond(request)
+    assert result["target_view"] == control["target_view"]
+    assert runner.run_due_once()
+    return control, result
 
 
 @pytest.mark.integration
@@ -438,7 +492,7 @@ def test_complete_snapshot_produces_one_bulk_proposal_with_one_unified_plan(
 
 
 @pytest.mark.integration
-def test_aggregate_card_exposes_read_only_manifest_review_without_revision_churn(
+def test_aggregate_card_persists_review_then_exposes_decision_without_revision_churn(
     session_factory: sessionmaker[Session],
 ) -> None:
     settings = get_settings()
@@ -461,55 +515,147 @@ def test_aggregate_card_exposes_read_only_manifest_review_without_revision_churn
         assert projection is not None and projection.message_id is not None
         assert thread is not None and thread.thread_id is not None
         projected = backend.messages[str(projection.id)]
-        review = next(
-            control for control in projected["controls"] if control.get("field") == "review_page"
-        )
-        assert [option["value"] for option in review["options"]] == ["1"]
-        assert not any(option["default"] for option in review["options"])
+        assert [control["label"] for control in projected["controls"]] == ["Begin review"]
+        assert not any(control.get("kind") == "approval" for control in projected["controls"])
         assert len(projected["embed"]["fields"]) <= 25
         projection_id = projection.id
         message_id = projection.message_id
-        thread_id = thread.thread_id
+        assert projection.view_mode == "summary"
+        initial_version = projection.projection_version
 
-    response = LocalActionResponse(
-        request_id=uuid.uuid4(),
-        discord_interaction_id="schedule-review-page-one",
-        discord_user_id=settings.operator_discord_user_id,
-        guild_id=settings.discord_guild_id,
-        channel_id=thread_id,
-        parent_channel_id=settings.queue_channel_id,
-        projection_id=projection_id,
-        message_id=message_id,
-        responded_at=datetime.now(UTC),
-        action_revision_id=proposal.action_revision_id,
-        action_token=review["token"],
-        transition="proposal_review_page",
-        field="review_page",
-        value="1",
+    begin, result = _navigate_schedule_card(
+        session_factory,
+        runner,
+        backend,
+        proposal,
+        label="Begin review",
+        interaction_id="schedule-review-begin",
     )
     with session_factory.begin() as session:
-        result = ProposalControlService(session).respond(response)
-        assert result["item_count"] == 3
-        assert len(result["items"]) == 3
-        assert "Schedule items" in str(result["content"])
+        replay_request = LocalActionResponse(
+            request_id=uuid.uuid4(),
+            discord_interaction_id="schedule-review-begin",
+            discord_user_id=settings.operator_discord_user_id,
+            guild_id=settings.discord_guild_id,
+            channel_id=session.scalar(select(DiscordDailyThread)).thread_id,
+            parent_channel_id=settings.queue_channel_id,
+            projection_id=projection_id,
+            message_id=message_id,
+            responded_at=datetime.now(UTC),
+            action_revision_id=proposal.action_revision_id,
+            action_token=begin["token"],
+            transition="proposal_review_navigate",
+            source_view=begin["source_view"],
+            source_page=begin["source_page"],
+            target_view=begin["target_view"],
+            target_page=begin["target_page"],
+        )
+        assert ProposalControlService(session).respond(replay_request) == result
+    with session_factory() as session:
+        projection = session.get(DiscordProjection, projection_id)
+        assert projection is not None
+        assert projection.message_id == message_id
+        assert projection.view_mode == "schedule_review"
+        assert projection.view_page == 1
+        assert projection.reviewed_through_page == 1
+        assert projection.projection_version == initial_version + 1
+        projected = backend.messages[str(projection.id)]
+        assert any(
+            field["name"] == "Immutable schedule review" for field in projected["embed"]["fields"]
+        )
+        assert [control["label"] for control in projected["controls"]] == [
+            "Back to summary",
+            "Continue to decision",
+        ]
+
+    _navigate_schedule_card(
+        session_factory,
+        runner,
+        backend,
+        proposal,
+        label="Continue to decision",
+        interaction_id="schedule-review-decision",
+    )
+    with session_factory() as session:
+        projection = session.get(DiscordProjection, projection_id)
+        action = session.get(Action, proposal.action_id)
+        assert projection is not None and action is not None
+        assert projection.message_id == message_id
+        assert projection.view_mode == "decision"
+        assert projection.view_page is None
+        assert projection.reviewed_through_page == 1
+        assert projection.projection_version == initial_version + 2
+        projected = backend.messages[str(projection.id)]
+        assert [control["label"] for control in projected["controls"]] == [
+            "Approve",
+            "Reject",
+            "Back to review",
+            "Snooze until tomorrow",
+        ]
+        assert any(field["name"] == "Review complete" for field in projected["embed"]["fields"])
+        reject_control = next(
+            control for control in projected["controls"] if control.get("decision") == "reject"
+        )
+        daily_thread = session.scalar(select(DiscordDailyThread))
+        assert daily_thread is not None and daily_thread.thread_id is not None
+        thread_id = daily_thread.thread_id
+        assert action.current_revision == 1
+        assert session.scalar(select(Operation)) is None
+
     with pytest.raises(DocketError) as rejected, session_factory.begin() as session:
         ProposalControlService(session).respond(
-            response.model_copy(
+            replay_request.model_copy(
                 update={
                     "request_id": uuid.uuid4(),
                     "discord_interaction_id": "schedule-review-forged-page",
-                    "value": "2",
                 }
             )
         )
-    assert rejected.value.code == "invalid_schedule_review_page"
-    with session_factory() as session:
-        action = session.get(Action, proposal.action_id)
-        approval = session.scalar(
-            select(ActionRevision).where(ActionRevision.id == proposal.action_revision_id)
+    assert rejected.value.code == "invalid_proposal_control_token"
+    legacy_token = issue_projection_approval_token(
+        proposal.approval_id,
+        projection_id,
+        proposal.expires_at,
+        settings.read_secret(settings.interaction_signing_key_file).encode(),
+    )
+    with pytest.raises(DocketError) as legacy_rejected, session_factory.begin() as session:
+        ApprovalService(session).respond(
+            ApprovalResponse(
+                request_id=uuid.uuid4(),
+                discord_interaction_id="schedule-legacy-button-rejected",
+                approval_id=proposal.approval_id,
+                approval_token=legacy_token,
+                short_code=None,
+                decision="approve",
+                discord_user_id=settings.operator_discord_user_id,
+                guild_id=settings.discord_guild_id,
+                channel_id=thread_id,
+                parent_channel_id=settings.queue_channel_id,
+                projection_id=projection_id,
+                message_id=message_id,
+                responded_at=datetime.now(UTC),
+            )
         )
-        assert action is not None and action.current_revision == 1
-        assert approval is not None
+    assert legacy_rejected.value.code == "invalid_approval_token"
+    with session_factory.begin() as session:
+        decision = ApprovalService(session).respond(
+            ApprovalResponse(
+                request_id=uuid.uuid4(),
+                discord_interaction_id="schedule-reviewed-reject",
+                approval_id=proposal.approval_id,
+                approval_token=reject_control["token"],
+                short_code=None,
+                decision="reject",
+                discord_user_id=settings.operator_discord_user_id,
+                guild_id=settings.discord_guild_id,
+                channel_id=thread_id,
+                parent_channel_id=settings.queue_channel_id,
+                projection_id=projection_id,
+                message_id=message_id,
+                responded_at=datetime.now(UTC),
+            )
+        )
+        assert decision["approval_status"] == "rejected"
         assert session.scalar(select(Operation)) is None
 
 
@@ -642,12 +788,9 @@ def test_schedule_batch_reports_partial_failure_without_replaying_siblings(
         thread = session.scalar(select(DiscordDailyThread))
         assert projection is not None and projection.message_id is not None
         assert thread is not None and thread.thread_id is not None
-        review = next(
-            control
-            for control in backend.messages[str(projection.id)]["controls"]
-            if control.get("field") == "review_page"
-        )
-        embed = backend.messages[str(projection.id)]["embed"]
+        projected = backend.messages[str(projection.id)]
+        assert [control["label"] for control in projected["controls"]] == ["View failures"]
+        embed = projected["embed"]
         aggregate_embed_characters = (
             len(embed["title"])
             + len(embed["description"])
@@ -655,35 +798,24 @@ def test_schedule_batch_reports_partial_failure_without_replaying_siblings(
         )
         assert len(embed["fields"]) <= 25
         assert aggregate_embed_characters < 6000
-        assert [option["value"] for option in review["options"]] == [
-            "1",
-            "failures",
-        ]
         projection_id = projection.id
         message_id = projection.message_id
-        thread_id = thread.thread_id
-    with session_factory.begin() as session:
-        failure_page = ProposalControlService(session).respond(
-            LocalActionResponse(
-                request_id=uuid.uuid4(),
-                discord_interaction_id="schedule-review-failures",
-                discord_user_id=settings.operator_discord_user_id,
-                guild_id=settings.discord_guild_id,
-                channel_id=thread_id,
-                parent_channel_id=settings.queue_channel_id,
-                projection_id=projection_id,
-                message_id=message_id,
-                responded_at=datetime.now(UTC),
-                action_revision_id=proposal.action_revision_id,
-                action_token=review["token"],
-                transition="proposal_review_page",
-                field="review_page",
-                value="failures",
-            )
-        )
-        assert failure_page["value"] == "failures"
-        assert len(failure_page["items"]) == 1
-        assert "fake_permanent" in str(failure_page["content"])
+    _navigate_schedule_card(
+        session_factory,
+        projection_runner,
+        backend,
+        proposal,
+        label="View failures",
+        interaction_id="schedule-review-failures",
+    )
+    with session_factory() as session:
+        projection = session.get(DiscordProjection, projection_id)
+        assert projection is not None
+        assert projection.message_id == message_id
+        assert projection.view_mode == "schedule_failures"
+        projected = backend.messages[str(projection.id)]
+        assert [control["label"] for control in projected["controls"]] == ["Back to results"]
+        assert "fake_permanent" in str(projected["embed"]["fields"])
 
 
 @pytest.mark.integration
@@ -798,12 +930,9 @@ def test_fifty_item_schedule_survives_restart_and_partial_failure_without_replay
     with session_factory() as session:
         projection = session.scalar(select(DiscordProjection))
         assert projection is not None
-        review = next(
-            control
-            for control in backend.messages[str(projection.id)]["controls"]
-            if control.get("field") == "review_page"
-        )
-        embed = backend.messages[str(projection.id)]["embed"]
+        projected = backend.messages[str(projection.id)]
+        assert [control["label"] for control in projected["controls"]] == ["Begin review"]
+        embed = projected["embed"]
         assert (
             len(embed["title"])
             + len(embed["description"])
@@ -811,13 +940,51 @@ def test_fifty_item_schedule_survives_restart_and_partial_failure_without_replay
             < 6000
         )
         assert len(embed["fields"]) <= 25
-        assert [option["value"] for option in review["options"]] == [
-            "1",
-            "2",
-            "3",
-            "4",
-            "5",
-        ]
+        projection_id = projection.id
+        message_id = projection.message_id
+    _navigate_schedule_card(
+        session_factory,
+        projection_runner,
+        backend,
+        proposal,
+        label="Begin review",
+        interaction_id="schedule-fifty-page-1",
+    )
+    for page in range(2, 6):
+        _navigate_schedule_card(
+            session_factory,
+            projection_runner,
+            backend,
+            proposal,
+            label="Next",
+            interaction_id=f"schedule-fifty-page-{page}",
+        )
+        with session_factory() as session:
+            projection = session.get(DiscordProjection, projection_id)
+            assert projection is not None
+            assert projection.message_id == message_id
+            assert projection.view_page == page
+            assert projection.reviewed_through_page == page
+            assert f"Page {page} of 5" in str(
+                backend.messages[str(projection.id)]["embed"]["fields"]
+            )
+    _navigate_schedule_card(
+        session_factory,
+        projection_runner,
+        backend,
+        proposal,
+        label="Continue to decision",
+        interaction_id="schedule-fifty-decision",
+    )
+    with session_factory() as session:
+        projection = session.get(DiscordProjection, projection_id)
+        assert projection is not None
+        assert projection.view_mode == "decision"
+        assert projection.reviewed_through_page == 5
+        assert any(
+            control.get("kind") == "approval"
+            for control in backend.messages[str(projection.id)]["controls"]
+        )
     with session_factory.begin() as session:
         operation_id = _approve_schedule(
             session,

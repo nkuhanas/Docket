@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, date, datetime, timedelta
-from typing import Any
+from typing import Any, TypedDict
 from zoneinfo import ZoneInfo
 
 import structlog
@@ -31,8 +31,10 @@ from docket.models.base import utc_now
 from docket.providers.discord import DiscordProjectionAdapter, DiscordProjectionError
 from docket.security import (
     issue_projection_approval_token,
+    issue_projection_decision_approval_token,
     issue_projection_local_action_token,
     issue_projection_proposal_control_token,
+    issue_projection_review_navigation_token,
 )
 from docket.services.queue import ensure_local_actions
 
@@ -49,6 +51,14 @@ _PROJECTION_EVENTS = {
     "discord.projection.refresh_requested",
 }
 logger = structlog.get_logger(__name__)
+
+
+class _NavigationCommon(TypedDict):
+    revision: ActionRevision
+    projection: DiscordProjection
+    projection_version: int
+    expires_at: datetime
+    signing_key: bytes
 
 
 def _aware(value: datetime) -> datetime:
@@ -417,15 +427,7 @@ class DiscordProjectionRunner:
         signing_key: bytes,
     ) -> list[dict[str, Any]]:
         if revision.action_type == "calendar_apply_term_schedule":
-            return [
-                DiscordProjectionRunner._schedule_review_select(
-                    revision,
-                    projection_id,
-                    approval.expires_at,
-                    signing_key,
-                    include_failures=False,
-                )
-            ]
+            return []
         if revision.action_type not in {
             "calendar_create_event",
             "calendar_update_event",
@@ -518,62 +520,87 @@ class DiscordProjectionRunner:
         return controls
 
     @staticmethod
-    def _schedule_review_select(
-        revision: ActionRevision,
-        projection_id: uuid.UUID,
-        expires_at: datetime,
-        signing_key: bytes,
-        *,
-        include_failures: bool,
-    ) -> dict[str, Any]:
+    def _schedule_page_count(revision: ActionRevision) -> int:
         raw_count = revision.preview.get("item_count")
         if not isinstance(raw_count, int) or not 1 <= raw_count <= 50:
             raise DiscordProjectionError(
                 "invalid_schedule_preview",
                 "Schedule preview item count is outside its bound",
             )
-        page_count = (raw_count + 9) // 10
-        options = [
-            {
-                "label": f"Page {page} of {page_count}",
-                "value": str(page),
-                "description": (
-                    f"Review immutable items {(page - 1) * 10 + 1}-{min(page * 10, raw_count)}"
-                ),
-                # This select is an action menu, not an editable field. Leaving
-                # every option unselected ensures that choosing page 1 emits a
-                # Discord interaction even when it is the only page.
-                "default": False,
-            }
-            for page in range(1, page_count + 1)
-        ]
-        if include_failures:
-            options.append(
-                {
-                    "label": "View failures",
-                    "value": "failures",
-                    "description": "Review failed or reconciliation-required items",
-                    "default": False,
-                }
+        items = revision.preview.get("items")
+        if not isinstance(items, list) or len(items) != raw_count:
+            raise DiscordProjectionError(
+                "invalid_schedule_preview",
+                "Schedule preview items do not match the immutable item count",
             )
+        return (raw_count + 9) // 10
+
+    def _schedule_item_field(self, item: dict[str, Any], index: int) -> dict[str, Any]:
+        event = item.get("event")
+        event = event if isinstance(event, dict) else {}
+        classification = item.get("classification")
+        classification = classification if isinstance(classification, dict) else {}
+        conflicts = item.get("conflicts")
+        conflict_count = len(conflicts) if isinstance(conflicts, list) else 0
+        identity = " · ".join(
+            str(value)
+            for value in (
+                item.get("course_code"),
+                item.get("section"),
+                item.get("meeting_id"),
+            )
+            if value
+        )
         return {
-            "kind": "string_select",
-            "field": "review_page",
-            "label": "Review items",
-            "placeholder": (
-                "Review items or view failures" if include_failures else "Review schedule items"
+            "name": f"{index}. {identity or item.get('item_key', 'Schedule item')}",
+            "value": (
+                f"{item.get('effect', 'unknown')} · "
+                f"{classification.get('recurrence', 'timed')}\n"
+                f"{event.get('title', 'Untitled')}\n"
+                f"{self._standalone_timing(event)}\n"
+                f"{event.get('location') or 'No location'} · "
+                f"{conflict_count} conflict{'s' if conflict_count != 1 else ''}"
             ),
-            "row": 1,
-            "min_values": 1,
-            "max_values": 1,
-            "token": issue_projection_proposal_control_token(
-                revision.id,
-                projection_id,
-                "review_page",
-                expires_at,
-                signing_key,
+            "inline": False,
+        }
+
+    def _review_navigation_control(
+        self,
+        *,
+        revision: ActionRevision,
+        projection: DiscordProjection,
+        projection_version: int,
+        expires_at: datetime,
+        signing_key: bytes,
+        source_view: str,
+        source_page: int | None,
+        target_view: str,
+        target_page: int | None,
+        label: str,
+        row: int = 1,
+    ) -> dict[str, Any]:
+        return {
+            "kind": "review_navigation",
+            "transition": "proposal_review_navigate",
+            "label": label,
+            "row": row,
+            "action_revision_id": str(revision.id),
+            "source_view": source_view,
+            "source_page": source_page,
+            "target_view": target_view,
+            "target_page": target_page,
+            "token": issue_projection_review_navigation_token(
+                action_revision_id=revision.id,
+                projection_id=projection.id,
+                projection_version=projection_version,
+                source_view=source_view,
+                source_page=source_page,
+                target_view=target_view,
+                target_page=target_page,
+                actor_id=self.settings.operator_discord_user_id,
+                expires_at=expires_at,
+                signing_key=signing_key,
             ),
-            "options": options,
         }
 
     def _render(
@@ -585,7 +612,8 @@ class DiscordProjectionRunner:
         operation: Operation | None,
         local_revisions: list[tuple[Action, ActionRevision]],
         account_label: str | None,
-        projection_id: uuid.UUID,
+        projection: DiscordProjection,
+        projection_version: int,
         projection_date: date,
         latest_date: date,
     ) -> tuple[dict[str, Any], list[dict[str, Any]], str, str]:
@@ -626,6 +654,7 @@ class DiscordProjectionRunner:
             )
         if account_label is not None:
             fields.append({"name": "Account", "value": account_label, "inline": False})
+        base_fields = list(fields)
         if revision is not None:
             preview = revision.preview
             standalone = preview.get("event")
@@ -826,6 +855,123 @@ class DiscordProjectionRunner:
                     "inline": True,
                 }
             )
+            if (
+                revision.action_type == "calendar_apply_term_schedule"
+                and projection.view_action_revision_id == revision.id
+            ):
+                page_count = self._schedule_page_count(revision)
+                if projection.view_mode == "schedule_review":
+                    page = projection.view_page
+                    if page is None or page > page_count:
+                        raise DiscordProjectionError(
+                            "invalid_schedule_review_state",
+                            "Stored schedule review page is outside its immutable preview",
+                        )
+                    raw_items = revision.preview.get("items")
+                    assert isinstance(raw_items, list)
+                    start = (page - 1) * 10
+                    page_items = raw_items[start : start + 10]
+                    if any(not isinstance(item, dict) for item in page_items):
+                        raise DiscordProjectionError(
+                            "invalid_schedule_preview",
+                            "Schedule preview contains an invalid review item",
+                        )
+                    fields = [
+                        *base_fields,
+                        {
+                            "name": "Immutable schedule review",
+                            "value": (
+                                f"Page {page} of {page_count} · items "
+                                f"{start + 1}-{start + len(page_items)} of "
+                                f"{revision.preview.get('item_count')}\n"
+                                f"Manifest {str(revision.preview.get('manifest_sha256'))[:16]}"
+                            ),
+                            "inline": False,
+                        },
+                        *[
+                            self._schedule_item_field(item, start + index)
+                            for index, item in enumerate(page_items, start=1)
+                        ],
+                    ]
+                elif projection.view_mode == "decision":
+                    fields.append(
+                        {
+                            "name": "Review complete",
+                            "value": (
+                                f"All {revision.preview.get('item_count')} immutable items "
+                                f"reviewed across {page_count} page"
+                                f"{'s' if page_count != 1 else ''}. "
+                                "Approve or reject the bound schedule below."
+                            ),
+                            "inline": False,
+                        }
+                    )
+                elif projection.view_mode == "schedule_failures":
+                    failures = (
+                        operation.result.get("failures")
+                        if operation is not None and isinstance(operation.result, dict)
+                        else None
+                    )
+                    if not isinstance(failures, list) or not failures:
+                        raise DiscordProjectionError(
+                            "schedule_failures_unavailable",
+                            "The stored schedule result has no reviewable failures",
+                        )
+                    page = projection.view_page
+                    failure_page_count = (min(len(failures), 50) + 9) // 10
+                    if page is None or page > failure_page_count:
+                        raise DiscordProjectionError(
+                            "invalid_schedule_review_state",
+                            "Stored schedule failure page is outside its result",
+                        )
+                    preview_items = revision.preview.get("items")
+                    preview_by_key = (
+                        {
+                            str(item.get("item_key")): item
+                            for item in preview_items
+                            if isinstance(item, dict)
+                        }
+                        if isinstance(preview_items, list)
+                        else {}
+                    )
+                    start = (page - 1) * 10
+                    page_failures = failures[start : start + 10]
+                    fields = [
+                        *base_fields,
+                        {
+                            "name": "Schedule failures",
+                            "value": (
+                                f"Page {page} of {failure_page_count} · items "
+                                f"{start + 1}-{start + len(page_failures)} of "
+                                f"{min(len(failures), 50)}"
+                            ),
+                            "inline": False,
+                        },
+                    ]
+                    for index, failure in enumerate(page_failures, start=start + 1):
+                        failure = failure if isinstance(failure, dict) else {}
+                        item_key = str(failure.get("item_key", "unknown"))
+                        preview_item = preview_by_key.get(item_key, {})
+                        label = " · ".join(
+                            str(value)
+                            for value in (
+                                preview_item.get("course_code"),
+                                preview_item.get("section"),
+                                preview_item.get("meeting_id"),
+                            )
+                            if value
+                        )
+                        fields.append(
+                            {
+                                "name": f"{index}. {label or item_key}",
+                                "value": (
+                                    f"{failure.get('status', 'failed')} · "
+                                    f"{failure.get('error_code') or 'unknown_error'}\n"
+                                    f"{item_key}"
+                                ),
+                                "inline": False,
+                            }
+                        )
         controls: list[dict[str, Any]] = []
         if (
             approval is not None
@@ -838,31 +984,124 @@ class DiscordProjectionRunner:
             signing_key = self.settings.read_secret(
                 self.settings.interaction_signing_key_file
             ).encode()
-            token = issue_projection_approval_token(
-                approval.id, projection_id, approval.expires_at, signing_key
-            )
-            controls = [
-                {
-                    "kind": "approval",
-                    "decision": "approve",
-                    "label": "Approve",
-                    "approval_id": str(approval.id),
-                    "token": token,
-                },
-                {
-                    "kind": "approval",
-                    "decision": "reject",
-                    "label": "Reject",
-                    "approval_id": str(approval.id),
-                    "token": token,
-                },
-            ]
-            if revision is not None:
+            if revision is not None and revision.action_type == "calendar_apply_term_schedule":
+                page_count = self._schedule_page_count(revision)
+                common: _NavigationCommon = {
+                    "revision": revision,
+                    "projection": projection,
+                    "projection_version": projection_version,
+                    "expires_at": approval.expires_at,
+                    "signing_key": signing_key,
+                }
+                if projection.view_mode == "summary":
+                    controls = [
+                        self._review_navigation_control(
+                            **common,
+                            source_view="summary",
+                            source_page=None,
+                            target_view="schedule_review",
+                            target_page=1,
+                            label="Begin review",
+                        )
+                    ]
+                elif projection.view_mode == "schedule_review":
+                    assert projection.view_page is not None
+                    page = projection.view_page
+                    controls = [
+                        self._review_navigation_control(
+                            **common,
+                            source_view="schedule_review",
+                            source_page=page,
+                            target_view=("summary" if page == 1 else "schedule_review"),
+                            target_page=None if page == 1 else page - 1,
+                            label="Back to summary" if page == 1 else "Previous",
+                        ),
+                        self._review_navigation_control(
+                            **common,
+                            source_view="schedule_review",
+                            source_page=page,
+                            target_view=("decision" if page == page_count else "schedule_review"),
+                            target_page=None if page == page_count else page + 1,
+                            label=("Continue to decision" if page == page_count else "Next"),
+                        ),
+                    ]
+                elif projection.view_mode == "decision":
+                    token = issue_projection_decision_approval_token(
+                        approval.id,
+                        projection.id,
+                        projection_version,
+                        approval.expires_at,
+                        signing_key,
+                    )
+                    controls = [
+                        {
+                            "kind": "approval",
+                            "decision": "approve",
+                            "label": "Approve",
+                            "approval_id": str(approval.id),
+                            "token": token,
+                        },
+                        {
+                            "kind": "approval",
+                            "decision": "reject",
+                            "label": "Reject",
+                            "approval_id": str(approval.id),
+                            "token": token,
+                        },
+                        self._review_navigation_control(
+                            **common,
+                            source_view="decision",
+                            source_page=None,
+                            target_view="schedule_review",
+                            target_page=page_count,
+                            label="Back to review",
+                        ),
+                        {
+                            "kind": "proposal_action",
+                            "transition": "proposal_snooze",
+                            "label": "Snooze until tomorrow",
+                            "row": 4,
+                            "action_revision_id": str(revision.id),
+                            "token": issue_projection_proposal_control_token(
+                                revision.id,
+                                projection.id,
+                                "snooze",
+                                approval.expires_at,
+                                signing_key,
+                            ),
+                        },
+                    ]
+                else:
+                    raise DiscordProjectionError(
+                        "invalid_schedule_review_state",
+                        "Pending schedule card is not in an approvable review state",
+                    )
+            else:
+                token = issue_projection_approval_token(
+                    approval.id, projection.id, approval.expires_at, signing_key
+                )
+                controls = [
+                    {
+                        "kind": "approval",
+                        "decision": "approve",
+                        "label": "Approve",
+                        "approval_id": str(approval.id),
+                        "token": token,
+                    },
+                    {
+                        "kind": "approval",
+                        "decision": "reject",
+                        "label": "Reject",
+                        "approval_id": str(approval.id),
+                        "token": token,
+                    },
+                ]
+            if revision is not None and revision.action_type != "calendar_apply_term_schedule":
                 controls.extend(
                     self._proposal_selects(
                         revision,
                         approval,
-                        projection_id,
+                        projection.id,
                         signing_key,
                     )
                 )
@@ -879,7 +1118,7 @@ class DiscordProjectionRunner:
                             "action_revision_id": str(revision.id),
                             "token": issue_projection_proposal_control_token(
                                 revision.id,
-                                projection_id,
+                                projection.id,
                                 "edit",
                                 approval.expires_at,
                                 signing_key,
@@ -895,7 +1134,7 @@ class DiscordProjectionRunner:
                         "action_revision_id": str(revision.id),
                         "token": issue_projection_proposal_control_token(
                             revision.id,
-                            projection_id,
+                            projection.id,
                             "snooze",
                             approval.expires_at,
                             signing_key,
@@ -917,7 +1156,7 @@ class DiscordProjectionRunner:
                             "action_revision_id": str(revision.id),
                             "token": issue_projection_proposal_control_token(
                                 revision.id,
-                                projection_id,
+                                projection.id,
                                 "refresh",
                                 approval.expires_at,
                                 signing_key,
@@ -949,20 +1188,58 @@ class DiscordProjectionRunner:
                 hours=self.settings.daily_rollover_hour,
                 seconds=self.settings.local_action_ttl_seconds,
             )
-            controls = [
-                self._schedule_review_select(
-                    revision,
-                    projection_id,
-                    expires_at,
-                    signing_key,
-                    include_failures=operation.status
-                    in {
-                        "partial_failed",
-                        "reconciliation_required",
-                        "failed",
-                    },
+            if operation.status in {
+                "partial_failed",
+                "reconciliation_required",
+                "failed",
+            }:
+                failures = (
+                    operation.result.get("failures") if isinstance(operation.result, dict) else None
                 )
-            ]
+                if isinstance(failures, list) and failures:
+                    failure_page_count = (min(len(failures), 50) + 9) // 10
+                    common = {
+                        "revision": revision,
+                        "projection": projection,
+                        "projection_version": projection_version,
+                        "expires_at": expires_at,
+                        "signing_key": signing_key,
+                    }
+                    if projection.view_mode == "summary":
+                        controls = [
+                            self._review_navigation_control(
+                                **common,
+                                source_view="summary",
+                                source_page=None,
+                                target_view="schedule_failures",
+                                target_page=1,
+                                label="View failures",
+                            )
+                        ]
+                    elif projection.view_mode == "schedule_failures":
+                        assert projection.view_page is not None
+                        page = projection.view_page
+                        controls = [
+                            self._review_navigation_control(
+                                **common,
+                                source_view="schedule_failures",
+                                source_page=page,
+                                target_view=("summary" if page == 1 else "schedule_failures"),
+                                target_page=None if page == 1 else page - 1,
+                                label="Back to results" if page == 1 else "Previous",
+                            )
+                        ]
+                        if page < failure_page_count:
+                            controls.append(
+                                self._review_navigation_control(
+                                    **common,
+                                    source_view="schedule_failures",
+                                    source_page=page,
+                                    target_view="schedule_failures",
+                                    target_page=page + 1,
+                                    label="Next",
+                                )
+                            )
         elif projection_date == latest_date and local_revisions:
             signing_key = self.settings.read_secret(
                 self.settings.interaction_signing_key_file
@@ -979,7 +1256,7 @@ class DiscordProjectionRunner:
             for local_action, local_revision in local_revisions:
                 token = issue_projection_local_action_token(
                     local_revision.id,
-                    projection_id,
+                    projection.id,
                     queue_item.version,
                     expires_at,
                     signing_key,
@@ -1133,24 +1410,62 @@ class DiscordProjectionRunner:
                             or account.email_address
                             or account.external_account_id
                         )
-            embed, controls, render_sha256, component_sha256 = self._render(
-                queue_item,
-                action,
-                revision,
-                approval,
-                operation,
-                local_revisions,
-                account_label,
-                projection.id,
-                daily_thread.local_date,
-                latest_date,
-            )
+            revision_changed = revision is None or projection.view_action_revision_id != revision.id
+            if revision is None:
+                projection.view_action_revision_id = None
+                projection.view_mode = "summary"
+                projection.view_page = None
+                projection.reviewed_through_page = 0
+            elif revision_changed:
+                projection.view_action_revision_id = revision.id
+                projection.view_mode = (
+                    "summary"
+                    if revision.action_type == "calendar_apply_term_schedule"
+                    else (
+                        "decision"
+                        if action is not None and action.status == "approval_pending"
+                        else "summary"
+                    )
+                )
+                projection.view_page = None
+                projection.reviewed_through_page = 0
+            elif (
+                revision.action_type == "calendar_apply_term_schedule"
+                and action is not None
+                and action.status != "approval_pending"
+                and projection.view_mode in {"schedule_review", "decision"}
+            ):
+                projection.view_mode = "summary"
+                projection.view_page = None
+                projection.reviewed_through_page = 0
+
+            def render(
+                version: int,
+            ) -> tuple[dict[str, Any], list[dict[str, Any]], str, str]:
+                return self._render(
+                    queue_item,
+                    action,
+                    revision,
+                    approval,
+                    operation,
+                    local_revisions,
+                    account_label,
+                    projection,
+                    version,
+                    daily_thread.local_date,
+                    latest_date,
+                )
+
+            candidate_version = projection.projection_version
+            embed, controls, render_sha256, component_sha256 = render(candidate_version)
             changed = (
                 projection.render_sha256 != render_sha256
                 or projection.component_sha256 != component_sha256
             )
             if changed and projection.render_sha256 != "0" * 64:
-                projection.projection_version += 1
+                candidate_version += 1
+                embed, controls, render_sha256, component_sha256 = render(candidate_version)
+            projection.projection_version = candidate_version
             projection.render_sha256 = render_sha256
             projection.component_sha256 = component_sha256
             projection.status = "pending"

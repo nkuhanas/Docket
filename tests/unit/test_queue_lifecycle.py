@@ -177,7 +177,12 @@ def test_queue_reads_filter_and_return_primary_source_identity(session) -> None:
 
 def test_signed_local_button_executes_once_and_refreshes_the_same_card(
     session_factory,
+    monkeypatch,
 ) -> None:
+    monkeypatch.setattr(
+        "docket.services.local_actions.utc_now",
+        lambda: datetime(2026, 7, 22, 12, tzinfo=UTC),
+    )
     settings = get_settings()
     with session_factory.begin() as session:
         item = _pending_item()

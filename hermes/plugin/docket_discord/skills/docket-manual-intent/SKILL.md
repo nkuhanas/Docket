@@ -106,8 +106,10 @@ For a complete adopted schedule:
    Under `off`, never propose, even when explicitly asked; report that Calendar
    proposals are disabled without falling back to another tool.
 5. Report one aggregate proposal and point only to its authoritative queue
-   card and Review items control. Never emit one card per course or reproduce
-   the full manifest in chat.
+   card. Its persistent card flow is **Begin review** → bounded immutable item
+   pages → **Continue to decision**; Approve and Reject appear only on the
+   final decision view. Never emit one card per course, reproduce the full
+   manifest in chat, or describe the retired review dropdown/ephemeral flow.
 
 The aggregate store is atomic: a canonical conflict means no course, term,
 source provenance, or schedule snapshot from that call was stored. Stop and

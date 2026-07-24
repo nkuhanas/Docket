@@ -57,34 +57,67 @@ class LocalActionResponse(DiscordContext):
         "proposal_edit",
         "proposal_field_change",
         "proposal_snooze",
-        "proposal_review_page",
+        "proposal_review_navigate",
     ] = "local_action"
-    field: Literal["priority", "reminder_preset", "review_page"] | None = None
+    field: Literal["priority", "reminder_preset"] | None = None
     value: str | None = Field(default=None, min_length=1, max_length=64)
     modal_values: dict[str, str] | None = None
+    source_view: Literal["summary", "schedule_review", "decision", "schedule_failures"] | None = (
+        None
+    )
+    source_page: int | None = Field(default=None, ge=1, le=5)
+    target_view: Literal["summary", "schedule_review", "decision", "schedule_failures"] | None = (
+        None
+    )
+    target_page: int | None = Field(default=None, ge=1, le=5)
 
     @model_validator(mode="after")
     def require_projection_context(self) -> "LocalActionResponse":
         if self.parent_channel_id is None or self.projection_id is None:
             raise ValueError("parent_channel_id and projection_id are required")
+        navigation_values = (
+            self.source_view,
+            self.source_page,
+            self.target_view,
+            self.target_page,
+        )
         if self.transition == "local_action":
-            if self.field is not None or self.value is not None or self.modal_values is not None:
+            if (
+                self.field is not None
+                or self.value is not None
+                or self.modal_values is not None
+                or any(value is not None for value in navigation_values)
+            ):
                 raise ValueError("ordinary local actions omit proposal-control values")
         elif self.transition == "proposal_field_change":
             if (
                 self.field not in {"priority", "reminder_preset"}
                 or self.value is None
                 or self.modal_values is not None
+                or any(value is not None for value in navigation_values)
             ):
                 raise ValueError("proposal field changes require exactly field and value")
-        elif self.transition == "proposal_review_page":
-            if self.field != "review_page" or self.value is None or self.modal_values is not None:
-                raise ValueError("proposal review paging requires the review_page field and value")
+        elif self.transition == "proposal_review_navigate":
+            if (
+                self.field is not None
+                or self.value is not None
+                or self.modal_values is not None
+                or self.source_view is None
+                or self.target_view is None
+            ):
+                raise ValueError("proposal review navigation requires source and target views")
+            if (self.source_view in {"schedule_review", "schedule_failures"}) != (
+                self.source_page is not None
+            ) or (self.target_view in {"schedule_review", "schedule_failures"}) != (
+                self.target_page is not None
+            ):
+                raise ValueError("review-page values must match their paginated views")
         elif self.transition == "proposal_edit":
             if (
                 self.modal_values is None
                 or self.field not in {None, "reminder_preset"}
                 or self.value is not None
+                or any(value is not None for value in navigation_values)
             ):
                 raise ValueError(
                     "proposal edits require bounded modal_values and an optional "
@@ -97,6 +130,11 @@ class LocalActionResponse(DiscordContext):
                 for key, value in self.modal_values.items()
             ):
                 raise ValueError("proposal edit modal values exceed their bounds")
-        elif self.field is not None or self.value is not None or self.modal_values is not None:
+        elif (
+            self.field is not None
+            or self.value is not None
+            or self.modal_values is not None
+            or any(value is not None for value in navigation_values)
+        ):
             raise ValueError("this proposal control does not accept field values")
         return self

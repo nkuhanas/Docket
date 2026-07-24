@@ -37,7 +37,7 @@ _PROJECTION_PATH = re.compile(r"^/internal/docket/discord/projections/([0-9a-fA-
 _THREAD_LIFECYCLE_PATH = re.compile(
     r"^/internal/docket/discord/threads/([0-9a-fA-F-]{36})/lifecycle$"
 )
-_CONTROL_ID = re.compile(r"^dkt:([arlp]):([A-Za-z0-9_-]{70,90})$")
+_CONTROL_ID = re.compile(r"^dkt:([arlnp]):([A-Za-z0-9_-]{70,90})$")
 _MAX_REQUEST_BYTES = 65536
 _SERVER: ThreadingHTTPServer | None = None
 _SERVER_STARTING = False
@@ -532,7 +532,7 @@ def _escaped(value: str, maximum: int) -> str:
 def _decode_control(token: str) -> tuple[uuid.UUID, uuid.UUID]:
     try:
         raw = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
-        if len(raw) != 57 or raw[0] != 2:
+        if (len(raw), raw[0]) not in {(57, 2), (61, 6)}:
             raise ValueError
         return uuid.UUID(bytes=raw[1:17]), uuid.UUID(bytes=raw[17:33])
     except (ValueError, UnicodeEncodeError) as exc:
@@ -555,7 +555,6 @@ def _decode_proposal_control(token: str) -> tuple[uuid.UUID, uuid.UUID, str]:
         2: "reminder_preset",
         3: "refresh",
         4: "edit",
-        5: "review_page",
         6: "snooze",
     }
     try:
@@ -569,6 +568,35 @@ def _decode_proposal_control(token: str) -> tuple[uuid.UUID, uuid.UUID, str]:
         )
     except (ValueError, UnicodeEncodeError) as exc:
         raise PluginAPIError("invalid_control", "Proposal control token is invalid", 422) from exc
+
+
+def _decode_review_navigation(
+    token: str,
+) -> tuple[uuid.UUID, uuid.UUID, int, str, int | None, str, int | None, str]:
+    views = {
+        1: "summary",
+        2: "schedule_review",
+        3: "decision",
+        4: "schedule_failures",
+    }
+    try:
+        raw = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
+        if len(raw) != 65 or raw[0] != 5 or raw[37] not in views or raw[39] not in views:
+            raise ValueError
+        source_page = raw[38] or None
+        target_page = raw[40] or None
+        return (
+            uuid.UUID(bytes=raw[1:17]),
+            uuid.UUID(bytes=raw[17:33]),
+            int.from_bytes(raw[33:37], "big"),
+            views[raw[37]],
+            source_page,
+            views[raw[39]],
+            target_page,
+            str(int.from_bytes(raw[41:49], "big")),
+        )
+    except (ValueError, UnicodeEncodeError) as exc:
+        raise PluginAPIError("invalid_control", "Review navigation token is invalid", 422) from exc
 
 
 def _render_embed(
@@ -755,11 +783,7 @@ def _render_embed(
                 }:
                     raise PluginAPIError("invalid_control", "Select descriptor is invalid", 422)
                 field = str(control["field"])
-                if field not in {
-                    "priority",
-                    "reminder_preset",
-                    "review_page",
-                }:
+                if field not in {"priority", "reminder_preset"}:
                     raise PluginAPIError("invalid_control", "Select field is not allowlisted", 422)
                 row = int(control["row"])
                 if row not in {1, 2, 3, 4} or row in rows:
@@ -810,15 +834,10 @@ def _render_embed(
                             default=default,
                         )
                     )
-                expected_defaults = 0 if field == "review_page" else 1
-                if defaults != expected_defaults:
+                if defaults != 1:
                     raise PluginAPIError(
                         "invalid_control",
-                        (
-                            "Review selects must start unselected"
-                            if field == "review_page"
-                            else "Select must identify one current value"
-                        ),
+                        "Select must identify one current value",
                         422,
                     )
                 view.add_item(
@@ -840,7 +859,12 @@ def _render_embed(
                 )
         if "proposal_action" in kinds:
             if "local_action" in kinds or not kinds.issubset(
-                {"approval", "string_select", "proposal_action"}
+                {
+                    "approval",
+                    "string_select",
+                    "proposal_action",
+                    "review_navigation",
+                }
             ):
                 raise PluginAPIError(
                     "invalid_control", "Proposal action kinds are incompatible", 422
@@ -906,7 +930,130 @@ def _render_embed(
                 ]
             ):
                 raise PluginAPIError("invalid_control", "Proposal actions are duplicated", 422)
-        if not kinds.issubset({"approval", "local_action", "string_select", "proposal_action"}):
+        if "review_navigation" in kinds:
+            if "local_action" in kinds or "string_select" in kinds:
+                raise PluginAPIError(
+                    "invalid_control",
+                    "Review navigation cannot mix with local actions or selects",
+                    422,
+                )
+            seen: set[tuple[str, int | None, str, int | None]] = set()
+            projection_version = int(payload["projection_version"])
+            for control in (
+                item
+                for item in controls
+                if isinstance(item, dict) and item.get("kind") == "review_navigation"
+            ):
+                if set(control) != {
+                    "kind",
+                    "transition",
+                    "label",
+                    "row",
+                    "action_revision_id",
+                    "source_view",
+                    "source_page",
+                    "target_view",
+                    "target_page",
+                    "token",
+                }:
+                    raise PluginAPIError(
+                        "invalid_control",
+                        "Review navigation descriptor is invalid",
+                        422,
+                    )
+                if control["transition"] != "proposal_review_navigate":
+                    raise PluginAPIError(
+                        "invalid_control", "Review transition is not canonical", 422
+                    )
+                revision_id = uuid.UUID(str(control["action_revision_id"]))
+                source_view = str(control["source_view"])
+                target_view = str(control["target_view"])
+                source_page = control["source_page"]
+                target_page = control["target_page"]
+                source_page = None if source_page is None else int(source_page)
+                target_page = None if target_page is None else int(target_page)
+                token = str(control["token"])
+                (
+                    token_revision,
+                    token_projection,
+                    token_version,
+                    token_source_view,
+                    token_source_page,
+                    token_target_view,
+                    token_target_page,
+                    token_actor,
+                ) = _decode_review_navigation(token)
+                if (
+                    token_revision != revision_id
+                    or token_projection != projection_id
+                    or token_version != projection_version
+                    or token_source_view != source_view
+                    or token_source_page != source_page
+                    or token_target_view != target_view
+                    or token_target_page != target_page
+                    or token_actor != str(int(_configured_identity()[2]))
+                ):
+                    raise PluginAPIError(
+                        "invalid_control",
+                        "Review navigation binding does not match",
+                        422,
+                    )
+                key = (source_view, source_page, target_view, target_page)
+                if key in seen:
+                    raise PluginAPIError("invalid_control", "Review navigation is duplicated", 422)
+                seen.add(key)
+                canonical_label: str | None = None
+                if source_view == "summary" and target_view == "schedule_review":
+                    canonical_label = "Begin review"
+                elif source_view == "summary" and target_view == "schedule_failures":
+                    canonical_label = "View failures"
+                elif source_view == "schedule_review" and target_view == "summary":
+                    canonical_label = "Back to summary"
+                elif source_view == "schedule_failures" and target_view == "summary":
+                    canonical_label = "Back to results"
+                elif source_view == "decision" and target_view == "schedule_review":
+                    canonical_label = "Back to review"
+                elif source_view == "schedule_review" and target_view == "decision":
+                    canonical_label = "Continue to decision"
+                elif (
+                    source_view == target_view
+                    and source_page is not None
+                    and target_page == source_page - 1
+                ):
+                    canonical_label = "Previous"
+                elif (
+                    source_view == target_view
+                    and source_page is not None
+                    and target_page == source_page + 1
+                ):
+                    canonical_label = "Next"
+                if (
+                    canonical_label is None
+                    or control["label"] != canonical_label
+                    or int(control["row"]) != 1
+                ):
+                    raise PluginAPIError(
+                        "invalid_control",
+                        "Review navigation is not canonical",
+                        422,
+                    )
+                view.add_item(
+                    discord.ui.Button(
+                        label=canonical_label,
+                        style=discord.ButtonStyle.secondary,
+                        custom_id=f"dkt:n:{token}",
+                        row=1,
+                    )
+                )
+        if not kinds.issubset(
+            {
+                "approval",
+                "local_action",
+                "string_select",
+                "proposal_action",
+                "review_navigation",
+            }
+        ):
             raise PluginAPIError("invalid_control", "Control kind is not allowed", 422)
     context_prefix = f"{_escaped(footer_context, 512)} | " if footer_context else ""
     footer = (
@@ -1440,7 +1587,13 @@ async def _on_docket_interaction(interaction: object) -> None:
         token = match.group(2)
         local_action = match.group(1) == "l"
         proposal_control = match.group(1) == "p"
-        if local_action:
+        review_navigation = match.group(1) == "n"
+        navigation = _decode_review_navigation(token) if review_navigation else None
+        if navigation is not None:
+            action_revision_id, projection_id = navigation[:2]
+            approval_id = None
+            proposal_field = None
+        elif local_action:
             action_revision_id, projection_id = _decode_local_control(token)
             approval_id = None
             proposal_field = None
@@ -1460,6 +1613,10 @@ async def _on_docket_interaction(interaction: object) -> None:
             or str(parent_id) != queue_channel_id
             or not isinstance(channel, discord.Thread)
             or message is None
+            or (
+                navigation is not None
+                and not hmac.compare_digest(navigation[7], str(int(interaction.user.id)))
+            )
         ):
             raise PluginAPIError(
                 "unauthorized_interaction", "This Docket control is not authorized", 403
@@ -1490,7 +1647,7 @@ async def _on_docket_interaction(interaction: object) -> None:
             if proposal_field not in {"refresh", "snooze"}:
                 values = data.get("values", []) if isinstance(data, dict) else []
                 if (
-                    proposal_field not in {"priority", "reminder_preset", "review_page"}
+                    proposal_field not in {"priority", "reminder_preset"}
                     or not isinstance(values, list)
                     or len(values) != 1
                 ):
@@ -1509,6 +1666,20 @@ async def _on_docket_interaction(interaction: object) -> None:
                         context=context,
                     )
                     return
+        if navigation is not None:
+            await interaction.response.defer()
+            payload = {
+                **context,
+                "action_revision_id": str(action_revision_id),
+                "action_token": token,
+                "transition": "proposal_review_navigate",
+                "source_view": navigation[3],
+                "source_page": navigation[4],
+                "target_view": navigation[5],
+                "target_page": navigation[6],
+            }
+            await asyncio.to_thread(_post_button_response, payload, local_action=True)
+            return
         await interaction.response.defer(ephemeral=True, thinking=True)
         if local_action:
             payload = {
@@ -1533,16 +1704,6 @@ async def _on_docket_interaction(interaction: object) -> None:
                         "proposal_refresh" if proposal_field == "refresh" else "proposal_snooze"
                     ),
                 }
-            elif proposal_field == "review_page":
-                assert proposal_value is not None
-                payload = {
-                    **context,
-                    "action_revision_id": str(action_revision_id),
-                    "action_token": token,
-                    "transition": "proposal_review_page",
-                    "field": "review_page",
-                    "value": proposal_value,
-                }
             else:
                 assert proposal_value is not None
                 payload = {
@@ -1555,9 +1716,7 @@ async def _on_docket_interaction(interaction: object) -> None:
                 }
             result = await asyncio.to_thread(_post_button_response, payload, local_action=True)
             acknowledgement = (
-                str(result.get("content"))
-                if proposal_field == "review_page"
-                else (
+                (
                     "Calendar state refreshed; "
                     f"proposal revision {result.get('revision')} is current"
                     if proposal_field == "refresh"
@@ -1597,6 +1756,10 @@ async def _on_docket_interaction(interaction: object) -> None:
         logger.exception("Unexpected Docket button interaction failure")
         if interaction.response.is_done():
             await interaction.followup.send(
+                "Docket could not record that decision.", ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
                 "Docket could not record that decision.", ephemeral=True
             )
 
