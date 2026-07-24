@@ -141,8 +141,11 @@ class TermScheduleActionService:
             )
         return account, state
 
-    def _snapshot(self, request: ProposeTermScheduleInput) -> CalendarScheduleSnapshot:
-        snapshot = self.session.get(CalendarScheduleSnapshot, request.schedule_snapshot_id)
+    def _verified_snapshot(
+        self,
+        snapshot_id: uuid.UUID,
+    ) -> CalendarScheduleSnapshot:
+        snapshot = self.session.get(CalendarScheduleSnapshot, snapshot_id)
         if snapshot is None:
             raise DocketError(
                 code="schedule_snapshot_not_found",
@@ -189,6 +192,9 @@ class TermScheduleActionService:
                     message="A schedule manifest item hash does not match.",
                 )
         return snapshot
+
+    def _snapshot(self, request: ProposeTermScheduleInput) -> CalendarScheduleSnapshot:
+        return self._verified_snapshot(request.schedule_snapshot_id)
 
     @staticmethod
     def _material_snapshot(
@@ -366,6 +372,86 @@ class TermScheduleActionService:
             compiled.append(compiled_item)
         return compiled, all_conflicts[:100]
 
+    def _compile_proposal_material(
+        self,
+        snapshot: CalendarScheduleSnapshot,
+        account: Account,
+        calendar_id: str,
+        reminder_plan: dict[str, Any],
+        state: CalendarSyncState,
+    ) -> tuple[dict[str, Any], dict[str, Any], str]:
+        items, conflicts = self._compile_items(
+            snapshot,
+            account,
+            calendar_id,
+            reminder_plan,
+            state,
+        )
+        counts = {
+            key: sum(item["effect"] == key for item in items)
+            for key in ("create", "update", "no_op")
+        }
+        parameters: dict[str, Any] = {
+            "calendar_id": calendar_id,
+            "schedule_snapshot_id": str(snapshot.id),
+            "manifest_sha256": snapshot.manifest_sha256,
+            "reminder_plan": reminder_plan,
+            "reminder_plan_sha256": sha256_json(reminder_plan),
+            "items": items,
+        }
+        preview: dict[str, Any] = {
+            "action_type": "calendar_apply_term_schedule",
+            "target": {
+                "account_id": str(account.id),
+                "calendar_id": calendar_id,
+            },
+            "schedule_snapshot_id": str(snapshot.id),
+            "manifest_sha256": snapshot.manifest_sha256,
+            "term": snapshot.manifest["term"],
+            "item_count": len(items),
+            "counts": counts,
+            "items": [
+                {
+                    "item_key": item["item_key"],
+                    "course_code": item["course_code"],
+                    "section": item["section"],
+                    "meeting_id": item["meeting_id"],
+                    "exception_id": item.get("exception_id"),
+                    "effect": item["effect"],
+                    "event": item["event"],
+                    "classification": item["classification"],
+                    "conflicts": item["conflicts"],
+                }
+                for item in items
+            ],
+            "reminder_plan": reminder_plan,
+            "conflicts": conflicts,
+            "freshness": {
+                "last_success_at": _aware(state.last_success_at).isoformat(),
+                "window_start": _aware(state.window_start).isoformat(),
+                "window_end": _aware(state.window_end).isoformat(),
+            },
+        }
+        material_fingerprint = sha256_json(
+            {
+                "action_type": "calendar_apply_term_schedule",
+                "account_id": str(account.id),
+                "calendar_id": calendar_id,
+                "manifest_sha256": snapshot.manifest_sha256,
+                "reminder_plan_sha256": sha256_json(reminder_plan),
+                "targets": [
+                    {
+                        "item_key": item["item_key"],
+                        "effect": item["effect"],
+                        "external_event_id": item["parameters"].get("external_event_id"),
+                        "provider_etag": item["parameters"].get("provider_etag"),
+                    }
+                    for item in items
+                ],
+            }
+        )
+        return parameters, preview, material_fingerprint
+
     @staticmethod
     def _first_overlap(
         left: list[tuple[datetime, datetime]],
@@ -397,85 +483,26 @@ class TermScheduleActionService:
             lead_seconds=profile.default_reminder_lead_seconds,
         )
         reminder_plan = plan_model.model_dump(mode="json")
-        items, conflicts = self._compile_items(
+        parameters, preview, material_fingerprint = self._compile_proposal_material(
             snapshot,
             account,
             request.calendar_id,
             reminder_plan,
             state,
         )
+        conflicts = preview["conflicts"]
+        assert isinstance(conflicts, list)
         if conflicts and profile.conflict_policy == "block":
             raise DocketError(
                 code="calendar_conflict_blocked",
                 message="The Calendar profile blocks this conflicting schedule.",
                 details={"conflicts": conflicts[:10]},
             )
-        counts = {
-            key: sum(item["effect"] == key for item in items)
-            for key in ("create", "update", "no_op")
-        }
-        parameters: dict[str, Any] = {
-            "calendar_id": request.calendar_id,
-            "schedule_snapshot_id": str(snapshot.id),
-            "manifest_sha256": snapshot.manifest_sha256,
-            "reminder_plan": reminder_plan,
-            "reminder_plan_sha256": sha256_json(reminder_plan),
-            "items": items,
-        }
-        preview: dict[str, Any] = {
-            "action_type": "calendar_apply_term_schedule",
-            "target": {
-                "account_id": str(account.id),
-                "calendar_id": request.calendar_id,
-            },
-            "schedule_snapshot_id": str(snapshot.id),
-            "manifest_sha256": snapshot.manifest_sha256,
-            "term": snapshot.manifest["term"],
-            "item_count": len(items),
-            "counts": counts,
-            "items": [
-                {
-                    "item_key": item["item_key"],
-                    "course_code": item["course_code"],
-                    "section": item["section"],
-                    "meeting_id": item["meeting_id"],
-                    "exception_id": item.get("exception_id"),
-                    "effect": item["effect"],
-                    "event": item["event"],
-                    "classification": item["classification"],
-                    "conflicts": item["conflicts"],
-                }
-                for item in items
-            ],
-            "reminder_plan": reminder_plan,
-            "conflicts": conflicts,
-            "freshness": {
-                "last_success_at": _aware(state.last_success_at).isoformat(),
-                "window_start": _aware(state.window_start).isoformat(),
-                "window_end": _aware(state.window_end).isoformat(),
-            },
-        }
+        counts = preview["counts"]
+        items = parameters["items"]
+        assert isinstance(counts, dict)
+        assert isinstance(items, list)
         parameters_sha256 = sha256_json(parameters)
-        material_fingerprint = sha256_json(
-            {
-                "action_type": "calendar_apply_term_schedule",
-                "account_id": str(account.id),
-                "calendar_id": request.calendar_id,
-                "manifest_sha256": snapshot.manifest_sha256,
-                "reminder_plan_sha256": sha256_json(reminder_plan),
-                "targets": [
-                    {
-                        "item_key": item["item_key"],
-                        "effect": item["effect"],
-                        "external_event_id": item["parameters"].get(
-                            "external_event_id"
-                        ),
-                        "provider_etag": item["parameters"].get("provider_etag"),
-                    }
-                    for item in items
-                ],
-            }
-        )
         preview_sha256 = sha256_json(preview)
         now = utc_now()
         matched = find_materially_identical_pending_proposal(

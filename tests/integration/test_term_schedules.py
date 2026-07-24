@@ -15,6 +15,7 @@ from docket.models import (
     ActionRevision,
     Approval,
     AuditEvent,
+    CalendarEventCache,
     CalendarReminderPlan,
     CalendarScheduleSnapshot,
     CalendarSyncState,
@@ -515,7 +516,10 @@ def test_aggregate_card_persists_review_then_exposes_decision_without_revision_c
         assert projection is not None and projection.message_id is not None
         assert thread is not None and thread.thread_id is not None
         projected = backend.messages[str(projection.id)]
-        assert [control["label"] for control in projected["controls"]] == ["Begin review"]
+        assert [control["label"] for control in projected["controls"]] == [
+            "Begin review",
+            "Refresh",
+        ]
         assert not any(control.get("kind") == "approval" for control in projected["controls"])
         assert len(projected["embed"]["fields"]) <= 25
         projection_id = projection.id
@@ -590,6 +594,7 @@ def test_aggregate_card_persists_review_then_exposes_decision_without_revision_c
             "Approve",
             "Reject",
             "Back to review",
+            "Refresh",
             "Snooze until tomorrow",
         ]
         assert any(field["name"] == "Review complete" for field in projected["embed"]["fields"])
@@ -657,6 +662,245 @@ def test_aggregate_card_persists_review_then_exposes_decision_without_revision_c
         )
         assert decision["approval_status"] == "rejected"
         assert session.scalar(select(Operation)) is None
+
+
+@pytest.mark.integration
+def test_schedule_refresh_recompiles_preview_and_preserves_item_reminder_bindings(
+    session_factory: sessionmaker[Session],
+) -> None:
+    settings = get_settings()
+    proposal, account_id = _store_and_propose(
+        session_factory,
+        store_message_id="400000000000000001",
+        proposal_message_id="400000000000000002",
+    )
+    backend = FakeDiscordBackend()
+    runner = DiscordProjectionRunner(
+        session_factory,
+        FakeDiscordProjectionAdapter(backend),
+        settings,
+    )
+    assert runner.run_due_once()
+    with session_factory() as session:
+        projection = session.scalar(select(DiscordProjection))
+        thread = session.scalar(select(DiscordDailyThread))
+        assert projection is not None and projection.message_id is not None
+        assert thread is not None and thread.thread_id is not None
+        projected = backend.messages[str(projection.id)]
+        refresh = next(
+            control
+            for control in projected["controls"]
+            if control.get("transition") == "proposal_refresh"
+        )
+        stale_begin = next(
+            control for control in projected["controls"] if control.get("label") == "Begin review"
+        )
+        projection_id = projection.id
+        message_id = projection.message_id
+        thread_id = thread.thread_id
+        initial_version = projection.projection_version
+
+    refreshed_at = datetime.now(UTC) + timedelta(seconds=5)
+    with session_factory.begin() as session:
+        state = session.scalar(
+            select(CalendarSyncState).where(
+                CalendarSyncState.account_id == account_id,
+                CalendarSyncState.calendar_id == settings.google_calendar_id,
+            )
+        )
+        assert state is not None
+        generation = uuid.uuid4()
+        state.snapshot_generation = generation
+        state.last_attempt_at = refreshed_at
+        state.last_success_at = refreshed_at
+        session.add(
+            CalendarEventCache(
+                account_id=account_id,
+                calendar_id=settings.google_calendar_id,
+                provider_event_id="schedule-refresh-conflict",
+                snapshot_generation=generation,
+                status="confirmed",
+                summary="Newly synchronized conflict",
+                location="Elsewhere",
+                is_all_day=False,
+                start_at=datetime(2026, 8, 24, 17, 45, tzinfo=UTC),
+                end_at=datetime(2026, 8, 24, 18, 0, tzinfo=UTC),
+                timezone="America/Los_Angeles",
+                recurrence_kind="one_time",
+                system_tags=["one_time", "timed", "external"],
+                operator_tags=[],
+                priority="normal",
+                priority_basis="default",
+                provider_reminders={},
+                provider_etag='"schedule-refresh"',
+                synced_at=refreshed_at,
+            )
+        )
+
+    response = LocalActionResponse(
+        request_id=uuid.uuid4(),
+        discord_interaction_id="schedule-refresh-recompile",
+        discord_user_id=settings.operator_discord_user_id,
+        guild_id=settings.discord_guild_id,
+        channel_id=thread_id,
+        parent_channel_id=settings.queue_channel_id,
+        projection_id=projection_id,
+        message_id=message_id,
+        responded_at=datetime.now(UTC),
+        action_revision_id=proposal.action_revision_id,
+        action_token=refresh["token"],
+        transition="proposal_refresh",
+    )
+    with session_factory.begin() as session:
+        assert ProposalControlService(session).prepare_refresh(response) == (
+            account_id,
+            settings.google_calendar_id,
+        )
+    with session_factory.begin() as session:
+        result = ProposalControlService(session).respond(
+            response,
+            refresh_started_at=refreshed_at - timedelta(seconds=1),
+        )
+        assert result["revision"] == 2
+        refreshed_revision_id = uuid.UUID(str(result["action_revision_id"]))
+
+    assert runner.run_due_once()
+    with session_factory() as session:
+        action = session.get(Action, proposal.action_id)
+        old_approval = session.get(Approval, proposal.approval_id)
+        refreshed_revision = session.get(ActionRevision, refreshed_revision_id)
+        refreshed_approval = session.scalar(
+            select(Approval).where(Approval.action_revision_id == refreshed_revision_id)
+        )
+        projection = session.get(DiscordProjection, projection_id)
+        assert action is not None and action.current_revision == 2
+        assert old_approval is not None and old_approval.status == "superseded"
+        assert refreshed_revision is not None
+        assert refreshed_approval is not None and refreshed_approval.status == "pending"
+        assert (
+            refreshed_revision.preview["freshness"]["last_success_at"] == refreshed_at.isoformat()
+        )
+        assert (
+            refreshed_revision.target_versions["calendar_snapshot"]["last_success_at"]
+            == refreshed_at.isoformat()
+        )
+        assert any(
+            conflict.get("provider_event_id") == "schedule-refresh-conflict"
+            for conflict in refreshed_revision.preview["conflicts"]
+        )
+        plans = list(
+            session.scalars(
+                select(CalendarReminderPlan).order_by(
+                    CalendarReminderPlan.created_at,
+                    CalendarReminderPlan.manifest_item_key,
+                )
+            )
+        )
+        old_plans = [
+            plan for plan in plans if plan.action_revision_id == proposal.action_revision_id
+        ]
+        new_plans = [plan for plan in plans if plan.action_revision_id == refreshed_revision_id]
+        assert len(old_plans) == 2
+        assert all(plan.status == "cancelled" for plan in old_plans)
+        assert len(new_plans) == 2
+        assert all(plan.status == "planned" for plan in new_plans)
+        assert {plan.manifest_item_key for plan in new_plans} == {
+            item["item_key"] for item in refreshed_revision.parameters["items"]
+        }
+        assert projection is not None
+        assert projection.message_id == message_id
+        assert projection.projection_version == initial_version + 1
+        assert projection.view_action_revision_id == refreshed_revision_id
+        assert projection.view_mode == "summary"
+        assert [
+            control["label"] for control in backend.messages[str(projection.id)]["controls"]
+        ] == [
+            "Begin review",
+            "Refresh",
+        ]
+
+    stale_request = LocalActionResponse(
+        request_id=uuid.uuid4(),
+        discord_interaction_id="schedule-refresh-stale-begin",
+        discord_user_id=settings.operator_discord_user_id,
+        guild_id=settings.discord_guild_id,
+        channel_id=thread_id,
+        parent_channel_id=settings.queue_channel_id,
+        projection_id=projection_id,
+        message_id=message_id,
+        responded_at=datetime.now(UTC),
+        action_revision_id=proposal.action_revision_id,
+        action_token=stale_begin["token"],
+        transition="proposal_review_navigate",
+        source_view=stale_begin["source_view"],
+        source_page=stale_begin["source_page"],
+        target_view=stale_begin["target_view"],
+        target_page=stale_begin["target_page"],
+    )
+    with pytest.raises(DocketError) as stale, session_factory.begin() as session:
+        ProposalControlService(session).respond(stale_request)
+    assert stale.value.code == "stale_proposal_control"
+
+    refreshed_proposal = proposal.model_copy(update={"action_revision_id": refreshed_revision_id})
+    _navigate_schedule_card(
+        session_factory,
+        runner,
+        backend,
+        refreshed_proposal,
+        label="Begin review",
+        interaction_id="schedule-refresh-review-begin",
+    )
+    _navigate_schedule_card(
+        session_factory,
+        runner,
+        backend,
+        refreshed_proposal,
+        label="Continue to decision",
+        interaction_id="schedule-refresh-review-decision",
+    )
+    with session_factory() as session:
+        projection = session.get(DiscordProjection, projection_id)
+        thread = session.scalar(select(DiscordDailyThread))
+        assert projection is not None and projection.message_id is not None
+        assert thread is not None and thread.thread_id is not None
+        snooze = next(
+            control
+            for control in backend.messages[str(projection.id)]["controls"]
+            if control.get("transition") == "proposal_snooze"
+        )
+        snooze_request = LocalActionResponse(
+            request_id=uuid.uuid4(),
+            discord_interaction_id="schedule-refresh-snooze",
+            discord_user_id=settings.operator_discord_user_id,
+            guild_id=settings.discord_guild_id,
+            channel_id=thread.thread_id,
+            parent_channel_id=settings.queue_channel_id,
+            projection_id=projection.id,
+            message_id=projection.message_id,
+            responded_at=datetime.now(UTC),
+            action_revision_id=refreshed_revision_id,
+            action_token=snooze["token"],
+            transition="proposal_snooze",
+        )
+    with session_factory.begin() as session:
+        snoozed = ProposalControlService(session).respond(snooze_request)
+        assert snoozed["revision"] == 3
+        snoozed_revision_id = uuid.UUID(str(snoozed["action_revision_id"]))
+    with session_factory() as session:
+        snoozed_revision = session.get(ActionRevision, snoozed_revision_id)
+        assert snoozed_revision is not None
+        snoozed_plans = list(
+            session.scalars(
+                select(CalendarReminderPlan).where(
+                    CalendarReminderPlan.action_revision_id == snoozed_revision_id
+                )
+            )
+        )
+        assert len(snoozed_plans) == 2
+        assert all(plan.status == "planned" for plan in snoozed_plans)
+        assert {plan.manifest_item_key for plan in snoozed_plans} == {
+            item["item_key"] for item in snoozed_revision.parameters["items"]
+        }
 
 
 @pytest.mark.integration
@@ -931,7 +1175,10 @@ def test_fifty_item_schedule_survives_restart_and_partial_failure_without_replay
         projection = session.scalar(select(DiscordProjection))
         assert projection is not None
         projected = backend.messages[str(projection.id)]
-        assert [control["label"] for control in projected["controls"]] == ["Begin review"]
+        assert [control["label"] for control in projected["controls"]] == [
+            "Begin review",
+            "Refresh",
+        ]
         embed = projected["embed"]
         assert (
             len(embed["title"])

@@ -1002,7 +1002,21 @@ class DiscordProjectionRunner:
                             target_view="schedule_review",
                             target_page=1,
                             label="Begin review",
-                        )
+                        ),
+                        {
+                            "kind": "proposal_action",
+                            "transition": "proposal_refresh",
+                            "label": "Refresh",
+                            "row": 3,
+                            "action_revision_id": str(revision.id),
+                            "token": issue_projection_proposal_control_token(
+                                revision.id,
+                                projection.id,
+                                "refresh",
+                                approval.expires_at,
+                                signing_key,
+                            ),
+                        },
                     ]
                 elif projection.view_mode == "schedule_review":
                     assert projection.view_page is not None
@@ -1056,6 +1070,20 @@ class DiscordProjectionRunner:
                             target_page=page_count,
                             label="Back to review",
                         ),
+                        {
+                            "kind": "proposal_action",
+                            "transition": "proposal_refresh",
+                            "label": "Refresh",
+                            "row": 3,
+                            "action_revision_id": str(revision.id),
+                            "token": issue_projection_proposal_control_token(
+                                revision.id,
+                                projection.id,
+                                "refresh",
+                                approval.expires_at,
+                                signing_key,
+                            ),
+                        },
                         {
                             "kind": "proposal_action",
                             "transition": "proposal_snooze",

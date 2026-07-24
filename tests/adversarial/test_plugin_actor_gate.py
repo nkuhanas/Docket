@@ -12,6 +12,7 @@ from docket.security import (
     issue_projection_approval_token,
     issue_projection_decision_approval_token,
     issue_projection_local_action_token,
+    issue_projection_proposal_control_token,
     issue_projection_review_navigation_token,
 )
 
@@ -521,6 +522,13 @@ def test_plugin_accepts_only_bound_persistent_review_navigation(plugin_module, m
         expires_at=expires_at,
         signing_key=b"test-signing-key",
     )
+    refresh_token = issue_projection_proposal_control_token(
+        revision_id,
+        projection_id,
+        "refresh",
+        expires_at,
+        b"test-signing-key",
+    )
     _embed, view = plugin_module._render_embed(
         projection_id,
         {
@@ -543,6 +551,14 @@ def test_plugin_accepts_only_bound_persistent_review_navigation(plugin_module, m
                     "target_page": 1,
                     "token": token,
                 },
+                {
+                    "kind": "proposal_action",
+                    "transition": "proposal_refresh",
+                    "label": "Refresh",
+                    "row": 3,
+                    "action_revision_id": str(revision_id),
+                    "token": refresh_token,
+                },
             ],
             "projection_version": 3,
             "render_sha256": "a" * 64,
@@ -550,8 +566,10 @@ def test_plugin_accepts_only_bound_persistent_review_navigation(plugin_module, m
         },
     )
 
-    assert len(view.items) == 1
-    assert view.items[0].custom_id == f"dkt:n:{token}"
+    assert {item.custom_id for item in view.items} == {
+        f"dkt:n:{token}",
+        f"dkt:p:{refresh_token}",
+    }
     with pytest.raises(plugin_module.PluginAPIError, match="binding does not match"):
         plugin_module._render_embed(
             projection_id,

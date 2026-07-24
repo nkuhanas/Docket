@@ -18,6 +18,7 @@ from docket.domain.enums import (
 from docket.domain.errors import DocketError
 from docket.internal_api.schemas import LocalActionResponse
 from docket.models import (
+    Account,
     Action,
     ActionRevision,
     Approval,
@@ -491,15 +492,36 @@ class ProposalControlService:
             leads = revision_plan.get("lead_seconds")
             channels = revision_plan.get("delivery_channels")
             assert isinstance(leads, list) and isinstance(channels, list)
-            for lead_seconds in leads:
-                self.session.add(
-                    CalendarReminderPlan(
-                        action_revision_id=next_revision.id,
-                        lead_seconds=int(lead_seconds),
-                        delivery_channels=list(channels),
-                        status="planned",
+            schedule_items = (
+                parameters.get("items")
+                if revision.action_type == "calendar_apply_term_schedule"
+                else None
+            )
+            manifest_keys: list[str | None]
+            if isinstance(schedule_items, list):
+                manifest_keys = [
+                    str(item["item_key"])
+                    for item in schedule_items
+                    if isinstance(item, dict) and item.get("item_key") is not None
+                ]
+                if not manifest_keys or len(manifest_keys) != len(schedule_items):
+                    raise DocketError(
+                        code="schedule_review_unavailable",
+                        message="The refreshed schedule has an invalid reminder binding.",
                     )
-                )
+            else:
+                manifest_keys = [None]
+            for manifest_key in manifest_keys:
+                for lead_seconds in leads:
+                    self.session.add(
+                        CalendarReminderPlan(
+                            action_revision_id=next_revision.id,
+                            manifest_item_key=manifest_key,
+                            lead_seconds=int(lead_seconds),
+                            delivery_channels=list(channels),
+                            status="planned",
+                        )
+                    )
         approval.status = ApprovalStatus.SUPERSEDED.value
         action.current_revision = next_revision.revision
         now = utc_now()
@@ -715,6 +737,16 @@ class ProposalControlService:
                 code="calendar_refresh_failed",
                 message="Docket could not obtain a fresh complete Calendar snapshot.",
             )
+        if revision.action_type == "calendar_apply_term_schedule":
+            return self._refresh_schedule(
+                request,
+                revision,
+                action,
+                approval,
+                queue_item,
+                command,
+                state,
+            )
         parameters = deepcopy(revision.parameters)
         preview = deepcopy(revision.preview)
         event_payload = parameters.get("event")
@@ -808,6 +840,91 @@ class ProposalControlService:
                 )
             )
             return result
+        return self._replace_revision(
+            request,
+            revision,
+            action,
+            approval,
+            queue_item,
+            command,
+            replacement_parameters=parameters,
+            replacement_preview=preview,
+            replacement_target_versions=target_versions,
+        )
+
+    def _refresh_schedule(
+        self,
+        request: LocalActionResponse,
+        revision: ActionRevision,
+        action: Action,
+        approval: Approval,
+        queue_item: QueueItem,
+        command: CommandRequest,
+        state: CalendarSyncState,
+    ) -> dict[str, object]:
+        from docket.services.calendar_profile import CalendarProfileService
+        from docket.services.schedule_actions import TermScheduleActionService
+
+        try:
+            snapshot_id = uuid.UUID(str(revision.parameters["schedule_snapshot_id"]))
+        except (KeyError, ValueError) as exc:
+            raise DocketError(
+                code="schedule_review_unavailable",
+                message="The schedule snapshot binding is invalid.",
+            ) from exc
+        compiler = TermScheduleActionService(self.session)
+        snapshot = compiler._verified_snapshot(snapshot_id)
+        account = self.session.get(Account, revision.account_id)
+        calendar_id = revision.parameters.get("calendar_id")
+        reminder_plan = revision.parameters.get("reminder_plan")
+        if (
+            account is None
+            or account.provider != "google"
+            or not account.enabled
+            or "google_calendar" not in account.capabilities
+            or not isinstance(calendar_id, str)
+            or not isinstance(reminder_plan, dict)
+            or state.last_success_at is None
+        ):
+            raise DocketError(
+                code="proposal_refresh_unavailable",
+                message="The schedule proposal no longer has a valid Calendar target.",
+            )
+        parameters, preview, material_fingerprint = compiler._compile_proposal_material(
+            snapshot,
+            account,
+            calendar_id,
+            deepcopy(reminder_plan),
+            state,
+        )
+        conflicts = preview.get("conflicts")
+        profile = CalendarProfileService(self.session).get()
+        if isinstance(conflicts, list) and conflicts and profile.conflict_policy == "block":
+            raise DocketError(
+                code="calendar_conflict_blocked",
+                message="The Calendar profile blocks this conflicting schedule.",
+                details={"conflicts": conflicts[:10]},
+            )
+        counts = preview.get("counts")
+        if not isinstance(counts, dict):
+            raise DocketError(
+                code="schedule_review_unavailable",
+                message="The refreshed schedule preview has no bounded effect counts.",
+            )
+        queue_item.material_fingerprint = material_fingerprint
+        queue_item.summary = (
+            f"{counts.get('create', 0)} create, "
+            f"{counts.get('update', 0)} update, "
+            f"{counts.get('no_op', 0)} already synchronized"
+        )
+        target_versions = deepcopy(revision.target_versions)
+        target_versions["schedule_snapshot"] = {
+            "id": str(snapshot.id),
+            "manifest_sha256": snapshot.manifest_sha256,
+        }
+        target_versions["calendar_snapshot"] = {
+            "last_success_at": _aware(state.last_success_at).isoformat(),
+        }
         return self._replace_revision(
             request,
             revision,
