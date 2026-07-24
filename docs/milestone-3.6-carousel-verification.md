@@ -162,3 +162,25 @@ request synchronously dependent on Discord. The existing leased five-second
 poll remains the lost-wake/restart fallback. Automated coverage proves
 cross-thread wake, drain/coalescing, polling fallback, commit ordering, no wake
 on rejection, and a harmless wake failure.
+
+## Projection-wake deployment and live evidence
+
+The correction is recorded in:
+
+* `f887295 perf(discord): wake projections after commit`
+* `8f34c03 docs(discord): record projection wake contract`
+
+Verification passed with 199 tests, repository-wide `ruff check`, and strict
+`mypy`. Docket was rebuilt and recreated on migration `0010`; health reported
+the database and worker ready, a current Calendar cache, no enabled legacy
+reminder rules, and external writes disabled. Startup logged the dedicated
+projection task with the unchanged five-second fallback poll.
+
+The pending revision-2 Decision card survived the restart with no operation.
+The operator then exercised Decision -> Back to review -> Decision. The two
+navigation transactions completed in 5 and 2 milliseconds; their durable
+Discord projection rows delivered in 1.123 and 0.970 seconds respectively,
+both on the first attempt. This reduced observed mean button-to-card delivery
+from 3.510 seconds to 1.047 seconds. The operator confirmed the interaction was
+materially better. The remaining latency is bounded thread verification and
+Discord message editing rather than waiting for the database polling cadence.
