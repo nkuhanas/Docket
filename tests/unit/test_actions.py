@@ -425,6 +425,7 @@ def test_fake_thread_ensure_and_archive_are_idempotent() -> None:
         "known_thread_id": None,
         "guild_id": settings.discord_guild_id,
         "channel_id": settings.queue_channel_id,
+        "operator_user_id": settings.operator_discord_user_id,
         "local_date": "2026-07-21",
         "name": "2026-07-21 — Tuesday",
         "thread_type": "public_thread",
@@ -435,6 +436,11 @@ def test_fake_thread_ensure_and_archive_are_idempotent() -> None:
     assert first["thread_id"] == second["thread_id"]
     assert first["created"] is True
     assert second["created"] is False
+    assert first["operator_joined"] is True
+    assert second["operator_joined"] is True
+    assert next(iter(backend.threads.values()))["member_user_ids"] == {
+        settings.operator_discord_user_id
+    }
 
     lifecycle = {
         "request_id": str(uuid.uuid4()),

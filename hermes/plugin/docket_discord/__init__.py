@@ -347,6 +347,20 @@ def _validate_system_target(guild_id: object, channel_id: object) -> tuple[str, 
     return guild, channel
 
 
+def _validate_operator_target(operator_user_id: object) -> str:
+    operator = _require_snowflake(operator_user_id, "operator_user_id")
+    expected_operator = os.environ.get("DOCKET_OPERATOR_DISCORD_USER_ID", "")
+    if not _DISCORD_ID.fullmatch(expected_operator) or not hmac.compare_digest(
+        operator, expected_operator
+    ):
+        raise PluginAPIError(
+            "discord_operator_not_allowed",
+            "Thread member is not the configured Docket operator",
+            403,
+        )
+    return operator
+
+
 async def _fetch_queue(client: object, guild_id: str, channel_id: str) -> object:
     import discord
 
@@ -383,6 +397,7 @@ async def _ensure_thread(payload: dict[str, Any]) -> dict[str, Any]:
             "invalid_thread_request", "Daily thread identity or date is invalid", 422
         ) from exc
     guild_id, channel_id = _validate_target(payload.get("guild_id"), payload.get("channel_id"))
+    operator_user_id = _validate_operator_target(payload.get("operator_user_id"))
     expected_name = f"{local_date.isoformat()} — {local_date.strftime('%A')}"
     if payload.get("name") != expected_name or payload.get("thread_type") != "public_thread":
         raise PluginAPIError(
@@ -460,11 +475,21 @@ async def _ensure_thread(payload: dict[str, Any]) -> dict[str, Any]:
         thread = await thread.edit(
             archived=False, locked=False, reason="Docket projection delivery"
         )
+    try:
+        await thread.add_user(discord.Object(id=int(operator_user_id)))
+    except discord.HTTPException as exc:
+        raise PluginAPIError(
+            "daily_thread_member_add_failed",
+            "Discord could not join the configured operator to the daily thread",
+            503,
+        ) from exc
     return {
         "request_id": request_id,
         "daily_thread_id": daily_thread_id,
         "guild_id": guild_id,
         "channel_id": channel_id,
+        "operator_user_id": operator_user_id,
+        "operator_joined": True,
         "thread_id": str(thread.id),
         "created": created,
         "unarchived": unarchived,

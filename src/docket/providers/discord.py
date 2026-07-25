@@ -140,15 +140,20 @@ class FakeDiscordProjectionAdapter:
                 "name": payload["name"],
                 "archived": False,
                 "auto_archive_minutes": payload["auto_archive_minutes"],
+                "member_user_ids": set(),
             }
         thread = self.backend.threads[key]
         unarchived = bool(thread["archived"])
         thread["archived"] = False
+        member_user_ids = thread.setdefault("member_user_ids", set())
+        member_user_ids.add(payload["operator_user_id"])
         result = {
             "request_id": payload["request_id"],
             "daily_thread_id": payload["daily_thread_id"],
             "guild_id": payload["guild_id"],
             "channel_id": payload["channel_id"],
+            "operator_user_id": payload["operator_user_id"],
+            "operator_joined": payload["operator_user_id"] in member_user_ids,
             "thread_id": thread["thread_id"],
             "created": created,
             "unarchived": unarchived,

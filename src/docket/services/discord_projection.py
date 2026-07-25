@@ -279,6 +279,7 @@ class DiscordProjectionRunner:
                 "known_thread_id": daily_thread.thread_id,
                 "guild_id": daily_thread.guild_id,
                 "channel_id": daily_thread.channel_id,
+                "operator_user_id": self.settings.operator_discord_user_id,
                 "local_date": daily_thread.local_date.isoformat(),
                 "name": daily_thread.thread_name,
                 "thread_type": "public_thread",
@@ -313,6 +314,8 @@ class DiscordProjectionRunner:
             and ack.get("daily_thread_id") == request["daily_thread_id"]
             and ack.get("guild_id") == request["guild_id"]
             and ack.get("channel_id") == request["channel_id"]
+            and ack.get("operator_user_id") == request["operator_user_id"]
+            and ack.get("operator_joined") is True
             and str(ack.get("thread_id", "")).isdigit()
         )
         if not exact:

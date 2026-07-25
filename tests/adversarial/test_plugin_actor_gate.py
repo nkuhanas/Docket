@@ -345,6 +345,98 @@ def test_outbound_target_cannot_escape_configured_queue(plugin_module, monkeypat
     assert rejected.value.code == "discord_target_not_allowed"
 
 
+@pytest.mark.asyncio
+async def test_thread_ensure_joins_only_configured_operator_idempotently(
+    plugin_module, monkeypatch
+) -> None:
+    actor = "111111111111111111"
+    guild = "222222222222222222"
+    queue_id = "333333333333333333"
+    bot_id = 444444444444444444
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_QUEUE_CHANNEL_ID", queue_id)
+
+    class FakeHTTPException(Exception):
+        pass
+
+    class FakeObject:
+        def __init__(self, *, id: int) -> None:
+            self.id = id
+
+    class FakeThread:
+        id = 555555555555555555
+        name = "2026-07-24 — Friday"
+        parent_id = int(queue_id)
+        owner_id = bot_id
+        archived = False
+        auto_archive_duration = 10080
+
+        def __init__(self) -> None:
+            self.add_attempts = 0
+            self.members: set[int] = set()
+
+        async def add_user(self, user) -> None:
+            self.add_attempts += 1
+            self.members.add(user.id)
+
+    thread = FakeThread()
+
+    class FakeQueue:
+        id = int(queue_id)
+
+        def __init__(self) -> None:
+            self.threads = [thread]
+
+        async def archived_threads(self, **_kwargs):
+            if False:
+                yield None
+
+    async def fake_fetch_queue(_client, requested_guild: str, requested_queue: str):
+        assert requested_guild == guild
+        assert requested_queue == queue_id
+        return FakeQueue()
+
+    fake_discord = SimpleNamespace(
+        HTTPException=FakeHTTPException,
+        Object=FakeObject,
+    )
+    monkeypatch.setitem(sys.modules, "discord", fake_discord)
+    monkeypatch.setattr(plugin_module, "_fetch_queue", fake_fetch_queue)
+    monkeypatch.setattr(
+        plugin_module,
+        "_discord_runtime",
+        lambda: (None, None, SimpleNamespace(user=SimpleNamespace(id=bot_id))),
+    )
+    payload = {
+        "request_id": str(uuid.uuid4()),
+        "daily_thread_id": str(uuid.uuid4()),
+        "known_thread_id": None,
+        "guild_id": guild,
+        "channel_id": queue_id,
+        "operator_user_id": actor,
+        "local_date": "2026-07-24",
+        "name": "2026-07-24 — Friday",
+        "thread_type": "public_thread",
+        "auto_archive_minutes": 10080,
+    }
+
+    first = await plugin_module._ensure_thread(payload)
+    second = await plugin_module._ensure_thread(
+        {**payload, "request_id": str(uuid.uuid4())}
+    )
+
+    assert first["operator_user_id"] == actor
+    assert first["operator_joined"] is True
+    assert second["operator_joined"] is True
+    assert thread.add_attempts == 2
+    assert thread.members == {int(actor)}
+
+    with pytest.raises(plugin_module.PluginAPIError) as rejected:
+        plugin_module._validate_operator_target("666666666666666666")
+    assert rejected.value.code == "discord_operator_not_allowed"
+
+
 @pytest.mark.adversarial
 def test_plugin_decodes_only_projection_bound_v2_control(plugin_module) -> None:
     approval_id = uuid.uuid4()
