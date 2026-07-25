@@ -49,7 +49,7 @@ Validation completed before deployment:
 ```text
 ruff check .  -> passed
 mypy          -> passed (65 source files)
-pytest -q     -> 218 passed, 1 dependency deprecation warning
+pytest -q     -> 219 passed, 1 dependency deprecation warning
 skill check   -> Skill is valid
 ```
 
@@ -92,13 +92,18 @@ Completed on 2026-07-24:
   provider patches. No destructive change occurred. The service and Hermes
   contract were corrected so an equal full replacement now returns
   `matched_existing`, preserves the version, and leaves reconciliation at
-  `no_op`. Automated coverage proves the corrected path; live verification
-  resumes after deployment.
+  `no_op`.
+* **Post-restore unchanged repeat:** the record-side correction held version 5
+  and Hermes issued no update, but reconciliation proposed two updates because
+  Google had reordered the semantically equal RRULE properties in its create
+  responses. The card was left unapproved. Reconciliation now canonicalizes
+  recurrence property, multi-value, and line order before comparison; the
+  integration regression uses Google's observed ordering.
 
 Remaining:
 
 ```text
-drop -> re-add -> unchanged repeat
+reject stale false-positive card -> unchanged repeat
 ```
 
 During the gate, confirm:

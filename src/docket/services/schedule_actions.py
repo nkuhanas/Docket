@@ -35,7 +35,10 @@ from docket.models import (
 )
 from docket.models.base import utc_now
 from docket.policy import get_action_definition
-from docket.providers.google.calendar import CalendarEventRequest
+from docket.providers.google.calendar import (
+    CalendarEventRequest,
+    normalize_recurrence_lines,
+)
 from docket.schemas.actions import ProposalResult, ProposeTermScheduleInput
 from docket.schemas.calendar import CalendarReminderPlanInput, StandaloneCalendarEventInput
 from docket.security import issue_approval_token, issue_short_code, short_code_sha256
@@ -230,6 +233,16 @@ class TermScheduleActionService:
             )
         }
 
+    @staticmethod
+    def _current_material_snapshot(
+        snapshot: dict[str, Any],
+        intended: dict[str, Any],
+    ) -> dict[str, Any]:
+        current = {key: snapshot.get(key) for key in intended}
+        if "recurrence" in current:
+            current["recurrence"] = normalize_recurrence_lines(current["recurrence"])
+        return current
+
     def _compile_items(
         self,
         snapshot: CalendarScheduleSnapshot,
@@ -300,7 +313,7 @@ class TermScheduleActionService:
                     reminder_plan,
                     str(item["logical_key"]),
                 )
-                current = {key: link.synced_snapshot.get(key) for key in intended}
+                current = self._current_material_snapshot(link.synced_snapshot, intended)
                 effect = "no_op" if current == intended else "update"
             conflicts = CalendarActionService(self.session)._conflicts(
                 account_id=account.id,

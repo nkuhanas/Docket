@@ -358,6 +358,31 @@ def test_course_add_change_partial_drop_restore_and_unchanged_reimport(
     with session_factory.begin() as session:
         course = session.get(Record, course_id)
         assert course is not None
+        active_links = [
+            link
+            for link in session.scalars(
+                select(CalendarLink).where(CalendarLink.record_id == course_id)
+            )
+            if link.synced_snapshot.get("status") != "cancelled"
+        ]
+        for link in active_links:
+            snapshot = deepcopy(link.synced_snapshot)
+            recurrence = snapshot["recurrence"][0]
+            parts = dict(
+                part.split("=", 1) for part in recurrence.removeprefix("RRULE:").split(";")
+            )
+            snapshot["recurrence"] = [
+                "RRULE:"
+                + ";".join(
+                    (
+                        f"FREQ={parts['FREQ']}",
+                        f"UNTIL={parts['UNTIL']}",
+                        f"INTERVAL={parts['INTERVAL']}",
+                        f"BYDAY={parts['BYDAY']}",
+                    )
+                )
+            ]
+            link.synced_snapshot = snapshot
         repeated = RecordService(session).update(
             UpdateRecordInput(
                 record_id=course_id,

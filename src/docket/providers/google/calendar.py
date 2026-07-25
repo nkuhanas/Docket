@@ -308,6 +308,38 @@ def normalize_reminders(value: Any) -> dict[str, Any]:
     }
 
 
+def normalize_recurrence_lines(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    normalized: list[str] = []
+    for raw_line in value:
+        if not isinstance(raw_line, str):
+            continue
+        prefix, separator, payload = raw_line.partition(":")
+        if separator and prefix.upper() == "RRULE":
+            parts: list[tuple[str, str]] = []
+            valid = True
+            for raw_part in payload.split(";"):
+                key, equals, part_value = raw_part.partition("=")
+                if not equals or not key or not part_value:
+                    valid = False
+                    break
+                normalized_value = part_value
+                if key.upper().startswith("BY"):
+                    normalized_value = ",".join(sorted(part_value.split(",")))
+                parts.append((key.upper(), normalized_value))
+            if valid:
+                normalized.append(
+                    "RRULE:"
+                    + ";".join(
+                        f"{key}={part_value}" for key, part_value in sorted(parts)
+                    )
+                )
+                continue
+        normalized.append(raw_line)
+    return sorted(normalized)
+
+
 def normalize_event_body(body: dict[str, Any]) -> dict[str, Any]:
     def endpoint(value: Any) -> Any:
         if not isinstance(value, dict) or not isinstance(value.get("dateTime"), str):
@@ -328,7 +360,7 @@ def normalize_event_body(body: dict[str, Any]) -> dict[str, Any]:
         "location": body.get("location"),
         "start": endpoint(body.get("start")),
         "end": endpoint(body.get("end")),
-        "recurrence": body.get("recurrence", []),
+        "recurrence": normalize_recurrence_lines(body.get("recurrence")),
         "reminders": normalize_reminders(body.get("reminders")),
         "docket_correlation": private.get("docket_correlation"),
         "docket_origin_kind": private.get("docket_origin_kind"),

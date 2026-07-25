@@ -370,7 +370,10 @@ class CourseReconciliationService:
                     reminder_plan,
                     logical_key,
                 )
-                current = {key: link.synced_snapshot.get(key) for key in intended}
+                current = TermScheduleActionService._current_material_snapshot(
+                    link.synced_snapshot,
+                    intended,
+                )
                 effect = "no_op" if current == intended else "update"
             conflicts = CalendarActionService(self.session)._conflicts(
                 account_id=account.id,

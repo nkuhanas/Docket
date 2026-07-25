@@ -324,6 +324,12 @@ course reconciliation returns `no_op` without a card. A materially identical
 version and canonical snapshot, and therefore cannot manufacture provider
 updates merely by advancing `last_synced_version`.
 
+Google may reorder RRULE properties in its response, including moving `UNTIL`
+ahead of `INTERVAL`. Docket canonicalizes recurrence property and multi-value
+ordering before material comparison. A same-version proposal showing only
+recurrence updates is therefore a defect: leave it unapproved and compare the
+stored provider snapshot with the compiled recurrence before retrying.
+
 An explicit drop uses `docket_propose_course_reconciliation` in `drop` mode.
 Never archive a linked course first. The approved operation owns one durable
 cancellation item per active link. A partial failure leaves the course active;

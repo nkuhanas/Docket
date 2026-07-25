@@ -121,6 +121,25 @@ def test_normalization_drops_unneeded_google_response_fields() -> None:
     assert snapshot == request.snapshot()
 
 
+def test_normalization_ignores_google_rrule_property_order() -> None:
+    intended = normalize_event_body(
+        {
+            "recurrence": [
+                "RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=WE;UNTIL=20261219T075959Z"
+            ]
+        }
+    )
+    google = normalize_event_body(
+        {
+            "recurrence": [
+                "RRULE:FREQ=WEEKLY;UNTIL=20261219T075959Z;INTERVAL=1;BYDAY=WE"
+            ]
+        }
+    )
+
+    assert google["recurrence"] == intended["recurrence"]
+
+
 def test_real_calendar_reads_do_not_enable_provider_writes() -> None:
     settings = get_settings().model_copy(
         update={"calendar_reads_enabled": True, "external_writes_enabled": False}
