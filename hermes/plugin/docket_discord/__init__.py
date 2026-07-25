@@ -64,16 +64,13 @@ _DOCKET_MCP_TOOL_NAMES = frozenset(
         "docket_list_calendar_events",
         "docket_list_queue_items",
         "docket_list_reminder_rules",
-        "docket_propose_action",
         "docket_propose_calendar_event",
         "docket_propose_course_reconciliation",
-        "docket_propose_term_schedule",
         "docket_restore_record",
         "docket_search_records",
         "docket_set_calendar_profile",
         "docket_snooze_queue_item",
         "docket_store_record",
-        "docket_store_term_schedule",
         "docket_update_record",
     }
 )

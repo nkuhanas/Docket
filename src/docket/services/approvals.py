@@ -25,7 +25,6 @@ from docket.models import (
     CalendarEventCache,
     CalendarLink,
     CalendarReminderPlan,
-    CalendarScheduleSnapshot,
     CalendarSyncState,
     DiscordDailyThread,
     DiscordProjection,
@@ -429,51 +428,6 @@ class ApprovalService:
                     code="target_version_changed",
                     message="The Calendar event changed after the approval preview was created.",
                 )
-        schedule_target = revision.target_versions.get("schedule_snapshot")
-        if isinstance(schedule_target, dict):
-            try:
-                snapshot_id = uuid.UUID(str(schedule_target.get("id")))
-            except ValueError as exc:
-                raise DocketError(
-                    code="approval_binding_mismatch",
-                    message="The schedule snapshot binding is invalid.",
-                ) from exc
-            snapshot = self.session.get(CalendarScheduleSnapshot, snapshot_id)
-            if (
-                snapshot is None
-                or snapshot.manifest_sha256 != schedule_target.get("manifest_sha256")
-                or sha256_json(snapshot.manifest) != snapshot.manifest_sha256
-            ):
-                raise DocketError(
-                    code="target_version_changed",
-                    message="The bound schedule snapshot changed after proposal.",
-                )
-            term = self.session.get(Record, snapshot.term_record_id)
-            if term is None or term.version != snapshot.term_record_version:
-                raise DocketError(
-                    code="target_version_changed",
-                    message="The bound term changed after proposal.",
-                )
-            for item in snapshot.manifest.get("items", []):
-                if not isinstance(item, dict):
-                    raise DocketError(
-                        code="approval_binding_mismatch",
-                        message="The schedule manifest contains an invalid item.",
-                    )
-                try:
-                    record_id = uuid.UUID(str(item["course_record_id"]))
-                    record_version = int(item["course_record_version"])
-                except (KeyError, TypeError, ValueError) as exc:
-                    raise DocketError(
-                        code="approval_binding_mismatch",
-                        message="The schedule manifest contains an invalid record binding.",
-                    ) from exc
-                record = self.session.get(Record, record_id)
-                if record is None or record.version != record_version:
-                    raise DocketError(
-                        code="target_version_changed",
-                        message="A bound course changed after proposal.",
-                    )
         if queue_item.version != queue_target.get("version"):
             raise DocketError(
                 code="target_version_changed",
@@ -483,16 +437,6 @@ class ApprovalService:
     @staticmethod
     def _idempotency_key(revision: ActionRevision) -> str:
         parameters = revision.parameters
-        if revision.action_type == "calendar_create_meeting":
-            return (
-                f"calendar:create:{revision.account_id}:{parameters['record_id']}:"
-                f"{parameters['meeting_id']}:{parameters['record_version']}"
-            )
-        if revision.action_type == "calendar_update_meeting":
-            return (
-                f"calendar:update:{revision.account_id}:{parameters['external_event_id']}:"
-                f"{parameters['record_version']}:{revision.preview_sha256}"
-            )
         if revision.action_type == "calendar_create_event":
             return (
                 f"calendar:create-event:{revision.account_id}:"
@@ -514,12 +458,6 @@ class ApprovalService:
             return (
                 f"calendar:cancel-event:{revision.account_id}:"
                 f"{parameters['external_event_id']}:{parameters.get('provider_etag')}"
-            )
-        if revision.action_type == "calendar_apply_term_schedule":
-            return (
-                f"calendar:apply-schedule:{revision.account_id}:"
-                f"{parameters['schedule_snapshot_id']}:"
-                f"{parameters['manifest_sha256']}"
             )
         if revision.action_type in {
             "calendar_reconcile_course",

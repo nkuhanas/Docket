@@ -9,13 +9,10 @@ from docket.models import Action, ActionRevision, OutboxEvent
 from docket.models.base import utc_now
 
 _ACTION_LABELS = {
-    "calendar_create_meeting": "Create course meeting",
-    "calendar_update_meeting": "Update course meeting",
     "calendar_create_event": "Create event",
     "calendar_update_event": "Update event",
     "calendar_update_reminders": "Update reminders",
     "calendar_cancel_event": "Cancel event",
-    "calendar_apply_term_schedule": "Apply term schedule",
     "calendar_reconcile_course": "Synchronize course",
     "calendar_drop_course": "Drop course",
 }

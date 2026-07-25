@@ -35,9 +35,9 @@ even if the returned fact is correct.
 
 A Calendar write succeeds only through this durable sequence:
 
-1. Hermes stores the course and calls `docket_propose_action` with the current
-   record version, stable meeting ID, explicit account UUID, configured calendar
-   ID, and trusted Discord source.
+1. Hermes stores the course with stable meeting IDs and calls
+   `docket_propose_course_reconciliation` with the current record version,
+   explicit account UUID, configured calendar ID, and trusted Discord source.
 2. Docket derives the executable parameters, risk, preview, hashes, target
    versions, short code, and expiry. No provider call occurs here.
 3. Docket projects the immutable preview into the ISO-dated public thread under
@@ -114,21 +114,18 @@ Run the Hermes plugin-list probe only after the gateway log reports that Discord
 is connected and the gateway is running. Do not parallelize it with a Hermes
 restart: this pinned CLI imports user plugins, whose registration has the side
 effect of binding the private projection port. A startup-time probe can contend
-with the gateway on port 8787. Plugin `0.15.5` retries that bind, but avoiding the
+with the gateway on port 8787. Plugin `0.15.6` retries that bind, but avoiding the
 race keeps startup and diagnostics unambiguous.
 
 Expected results:
 
 * PostgreSQL and Docket are healthy; Hermes and SearXNG are running.
-* `docket-discord` `0.15.5` is `enabled`.
+* `docket-discord` `0.15.6` is `enabled`.
 * `hermes mcp test docket` connects to `http://docket:8000/mcp/` and discovers
-  the 22-tool compatibility surface, including `docket_store_record`,
+  exactly 19 tools, including `docket_store_record`,
   `docket_restore_record`, `docket_propose_course_reconciliation`,
   `docket_propose_calendar_event`, and the Calendar/queue read tools.
-* The running Hermes gateway registers 20 model-visible Docket tools. Its
-  allowlist intentionally omits legacy `docket_store_term_schedule` and
-  `docket_propose_term_schedule`; those endpoints remain server-visible only
-  for existing durable history.
+* The running Hermes gateway registers the same 19 model-visible Docket tools.
 * Logs contain no startup, plugin-load, MCP-authentication, or migration error.
 
 After an MCP tool, schema, or allowlist change, send `/reload-mcp` in the active
@@ -160,12 +157,11 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Proposal returns `action_unavailable` | Inspect the named stable meeting and missing-fields detail | Incomplete dates, local times, timezone, or no selected weekday in range |
 | Proposal returns `calendar_not_allowed` | Compare the exact ID returned by `docket_list_accounts` with `GOOGLE_CALENDAR_ID` | Display name or different calendar substituted for the configured opaque ID |
 | A standalone event uses the wrong timezone | Inspect the immutable timing payload for an explicit timezone, then compare `DOCKET_TIMEZONE` in the Docket container | The operator supplied another zone, Hermes sent an unintended override, or the configured default differs from the expected local zone |
-| Bulk course input uses `docket_store_term_schedule` or produces one aggregate schedule card | Confirm the server still discovers 22 tools but the running Hermes gateway registers only the 20 active tools, then run `/reload-mcp` | Hermes retained a stale model registry or the deployed allowlist still exposes the legacy aggregate workflow |
-| Schedule proposal returns `calendar_schedule_outside_fresh_window` | Compare the term/meeting bounds with `calendar_sync_states.window_start/window_end` | The fresh complete Calendar snapshot does not cover the whole proposed schedule |
-| Schedule batch is `partial_failed` | Inspect the parent result and only its failed `operation_items`; do not replay succeeded siblings | One or more provider items failed definitively after other items succeeded |
-| Schedule batch is `reconciliation_required` | Inspect the uncertain item, its attempts, and provider correlation (`operation_items.id`) | A provider call may have succeeded without a durable acknowledgement |
-| Daily thread exists but an aggregate card is absent | Inspect the newest projection outbox row and Hermes response; a repeated HTTP 422 `invalid_control` means the plugin rejected Docket's deterministic component set | Pinned plugin control-kind/token-map drift; reproduce the exact view-specific component set, restart Hermes after the fix, and let the same durable outbox row retry |
-| Schedule card still shows a `Page 1 of N` dropdown or ephemeral item review | Compare the deployed migration/image/plugin with revision `0010` and inspect `discord_projections.view_mode` | Pre-carousel Docket or Hermes code is still active; rebuild/recreate both services and refresh the same durable projection |
+| Hermes tries a removed aggregate or single-meeting proposal tool | Confirm server discovery and the running gateway each contain exactly 19 tools, restart Hermes, run `/reload-mcp`, and begin a new turn | The conversation retained a pre-removal model registry or skill |
+| Course batch is `partial_failed` | Inspect the parent result and only its failed `operation_items`; do not replay succeeded siblings | One or more provider items failed definitively after other items succeeded |
+| Course batch is `reconciliation_required` | Inspect the uncertain item, its attempts, and provider correlation (`operation_items.id`) | A provider call may have succeeded without a durable acknowledgement |
+| Daily thread exists but a course card is absent | Inspect the newest projection outbox row and Hermes response; a repeated HTTP 422 `invalid_control` means the plugin rejected Docket's deterministic component set | Pinned plugin control-kind/token-map drift; reproduce the exact view-specific component set, restart Hermes after the fix, and let the same durable outbox row retry |
+| Course card still shows a `Page 1 of N` dropdown or ephemeral item review | Compare the deployed migration/image/plugin with revision `0010` and inspect `discord_projections.view_mode` | Pre-carousel Docket or Hermes code is still active; rebuild/recreate both services and refresh the same durable projection |
 | **Begin review**, **Next**, or **Continue to decision** appears inert | Inspect the plugin callback log, the `proposal_review_navigate` command, projection status/version, and its refresh outbox row; the successful callback intentionally has no ephemeral reply | Listener drift, a stale version-bound token, projection delivery retry, or the active card is still being edited |
 | A button commits but the card changes two to five seconds later | Compare `command_requests.created_at/completed_at` with the matching projection outbox `created_at/updated_at`, then confirm `discord_projection_worker_started` after the deployed restart | Pre-wakeup Docket image, missing post-commit wake registration, a busy/crashed projection task, or delivery falling back to the durable five-second poll |
 | Schedule card is stuck on a review page after a restart or lost acknowledgement | Read `view_mode`, `view_page`, `reviewed_through_page`, and `view_action_revision_id`, then inspect/retry the existing projection refresh outbox row | Durable view state succeeded but the same-message Discord edit was not acknowledged; do not recreate the proposal or card |
@@ -178,9 +174,8 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Approval button appears inert | Inspect the stored projection/message binding and interaction listener before using any break-glass code | Stale/copied card, wrong parent or actor, listener unavailable, token expired, or action already resolved |
 | No daily thread/card appears | Inspect projection outbox status, then the private plugin listener and Hermes logs | Hermes not recreated after plugin/env change, private listener unavailable, Discord permission/API failure, or retry backoff |
 | Daily thread exists but is hidden until **Join Thread** is used | Inspect the latest thread-ensure acknowledgement for the exact configured `operator_user_id` and `operator_joined=true`, then check Hermes for `daily_thread_member_add_failed` | Pre-`0.10.0` plugin, Hermes was not restarted, operator ID mismatch, missing `SEND_MESSAGES_IN_THREADS`, parent-channel access failure, archived-thread race, or Discord member limit |
-| Hermes ignores the configured operator inside a Docket daily thread | Confirm the event exposes the queue as `parent_chat_id`, the thread exists in `discord_daily_threads`, plugin `0.15.5` is active, and the operator is still the sole allowed user | Old control-only plugin, foreign thread, parent-ID event-shape drift, or Hermes/plugin authorization mismatch |
+| Hermes ignores the configured operator inside a Docket daily thread | Confirm the event exposes the queue as `parent_chat_id`, the thread exists in `discord_daily_threads`, plugin `0.15.6` is active, and the operator is still the sole allowed user | Old control-only plugin, foreign thread, parent-ID event-shape drift, or Hermes/plugin authorization mismatch |
 | No rollover occurs after 07:00 local | Inspect `system:daily_rollover:ISO-DATE`, worker heartbeat, timezone, and rollover hour | Worker unavailable, wrong timezone/hour, or a prior command already owns the date |
-| An expired whole-term compatibility proposal keeps appearing in new daily threads | Inspect the queue item's resolution code, its legacy `calendar_apply_term_schedule` action, local Snooze/Ignore actions, and the latest projection refresh | Pre-retirement worker code or a failed terminal projection edit; an expired legacy proposal must resolve once as `legacy_approval_expired`, supersede local controls, and never carry again |
 | Duplicate daily thread or card | Stop retries and inspect exact name/owner or footer-marker collisions | Archived lookup drift, manually copied marker, lost binding, or plugin concurrency regression |
 | Button says the control is unauthorized/stale | Compare stored control projection with actual parent/thread/message and actor | Copied/old card, wrong operator, changed thread parent, projection refresh, or callback drift |
 | Snoozed item does not return | Compare `snoozed_until`, `snooze_local_date`, local timezone, and the day's rollover audit | Wake time has not arrived, rollover did not run, or the item was resolved separately |
@@ -195,13 +190,13 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Calendar lookup is empty or stale | Inspect `calendar_sync_states`, its covered window, and the prior cache generation before changing credentials | Read gate disabled, sync due/leased, OAuth failure, partial page walk, or requested range outside the cache |
 | A newly created provider event is absent from a healthy current-day lookup | Compare `last_success_at` with the event creation time, then retry the same bounded lookup with `require_fresh` | `prefer_cache` returned before the next five-minute synchronization; healthy and covered do not imply read-after-provider-write consistency |
 | Hermes calls a terminal or time tool around a today/tomorrow Calendar lookup | Inspect the active lookup schema/result for `relative_day`, `start_local`, and `end_local`, then restart Hermes and run `/reload-mcp` | The active session cached the prior MCP schema or old manual-intent guidance |
-| Reminder does not arrive | Inspect rule version, event cache identity, scheduled row, bound daily thread, notification outbox, and plugin `0.15.5` logs | Rule disabled, event moved/cancelled, stale event already began, queue binding changed, thread ensure failed, or Discord retry |
-| External action has no `docket-system` lifecycle entry | Inspect `discord.system_log.requested` outbox rows and the plugin `system-logs` endpoint before posting a manual summary | Plugin not recreated at `0.15.5`, system target mismatch, retry backoff, or marker ownership conflict; canonical operation/audit state remains authoritative |
-| A Docket-backed agent turn has no `docket-system` tool trace | Inspect Hermes for all four registered plugin hooks, then inspect `discord_mcp_traces` and `discord.mcp_trace.requested` outbox rows | Plugin `0.15.5` was not restarted, `/reload-mcp` still exposes a differently named server/tool, trusted chat/thread-to-session binding failed, plugin-to-Docket trace delivery failed, or projection is retrying |
+| Reminder does not arrive | Inspect rule version, event cache identity, scheduled row, bound daily thread, notification outbox, and plugin `0.15.6` logs | Rule disabled, event moved/cancelled, stale event already began, queue binding changed, thread ensure failed, or Discord retry |
+| External action has no `docket-system` lifecycle entry | Inspect `discord.system_log.requested` outbox rows and the plugin `system-logs` endpoint before posting a manual summary | Plugin not recreated at `0.15.6`, system target mismatch, retry backoff, or marker ownership conflict; canonical operation/audit state remains authoritative |
+| A Docket-backed agent turn has no `docket-system` tool trace | Inspect Hermes for all four registered plugin hooks, then inspect `discord_mcp_traces` and `discord.mcp_trace.requested` outbox rows | Plugin `0.15.6` was not restarted, `/reload-mcp` still exposes a differently named server/tool, trusted chat/thread-to-session binding failed, plugin-to-Docket trace delivery failed, or projection is retrying |
 | A Docket tool trace remains Running after the response | Compare the trace calls/status with Hermes `post_tool_call` and `post_llm_call` hook logs; start a new authorized chat turn to close an interrupted prior trace | Pinned hook drift, gateway interruption before turn finalization, plugin restart, or a trace update waiting in the bounded delivery queue |
 | Queue card exposes provider IDs, ETags, hashes, enum action names, or freshness timestamps | Stop treating the card as an operator-safe surface and inspect the deterministic renderer | Diagnostic metadata leaked into the projection; keep it in PostgreSQL/runbook queries and render only decision-relevant labels |
 | Calendar card repeats Status/Execution/Effect, uses the event subject as its long title/description, or dumps a generic Before record | Inspect the state-oriented renderer and rebuild/recreate Docket | Pre-polish image or renderer regression; standalone subjects belong under `Title`, successful terminal state needs no description, and updates use bounded `Delta · Property` fields with separate Before/After lines |
-| A timed card, reminder, or system entry displays raw `<t:...>` text or a manual IANA timezone | Confirm the value is in an embed description/field, Hermes runs plugin `0.15.5`, and the token survived escaping unchanged | Old renderer/plugin, malformed milliseconds or timestamp style, or a Discord-client rendering regression; all-day and recurrence-definition timezone text is intentionally exempt |
+| A timed card, reminder, or system entry displays raw `<t:...>` text or a manual IANA timezone | Confirm the value is in an embed description/field, Hermes runs plugin `0.15.6`, and the token survived escaping unchanged | Old renderer/plugin, malformed milliseconds or timestamp style, or a Discord-client rendering regression; all-day and recurrence-definition timezone text is intentionally exempt |
 | Duplicate reminder appears | Stop retries and compare notification ID, event-start key, outbox dedupe key, and `docket-calendar-reminder:<uuid>` footer marker | Marker collision, manual copy, lost binding, or plugin idempotency regression |
 
 ## Missing trusted Discord context
@@ -371,15 +366,6 @@ and review-complete fields are omitted, and the card exposes **Approve**,
 **Reject**, and **Snooze until tomorrow** without navigation. Larger course
 proposals retain paged review and must traverse every page before decision.
 
-`docket_store_term_schedule` and `docket_propose_term_schedule` remain legacy
-compatibility tools for already-durable aggregate history. Docket continues to
-serve their schemas so stored revisions and audit history remain readable, but
-the active Hermes allowlist excludes them. Do not use them for new imports,
-edits, drops, or restores. If one of their pending approvals expires, the worker
-resolves its queue item as `legacy_approval_expired`, cancels its unactivated
-reminder-plan rows, supersedes Snooze/Ignore, refreshes the latest card once,
-and excludes it from subsequent carryover.
-
 After approval, inspect the parent and item ledger without printing private
 event content:
 
@@ -417,7 +403,7 @@ The plugin makes that free-response exception safe by dropping every queue
 message except an exact break-glass `docket approve CODE` or
 `docket reject CODE`, then checking the configured operator, guild, and channel
 before calling Docket. A queue message never belongs in a model session. Hermes
-does not receive short codes from `docket_propose_action` and must direct the
+does not receive short codes from Calendar proposal tools and must direct the
 operator to the persistent card buttons instead.
 
 When a decision appears inert, inspect the action graph by action UUID:
@@ -504,7 +490,7 @@ from discord_mcp_traces order by created_at desc limit 20;'
 First failure points:
 
 * `discord_transport_error` or `discord_runtime_unavailable`: verify Hermes is
-  running, plugin `0.15.5` is enabled, port 8787 is exposed only internally, and
+  running, plugin `0.15.6` is enabled, port 8787 is exposed only internally, and
   Hermes was recreated after Compose environment changes. The default ten
   attempts cover ordinary Hermes startup; do not reduce the window without
   measuring the pinned runtime's initialization time.
@@ -523,7 +509,7 @@ First failure points:
 * `invalid_discord_ack`: the plugin response did not echo request, target, or
   digest bindings. Treat this as a compatibility/security failure.
 * `invalid_mcp_trace_*`, `nonmonotonic_mcp_trace`, or
-  `mcp_trace_state_regression`: compare plugin `0.15.5` with the Docket image
+  `mcp_trace_state_regression`: compare plugin `0.15.6` with the Docket image
   and migration `0011`. Do not replay arguments/results or edit trace JSON;
   these errors mean the pinned hook/schema contract drifted or a terminal
   update arrived out of order.
@@ -547,7 +533,7 @@ print("projection listener reachable")'
 Hermes plugin edits require a gateway restart. `/reload-mcp` is still required
 for MCP tool/schema changes, but it does not reload this Python plugin.
 
-The pinned Hermes runtime performs overlapping plugin discovery. Plugin `0.15.5`
+The pinned Hermes runtime performs overlapping plugin discovery. Plugin `0.15.6`
 therefore starts port 8787 under a retrying supervisor: one discovery pass may
 log that startup is deferred because the port is in use, but plugin loading must
 still succeed and one listener must remain reachable. A warning that the plugin
@@ -672,9 +658,9 @@ credential directory, and `.env.example`; it is safe when the production
 operations/outbox state. `deploy` then writes a PostgreSQL custom-format backup
 under ignored `backups/`, retains the old image with a timestamped rollback
 tag, rebuilds and recreates Docket and Hermes, and verifies Docket health,
-Alembic head, the Discord gateway, the 22-tool Docket compatibility registry,
-the 20-tool Hermes model registry, the declared Hermes plugin version, its
-private listener, and drained durable state.
+Alembic head, the Discord gateway, the matching 19-tool Docket and Hermes
+registries, the declared Hermes plugin version, its private listener, and
+drained durable state.
 
 The image tag is recovery evidence, not permission to downgrade a migrated
 database. Restore or migrate the database according to the affected revision
@@ -865,8 +851,8 @@ Before changing either gate, confirm the fake crash-window and snapshot suite:
 
 ```bash
 uv run pytest \
-  tests/integration/test_calendar_operations.py \
-  tests/integration/test_schedule_workflow.py \
+  tests/integration/test_standalone_calendar_operations.py \
+  tests/integration/test_course_reconciliation.py \
   tests/integration/test_calendar_read_model.py
 ```
 
@@ -969,14 +955,14 @@ uv run pytest \
   tests/adversarial/test_plugin_actor_gate.py
 ```
 
-For Milestone 3.6 Calendar control and aggregate schedules, also run:
+For Calendar control and independent course lifecycle changes, also run:
 
 ```bash
 uv run pytest \
   tests/unit/test_worker_runtime.py \
   tests/unit/test_internal_projection_wakeup.py \
   tests/integration/test_standalone_calendar_operations.py \
-  tests/integration/test_term_schedules.py \
+  tests/integration/test_course_reconciliation.py \
   tests/integration/test_mcp_contract.py \
   tests/integration/test_migrations.py \
   tests/adversarial/test_plugin_actor_gate.py

@@ -29,13 +29,13 @@ remains outside this repository.
   denied.
 * Standalone timed and all-day events materialize an omitted timezone from
   `DOCKET_TIMEZONE`; an explicit IANA timezone retains precedence.
-* `docket_store_term_schedule` and `docket_propose_term_schedule` remain
-  available on the MCP server only for compatibility with existing durable
-  history; Hermes does not register them as model-visible tools.
+* The obsolete atomic whole-term store/proposal path is absent from both Docket
+  and Hermes; bulk input is agent-side orchestration over independent courses.
 
-No schema migration is required. Existing action, operation, operation-item,
-record-status, Calendar-link snapshot, audit, and outbox columns already admit
-the new closed action types and lifecycle transitions.
+Alpha cleanup migration `0012` terminalizes any unresolved obsolete proposal,
+cancels its unactivated reminder plans, and drops
+`calendar_schedule_snapshots`. Ordinary action, queue, outbox, and audit rows
+remain as inert operational history.
 
 ## Automated evidence
 
@@ -59,8 +59,8 @@ Validation completed before deployment:
 
 ```text
 ruff check .  -> passed
-mypy          -> passed (65 source files)
-pytest -q     -> 230 passed, 1 dependency deprecation warning
+mypy          -> passed (64 source files)
+pytest -q     -> 197 passed, 1 dependency deprecation warning
 skill check   -> Skill is valid
 ```
 
@@ -69,14 +69,13 @@ deprecation; it is unrelated to this milestone.
 
 ## MCP and Hermes contract
 
-The generated server compatibility surface contains 22 tools. The active Hermes
-allowlist contains 20 and deliberately excludes the two legacy whole-term
+The generated Docket surface and active Hermes allowlist contain the same 19
 tools. The Milestone 3.7 additions are:
 
 * `docket_restore_record`
 * `docket_propose_course_reconciliation`
 
-Hermes plugin `0.15.5` recognizes both in redacted MCP traces. The
+Hermes plugin `0.15.6` recognizes both in redacted MCP traces. The
 `docket-manual-intent` skill now treats bulk input as resumable per-course
 orchestration, allocates a distinct intent index to every write/proposal,
 requires explicit drop, recognizes materially equal updates before writing,
@@ -172,10 +171,8 @@ first create card had remained open beyond Calendar freshness, so approval
 failed closed and the same card was rebuilt before the successful decision.
 That is the intended stale-preview recovery path, not a provider retry.
 
-The smoke also exposed one compatibility leak: an expired Milestone 3.6
-whole-term proposal was still eligible for daily carryover. The worker now
-terminalizes such queue items as `legacy_approval_expired`, cancels unactivated
-reminder plans, supersedes local controls, refreshes the latest card, and never
-carries them again. The legacy endpoints remain on Docket's 22-tool server
-registry for stored history, but Hermes' normal model allowlist contains only
-the 20 current tools.
+The smoke also exposed an expired Milestone 3.6 whole-term proposal eligible
+for daily carryover. It was terminalized and its unactivated reminder plans
+were cancelled. Because Docket is alpha software, the subsequent cleanup
+removed that compatibility workflow entirely instead of maintaining a runtime
+retirement path.

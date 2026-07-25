@@ -33,7 +33,7 @@ class CalendarEventRequest:
     priority_basis: str = "default"
     reminder_plan_sha256: str | None = None
     origin_kind: str | None = None
-    operation_type: str = "calendar_create_meeting"
+    operation_type: str = "calendar_create_event"
 
     def event_body(self) -> dict[str, Any]:
         if self.event_spec is not None:

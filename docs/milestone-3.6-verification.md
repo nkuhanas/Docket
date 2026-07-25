@@ -1,5 +1,9 @@
 # Milestone 3.6 verification
 
+> Historical checkpoint only. Alpha cleanup migration `0012` removed the
+> aggregate term-schedule tools, services, action type, and snapshot table in
+> favor of independent per-course reconciliation.
+
 This record covers the Full Calendar control closure release deployed on
 2026-07-22. The private implementation specification remains outside this
 repository. Automated and deployment evidence is complete. The operator-present

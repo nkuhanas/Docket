@@ -4,7 +4,6 @@ from pydantic import BaseModel
 
 from docket.domain.enums import ActionAvailability, RiskClass
 from docket.domain.errors import ActionDisabled, DocketError
-from docket.schemas.actions import CalendarMeetingActionParameters
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,22 +20,6 @@ class ActionDefinition:
 ACTION_REGISTRY: dict[str, ActionDefinition] = {
     item.action_type: item
     for item in (
-        ActionDefinition(
-            "calendar_create_meeting",
-            RiskClass.EXTERNAL_PRIVATE_WRITE,
-            "google_calendar",
-            ActionAvailability.ENABLED,
-            parameter_schema=CalendarMeetingActionParameters,
-            requires_account=True,
-        ),
-        ActionDefinition(
-            "calendar_update_meeting",
-            RiskClass.EXTERNAL_PRIVATE_WRITE,
-            "google_calendar",
-            ActionAvailability.ENABLED,
-            parameter_schema=CalendarMeetingActionParameters,
-            requires_account=True,
-        ),
         ActionDefinition(
             "calendar_create_event",
             RiskClass.EXTERNAL_PRIVATE_WRITE,
@@ -61,13 +44,6 @@ ACTION_REGISTRY: dict[str, ActionDefinition] = {
         ActionDefinition(
             "calendar_cancel_event",
             RiskClass.DESTRUCTIVE,
-            "google_calendar",
-            ActionAvailability.ENABLED,
-            requires_account=True,
-        ),
-        ActionDefinition(
-            "calendar_apply_term_schedule",
-            RiskClass.BULK,
             "google_calendar",
             ActionAvailability.ENABLED,
             requires_account=True,
@@ -133,7 +109,6 @@ ACTION_REGISTRY: dict[str, ActionDefinition] = {
 
 BATCH_CALENDAR_ACTION_TYPES = frozenset(
     {
-        "calendar_apply_term_schedule",
         "calendar_reconcile_course",
         "calendar_drop_course",
     }

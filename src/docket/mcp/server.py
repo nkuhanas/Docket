@@ -12,15 +12,11 @@ from docket.domain.enums import RecordStatus
 from docket.domain.errors import DocketError
 from docket.providers.google.runtime import get_calendar_read_provider
 from docket.schemas.actions import (
-    CalendarActionType,
     CalendarEventProposal,
-    CalendarMeetingActionParameters,
     CourseReconciliationMode,
     ProposalResult,
-    ProposeActionInput,
     ProposeCalendarEventInput,
     ProposeCourseReconciliationInput,
-    ProposeTermScheduleInput,
 )
 from docket.schemas.calendar import (
     CalendarFreshness,
@@ -47,16 +43,13 @@ from docket.schemas.records import (
     RecordSourceInput,
     RecordType,
     RestoreRecordInput,
-    ScheduleTerm,
     StoreRecordInput,
-    StoreTermScheduleInput,
     TermData,
     TermIdentity,
-    TermScheduleCourse,
     UpdateRecordInput,
 )
 from docket.services.accounts import AccountService
-from docket.services.actions import ActionService
+from docket.services.action_read import ActionReadService
 from docket.services.calendar_actions import CalendarActionService
 from docket.services.calendar_profile import CalendarProfileService
 from docket.services.calendar_sync import CalendarReadService, CalendarSyncService
@@ -64,8 +57,6 @@ from docket.services.course_reconciliation import CourseReconciliationService
 from docket.services.queue import QueueService
 from docket.services.records import RecordService, serialize_record
 from docket.services.reminders import ReminderRuleService
-from docket.services.schedule_actions import TermScheduleActionService
-from docket.services.schedules import TermScheduleService
 
 mcp = FastMCP(
     "docket",
@@ -164,40 +155,6 @@ def docket_store_record(
         with session_scope() as session:
             result = RecordService(session).store(request)
             return {"ok": True, **result.model_dump(mode="json", exclude_none=True)}
-    except Exception as exc:
-        return _error(exc)
-
-
-@mcp.tool()
-def docket_store_term_schedule(
-    term: ScheduleTerm,
-    courses: Annotated[
-        list[TermScheduleCourse],
-        Field(min_length=1, max_length=50),
-    ],
-    request_key: DiscordRequestKey,
-    source: RecordSourceInput,
-    actor_id: DiscordId,
-) -> dict[str, Any]:
-    """Legacy compatibility path for one atomic complete-schedule snapshot.
-
-    Do not use this for ordinary imports or later schedule changes. The normal workflow
-    stores or updates each independent course record and calls
-    ``docket_propose_course_reconciliation`` for only the affected course. This retained
-    compatibility tool accepts 1-50 courses, rolls back the whole request on conflict,
-    and returns a legacy ``schedule_snapshot_id``. It does not contact Google.
-    """
-    try:
-        request = StoreTermScheduleInput(
-            term=term,
-            courses=courses,
-            request_key=request_key,
-            source=source,
-            actor_id=actor_id,
-        )
-        with session_scope() as session:
-            result = TermScheduleService(session).store(request)
-            return {"ok": True, **result.model_dump(mode="json")}
     except Exception as exc:
         return _error(exc)
 
@@ -549,50 +506,6 @@ def docket_propose_calendar_event(
 
 
 @mcp.tool()
-def docket_propose_term_schedule(
-    schedule_snapshot_id: uuid.UUID,
-    account_id: uuid.UUID,
-    calendar_id: CalendarId,
-    request_key: DiscordRequestKey,
-    source: RecordSourceInput,
-    actor_id: DiscordId,
-    reminder_plan: CalendarReminderPlanInput | None = None,
-) -> dict[str, Any]:
-    """Legacy compatibility proposal for an atomic complete-schedule snapshot.
-
-    Prefer ``docket_propose_course_reconciliation`` for ordinary imports and changes.
-    This retained tool accepts only a legacy ``schedule_snapshot_id`` and creates one
-    bounded aggregate approval. It performs no provider mutation before approval.
-    """
-    try:
-        _calendar_read_service().list_events(
-            account_id=account_id,
-            calendar_id=calendar_id,
-            start=None,
-            end=None,
-            text_filter=None,
-            limit=1,
-            freshness="require_fresh",
-        )
-        request = ProposeTermScheduleInput.model_validate(
-            {
-                "schedule_snapshot_id": schedule_snapshot_id,
-                "account_id": account_id,
-                "calendar_id": calendar_id,
-                "reminder_plan": reminder_plan,
-                "request_key": request_key,
-                "source": source,
-                "actor_id": actor_id,
-            }
-        )
-        with session_scope() as session:
-            result = TermScheduleActionService(session).propose(request)
-            return {"ok": True, **_model_proposal_result(result)}
-    except Exception as exc:
-        return _error(exc)
-
-
-@mcp.tool()
 def docket_propose_course_reconciliation(
     record_id: uuid.UUID,
     expected_record_version: int,
@@ -744,48 +657,10 @@ def docket_ignore_queue_item(
 
 
 @mcp.tool()
-def docket_propose_action(
-    action_type: CalendarActionType,
-    record_id: str,
-    expected_record_version: int,
-    account_id: str,
-    parameters: CalendarMeetingActionParameters,
-    request_key: DiscordRequestKey,
-    source: RecordSourceInput,
-    actor_id: DiscordId,
-) -> dict[str, Any]:
-    """Propose a typed Calendar write from trusted Discord context.
-
-    Docket derives risk, exact executable parameters, immutable preview, hashes,
-    target versions, and approval expiry. Normal approval occurs only through the
-    persistent Approve/Reject buttons on the projected card in today's ISO-dated
-    Docket queue thread. Do not instruct the operator to type an approval code; that
-    compatibility path is break-glass only and is not returned to the model. This tool
-    never records or consumes an approval and never contacts Google Calendar.
-    """
-    try:
-        request = ProposeActionInput(
-            action_type=action_type,
-            record_id=uuid.UUID(record_id),
-            expected_record_version=expected_record_version,
-            account_id=uuid.UUID(account_id),
-            parameters=parameters,
-            request_key=request_key,
-            source=source,
-            actor_id=actor_id,
-        )
-        with session_scope() as session:
-            result = ActionService(session).propose(request)
-            return {"ok": True, **_model_proposal_result(result)}
-    except Exception as exc:
-        return _error(exc)
-
-
-@mcp.tool()
 def docket_get_action(action_id: str) -> dict[str, Any]:
     """Read a redacted action, immutable preview, approval, and operation status."""
     try:
         with session_scope() as session:
-            return {"ok": True, "action": ActionService(session).get(uuid.UUID(action_id))}
+            return {"ok": True, "action": ActionReadService(session).get(uuid.UUID(action_id))}
     except Exception as exc:
         return _error(exc)

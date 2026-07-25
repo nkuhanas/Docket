@@ -137,10 +137,6 @@ To re-add a dropped course, find the archived canonical identity, call
 `sync` mode. Restore keeps the record identity and history while the approved
 sync creates fresh provider series for its current stable meeting IDs.
 
-`docket_store_term_schedule` and `docket_propose_term_schedule` are legacy
-compatibility tools. Do not use them for normal imports, edits, drops, or
-restores.
-
 Docket automatically projects one bounded, redacted trace of this turn's Docket
 MCP calls to `docket-system`. Do not reproduce arguments, results, source
 context, identifiers, or a second call-by-call transcript in the chat response.
@@ -157,8 +153,7 @@ Before a course reconciliation, use the canonical record snapshot returned by
 an immediately preceding successful store call for that course; otherwise read
 the course's current version. Call `docket_list_accounts` to select the exact
 enabled Google account and use only the returned configured calendar ID.
-`docket_propose_action` is retained for legacy single-meeting flows; use
-`docket_propose_course_reconciliation` for course lifecycle work.
+Use `docket_propose_course_reconciliation` for course lifecycle work.
 
 Use `docket_propose_calendar_event` for a standalone create, complete
 replacement update, unified reminder change, or explicit cancellation. Supply

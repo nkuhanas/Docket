@@ -41,10 +41,14 @@ from docket.schemas.records import CourseData, TermData
 from docket.security import issue_approval_token, issue_short_code, short_code_sha256
 from docket.services.calendar_actions import CalendarActionService, _occurrence_intervals
 from docket.services.calendar_profile import CalendarProfileService
+from docket.services.course_manifest import (
+    calendar_material_snapshot,
+    compile_course_items,
+    current_calendar_material_snapshot,
+    first_overlap,
+)
 from docket.services.proposal_dedup import find_materially_identical_pending_proposal
 from docket.services.queue import queue_projection_date
-from docket.services.schedule_actions import TermScheduleActionService
-from docket.services.schedules import TermScheduleService
 from docket.services.source_context import validate_configured_discord_source
 
 
@@ -220,14 +224,14 @@ class CourseReconciliationService:
                 code="incomplete_schedule_term",
                 message="The course term requires explicit start and end dates.",
             )
-        manifest = TermScheduleService._manifest(term, term_data, [record])
-        items = manifest.get("items")
-        if not isinstance(items, list) or not items or len(items) > 50:
-            raise DocketError(
-                code="invalid_course_meetings",
-                message="A course reconciliation requires from one through fifty meeting items.",
+        return [
+            deepcopy(item)
+            for item in compile_course_items(
+                record,
+                course,
+                term_data,
             )
-        return [deepcopy(item) for item in items]
+        ]
 
     def _safe_target(
         self,
@@ -409,12 +413,12 @@ class CourseReconciliationService:
                     calendar_id=calendar_id,
                     link=link,
                 )
-                intended = TermScheduleActionService._material_snapshot(
+                intended = calendar_material_snapshot(
                     event_payload,
                     reminder_plan,
                     logical_key,
                 )
-                current = TermScheduleActionService._current_material_snapshot(
+                current = current_calendar_material_snapshot(
                     link.synced_snapshot,
                     intended,
                 )
@@ -426,7 +430,7 @@ class CourseReconciliationService:
                 exclude_provider_event_id=target.provider_event_id if target else None,
             )
             for other_key, other_title, other_intervals in intended_intervals:
-                overlap = TermScheduleActionService._first_overlap(intervals, other_intervals)
+                overlap = first_overlap(intervals, other_intervals)
                 if overlap is None or len(conflicts) >= 10:
                     continue
                 overlap_start, overlap_end = overlap

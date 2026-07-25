@@ -335,41 +335,6 @@ class CalendarLink(TimestampMixin, Base):
     synced_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
 
 
-class CalendarScheduleSnapshot(TimestampMixin, Base):
-    __tablename__ = "calendar_schedule_snapshots"
-    __table_args__ = (
-        CheckConstraint(
-            "item_count BETWEEN 1 AND 50",
-            name="ck_calendar_schedule_snapshots_item_count",
-        ),
-        UniqueConstraint(
-            "command_request_id",
-            name="uq_calendar_schedule_snapshots_command_request",
-        ),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    command_request_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("command_requests.id", ondelete="RESTRICT"), nullable=False
-    )
-    term_record_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("records.id", ondelete="RESTRICT"), nullable=False
-    )
-    term_record_version: Mapped[int] = mapped_column(Integer, nullable=False)
-    manifest: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
-    manifest_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
-    item_count: Mapped[int] = mapped_column(Integer, nullable=False)
-
-
-@event.listens_for(CalendarScheduleSnapshot, "before_update")
-def _reject_calendar_schedule_snapshot_update(
-    _mapper: Mapper[CalendarScheduleSnapshot],
-    _connection: Connection,
-    _target: CalendarScheduleSnapshot,
-) -> None:
-    raise ValueError("Calendar schedule snapshots are immutable")
-
-
 class OperationItem(TimestampMixin, Base):
     __tablename__ = "operation_items"
     __table_args__ = (

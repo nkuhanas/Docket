@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -43,9 +43,6 @@ _UNRESOLVED = {
     QueueItemStatus.FAILED.value,
     QueueItemStatus.RECONCILIATION_REQUIRED.value,
 }
-_LEGACY_SCHEDULE_ACTION = "calendar_apply_term_schedule"
-
-
 class RolloverService:
     def __init__(
         self,
@@ -255,86 +252,6 @@ class RolloverService:
             plan.status = "cancelled"
         return len(plans)
 
-    def _retire_expired_legacy_proposals(self, session: Session, now: datetime) -> int:
-        rows = session.execute(
-            select(QueueItem, Action)
-            .join(Action, Action.queue_item_id == QueueItem.id)
-            .where(
-                Action.action_type == _LEGACY_SCHEDULE_ACTION,
-                Action.status == ActionStatus.EXPIRED.value,
-                or_(
-                    QueueItem.status.in_(_UNRESOLVED),
-                    and_(
-                        QueueItem.status == QueueItemStatus.COMPLETED.value,
-                        QueueItem.resolution_code == "legacy_approval_expired",
-                    ),
-                ),
-            )
-        ).all()
-        retired = 0
-        for queue_item, action in rows:
-            cancelled_reminder_plan_count = self._cancel_unactivated_reminder_plans(
-                session,
-                action.id,
-            )
-            if (
-                queue_item.status == QueueItemStatus.COMPLETED.value
-                and queue_item.resolution_code == "legacy_approval_expired"
-            ):
-                if cancelled_reminder_plan_count:
-                    session.add(
-                        AuditEvent(
-                            event_type="queue_item.legacy_reminder_plans_cancelled",
-                            entity_type="queue_item",
-                            entity_id=queue_item.id,
-                            actor_type="docket",
-                            data={
-                                "action_id": str(action.id),
-                                "cancelled_reminder_plan_count": cancelled_reminder_plan_count,
-                            },
-                        )
-                    )
-                continue
-            queue_item.status = QueueItemStatus.COMPLETED.value
-            queue_item.resolved_at = now
-            queue_item.resolution_code = "legacy_approval_expired"
-            queue_item.resolution_note = (
-                "The compatibility whole-term proposal expired without approval."
-            )
-            queue_item.snoozed_until = None
-            queue_item.snooze_local_date = None
-            queue_item.version += 1
-            ensure_local_actions(
-                session,
-                queue_item,
-                projection_date=self._local_now(now).date(),
-            )
-            QueueService(session, self.settings).enqueue_refresh(
-                queue_item,
-                "legacy_approval_expired",
-            )
-            session.add(
-                AuditEvent(
-                    event_type="queue_item.legacy_proposal_retired",
-                    entity_type="queue_item",
-                    entity_id=queue_item.id,
-                    actor_type="docket",
-                    data={
-                        "action_id": str(action.id),
-                        "version": queue_item.version,
-                        "resolution_code": queue_item.resolution_code,
-                        "cancelled_reminder_plan_count": cancelled_reminder_plan_count,
-                    },
-                )
-            )
-            retired += 1
-        return retired
-
-    def retire_expired_legacy_proposals(self, now: datetime | None = None) -> int:
-        now = now or utc_now()
-        with self.session_factory.begin() as session:
-            return self._retire_expired_legacy_proposals(session, now)
-
     def _renew_expired_action(self, session: Session, queue_item: QueueItem, now: datetime) -> bool:
         action = session.scalar(
             select(Action).where(
@@ -484,7 +401,6 @@ class RolloverService:
             else:
                 savepoint.commit()
             self._expire_due_approvals(session, now)
-            self._retire_expired_legacy_proposals(session, now)
             daily_thread = self._ensure_thread_row(session, local_date)
 
             woken = 0

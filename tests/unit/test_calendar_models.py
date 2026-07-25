@@ -46,7 +46,7 @@ def milestone_two_graph(session: Session) -> tuple[Record, Account, ActionRevisi
     action = Action(
         queue_item_id=queue_item.id,
         record_id=term.id,
-        action_type="calendar_create_meeting",
+        action_type="calendar_create_event",
         status="approval_pending",
     )
     session.add(action)
@@ -108,7 +108,7 @@ def test_operation_attempt_number_is_unique(session: Session) -> None:
         action_revision_id=revision.id,
         approval_id=approval.id,
         idempotency_key=f"calendar:create:{uuid.uuid4()}",
-        operation_type="calendar_create_meeting",
+        operation_type="calendar_create_event",
         account_id=account.id,
         status="pending",
         provider_correlation=str(uuid.uuid4()),

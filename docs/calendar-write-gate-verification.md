@@ -1,5 +1,8 @@
 # Production Calendar write-gate verification
 
+> Historical checkpoint. References to the aggregate schedule card describe
+> the pre-`0012` alpha implementation and are not current runtime behavior.
+
 Verified on 2026-07-24 against commit `d643a27`.
 
 ## Contract

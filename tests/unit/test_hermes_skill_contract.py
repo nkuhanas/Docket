@@ -58,7 +58,8 @@ def test_manual_intent_skill_uses_independent_course_lifecycles() -> None:
     assert "`docket_propose_course_reconciliation` in `drop` mode" in skill
     assert "partial provider success leaves the course active for retry" in skill
     assert "`docket_restore_record`" in skill
-    assert "legacy compatibility tools" in skill
+    assert "docket_store_term_schedule" not in skill
+    assert "docket_propose_term_schedule" not in skill
     assert "Do not call update merely to restate equal data" in skill
     assert "version-preserving no-op" in skill
     assert "Under `off`, never propose" in skill

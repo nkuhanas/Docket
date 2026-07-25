@@ -1,5 +1,9 @@
 # Milestone 3.6 persistent review-carousel verification
 
+> Historical checkpoint only. The aggregate term-schedule workflow described
+> here was removed by alpha cleanup migration `0012`; reviewed paging remains
+> only for multi-item per-course reconciliation.
+
 Date: 2026-07-24 (America/Los_Angeles)
 
 This closure replaces the schedule card's action-menu/ephemeral review with one

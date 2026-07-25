@@ -49,7 +49,7 @@ on every request. Docket's callback uses the independent
 
 Hermes performs overlapping plugin discovery during this pin's startup. Each
 discovery pass imports an isolated plugin module, so module globals alone cannot
-prevent a transient second bind. Plugin `0.15.5` starts the private HTTP server
+prevent a transient second bind. Plugin `0.15.6` starts the private HTTP server
 under a background supervisor: an `EADDRINUSE` defers that copy without failing
 plugin registration, and it retries if the process that temporarily owned the
 port exits. Healthy startup may contain one `startup deferred` line, followed
@@ -106,7 +106,7 @@ Pinned outbound assumptions to revalidate:
   through its durable outbox; the plugin never posts hook output directly to
   Discord.
 
-Plugin `0.15.5` renders timed reminder start/end values as Docket-supplied native
+Plugin `0.15.6` renders timed reminder start/end values as Docket-supplied native
 Discord timestamps, puts the event subject under the native `Title` field, and
 omits a redundant timezone field. All-day reminders instead render fixed
 start/end dates plus the Calendar timezone. Projection embeds may omit their
@@ -353,10 +353,11 @@ Docket `calendar_links` row rather than an expanded occurrence cache row.
 Cancellation and reminder-only approvals require a current, non-stale complete
 cache plus the exact bound event/master ETag, but do not require the cache's
 `last_success_at` to remain byte-for-byte unchanged. A later harmless complete
-refresh therefore cannot invalidate an earlier independent card. Create,
-event-content update, per-course reconciliation, and legacy aggregate schedule
-approvals remain bound to the exact complete snapshot because their conflict
-previews depend on it.
+refresh therefore cannot invalidate an earlier independent card. Create and
+event-content update approvals retain the exact target and conflict
+dependencies used by their preview. Per-course reconciliation binds its record
+version, linked provider identities/ETags, effects, and actual overlapping
+conflict set.
 The rule list supplies current canonical identities for diagnosis after session
 compaction, avoiding a past-session search. Reminder destinations are fixed:
 Docket binds Google popup plus the due-date queue thread internally.
@@ -376,9 +377,8 @@ a provider event created seconds earlier. `prefer_cache` remains correct only
 when that bounded lag is acceptable.
 The active and template allowlists are synchronized by
 `scripts/prepare-hermes-home.sh`, but an existing Hermes session still requires
-`/reload-mcp` after deployment. The allowlist is intentionally a strict subset
-of the MCP server registry: Docket retains a 22-tool compatibility surface,
-while Hermes registers 20 model-visible tools.
+`/reload-mcp` after deployment. The MCP server registry and Hermes allowlist
+must contain the same 19 tools.
 
 `docket_propose_course_reconciliation` accepts one active course UUID/version,
 `sync|drop`, configured account/calendar, optional unified reminder plan, and
@@ -388,15 +388,6 @@ no-op; an approved proposal compiles one parent operation and independent
 durable items. Drop archives only after every active link is confirmed
 cancelled. `docket_restore_record` is a separate optimistic local transition;
 it never contacts Google.
-
-`docket_store_term_schedule` and `docket_propose_term_schedule` retain their
-Milestone 3.6 schemas for compatibility with existing durable history. They are
-excluded from the active Hermes allowlist as well as from the active skill, so
-the model cannot select them for new imports, edits, drops, or restores.
-Expired pending proposals from this compatibility workflow are terminalized
-with queue resolution `legacy_approval_expired`; their unactivated reminder
-plans are cancelled, their local Snooze/Ignore controls are superseded, and
-they do not participate in later carryover.
 
 The Discord plugin understands editable proposal-control token fields by
 compact numeric codes shared with Docket. Adding a token field requires

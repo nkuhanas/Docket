@@ -16,7 +16,7 @@ Start here when operating or changing the deployed stack:
 * [Milestone 3.5 verification](milestone-3.5-verification.md) — bounded Calendar
   synchronization, cache freshness, reminder delivery, and the controlled live gate.
 * [Milestone 3.6 verification](milestone-3.6-verification.md) — full Calendar
-  control, legacy aggregate term schedules, and durable batch history.
+  control, independent course reconciliation, and durable batch history.
 * [Milestone 3.7 verification](milestone-3.7-verification.md) — independent
   course reconciliation, durable drop, restore, and the operator-present gate.
 * [Production Calendar write-gate verification](calendar-write-gate-verification.md)

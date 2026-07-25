@@ -13,7 +13,6 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
     names = set(tools)
     assert names == {
         "docket_store_record",
-        "docket_store_term_schedule",
         "docket_get_record",
         "docket_search_records",
         "docket_update_record",
@@ -26,13 +25,11 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
         "docket_set_calendar_profile",
         "docket_list_reminder_rules",
         "docket_propose_calendar_event",
-        "docket_propose_term_schedule",
         "docket_propose_course_reconciliation",
         "docket_list_queue_items",
         "docket_get_queue_item",
         "docket_snooze_queue_item",
         "docket_ignore_queue_item",
-        "docket_propose_action",
         "docket_get_action",
     }
     assert not names.intersection(
@@ -47,12 +44,7 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
         for line in include_block.splitlines()
         if line.strip()
     }
-    legacy_compatibility_tools = {
-        "docket_store_term_schedule",
-        "docket_propose_term_schedule",
-    }
-    assert configured_names == names - legacy_compatibility_tools
-    assert configured_names.isdisjoint(legacy_compatibility_tools)
+    assert configured_names == names
     smoke_contract = runpy.run_path("scripts/compose-mcp-smoke.py")
     assert smoke_contract["EXPECTED_TOOLS"] == names
     store_description = " ".join((tools["docket_store_record"].description or "").split())
@@ -95,36 +87,6 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
     )
     source_metadata = definitions["DiscordSourceMetadata"]["properties"]
     assert "Docket-owned daily thread" in source_metadata["parent_channel_id"]["description"]
-    schedule_store = tools["docket_store_term_schedule"]
-    schedule_description = " ".join((schedule_store.description or "").split())
-    assert "Legacy compatibility path" in schedule_description
-    assert "normal workflow stores or updates each independent course record" in (
-        schedule_description
-    )
-    assert "rolls back the whole request on conflict" in schedule_description
-    schedule_properties = schedule_store.inputSchema["properties"]
-    assert schedule_properties["term"]["discriminator"]["propertyName"] == "kind"
-    assert schedule_properties["courses"]["minItems"] == 1
-    assert schedule_properties["courses"]["maxItems"] == 50
-    schedule_definitions = schedule_store.inputSchema["$defs"]
-    assert (
-        schedule_definitions["CourseMeeting"]["properties"]["additional_occurrences"]["maxItems"]
-        == 100
-    )
-
-    proposal = tools["docket_propose_action"]
-    proposal_description = " ".join((proposal.description or "").split())
-    assert "never records or consumes an approval" in proposal_description
-    assert "never contacts Google Calendar" in proposal_description
-    assert "persistent Approve/Reject buttons" in proposal_description
-    assert "Do not instruct the operator to type an approval code" in proposal_description
-    proposal_properties = proposal.inputSchema["properties"]
-    assert proposal_properties["action_type"]["enum"] == [
-        "calendar_create_meeting",
-        "calendar_update_meeting",
-    ]
-    assert "risk_class" not in proposal_properties
-
     snooze = tools["docket_snooze_queue_item"]
     snooze_description = " ".join((snooze.description or "").split())
     assert "07:00 Los Angeles rollover" in snooze_description
@@ -199,15 +161,6 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
             "title": "Target Scope",
             "type": "string",
         }
-
-    schedule_proposal = tools["docket_propose_term_schedule"]
-    schedule_proposal_description = " ".join((schedule_proposal.description or "").split())
-    assert "Legacy compatibility proposal" in schedule_proposal_description
-    assert "Prefer ``docket_propose_course_reconciliation``" in schedule_proposal_description
-    assert "performs no provider mutation" in schedule_proposal_description
-    schedule_proposal_properties = schedule_proposal.inputSchema["properties"]
-    assert "reminder_plan" not in schedule_proposal.inputSchema["required"]
-    assert schedule_proposal_properties["request_key"]["pattern"].startswith("^discord:")
 
     restore = tools["docket_restore_record"]
     restore_description = " ".join((restore.description or "").split())

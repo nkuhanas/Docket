@@ -25,7 +25,6 @@ from docket.models import (
     AuditEvent,
     CalendarEventCache,
     CalendarReminderPlan,
-    CalendarScheduleSnapshot,
     CalendarSyncState,
     CommandRequest,
     DiscordDailyThread,
@@ -765,16 +764,6 @@ class ProposalControlService:
                 code="calendar_refresh_failed",
                 message="Docket could not obtain a fresh complete Calendar snapshot.",
             )
-        if revision.action_type == "calendar_apply_term_schedule":
-            return self._refresh_schedule(
-                request,
-                revision,
-                action,
-                approval,
-                queue_item,
-                command,
-                state,
-            )
         if revision.action_type in COURSE_CALENDAR_ACTION_TYPES:
             return self._refresh_course(
                 request,
@@ -890,91 +879,6 @@ class ProposalControlService:
                 )
             )
             return result
-        return self._replace_revision(
-            request,
-            revision,
-            action,
-            approval,
-            queue_item,
-            command,
-            replacement_parameters=parameters,
-            replacement_preview=preview,
-            replacement_target_versions=target_versions,
-        )
-
-    def _refresh_schedule(
-        self,
-        request: LocalActionResponse,
-        revision: ActionRevision,
-        action: Action,
-        approval: Approval,
-        queue_item: QueueItem,
-        command: CommandRequest,
-        state: CalendarSyncState,
-    ) -> dict[str, object]:
-        from docket.services.calendar_profile import CalendarProfileService
-        from docket.services.schedule_actions import TermScheduleActionService
-
-        try:
-            snapshot_id = uuid.UUID(str(revision.parameters["schedule_snapshot_id"]))
-        except (KeyError, ValueError) as exc:
-            raise DocketError(
-                code="schedule_review_unavailable",
-                message="The schedule snapshot binding is invalid.",
-            ) from exc
-        compiler = TermScheduleActionService(self.session)
-        snapshot = compiler._verified_snapshot(snapshot_id)
-        account = self.session.get(Account, revision.account_id)
-        calendar_id = revision.parameters.get("calendar_id")
-        reminder_plan = revision.parameters.get("reminder_plan")
-        if (
-            account is None
-            or account.provider != "google"
-            or not account.enabled
-            or "google_calendar" not in account.capabilities
-            or not isinstance(calendar_id, str)
-            or not isinstance(reminder_plan, dict)
-            or state.last_success_at is None
-        ):
-            raise DocketError(
-                code="proposal_refresh_unavailable",
-                message="The schedule proposal no longer has a valid Calendar target.",
-            )
-        parameters, preview, material_fingerprint = compiler._compile_proposal_material(
-            snapshot,
-            account,
-            calendar_id,
-            deepcopy(reminder_plan),
-            state,
-        )
-        conflicts = preview.get("conflicts")
-        profile = CalendarProfileService(self.session).get()
-        if isinstance(conflicts, list) and conflicts and profile.conflict_policy == "block":
-            raise DocketError(
-                code="calendar_conflict_blocked",
-                message="The Calendar profile blocks this conflicting schedule.",
-                details={"conflicts": conflicts[:10]},
-            )
-        counts = preview.get("counts")
-        if not isinstance(counts, dict):
-            raise DocketError(
-                code="schedule_review_unavailable",
-                message="The refreshed schedule preview has no bounded effect counts.",
-            )
-        queue_item.material_fingerprint = material_fingerprint
-        queue_item.summary = (
-            f"{counts.get('create', 0)} create, "
-            f"{counts.get('update', 0)} update, "
-            f"{counts.get('no_op', 0)} already synchronized"
-        )
-        target_versions = deepcopy(revision.target_versions)
-        target_versions["schedule_snapshot"] = {
-            "id": str(snapshot.id),
-            "manifest_sha256": snapshot.manifest_sha256,
-        }
-        target_versions["calendar_snapshot"] = {
-            "last_success_at": _aware(state.last_success_at).isoformat(),
-        }
         return self._replace_revision(
             request,
             revision,
@@ -1125,59 +1029,24 @@ class ProposalControlService:
         self,
         revision: ActionRevision,
     ) -> tuple[str, int]:
-        if revision.action_type in COURSE_CALENDAR_ACTION_TYPES:
-            raw_items = revision.preview.get("items")
-            parameter_items = revision.parameters.get("items")
-            if (
-                not isinstance(raw_items, list)
-                or not isinstance(parameter_items, list)
-                or not raw_items
-                or len(raw_items) != len(parameter_items)
-                or len(raw_items) > 50
-                or revision.preview.get("item_count") != len(raw_items)
-                or any(not isinstance(item, dict) for item in raw_items)
-                or any(not isinstance(item, dict) for item in parameter_items)
-            ):
-                raise DocketError(
-                    code="course_review_unavailable",
-                    message="The immutable course batch has invalid review items.",
-                )
-            return sha256_json(parameter_items), (len(raw_items) + 9) // 10
-        try:
-            snapshot_id = uuid.UUID(str(revision.parameters["schedule_snapshot_id"]))
-        except (KeyError, ValueError) as exc:
-            raise DocketError(
-                code="schedule_review_unavailable",
-                message="The schedule snapshot binding is invalid.",
-            ) from exc
-        snapshot = self.session.get(CalendarScheduleSnapshot, snapshot_id)
+        raw_items = revision.preview.get("items")
+        parameter_items = revision.parameters.get("items")
         if (
-            snapshot is None
-            or snapshot.manifest_sha256 != revision.parameters.get("manifest_sha256")
-            or sha256_json(snapshot.manifest) != snapshot.manifest_sha256
+            revision.action_type not in COURSE_CALENDAR_ACTION_TYPES
+            or not isinstance(raw_items, list)
+            or not isinstance(parameter_items, list)
+            or not raw_items
+            or len(raw_items) != len(parameter_items)
+            or len(raw_items) > 50
+            or revision.preview.get("item_count") != len(raw_items)
+            or any(not isinstance(item, dict) for item in raw_items)
+            or any(not isinstance(item, dict) for item in parameter_items)
         ):
             raise DocketError(
-                code="schedule_review_unavailable",
-                message="The immutable schedule snapshot could not be verified.",
+                code="course_review_unavailable",
+                message="The immutable course batch has invalid review items.",
             )
-        raw_items = snapshot.manifest.get("items")
-        if not isinstance(raw_items, list) or not raw_items:
-            raise DocketError(
-                code="schedule_review_unavailable",
-                message="The immutable schedule snapshot has no reviewable items.",
-            )
-        items = [item for item in raw_items if isinstance(item, dict)]
-        if len(items) != len(raw_items):
-            raise DocketError(
-                code="schedule_review_unavailable",
-                message="The immutable schedule snapshot contains an invalid item.",
-            )
-        if len(items) > 50 or revision.preview.get("item_count") != len(items):
-            raise DocketError(
-                code="schedule_review_unavailable",
-                message="The schedule review count does not match its immutable preview.",
-            )
-        return snapshot.manifest_sha256, (len(items) + 9) // 10
+        return sha256_json(parameter_items), (len(raw_items) + 9) // 10
 
     def _failure_page_count(self, revision: ActionRevision) -> int:
         operation = self.session.scalar(

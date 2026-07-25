@@ -15,7 +15,7 @@ def test_model_proposal_result_is_button_first_and_omits_short_code() -> None:
         approval_id=uuid.uuid4(),
         short_code="RECOVERY-CODE",
         expires_at=datetime(2026, 7, 22, 9, tzinfo=UTC),
-        preview={"action_type": "calendar_create_meeting"},
+        preview={"action_type": "calendar_create_event"},
     )
 
     payload = _model_proposal_result(result)

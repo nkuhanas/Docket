@@ -26,7 +26,6 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
         "calendar_event_cache",
         "calendar_profiles",
         "calendar_reminder_plans",
-        "calendar_schedule_snapshots",
         "reminder_rules",
         "scheduled_notifications",
         "records",
@@ -41,6 +40,7 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
         "discord_daily_threads",
         "discord_projections",
     }.issubset(set(inspect(engine).get_table_names()))
+    assert "calendar_schedule_snapshots" not in inspect(engine).get_table_names()
     assert "synced_snapshot" in {
         column["name"] for column in inspect(engine).get_columns("calendar_links")
     }

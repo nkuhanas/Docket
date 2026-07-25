@@ -537,27 +537,13 @@ class OperationRunner:
     ) -> None:
         revision, action, queue_item = OperationRunner._bound_entities(session, operation)
         parameters = revision.parameters
-        meeting_action = operation.operation_type in {
-            "calendar_create_meeting",
-            "calendar_update_meeting",
-        }
-        if meeting_action:
-            link = session.scalar(
-                select(CalendarLink).where(
-                    CalendarLink.record_id == uuid.UUID(str(parameters["record_id"])),
-                    CalendarLink.meeting_id == parameters["meeting_id"],
-                    CalendarLink.account_id == operation.account_id,
-                    CalendarLink.calendar_id == parameters["calendar_id"],
-                )
+        link = session.scalar(
+            select(CalendarLink).where(
+                CalendarLink.account_id == operation.account_id,
+                CalendarLink.calendar_id == parameters["calendar_id"],
+                CalendarLink.logical_key == parameters["logical_key"],
             )
-        else:
-            link = session.scalar(
-                select(CalendarLink).where(
-                    CalendarLink.account_id == operation.account_id,
-                    CalendarLink.calendar_id == parameters["calendar_id"],
-                    CalendarLink.logical_key == parameters["logical_key"],
-                )
-            )
+        )
         if operation.operation_type == "calendar_cancel_event":
             if link is not None:
                 link.provider_etag = None
@@ -576,40 +562,24 @@ class OperationRunner:
                 if not isinstance(classification, dict):
                     classification = {}
                 link = CalendarLink(
-                    record_id=(uuid.UUID(str(parameters["record_id"])) if meeting_action else None),
-                    meeting_id=(str(parameters["meeting_id"]) if meeting_action else None),
+                    record_id=None,
+                    meeting_id=None,
                     origin_kind=(
-                        "course_meeting"
-                        if meeting_action
-                        else "standalone"
+                        "standalone"
                         if operation.operation_type == "calendar_create_event"
                         else "adopted_provider_event"
                     ),
-                    logical_key=(
-                        f"course:{parameters['record_id']}:{parameters['meeting_id']}"
-                        if meeting_action
-                        else str(parameters["logical_key"])
-                    ),
+                    logical_key=str(parameters["logical_key"]),
                     account_id=operation.account_id,
                     calendar_id=str(parameters["calendar_id"]),
                     external_event_id=result.external_event_id,
                     provider_etag=result.provider_etag,
                     provider_correlation=operation.provider_correlation,
-                    last_synced_version=(
-                        int(parameters["record_version"]) if meeting_action else revision.revision
-                    ),
+                    last_synced_version=revision.revision,
                     recurrence_kind=str(
-                        classification.get(
-                            "recurrence_kind",
-                            "recurring" if meeting_action else "one_time",
-                        )
+                        classification.get("recurrence_kind", "one_time")
                     ),
-                    system_tags=list(
-                        classification.get(
-                            "system_tags",
-                            ["recurring", "timed", "course_meeting"] if meeting_action else [],
-                        )
-                    ),
+                    system_tags=list(classification.get("system_tags", [])),
                     operator_tags=list(classification.get("operator_tags", [])),
                     priority=str(parameters.get("priority", "normal")),
                     priority_basis=str(parameters.get("priority_basis", "default")),
@@ -622,7 +592,6 @@ class OperationRunner:
                 if (
                     operation.operation_type
                     in {
-                        "calendar_update_meeting",
                         "calendar_update_event",
                         "calendar_update_reminders",
                     }
@@ -635,9 +604,7 @@ class OperationRunner:
                 link.external_event_id = result.external_event_id
                 link.provider_etag = result.provider_etag
                 link.provider_correlation = operation.provider_correlation
-                link.last_synced_version = (
-                    int(parameters["record_version"]) if meeting_action else revision.revision
-                )
+                link.last_synced_version = revision.revision
                 link.synced_snapshot = result.snapshot
                 if parameters.get("reminder_plan_sha256") is not None:
                     link.reminder_plan_sha256 = parameters["reminder_plan_sha256"]
@@ -657,7 +624,7 @@ class OperationRunner:
         operation.result = {
             "calendar_link_id": str(link.id) if link is not None else None,
             "external_event_id": result.external_event_id,
-            "record_version": (int(parameters["record_version"]) if meeting_action else None),
+            "record_version": None,
         }
         operation.last_error_code = None
         operation.last_error_message = None
@@ -1268,13 +1235,9 @@ class OperationRunner:
         self.mark_provider_call_started(claim)
         request = claim.calendar_request()
         try:
-            if claim.operation_type in {
-                "calendar_create_meeting",
-                "calendar_create_event",
-            }:
+            if claim.operation_type == "calendar_create_event":
                 result = self.provider.create_event(request)
             elif claim.operation_type in {
-                "calendar_update_meeting",
                 "calendar_update_event",
                 "calendar_update_reminders",
             }:
@@ -1550,10 +1513,7 @@ class OperationRunner:
             return False
         request = claim.calendar_request()
         try:
-            if claim.operation_type in {
-                "calendar_create_meeting",
-                "calendar_create_event",
-            }:
+            if claim.operation_type == "calendar_create_event":
                 matches = self.provider.find_by_correlation(request)
             else:
                 current = self.provider.get_event(request)
@@ -1601,7 +1561,6 @@ class OperationRunner:
             self.finish_success(claim, exact[0])
         elif len(matches) == 0:
             if claim.operation_type in {
-                "calendar_update_meeting",
                 "calendar_update_event",
                 "calendar_update_reminders",
             }:

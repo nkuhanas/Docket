@@ -155,9 +155,6 @@ class WorkerRuntime:
                     next_recovery = now + self.stale_lease_poll_seconds
                 if self.rollover_service is not None and now >= next_rollover:
                     await asyncio.to_thread(self.rollover_service.expire_due_approvals)
-                    await asyncio.to_thread(
-                        self.rollover_service.retire_expired_legacy_proposals
-                    )
                     await asyncio.to_thread(self.rollover_service.run_due_once)
                     await asyncio.to_thread(self.rollover_service.maintain_archives)
                     next_rollover = now + self.rollover_poll_seconds

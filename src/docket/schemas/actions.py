@@ -12,13 +12,11 @@ from docket.schemas.calendar import (
 from docket.schemas.records import (
     DiscordId,
     DiscordRequestKey,
-    MeetingId,
     RecordSourceInput,
     StrictModel,
     validate_discord_request_fields,
 )
 
-CalendarActionType = Literal["calendar_create_meeting", "calendar_update_meeting"]
 StandaloneCalendarActionType = Literal[
     "calendar_create_event",
     "calendar_update_event",
@@ -27,28 +25,6 @@ StandaloneCalendarActionType = Literal[
 ]
 CalendarMutationScope = Literal["event", "series"]
 CourseReconciliationMode = Literal["sync", "drop"]
-
-
-class CalendarMeetingActionParameters(StrictModel):
-    meeting_id: MeetingId
-    calendar_id: str = Field(min_length=1, max_length=1024)
-
-
-class ProposeActionInput(StrictModel):
-    action_type: CalendarActionType
-    record_id: UUID
-    expected_record_version: int = Field(ge=1)
-    account_id: UUID
-    parameters: CalendarMeetingActionParameters
-    request_key: DiscordRequestKey
-    source: RecordSourceInput
-    actor_type: Literal["hermes"] = "hermes"
-    actor_id: DiscordId
-
-    @model_validator(mode="after")
-    def request_matches_source(self) -> "ProposeActionInput":
-        validate_discord_request_fields(self.request_key, self.source, self.actor_id)
-        return self
 
 
 class CreateCalendarEventProposal(StrictModel):
@@ -111,22 +87,6 @@ class ProposeCalendarEventInput(StrictModel):
 
     @model_validator(mode="after")
     def request_matches_source(self) -> "ProposeCalendarEventInput":
-        validate_discord_request_fields(self.request_key, self.source, self.actor_id)
-        return self
-
-
-class ProposeTermScheduleInput(StrictModel):
-    schedule_snapshot_id: UUID
-    account_id: UUID
-    calendar_id: str = Field(min_length=1, max_length=1024)
-    reminder_plan: CalendarReminderPlanInput | None = None
-    request_key: DiscordRequestKey
-    source: RecordSourceInput
-    actor_type: Literal["hermes"] = "hermes"
-    actor_id: DiscordId
-
-    @model_validator(mode="after")
-    def request_matches_source(self) -> "ProposeTermScheduleInput":
         validate_discord_request_fields(self.request_key, self.source, self.actor_id)
         return self
 

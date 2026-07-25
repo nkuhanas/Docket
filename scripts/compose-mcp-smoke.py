@@ -12,7 +12,6 @@ from mcp.client.streamable_http import streamable_http_client
 
 EXPECTED_TOOLS = {
     "docket_store_record",
-    "docket_store_term_schedule",
     "docket_get_record",
     "docket_search_records",
     "docket_update_record",
@@ -26,12 +25,10 @@ EXPECTED_TOOLS = {
     "docket_list_reminder_rules",
     "docket_propose_calendar_event",
     "docket_propose_course_reconciliation",
-    "docket_propose_term_schedule",
     "docket_list_queue_items",
     "docket_get_queue_item",
     "docket_snooze_queue_item",
     "docket_ignore_queue_item",
-    "docket_propose_action",
     "docket_get_action",
 }
 

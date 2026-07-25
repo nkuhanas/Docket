@@ -446,13 +446,10 @@ class DiscordProjectionRunner:
     @staticmethod
     def _action_label(value: str) -> str:
         labels = {
-            "calendar_create_meeting": "Create course meeting",
-            "calendar_update_meeting": "Update course meeting",
             "calendar_create_event": "Create event",
             "calendar_update_event": "Update event",
             "calendar_update_reminders": "Update reminders",
             "calendar_cancel_event": "Cancel event",
-            "calendar_apply_term_schedule": "Apply term schedule",
             "calendar_reconcile_course": "Synchronize course",
             "calendar_drop_course": "Drop course",
         }
@@ -665,16 +662,6 @@ class DiscordProjectionRunner:
         target_scope: str = "event",
     ) -> str:
         labels = {
-            "calendar_create_meeting": (
-                "new course meeting",
-                "Course meeting creation",
-                "Course meeting created",
-            ),
-            "calendar_update_meeting": (
-                "course meeting update",
-                "Course meeting update",
-                "Course meeting updated",
-            ),
             "calendar_create_event": ("new event", "Event creation", "Event created"),
             "calendar_update_event": ("event update", "Event update", "Event updated"),
             "calendar_update_reminders": (
@@ -686,11 +673,6 @@ class DiscordProjectionRunner:
                 "event cancellation",
                 "Event cancellation",
                 "Event cancelled",
-            ),
-            "calendar_apply_term_schedule": (
-                "term schedule",
-                "Term schedule",
-                "Term schedule applied",
             ),
             "calendar_reconcile_course": (
                 "course changes",

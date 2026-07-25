@@ -84,7 +84,6 @@ mcp_servers:
         - docket_get_queue_item
         - docket_snooze_queue_item
         - docket_ignore_queue_item
-        - docket_propose_action
         - docket_get_action
       prompts: false
       resources: false
