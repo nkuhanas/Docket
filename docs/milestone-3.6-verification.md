@@ -316,5 +316,16 @@ Automated evidence covers hook redaction, non-Docket exclusion, plugin
 create/edit idempotency, trace replay and terminal non-regression, overflow,
 healthy-card control absence, stale-card transition, and standalone/aggregate
 replacement behavior. The complete suite contains 214 passing tests before the
-release commit. Live operator verification remains to confirm the first
-deployed trace card and one stale approval/rebuild interaction.
+release commit.
+
+On 2026-07-24, the first operator-present trace smoke completed through the
+deployed Discord gateway. One trusted chat message produced one terminal
+`discord_mcp_traces` row containing exactly two successful calls:
+`docket_search_records` followed by `docket_get_record`. The stored calls
+contained only the closed trace fields, with no unexpected keys. All five
+durable projection updates—including running, per-call, and terminal
+transitions—were delivered on their first attempt with no error. The
+operator-visible `docket-system` card updated in place and ended at
+**Completed**. This closes the live MCP-provenance gate. Live operator
+verification remains only for one deliberately stale approval and contextual
+**Rebuild preview** interaction.
