@@ -294,38 +294,37 @@ class TermScheduleService:
         for record in courses:
             course = CourseData.model_validate(record.data)
             for meeting_id, meeting in sorted(course.meetings.items()):
-                if any(
-                    value is None
-                    for value in (
-                        meeting.start_time,
-                        meeting.end_time,
-                        meeting.start_date,
-                        meeting.end_date,
-                        meeting.timezone,
-                    )
-                ):
+                if meeting.start_time is None or meeting.end_time is None:
                     raise DocketError(
                         code="incomplete_schedule_meeting",
                         message=(
-                            f"{course.course_code} {meeting_id} requires explicit "
-                            "time, date, and timezone bounds."
+                            f"{course.course_code} {meeting_id} requires explicit start "
+                            "and end times."
                         ),
                     )
-                assert meeting.start_date is not None
-                assert meeting.end_date is not None
                 assert meeting.start_time is not None
                 assert meeting.end_time is not None
-                assert meeting.timezone is not None
+                effective_start_date = meeting.start_date or term_data.start_date
+                effective_end_date = meeting.end_date or term_data.end_date
+                effective_timezone = meeting.timezone or term_data.timezone
+                if effective_end_date < effective_start_date:
+                    raise DocketError(
+                        code="invalid_schedule_meeting_bounds",
+                        message=(
+                            f"{course.course_code} {meeting_id} ends before its "
+                            "effective start date."
+                        ),
+                    )
                 if (
-                    meeting.start_date < term_data.start_date
-                    or meeting.end_date > term_data.end_date
+                    effective_start_date < term_data.start_date
+                    or effective_end_date > term_data.end_date
                 ):
                     raise DocketError(
                         code="schedule_meeting_outside_term",
                         message=(f"{course.course_code} {meeting_id} falls outside the term."),
                     )
-                first = _first_occurrence(meeting.start_date, list(meeting.days))
-                if first > meeting.end_date:
+                first = _first_occurrence(effective_start_date, list(meeting.days))
+                if first > effective_end_date:
                     raise DocketError(
                         code="schedule_meeting_has_no_occurrence",
                         message=(
@@ -348,7 +347,7 @@ class TermScheduleService:
                         "kind": "timed",
                         "start_local": datetime.combine(first, meeting.start_time).isoformat(),
                         "end_local": datetime.combine(first, meeting.end_time).isoformat(),
-                        "timezone": meeting.timezone,
+                        "timezone": effective_timezone,
                         "fold": None,
                     },
                     "location": meeting.location,
@@ -361,7 +360,7 @@ class TermScheduleService:
                         "weekdays": list(meeting.days),
                         "month_days": [],
                         "count": None,
-                        "until_date": meeting.end_date.isoformat(),
+                        "until_date": effective_end_date.isoformat(),
                         "excluded_dates": [value.isoformat() for value in meeting.excluded_dates],
                         "additional_dates": [],
                     },
@@ -378,6 +377,15 @@ class TermScheduleService:
                     "section": course.section,
                     "meeting_id": meeting_id,
                     "exception_id": None,
+                    "date_range": {
+                        "start_date": effective_start_date.isoformat(),
+                        "end_date": effective_end_date.isoformat(),
+                        "timezone": effective_timezone,
+                        "start_source": (
+                            "meeting" if meeting.start_date is not None else "term"
+                        ),
+                        "end_source": "meeting" if meeting.end_date is not None else "term",
+                    },
                     "event": event,
                     "classification": {
                         "recurrence_kind": "recurring",
@@ -421,7 +429,7 @@ class TermScheduleService:
                             "end_local": datetime.combine(
                                 occurrence.date, occurrence.end_time
                             ).isoformat(),
-                            "timezone": meeting.timezone,
+                            "timezone": effective_timezone,
                             "fold": None,
                         },
                         "location": occurrence.location,

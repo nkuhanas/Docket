@@ -71,6 +71,12 @@ Courses always use `record_type: course`. Their canonical identity is
 `term_record_id`, `course_code`, and nullable `section`; the data must repeat
 those fields exactly and use the generated `meetings` object schema. Meeting
 IDs are stable descriptive keys such as `lecture-mo-we-1`, never array indexes.
+Preserve every explicitly supplied meeting `start_date`, `end_date`, and
+timezone exactly; these meeting values take precedence over the associated
+term. When a bound is genuinely omitted, leave it null so Docket can derive the
+corresponding term default without misrepresenting that default as an
+operator-supplied course fact. Never replace a shorter supplied course range
+with the full term range.
 If one weekday in a combined meeting changes, replace the course data with
 separate stable meeting objects for the unchanged and changed recurrence.
 Do not turn test framing or conversational descriptors into `course_title` or

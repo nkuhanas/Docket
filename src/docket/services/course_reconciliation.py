@@ -612,6 +612,7 @@ class CourseReconciliationService:
                     "section": item["section"],
                     "meeting_id": item["meeting_id"],
                     "exception_id": item.get("exception_id"),
+                    "date_range": item.get("date_range"),
                     "effect": item["effect"],
                     "event": item.get("event"),
                     "before": item.get("before"),
@@ -621,6 +622,18 @@ class CourseReconciliationService:
                 for item in items
             ],
             "conflicts": conflicts,
+            "course_date_ranges": sorted(
+                {
+                    sha256_json(date_range): date_range
+                    for item in items
+                    if isinstance(item.get("date_range"), dict)
+                    for date_range in [item["date_range"]]
+                }.values(),
+                key=lambda date_range: (
+                    str(date_range.get("start_date")),
+                    str(date_range.get("end_date")),
+                ),
+            ),
             "freshness": {
                 "last_success_at": _aware(state.last_success_at).isoformat(),
                 "window_start": _aware(state.window_start).isoformat(),

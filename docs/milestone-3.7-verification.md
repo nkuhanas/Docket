@@ -19,6 +19,10 @@ remains outside this repository.
 * Re-importing unchanged data, repeating an equal explicit replacement, and
   reconciling an unchanged course preserve the version and perform no provider
   work. Omitting a course has no effect.
+* Explicit meeting date bounds and timezone override the shared term; only
+  omitted values inherit term defaults during compilation.
+* A bounded course proposal renders its immutable items on the initial card and
+  opens directly at the decision controls; overflow retains reviewed paging.
 * `docket_store_term_schedule` and `docket_propose_term_schedule` remain
   available only for compatibility with existing durable history.
 
@@ -49,7 +53,7 @@ Validation completed before deployment:
 ```text
 ruff check .  -> passed
 mypy          -> passed (65 source files)
-pytest -q     -> 221 passed, 1 dependency deprecation warning
+pytest -q     -> 222 passed, 1 dependency deprecation warning
 skill check   -> Skill is valid
 ```
 
@@ -63,7 +67,7 @@ The generated and allowlisted surface contains 22 tools. The additions are:
 * `docket_restore_record`
 * `docket_propose_course_reconciliation`
 
-Hermes plugin `0.15.1` recognizes both in redacted MCP traces. The
+Hermes plugin `0.15.2` recognizes both in redacted MCP traces. The
 `docket-manual-intent` skill now treats bulk input as resumable per-course
 orchestration, allocates a distinct intent index to every write/proposal,
 requires explicit drop, recognizes materially equal updates before writing,

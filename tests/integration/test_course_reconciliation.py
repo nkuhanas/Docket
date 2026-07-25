@@ -14,6 +14,7 @@ from docket.models import (
     CalendarEventCache,
     CalendarLink,
     CalendarSyncState,
+    DiscordProjection,
     Operation,
     Record,
 )
@@ -240,6 +241,15 @@ def test_course_add_change_partial_drop_restore_and_unchanged_reimport(
             "cancel": 0,
             "no_op": 0,
         }
+        assert first["preview"]["course_date_ranges"] == [
+            {
+                "start_date": "2026-08-24",
+                "end_date": "2026-12-18",
+                "timezone": "America/Los_Angeles",
+                "start_source": "meeting",
+                "end_source": "meeting",
+            }
+        ]
 
     backend = FakeDiscordBackend()
     projection_runner = DiscordProjectionRunner(
@@ -252,12 +262,34 @@ def test_course_add_change_partial_drop_restore_and_unchanged_reimport(
     assert projected["embed"]["title"] == "Review course changes"
     assert [field["name"] for field in projected["embed"]["fields"][:4]] == [
         "Course",
+        "Course dates",
         "Notifications",
         "Term",
-        "Changes",
     ]
-    assert "<t:" in projected["embed"]["fields"][2]["value"]
-    assert [control["label"] for control in projected["controls"]] == ["Begin review"]
+    assert projected["embed"]["fields"][2]["value"] == "10 minutes beforehand"
+    assert "<t:" in projected["embed"]["fields"][1]["value"]
+    assert "<t:" in projected["embed"]["fields"][3]["value"]
+    assert not any(
+        field["name"] in {"Changes", "Review complete"}
+        for field in projected["embed"]["fields"]
+    )
+    proposal_fields = [
+        field
+        for field in projected["embed"]["fields"]
+        if field["name"].startswith(("1.", "2."))
+    ]
+    assert len(proposal_fields) == 2
+    assert all("through" in field["value"] for field in proposal_fields)
+    assert [control["label"] for control in projected["controls"]] == [
+        "Approve",
+        "Reject",
+        "Snooze until tomorrow",
+    ]
+    with session_factory() as session:
+        projection = session.scalar(select(DiscordProjection))
+        assert projection is not None
+        assert projection.view_mode == "decision"
+        assert projection.reviewed_through_page == 1
 
     with session_factory.begin() as session:
         duplicate = _propose(

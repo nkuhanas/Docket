@@ -390,6 +390,52 @@ def test_schedule_store_rejects_a_series_with_no_in_range_occurrence(
 
 
 @pytest.mark.integration
+def test_meeting_dates_override_term_and_missing_bounds_inherit(
+    session_factory: sessionmaker[Session],
+) -> None:
+    payload = _schedule("346666666666666666").model_dump(mode="json")
+    lecture = payload["courses"][0]["meetings"]["lecture-mo-we"]
+    lecture["end_date"] = "2026-12-11"
+    payload["courses"][0]["meetings"]["lab-fr"] = {
+        "meeting_type": "lab",
+        "days": ["FR"],
+        "start_time": "13:00:00",
+        "end_time": "13:50:00",
+        "location": "Building 14",
+        "start_date": None,
+        "end_date": None,
+        "timezone": None,
+        "excluded_dates": [],
+        "additional_occurrences": [],
+    }
+    request = StoreTermScheduleInput.model_validate(payload)
+
+    with session_factory.begin() as session:
+        stored = TermScheduleService(session).store(request)
+        snapshot = session.get(CalendarScheduleSnapshot, stored.schedule_snapshot_id)
+        assert snapshot is not None
+        items = {item["meeting_id"]: item for item in snapshot.manifest["items"]}
+
+    assert items["lecture-mo-we"]["date_range"] == {
+        "start_date": "2026-08-24",
+        "end_date": "2026-12-11",
+        "timezone": "America/Los_Angeles",
+        "start_source": "meeting",
+        "end_source": "meeting",
+    }
+    assert items["lecture-mo-we"]["event"]["recurrence"]["until_date"] == "2026-12-11"
+    assert items["lab-fr"]["date_range"] == {
+        "start_date": "2026-08-24",
+        "end_date": "2026-12-18",
+        "timezone": "America/Los_Angeles",
+        "start_source": "term",
+        "end_source": "term",
+    }
+    assert items["lab-fr"]["event"]["timing"]["timezone"] == "America/Los_Angeles"
+    assert items["lab-fr"]["event"]["recurrence"]["until_date"] == "2026-12-18"
+
+
+@pytest.mark.integration
 def test_complete_snapshot_produces_one_bulk_proposal_with_one_unified_plan(
     session_factory,
 ) -> None:

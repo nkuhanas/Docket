@@ -363,7 +363,7 @@ def test_update_card_prioritizes_operator_changes_and_terminal_state(
         )
         assert fields["Delta · Reminders"] == ("Before: 5 minutes, 10 minutes\nAfter: 5 minutes")
         assert fields["Details"] == "One-time · Normal priority\nTags: email"
-        assert fields["Notifications"] == ("5 minutes\nGoogle Calendar popup + Docket daily thread")
+        assert fields["Notifications"] == "5 minutes beforehand"
         assert fields["Conflicts"] == "None found"
 
     with session_factory.begin() as session:
@@ -781,7 +781,7 @@ def test_proposal_selects_and_custom_modal_replace_the_revision_in_place(
         assert fields["Where"] == "Desk"
         assert fields["Details"] == "One-time · Normal priority\nTags: email"
         assert fields["Notifications"] == (
-            "5 minutes, 10 minutes\nGoogle Calendar popup + Docket daily thread"
+            "5 minutes beforehand\n10 minutes beforehand"
         )
         assert fields["Conflicts"] == "None found"
         assert {

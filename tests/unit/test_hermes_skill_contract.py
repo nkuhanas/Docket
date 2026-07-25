@@ -61,3 +61,6 @@ def test_manual_intent_skill_uses_independent_course_lifecycles() -> None:
     assert "Under `off`, never propose" in skill
     assert "Under `explicit_only`, propose only" in skill
     assert "Cancellation is always explicit" in skill
+    assert "meeting values take precedence over the associated term" in skill
+    assert "leave it null so Docket can derive the corresponding term default" in skill
+    assert "Never replace a shorter supplied course range" in skill

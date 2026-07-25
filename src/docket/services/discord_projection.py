@@ -550,7 +550,7 @@ class DiscordProjectionRunner:
         return f"{self._discord_timestamp(start, 'F')} to {self._discord_timestamp(end, 't')}"
 
     @staticmethod
-    def _reminder_text(plan: object) -> str:
+    def _reminder_lead_text(plan: object) -> str:
         if not isinstance(plan, dict):
             return "Preserve current provider reminders"
         if "useDefault" in plan or "overrides" in plan:
@@ -583,11 +583,20 @@ class DiscordProjectionRunner:
                 f"{int(value) // 60} minute{'s' if int(value) != 60 else ''}" for value in leads
             )
         )
-        return f"{lead_text}\nGoogle Calendar popup + Docket daily thread"
+        return lead_text
 
     @staticmethod
-    def _reminder_lead_text(plan: object) -> str:
-        return DiscordProjectionRunner._reminder_text(plan).splitlines()[0]
+    def _reminder_text(plan: object) -> str:
+        lead_text = DiscordProjectionRunner._reminder_lead_text(plan)
+        if lead_text in {
+            "Disabled",
+            "Provider calendar defaults",
+            "Preserve current provider reminders",
+        }:
+            return lead_text
+        return "\n".join(
+            f"{lead} beforehand" for lead in lead_text.split(", ")
+        )
 
     def _calendar_delta_fields(
         self,
@@ -889,18 +898,61 @@ class DiscordProjectionRunner:
             if effect == "cancel"
             else str(event.get("location") or "No location")
         )
+        date_range = item.get("date_range")
+        range_line = ""
+        if isinstance(date_range, dict):
+            range_line = f"\n{self._course_date_range_text(date_range)}"
         return {
             "name": f"{index}. {identity or item.get('item_key', 'Schedule item')}",
             "value": (
                 f"{effect} · "
                 f"{classification.get('recurrence_kind', 'timed')}\n"
                 f"{title}\n"
-                f"{timing}\n"
+                f"{timing}{range_line}\n"
                 f"{location} · "
                 f"{conflict_count} conflict{'s' if conflict_count != 1 else ''}"
             ),
             "inline": False,
         }
+
+    def _inline_course_review(self, revision: ActionRevision) -> bool:
+        if revision.action_type not in {
+            "calendar_reconcile_course",
+            "calendar_drop_course",
+        }:
+            return False
+        raw_items = revision.preview.get("items")
+        if not isinstance(raw_items, list) or not 1 <= len(raw_items) <= 5:
+            return False
+        if any(not isinstance(item, dict) for item in raw_items):
+            return False
+        rendered = [
+            self._schedule_item_field(item, index)
+            for index, item in enumerate(raw_items, start=1)
+        ]
+        return all(
+            len(str(field["name"])) <= 256 and len(str(field["value"])) <= 1024
+            for field in rendered
+        ) and sum(
+            len(str(field["name"])) + len(str(field["value"])) for field in rendered
+        ) <= 3500
+
+    def _course_date_range_text(self, date_range: dict[str, Any]) -> str:
+        timezone_name = date_range.get("timezone", self.settings.timezone)
+        value = (
+            f"{self._term_date_label(date_range.get('start_date'), timezone_name)} "
+            "through "
+            f"{self._term_date_label(date_range.get('end_date'), timezone_name)}"
+        )
+        sources = {
+            str(date_range.get("start_source")),
+            str(date_range.get("end_source")),
+        }
+        if sources == {"term"}:
+            return f"{value} · term default"
+        if "term" in sources:
+            return f"{value} · partial term default"
+        return value
 
     def _review_navigation_control(
         self,
@@ -1032,6 +1084,23 @@ class DiscordProjectionRunner:
             )
             if course_label:
                 fields.append({"name": "Course", "value": course_label, "inline": False})
+            course_date_ranges = preview.get("course_date_ranges")
+            if isinstance(course_date_ranges, list) and course_date_ranges:
+                if len(course_date_ranges) == 1 and isinstance(
+                    course_date_ranges[0], dict
+                ):
+                    course_date_text = self._course_date_range_text(
+                        course_date_ranges[0]
+                    )
+                else:
+                    course_date_text = "Varies by meeting; review each change."
+                fields.append(
+                    {
+                        "name": "Course dates",
+                        "value": course_date_text,
+                        "inline": False,
+                    }
+                )
             standalone = preview.get("event")
             if isinstance(standalone, dict):
                 fields.append(
@@ -1180,6 +1249,7 @@ class DiscordProjectionRunner:
                 and projection.view_action_revision_id == revision.id
             ):
                 page_count = self._schedule_page_count(revision)
+                inline_course_review = self._inline_course_review(revision)
                 if projection.view_mode == "schedule_review":
                     page = projection.view_page
                     if page is None or page > page_count:
@@ -1218,25 +1288,39 @@ class DiscordProjectionRunner:
                         ],
                     ]
                 elif projection.view_mode == "decision":
-                    change_label = (
-                        "course changes"
-                        if revision.action_type
-                        in {"calendar_reconcile_course", "calendar_drop_course"}
-                        else "calendar changes"
-                    )
-                    fields.append(
-                        {
-                            "name": "Review complete",
-                            "value": (
-                                f"All {revision.preview.get('item_count')} "
-                                f"{change_label} "
-                                f"reviewed across {page_count} page"
-                                f"{'s' if page_count != 1 else ''}. "
-                                "Approve or reject the bound changes below."
-                            ),
-                            "inline": False,
-                        }
-                    )
+                    if inline_course_review:
+                        raw_items = revision.preview.get("items")
+                        assert isinstance(raw_items, list)
+                        fields = [
+                            field
+                            for field in fields
+                            if field.get("name") != "Changes"
+                        ]
+                        fields.extend(
+                            self._schedule_item_field(item, index)
+                            for index, item in enumerate(raw_items, start=1)
+                            if isinstance(item, dict)
+                        )
+                    else:
+                        change_label = (
+                            "course changes"
+                            if revision.action_type
+                            in {"calendar_reconcile_course", "calendar_drop_course"}
+                            else "calendar changes"
+                        )
+                        fields.append(
+                            {
+                                "name": "Review complete",
+                                "value": (
+                                    f"All {revision.preview.get('item_count')} "
+                                    f"{change_label} "
+                                    f"reviewed across {page_count} page"
+                                    f"{'s' if page_count != 1 else ''}. "
+                                    "Approve or reject the bound changes below."
+                                ),
+                                "inline": False,
+                            }
+                        )
                 elif projection.view_mode == "schedule_failures":
                     failures = (
                         operation.result.get("failures")
@@ -1401,6 +1485,7 @@ class DiscordProjectionRunner:
                         ),
                     ]
                 elif projection.view_mode == "decision":
+                    inline_course_review = self._inline_course_review(revision)
                     token = issue_projection_decision_approval_token(
                         approval.id,
                         projection.id,
@@ -1423,14 +1508,19 @@ class DiscordProjectionRunner:
                             "approval_id": str(approval.id),
                             "token": token,
                         },
-                        self._review_navigation_control(
-                            **common,
-                            source_view="decision",
-                            source_page=None,
-                            target_view="schedule_review",
-                            target_page=page_count,
-                            label="Back to review",
-                        ),
+                    ]
+                    if not inline_course_review:
+                        controls.append(
+                            self._review_navigation_control(
+                                **common,
+                                source_view="decision",
+                                source_page=None,
+                                target_view="schedule_review",
+                                target_page=page_count,
+                                label="Back to review",
+                            )
+                        )
+                    controls.append(
                         {
                             "kind": "proposal_action",
                             "transition": "proposal_snooze",
@@ -1444,8 +1534,8 @@ class DiscordProjectionRunner:
                                 approval.expires_at,
                                 signing_key,
                             ),
-                        },
-                    ]
+                        }
+                    )
                 else:
                     raise DiscordProjectionError(
                         "invalid_schedule_review_state",
@@ -1862,17 +1952,38 @@ class DiscordProjectionRunner:
                 projection.reviewed_through_page = 0
             elif revision_changed:
                 projection.view_action_revision_id = revision.id
+                inline_course_review = (
+                    action is not None
+                    and action.status == "approval_pending"
+                    and self._inline_course_review(revision)
+                )
                 projection.view_mode = (
-                    "summary"
-                    if revision.action_type in BATCH_CALENDAR_ACTION_TYPES
+                    "decision"
+                    if inline_course_review
                     else (
-                        "decision"
-                        if action is not None and action.status == "approval_pending"
-                        else "summary"
+                        "summary"
+                        if revision.action_type in BATCH_CALENDAR_ACTION_TYPES
+                        else (
+                            "decision"
+                            if action is not None and action.status == "approval_pending"
+                            else "summary"
+                        )
                     )
                 )
                 projection.view_page = None
-                projection.reviewed_through_page = 0
+                projection.reviewed_through_page = (
+                    self._schedule_page_count(revision) if inline_course_review else 0
+                )
+            elif (
+                revision.action_type in BATCH_CALENDAR_ACTION_TYPES
+                and action is not None
+                and action.status == "approval_pending"
+                and projection.view_mode == "summary"
+                and self._inline_course_review(revision)
+            ):
+                projection.view_mode = "decision"
+                projection.view_page = None
+                projection.reviewed_through_page = self._schedule_page_count(revision)
             elif (
                 revision.action_type in BATCH_CALENDAR_ACTION_TYPES
                 and action is not None

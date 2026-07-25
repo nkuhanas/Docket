@@ -121,9 +121,29 @@ class CourseMeeting(StrictModel):
     start_time: time | None = None
     end_time: time | None = None
     location: str | None = Field(default=None, max_length=512)
-    start_date: date | None = None
-    end_date: date | None = None
-    timezone: str | None = Field(default=None, min_length=1, max_length=255)
+    start_date: date | None = Field(
+        default=None,
+        description=(
+            "Explicit first date for this meeting pattern. Omit only to inherit "
+            "the associated term start date."
+        ),
+    )
+    end_date: date | None = Field(
+        default=None,
+        description=(
+            "Explicit last date for this meeting pattern. Omit only to inherit "
+            "the associated term end date."
+        ),
+    )
+    timezone: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=255,
+        description=(
+            "Explicit IANA timezone for this meeting pattern. Omit only to inherit "
+            "the associated term timezone."
+        ),
+    )
     excluded_dates: list[date] = Field(default_factory=list, max_length=100)
     additional_occurrences: list[AdditionalCourseOccurrence] = Field(
         default_factory=list,
