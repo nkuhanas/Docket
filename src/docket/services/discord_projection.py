@@ -565,21 +565,33 @@ class DiscordProjectionRunner:
     def _reminder_lead_text(plan: object) -> str:
         return DiscordProjectionRunner._reminder_text(plan).splitlines()[0]
 
-    def _calendar_change_text(
+    def _calendar_delta_fields(
         self,
         preview: dict[str, Any],
         action_type: str,
-    ) -> str | None:
+    ) -> list[dict[str, Any]]:
         if action_type == "calendar_cancel_event":
-            return "Remove this event from your configured Docket calendar."
+            return [
+                {
+                    "name": "Delta",
+                    "value": "Remove this event from your configured Docket calendar.",
+                    "inline": False,
+                }
+            ]
         before = preview.get("before")
         event = preview.get("event")
         if not isinstance(before, dict):
-            return None
-        changes: list[str] = []
+            return []
+        fields: list[dict[str, Any]] = []
 
         def add_delta(label: str, old_value: str, new_value: str) -> None:
-            changes.append(f"{label}\nBefore: {old_value}\nAfter: {new_value}")
+            fields.append(
+                {
+                    "name": f"Delta · {label}",
+                    "value": f"Before: {old_value}\nAfter: {new_value}",
+                    "inline": False,
+                }
+            )
 
         if isinstance(event, dict):
             old_title = str(before.get("summary") or "Untitled")
@@ -603,7 +615,7 @@ class DiscordProjectionRunner:
             new_reminders = self._reminder_lead_text(preview.get("reminder_plan"))
             if old_reminders != new_reminders:
                 add_delta("Reminders", old_reminders, new_reminders)
-        return "\n\n".join(changes) or None
+        return fields
 
     @staticmethod
     def _calendar_state_title(
@@ -958,15 +970,7 @@ class DiscordProjectionRunner:
                             "inline": False,
                         }
                     )
-            changes = self._calendar_change_text(preview, revision.action_type)
-            if changes is not None:
-                fields.append(
-                    {
-                        "name": "Delta",
-                        "value": changes,
-                        "inline": False,
-                    }
-                )
+            fields.extend(self._calendar_delta_fields(preview, revision.action_type))
             classification = preview.get("classification")
             if isinstance(classification, dict):
                 recurrence = str(

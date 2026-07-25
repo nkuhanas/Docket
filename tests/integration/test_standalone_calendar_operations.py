@@ -351,11 +351,11 @@ def test_update_card_prioritizes_operator_changes_and_terminal_state(
             "Starts <t:1785439800:F>\n"
             "Ends <t:1785440700:F>"
         )
-        assert fields["Delta"] == (
-            "Time\n"
+        assert fields["Delta · Time"] == (
             "Before: <t:1785438000:F> to <t:1785438900:t>\n"
-            "After: <t:1785439800:F> to <t:1785440700:t>\n\n"
-            "Reminders\n"
+            "After: <t:1785439800:F> to <t:1785440700:t>"
+        )
+        assert fields["Delta · Reminders"] == (
             "Before: 5 minutes, 10 minutes\n"
             "After: 5 minutes"
         )
@@ -381,7 +381,7 @@ def test_update_card_prioritizes_operator_changes_and_terminal_state(
         "Check my email\nCompleted on your configured Docket calendar."
     )
     assert projected["embed"]["color"] == 0x3BA55D
-    assert fields["Delta"].endswith("After: 5 minutes")
+    assert fields["Delta · Reminders"].endswith("After: 5 minutes")
     assert {
         "Status",
         "Calendar",
@@ -389,6 +389,7 @@ def test_update_card_prioritizes_operator_changes_and_terminal_state(
         "Effect",
         "Before",
         "Changes",
+        "Delta",
         "Conflicts",
     }.isdisjoint(fields)
 
