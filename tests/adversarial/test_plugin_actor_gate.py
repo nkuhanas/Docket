@@ -331,25 +331,68 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
 
 
 @pytest.mark.adversarial
-def test_non_command_daily_thread_message_is_dropped_before_model(
+def test_authorized_daily_thread_message_reaches_model_with_thread_provenance(
     plugin_module, monkeypatch
 ) -> None:
-    monkeypatch.setenv("DOCKET_QUEUE_CHANNEL_ID", "queue")
+    actor = "111111111111111111"
+    guild = "222222222222222222"
+    chat = "333333333333333333"
+    queue = "444444444444444444"
+    thread = "555555555555555555"
+    message = "666666666666666666"
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", chat)
+    monkeypatch.setenv("DOCKET_QUEUE_CHANNEL_ID", queue)
     event = SimpleNamespace(
         text="please explain this card",
-        message_id="message",
+        message_id=message,
         source=SimpleNamespace(
             platform="discord",
-            user_id="operator",
-            guild_id="guild",
-            chat_id="thread",
-            parent_chat_id="queue",
+            user_id=actor,
+            guild_id=guild,
+            chat_id=thread,
+            parent_chat_id=queue,
+        ),
+    )
+    store = SimpleNamespace(
+        get_or_create_session=lambda _source: SimpleNamespace(session_id="thread-session")
+    )
+
+    rewritten = plugin_module._pre_gateway_dispatch(event, session_store=store)
+
+    assert rewritten is not None and rewritten["action"] == "rewrite"
+    assert f'"channel_id": "{thread}"' in rewritten["text"]
+    assert f'"parent_channel_id": "{queue}"' in rewritten["text"]
+    assert f'"request_key": "discord:{guild}:{thread}:{message}:0"' in rewritten["text"]
+    trace_context = plugin_module._TRACE_CONTEXTS["thread-session"]
+    assert trace_context["source_channel_id"] == thread
+    assert trace_context["source_message_id"] == message
+
+
+@pytest.mark.adversarial
+def test_unauthorized_daily_thread_message_is_dropped_before_model(
+    plugin_module, monkeypatch
+) -> None:
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", "111111111111111111")
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", "222222222222222222")
+    monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", "333333333333333333")
+    monkeypatch.setenv("DOCKET_QUEUE_CHANNEL_ID", "444444444444444444")
+    event = SimpleNamespace(
+        text="please explain this card",
+        message_id="666666666666666666",
+        source=SimpleNamespace(
+            platform="discord",
+            user_id="999999999999999999",
+            guild_id="222222222222222222",
+            chat_id="555555555555555555",
+            parent_chat_id="444444444444444444",
         ),
     )
 
     assert plugin_module._pre_gateway_dispatch(event) == {
         "action": "skip",
-        "reason": "invalid-docket-control",
+        "reason": "unauthorized-docket-thread",
     }
 
 

@@ -64,3 +64,5 @@ def test_manual_intent_skill_uses_independent_course_lifecycles() -> None:
     assert "meeting values take precedence over the associated term" in skill
     assert "leave it null so Docket can derive the corresponding term default" in skill
     assert "Never replace a shorter supplied course range" in skill
+    assert "Docket-owned daily threads under `#docket-queue`" in skill
+    assert "queue root and `#docket-system` remain non-conversational" in skill

@@ -88,6 +88,8 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
     assert definitions["RecordSourceInput"]["properties"]["source_type"]["const"] == (
         "discord_message"
     )
+    source_metadata = definitions["DiscordSourceMetadata"]["properties"]
+    assert "Docket-owned daily thread" in source_metadata["parent_channel_id"]["description"]
     schedule_store = tools["docket_store_term_schedule"]
     schedule_description = " ".join((schedule_store.description or "").split())
     assert "Legacy compatibility path" in schedule_description

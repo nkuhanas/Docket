@@ -276,7 +276,7 @@ class ReminderRuleService:
         return command, None
 
     def set(self, request: SetReminderRuleInput) -> ReminderRuleResult:
-        validate_configured_discord_source(request.source, request.actor_id)
+        validate_configured_discord_source(self.session, request.source, request.actor_id)
         payload = {
             **request.model_dump(mode="json"),
             # Preserve hashes for pre-0007 requests whose optional model-visible
@@ -385,7 +385,7 @@ class ReminderRuleService:
         return result
 
     def disable(self, request: DisableReminderRuleInput) -> ReminderRuleResult:
-        validate_configured_discord_source(request.source, request.actor_id)
+        validate_configured_discord_source(self.session, request.source, request.actor_id)
         payload = request.model_dump(mode="json")
         command, replay = self._start_command(
             request_key=request.request_key,

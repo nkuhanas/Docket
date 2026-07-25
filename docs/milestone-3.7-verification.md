@@ -23,6 +23,10 @@ remains outside this repository.
   omitted values inherit term defaults during compilation.
 * A bounded course proposal renders its immutable items on the initial card and
   opens directly at the decision controls; overflow retains reviewed paging.
+* The configured operator can converse with Hermes inside a Docket-owned daily
+  thread; trusted writes and redacted MCP traces bind the actual stored thread,
+  while the queue root, foreign threads, other actors, and system channel remain
+  denied.
 * `docket_store_term_schedule` and `docket_propose_term_schedule` remain
   available only for compatibility with existing durable history.
 
@@ -53,7 +57,7 @@ Validation completed before deployment:
 ```text
 ruff check .  -> passed
 mypy          -> passed (65 source files)
-pytest -q     -> 222 passed, 1 dependency deprecation warning
+pytest -q     -> 226 passed, 1 dependency deprecation warning
 skill check   -> Skill is valid
 ```
 
@@ -67,7 +71,7 @@ The generated and allowlisted surface contains 22 tools. The additions are:
 * `docket_restore_record`
 * `docket_propose_course_reconciliation`
 
-Hermes plugin `0.15.2` recognizes both in redacted MCP traces. The
+Hermes plugin `0.15.3` recognizes both in redacted MCP traces. The
 `docket-manual-intent` skill now treats bulk input as resumable per-course
 orchestration, allocates a distinct intent index to every write/proposal,
 requires explicit drop, recognizes materially equal updates before writing,

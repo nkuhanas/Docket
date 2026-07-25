@@ -195,7 +195,7 @@ class RecordService:
             )
 
     def store(self, request: StoreRecordInput) -> RecordResult:
-        validate_configured_discord_source(request.source, request.actor_id)
+        validate_configured_discord_source(self.session, request.source, request.actor_id)
         payload = request.model_dump(mode="json")
         command, replay = self._start_command(
             request_key=request.request_key,

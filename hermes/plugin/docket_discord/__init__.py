@@ -1,8 +1,11 @@
-"""Trusted Hermes gateway bridge for Docket control messages.
+"""Trusted Hermes gateway bridge for Docket conversation and controls.
 
 The bridge intentionally uses ``pre_gateway_dispatch`` instead of a model tool.
-Hermes v2026.7.20 supplies the normalized source actor on this hook. Persistent
-Approve/Reject buttons are the normal approval surface. Plain
+Hermes v2026.7.20 supplies the normalized source actor, channel, and thread
+parent on this hook. The configured operator may converse in Docket chat and
+queue child threads; Docket validates stored daily-thread bindings before
+accepting model-visible writes. Persistent Approve/Reject buttons are the
+normal approval surface. Plain
 ``docket approve|reject CODE`` messages remain accepted only as an operator
 break-glass path; they are not model-facing guidance. Leading-slash messages
 remain accepted when the Discord client delivers them as ordinary messages.
@@ -226,12 +229,11 @@ def _register_trace_context(event: object, session_store: object | None) -> None
     if session_store is None:
         return
     source = getattr(event, "source", None)
-    actor = os.environ.get("DOCKET_OPERATOR_DISCORD_USER_ID", "")
-    guild = os.environ.get("DOCKET_DISCORD_GUILD_ID", "")
-    channel = os.environ.get("DOCKET_CHAT_CHANNEL_ID", "")
-    message_id = str(getattr(event, "message_id", "") or _source_value(source, "message_id"))
-    if not _is_exact_context(source=source, actor=actor, guild=guild, channel=channel):
+    ingress = _trusted_ingress_context(source)
+    if ingress is None:
         return
+    actor, guild, channel, _parent_channel = ingress
+    message_id = str(getattr(event, "message_id", "") or _source_value(source, "message_id"))
     if not all(_DISCORD_ID.fullmatch(value) for value in (actor, guild, channel, message_id)):
         return
     try:
@@ -511,32 +513,61 @@ def _is_configured_chat_child(source: object | None) -> bool:
     )
 
 
-def _rewrite_with_source_context(event: object) -> dict[str, str] | None:
-    source = getattr(event, "source", None)
+def _trusted_ingress_context(
+    source: object | None,
+) -> tuple[str, str, str, str | None] | None:
+    if source is None or _source_value(source, "platform").casefold() != "discord":
+        return None
     actor = os.environ.get("DOCKET_OPERATOR_DISCORD_USER_ID", "")
     guild = os.environ.get("DOCKET_DISCORD_GUILD_ID", "")
-    channel = os.environ.get("DOCKET_CHAT_CHANNEL_ID", "")
+    chat_channel = os.environ.get("DOCKET_CHAT_CHANNEL_ID", "")
+    queue_channel = os.environ.get("DOCKET_QUEUE_CHANNEL_ID", "")
+    source_actor = _source_value(source, "user_id", "sender_id")
+    source_guild = _source_value(source, "guild_id", "workspace_id")
+    channel = _source_value(source, "chat_id", "channel_id")
+    parent = _source_value(source, "parent_chat_id", "parent_channel_id")
+    if source_actor != actor or source_guild != guild:
+        return None
+    if channel == chat_channel and not parent:
+        return actor, guild, channel, None
+    if parent == queue_channel and channel not in {
+        "",
+        queue_channel,
+        chat_channel,
+    }:
+        return actor, guild, channel, parent
+    return None
+
+
+def _rewrite_with_source_context(event: object) -> dict[str, str] | None:
+    source = getattr(event, "source", None)
+    ingress = _trusted_ingress_context(source)
     message_id = str(getattr(event, "message_id", "") or _source_value(source, "message_id"))
     original_text = str(getattr(event, "text", ""))
 
-    if original_text.lstrip().startswith("/"):
+    if original_text.lstrip().startswith("/") or ingress is None:
         return None
-    if not _is_exact_context(source=source, actor=actor, guild=guild, channel=channel):
-        return None
-    if not all(_DISCORD_ID.fullmatch(value) for value in (actor, guild, channel, message_id)):
+    actor, guild, channel, parent_channel = ingress
+    identifiers = [actor, guild, channel, message_id]
+    if parent_channel is not None:
+        identifiers.append(parent_channel)
+    if not all(_DISCORD_ID.fullmatch(value) for value in identifiers):
         logger.error("Trusted Docket Discord context contained a malformed identifier")
         return None
 
+    metadata = {
+        "guild_id": guild,
+        "channel_id": channel,
+        "message_id": message_id,
+        "user_id": actor,
+        "intent_index": 0,
+    }
+    if parent_channel is not None:
+        metadata["parent_channel_id"] = parent_channel
     context = {
         "source_type": "discord_message",
         "source_object_id": message_id,
-        "metadata": {
-            "guild_id": guild,
-            "channel_id": channel,
-            "message_id": message_id,
-            "user_id": actor,
-            "intent_index": 0,
-        },
+        "metadata": metadata,
         "actor_id": actor,
         "request_key": f"discord:{guild}:{channel}:{message_id}:0",
     }
@@ -577,13 +608,15 @@ def _pre_gateway_dispatch(
         return {"action": "skip", "reason": "docket-generic-delivery-disabled"}
     match = _COMMAND.fullmatch(text.strip())
     if match is None:
-        # The queue is configured as a free-response channel so that Discord
-        # delivers ordinary control messages without a bot mention. Keep it a
-        # control-only surface: malformed commands and conversation never reach
-        # Hermes authorization, sessions, or the model.
         if _is_configured_queue(source):
-            logger.warning("Dropped non-command message from Docket control queue")
-            return {"action": "skip", "reason": "invalid-docket-control"}
+            queue_channel = os.environ.get("DOCKET_QUEUE_CHANNEL_ID", "")
+            source_channel = _source_value(source, "chat_id", "channel_id")
+            if source_channel == queue_channel:
+                logger.warning("Dropped non-command message from Docket queue root")
+                return {"action": "skip", "reason": "invalid-docket-control"}
+            if _trusted_ingress_context(source) is None:
+                logger.warning("Dropped unauthorized message from Docket queue thread")
+                return {"action": "skip", "reason": "unauthorized-docket-thread"}
         _register_trace_context(event, session_store)
         return _rewrite_with_source_context(event)
 

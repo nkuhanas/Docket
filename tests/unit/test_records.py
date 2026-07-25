@@ -1,3 +1,5 @@
+from datetime import date
+
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -9,7 +11,13 @@ from docket.domain.errors import (
     RecordConflict,
     VersionConflict,
 )
-from docket.models import AuditEvent, CommandRequest, Record, RecordSource
+from docket.models import (
+    AuditEvent,
+    CommandRequest,
+    DiscordDailyThread,
+    Record,
+    RecordSource,
+)
 from docket.schemas.records import (
     ArchiveRecordInput,
     CourseData,
@@ -401,6 +409,12 @@ def test_discord_request_key_must_match_source_metadata() -> None:
         StoreRecordInput.model_validate(payload)
 
 
+def test_chat_source_serialization_preserves_legacy_idempotency_payload() -> None:
+    serialized = store_term_request().model_dump(mode="json")
+
+    assert "parent_channel_id" not in serialized["source"]["metadata"]
+
+
 def test_discord_source_must_match_configured_operator_context(session: Session) -> None:
     request = store_term_request()
     request.source.metadata.guild_id = "999999999999999999"
@@ -410,3 +424,47 @@ def test_discord_source_must_match_configured_operator_context(session: Session)
         RecordService(session).store(request)
 
     assert raised.value.code == "invalid_source_context"
+
+
+def test_discord_source_accepts_only_a_bound_docket_daily_thread(session: Session) -> None:
+    queue_channel_id = "000000000000000004"
+    thread_id = "555555555555555555"
+    message_id = "666666666666666666"
+    session.add(
+        DiscordDailyThread(
+            guild_id=GUILD_ID,
+            channel_id=queue_channel_id,
+            local_date=date(2026, 7, 24),
+            thread_name="2026-07-24",
+            thread_id=thread_id,
+            status="active",
+        )
+    )
+    session.flush()
+    payload = store_term_request(message_id=message_id).model_dump(mode="json")
+    payload["source"]["metadata"]["channel_id"] = thread_id
+    payload["source"]["metadata"]["parent_channel_id"] = queue_channel_id
+    payload["request_key"] = f"discord:{GUILD_ID}:{thread_id}:{message_id}:0"
+    request = StoreRecordInput.model_validate(payload)
+
+    assert request.model_dump(mode="json")["source"]["metadata"]["parent_channel_id"] == (
+        queue_channel_id
+    )
+
+    stored = RecordService(session).store(request)
+
+    assert stored.disposition == "created"
+
+    unknown = store_term_request(message_id="777777777777777777").model_dump(mode="json")
+    unknown["canonical_identity"]["term_name"] = "Winter 2027"
+    unknown["data"]["term_name"] = "Winter 2027"
+    unknown["title"] = "Winter 2027"
+    unknown["source"]["metadata"]["channel_id"] = "888888888888888888"
+    unknown["source"]["metadata"]["parent_channel_id"] = queue_channel_id
+    unknown["request_key"] = (
+        f"discord:{GUILD_ID}:888888888888888888:777777777777777777:0"
+    )
+    with pytest.raises(DocketError) as rejected:
+        RecordService(session).store(StoreRecordInput.model_validate(unknown))
+
+    assert rejected.value.code == "invalid_source_context"

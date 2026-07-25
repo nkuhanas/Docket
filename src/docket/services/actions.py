@@ -206,7 +206,7 @@ class ActionService:
         return record, course, account, schedule, link
 
     def propose(self, request: ProposeActionInput) -> ProposalResult:
-        validate_configured_discord_source(request.source, request.actor_id)
+        validate_configured_discord_source(self.session, request.source, request.actor_id)
         command, replay = self._start_command(request)
         if replay is not None:
             return replay

@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pytest
 from sqlalchemy import func, select
@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from docket.config import get_settings
 from docket.domain.errors import DocketError
 from docket.internal_api.schemas import McpTraceUpdate
-from docket.models import DiscordMcpTrace, OutboxEvent
+from docket.models import DiscordDailyThread, DiscordMcpTrace, OutboxEvent
 from docket.providers.discord import FakeDiscordBackend, FakeDiscordProjectionAdapter
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.mcp_traces import McpTraceService, trace_id_for_source
@@ -20,6 +20,7 @@ def _update(
     ordinal: int | None = None,
     state: str | None = None,
     turn_status: str = "running",
+    source_channel_id: str | None = None,
 ) -> McpTraceUpdate:
     settings = get_settings()
     call = None
@@ -37,7 +38,7 @@ def _update(
         {
             "request_id": str(uuid.uuid4()),
             "guild_id": settings.discord_guild_id,
-            "source_channel_id": settings.chat_channel_id,
+            "source_channel_id": source_channel_id or settings.chat_channel_id,
             "source_message_id": "777777777777777777",
             "actor_id": settings.operator_discord_user_id,
             "updated_at": datetime.now(UTC).isoformat(),
@@ -45,6 +46,58 @@ def _update(
             "call": call,
         }
     )
+
+
+@pytest.mark.integration
+def test_mcp_trace_accepts_a_bound_docket_daily_thread(
+    session_factory: sessionmaker[Session],
+) -> None:
+    settings = get_settings()
+    thread_id = "888888888888888888"
+    trace_id = trace_id_for_source(
+        settings.discord_guild_id,
+        thread_id,
+        "777777777777777777",
+    )
+    with session_factory.begin() as session:
+        session.add(
+            DiscordDailyThread(
+                guild_id=settings.discord_guild_id,
+                channel_id=settings.queue_channel_id,
+                local_date=date(2026, 7, 24),
+                thread_name="2026-07-24",
+                thread_id=thread_id,
+                status="active",
+            )
+        )
+        result = McpTraceService(session).update(
+            trace_id,
+            _update(
+                trace_id=trace_id,
+                ordinal=1,
+                state="running",
+                source_channel_id=thread_id,
+            ),
+        )
+        assert result["trace_version"] == 1
+
+    unknown_channel = "999999999999999999"
+    unknown_trace = trace_id_for_source(
+        settings.discord_guild_id,
+        unknown_channel,
+        "777777777777777777",
+    )
+    with pytest.raises(DocketError) as rejected, session_factory.begin() as session:
+        McpTraceService(session).update(
+            unknown_trace,
+            _update(
+                trace_id=unknown_trace,
+                ordinal=1,
+                state="running",
+                source_channel_id=unknown_channel,
+            ),
+        )
+    assert rejected.value.code == "invalid_mcp_trace_context"
 
 
 @pytest.mark.integration

@@ -10,7 +10,7 @@ from docket.config import get_settings
 from docket.domain.enums import OutboxStatus
 from docket.domain.errors import DocketError
 from docket.internal_api.schemas import McpTraceCallUpdate, McpTraceUpdate
-from docket.models import DiscordMcpTrace, OutboxEvent
+from docket.models import DiscordDailyThread, DiscordMcpTrace, OutboxEvent
 from docket.models.base import utc_now
 
 MCP_TRACE_NAMESPACE = uuid.UUID("326f8ee5-f0d5-4d08-b777-31dbac1f8265")
@@ -81,12 +81,26 @@ class McpTraceService:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    @staticmethod
-    def _validate_context(trace_id: uuid.UUID, request: McpTraceUpdate) -> None:
+    def _validate_context(self, trace_id: uuid.UUID, request: McpTraceUpdate) -> None:
         settings = get_settings()
+        trusted_channel = request.source_channel_id == settings.chat_channel_id
+        if not trusted_channel:
+            trusted_channel = (
+                self.session.scalar(
+                    select(DiscordDailyThread.id)
+                    .where(
+                        DiscordDailyThread.guild_id == settings.discord_guild_id,
+                        DiscordDailyThread.channel_id == settings.queue_channel_id,
+                        DiscordDailyThread.thread_id == request.source_channel_id,
+                        DiscordDailyThread.status.in_(("active", "archived")),
+                    )
+                    .limit(1)
+                )
+                is not None
+            )
         if (
             request.guild_id != settings.discord_guild_id
-            or request.source_channel_id != settings.chat_channel_id
+            or not trusted_channel
             or request.actor_id != settings.operator_discord_user_id
             or trace_id
             != trace_id_for_source(
@@ -97,7 +111,10 @@ class McpTraceService:
         ):
             raise DocketError(
                 code="invalid_mcp_trace_context",
-                message="The MCP trace is not bound to the configured Docket chat context.",
+                message=(
+                    "The MCP trace is not bound to the configured Docket chat or "
+                    "a Docket-owned daily thread."
+                ),
             )
         if not request.source_message_id.isascii() or not request.source_message_id.isdecimal():
             raise DocketError(

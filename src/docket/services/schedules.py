@@ -486,7 +486,7 @@ class TermScheduleService:
         }
 
     def store(self, request: StoreTermScheduleInput) -> TermScheduleStoreResult:
-        validate_configured_discord_source(request.source, request.actor_id)
+        validate_configured_discord_source(self.session, request.source, request.actor_id)
         command, replay = self._start_command(request)
         if replay is not None:
             return replay

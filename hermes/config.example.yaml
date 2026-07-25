@@ -32,14 +32,14 @@ discord:
   thread_require_mention: false
   free_response_channels:
     - "000000000000000003" # docket-chat
-    - "000000000000000004" # docket-queue; plugin drops non-control messages
+    - "000000000000000004" # queue root is control-only; child threads admit the operator
   allowed_channels:
     - "000000000000000003" # docket-chat
     - "000000000000000004" # docket-queue
     - "000000000000000005" # docket-system
   no_thread_channels:
-    - "000000000000000003"
-    - "000000000000000004"
+    - "000000000000000003" # reply in place
+    - "000000000000000004" # do not create a nested response thread
   ignored_channels: []
   history_backfill: false
   allow_mentions:

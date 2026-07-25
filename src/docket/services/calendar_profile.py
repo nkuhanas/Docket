@@ -56,7 +56,7 @@ class CalendarProfileService:
         return _profile_result(profile)
 
     def set(self, request: SetCalendarProfileInput) -> CalendarProfileResult:
-        validate_configured_discord_source(request.source, request.actor_id)
+        validate_configured_discord_source(self.session, request.source, request.actor_id)
         payload = request.model_dump(mode="json")
         input_sha256 = sha256_json(payload)
         existing = self.session.scalar(

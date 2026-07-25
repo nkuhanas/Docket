@@ -705,7 +705,7 @@ class CourseReconciliationService:
         return course_reconciliation_dependency_sha256(current_parameters)
 
     def propose(self, request: ProposeCourseReconciliationInput) -> dict[str, Any]:
-        validate_configured_discord_source(request.source, request.actor_id)
+        validate_configured_discord_source(self.session, request.source, request.actor_id)
         command, replay = self._start_command(request)
         if replay is not None:
             return replay

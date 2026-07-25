@@ -49,7 +49,7 @@ on every request. Docket's callback uses the independent
 
 Hermes performs overlapping plugin discovery during this pin's startup. Each
 discovery pass imports an isolated plugin module, so module globals alone cannot
-prevent a transient second bind. Plugin `0.15.2` starts the private HTTP server
+prevent a transient second bind. Plugin `0.15.3` starts the private HTTP server
 under a background supervisor: an `EADDRINUSE` defers that copy without failing
 plugin registration, and it retries if the process that temporarily owned the
 port exits. Healthy startup may contain one `startup deferred` line, followed
@@ -106,7 +106,7 @@ Pinned outbound assumptions to revalidate:
   through its durable outbox; the plugin never posts hook output directly to
   Discord.
 
-Plugin `0.15.2` renders timed reminder start/end values as Docket-supplied native
+Plugin `0.15.3` renders timed reminder start/end values as Docket-supplied native
 Discord timestamps, puts the event subject under the native `Title` field, and
 omits a redundant timezone field. All-day reminders instead render fixed
 start/end dates plus the Calendar timezone. Projection embeds may omit their
@@ -127,7 +127,8 @@ the outbox lease and polling fallback.
 
 The hook is invoked before ordinary gateway authorization. Therefore the plugin
 must perform its own exact actor/guild/channel check and fail closed for control
-commands. On an authorized ordinary Docket-chat message it returns:
+commands and daily-thread conversation. On an authorized ordinary Docket-chat
+or queue-child message it returns:
 
 ```python
 {"action": "rewrite", "text": rewritten_text}
@@ -140,17 +141,21 @@ rewritten with Docket source context.
 Discord channel admission happens inside the pinned Discord adapter before it
 constructs the event passed to this hook. Because `require_mention` is enabled,
 the dedicated Docket queue must also be a `free_response_channels` and
-`no_thread_channels` entry. It remains in `allowed_channels`. The plugin treats
-the root and every child daily thread as control-only and skips every message
-that is not an exact root approval or rejection command, so queue conversation
-cannot reach the model. It also drops ordinary system-channel input and child
-threads under Docket chat. `/sethome` and generic `/cron` commands fail closed
-on Docket surfaces; the Discord toolset omits generic cron creation, and tool
-progress is logged rather than posted to chat. Background-process notifications
-are disabled, and the prepared Hermes environment has no Discord home-channel
-binding. The configured Docket operator is also the sole generated
-`DISCORD_ALLOWED_USERS` entry; Compose repeats that mapping so Hermes' gateway
-authorization and the plugin's exact actor gate cannot drift after recreation.
+`no_thread_channels` entry. It remains in `allowed_channels`; in this pinned
+adapter that setting prevents Hermes from creating a second response thread and
+does not suppress messages already inside a thread. The plugin keeps the queue
+root control-only but admits the exact configured operator in a queue child,
+then appends that thread ID and the queue parent to trusted Docket provenance.
+Docket accepts writes and MCP traces only when the thread is bound in
+`discord_daily_threads`. It drops other queue actors, ordinary system-channel
+input, and child threads under Docket chat. `/sethome` and generic `/cron`
+commands fail closed on Docket surfaces; the Discord toolset omits generic cron
+creation, and tool progress is logged rather than posted to chat.
+Background-process notifications are disabled, and the prepared Hermes
+environment has no Discord home-channel binding. The configured Docket operator
+is also the sole generated `DISCORD_ALLOWED_USERS` entry; Compose repeats that
+mapping so Hermes' gateway authorization and the plugin's exact actor gate
+cannot drift after recreation.
 
 The current deployment does not register a native Docket Discord application
 command. Persistent Approve/Reject components on the projected card are the
@@ -480,13 +485,17 @@ actor_id = metadata.user_id
 request_key = discord:{guild_id}:{channel_id}:{message_id}:{intent_index}
 ```
 
+For chat-root messages, `metadata.parent_channel_id` is omitted so historical
+command hashes remain stable. For daily-thread messages, `channel_id` is the
+actual thread and `parent_channel_id` is the configured queue.
+
 Docket validates:
 
 * 17–20 digit Discord snowflake shapes;
 * equality among source object ID, metadata message ID, actor ID, and request
   key components;
-* exact operator user, guild, and Docket-chat channel against Docket's own
-  settings;
+* exact operator user and guild, plus either the configured Docket-chat root or
+  an active/archived Docket daily thread bound to the configured queue;
 * the record-type-specific identity and data schema.
 
 This is defense in depth over the Hermes bearer token, but it is not

@@ -333,7 +333,7 @@ class QueueService:
         command.completed_at = utc_now()
 
     def snooze(self, request: SnoozeQueueItemInput) -> QueueMutationResult:
-        validate_configured_discord_source(request.source, request.actor_id)
+        validate_configured_discord_source(self.session, request.source, request.actor_id)
         payload = request.model_dump(mode="json")
         command, replay = self._start_command(
             request_key=request.request_key,
@@ -387,7 +387,7 @@ class QueueService:
         return result
 
     def ignore(self, request: IgnoreQueueItemInput) -> QueueMutationResult:
-        validate_configured_discord_source(request.source, request.actor_id)
+        validate_configured_discord_source(self.session, request.source, request.actor_id)
         payload = request.model_dump(mode="json")
         command, replay = self._start_command(
             request_key=request.request_key,

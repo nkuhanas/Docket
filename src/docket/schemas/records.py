@@ -3,7 +3,14 @@ from typing import Annotated, Any, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 RecordType = Literal["term", "course", "generic"]
 _DISCORD_REQUEST_KEY_PATTERN = r"^discord:[0-9]{17,20}:[0-9]{17,20}:[0-9]{17,20}:(0|[1-9][0-9]*)$"
@@ -41,9 +48,23 @@ class GenericRecordData(BaseModel):
 class DiscordSourceMetadata(StrictModel):
     guild_id: DiscordId
     channel_id: DiscordId
+    parent_channel_id: DiscordId | None = Field(
+        default=None,
+        description=(
+            "Configured queue parent when channel_id is a Docket-owned daily "
+            "thread; omit for the Docket chat root."
+        ),
+    )
     message_id: DiscordId
     user_id: DiscordId
     intent_index: int = Field(ge=0)
+
+    @model_serializer(mode="wrap")
+    def omit_empty_parent(self, handler: Any) -> dict[str, Any]:
+        serialized: dict[str, Any] = handler(self)
+        if self.parent_channel_id is None:
+            serialized.pop("parent_channel_id", None)
+        return serialized
 
 
 class RecordSourceInput(StrictModel):

@@ -53,11 +53,14 @@ This skill is repository-managed and mounted read-only in the pinned runtime.
 Do not try to patch it with `skill_manage`; report any missing rule so it can be
 reviewed, tested, and committed at the source.
 
-`#docket-chat` is request/response ingress, not an operational output feed.
-Keep the final response concise and correlated to the current request. Never
-duplicate a proposal body, persistent controls, queue card, reminder, daily
-summary, system alert, cron result, or other durable projection in chat; point
-to the authoritative Docket queue card when one exists.
+`#docket-chat` and Docket-owned daily threads under `#docket-queue` are trusted
+request/response ingress for the configured operator. Keep the final response
+concise, correlated to the current request, and in the surface where the
+operator spoke. Never duplicate a proposal body, persistent controls, queue
+card, reminder, daily summary, system alert, cron result, or other durable
+projection in conversation; when speaking inside its daily thread, refer to
+the authoritative card already present there. The queue root and
+`#docket-system` remain non-conversational.
 Complete Docket requests synchronously. Do not start a background terminal
 process or asynchronous delegation whose later completion would re-enter chat.
 
