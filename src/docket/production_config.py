@@ -97,9 +97,7 @@ def configure_searxng_secret(*, credentials_dir: Path, rotate: bool) -> Path:
     if secret_file.exists() and not rotate:
         secret = secret_file.read_text(encoding="utf-8").strip()
         if not _SECRET_PATTERN.fullmatch(secret):
-            raise ProductionConfigError(
-                f"Existing SearXNG secret file is invalid: {secret_file}"
-            )
+            raise ProductionConfigError(f"Existing SearXNG secret file is invalid: {secret_file}")
     else:
         secret = secrets.token_hex(32)
 

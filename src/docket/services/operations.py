@@ -31,9 +31,11 @@ from docket.models import (
     OperationItem,
     OutboxEvent,
     QueueItem,
+    Record,
     ReminderRule,
 )
 from docket.models.base import utc_now
+from docket.policy import BATCH_CALENDAR_ACTION_TYPES
 from docket.providers.google.calendar import (
     CalendarEventRequest,
     CalendarEventResult,
@@ -133,7 +135,7 @@ class OperationRunner:
             select(Operation)
             .where(
                 Operation.status == desired_status,
-                Operation.operation_type != "calendar_apply_term_schedule",
+                Operation.operation_type.not_in(BATCH_CALENDAR_ACTION_TYPES),
                 or_(Operation.next_attempt_at.is_(None), Operation.next_attempt_at <= now),
                 or_(Operation.leased_until.is_(None), Operation.leased_until < now),
             )
@@ -182,7 +184,7 @@ class OperationRunner:
             select(OperationItem)
             .join(Operation, Operation.id == OperationItem.operation_id)
             .where(
-                Operation.operation_type == "calendar_apply_term_schedule",
+                Operation.operation_type.in_(BATCH_CALENDAR_ACTION_TYPES),
                 OperationItem.status == desired_status,
                 or_(
                     OperationItem.next_attempt_at.is_(None),
@@ -561,7 +563,11 @@ class OperationRunner:
                 link.provider_etag = None
                 link.provider_correlation = operation.provider_correlation
                 link.reminder_plan_sha256 = parameters.get("reminder_plan_sha256")
-                link.synced_snapshot = result.snapshot
+                before = parameters.get("provider_before")
+                link.synced_snapshot = {
+                    **(dict(before) if isinstance(before, dict) else result.snapshot),
+                    "status": "cancelled",
+                }
             OperationRunner._apply_cancelled_cache(session, operation, result)
             OperationRunner._activate_reminder_plan(session, operation, result)
         else:
@@ -780,11 +786,34 @@ class OperationRunner:
                 "calendar_schedule_partial" if partially_succeeded else "calendar_schedule_failed"
             )
         else:
+            if not OperationRunner._apply_course_transition(
+                session,
+                operation,
+                revision,
+                action,
+                queue_item,
+            ):
+                queue_item.version += 1
+                if operation.status != previous_status:
+                    enqueue_action_system_log(
+                        session,
+                        action=action,
+                        revision=revision,
+                        state=operation.status,
+                        result=operation.result,
+                    )
+                return
             operation.status = OperationStatus.SUCCEEDED.value
             action.status = ActionStatus.SUCCEEDED.value
             queue_item.status = QueueItemStatus.COMPLETED.value
             queue_item.resolved_at = utc_now()
-            queue_item.resolution_code = "calendar_schedule_synchronized"
+            queue_item.resolution_code = (
+                "calendar_course_dropped"
+                if revision.action_type == "calendar_drop_course"
+                else "calendar_course_synchronized"
+                if revision.action_type == "calendar_reconcile_course"
+                else "calendar_schedule_synchronized"
+            )
         queue_item.version += 1
         if operation.status != previous_status and operation.status in {
             OperationStatus.SUCCEEDED.value,
@@ -799,6 +828,96 @@ class OperationRunner:
                 state=operation.status,
                 result=operation.result,
             )
+
+    @staticmethod
+    def _apply_course_transition(
+        session: Session,
+        operation: Operation,
+        revision: ActionRevision,
+        action: Action,
+        queue_item: QueueItem,
+    ) -> bool:
+        if revision.action_type != "calendar_drop_course":
+            return True
+        try:
+            record_id = uuid.UUID(str(revision.parameters["record_id"]))
+            expected_version = int(revision.parameters["record_version"])
+        except (KeyError, TypeError, ValueError):
+            record_id = uuid.UUID(int=0)
+            expected_version = -1
+        record = session.get(Record, record_id)
+        if record is not None and record.status == "active" and record.version == expected_version:
+            active_links = list(
+                session.scalars(select(CalendarLink).where(CalendarLink.record_id == record.id))
+            )
+            if any(link.synced_snapshot.get("status") != "cancelled" for link in active_links):
+                operation.status = OperationStatus.RECONCILIATION_REQUIRED.value
+                operation.last_error_code = "course_archive_links_active"
+                action.status = ActionStatus.RECONCILIATION_REQUIRED.value
+                queue_item.status = QueueItemStatus.RECONCILIATION_REQUIRED.value
+                queue_item.resolved_at = None
+                queue_item.resolution_code = None
+                result = dict(operation.result or {})
+                failures = list(result.get("failures") or [])
+                failures.append(
+                    {
+                        "item_key": f"course:{record_id}:archive",
+                        "status": "reconciliation_required",
+                        "error_code": "course_archive_links_active",
+                    }
+                )
+                result["failures"] = failures
+                operation.result = result
+                return False
+            record.status = "archived"
+            record.version += 1
+            session.add(
+                AuditEvent(
+                    event_type="record.archived",
+                    entity_type="record",
+                    entity_id=record.id,
+                    actor_type="docket",
+                    actor_id=None,
+                    request_id=None,
+                    data={
+                        "version": record.version,
+                        "reason": revision.parameters.get("reason"),
+                        "operation_id": str(operation.id),
+                    },
+                )
+            )
+            result = dict(operation.result or {})
+            result["record_transition"] = {
+                "record_id": str(record.id),
+                "status": "archived",
+                "version": record.version,
+            }
+            operation.result = result
+            return True
+        if (
+            record is not None
+            and record.status == "archived"
+            and record.version == expected_version + 1
+        ):
+            return True
+        operation.status = OperationStatus.RECONCILIATION_REQUIRED.value
+        operation.last_error_code = "course_archive_transition_conflict"
+        action.status = ActionStatus.RECONCILIATION_REQUIRED.value
+        queue_item.status = QueueItemStatus.RECONCILIATION_REQUIRED.value
+        queue_item.resolved_at = None
+        queue_item.resolution_code = None
+        result = dict(operation.result or {})
+        failures = list(result.get("failures") or [])
+        failures.append(
+            {
+                "item_key": f"course:{record_id}:archive",
+                "status": "reconciliation_required",
+                "error_code": "course_archive_transition_conflict",
+            }
+        )
+        result["failures"] = failures
+        operation.result = result
+        return False
 
     @staticmethod
     def _apply_batch_item_success(
@@ -853,6 +972,16 @@ class OperationRunner:
             )
             session.add(link)
             session.flush()
+        elif item.item_type == "calendar_cancel_event":
+            link.provider_etag = None
+            link.provider_correlation = str(item.id)
+            link.last_synced_version = int(parameters["record_version"])
+            link.reminder_plan_sha256 = parameters.get("reminder_plan_sha256")
+            before = parameters.get("provider_before")
+            link.synced_snapshot = {
+                **(dict(before) if isinstance(before, dict) else result.snapshot),
+                "status": "cancelled",
+            }
         else:
             if (
                 item.item_type == "calendar_update_event"
@@ -873,13 +1002,16 @@ class OperationRunner:
         classification = (
             dict(classification_value) if isinstance(classification_value, dict) else {}
         )
-        OperationRunner._upsert_calendar_cache(
-            session,
-            operation,
-            result,
-            parameters_override=parameters,
-            classification_override=classification,
-        )
+        if item.item_type == "calendar_cancel_event":
+            OperationRunner._apply_cancelled_cache(session, operation, result)
+        else:
+            OperationRunner._upsert_calendar_cache(
+                session,
+                operation,
+                result,
+                parameters_override=parameters,
+                classification_override=classification,
+            )
         OperationRunner._activate_reminder_plan(
             session,
             operation,
@@ -1170,7 +1302,7 @@ class OperationRunner:
                     select(Operation)
                     .where(
                         Operation.status == OperationStatus.RUNNING.value,
-                        Operation.operation_type != "calendar_apply_term_schedule",
+                        Operation.operation_type.not_in(BATCH_CALENDAR_ACTION_TYPES),
                         Operation.leased_until < now,
                     )
                     .with_for_update(skip_locked=True)
@@ -1209,7 +1341,7 @@ class OperationRunner:
                     select(OperationItem)
                     .join(Operation, Operation.id == OperationItem.operation_id)
                     .where(
-                        Operation.operation_type == "calendar_apply_term_schedule",
+                        Operation.operation_type.in_(BATCH_CALENDAR_ACTION_TYPES),
                         OperationItem.status == "running",
                         OperationItem.leased_until < now,
                     )

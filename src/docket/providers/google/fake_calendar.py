@@ -30,17 +30,12 @@ class FakeCalendarProvider:
         previous: CalendarEventResult | None = None,
     ) -> CalendarEventResult:
         snapshot = request.snapshot()
-        if (
-            previous is not None
-            and request.operation_type == "calendar_update_reminders"
-        ):
+        if previous is not None and request.operation_type == "calendar_update_reminders":
             snapshot = {
                 **previous.snapshot,
                 "reminders": snapshot["reminders"],
                 "docket_correlation": snapshot["docket_correlation"],
-                "docket_reminder_plan_sha256": snapshot[
-                    "docket_reminder_plan_sha256"
-                ],
+                "docket_reminder_plan_sha256": snapshot["docket_reminder_plan_sha256"],
             }
         elif (
             previous is not None
@@ -120,9 +115,7 @@ class FakeCalendarProvider:
             },
         )
         if outcome == "unknown_after_write":
-            raise CalendarUnknownOutcome(
-                "Injected unknown outcome after Calendar cancellation."
-            )
+            raise CalendarUnknownOutcome("Injected unknown outcome after Calendar cancellation.")
         return result
 
     def get_event(self, request: CalendarEventRequest) -> CalendarEventResult | None:

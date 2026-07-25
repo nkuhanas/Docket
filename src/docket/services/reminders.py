@@ -175,11 +175,7 @@ def materialize_reminders(
                 selected.scheduled_for = scheduled_for
                 selected.status = next_status
                 selected.last_error_code = (
-                    "missed_stale_calendar"
-                    if missed
-                    else "late_calendar_refresh"
-                    if late
-                    else None
+                    "missed_stale_calendar" if missed else "late_calendar_refresh" if late else None
                 )
 
         for notification in existing:
@@ -510,9 +506,11 @@ class ReminderDispatcher:
                 f"calendar-reminder:{rule.id}:{notification.provider_event_id}:"
                 f"{notification.event_start_key}"
             )
-            target_local_date = _aware(notification.scheduled_for).astimezone(
-                ZoneInfo(self.settings.timezone)
-            ).date()
+            target_local_date = (
+                _aware(notification.scheduled_for)
+                .astimezone(ZoneInfo(self.settings.timezone))
+                .date()
+            )
             outbox = session.scalar(select(OutboxEvent).where(OutboxEvent.deduplication_key == key))
             if outbox is None:
                 outbox = OutboxEvent(

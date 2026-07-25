@@ -57,9 +57,7 @@ def test_calendar_body_uses_local_recurrence_and_private_correlation() -> None:
         "dateTime": "2026-08-24T10:30:00",
         "timeZone": "America/Los_Angeles",
     }
-    assert body["recurrence"] == [
-        "RRULE:FREQ=WEEKLY;BYDAY=MO,WE;UNTIL=20261219T075959Z"
-    ]
+    assert body["recurrence"] == ["RRULE:FREQ=WEEKLY;BYDAY=MO,WE;UNTIL=20261219T075959Z"]
     assert body["extendedProperties"]["private"]["docket_correlation"] == (
         request.provider_correlation
     )
@@ -207,9 +205,7 @@ def test_standalone_event_compiles_recurrence_exceptions_and_popup_plan() -> Non
             {"method": "popup", "minutes": 10},
         ],
     }
-    assert body["extendedProperties"]["private"]["docket_logical_key"] == (
-        "standalone:request-1"
-    )
+    assert body["extendedProperties"]["private"]["docket_logical_key"] == ("standalone:request-1")
     assert "description" not in request.snapshot()
 
 

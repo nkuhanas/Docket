@@ -561,9 +561,7 @@ def test_aggregate_card_persists_review_then_exposes_decision_without_revision_c
         assert projection.reviewed_through_page == 1
         assert projection.projection_version == initial_version + 1
         projected = backend.messages[str(projection.id)]
-        assert any(
-            field["name"] == "Schedule review" for field in projected["embed"]["fields"]
-        )
+        assert any(field["name"] == "Schedule review" for field in projected["embed"]["fields"])
         assert [control["label"] for control in projected["controls"]] == [
             "Back to summary",
             "Continue to decision",
@@ -684,8 +682,7 @@ def test_schedule_refresh_recompiles_preview_and_preserves_item_reminder_binding
         assert thread is not None and thread.thread_id is not None
         projected = backend.messages[str(projection.id)]
         assert not any(
-            control.get("transition") == "proposal_refresh"
-            for control in projected["controls"]
+            control.get("transition") == "proposal_refresh" for control in projected["controls"]
         )
         stale_begin = next(
             control for control in projected["controls"] if control.get("label") == "Begin review"

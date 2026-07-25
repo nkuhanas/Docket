@@ -26,6 +26,7 @@ StandaloneCalendarActionType = Literal[
     "calendar_cancel_event",
 ]
 CalendarMutationScope = Literal["event", "series"]
+CourseReconciliationMode = Literal["sync", "drop"]
 
 
 class CalendarMeetingActionParameters(StrictModel):
@@ -127,6 +128,29 @@ class ProposeTermScheduleInput(StrictModel):
     @model_validator(mode="after")
     def request_matches_source(self) -> "ProposeTermScheduleInput":
         validate_discord_request_fields(self.request_key, self.source, self.actor_id)
+        return self
+
+
+class ProposeCourseReconciliationInput(StrictModel):
+    record_id: UUID
+    expected_record_version: int = Field(ge=1)
+    mode: CourseReconciliationMode = "sync"
+    account_id: UUID
+    calendar_id: str = Field(min_length=1, max_length=1024)
+    reminder_plan: CalendarReminderPlanInput | None = None
+    reason: str | None = Field(default=None, min_length=1, max_length=1000)
+    request_key: DiscordRequestKey
+    source: RecordSourceInput
+    actor_type: Literal["hermes"] = "hermes"
+    actor_id: DiscordId
+
+    @model_validator(mode="after")
+    def request_matches_source_and_mode(self) -> "ProposeCourseReconciliationInput":
+        validate_discord_request_fields(self.request_key, self.source, self.actor_id)
+        if self.mode == "drop" and self.reason is None:
+            raise ValueError("drop requires an explicit reason")
+        if self.mode == "sync" and self.reason is not None:
+            raise ValueError("reason is valid only for an explicit drop")
         return self
 
 

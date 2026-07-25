@@ -63,11 +63,7 @@ def find_materially_identical_pending_proposal(
     if proposed is None or proposed.request_id is None:
         return None
     command = session.get(CommandRequest, proposed.request_id)
-    if (
-        command is None
-        or command.status != CommandStatus.SUCCEEDED.value
-        or command.result is None
-    ):
+    if command is None or command.status != CommandStatus.SUCCEEDED.value or command.result is None:
         return None
 
     result: dict[str, Any] = dict(command.result)

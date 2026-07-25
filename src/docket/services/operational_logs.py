@@ -16,6 +16,8 @@ _ACTION_LABELS = {
     "calendar_update_reminders": "Update reminders",
     "calendar_cancel_event": "Cancel event",
     "calendar_apply_term_schedule": "Apply term schedule",
+    "calendar_reconcile_course": "Synchronize course",
+    "calendar_drop_course": "Drop course",
 }
 _STATE_TITLES = {
     "queued": "Calendar change queued",
@@ -46,9 +48,7 @@ def _subject(revision: ActionRevision) -> str:
     course = preview.get("course")
     if isinstance(course, dict):
         values = [
-            str(value)
-            for value in (course.get("course_code"), course.get("section"))
-            if value
+            str(value) for value in (course.get("course_code"), course.get("section")) if value
         ]
         if values:
             return " · ".join(values)
@@ -92,14 +92,11 @@ def enqueue_action_system_log(
     if detail is not None:
         summary = f"{summary}\n{detail}"
     deduplication_key = (
-        f"discord_system_log:action:{action.id}:"
-        f"revision:{revision.revision}:{state}"
+        f"discord_system_log:action:{action.id}:revision:{revision.revision}:{state}"
     )
     if (
         session.scalar(
-            select(OutboxEvent.id).where(
-                OutboxEvent.deduplication_key == deduplication_key
-            )
+            select(OutboxEvent.id).where(OutboxEvent.deduplication_key == deduplication_key)
         )
         is not None
     ):

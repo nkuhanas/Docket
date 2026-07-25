@@ -23,6 +23,7 @@ CalendarConflictPolicy = Literal["warn", "block"]
 CalendarReminderDisposition = Literal["preserve", "replace", "disable"]
 CalendarReminderChannel = Literal["google_popup", "docket_queue"]
 
+
 def _normalize_operator_tag(value: object) -> object:
     return value.strip().lower() if isinstance(value, str) else value
 
@@ -63,9 +64,7 @@ class CalendarReminderPlanInput(StrictModel):
         if len(value) != len(set(value)):
             raise ValueError("reminder leads must be unique")
         if any(lead < 0 or lead > 2_419_200 or lead % 60 != 0 for lead in value):
-            raise ValueError(
-                "reminder leads must be whole minutes from zero through 28 days"
-            )
+            raise ValueError("reminder leads must be whole minutes from zero through 28 days")
         return sorted(value)
 
 
@@ -105,8 +104,7 @@ class TimedEventTiming(StrictModel):
         if not start_folds or not end_folds:
             raise ValueError("timed event falls in a nonexistent daylight-saving local time")
         start_offsets = {
-            self.start_local.replace(tzinfo=zone, fold=fold).utcoffset()
-            for fold in start_folds
+            self.start_local.replace(tzinfo=zone, fold=fold).utcoffset() for fold in start_folds
         }
         end_offsets = {
             self.end_local.replace(tzinfo=zone, fold=fold).utcoffset() for fold in end_folds
@@ -250,9 +248,7 @@ class StandaloneCalendarEventInput(StrictModel):
 
 class CalendarProfileInput(StrictModel):
     proposal_mode: CalendarProposalMode = "suggest"
-    default_reminder_lead_seconds: list[int] = Field(
-        default_factory=lambda: [600], max_length=5
-    )
+    default_reminder_lead_seconds: list[int] = Field(default_factory=lambda: [600], max_length=5)
     default_reminder_delivery_channels: list[CalendarReminderChannel] = Field(
         default_factory=_default_reminder_channels,
         min_length=2,

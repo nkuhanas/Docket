@@ -15,9 +15,11 @@ from docket.schemas.actions import (
     CalendarActionType,
     CalendarEventProposal,
     CalendarMeetingActionParameters,
+    CourseReconciliationMode,
     ProposalResult,
     ProposeActionInput,
     ProposeCalendarEventInput,
+    ProposeCourseReconciliationInput,
     ProposeTermScheduleInput,
 )
 from docket.schemas.calendar import (
@@ -44,6 +46,7 @@ from docket.schemas.records import (
     GenericRecordData,
     RecordSourceInput,
     RecordType,
+    RestoreRecordInput,
     ScheduleTerm,
     StoreRecordInput,
     StoreTermScheduleInput,
@@ -57,6 +60,7 @@ from docket.services.actions import ActionService
 from docket.services.calendar_actions import CalendarActionService
 from docket.services.calendar_profile import CalendarProfileService
 from docket.services.calendar_sync import CalendarReadService, CalendarSyncService
+from docket.services.course_reconciliation import CourseReconciliationService
 from docket.services.queue import QueueService
 from docket.services.records import RecordService, serialize_record
 from docket.services.reminders import ReminderRuleService
@@ -112,6 +116,22 @@ def _model_proposal_result(result: ProposalResult) -> dict[str, Any]:
     return payload
 
 
+def _model_course_reconciliation_result(result: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(result)
+    payload.pop("short_code", None)
+    if payload.get("approval_id") is not None:
+        payload["approval_surface"] = {
+            "kind": "discord_button_card",
+            "location": "today's ISO-dated thread under the configured Docket queue",
+            "delivery_status": payload.get("projection_status", "pending"),
+            "operator_instruction": (
+                "Review the per-meeting delta, then use the card's Approve or Reject button."
+            ),
+            "typed_code_policy": "break_glass_only_not_for_agent_guidance",
+        }
+    return payload
+
+
 @mcp.tool()
 def docket_store_record(
     record_type: RecordType,
@@ -159,15 +179,13 @@ def docket_store_term_schedule(
     source: RecordSourceInput,
     actor_id: DiscordId,
 ) -> dict[str, Any]:
-    """Atomically store one complete trusted term schedule and immutable manifest.
+    """Legacy compatibility path for one atomic complete-schedule snapshot.
 
-    Use this once—not one record call per class—after the configured operator supplies
-    or explicitly adopts a complete schedule. ``term`` may bind an exact existing term
-    record/version or define a complete new term. The request accepts 1-50 courses and
-    at most 50 compiled meeting/exception items. Any canonical conflict rolls back every
-    new record and every source attachment. Success returns all canonical records plus a
-    ``schedule_snapshot_id`` for exactly one aggregate Calendar proposal. This local
-    write does not contact Google or create an approval by itself.
+    Do not use this for ordinary imports or later schedule changes. The normal workflow
+    stores or updates each independent course record and calls
+    ``docket_propose_course_reconciliation`` for only the affected course. This retained
+    compatibility tool accepts 1-50 courses, rolls back the whole request on conflict,
+    and returns a legacy ``schedule_snapshot_id``. It does not contact Google.
     """
     try:
         request = StoreTermScheduleInput(
@@ -255,7 +273,12 @@ def docket_archive_record(
     reason: str,
     actor_id: str | None = None,
 ) -> dict[str, Any]:
-    """Soft-archive a canonical record; physical deletion is not exposed."""
+    """Soft-archive an unlinked canonical record; physical deletion is not exposed.
+
+    A course with active Calendar links must instead use
+    ``docket_propose_course_reconciliation`` in ``drop`` mode so every provider series
+    reaches a durable terminal cancellation before Docket archives the course.
+    """
     try:
         request = ArchiveRecordInput(
             record_id=uuid.UUID(record_id),
@@ -266,6 +289,35 @@ def docket_archive_record(
         )
         with session_scope() as session:
             result = RecordService(session).archive(request)
+            return {"ok": True, **result.model_dump(mode="json", exclude_none=True)}
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_restore_record(
+    record_id: str,
+    expected_version: int,
+    request_key: str,
+    reason: str,
+    actor_id: str | None = None,
+) -> dict[str, Any]:
+    """Reactivate one archived canonical identity without discarding its history.
+
+    Restoring a course does not itself recreate Google Calendar series. After restore,
+    call ``docket_propose_course_reconciliation`` in ``sync`` mode; cancelled stable
+    meeting links are then reused with fresh provider event identities.
+    """
+    try:
+        request = RestoreRecordInput(
+            record_id=uuid.UUID(record_id),
+            expected_version=expected_version,
+            request_key=request_key,
+            reason=reason,
+            actor_id=actor_id,
+        )
+        with session_scope() as session:
+            result = RecordService(session).restore(request)
             return {"ok": True, **result.model_dump(mode="json", exclude_none=True)}
     except Exception as exc:
         return _error(exc)
@@ -498,15 +550,11 @@ def docket_propose_term_schedule(
     actor_id: DiscordId,
     reminder_plan: CalendarReminderPlanInput | None = None,
 ) -> dict[str, Any]:
-    """Create one immutable approval proposal for a complete stored term schedule.
+    """Legacy compatibility proposal for an atomic complete-schedule snapshot.
 
-    Call this exactly once with the ``schedule_snapshot_id`` returned by
-    ``docket_store_term_schedule`` when the Calendar profile permits suggestion. Docket
-    refreshes the configured calendar, verifies every bound record version, compiles at
-    most 50 create/update/no-op ledger items, detects conflicts, and applies one reminder
-    plan to both Google popup and Docket queue delivery. Omit ``reminder_plan`` for the
-    profile's default ten-minute plan. This returns one aggregate Discord review card and
-    performs no provider mutation until its one explicit approval.
+    Prefer ``docket_propose_course_reconciliation`` for ordinary imports and changes.
+    This retained tool accepts only a legacy ``schedule_snapshot_id`` and creates one
+    bounded aggregate approval. It performs no provider mutation before approval.
     """
     try:
         _calendar_read_service().list_events(
@@ -532,6 +580,59 @@ def docket_propose_term_schedule(
         with session_scope() as session:
             result = TermScheduleActionService(session).propose(request)
             return {"ok": True, **_model_proposal_result(result)}
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_propose_course_reconciliation(
+    record_id: uuid.UUID,
+    expected_record_version: int,
+    mode: CourseReconciliationMode,
+    account_id: uuid.UUID,
+    calendar_id: CalendarId,
+    request_key: DiscordRequestKey,
+    source: RecordSourceInput,
+    actor_id: DiscordId,
+    reminder_plan: CalendarReminderPlanInput | None = None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Reconcile one independent course record with its linked Calendar series.
+
+    ``sync`` compares stable meeting identities and derives create, update, cancel, and
+    no-op effects. A fully synchronized course returns ``no_op`` without a card.
+    ``drop`` requires an explicit reason and creates one destructive durable operation;
+    Docket archives the course only after every linked active series is terminally
+    cancelled. Omitted courses are never inferred as drops. After
+    ``docket_restore_record``, ``sync`` reuses cancelled logical links with fresh Google
+    event identities. The tool refreshes Calendar state and creates at most one
+    per-course review card; provider writes occur only after its explicit approval.
+    """
+    try:
+        _calendar_read_service().list_events(
+            account_id=account_id,
+            calendar_id=calendar_id,
+            start=None,
+            end=None,
+            text_filter=None,
+            limit=1,
+            freshness="require_fresh",
+        )
+        request = ProposeCourseReconciliationInput(
+            record_id=record_id,
+            expected_record_version=expected_record_version,
+            mode=mode,
+            account_id=account_id,
+            calendar_id=calendar_id,
+            reminder_plan=reminder_plan,
+            reason=reason,
+            request_key=request_key,
+            source=source,
+            actor_id=actor_id,
+        )
+        with session_scope() as session:
+            result = CourseReconciliationService(session).propose(request)
+            return {"ok": True, **_model_course_reconciliation_result(result)}
     except Exception as exc:
         return _error(exc)
 

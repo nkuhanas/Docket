@@ -136,9 +136,7 @@ def _recurrence_dates(event: StandaloneCalendarEventInput) -> list[date]:
     return _apply_recurrence_exceptions(candidates, recurrence)
 
 
-def _apply_recurrence_exceptions(
-    candidates: list[date], recurrence: Any
-) -> list[date]:
+def _apply_recurrence_exceptions(candidates: list[date], recurrence: Any) -> list[date]:
     excluded = set(recurrence.excluded_dates)
     dates = {candidate for candidate in candidates if candidate not in excluded}
     dates.update(recurrence.additional_dates)
@@ -172,9 +170,7 @@ def _occurrence_intervals(
     return [
         (
             datetime.combine(occurrence, time.min, tzinfo=zone).astimezone(UTC),
-            datetime.combine(occurrence + day_span, time.min, tzinfo=zone).astimezone(
-                UTC
-            ),
+            datetime.combine(occurrence + day_span, time.min, tzinfo=zone).astimezone(UTC),
         )
         for occurrence in dates
     ]
@@ -213,9 +209,7 @@ class CalendarActionService:
         payload = request.model_dump(mode="json")
         input_sha256 = sha256_json(payload)
         existing = self.session.scalar(
-            select(CommandRequest).where(
-                CommandRequest.request_key == request.request_key
-            )
+            select(CommandRequest).where(CommandRequest.request_key == request.request_key)
         )
         if existing is not None:
             if (
@@ -227,10 +221,7 @@ class CalendarActionService:
                     existing_operation=existing.operation_name,
                     attempted_operation="docket_propose_calendar_event",
                 )
-            if (
-                existing.status == CommandStatus.SUCCEEDED.value
-                and existing.result is not None
-            ):
+            if existing.status == CommandStatus.SUCCEEDED.value and existing.result is not None:
                 return existing, _replayed_proposal(existing.result)
             raise DocketError(
                 code="request_in_progress",
@@ -320,11 +311,7 @@ class CalendarActionService:
         )
         if len(matches) != 1:
             raise DocketError(
-                code=(
-                    "calendar_event_not_found"
-                    if not matches
-                    else "calendar_event_ambiguous"
-                ),
+                code=("calendar_event_not_found" if not matches else "calendar_event_ambiguous"),
                 message="The exact Calendar event could not be resolved safely.",
                 details={"provider_event_id": provider_event_id},
             )
@@ -470,9 +457,7 @@ class CalendarActionService:
                 if row.start_date is None or row.end_date is None:
                     continue
                 zone = ZoneInfo(row.timezone or get_settings().timezone)
-                row_start = datetime.combine(row.start_date, time.min, tzinfo=zone).astimezone(
-                    UTC
-                )
+                row_start = datetime.combine(row.start_date, time.min, tzinfo=zone).astimezone(UTC)
                 row_end = datetime.combine(row.end_date, time.min, tzinfo=zone).astimezone(UTC)
             else:
                 if row.start_at is None or row.end_at is None:
@@ -560,8 +545,10 @@ class CalendarActionService:
         if isinstance(proposal, CreateCalendarEventProposal):
             event = proposal.event.model_copy(update={"reminder_plan": None})
             intervals = _occurrence_intervals(event)
-            if not intervals or intervals[0][0] < _as_utc(state.window_start) or (
-                intervals[-1][1] > _as_utc(state.window_end)
+            if (
+                not intervals
+                or intervals[0][0] < _as_utc(state.window_start)
+                or (intervals[-1][1] > _as_utc(state.window_end))
             ):
                 raise DocketError(
                     code="calendar_event_outside_fresh_window",
@@ -589,9 +576,7 @@ class CalendarActionService:
                     account.id, request.calendar_id, proposal.provider_event_id
                 )
             logical_key = (
-                link.logical_key
-                if link is not None
-                else f"provider:{proposal.provider_event_id}"
+                link.logical_key if link is not None else f"provider:{proposal.provider_event_id}"
             )
             if isinstance(proposal, UpdateCalendarEventProposal):
                 event = proposal.replacement
@@ -608,9 +593,7 @@ class CalendarActionService:
                 details={"conflicts": conflicts},
             )
 
-        plan_payload = (
-            reminder_plan.model_dump(mode="json") if reminder_plan is not None else None
-        )
+        plan_payload = reminder_plan.model_dump(mode="json") if reminder_plan is not None else None
         plan_sha256 = sha256_json(plan_payload) if plan_payload is not None else None
         if (
             isinstance(proposal, UpdateCalendarEventProposal)
@@ -620,14 +603,10 @@ class CalendarActionService:
             plan_sha256 = link.reminder_plan_sha256
         event_payload = event.model_dump(mode="json") if event is not None else None
         priority = (
-            event.priority
-            if event is not None
-            else (target.priority if target else "normal")
+            event.priority if event is not None else (target.priority if target else "normal")
         )
         priority_basis = (
-            "default"
-            if event is not None
-            else (target.priority_basis if target else "default")
+            "default" if event is not None else (target.priority_basis if target else "default")
         )
         parameters: dict[str, Any] = {
             "calendar_id": request.calendar_id,
@@ -663,9 +642,7 @@ class CalendarActionService:
                 "reminder_disposition": parameters.get("reminder_disposition"),
                 "priority": priority,
                 "priority_basis": priority_basis,
-                "external_event_id": (
-                    target.provider_event_id if target is not None else None
-                ),
+                "external_event_id": (target.provider_event_id if target is not None else None),
                 "provider_etag": target.provider_etag if target is not None else None,
                 "target_scope": target_scope,
                 "reason": parameters.get("reason"),
@@ -802,9 +779,9 @@ class CalendarActionService:
 
         expires_at = now + timedelta(seconds=get_settings().approval_ttl_seconds)
         approval_id = uuid.uuid4()
-        signing_key = get_settings().read_secret(
-            get_settings().interaction_signing_key_file
-        ).encode()
+        signing_key = (
+            get_settings().read_secret(get_settings().interaction_signing_key_file).encode()
+        )
         short_code = issue_short_code(approval_id, expires_at, signing_key)
         approval_token = issue_approval_token(approval_id, expires_at, signing_key)
         approval = Approval(

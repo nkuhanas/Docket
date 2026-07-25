@@ -3,7 +3,7 @@
 Start here when operating or changing the deployed stack:
 
 * [Operations runbook](operations-runbook.md) — symptom-first diagnosis,
-  reload/rebuild rules, safe recovery, and schedule/Calendar verification.
+  reload/rebuild rules, safe recovery, and course/Calendar verification.
 * [Pinned integration contracts](pinned-integration-contracts.md) — fragile
   Hermes, MCP, container, and Compose assumptions that must be revalidated on
   upgrades.
@@ -16,7 +16,9 @@ Start here when operating or changing the deployed stack:
 * [Milestone 3.5 verification](milestone-3.5-verification.md) — bounded Calendar
   synchronization, cache freshness, reminder delivery, and the controlled live gate.
 * [Milestone 3.6 verification](milestone-3.6-verification.md) — full Calendar
-  control, aggregate term schedules, durable batches, and the pending live gate.
+  control, legacy aggregate term schedules, and durable batch history.
+* [Milestone 3.7 verification](milestone-3.7-verification.md) — independent
+  course reconciliation, durable drop, restore, and the operator-present gate.
 * [Production Calendar write-gate verification](calendar-write-gate-verification.md)
   — fail-closed production writes, paused execution, stale rejection, and the
   deployed pending-card state.

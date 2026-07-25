@@ -152,9 +152,7 @@ class McpTraceCallUpdate(InternalModel):
     @model_validator(mode="after")
     def validate_terminal_details(self) -> "McpTraceCallUpdate":
         if self.state == "running" and (
-            self.elapsed_ms != 0
-            or self.disposition is not None
-            or self.error_code is not None
+            self.elapsed_ms != 0 or self.disposition is not None or self.error_code is not None
         ):
             raise ValueError("running trace calls omit terminal details")
         if self.state == "succeeded" and self.error_code is not None:

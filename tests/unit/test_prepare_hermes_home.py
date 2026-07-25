@@ -11,9 +11,7 @@ def test_preparation_preserves_operator_gateway_authorization(tmp_path: Path) ->
     credentials.mkdir()
     (credentials / "discord_bot_token").write_text("test-live-token\n", encoding="utf-8")
     (credentials / "docket_to_hermes_token").write_text("mcp-token\n", encoding="utf-8")
-    (credentials / "hermes_to_docket_token").write_text(
-        "callback-token\n", encoding="utf-8"
-    )
+    (credentials / "hermes_to_docket_token").write_text("callback-token\n", encoding="utf-8")
     env_file = tmp_path / ".env"
     env_file.write_text(
         "\n".join(

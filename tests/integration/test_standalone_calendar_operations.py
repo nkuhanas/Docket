@@ -356,18 +356,12 @@ def test_update_card_prioritizes_operator_changes_and_terminal_state(
         )
         assert fields["Title"] == "Check my email"
         assert "Name" not in fields
-        assert fields["When"] == (
-            "Starts <t:1785439800:F>\n"
-            "Ends <t:1785440700:F>"
-        )
+        assert fields["When"] == ("Starts <t:1785439800:F>\nEnds <t:1785440700:F>")
         assert fields["Delta · Time"] == (
             "Before: <t:1785438000:F> to <t:1785438900:t>\n"
             "After: <t:1785439800:F> to <t:1785440700:t>"
         )
-        assert fields["Delta · Reminders"] == (
-            "Before: 5 minutes, 10 minutes\n"
-            "After: 5 minutes"
-        )
+        assert fields["Delta · Reminders"] == ("Before: 5 minutes, 10 minutes\nAfter: 5 minutes")
         assert fields["Details"] == "One-time · Normal priority\nTags: email"
         assert fields["Notifications"] == ("5 minutes\nGoogle Calendar popup + Docket daily thread")
         assert fields["Conflicts"] == "None found"
@@ -690,9 +684,7 @@ def test_recurring_series_cancellation_binds_master_and_cleans_every_instance(
 
     with session_factory.begin() as session:
         link = session.scalar(
-            select(CalendarLink).where(
-                CalendarLink.external_event_id == master.external_event_id
-            )
+            select(CalendarLink).where(CalendarLink.external_event_id == master.external_event_id)
         )
         assert link is not None and link.provider_etag == '"series-current"'
         link.provider_etag = '"series-changed-after-preview"'
@@ -725,9 +717,7 @@ def test_recurring_series_cancellation_binds_master_and_cleans_every_instance(
     with session_factory() as session:
         operation = session.get(Operation, operation_id)
         link = session.scalar(
-            select(CalendarLink).where(
-                CalendarLink.external_event_id == master.external_event_id
-            )
+            select(CalendarLink).where(CalendarLink.external_event_id == master.external_event_id)
         )
         instances = list(
             session.scalars(
@@ -787,10 +777,7 @@ def test_proposal_selects_and_custom_modal_replace_the_revision_in_place(
         )
         assert fields["Title"] == "Check my email"
         assert "Name" not in fields
-        assert fields["When"] == (
-            "Starts <t:1785438000:F>\n"
-            "Ends <t:1785438900:F>"
-        )
+        assert fields["When"] == ("Starts <t:1785438000:F>\nEnds <t:1785438900:F>")
         assert fields["Where"] == "Desk"
         assert fields["Details"] == "One-time · Normal priority\nTags: email"
         assert fields["Notifications"] == (
@@ -989,9 +976,7 @@ def test_refresh_rebinds_conflicts_and_edit_modal_replaces_typed_fields(
         message_id = projection.message_id
         thread_id = thread.thread_id
         controls = backend.messages[str(projection.id)]["controls"]
-        assert not any(
-            control.get("transition") == "proposal_refresh" for control in controls
-        )
+        assert not any(control.get("transition") == "proposal_refresh" for control in controls)
     refresh_started = datetime.now(UTC)
     with session_factory.begin() as session:
         state = session.scalar(
@@ -1047,8 +1032,7 @@ def test_refresh_rebinds_conflicts_and_edit_modal_replaces_typed_fields(
             "Rebuild preview",
         ]
         assert any(
-            field["name"] == "Calendar state changed"
-            for field in projected["embed"]["fields"]
+            field["name"] == "Calendar state changed" for field in projected["embed"]["fields"]
         )
         refresh_control = next(
             control

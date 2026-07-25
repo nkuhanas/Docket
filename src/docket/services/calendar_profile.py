@@ -18,9 +18,7 @@ def _profile_result(profile: CalendarProfile) -> CalendarProfileResult:
         operator_user_id=profile.operator_user_id,
         proposal_mode=profile.proposal_mode,
         default_reminder_lead_seconds=list(profile.default_reminder_lead_seconds),
-        default_reminder_delivery_channels=list(
-            profile.default_reminder_delivery_channels
-        ),
+        default_reminder_delivery_channels=list(profile.default_reminder_delivery_channels),
         conflict_policy=profile.conflict_policy,
         version=profile.version,
     )
@@ -33,9 +31,7 @@ class CalendarProfileService:
     def get(self) -> CalendarProfileResult:
         operator_user_id = get_settings().operator_discord_user_id
         profile = self.session.scalar(
-            select(CalendarProfile).where(
-                CalendarProfile.operator_user_id == operator_user_id
-            )
+            select(CalendarProfile).where(CalendarProfile.operator_user_id == operator_user_id)
         )
         if profile is None:
             profile = CalendarProfile(operator_user_id=operator_user_id)
@@ -51,9 +47,7 @@ class CalendarProfileService:
                     request_id=None,
                     data={
                         "proposal_mode": profile.proposal_mode,
-                        "default_reminder_lead_seconds": (
-                            profile.default_reminder_lead_seconds
-                        ),
+                        "default_reminder_lead_seconds": (profile.default_reminder_lead_seconds),
                         "conflict_policy": profile.conflict_policy,
                         "version": profile.version,
                     },
@@ -66,9 +60,7 @@ class CalendarProfileService:
         payload = request.model_dump(mode="json")
         input_sha256 = sha256_json(payload)
         existing = self.session.scalar(
-            select(CommandRequest).where(
-                CommandRequest.request_key == request.request_key
-            )
+            select(CommandRequest).where(CommandRequest.request_key == request.request_key)
         )
         if existing is not None:
             if (
@@ -80,10 +72,7 @@ class CalendarProfileService:
                     existing_operation=existing.operation_name,
                     attempted_operation="docket_set_calendar_profile",
                 )
-            if (
-                existing.status == CommandStatus.SUCCEEDED.value
-                and existing.result is not None
-            ):
+            if existing.status == CommandStatus.SUCCEEDED.value and existing.result is not None:
                 return CalendarProfileResult.model_validate(existing.result)
             raise DocketError(
                 code="request_in_progress",
@@ -109,14 +98,10 @@ class CalendarProfileService:
         )
         assert profile is not None
         if profile.version != request.expected_version:
-            raise VersionConflict(
-                str(profile.id), request.expected_version, profile.version
-            )
+            raise VersionConflict(str(profile.id), request.expected_version, profile.version)
         before: dict[str, Any] = _profile_result(profile).model_dump(mode="json")
         profile.proposal_mode = request.proposal_mode
-        profile.default_reminder_lead_seconds = list(
-            request.default_reminder_lead_seconds
-        )
+        profile.default_reminder_lead_seconds = list(request.default_reminder_lead_seconds)
         profile.default_reminder_delivery_channels = list(
             request.default_reminder_delivery_channels
         )

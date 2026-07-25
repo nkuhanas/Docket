@@ -46,11 +46,7 @@ class CalendarEventRequest:
             "docket_correlation": self.provider_correlation,
             "docket_origin_kind": (
                 self.origin_kind
-                or (
-                    "course_meeting"
-                    if self.schedule is not None
-                    else "standalone"
-                )
+                or ("course_meeting" if self.schedule is not None else "standalone")
             ),
             "docket_priority": self.priority,
             "docket_priority_basis": self.priority_basis,
@@ -90,9 +86,7 @@ def _course_meeting_body(summary: str, schedule: dict[str, Any]) -> dict[str, An
             "dateTime": f"{start_date}T{end_time}",
             "timeZone": timezone,
         },
-        "recurrence": [
-            f"RRULE:FREQ=WEEKLY;BYDAY={','.join(schedule['days'])};UNTIL={until_utc}"
-        ],
+        "recurrence": [f"RRULE:FREQ=WEEKLY;BYDAY={','.join(schedule['days'])};UNTIL={until_utc}"],
     }
     if schedule.get("location"):
         body["location"] = schedule["location"]
@@ -105,10 +99,7 @@ def _google_reminders(plan: dict[str, Any] | None) -> dict[str, Any] | None:
     leads = [int(value) for value in plan.get("lead_seconds", [])]
     return {
         "useDefault": False,
-        "overrides": [
-            {"method": "popup", "minutes": lead // 60}
-            for lead in leads
-        ],
+        "overrides": [{"method": "popup", "minutes": lead // 60} for lead in leads],
     }
 
 
@@ -141,27 +132,19 @@ def _recurrence_lines(
             until_local = datetime.combine(until, time.max, tzinfo=ZoneInfo(timezone))
             parts.append(f"UNTIL={until_local.astimezone(UTC).strftime('%Y%m%dT%H%M%SZ')}")
     lines = [f"RRULE:{';'.join(parts)}"]
-    excluded_dates = [date.fromisoformat(str(value)) for value in recurrence.get(
-        "excluded_dates", []
-    )]
-    additional_dates = [date.fromisoformat(str(value)) for value in recurrence.get(
-        "additional_dates", []
-    )]
+    excluded_dates = [
+        date.fromisoformat(str(value)) for value in recurrence.get("excluded_dates", [])
+    ]
+    additional_dates = [
+        date.fromisoformat(str(value)) for value in recurrence.get("additional_dates", [])
+    ]
     if is_all_day:
         if excluded_dates:
-            encoded = ",".join(
-                value.strftime("%Y%m%d") for value in excluded_dates
-            )
-            lines.append(
-                f"EXDATE;VALUE=DATE:{encoded}"
-            )
+            encoded = ",".join(value.strftime("%Y%m%d") for value in excluded_dates)
+            lines.append(f"EXDATE;VALUE=DATE:{encoded}")
         if additional_dates:
-            encoded = ",".join(
-                value.strftime("%Y%m%d") for value in additional_dates
-            )
-            lines.append(
-                f"RDATE;VALUE=DATE:{encoded}"
-            )
+            encoded = ",".join(value.strftime("%Y%m%d") for value in additional_dates)
+            lines.append(f"RDATE;VALUE=DATE:{encoded}")
     else:
         assert start_local is not None
         suffixes = [
@@ -352,9 +335,7 @@ def normalize_event_body(body: dict[str, Any]) -> dict[str, Any]:
         "docket_logical_key": private.get("docket_logical_key"),
         "docket_priority": private.get("docket_priority"),
         "docket_priority_basis": private.get("docket_priority_basis"),
-        "docket_reminder_plan_sha256": private.get(
-            "docket_reminder_plan_sha256"
-        ),
+        "docket_reminder_plan_sha256": private.get("docket_reminder_plan_sha256"),
     }
 
 

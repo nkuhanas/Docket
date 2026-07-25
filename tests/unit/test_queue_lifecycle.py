@@ -156,9 +156,10 @@ def test_failed_queue_item_only_exposes_valid_local_controls(session) -> None:
     actions = session.scalars(select(Action).where(Action.queue_item_id == item.id)).all()
 
     assert [revision.action_type for revision in current] == ["ignore_queue_item"]
-    assert next(
-        action for action in actions if action.action_type == "snooze_queue_item"
-    ).status == "superseded"
+    assert (
+        next(action for action in actions if action.action_type == "snooze_queue_item").status
+        == "superseded"
+    )
 
 
 def test_queue_reads_filter_and_return_primary_source_identity(session) -> None:

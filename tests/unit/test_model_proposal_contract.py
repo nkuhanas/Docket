@@ -25,8 +25,6 @@ def test_model_proposal_result_is_button_first_and_omits_short_code() -> None:
         "kind": "discord_button_card",
         "location": "today's ISO-dated thread under the configured Docket queue",
         "delivery_status": "pending",
-        "operator_instruction": (
-            "Use the Approve or Reject button on the projected Docket card."
-        ),
+        "operator_instruction": ("Use the Approve or Reject button on the projected Docket card."),
         "typed_code_policy": "break_glass_only_not_for_agent_guidance",
     }

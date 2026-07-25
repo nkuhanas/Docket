@@ -6,9 +6,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 RecordType = Literal["term", "course", "generic"]
-_DISCORD_REQUEST_KEY_PATTERN = (
-    r"^discord:[0-9]{17,20}:[0-9]{17,20}:[0-9]{17,20}:(0|[1-9][0-9]*)$"
-)
+_DISCORD_REQUEST_KEY_PATTERN = r"^discord:[0-9]{17,20}:[0-9]{17,20}:[0-9]{17,20}:(0|[1-9][0-9]*)$"
 _DISCORD_ID_PATTERN = r"^[0-9]{17,20}$"
 DiscordId = Annotated[str, Field(pattern=_DISCORD_ID_PATTERN)]
 DiscordRequestKey = Annotated[
@@ -158,14 +156,15 @@ class CourseMeeting(StrictModel):
             raise ValueError("end_date must not be before start_date")
         if len(self.excluded_dates) != len(set(self.excluded_dates)):
             raise ValueError("excluded_dates must be unique")
-        if self.start_date is not None and self.end_date is not None and any(
-            value < self.start_date or value > self.end_date
-            for value in self.excluded_dates
+        if (
+            self.start_date is not None
+            and self.end_date is not None
+            and any(
+                value < self.start_date or value > self.end_date for value in self.excluded_dates
+            )
         ):
             raise ValueError("excluded dates must fall within the meeting range")
-        occurrence_ids = [
-            occurrence.occurrence_id for occurrence in self.additional_occurrences
-        ]
+        occurrence_ids = [occurrence.occurrence_id for occurrence in self.additional_occurrences]
         if len(occurrence_ids) != len(set(occurrence_ids)):
             raise ValueError("additional occurrence IDs must be unique")
         return self
@@ -325,9 +324,25 @@ class ArchiveRecordInput(StrictModel):
     actor_id: str | None = Field(default=None, max_length=255)
 
 
+class RestoreRecordInput(StrictModel):
+    record_id: UUID
+    expected_version: int = Field(ge=1)
+    request_key: str = Field(min_length=8, max_length=512)
+    reason: str = Field(min_length=1, max_length=1000)
+    actor_type: Literal["user", "hermes", "system"] = "hermes"
+    actor_id: str | None = Field(default=None, max_length=255)
+
+
 class RecordResult(StrictModel):
     record_id: UUID
     version: int
-    disposition: Literal["created", "matched_existing", "replayed_request", "updated", "archived"]
+    disposition: Literal[
+        "created",
+        "matched_existing",
+        "replayed_request",
+        "updated",
+        "archived",
+        "restored",
+    ]
     request_id: UUID
     record: dict[str, Any] | None = None

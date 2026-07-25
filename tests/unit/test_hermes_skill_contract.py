@@ -43,15 +43,19 @@ def test_manual_intent_skill_keeps_durable_output_out_of_chat() -> None:
     assert "Do not start a background terminal process" in skill
 
 
-def test_manual_intent_skill_uses_one_atomic_schedule_flow() -> None:
+def test_manual_intent_skill_uses_independent_course_lifecycles() -> None:
     skill = " ".join(SKILL_PATH.read_text(encoding="utf-8").split())
 
-    assert "Call `docket_store_term_schedule` exactly once" in skill
-    assert "Never loop over `docket_store_record` per term or course" in skill
-    assert "call `docket_propose_term_schedule` exactly once" in skill
-    assert "do not wait for a second “propose it” prompt" in skill
+    assert "A schedule is not a Docket entity" in skill
     assert "ask one consolidated clarification question" in skill
-    assert "one aggregate proposal" in skill
+    assert "Store or explicitly update each course/section as its own canonical record" in skill
+    assert "one conflict or failure does not roll back successful siblings" in skill
+    assert "`docket_propose_course_reconciliation` in `sync` mode" in skill
+    assert "Omitting a previously stored course from a later import has no effect" in skill
+    assert "`docket_propose_course_reconciliation` in `drop` mode" in skill
+    assert "partial provider success leaves the course active for retry" in skill
+    assert "`docket_restore_record`" in skill
+    assert "legacy compatibility tools" in skill
     assert "Under `off`, never propose" in skill
     assert "Under `explicit_only`, propose only" in skill
     assert "Cancellation is always explicit" in skill

@@ -73,6 +73,20 @@ ACTION_REGISTRY: dict[str, ActionDefinition] = {
             requires_account=True,
         ),
         ActionDefinition(
+            "calendar_reconcile_course",
+            RiskClass.BULK,
+            "google_calendar",
+            ActionAvailability.ENABLED,
+            requires_account=True,
+        ),
+        ActionDefinition(
+            "calendar_drop_course",
+            RiskClass.DESTRUCTIVE,
+            "google_calendar",
+            ActionAvailability.ENABLED,
+            requires_account=True,
+        ),
+        ActionDefinition(
             "gmail_archive_message",
             RiskClass.EXTERNAL_PRIVATE_WRITE,
             "gmail",
@@ -116,6 +130,20 @@ ACTION_REGISTRY: dict[str, ActionDefinition] = {
         ),
     )
 }
+
+BATCH_CALENDAR_ACTION_TYPES = frozenset(
+    {
+        "calendar_apply_term_schedule",
+        "calendar_reconcile_course",
+        "calendar_drop_course",
+    }
+)
+COURSE_CALENDAR_ACTION_TYPES = frozenset(
+    {
+        "calendar_reconcile_course",
+        "calendar_drop_course",
+    }
+)
 
 
 def get_action_definition(action_type: str, *, require_enabled: bool = True) -> ActionDefinition:

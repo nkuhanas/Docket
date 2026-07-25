@@ -86,9 +86,7 @@ def create_request(account: Account, *, intent_index: int = 0) -> ProposeCalenda
                     "operator_tags": ["Email"],
                 },
             },
-            "request_key": (
-                f"discord:{GUILD_ID}:{CHAT_CHANNEL_ID}:{MESSAGE_ID}:{intent_index}"
-            ),
+            "request_key": (f"discord:{GUILD_ID}:{CHAT_CHANNEL_ID}:{MESSAGE_ID}:{intent_index}"),
             "source": trusted_source(intent_index),
             "actor_id": OPERATOR_ID,
         }
@@ -211,9 +209,7 @@ def test_attendee_event_cannot_be_targeted(session: Session) -> None:
     }
 
     with pytest.raises(DocketError) as raised:
-        CalendarActionService(session).propose(
-            ProposeCalendarEventInput.model_validate(request)
-        )
+        CalendarActionService(session).propose(ProposeCalendarEventInput.model_validate(request))
 
     assert raised.value.code == "calendar_event_not_private"
 

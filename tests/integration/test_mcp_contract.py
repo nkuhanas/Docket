@@ -18,6 +18,7 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
         "docket_search_records",
         "docket_update_record",
         "docket_archive_record",
+        "docket_restore_record",
         "docket_list_accounts",
         "docket_list_calendar_events",
         "docket_get_calendar_sync_status",
@@ -26,6 +27,7 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
         "docket_list_reminder_rules",
         "docket_propose_calendar_event",
         "docket_propose_term_schedule",
+        "docket_propose_course_reconciliation",
         "docket_list_queue_items",
         "docket_get_queue_item",
         "docket_snooze_queue_item",
@@ -88,8 +90,11 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
     )
     schedule_store = tools["docket_store_term_schedule"]
     schedule_description = " ".join((schedule_store.description or "").split())
-    assert "exactly one aggregate Calendar proposal" in schedule_description
-    assert "rolls back every new record" in schedule_description
+    assert "Legacy compatibility path" in schedule_description
+    assert "normal workflow stores or updates each independent course record" in (
+        schedule_description
+    )
+    assert "rolls back the whole request on conflict" in schedule_description
     schedule_properties = schedule_store.inputSchema["properties"]
     assert schedule_properties["term"]["discriminator"]["propertyName"] == "kind"
     assert schedule_properties["courses"]["minItems"] == 1
@@ -175,12 +180,29 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
 
     schedule_proposal = tools["docket_propose_term_schedule"]
     schedule_proposal_description = " ".join((schedule_proposal.description or "").split())
-    assert "Call this exactly once" in schedule_proposal_description
-    assert "one aggregate Discord review card" in schedule_proposal_description
+    assert "Legacy compatibility proposal" in schedule_proposal_description
+    assert "Prefer ``docket_propose_course_reconciliation``" in schedule_proposal_description
     assert "performs no provider mutation" in schedule_proposal_description
     schedule_proposal_properties = schedule_proposal.inputSchema["properties"]
     assert "reminder_plan" not in schedule_proposal.inputSchema["required"]
     assert schedule_proposal_properties["request_key"]["pattern"].startswith("^discord:")
+
+    restore = tools["docket_restore_record"]
+    restore_description = " ".join((restore.description or "").split())
+    assert "Reactivate one archived canonical identity" in restore_description
+    assert "does not itself recreate Google Calendar series" in restore_description
+    assert "docket_propose_course_reconciliation" in restore_description
+
+    course_proposal = tools["docket_propose_course_reconciliation"]
+    course_description = " ".join((course_proposal.description or "").split())
+    assert "one independent course record" in course_description
+    assert "create, update, cancel, and no-op effects" in course_description
+    assert "archives the course only after every linked active series" in course_description
+    assert "Omitted courses are never inferred as drops" in course_description
+    course_properties = course_proposal.inputSchema["properties"]
+    assert course_properties["mode"]["enum"] == ["sync", "drop"]
+    assert course_properties["request_key"]["pattern"].startswith("^discord:")
+    assert "reason" not in course_proposal.inputSchema["required"]
 
     set_profile = tools["docket_set_calendar_profile"]
     set_profile_description = " ".join((set_profile.description or "").split())

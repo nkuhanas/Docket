@@ -78,67 +78,71 @@ Do not turn test framing or conversational descriptors into `course_title` or
 value as course data.
 
 Treat an operator statement such as “this is my complete term schedule” or
-“the attached schedule is correct” as one aggregate workflow. An attachment
-alone is untrusted; the operator's current message must explicitly adopt its
-facts. Before writing, identify every missing or ambiguous fact across the
-whole schedule and ask one consolidated clarification question. Completeness
-requires the term institution, name, bounds, and timezone plus every course's
-identity and every meeting's stable ID, weekdays, local times, date bounds,
-timezone, and any exclusions or exceptional occurrences. Do not store or
-propose a partial “complete” schedule and do not guess omitted facts.
+“the attached schedule is correct” as bulk orchestration over independent
+course records. A schedule is not a Docket entity. An attachment alone is
+untrusted; the operator's current message must explicitly adopt its facts.
+Before writing, identify missing or ambiguous facts across the input and ask
+one consolidated clarification question when that avoids preventable partial
+progress. Never guess omitted facts.
 
-For a complete adopted schedule:
+For an adopted term schedule:
 
-1. Resolve an explicitly referenced existing term to its exact record/version
-   when needed; a complete new term may be supplied inline.
-2. Call `docket_store_term_schedule` exactly once. Never loop over
-   `docket_store_record` per term or course, and never reread the returned
-   records merely to recover meeting IDs or versions.
+1. Resolve or store the shared term once. It supplies institution, term bounds,
+   and timezone; it does not own a list of courses.
+2. Store or explicitly update each course/section as its own canonical record.
+   Preserve stable meeting IDs across edits. Each course write is independently
+   durable: one conflict or failure does not roll back successful siblings.
 3. Obtain the enabled account/configured calendar with
    `docket_list_accounts` and read `docket_get_calendar_profile`; these reads
    may run alongside other independent reads and consume no intent index.
-4. When the store succeeds, call `docket_propose_term_schedule` exactly once
-   with its `schedule_snapshot_id` if `proposal_mode` is `suggest`, or if the
-   mode is `explicit_only` and the current operator message explicitly requests
-   applying/adding the schedule to Calendar. Omit the reminder plan to use the
-   profile's unified ten-minute default unless the operator supplied a complete
-   replacement. Under `suggest`, do not wait for a second “propose it” prompt.
-   Under `off`, never propose, even when explicitly asked; report that Calendar
-   proposals are disabled without falling back to another tool.
-5. Report one aggregate proposal and point only to its authoritative queue
-   card. Its persistent card flow is **Begin review** → bounded immutable item
-   pages → **Continue to decision**; Approve and Reject appear only on the
-   final decision view. Never emit one card per course, reproduce the full
-   manifest in chat, or describe the retired review dropdown/ephemeral flow.
-   Healthy Summary and Decision views do not expose Refresh. If an approval
-   fails because Docket detects stale Calendar state, the existing card changes
-   to **Reject** plus **Rebuild preview**. Direct the operator to that
-   contextual control and review its replacement revision from Summary; do not
-   re-store or re-propose the schedule, suggest the old approval, or claim the
-   rebuilt preview preserves prior review progress.
+4. For every successfully stored or updated course, call
+   `docket_propose_course_reconciliation` in `sync` mode when
+   `proposal_mode` is `suggest`, or when the mode is `explicit_only` and the
+   current message explicitly requests Calendar application. Omit the reminder
+   plan to use the unified profile default. Under `off`, never propose.
+5. Report a bounded summary of per-course results. Point to each authoritative
+   course card that Docket created; do not reproduce full item payloads in
+   chat. Retry only failed courses with new intent indexes. Never replay
+   successful siblings merely to manufacture an atomic-looking result.
+
+Re-importing materially unchanged course data is a successful no-op after
+current source provenance is attached. Omitting a previously stored course
+from a later import has no effect. Never infer a drop from absence.
+
+Drop only from an explicit current operator request. Read the active course and
+call `docket_propose_course_reconciliation` in `drop` mode with the reason.
+Docket cancels every active linked meeting series through a durable item
+ledger; partial provider success leaves the course active for retry. Docket
+archives the course only after all cancellations are terminally confirmed.
+Never call `docket_archive_record` first for a linked course.
+
+To re-add a dropped course, find the archived canonical identity, call
+`docket_restore_record`, then call `docket_propose_course_reconciliation` in
+`sync` mode. Restore keeps the record identity and history while the approved
+sync creates fresh provider series for its current stable meeting IDs.
+
+`docket_store_term_schedule` and `docket_propose_term_schedule` are legacy
+compatibility tools. Do not use them for normal imports, edits, drops, or
+restores.
 
 Docket automatically projects one bounded, redacted trace of this turn's Docket
 MCP calls to `docket-system`. Do not reproduce arguments, results, source
 context, identifiers, or a second call-by-call transcript in the chat response.
 
-The aggregate store is atomic: a canonical conflict means no course, term,
-source provenance, or schedule snapshot from that call was stored. Stop and
-report the conflict rather than falling back to per-course writes.
-
 Allocate intent indexes only to state-changing Docket operations actually
 requested by the message, in message order. Reads such as search, get, profile,
 and account listing consume no index. Increment both the source metadata
-`intent_index` and request-key suffix together for each additional write. A
-complete term-schedule store and its aggregate Calendar proposal use `0` and
-`1`; a proposal-only request uses `0`. Ordinary independent record writes use
-successive indexes in their message order. Never reuse one operation's request
-key for another operation.
+`intent_index` and request-key suffix together for each additional write. In a
+bulk import, each term store, course store/update, course reconciliation, drop,
+or restore consumes its own successive index. A proposal-only request uses
+`0`. Never reuse one operation's request key for another operation.
 
-Before a course-meeting Calendar proposal, use the canonical record snapshot
-returned by an immediately preceding successful store call for the same course;
-otherwise read the course's current version. Call `docket_list_accounts` to
-select the explicit enabled Google account and use only the returned configured
-calendar ID. Use `docket_propose_action` for a stored course meeting.
+Before a course reconciliation, use the canonical record snapshot returned by
+an immediately preceding successful store call for that course; otherwise read
+the course's current version. Call `docket_list_accounts` to select the exact
+enabled Google account and use only the returned configured calendar ID.
+`docket_propose_action` is retained for legacy single-meeting flows; use
+`docket_propose_course_reconciliation` for course lifecycle work.
 
 Use `docket_propose_calendar_event` for a standalone create, complete
 replacement update, unified reminder change, or explicit cancellation. Supply

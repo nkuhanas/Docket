@@ -209,9 +209,7 @@ def test_rollover_resumes_due_snooze_once_at_local_seven(session_factory) -> Non
     assert not rollover.run_due_once(wake_at + datetime.resolution)
     with session_factory() as session:
         item = session.get(QueueItem, item_id)
-        actions = session.scalars(
-            select(Action).where(Action.queue_item_id == item_id)
-        ).all()
+        actions = session.scalars(select(Action).where(Action.queue_item_id == item_id)).all()
         projections = session.scalars(
             select(DiscordProjection).where(DiscordProjection.queue_item_id == item_id)
         ).all()

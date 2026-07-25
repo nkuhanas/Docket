@@ -15,12 +15,22 @@ from docket.domain.errors import (
     RecordNotFound,
     VersionConflict,
 )
-from docket.models import AuditEvent, CommandRequest, Record, RecordSource
+from docket.models import (
+    Action,
+    ActionRevision,
+    AuditEvent,
+    CalendarLink,
+    CommandRequest,
+    Operation,
+    Record,
+    RecordSource,
+)
 from docket.models.base import utc_now
 from docket.schemas.records import (
     ArchiveRecordInput,
     CourseData,
     RecordResult,
+    RestoreRecordInput,
     StoreRecordInput,
     TermData,
     UpdateRecordInput,
@@ -44,9 +54,7 @@ def _validated_data(
             if meeting.start_date is not None
         ]
         ends = [
-            meeting.end_date
-            for meeting in course.meetings.values()
-            if meeting.end_date is not None
+            meeting.end_date for meeting in course.meetings.values() if meeting.end_date is not None
         ]
         return normalized, min(starts, default=None), max(ends, default=None)
     return data, None, None
@@ -92,9 +100,7 @@ class RecordService:
             select(CommandRequest).where(CommandRequest.request_key == request_key)
         )
         if existing is not None:
-            accepted_operation_names = compatible_operation_names or frozenset(
-                {operation_name}
-            )
+            accepted_operation_names = compatible_operation_names or frozenset({operation_name})
             if (
                 existing.operation_name not in accepted_operation_names
                 or existing.input_sha256 != input_sha256
@@ -132,11 +138,7 @@ class RecordService:
 
     def _validate_course_term(self, course: CourseData) -> None:
         term = self.session.get(Record, course.term_record_id)
-        if (
-            term is None
-            or term.record_type != "term"
-            or term.status != RecordStatus.ACTIVE.value
-        ):
+        if term is None or term.record_type != "term" or term.status != RecordStatus.ACTIVE.value:
             raise DocketError(
                 code="invalid_term_reference",
                 message="Course records must reference an active term record.",
@@ -170,15 +172,35 @@ class RecordService:
                 message="Canonical identity must match the validated record data.",
             )
 
+    def _reject_active_lifecycle(self, record_id: uuid.UUID) -> None:
+        active = self.session.scalar(
+            select(Operation)
+            .join(
+                ActionRevision,
+                ActionRevision.id == Operation.action_revision_id,
+            )
+            .join(Action, Action.id == ActionRevision.action_id)
+            .where(
+                Action.record_id == record_id,
+                Operation.operation_type.in_({"calendar_reconcile_course", "calendar_drop_course"}),
+                Operation.status.in_({"pending", "running", "reconciliation_required"}),
+            )
+            .limit(1)
+        )
+        if active is not None:
+            raise DocketError(
+                code="course_lifecycle_busy",
+                message="The course has an unfinished Calendar lifecycle operation.",
+                details={"operation_id": str(active.id), "status": active.status},
+            )
+
     def store(self, request: StoreRecordInput) -> RecordResult:
         validate_configured_discord_source(request.source, request.actor_id)
         payload = request.model_dump(mode="json")
         command, replay = self._start_command(
             request_key=request.request_key,
             operation_name="docket_store_record",
-            compatible_operation_names=frozenset(
-                {"docket_remember_record", "docket_store_record"}
-            ),
+            compatible_operation_names=frozenset({"docket_remember_record", "docket_store_record"}),
             payload=payload,
             actor_type=request.actor_type,
             actor_id=request.actor_id,
@@ -220,6 +242,15 @@ class RecordService:
             self.session.flush()
             disposition = "created"
         else:
+            if record.status == RecordStatus.ARCHIVED.value:
+                raise DocketError(
+                    code="record_archived",
+                    message=(
+                        "The canonical record is archived; restore that identity "
+                        "instead of storing a duplicate."
+                    ),
+                    details={"record_id": str(record.id), "version": record.version},
+                )
             differing_fields = _differing_fields(record.data, normalized_data)
             if differing_fields:
                 raise RecordConflict(
@@ -310,8 +341,14 @@ class RecordService:
             return replay
 
         record = self.get(request.record_id)
+        self._reject_active_lifecycle(record.id)
         if record.version != request.expected_version:
             raise VersionConflict(str(record.id), request.expected_version, record.version)
+        if record.status != RecordStatus.ACTIVE.value:
+            raise DocketError(
+                code="record_archived",
+                message="Restore the canonical record before updating it.",
+            )
 
         normalized_data, valid_from, valid_until = _validated_data(record.record_type, request.data)
         self._validate_record_identity(record.record_type, record.canonical_key, normalized_data)
@@ -360,8 +397,29 @@ class RecordService:
             return replay
 
         record = self.get(request.record_id)
+        self._reject_active_lifecycle(record.id)
         if record.version != request.expected_version:
             raise VersionConflict(str(record.id), request.expected_version, record.version)
+        if record.status == RecordStatus.ARCHIVED.value:
+            raise DocketError(
+                code="record_already_archived",
+                message="The canonical record is already archived.",
+            )
+        if record.record_type == "course":
+            links = list(
+                self.session.scalars(
+                    select(CalendarLink).where(CalendarLink.record_id == record.id)
+                )
+            )
+            if any(link.synced_snapshot.get("status") != "cancelled" for link in links):
+                raise DocketError(
+                    code="course_calendar_links_active",
+                    message=(
+                        "A linked course must use the durable course-drop workflow "
+                        "before its record can be archived."
+                    ),
+                    details={"record_id": str(record.id)},
+                )
         record.status = RecordStatus.ARCHIVED.value
         record.version += 1
         self.session.add(
@@ -379,6 +437,51 @@ class RecordService:
             record_id=record.id,
             version=record.version,
             disposition="archived",
+            request_id=command.id,
+        )
+        self._finish_command(command, result)
+        return result
+
+    def restore(self, request: RestoreRecordInput) -> RecordResult:
+        payload = request.model_dump(mode="json")
+        command, replay = self._start_command(
+            request_key=request.request_key,
+            operation_name="docket_restore_record",
+            payload=payload,
+            actor_type=request.actor_type,
+            actor_id=request.actor_id,
+        )
+        if replay is not None:
+            return replay
+
+        record = self.get(request.record_id)
+        self._reject_active_lifecycle(record.id)
+        if record.version != request.expected_version:
+            raise VersionConflict(str(record.id), request.expected_version, record.version)
+        if record.status != RecordStatus.ARCHIVED.value:
+            raise DocketError(
+                code="record_already_active",
+                message="The canonical record is already active.",
+            )
+        if record.record_type == "course":
+            self._validate_course_term(CourseData.model_validate(record.data))
+        record.status = RecordStatus.ACTIVE.value
+        record.version += 1
+        self.session.add(
+            AuditEvent(
+                event_type="record.restored",
+                entity_type="record",
+                entity_id=record.id,
+                actor_type=request.actor_type,
+                actor_id=request.actor_id,
+                request_id=command.id,
+                data={"version": record.version, "reason": request.reason},
+            )
+        )
+        result = RecordResult(
+            record_id=record.id,
+            version=record.version,
+            disposition="restored",
             request_id=command.id,
         )
         self._finish_command(command, result)

@@ -218,9 +218,7 @@ class ActionService:
             "meeting_id": request.parameters.meeting_id,
             "calendar_id": request.parameters.calendar_id,
             "summary": " - ".join(
-                value
-                for value in (course.course_code, course.course_title)
-                if value is not None
+                value for value in (course.course_code, course.course_title) if value is not None
             ),
             "course_code": course.course_code,
             "course_title": course.course_title,
@@ -304,9 +302,9 @@ class ActionService:
         now = utc_now()
         expires_at = now + timedelta(seconds=get_settings().approval_ttl_seconds)
         approval_id = uuid.uuid4()
-        signing_key = get_settings().read_secret(
-            get_settings().interaction_signing_key_file
-        ).encode()
+        signing_key = (
+            get_settings().read_secret(get_settings().interaction_signing_key_file).encode()
+        )
         short_code = issue_short_code(approval_id, expires_at, signing_key)
         approval_token = issue_approval_token(approval_id, expires_at, signing_key)
         approval = Approval(

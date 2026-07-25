@@ -1,18 +1,18 @@
 # Docket
 
-Docket is a durable authorization and state layer for personal operations. This
-repository currently implements the Milestone 0-3.5 path: term/course persistence,
-typed Calendar proposals, immutable previews, authenticated one-time approvals,
-durable operations and attempts, Google Calendar create/update/reconciliation,
-audit history, durable Discord daily-thread/card projection, and Hermes
-integration. Milestone 3 adds canonical queue reads and local transitions,
-07:00 local daily rollover, carryover with one current control surface, thread
-archival recovery, and durable system-channel failure reporting. Detailed
-implementation specifications are maintained privately and excluded from Git.
-Milestone 3.5 adds a bounded, atomically promoted Calendar read model, freshness
-reporting, explicit reminder rules, and deterministic deduplicated Discord reminders.
-Calendar lookups resolve `today` and `tomorrow` inside Docket's configured
-timezone, so Hermes does not need terminal access to derive local-day bounds.
+Docket is a durable authorization and state layer for personal operations.
+Current Calendar control treats each course/section as an independent canonical
+record with stable meeting identities, per-course reconciliation, durable
+partial-progress drop, explicit restore, and fresh provider-series recreation.
+Bulk term input is resumable orchestration over courses; omission never implies
+deletion. The system also provides typed standalone Calendar proposals,
+immutable previews, authenticated one-time approvals, durable operations and
+attempts, a bounded Calendar read model, unified Google/Discord reminders,
+daily-thread cards, system logs, redacted MCP traces, and Hermes integration.
+Detailed implementation specifications are maintained privately and excluded
+from Git. Calendar lookups resolve `today` and `tomorrow` inside Docket's
+configured timezone, so Hermes does not need terminal access to derive
+local-day bounds.
 
 ## Operational documentation
 

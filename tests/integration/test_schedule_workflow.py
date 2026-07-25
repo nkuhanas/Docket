@@ -96,9 +96,7 @@ def test_schedule_is_stored_approved_created_once_and_modified_in_place(
                 },
                 title="Fall 2026",
                 data={
-                    "institution": (
-                        "California Polytechnic State University, San Luis Obispo"
-                    ),
+                    "institution": ("California Polytechnic State University, San Luis Obispo"),
                     "term_name": "Fall 2026",
                     "start_date": "2026-08-24",
                     "end_date": "2026-12-18",
@@ -223,9 +221,7 @@ def test_schedule_is_stored_approved_created_once_and_modified_in_place(
                 message_id="333333333333333333",
             )
         )
-        ApprovalService(session).respond(
-            approve(update_action.short_code, "interaction-update")
-        )
+        ApprovalService(session).respond(approve(update_action.short_code, "interaction-update"))
 
     # A new runner instance models a Docket restart after approval and before execution.
     OperationRunner(session_factory, provider).run_due_once()

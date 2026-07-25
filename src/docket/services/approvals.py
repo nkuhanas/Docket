@@ -36,12 +36,14 @@ from docket.models import (
     Record,
 )
 from docket.models.base import utc_now
+from docket.policy import BATCH_CALENDAR_ACTION_TYPES
 from docket.security import (
     short_code_sha256,
     verify_projection_approval_token,
     verify_projection_decision_approval_token,
 )
 from docket.services.operational_logs import enqueue_action_system_log
+from docket.services.operations import OperationRunner
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -147,12 +149,8 @@ class ApprovalService:
                 message="The interaction thread does not match the stored projection context.",
             )
         signing_key = settings.read_secret(settings.interaction_signing_key_file).encode()
-        if (
-            revision.action_type == "calendar_apply_term_schedule"
-            and not (
-                approval.refresh_required_at is not None
-                and request.decision == "reject"
-            )
+        if revision.action_type in BATCH_CALENDAR_ACTION_TYPES and not (
+            approval.refresh_required_at is not None and request.decision == "reject"
         ):
             page_count = (int(revision.preview.get("item_count", 0)) + 9) // 10
             valid = (
@@ -280,7 +278,14 @@ class ApprovalService:
                     message="The action contains an invalid target record binding.",
                 ) from exc
             record = self.session.get(Record, record_id)
-            if record is None or record.version != record_target.get("version"):
+            if (
+                record is None
+                or record.version != record_target.get("version")
+                or (
+                    record_target.get("status") is not None
+                    and record.status != record_target.get("status")
+                )
+            ):
                 raise DocketError(
                     code="target_version_changed",
                     message="The target record changed after the approval preview was created.",
@@ -324,10 +329,8 @@ class ApprovalService:
                 link = self.session.scalar(
                     select(CalendarLink).where(
                         CalendarLink.account_id == revision.account_id,
-                        CalendarLink.calendar_id
-                        == revision.parameters.get("calendar_id"),
-                        CalendarLink.external_event_id
-                        == calendar_target["provider_event_id"],
+                        CalendarLink.calendar_id == revision.parameters.get("calendar_id"),
+                        CalendarLink.external_event_id == calendar_target["provider_event_id"],
                     )
                 )
                 instances = list(
@@ -357,8 +360,7 @@ class ApprovalService:
                 event = self.session.scalar(
                     select(CalendarEventCache).where(
                         CalendarEventCache.account_id == revision.account_id,
-                        CalendarEventCache.calendar_id
-                        == revision.parameters.get("calendar_id"),
+                        CalendarEventCache.calendar_id == revision.parameters.get("calendar_id"),
                         CalendarEventCache.provider_event_id
                         == calendar_target["provider_event_id"],
                     )
@@ -467,6 +469,15 @@ class ApprovalService:
                 f"{parameters['schedule_snapshot_id']}:"
                 f"{parameters['manifest_sha256']}"
             )
+        if revision.action_type in {
+            "calendar_reconcile_course",
+            "calendar_drop_course",
+        }:
+            return (
+                f"calendar:{parameters['mode']}-course:{revision.account_id}:"
+                f"{parameters['record_id']}:{parameters['record_version']}:"
+                f"{revision.parameters_sha256}"
+            )
         raise DocketError(
             code="invalid_approval_state",
             message="The approved action has no external operation handler.",
@@ -529,8 +540,7 @@ class ApprovalService:
                 raise DocketError(
                     code="external_writes_disabled",
                     message=(
-                        "External Calendar writes are disabled. "
-                        "The approval remains pending."
+                        "External Calendar writes are disabled. The approval remains pending."
                     ),
                 )
             try:
@@ -620,7 +630,7 @@ class ApprovalService:
                 )
                 self.session.add(operation)
                 self.session.flush()
-                if revision.action_type == "calendar_apply_term_schedule":
+                if revision.action_type in BATCH_CALENDAR_ACTION_TYPES:
                     batch_items = list(revision.parameters["items"])
                     for manifest_item in revision.parameters["items"]:
                         item_key = str(manifest_item["item_key"])
@@ -634,7 +644,7 @@ class ApprovalService:
                                 item_key=item_key,
                                 item_type=str(manifest_item["operation_type"]),
                                 idempotency_key=(
-                                    f"calendar:schedule-item:{operation.id}:"
+                                    f"calendar:batch-item:{operation.id}:"
                                     f"{item_key}:{parameters_sha256}"
                                 ),
                                 parameters=parameters,
@@ -661,6 +671,17 @@ class ApprovalService:
                             },
                             "failures": [],
                         }
+                        if not OperationRunner._apply_course_transition(
+                            self.session,
+                            operation,
+                            revision,
+                            action,
+                            queue_item,
+                        ):
+                            raise DocketError(
+                                code="course_archive_transition_conflict",
+                                message="The course changed before its archive transition.",
+                            )
             approval.status = ApprovalStatus.CONSUMED.value
             approval.consumed_operation_id = operation.id
             action.status = (
@@ -673,7 +694,13 @@ class ApprovalService:
             )
             if batch_all_no_op:
                 queue_item.resolved_at = now
-                queue_item.resolution_code = "calendar_schedule_synchronized"
+                queue_item.resolution_code = (
+                    "calendar_course_dropped"
+                    if revision.action_type == "calendar_drop_course"
+                    else "calendar_course_synchronized"
+                    if revision.action_type == "calendar_reconcile_course"
+                    else "calendar_schedule_synchronized"
+                )
             queue_item.version += 1
             event_type = "approval.consumed"
 

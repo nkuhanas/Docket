@@ -26,9 +26,7 @@ CHAT_CHANNEL_ID = "000000000000000003"
 MESSAGE_ID = "111111111111111111"
 
 
-def store_term_request(
-    *, message_id: str = MESSAGE_ID, intent_index: int = 0
-) -> StoreRecordInput:
+def store_term_request(*, message_id: str = MESSAGE_ID, intent_index: int = 0) -> StoreRecordInput:
     request_key = f"discord:{GUILD_ID}:{CHAT_CHANNEL_ID}:{message_id}:{intent_index}"
     return StoreRecordInput(
         record_type="term",
@@ -181,9 +179,7 @@ def test_search_matches_terms_across_title_and_canonical_key(session: Session) -
 
     matches = service.search(
         record_type="term",
-        query=(
-            "California Polytechnic State University San Luis Obispo Fall 2026"
-        ),
+        query=("California Polytechnic State University San Luis Obispo Fall 2026"),
     )
 
     assert [record.id for record in matches] == [created.record_id]
@@ -366,9 +362,7 @@ def test_update_cannot_change_canonical_identity(session: Session) -> None:
 
 def test_discord_request_key_must_match_source_metadata() -> None:
     payload = store_term_request().model_dump(mode="json")
-    payload["request_key"] = (
-        f"discord:{GUILD_ID}:{CHAT_CHANNEL_ID}:333333333333333333:0"
-    )
+    payload["request_key"] = f"discord:{GUILD_ID}:{CHAT_CHANNEL_ID}:333333333333333333:0"
     with pytest.raises(ValidationError, match="request_key"):
         StoreRecordInput.model_validate(payload)
 
@@ -376,9 +370,7 @@ def test_discord_request_key_must_match_source_metadata() -> None:
 def test_discord_source_must_match_configured_operator_context(session: Session) -> None:
     request = store_term_request()
     request.source.metadata.guild_id = "999999999999999999"
-    request.request_key = (
-        f"discord:999999999999999999:{CHAT_CHANNEL_ID}:{MESSAGE_ID}:0"
-    )
+    request.request_key = f"discord:999999999999999999:{CHAT_CHANNEL_ID}:{MESSAGE_ID}:0"
 
     with pytest.raises(DocketError) as raised:
         RecordService(session).store(request)

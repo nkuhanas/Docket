@@ -49,7 +49,7 @@ on every request. Docket's callback uses the independent
 
 Hermes performs overlapping plugin discovery during this pin's startup. Each
 discovery pass imports an isolated plugin module, so module globals alone cannot
-prevent a transient second bind. Plugin `0.14.0` starts the private HTTP server
+prevent a transient second bind. Plugin `0.15.0` starts the private HTTP server
 under a background supervisor: an `EADDRINUSE` defers that copy without failing
 plugin registration, and it retries if the process that temporarily owned the
 port exits. Healthy startup may contain one `startup deferred` line, followed
@@ -106,7 +106,7 @@ Pinned outbound assumptions to revalidate:
   through its durable outbox; the plugin never posts hook output directly to
   Discord.
 
-Plugin `0.14.0` renders timed reminder start/end values as Docket-supplied native
+Plugin `0.15.0` renders timed reminder start/end values as Docket-supplied native
 Discord timestamps, puts the event subject under the native `Title` field, and
 omits a redundant timezone field. All-day reminders instead render fixed
 start/end dates plus the Calendar timezone. Projection embeds may omit their
@@ -335,7 +335,8 @@ approval or directly calls Google.
 
 Calendar lookups and control do not expose a provider client. Bounded cache
 lookup, redacted sync status, profile reads/writes, canonical reminder-rule
-listing, standalone proposals, and aggregate term-schedule proposals all use
+listing, standalone proposals, per-course reconciliation, restore, and legacy
+aggregate term-schedule proposals all use
 generated typed schemas. Reminder mutations exist only inside an approved
 Calendar proposal; there is no model-visible direct rule-write/disable tool.
 Existing-event mutations distinguish one occurrence or non-recurring event
@@ -348,8 +349,9 @@ Cancellation and reminder-only approvals require a current, non-stale complete
 cache plus the exact bound event/master ETag, but do not require the cache's
 `last_success_at` to remain byte-for-byte unchanged. A later harmless complete
 refresh therefore cannot invalidate an earlier independent card. Create,
-event-content update, and aggregate schedule approvals remain bound to the
-exact complete snapshot because their conflict previews depend on it.
+event-content update, per-course reconciliation, and legacy aggregate schedule
+approvals remain bound to the exact complete snapshot because their conflict
+previews depend on it.
 The rule list supplies current canonical identities for diagnosis after session
 compaction, avoiding a past-session search. Reminder destinations are fixed:
 Docket binds Google popup plus the due-date queue thread internally.
@@ -371,20 +373,23 @@ The active and template allowlists are synchronized by
 `scripts/prepare-hermes-home.sh`, but an existing Hermes session still requires
 `/reload-mcp` after deployment.
 
-`docket_store_term_schedule` deliberately accepts one discriminated existing
-or new term plus 1-50 courses. Its generated schema must preserve the nested
-meeting map, exclusions, additional occurrences, and exact 50-item compiled
-bound. It performs one atomic local transaction and returns an immutable
-manifest snapshot. `docket_propose_term_schedule` accepts that snapshot,
-configured account/calendar, optional unified reminder plan, and a second
-trusted request key. Omitted reminders must remain optional in the generated
-MCP schema. The proposal compiles one parent operation and independent durable
-items only after one approval; Hermes must not synthesize per-course calls.
+`docket_propose_course_reconciliation` accepts one active course UUID/version,
+`sync|drop`, configured account/calendar, optional unified reminder plan, and
+trusted request context. `drop` additionally requires a reason. The generated
+schema must keep these fields explicit. A fully synchronized course returns a
+no-op; an approved proposal compiles one parent operation and independent
+durable items. Drop archives only after every active link is confirmed
+cancelled. `docket_restore_record` is a separate optimistic local transition;
+it never contacts Google.
+
+`docket_store_term_schedule` and `docket_propose_term_schedule` retain their
+Milestone 3.6 schemas for compatibility with existing durable history. The
+active skill must not use them for new imports, edits, drops, or restores.
 
 The Discord plugin understands editable proposal-control token fields by
 compact numeric codes shared with Docket. Adding a token field requires
 changing both maps. Codes currently cover priority, reminder preset, refresh,
-edit, and snooze. Aggregate schedule review uses a separate compact navigation
+edit, and snooze. Bounded batch review uses a separate compact navigation
 token bound to revision, projection, projection version, source/target
 view/page, actor, and expiry. Its final approval uses a separate decision token
 bound to the delivered projection version. A server-only code or token version
@@ -392,15 +397,15 @@ produces a valid-looking card that the pinned plugin rejects, so the
 adversarial plugin contract and one live persistent-navigation/decision smoke
 are mandatory after changes.
 
-Healthy aggregate Summary contains one `review_navigation` **Begin review**
+Healthy batch Summary contains one `review_navigation` **Begin review**
 button. Healthy Decision combines two approval buttons, one
 `review_navigation` **Back to review**, and **Snooze until tomorrow**. Review
 pages contain navigation only. After an approval fails Docket's target-version
 check, the same card contains a reject-only approval control plus one
 `proposal_action` **Rebuild preview** button. The renderer accepts that exact
 mixed set even though ordinary approval cards use an Approve/Reject pair.
-Rebuild verifies the immutable schedule snapshot, recompiles every item against
-the newly complete Calendar generation, creates a replacement
+Rebuild verifies the immutable course or legacy schedule binding, recompiles
+every item against the newly complete Calendar generation, creates a replacement
 revision/approval and per-item reminder plans, and resets the same projection
 to Summary. Restart Hermes after changing this component contract, then
 exercise the stale-card renderer and a real callback.

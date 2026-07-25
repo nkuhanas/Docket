@@ -125,9 +125,7 @@ def test_non_command_queue_message_is_dropped_before_model(plugin_module, monkey
 
 
 @pytest.mark.adversarial
-def test_docket_mcp_hooks_emit_only_bounded_trace_metadata(
-    plugin_module, monkeypatch
-) -> None:
+def test_docket_mcp_hooks_emit_only_bounded_trace_metadata(plugin_module, monkeypatch) -> None:
     actor = "111111111111111111"
     guild = "222222222222222222"
     chat = "333333333333333333"
@@ -329,9 +327,7 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
     assert second["created"] is False
     assert len(channel.messages) == 1
     assert channel.messages[0].edit_count == 1
-    assert channel.messages[0].embeds[0].fields[1]["name"] == (
-        "1. docket_search_records"
-    )
+    assert channel.messages[0].embeds[0].fields[1]["name"] == ("1. docket_search_records")
 
 
 @pytest.mark.adversarial
@@ -632,9 +628,7 @@ async def test_thread_ensure_joins_only_configured_operator_idempotently(
     }
 
     first = await plugin_module._ensure_thread(payload)
-    second = await plugin_module._ensure_thread(
-        {**payload, "request_id": str(uuid.uuid4())}
-    )
+    second = await plugin_module._ensure_thread({**payload, "request_id": str(uuid.uuid4())})
 
     assert first["operator_user_id"] == actor
     assert first["operator_joined"] is True

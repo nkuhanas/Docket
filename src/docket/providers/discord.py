@@ -30,9 +30,7 @@ class DiscordProjectionAdapter(Protocol):
 
     def post_system_log(self, payload: dict[str, Any]) -> dict[str, Any]: ...
 
-    def put_mcp_trace(
-        self, trace_id: uuid.UUID, payload: dict[str, Any]
-    ) -> dict[str, Any]: ...
+    def put_mcp_trace(self, trace_id: uuid.UUID, payload: dict[str, Any]) -> dict[str, Any]: ...
 
     def post_calendar_reminder(self, payload: dict[str, Any]) -> dict[str, Any]: ...
 
@@ -99,9 +97,7 @@ class HttpDiscordProjectionAdapter:
     def post_system_log(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/internal/docket/discord/system-logs", payload)
 
-    def put_mcp_trace(
-        self, trace_id: uuid.UUID, payload: dict[str, Any]
-    ) -> dict[str, Any]:
+    def put_mcp_trace(self, trace_id: uuid.UUID, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request(
             "PUT",
             f"/internal/docket/discord/mcp-traces/{trace_id}",
@@ -284,9 +280,7 @@ class FakeDiscordProjectionAdapter:
             "created": created,
         }
 
-    def put_mcp_trace(
-        self, trace_id: uuid.UUID, payload: dict[str, Any]
-    ) -> dict[str, Any]:
+    def put_mcp_trace(self, trace_id: uuid.UUID, payload: dict[str, Any]) -> dict[str, Any]:
         self._check_request(payload)
         key = str(trace_id)
         if payload["trace_id"] != key:
@@ -333,9 +327,7 @@ class FakeDiscordProjectionAdapter:
             }
         message = self.backend.notification_messages[key]
         if message["thread_id"] != payload["thread_id"]:
-            raise DiscordProjectionError(
-                "reminder_target_changed", "Reminder target changed"
-            )
+            raise DiscordProjectionError("reminder_target_changed", "Reminder target changed")
         message["render_sha256"] = payload["render_sha256"]
         message["render"] = copy.deepcopy(payload["render"])
         result = {

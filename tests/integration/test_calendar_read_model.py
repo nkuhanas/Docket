@@ -1146,9 +1146,10 @@ def test_due_reminder_survives_lost_ack_without_duplicate_discord_message(
         daily_thread = session.get(DiscordDailyThread, notification.daily_thread_id)
         assert daily_thread is not None
         assert daily_thread.channel_id == settings.queue_channel_id
-        assert daily_thread.thread_id == next(iter(backend.notification_messages.values()))[
-            "thread_id"
-        ]
+        assert (
+            daily_thread.thread_id
+            == next(iter(backend.notification_messages.values()))["thread_id"]
+        )
         assert notification.attempt_count == 2
         assert notification.discord_message_id is not None
         assert len(backend.notification_messages) == 1

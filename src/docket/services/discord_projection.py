@@ -29,6 +29,7 @@ from docket.models import (
     ScheduledNotification,
 )
 from docket.models.base import utc_now
+from docket.policy import BATCH_CALENDAR_ACTION_TYPES
 from docket.providers.discord import DiscordProjectionAdapter, DiscordProjectionError
 from docket.security import (
     issue_projection_approval_token,
@@ -433,6 +434,16 @@ class DiscordProjectionRunner:
         return self._discord_timestamp_pair(value)
 
     @staticmethod
+    def _term_date_label(value: object, timezone_name: object) -> str:
+        try:
+            parsed = date.fromisoformat(str(value))
+            zone = ZoneInfo(str(timezone_name))
+        except (ValueError, ZoneInfoNotFoundError):
+            return str(value or "?")
+        instant = datetime.combine(parsed, datetime.min.time(), tzinfo=zone).astimezone(UTC)
+        return DiscordProjectionRunner._discord_timestamp(instant, "D")
+
+    @staticmethod
     def _action_label(value: str) -> str:
         labels = {
             "calendar_create_meeting": "Create course meeting",
@@ -442,6 +453,8 @@ class DiscordProjectionRunner:
             "calendar_update_reminders": "Update reminders",
             "calendar_cancel_event": "Cancel event",
             "calendar_apply_term_schedule": "Apply term schedule",
+            "calendar_reconcile_course": "Synchronize course",
+            "calendar_drop_course": "Drop course",
         }
         return labels.get(value, value.replace("_", " ").title())
 
@@ -588,8 +601,7 @@ class DiscordProjectionRunner:
                 {
                     "name": "Delta",
                     "value": (
-                        "Remove this entire recurring series from your configured "
-                        "Docket calendar."
+                        "Remove this entire recurring series from your configured Docket calendar."
                         if scope == "series"
                         else "Remove this event from your configured Docket calendar."
                     ),
@@ -671,6 +683,16 @@ class DiscordProjectionRunner:
                 "Term schedule",
                 "Term schedule applied",
             ),
+            "calendar_reconcile_course": (
+                "course changes",
+                "Course synchronization",
+                "Course synchronized",
+            ),
+            "calendar_drop_course": (
+                "course drop",
+                "Course drop",
+                "Course dropped",
+            ),
         }
         review_subject, outcome_subject, completed = labels.get(
             action_type,
@@ -724,7 +746,7 @@ class DiscordProjectionRunner:
         projection_id: uuid.UUID,
         signing_key: bytes,
     ) -> list[dict[str, Any]]:
-        if revision.action_type == "calendar_apply_term_schedule":
+        if revision.action_type in BATCH_CALENDAR_ACTION_TYPES:
             return []
         if revision.action_type not in {
             "calendar_create_event",
@@ -836,6 +858,8 @@ class DiscordProjectionRunner:
     def _schedule_item_field(self, item: dict[str, Any], index: int) -> dict[str, Any]:
         event = item.get("event")
         event = event if isinstance(event, dict) else {}
+        before = item.get("before")
+        before = before if isinstance(before, dict) else {}
         classification = item.get("classification")
         classification = classification if isinstance(classification, dict) else {}
         conflicts = item.get("conflicts")
@@ -849,14 +873,30 @@ class DiscordProjectionRunner:
             )
             if value
         )
+        effect = str(item.get("effect", "unknown"))
+        timing = (
+            self._provider_timing(before)
+            if effect == "cancel" and before
+            else self._standalone_timing_compact(event)
+        )
+        title = (
+            str(before.get("summary") or "Linked Calendar series")
+            if effect == "cancel"
+            else str(event.get("title") or "Untitled")
+        )
+        location = (
+            str(before.get("location") or "No location")
+            if effect == "cancel"
+            else str(event.get("location") or "No location")
+        )
         return {
             "name": f"{index}. {identity or item.get('item_key', 'Schedule item')}",
             "value": (
-                f"{item.get('effect', 'unknown')} · "
-                f"{classification.get('recurrence', 'timed')}\n"
-                f"{event.get('title', 'Untitled')}\n"
-                f"{self._standalone_timing_manual(event)}\n"
-                f"{event.get('location') or 'No location'} · "
+                f"{effect} · "
+                f"{classification.get('recurrence_kind', 'timed')}\n"
+                f"{title}\n"
+                f"{timing}\n"
+                f"{location} · "
                 f"{conflict_count} conflict{'s' if conflict_count != 1 else ''}"
             ),
             "inline": False,
@@ -976,6 +1016,22 @@ class DiscordProjectionRunner:
         base_fields = list(fields)
         if revision is not None:
             preview = revision.preview
+            course = preview.get("course")
+            course_label = (
+                " · ".join(
+                    str(value)
+                    for value in (
+                        course.get("course_code"),
+                        course.get("section"),
+                        course.get("course_title"),
+                    )
+                    if value
+                )
+                if isinstance(course, dict)
+                else ""
+            )
+            if course_label:
+                fields.append({"name": "Course", "value": course_label, "inline": False})
             standalone = preview.get("event")
             if isinstance(standalone, dict):
                 fields.append(
@@ -1024,18 +1080,19 @@ class DiscordProjectionRunner:
                         "inline": False,
                     }
                 )
-            if revision.action_type == "calendar_apply_term_schedule":
+            if revision.action_type in BATCH_CALENDAR_ACTION_TYPES:
                 term = preview.get("term")
                 if isinstance(term, dict):
+                    timezone_name = term.get("timezone", self.settings.timezone)
                     fields.append(
                         {
                             "name": "Term",
                             "value": (
                                 f"{term.get('term_name', 'Unnamed term')}\n"
                                 f"{term.get('institution', 'Unknown institution')}\n"
-                                f"{term.get('start_date', '?')} through "
-                                f"{term.get('end_date', '?')} · "
-                                f"{term.get('timezone', '?')}"
+                                f"{self._term_date_label(term.get('start_date'), timezone_name)} "
+                                "through "
+                                f"{self._term_date_label(term.get('end_date'), timezone_name)}"
                             ),
                             "inline": False,
                         }
@@ -1044,11 +1101,17 @@ class DiscordProjectionRunner:
                 if isinstance(counts, dict):
                     fields.append(
                         {
-                            "name": "Batch",
+                            "name": (
+                                "Changes"
+                                if revision.action_type
+                                in {"calendar_reconcile_course", "calendar_drop_course"}
+                                else "Batch"
+                            ),
                             "value": (
                                 f"{preview.get('item_count', '?')} calendar changes · "
                                 f"{counts.get('create', 0)} create · "
                                 f"{counts.get('update', 0)} update · "
+                                f"{counts.get('cancel', 0)} cancel · "
                                 f"{counts.get('no_op', 0)} already synchronized"
                             ),
                             "inline": False,
@@ -1095,18 +1158,6 @@ class DiscordProjectionRunner:
                         "inline": False,
                     }
                 )
-            course = preview.get("course", {})
-            course_label = " · ".join(
-                str(value)
-                for value in (
-                    course.get("course_code"),
-                    course.get("section"),
-                    course.get("course_title"),
-                )
-                if value
-            )
-            if course_label:
-                fields.append({"name": "Course", "value": course_label, "inline": False})
             schedule = preview.get("schedule")
             if isinstance(schedule, dict):
                 fields.append(
@@ -1125,7 +1176,7 @@ class DiscordProjectionRunner:
                     }
                 )
             if (
-                revision.action_type == "calendar_apply_term_schedule"
+                revision.action_type in BATCH_CALENDAR_ACTION_TYPES
                 and projection.view_action_revision_id == revision.id
             ):
                 page_count = self._schedule_page_count(revision)
@@ -1148,7 +1199,12 @@ class DiscordProjectionRunner:
                     fields = [
                         *base_fields,
                         {
-                            "name": "Schedule review",
+                            "name": (
+                                "Course change review"
+                                if revision.action_type
+                                in {"calendar_reconcile_course", "calendar_drop_course"}
+                                else "Schedule review"
+                            ),
                             "value": (
                                 f"Page {page} of {page_count} · changes "
                                 f"{start + 1}-{start + len(page_items)} of "
@@ -1162,14 +1218,21 @@ class DiscordProjectionRunner:
                         ],
                     ]
                 elif projection.view_mode == "decision":
+                    change_label = (
+                        "course changes"
+                        if revision.action_type
+                        in {"calendar_reconcile_course", "calendar_drop_course"}
+                        else "calendar changes"
+                    )
                     fields.append(
                         {
                             "name": "Review complete",
                             "value": (
-                                f"All {revision.preview.get('item_count')} calendar changes "
+                                f"All {revision.preview.get('item_count')} "
+                                f"{change_label} "
                                 f"reviewed across {page_count} page"
                                 f"{'s' if page_count != 1 else ''}. "
-                                "Approve or reject the bound schedule below."
+                                "Approve or reject the bound changes below."
                             ),
                             "inline": False,
                         }
@@ -1207,7 +1270,12 @@ class DiscordProjectionRunner:
                     fields = [
                         *base_fields,
                         {
-                            "name": "Schedule failures",
+                            "name": (
+                                "Course failures"
+                                if revision.action_type
+                                in {"calendar_reconcile_course", "calendar_drop_course"}
+                                else "Schedule failures"
+                            ),
                             "value": (
                                 f"Page {page} of {failure_page_count} · items "
                                 f"{start + 1}-{start + len(page_failures)} of "
@@ -1291,7 +1359,7 @@ class DiscordProjectionRunner:
                         ),
                     },
                 ]
-            elif revision is not None and revision.action_type == "calendar_apply_term_schedule":
+            elif revision is not None and revision.action_type in BATCH_CALENDAR_ACTION_TYPES:
                 page_count = self._schedule_page_count(revision)
                 common: _NavigationCommon = {
                     "revision": revision,
@@ -1406,7 +1474,7 @@ class DiscordProjectionRunner:
             if (
                 not refresh_required
                 and revision is not None
-                and revision.action_type != "calendar_apply_term_schedule"
+                and revision.action_type not in BATCH_CALENDAR_ACTION_TYPES
             ):
                 controls.extend(
                     self._proposal_selects(
@@ -1462,7 +1530,7 @@ class DiscordProjectionRunner:
         elif (
             projection_date == latest_date
             and revision is not None
-            and revision.action_type == "calendar_apply_term_schedule"
+            and revision.action_type in BATCH_CALENDAR_ACTION_TYPES
             and operation is not None
         ):
             signing_key = self.settings.read_secret(
@@ -1796,7 +1864,7 @@ class DiscordProjectionRunner:
                 projection.view_action_revision_id = revision.id
                 projection.view_mode = (
                     "summary"
-                    if revision.action_type == "calendar_apply_term_schedule"
+                    if revision.action_type in BATCH_CALENDAR_ACTION_TYPES
                     else (
                         "decision"
                         if action is not None and action.status == "approval_pending"
@@ -1806,7 +1874,7 @@ class DiscordProjectionRunner:
                 projection.view_page = None
                 projection.reviewed_through_page = 0
             elif (
-                revision.action_type == "calendar_apply_term_schedule"
+                revision.action_type in BATCH_CALENDAR_ACTION_TYPES
                 and action is not None
                 and action.status != "approval_pending"
                 and projection.view_mode in {"schedule_review", "decision"}
@@ -2189,9 +2257,7 @@ class DiscordProjectionRunner:
                 "status": status_labels[trace.status],
                 "calls": visible_calls,
                 "overflow_count": max(0, call_count - len(visible_calls)),
-                "updated_at": self._discord_timestamp_pair(
-                    trace.completed_at or trace.updated_at
-                ),
+                "updated_at": self._discord_timestamp_pair(trace.completed_at or trace.updated_at),
             }
             return {
                 "request_id": str(event.id),
@@ -2270,9 +2336,7 @@ class DiscordProjectionRunner:
                     else ""
                 )
                 end_value = (
-                    self._discord_timestamp(event.end_at, "F")
-                    if event.end_at is not None
-                    else ""
+                    self._discord_timestamp(event.end_at, "F") if event.end_at is not None else ""
                 )
             late = notification.last_error_code == "late_calendar_refresh"
             render = {

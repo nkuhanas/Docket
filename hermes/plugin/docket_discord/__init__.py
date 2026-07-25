@@ -63,7 +63,9 @@ _DOCKET_MCP_TOOL_NAMES = frozenset(
         "docket_list_reminder_rules",
         "docket_propose_action",
         "docket_propose_calendar_event",
+        "docket_propose_course_reconciliation",
         "docket_propose_term_schedule",
+        "docket_restore_record",
         "docket_search_records",
         "docket_set_calendar_profile",
         "docket_snooze_queue_item",
@@ -82,6 +84,7 @@ _TRACE_DISPOSITIONS = frozenset(
         "no_op",
         "proposed",
         "replayed_request",
+        "restored",
         "stored",
         "succeeded",
         "updated",
@@ -1476,9 +1479,7 @@ def _render_embed(
             raise PluginAPIError("invalid_control", "Control kind is not allowed", 422)
     projection_ref = base64.urlsafe_b64encode(projection_id.bytes).decode().rstrip("=")
     context_prefix = f"{_escaped(footer_context, 384)} · " if footer_context else ""
-    footer = (
-        f"{context_prefix}ref {projection_ref} · v{int(payload['projection_version'])}"
-    )
+    footer = f"{context_prefix}ref {projection_ref} · v{int(payload['projection_version'])}"
     embed.set_footer(text=footer)
     return embed, view
 

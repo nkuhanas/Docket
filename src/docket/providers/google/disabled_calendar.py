@@ -34,8 +34,6 @@ class DisabledCalendarProvider:
         del request
         return self._unavailable()
 
-    def find_by_correlation(
-        self, request: CalendarEventRequest
-    ) -> list[CalendarEventResult]:
+    def find_by_correlation(self, request: CalendarEventRequest) -> list[CalendarEventResult]:
         del request
         return self._unavailable()

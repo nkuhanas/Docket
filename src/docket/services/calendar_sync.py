@@ -73,15 +73,9 @@ def _normalized_reminder_state(
     use_default, provider_leads = _provider_popup_leads(row.provider_reminders)
     enabled = [rule for rule in rules if rule.enabled]
     canonical_leads = sorted(
-        {
-            rule.lead_seconds
-            for rule in enabled
-            if rule.source_kind == "canonical_plan"
-        }
+        {rule.lead_seconds for rule in enabled if rule.source_kind == "canonical_plan"}
     )
-    has_noncanonical = any(
-        rule.source_kind != "canonical_plan" for rule in enabled
-    )
+    has_noncanonical = any(rule.source_kind != "canonical_plan" for rule in enabled)
     expected_plan = {
         "delivery_channels": ["google_popup", "docket_queue"],
         "lead_seconds": canonical_leads,
@@ -103,9 +97,7 @@ def _normalized_reminder_state(
     return {
         "state": state,
         "canonical_lead_seconds": (
-            canonical_leads
-            if link is not None and link.reminder_plan_sha256 is not None
-            else []
+            canonical_leads if link is not None and link.reminder_plan_sha256 is not None else []
         ),
         "delivery_channels": (
             ["google_popup", "docket_queue"]
@@ -365,9 +357,7 @@ class CalendarSyncService:
             expected_etag,
             expected_correlation,
             external_event_id,
-        ) in self._linked_series_targets(
-            account_id, calendar_id
-        ):
+        ) in self._linked_series_targets(account_id, calendar_id):
             result = self.provider.get_event(
                 CalendarEventRequest(
                     calendar_id=calendar_id,
@@ -455,13 +445,11 @@ class CalendarSyncService:
                     or link.calendar_id != state.calendar_id
                     or link.external_event_id != series.external_event_id
                     or link.provider_etag != series.expected_provider_etag
-                    or link.provider_correlation
-                    != series.expected_provider_correlation
+                    or link.provider_correlation != series.expected_provider_correlation
                 ):
                     continue
                 cancelled = (
-                    series.result is None
-                    or series.result.snapshot.get("status") == "cancelled"
+                    series.result is None or series.result.snapshot.get("status") == "cancelled"
                 )
                 if cancelled:
                     link.provider_etag = None
@@ -474,8 +462,7 @@ class CalendarSyncService:
                             ReminderRule.account_id == state.account_id,
                             ReminderRule.calendar_id == state.calendar_id,
                             ReminderRule.scope == "event",
-                            ReminderRule.provider_event_id
-                            == series.external_event_id,
+                            ReminderRule.provider_event_id == series.external_event_id,
                             ReminderRule.enabled.is_(True),
                         )
                     ).all()
@@ -668,9 +655,7 @@ class CalendarSyncService:
         account_attempts.sort(
             key=lambda item: (
                 item[1] is not None,
-                _aware(item[1])
-                if item[1] is not None
-                else datetime.min.replace(tzinfo=UTC),
+                _aware(item[1]) if item[1] is not None else datetime.min.replace(tzinfo=UTC),
                 str(item[0]),
             )
         )
