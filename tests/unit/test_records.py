@@ -272,6 +272,40 @@ def test_optimistic_update_and_archive(session: Session) -> None:
         )
 
 
+def test_materially_identical_update_preserves_version(session: Session) -> None:
+    service = RecordService(session)
+    term = service.store(store_term_request())
+    course = service.store(store_course_request(term.record_id))
+    stored = session.get(Record, course.record_id)
+    assert stored is not None
+    original_updated_at = stored.updated_at
+
+    result = service.update(
+        UpdateRecordInput(
+            record_id=course.record_id,
+            expected_version=1,
+            data=stored.data,
+            request_key="discord:guild:channel:unchanged-update:0",
+            reason="Operator repeated the already-current course state.",
+            actor_id=OPERATOR_ID,
+        )
+    )
+    session.flush()
+
+    assert result.disposition == "matched_existing"
+    assert result.version == 1
+    assert result.record is not None
+    assert result.record["version"] == 1
+    assert stored.version == 1
+    assert stored.updated_at == original_updated_at
+    audit = session.scalar(
+        select(AuditEvent).where(AuditEvent.event_type == "record.update_no_op")
+    )
+    assert audit is not None
+    assert audit.entity_id == course.record_id
+    assert audit.data["version"] == 1
+
+
 def test_audit_stores_hash_not_record_body(session: Session) -> None:
     secret_text = "private body must not enter audit"
     request = store_term_request()

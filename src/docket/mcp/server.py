@@ -248,7 +248,13 @@ def docket_update_record(
     reason: str,
     actor_id: str | None = None,
 ) -> dict[str, Any]:
-    """Replace validated record data using optimistic locking and idempotency."""
+    """Replace validated record data using optimistic locking and idempotency.
+
+    Read the canonical record and send a complete replacement only for an explicit
+    operator correction. A materially identical replacement returns
+    ``matched_existing`` with the unchanged version and canonical snapshot; it does not
+    manufacture Calendar work.
+    """
     try:
         request = UpdateRecordInput(
             record_id=uuid.UUID(record_id),

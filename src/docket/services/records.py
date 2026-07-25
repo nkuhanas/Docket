@@ -352,10 +352,41 @@ class RecordService:
 
         normalized_data, valid_from, valid_until = _validated_data(record.record_type, request.data)
         self._validate_record_identity(record.record_type, record.canonical_key, normalized_data)
+        desired_schema_version = 2 if record.record_type == "course" else record.schema_version
+        if (
+            record.data == normalized_data
+            and record.valid_from_date == valid_from
+            and record.valid_until_date == valid_until
+            and record.schema_version == desired_schema_version
+        ):
+            self.session.add(
+                AuditEvent(
+                    event_type="record.update_no_op",
+                    entity_type="record",
+                    entity_id=record.id,
+                    actor_type=request.actor_type,
+                    actor_id=request.actor_id,
+                    request_id=command.id,
+                    data={
+                        "data_sha256": sha256_json(record.data),
+                        "version": record.version,
+                        "reason": request.reason,
+                    },
+                )
+            )
+            result = RecordResult(
+                record_id=record.id,
+                version=record.version,
+                disposition="matched_existing",
+                request_id=command.id,
+                record=serialize_record(record),
+            )
+            self._finish_command(command, result)
+            return result
+
         previous_hash = sha256_json(record.data)
         record.data = normalized_data
-        if record.record_type == "course":
-            record.schema_version = 2
+        record.schema_version = desired_schema_version
         record.valid_from_date = valid_from
         record.valid_until_date = valid_until
         record.version += 1

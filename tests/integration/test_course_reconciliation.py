@@ -356,6 +356,19 @@ def test_course_add_change_partial_drop_restore_and_unchanged_reimport(
         assert links[added_key].synced_snapshot["status"] != "cancelled"
 
     with session_factory.begin() as session:
+        course = session.get(Record, course_id)
+        assert course is not None
+        repeated = RecordService(session).update(
+            UpdateRecordInput(
+                record_id=course_id,
+                expected_version=2,
+                data=deepcopy(course.data),
+                request_key="course-lifecycle:update-identical:2",
+                reason="Repeat the already-current course state.",
+            )
+        )
+        assert repeated.disposition == "matched_existing"
+        assert repeated.version == 2
         unchanged = _propose(
             session,
             record_id=course_id,

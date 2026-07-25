@@ -92,6 +92,11 @@ For an adopted term schedule:
 2. Store or explicitly update each course/section as its own canonical record.
    Preserve stable meeting IDs across edits. Each course write is independently
    durable: one conflict or failure does not roll back successful siblings.
+   Before `docket_update_record`, compare the complete requested replacement
+   with the current canonical data. Do not call update merely to restate equal
+   data. If an equal update is nevertheless submitted, Docket returns
+   `matched_existing` with the unchanged version; use its canonical snapshot
+   and never claim that the record changed.
 3. Obtain the enabled account/configured calendar with
    `docket_list_accounts` and read `docket_get_calendar_profile`; these reads
    may run alongside other independent reads and consume no intent index.
@@ -105,9 +110,11 @@ For an adopted term schedule:
    chat. Retry only failed courses with new intent indexes. Never replay
    successful siblings merely to manufacture an atomic-looking result.
 
-Re-importing materially unchanged course data is a successful no-op after
-current source provenance is attached. Omitting a previously stored course
-from a later import has no effect. Never infer a drop from absence.
+Re-importing materially unchanged course data through `docket_store_record` is
+a successful no-op after current source provenance is attached. Repeating an
+explicit update whose complete replacement already equals canonical data is
+also a version-preserving no-op. Omitting a previously stored course from a
+later import has no effect. Never infer a drop from absence.
 
 Drop only from an explicit current operator request. Read the active course and
 call `docket_propose_course_reconciliation` in `drop` mode with the reason.

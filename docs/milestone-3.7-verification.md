@@ -16,8 +16,9 @@ remains outside this repository.
   only after every active link is confirmed cancelled.
 * `docket_restore_record` reactivates the same canonical identity; the next
   approved sync creates fresh provider event IDs for its current meetings.
-* Re-importing unchanged data and reconciling an unchanged course are no-ops.
-  Omitting a course has no effect.
+* Re-importing unchanged data, repeating an equal explicit replacement, and
+  reconciling an unchanged course preserve the version and perform no provider
+  work. Omitting a course has no effect.
 * `docket_store_term_schedule` and `docket_propose_term_schedule` remain
   available only for compatibility with existing durable history.
 
@@ -31,7 +32,8 @@ The integration lifecycle uses the stateful fake Calendar adapter and proves:
 
 1. add two meetings;
 2. update one stable series, cancel one, and create one;
-3. unchanged reconciliation without a card;
+3. an equal update that preserves the record version, followed by unchanged
+   reconciliation without a card;
 4. permanent failure after one drop cancellation;
 5. active course state during partial failure;
 6. retry of only the remaining cancellation followed by archival;
@@ -47,7 +49,7 @@ Validation completed before deployment:
 ```text
 ruff check .  -> passed
 mypy          -> passed (65 source files)
-pytest -q     -> 217 passed, 1 dependency deprecation warning
+pytest -q     -> 218 passed, 1 dependency deprecation warning
 skill check   -> Skill is valid
 ```
 
@@ -61,22 +63,42 @@ The generated and allowlisted surface contains 22 tools. The additions are:
 * `docket_restore_record`
 * `docket_propose_course_reconciliation`
 
-Hermes plugin `0.15.0` recognizes both in redacted MCP traces. The
+Hermes plugin `0.15.1` recognizes both in redacted MCP traces. The
 `docket-manual-intent` skill now treats bulk input as resumable per-course
 orchestration, allocates a distinct intent index to every write/proposal,
-requires explicit drop, and follows restore with reconciliation. The skill
-passed the Skill Creator validator.
+requires explicit drop, recognizes materially equal updates before writing,
+and follows restore with reconciliation. The skill passed the Skill Creator
+validator.
 
 Existing sessions still cache MCP discovery. Run `/reload-mcp` after the
 deployment before the live gate.
 
 ## Operator-present gate
 
-Pending operator execution. Use one disposable course and stop after each
-decision card when requested:
+The operator-present gate uses disposable course `DKT 932 · LIFECYCLE` and
+stops after each decision card.
+
+Completed on 2026-07-24:
+
+* **Add:** stored version 1 and approved one `calendar_create_event` item for
+  stable meeting `lecture`. Google returned success, the recurring link became
+  confirmed, and the normal ten-minute unified reminder plan was bound.
+* **Change:** stored version 2, approved one in-place lecture update plus one
+  new `lab` series, and observed both items succeed on their first attempts.
+  The lecture retained its provider identity; the lab received a distinct
+  provider identity.
+* **Accidental unchanged repeat:** repeating the already-current change exposed
+  a gap: `docket_update_record` advanced version 2 to 3 and caused two needless
+  provider patches. No destructive change occurred. The service and Hermes
+  contract were corrected so an equal full replacement now returns
+  `matched_existing`, preserves the version, and leaves reconciliation at
+  `no_op`. Automated coverage proves the corrected path; live verification
+  resumes after deployment.
+
+Remaining:
 
 ```text
-add -> change one meeting/add one/remove one -> drop -> re-add
+drop -> re-add -> unchanged repeat
 ```
 
 During the gate, confirm:

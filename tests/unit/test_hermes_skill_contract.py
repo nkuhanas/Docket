@@ -56,6 +56,8 @@ def test_manual_intent_skill_uses_independent_course_lifecycles() -> None:
     assert "partial provider success leaves the course active for retry" in skill
     assert "`docket_restore_record`" in skill
     assert "legacy compatibility tools" in skill
+    assert "Do not call update merely to restate equal data" in skill
+    assert "version-preserving no-op" in skill
     assert "Under `off`, never propose" in skill
     assert "Under `explicit_only`, propose only" in skill
     assert "Cancellation is always explicit" in skill
