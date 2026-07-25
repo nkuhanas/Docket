@@ -30,6 +30,10 @@ class DiscordProjectionAdapter(Protocol):
 
     def post_system_log(self, payload: dict[str, Any]) -> dict[str, Any]: ...
 
+    def put_mcp_trace(
+        self, trace_id: uuid.UUID, payload: dict[str, Any]
+    ) -> dict[str, Any]: ...
+
     def post_calendar_reminder(self, payload: dict[str, Any]) -> dict[str, Any]: ...
 
 
@@ -95,6 +99,15 @@ class HttpDiscordProjectionAdapter:
     def post_system_log(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/internal/docket/discord/system-logs", payload)
 
+    def put_mcp_trace(
+        self, trace_id: uuid.UUID, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        return self._request(
+            "PUT",
+            f"/internal/docket/discord/mcp-traces/{trace_id}",
+            payload,
+        )
+
     def post_calendar_reminder(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/internal/docket/discord/notifications", payload)
 
@@ -105,6 +118,7 @@ class FakeDiscordBackend:
     messages: dict[str, dict[str, Any]] = field(default_factory=dict)
     system_messages: dict[str, dict[str, Any]] = field(default_factory=dict)
     system_logs: dict[str, dict[str, Any]] = field(default_factory=dict)
+    mcp_traces: dict[str, dict[str, Any]] = field(default_factory=dict)
     notification_messages: dict[str, dict[str, Any]] = field(default_factory=dict)
     next_snowflake: int = 10000000000000000
 
@@ -263,6 +277,31 @@ class FakeDiscordProjectionAdapter:
         return {
             "request_id": payload["request_id"],
             "log_id": key,
+            "guild_id": payload["guild_id"],
+            "channel_id": payload["channel_id"],
+            "message_id": message["message_id"],
+            "render_sha256": message["render_sha256"],
+            "created": created,
+        }
+
+    def put_mcp_trace(
+        self, trace_id: uuid.UUID, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        self._check_request(payload)
+        key = str(trace_id)
+        if payload["trace_id"] != key:
+            raise DiscordProjectionError("invalid_mcp_trace", "Trace path and body differ")
+        created = key not in self.backend.mcp_traces
+        if created:
+            self.backend.mcp_traces[key] = {
+                "message_id": self.backend.snowflake(),
+            }
+        message = self.backend.mcp_traces[key]
+        message["render_sha256"] = payload["render_sha256"]
+        message["render"] = copy.deepcopy(payload["render"])
+        return {
+            "request_id": payload["request_id"],
+            "trace_id": key,
             "guild_id": payload["guild_id"],
             "channel_id": payload["channel_id"],
             "message_id": message["message_id"],

@@ -516,10 +516,7 @@ def test_aggregate_card_persists_review_then_exposes_decision_without_revision_c
         assert projection is not None and projection.message_id is not None
         assert thread is not None and thread.thread_id is not None
         projected = backend.messages[str(projection.id)]
-        assert [control["label"] for control in projected["controls"]] == [
-            "Begin review",
-            "Refresh",
-        ]
+        assert [control["label"] for control in projected["controls"]] == ["Begin review"]
         assert not any(control.get("kind") == "approval" for control in projected["controls"])
         assert len(projected["embed"]["fields"]) <= 25
         projection_id = projection.id
@@ -594,7 +591,6 @@ def test_aggregate_card_persists_review_then_exposes_decision_without_revision_c
             "Approve",
             "Reject",
             "Back to review",
-            "Refresh",
             "Snooze until tomorrow",
         ]
         assert any(field["name"] == "Review complete" for field in projected["embed"]["fields"])
@@ -687,10 +683,9 @@ def test_schedule_refresh_recompiles_preview_and_preserves_item_reminder_binding
         assert projection is not None and projection.message_id is not None
         assert thread is not None and thread.thread_id is not None
         projected = backend.messages[str(projection.id)]
-        refresh = next(
-            control
+        assert not any(
+            control.get("transition") == "proposal_refresh"
             for control in projected["controls"]
-            if control.get("transition") == "proposal_refresh"
         )
         stale_begin = next(
             control for control in projected["controls"] if control.get("label") == "Begin review"
@@ -735,6 +730,31 @@ def test_schedule_refresh_recompiles_preview_and_preserves_item_reminder_binding
                 provider_etag='"schedule-refresh"',
                 synced_at=refreshed_at,
             )
+        )
+    stale_error: DocketError | None = None
+    with session_factory.begin() as session:
+        try:
+            _approve_schedule(
+                session,
+                short_code=proposal.short_code,
+                interaction_id="schedule-stale-approval",
+            )
+        except DocketError as exc:
+            stale_error = exc
+    assert stale_error is not None and stale_error.code == "target_version_changed"
+    assert runner.run_due_once()
+    with session_factory() as session:
+        approval = session.get(Approval, proposal.approval_id)
+        assert approval is not None and approval.refresh_required_at is not None
+        projected = backend.messages[str(projection_id)]
+        assert [control["label"] for control in projected["controls"]] == [
+            "Reject",
+            "Rebuild preview",
+        ]
+        refresh = next(
+            control
+            for control in projected["controls"]
+            if control.get("transition") == "proposal_refresh"
         )
 
     response = LocalActionResponse(
@@ -809,15 +829,12 @@ def test_schedule_refresh_recompiles_preview_and_preserves_item_reminder_binding
         }
         assert projection is not None
         assert projection.message_id == message_id
-        assert projection.projection_version == initial_version + 1
+        assert projection.projection_version == initial_version + 2
         assert projection.view_action_revision_id == refreshed_revision_id
         assert projection.view_mode == "summary"
         assert [
             control["label"] for control in backend.messages[str(projection.id)]["controls"]
-        ] == [
-            "Begin review",
-            "Refresh",
-        ]
+        ] == ["Begin review"]
 
     stale_request = LocalActionResponse(
         request_id=uuid.uuid4(),
@@ -1216,10 +1233,7 @@ def test_fifty_item_schedule_survives_restart_and_partial_failure_without_replay
         projection = session.scalar(select(DiscordProjection))
         assert projection is not None
         projected = backend.messages[str(projection.id)]
-        assert [control["label"] for control in projected["controls"]] == [
-            "Begin review",
-            "Refresh",
-        ]
+        assert [control["label"] for control in projected["controls"]] == ["Begin review"]
         embed = projected["embed"]
         assert (
             len(embed["title"])

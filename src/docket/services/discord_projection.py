@@ -20,6 +20,7 @@ from docket.models import (
     AuditEvent,
     CalendarEventCache,
     DiscordDailyThread,
+    DiscordMcpTrace,
     DiscordProjection,
     Operation,
     OutboxEvent,
@@ -45,6 +46,7 @@ _SUPPORTED_EVENTS = {
     "discord.thread.lifecycle_requested",
     "discord.system_alert.requested",
     "discord.system_log.requested",
+    "discord.mcp_trace.requested",
     "discord.calendar_reminder.requested",
 }
 _PROJECTION_EVENTS = {
@@ -1238,6 +1240,7 @@ class DiscordProjectionRunner:
                             }
                         )
         controls: list[dict[str, Any]] = []
+        refresh_required = approval is not None and approval.refresh_required_at is not None
         if (
             approval is not None
             and action is not None
@@ -1249,7 +1252,46 @@ class DiscordProjectionRunner:
             signing_key = self.settings.read_secret(
                 self.settings.interaction_signing_key_file
             ).encode()
-            if revision is not None and revision.action_type == "calendar_apply_term_schedule":
+            if refresh_required:
+                assert revision is not None
+                fields.insert(
+                    0,
+                    {
+                        "name": "Calendar state changed",
+                        "value": (
+                            "This preview is stale. Rebuild it from current Calendar state "
+                            "before approval, or reject it."
+                        ),
+                        "inline": False,
+                    },
+                )
+                token = issue_projection_approval_token(
+                    approval.id, projection.id, approval.expires_at, signing_key
+                )
+                controls = [
+                    {
+                        "kind": "approval",
+                        "decision": "reject",
+                        "label": "Reject",
+                        "approval_id": str(approval.id),
+                        "token": token,
+                    },
+                    {
+                        "kind": "proposal_action",
+                        "transition": "proposal_refresh",
+                        "label": "Rebuild preview",
+                        "row": 3,
+                        "action_revision_id": str(revision.id),
+                        "token": issue_projection_proposal_control_token(
+                            revision.id,
+                            projection.id,
+                            "refresh",
+                            approval.expires_at,
+                            signing_key,
+                        ),
+                    },
+                ]
+            elif revision is not None and revision.action_type == "calendar_apply_term_schedule":
                 page_count = self._schedule_page_count(revision)
                 common: _NavigationCommon = {
                     "revision": revision,
@@ -1268,20 +1310,6 @@ class DiscordProjectionRunner:
                             target_page=1,
                             label="Begin review",
                         ),
-                        {
-                            "kind": "proposal_action",
-                            "transition": "proposal_refresh",
-                            "label": "Refresh",
-                            "row": 3,
-                            "action_revision_id": str(revision.id),
-                            "token": issue_projection_proposal_control_token(
-                                revision.id,
-                                projection.id,
-                                "refresh",
-                                approval.expires_at,
-                                signing_key,
-                            ),
-                        },
                     ]
                 elif projection.view_mode == "schedule_review":
                     assert projection.view_page is not None
@@ -1337,20 +1365,6 @@ class DiscordProjectionRunner:
                         ),
                         {
                             "kind": "proposal_action",
-                            "transition": "proposal_refresh",
-                            "label": "Refresh",
-                            "row": 3,
-                            "action_revision_id": str(revision.id),
-                            "token": issue_projection_proposal_control_token(
-                                revision.id,
-                                projection.id,
-                                "refresh",
-                                approval.expires_at,
-                                signing_key,
-                            ),
-                        },
-                        {
-                            "kind": "proposal_action",
                             "transition": "proposal_snooze",
                             "label": "Snooze until tomorrow",
                             "row": 4,
@@ -1389,7 +1403,11 @@ class DiscordProjectionRunner:
                         "token": token,
                     },
                 ]
-            if revision is not None and revision.action_type != "calendar_apply_term_schedule":
+            if (
+                not refresh_required
+                and revision is not None
+                and revision.action_type != "calendar_apply_term_schedule"
+            ):
                 controls.extend(
                     self._proposal_selects(
                         revision,
@@ -1434,28 +1452,6 @@ class DiscordProjectionRunner:
                         ),
                     }
                 )
-                if revision.action_type in {
-                    "calendar_create_event",
-                    "calendar_update_event",
-                    "calendar_update_reminders",
-                    "calendar_cancel_event",
-                }:
-                    controls.append(
-                        {
-                            "kind": "proposal_action",
-                            "transition": "proposal_refresh",
-                            "label": "Refresh",
-                            "row": 3,
-                            "action_revision_id": str(revision.id),
-                            "token": issue_projection_proposal_control_token(
-                                revision.id,
-                                projection.id,
-                                "refresh",
-                                approval.expires_at,
-                                signing_key,
-                            ),
-                        }
-                    )
             fields.append(
                 {
                     "name": "Approval expires",
@@ -1625,7 +1621,11 @@ class DiscordProjectionRunner:
         if calendar_action:
             state_description: str | None = queue_item.summary
             if approval is not None and approval.status == ApprovalStatus.PENDING.value:
-                state_description = "Review the details below. Nothing changes until you approve."
+                state_description = (
+                    "Calendar state changed. Rebuild this preview before approval."
+                    if approval.refresh_required_at is not None
+                    else "Review the details below. Nothing changes until you approve."
+                )
             elif action is not None and action.status == "rejected":
                 state_description = "Rejected. No Calendar change was made."
             elif operation is not None and operation.status == "succeeded":
@@ -2152,6 +2152,79 @@ class DiscordProjectionRunner:
             event.next_attempt_at = None
             event.last_error_code = None
 
+    def _mcp_trace_request(self, event_id: uuid.UUID, lease_token: uuid.UUID) -> dict[str, Any]:
+        with self.session_factory() as session:
+            event = session.get(OutboxEvent, event_id)
+            if event is None or event.lease_token != lease_token:
+                raise DiscordProjectionError("delivery_lease_lost", "Outbox lease was lost")
+            trace = session.get(DiscordMcpTrace, event.aggregate_id)
+            if trace is None:
+                raise DiscordProjectionError("mcp_trace_missing", "MCP trace is missing")
+            visible_calls = []
+            for raw_call in trace.calls[:20]:
+                state = str(raw_call.get("state", "failed"))
+                outcome = raw_call.get("disposition") or raw_call.get("error_code")
+                visible_calls.append(
+                    {
+                        "ordinal": int(raw_call["ordinal"]),
+                        "tool_name": self._bounded(str(raw_call["tool_name"]), 128),
+                        "state": state,
+                        "elapsed_ms": min(max(int(raw_call.get("elapsed_ms", 0)), 0), 600_000),
+                        "outcome": self._bounded(str(outcome or state), 64),
+                    }
+                )
+            call_count = trace.last_ordinal
+            status_labels = {
+                "running": "Running",
+                "completed": "Completed",
+                "failed": "Failed",
+                "interrupted": "Interrupted",
+            }
+            render = {
+                "title": "Docket tool activity",
+                "summary": (
+                    "Trusted docket-chat request"
+                    f"\n{call_count} Docket call{'s' if call_count != 1 else ''}"
+                ),
+                "status": status_labels[trace.status],
+                "calls": visible_calls,
+                "overflow_count": max(0, call_count - len(visible_calls)),
+                "updated_at": self._discord_timestamp_pair(
+                    trace.completed_at or trace.updated_at
+                ),
+            }
+            return {
+                "request_id": str(event.id),
+                "trace_id": str(trace.id),
+                "guild_id": self.settings.discord_guild_id,
+                "channel_id": self.settings.system_channel_id,
+                "render": render,
+                "render_sha256": sha256_json(render),
+            }
+
+    def _accept_mcp_trace_ack(
+        self,
+        event_id: uuid.UUID,
+        lease_token: uuid.UUID,
+        request: dict[str, Any],
+        ack: dict[str, Any],
+    ) -> None:
+        exact = all(
+            ack.get(field) == request[field]
+            for field in (
+                "request_id",
+                "trace_id",
+                "guild_id",
+                "channel_id",
+                "render_sha256",
+            )
+        )
+        if not exact or not str(ack.get("message_id", "")).isdigit():
+            raise DiscordProjectionError(
+                "invalid_discord_ack", "MCP trace acknowledgement did not echo its binding"
+            )
+        self._complete_event(event_id, lease_token)
+
     def _notification_request(
         self,
         event_id: uuid.UUID,
@@ -2449,6 +2522,16 @@ class DiscordProjectionRunner:
                 log_request = self._system_log_request(event_id, lease_token)
                 log_ack = self.adapter.post_system_log(log_request)
                 self._accept_system_log_ack(event_id, lease_token, log_request, log_ack)
+            elif event_type == "discord.mcp_trace.requested":
+                trace_request = self._mcp_trace_request(event_id, lease_token)
+                trace_id = uuid.UUID(str(trace_request["trace_id"]))
+                trace_ack = self.adapter.put_mcp_trace(trace_id, trace_request)
+                self._accept_mcp_trace_ack(
+                    event_id,
+                    lease_token,
+                    trace_request,
+                    trace_ack,
+                )
             elif event_type == "discord.calendar_reminder.requested":
                 daily_thread_id = self._ensure_notification_thread(event_id, lease_token)
                 thread_request = self._thread_request(event_id, lease_token, daily_thread_id)

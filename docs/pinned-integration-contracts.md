@@ -30,8 +30,9 @@ traceability marker only.
 
 ## Hermes plugin contract
 
-The Docket plugin depends on the user-plugin loader and the
-`pre_gateway_dispatch` hook in Hermes `v2026.7.20`.
+The Docket plugin depends on the user-plugin loader plus
+`pre_gateway_dispatch`, `pre_tool_call`, `post_tool_call`, and `post_llm_call`
+hooks in Hermes `v2026.7.20`.
 
 Milestone 2.5 also depends on a private outbound seam in that exact image. The
 plugin resolves `gateway.run._gateway_runner_ref()`, selects the Discord adapter
@@ -48,7 +49,7 @@ on every request. Docket's callback uses the independent
 
 Hermes performs overlapping plugin discovery during this pin's startup. Each
 discovery pass imports an isolated plugin module, so module globals alone cannot
-prevent a transient second bind. Plugin `0.13.0` starts the private HTTP server
+prevent a transient second bind. Plugin `0.14.0` starts the private HTTP server
 under a background supervisor: an `EADDRINUSE` defers that copy without failing
 plugin registration, and it retries if the process that temporarily owned the
 port exits. Healthy startup may contain one `startup deferred` line, followed
@@ -90,8 +91,22 @@ Pinned outbound assumptions to revalidate:
   channel and one compact action marker. Later states edit the same bot-owned
   message; raw request/provider payloads and per-item progress never cross this
   seam.
+* `pre_tool_call` receives the registered
+  `mcp__docket__docket_<tool>` name plus stable task/session, turn, and call
+  identifiers before dispatch; `post_tool_call` receives those identities,
+  bounded duration, status/error category, and result after dispatch.
+  `post_llm_call` fires once after the tool loop for the completed turn.
+* `pre_gateway_dispatch` receives the synchronous session store. The plugin
+  resolves the authorized chat message to the same session ID Hermes later
+  supplies as the tool hook task ID. This is the trusted source-to-trace join;
+  tool arguments and results are never retained or forwarded.
+* the plugin sends hook observations to Docket through a bounded background
+  queue so trace telemetry does not add one network round trip to each tool's
+  critical path. Docket validates monotonicity and projects the one trace
+  through its durable outbox; the plugin never posts hook output directly to
+  Discord.
 
-Plugin `0.13.0` renders timed reminder start/end values as Docket-supplied native
+Plugin `0.14.0` renders timed reminder start/end values as Docket-supplied native
 Discord timestamps, puts the event subject under the native `Title` field, and
 omits a redundant timezone field. All-day reminders instead render fixed
 start/end dates plus the Calendar timezone. Projection embeds may omit their
@@ -377,17 +392,18 @@ produces a valid-looking card that the pinned plugin rejects, so the
 adversarial plugin contract and one live persistent-navigation/decision smoke
 are mandatory after changes.
 
-Aggregate schedule Summary combines one `review_navigation` **Begin review**
-button with one `proposal_action` **Refresh** button. Decision combines two
-approval buttons, one `review_navigation` **Back to review**, and
-`proposal_action` **Refresh** and **Snooze until tomorrow** buttons. The pinned
-renderer must accept those exact mixed kind/row sets; review pages themselves
-contain navigation only. Schedule Refresh is not the standalone proposal's
-timestamp/target rebind: Docket verifies the immutable schedule snapshot,
-recompiles every item against the newly complete Calendar generation, creates
-a replacement revision/approval and per-item reminder plans, and resets the
-same projection to Summary. Restart Hermes after changing this component
-contract, then exercise both the mixed renderer and a real callback.
+Healthy aggregate Summary contains one `review_navigation` **Begin review**
+button. Healthy Decision combines two approval buttons, one
+`review_navigation` **Back to review**, and **Snooze until tomorrow**. Review
+pages contain navigation only. After an approval fails Docket's target-version
+check, the same card contains a reject-only approval control plus one
+`proposal_action` **Rebuild preview** button. The renderer accepts that exact
+mixed set even though ordinary approval cards use an Approve/Reject pair.
+Rebuild verifies the immutable schedule snapshot, recompiles every item against
+the newly complete Calendar generation, creates a replacement
+revision/approval and per-item reminder plans, and resets the same projection
+to Summary. Restart Hermes after changing this component contract, then
+exercise the stale-card renderer and a real callback.
 
 ## Google Calendar REST contract
 

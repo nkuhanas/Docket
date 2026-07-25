@@ -110,11 +110,16 @@ For a complete adopted schedule:
    pages → **Continue to decision**; Approve and Reject appear only on the
    final decision view. Never emit one card per course, reproduce the full
    manifest in chat, or describe the retired review dropdown/ephemeral flow.
-   Summary and Decision also expose **Refresh**. If Calendar freshness changes
-   during review, direct the operator to Refresh that existing card and review
-   its replacement revision from Summary; do not re-store or re-propose the
-   schedule, suggest the old approval, or claim Refresh preserves prior review
-   progress.
+   Healthy Summary and Decision views do not expose Refresh. If an approval
+   fails because Docket detects stale Calendar state, the existing card changes
+   to **Reject** plus **Rebuild preview**. Direct the operator to that
+   contextual control and review its replacement revision from Summary; do not
+   re-store or re-propose the schedule, suggest the old approval, or claim the
+   rebuilt preview preserves prior review progress.
+
+Docket automatically projects one bounded, redacted trace of this turn's Docket
+MCP calls to `docket-system`. Do not reproduce arguments, results, source
+context, identifiers, or a second call-by-call transcript in the chat response.
 
 The aggregate store is atomic: a canonical conflict means no course, term,
 source provenance, or schedule snapshot from that call was stored. Stop and

@@ -138,3 +138,44 @@ class LocalActionResponse(DiscordContext):
         ):
             raise ValueError("this proposal control does not accept field values")
         return self
+
+
+class McpTraceCallUpdate(InternalModel):
+    call_id: str = Field(min_length=1, max_length=255)
+    ordinal: int = Field(ge=1, le=100)
+    tool_name: str = Field(min_length=1, max_length=128)
+    state: Literal["running", "succeeded", "failed", "timed_out"]
+    elapsed_ms: int = Field(default=0, ge=0, le=600_000)
+    disposition: str | None = Field(default=None, min_length=1, max_length=64)
+    error_code: str | None = Field(default=None, min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_terminal_details(self) -> "McpTraceCallUpdate":
+        if self.state == "running" and (
+            self.elapsed_ms != 0
+            or self.disposition is not None
+            or self.error_code is not None
+        ):
+            raise ValueError("running trace calls omit terminal details")
+        if self.state == "succeeded" and self.error_code is not None:
+            raise ValueError("successful trace calls omit error_code")
+        if self.state in {"failed", "timed_out"} and self.disposition is not None:
+            raise ValueError("failed trace calls omit disposition")
+        return self
+
+
+class McpTraceUpdate(InternalModel):
+    request_id: UUID
+    guild_id: str = Field(min_length=1, max_length=64)
+    source_channel_id: str = Field(min_length=1, max_length=64)
+    source_message_id: str = Field(min_length=1, max_length=64)
+    actor_id: str = Field(min_length=1, max_length=64)
+    updated_at: datetime
+    turn_status: Literal["running", "completed", "failed", "interrupted"] = "running"
+    call: McpTraceCallUpdate | None = None
+
+    @model_validator(mode="after")
+    def require_update(self) -> "McpTraceUpdate":
+        if self.call is None and self.turn_status == "running":
+            raise ValueError("a running trace update requires a call")
+        return self

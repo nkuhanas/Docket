@@ -114,13 +114,13 @@ Run the Hermes plugin-list probe only after the gateway log reports that Discord
 is connected and the gateway is running. Do not parallelize it with a Hermes
 restart: this pinned CLI imports user plugins, whose registration has the side
 effect of binding the private projection port. A startup-time probe can contend
-with the gateway on port 8787. Plugin `0.13.0` retries that bind, but avoiding the
+with the gateway on port 8787. Plugin `0.14.0` retries that bind, but avoiding the
 race keeps startup and diagnostics unambiguous.
 
 Expected results:
 
 * PostgreSQL and Docket are healthy; Hermes and SearXNG are running.
-* `docket-discord` `0.13.0` is `enabled`.
+* `docket-discord` `0.14.0` is `enabled`.
 * Hermes connects to `http://docket:8000/mcp/` and discovers exactly twenty
   tools, including `docket_store_term_schedule`,
   `docket_propose_term_schedule`, `docket_store_record`,
@@ -165,10 +165,11 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | A button commits but the card changes two to five seconds later | Compare `command_requests.created_at/completed_at` with the matching projection outbox `created_at/updated_at`, then confirm `discord_projection_worker_started` after the deployed restart | Pre-wakeup Docket image, missing post-commit wake registration, a busy/crashed projection task, or delivery falling back to the durable five-second poll |
 | Schedule card is stuck on a review page after a restart or lost acknowledgement | Read `view_mode`, `view_page`, `reviewed_through_page`, and `view_action_revision_id`, then inspect/retry the existing projection refresh outbox row | Durable view state succeeded but the same-message Discord edit was not acknowledged; do not recreate the proposal or card |
 | Approve/Reject appears before every schedule page was traversed | Stop before using the buttons and compare `reviewed_through_page` with the immutable page count | Projection renderer/state invariant regression; schedule button approvals must also fail closed unless the current delivered view is `decision` |
-| Schedule approval reports `target_version_changed` after review | Compare the revision's `calendar_snapshot.last_success_at` with the current sync state, then use the card's **Refresh** control and review the replacement revision from Summary | Calendar sync advanced after compilation; do not relax the exact freshness check, reuse the old approval, or recreate the schedule |
+| Schedule approval reports `target_version_changed` after review | Confirm the same card changes to **Calendar state changed** with **Reject** and **Rebuild preview**, compare the revision's `calendar_snapshot.last_success_at` with current sync state, then rebuild and review the replacement from Summary | Calendar sync advanced after compilation; if the card remains healthy-looking, inspect `approvals.refresh_required_at` and its projection outbox before retrying |
 | Approve reports `external_writes_disabled` | Check `/health/ready` for `calendar_write_mode=disabled`; leave the approval pending until the operator deliberately enables writes and recreates Docket | The production write gate is closed; Docket must not create an operation, consume the approval, or substitute a fake provider |
 | Reject reports Calendar target staleness | Treat this as a regression and inspect the approval validation split | Rejection must validate actor, projection, current immutable revision, hashes, and queue identity, but it must not require mutable Calendar/record/account freshness because it cannot create an external operation |
-| Schedule **Refresh** appears inert or leaves the old revision/view | Inspect the fresh-sync command, `proposal_refresh` command, replacement action revision/approval, cancelled/recreated `calendar_reminder_plans`, and projection refresh outbox row | Fresh sync did not complete after the click, immutable schedule bindings changed, plugin control drift, or the durable same-message edit is retrying |
+| **Rebuild preview** appears on a healthy proposal | Inspect `approvals.refresh_required_at` and the renderer version; do not use the control | Pre-contextual renderer/plugin drift or stale approval state was copied incorrectly |
+| **Rebuild preview** appears inert or leaves the old revision/view | Inspect the fresh-sync command, `proposal_refresh` command, replacement action revision/approval, cancelled/recreated `calendar_reminder_plans`, and projection refresh outbox row | Fresh sync did not complete after the click, immutable schedule bindings changed, plugin control drift, or the durable same-message edit is retrying |
 | Approval button appears inert | Inspect the stored projection/message binding and interaction listener before using any break-glass code | Stale/copied card, wrong parent or actor, listener unavailable, token expired, or action already resolved |
 | No daily thread/card appears | Inspect projection outbox status, then the private plugin listener and Hermes logs | Hermes not recreated after plugin/env change, private listener unavailable, Discord permission/API failure, or retry backoff |
 | Daily thread exists but is hidden until **Join Thread** is used | Inspect the latest thread-ensure acknowledgement for the exact configured `operator_user_id` and `operator_joined=true`, then check Hermes for `daily_thread_member_add_failed` | Pre-`0.10.0` plugin, Hermes was not restarted, operator ID mismatch, missing `SEND_MESSAGES_IN_THREADS`, parent-channel access failure, archived-thread race, or Discord member limit |
@@ -187,11 +188,13 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Calendar lookup is empty or stale | Inspect `calendar_sync_states`, its covered window, and the prior cache generation before changing credentials | Read gate disabled, sync due/leased, OAuth failure, partial page walk, or requested range outside the cache |
 | A newly created provider event is absent from a healthy current-day lookup | Compare `last_success_at` with the event creation time, then retry the same bounded lookup with `require_fresh` | `prefer_cache` returned before the next five-minute synchronization; healthy and covered do not imply read-after-provider-write consistency |
 | Hermes calls a terminal or time tool around a today/tomorrow Calendar lookup | Inspect the active lookup schema/result for `relative_day`, `start_local`, and `end_local`, then restart Hermes and run `/reload-mcp` | The active session cached the prior MCP schema or old manual-intent guidance |
-| Reminder does not arrive | Inspect rule version, event cache identity, scheduled row, bound daily thread, notification outbox, and plugin `0.13.0` logs | Rule disabled, event moved/cancelled, stale event already began, queue binding changed, thread ensure failed, or Discord retry |
-| External action has no `docket-system` lifecycle entry | Inspect `discord.system_log.requested` outbox rows and the plugin `system-logs` endpoint before posting a manual summary | Plugin not recreated at `0.13.0`, system target mismatch, retry backoff, or marker ownership conflict; canonical operation/audit state remains authoritative |
+| Reminder does not arrive | Inspect rule version, event cache identity, scheduled row, bound daily thread, notification outbox, and plugin `0.14.0` logs | Rule disabled, event moved/cancelled, stale event already began, queue binding changed, thread ensure failed, or Discord retry |
+| External action has no `docket-system` lifecycle entry | Inspect `discord.system_log.requested` outbox rows and the plugin `system-logs` endpoint before posting a manual summary | Plugin not recreated at `0.14.0`, system target mismatch, retry backoff, or marker ownership conflict; canonical operation/audit state remains authoritative |
+| A Docket-backed agent turn has no `docket-system` tool trace | Inspect Hermes for all four registered plugin hooks, then inspect `discord_mcp_traces` and `discord.mcp_trace.requested` outbox rows | Plugin `0.14.0` was not restarted, `/reload-mcp` still exposes a differently named server/tool, trusted chat-to-session binding failed, plugin-to-Docket trace delivery failed, or projection is retrying |
+| A Docket tool trace remains Running after the response | Compare the trace calls/status with Hermes `post_tool_call` and `post_llm_call` hook logs; start a new authorized chat turn to close an interrupted prior trace | Pinned hook drift, gateway interruption before turn finalization, plugin restart, or a trace update waiting in the bounded delivery queue |
 | Queue card exposes provider IDs, ETags, hashes, enum action names, or freshness timestamps | Stop treating the card as an operator-safe surface and inspect the deterministic renderer | Diagnostic metadata leaked into the projection; keep it in PostgreSQL/runbook queries and render only decision-relevant labels |
 | Calendar card repeats Status/Execution/Effect, uses the event subject as its long title/description, or dumps a generic Before record | Inspect the state-oriented renderer and rebuild/recreate Docket | Pre-polish image or renderer regression; standalone subjects belong under `Title`, successful terminal state needs no description, and updates use bounded `Delta · Property` fields with separate Before/After lines |
-| A timed card, reminder, or system entry displays raw `<t:...>` text or a manual IANA timezone | Confirm the value is in an embed description/field, Hermes runs plugin `0.13.0`, and the token survived escaping unchanged | Old renderer/plugin, malformed milliseconds or timestamp style, or a Discord-client rendering regression; all-day and recurrence-definition timezone text is intentionally exempt |
+| A timed card, reminder, or system entry displays raw `<t:...>` text or a manual IANA timezone | Confirm the value is in an embed description/field, Hermes runs plugin `0.14.0`, and the token survived escaping unchanged | Old renderer/plugin, malformed milliseconds or timestamp style, or a Discord-client rendering regression; all-day and recurrence-definition timezone text is intentionally exempt |
 | Duplicate reminder appears | Stop retries and compare notification ID, event-start key, outbox dedupe key, and `docket-calendar-reminder:<uuid>` footer marker | Marker collision, manual copy, lost binding, or plugin idempotency regression |
 
 ## Missing trusted Discord context
@@ -250,7 +253,7 @@ Hermes currently supplies `source.platform` as an enum, not a plain string.
 
 ## Stored response without a write
 
-The Discord UI tool trace is a useful first signal:
+The bounded Docket tool trace in `docket-system` is the first signal:
 
 * `...docket_store_record...` is required for a remember/store request.
 * `...docket_search_records...` and `...docket_get_record...` prove only a read.
@@ -319,15 +322,17 @@ proposal. Account, profile, search, and get calls are reads and consume no
 index. A course conflict must roll back the entire store: no new record,
 provenance, command, or snapshot from that request may remain.
 
-The aggregate Summary and Decision views expose **Refresh**. Use it when review
-outlives the Calendar generation bound into the proposal. It performs a new
-complete Calendar read, recompiles every immutable schedule item, supersedes
-the approval, and resets the same message to Summary under a new action
-revision. Traverse the replacement review again. Do not retry the old Approve
-button, manually edit freshness state, or weaken the exact
-`last_success_at` approval check. Confirm the replacement revision has one
+Healthy aggregate Summary and Decision views do not expose a refresh control.
+If review outlives the Calendar generation bound into the proposal, the
+Approve attempt must fail closed and change the same card to **Reject** plus
+**Rebuild preview**. Rebuild performs a new complete Calendar read, recompiles
+every immutable schedule item, supersedes the approval, and resets the same
+message to Summary under a new action revision. Traverse the replacement review
+again. Do not retry the old Approve button, manually edit freshness state, or
+weaken the exact `last_success_at` approval check. Confirm the replacement
+revision has one
 planned `calendar_reminder_plans` row for each manifest item and lead, with
-`manifest_item_key` populated; Refresh and Snooze must cancel the superseded
+`manifest_item_key` populated; Rebuild and Snooze must cancel the superseded
 revision's planned rows and preserve those per-item bindings.
 
 After approval, inspect the parent and item ledger without printing private
@@ -446,13 +451,15 @@ select id, local_date, thread_name, thread_id, status, auto_archive_minutes,
 from discord_daily_threads order by local_date desc limit 10;
 select id, queue_item_id, daily_thread_id, projection_version, message_id,
        status, last_error_code
-from discord_projections order by created_at desc limit 20;'
+from discord_projections order by created_at desc limit 20;
+select id, status, last_ordinal, version, started_at, completed_at
+from discord_mcp_traces order by created_at desc limit 20;'
 ```
 
 First failure points:
 
 * `discord_transport_error` or `discord_runtime_unavailable`: verify Hermes is
-  running, plugin `0.13.0` is enabled, port 8787 is exposed only internally, and
+  running, plugin `0.14.0` is enabled, port 8787 is exposed only internally, and
   Hermes was recreated after Compose environment changes. The default ten
   attempts cover ordinary Hermes startup; do not reduce the window without
   measuring the pinned runtime's initialization time.
@@ -470,6 +477,14 @@ First failure points:
   arbitrarily.
 * `invalid_discord_ack`: the plugin response did not echo request, target, or
   digest bindings. Treat this as a compatibility/security failure.
+* `invalid_mcp_trace_*`, `nonmonotonic_mcp_trace`, or
+  `mcp_trace_state_regression`: compare plugin `0.14.0` with the Docket image
+  and migration `0011`. Do not replay arguments/results or edit trace JSON;
+  these errors mean the pinned hook/schema contract drifted or a terminal
+  update arrived out of order.
+* `mcp_trace_marker_conflict`: more than one bot/foreign message contains the
+  compact trace marker. Do not choose or delete one automatically; preserve the
+  durable trace/outbox and resolve the Discord collision explicitly.
 * a button callback with no response fields: confirm the raw interaction
   listener was installed after restart, then inspect Hermes logs. Buttons defer
   first and report success only after Docket commits.
@@ -487,7 +502,7 @@ print("projection listener reachable")'
 Hermes plugin edits require a gateway restart. `/reload-mcp` is still required
 for MCP tool/schema changes, but it does not reload this Python plugin.
 
-The pinned Hermes runtime performs overlapping plugin discovery. Plugin `0.13.0`
+The pinned Hermes runtime performs overlapping plugin discovery. Plugin `0.14.0`
 therefore starts port 8787 under a retrying supervisor: one discovery pass may
 log that startup is deferred because the port is in use, but plugin loading must
 still succeed and one listener must remain reachable. A warning that the plugin

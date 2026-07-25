@@ -18,6 +18,7 @@ import hmac
 import json
 import logging
 import os
+import queue
 import re
 import threading
 import time
@@ -37,6 +38,7 @@ _PROJECTION_PATH = re.compile(r"^/internal/docket/discord/projections/([0-9a-fA-
 _THREAD_LIFECYCLE_PATH = re.compile(
     r"^/internal/docket/discord/threads/([0-9a-fA-F-]{36})/lifecycle$"
 )
+_MCP_TRACE_PATH = re.compile(r"^/internal/docket/discord/mcp-traces/([0-9a-fA-F-]{36})$")
 _CONTROL_ID = re.compile(r"^dkt:([arlnp]):([A-Za-z0-9_-]{70,90})$")
 _MAX_REQUEST_BYTES = 65536
 _SERVER: ThreadingHTTPServer | None = None
@@ -44,6 +46,64 @@ _SERVER_STARTING = False
 _LISTENER_CLIENT_ID: int | None = None
 _OPERATION_LOCKS: dict[str, threading.Lock] = {}
 _OPERATION_LOCKS_GUARD = threading.Lock()
+_MCP_TRACE_NAMESPACE = uuid.UUID("326f8ee5-f0d5-4d08-b777-31dbac1f8265")
+_DOCKET_TOOL_PREFIX = "mcp__docket__"
+_DOCKET_MCP_TOOL_NAMES = frozenset(
+    {
+        "docket_archive_record",
+        "docket_get_action",
+        "docket_get_calendar_profile",
+        "docket_get_calendar_sync_status",
+        "docket_get_queue_item",
+        "docket_get_record",
+        "docket_ignore_queue_item",
+        "docket_list_accounts",
+        "docket_list_calendar_events",
+        "docket_list_queue_items",
+        "docket_list_reminder_rules",
+        "docket_propose_action",
+        "docket_propose_calendar_event",
+        "docket_propose_term_schedule",
+        "docket_search_records",
+        "docket_set_calendar_profile",
+        "docket_snooze_queue_item",
+        "docket_store_record",
+        "docket_store_term_schedule",
+        "docket_update_record",
+    }
+)
+_TRACE_DISPOSITIONS = frozenset(
+    {
+        "archived",
+        "created",
+        "disabled",
+        "duplicate_suppressed",
+        "matched_existing",
+        "no_op",
+        "proposed",
+        "replayed_request",
+        "stored",
+        "succeeded",
+        "updated",
+    }
+)
+_TRACE_ERROR_CODES = frozenset(
+    {
+        "authorization_failed",
+        "blocked",
+        "cancelled",
+        "docket_error",
+        "invalid_result",
+        "timeout",
+        "transport_error",
+        "unknown_error",
+    }
+)
+_TRACE_CONTEXTS: dict[str, dict[str, Any]] = {}
+_TRACE_CONTEXT_LOCK = threading.Lock()
+_TRACE_DELIVERY_QUEUE: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1000)
+_TRACE_DELIVERY_STARTED = False
+_TRACE_DELIVERY_START_LOCK = threading.Lock()
 
 
 class PluginAPIError(RuntimeError):
@@ -75,6 +135,304 @@ def _source_value(source: object, *names: str) -> str:
                 value = enum_value
             return str(value)
     return ""
+
+
+def _trace_id(guild_id: str, channel_id: str, message_id: str) -> str:
+    return str(
+        uuid.uuid5(
+            _MCP_TRACE_NAMESPACE,
+            f"{guild_id}:{channel_id}:{message_id}",
+        )
+    )
+
+
+def _deliver_trace_update(payload: dict[str, Any]) -> None:
+    trace_id = str(payload["trace_id"])
+    body = {key: value for key, value in payload.items() if key != "trace_id"}
+    request = urllib.request.Request(
+        (
+            f"{os.environ['DOCKET_INTERNAL_URL'].rstrip('/')}"
+            f"/internal/v1/discord/mcp-traces/{trace_id}"
+        ),
+        data=json.dumps(body, separators=(",", ":")).encode(),
+        headers={
+            "Authorization": f"Bearer {_read_token()}",
+            "Content-Type": "application/json",
+        },
+        method="PUT",
+    )
+    with urllib.request.urlopen(request, timeout=5) as response:
+        if response.status not in {200, 202, 204}:
+            raise RuntimeError(f"Docket returned HTTP {response.status}")
+
+
+def _trace_delivery_worker() -> None:
+    while True:
+        payload = _TRACE_DELIVERY_QUEUE.get()
+        try:
+            for attempt in range(3):
+                try:
+                    _deliver_trace_update(payload)
+                    break
+                except (OSError, RuntimeError, urllib.error.URLError):
+                    if attempt == 2:
+                        logger.exception("Docket MCP trace delivery failed")
+                    else:
+                        time.sleep(0.25 * (2**attempt))
+        finally:
+            _TRACE_DELIVERY_QUEUE.task_done()
+
+
+def _start_trace_delivery_worker() -> None:
+    global _TRACE_DELIVERY_STARTED
+    with _TRACE_DELIVERY_START_LOCK:
+        if _TRACE_DELIVERY_STARTED:
+            return
+        threading.Thread(
+            target=_trace_delivery_worker,
+            name="docket-mcp-trace-delivery",
+            daemon=True,
+        ).start()
+        _TRACE_DELIVERY_STARTED = True
+
+
+def _enqueue_trace_update(
+    context: dict[str, Any],
+    *,
+    call: dict[str, Any] | None = None,
+    turn_status: str = "running",
+) -> None:
+    payload = {
+        "trace_id": context["trace_id"],
+        "request_id": str(uuid.uuid4()),
+        "guild_id": context["guild_id"],
+        "source_channel_id": context["source_channel_id"],
+        "source_message_id": context["source_message_id"],
+        "actor_id": context["actor_id"],
+        "updated_at": datetime.now(UTC).isoformat(),
+        "turn_status": turn_status,
+        "call": call,
+    }
+    try:
+        _TRACE_DELIVERY_QUEUE.put_nowait(payload)
+    except queue.Full:
+        logger.error("Docket MCP trace delivery queue is full")
+
+
+def _register_trace_context(event: object, session_store: object | None) -> None:
+    if session_store is None:
+        return
+    source = getattr(event, "source", None)
+    actor = os.environ.get("DOCKET_OPERATOR_DISCORD_USER_ID", "")
+    guild = os.environ.get("DOCKET_DISCORD_GUILD_ID", "")
+    channel = os.environ.get("DOCKET_CHAT_CHANNEL_ID", "")
+    message_id = str(getattr(event, "message_id", "") or _source_value(source, "message_id"))
+    if not _is_exact_context(source=source, actor=actor, guild=guild, channel=channel):
+        return
+    if not all(_DISCORD_ID.fullmatch(value) for value in (actor, guild, channel, message_id)):
+        return
+    try:
+        session_entry = session_store.get_or_create_session(source)
+        session_id = str(session_entry.session_id)
+    except Exception:
+        logger.exception("Could not bind Docket MCP trace to the Hermes session")
+        return
+    prior: dict[str, Any] | None = None
+    with _TRACE_CONTEXT_LOCK:
+        existing = _TRACE_CONTEXTS.get(session_id)
+        if existing is not None and existing.get("source_message_id") == message_id:
+            return
+        if existing is not None and existing.get("started") and not existing.get("terminal"):
+            existing["terminal"] = True
+            prior = dict(existing)
+        _TRACE_CONTEXTS[session_id] = {
+            "trace_id": _trace_id(guild, channel, message_id),
+            "guild_id": guild,
+            "source_channel_id": channel,
+            "source_message_id": message_id,
+            "actor_id": actor,
+            "turn_id": None,
+            "next_ordinal": 1,
+            "calls": {},
+            "started": False,
+            "terminal": False,
+        }
+    if prior is not None:
+        _enqueue_trace_update(prior, turn_status="interrupted")
+
+
+def _docket_public_tool_name(tool_name: str) -> str | None:
+    if not tool_name.startswith(_DOCKET_TOOL_PREFIX):
+        return None
+    public_name = tool_name.removeprefix(_DOCKET_TOOL_PREFIX)
+    return public_name if public_name in _DOCKET_MCP_TOOL_NAMES else None
+
+
+def _trace_context(task_id: str, session_id: str) -> dict[str, Any] | None:
+    key = task_id or session_id
+    return _TRACE_CONTEXTS.get(key)
+
+
+def _on_pre_tool_call(
+    tool_name: str = "",
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+    turn_id: str = "",
+    **_kwargs: Any,
+) -> None:
+    public_name = _docket_public_tool_name(tool_name)
+    if public_name is None:
+        return
+    with _TRACE_CONTEXT_LOCK:
+        context = _trace_context(task_id, session_id)
+        if context is None or context.get("terminal"):
+            return
+        if context["turn_id"] is None:
+            context["turn_id"] = turn_id
+        elif turn_id and context["turn_id"] != turn_id:
+            return
+        stable_call_id = str(tool_call_id)[:255]
+        if not stable_call_id:
+            stable_call_id = str(
+                uuid.uuid5(
+                    uuid.UUID(context["trace_id"]),
+                    f"{turn_id}:{context['next_ordinal']}",
+                )
+            )
+        if stable_call_id in context["calls"]:
+            return
+        ordinal = int(context["next_ordinal"])
+        if ordinal > 100:
+            logger.error("Docket MCP trace exceeded its 100-call safety bound")
+            return
+        context["next_ordinal"] = ordinal + 1
+        context["started"] = True
+        context["calls"][stable_call_id] = {
+            "call_id": stable_call_id,
+            "ordinal": ordinal,
+            "tool_name": public_name,
+            "state": "running",
+            "elapsed_ms": 0,
+            "disposition": None,
+            "error_code": None,
+        }
+        payload_context = dict(context)
+        call = dict(context["calls"][stable_call_id])
+    _enqueue_trace_update(payload_context, call=call)
+
+
+def _decoded_tool_result(result: Any) -> dict[str, Any] | None:
+    if isinstance(result, dict):
+        return result
+    if not isinstance(result, str):
+        return None
+    try:
+        decoded = json.loads(result)
+    except (TypeError, ValueError):
+        return None
+    return decoded if isinstance(decoded, dict) else None
+
+
+def _terminal_trace_call(
+    call: dict[str, Any],
+    *,
+    result: Any,
+    duration_ms: int,
+    status: str | None,
+    error_type: str | None,
+) -> dict[str, Any]:
+    decoded = _decoded_tool_result(result)
+    status_text = str(status or "").casefold()
+    error_text = str(error_type or "").casefold()
+    state = "succeeded"
+    disposition = "succeeded"
+    error_code = None
+    if "timeout" in status_text or "timeout" in error_text:
+        state = "timed_out"
+        disposition = None
+        error_code = "timeout"
+    elif "cancel" in status_text or "cancel" in error_text:
+        state = "failed"
+        disposition = None
+        error_code = "cancelled"
+    elif decoded is not None and decoded.get("ok") is False:
+        state = "failed"
+        disposition = None
+        error_code = "docket_error"
+    elif status_text in {"error", "failed", "blocked"} or error_type:
+        state = "failed"
+        disposition = None
+        error_code = "blocked" if status_text == "blocked" else "transport_error"
+    elif decoded is None:
+        disposition = "succeeded"
+    else:
+        candidate = decoded.get("disposition")
+        disposition = candidate if candidate in _TRACE_DISPOSITIONS else "succeeded"
+    return {
+        **call,
+        "state": state,
+        "elapsed_ms": min(max(int(duration_ms or 0), 0), 600_000),
+        "disposition": disposition,
+        "error_code": error_code,
+    }
+
+
+def _on_post_tool_call(
+    tool_name: str = "",
+    result: Any = None,
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+    turn_id: str = "",
+    duration_ms: int = 0,
+    status: str | None = None,
+    error_type: str | None = None,
+    **_kwargs: Any,
+) -> None:
+    if _docket_public_tool_name(tool_name) is None:
+        return
+    with _TRACE_CONTEXT_LOCK:
+        context = _trace_context(task_id, session_id)
+        if (
+            context is None
+            or context.get("terminal")
+            or (turn_id and context.get("turn_id") not in {None, turn_id})
+        ):
+            return
+        call = context["calls"].get(str(tool_call_id)[:255])
+        if call is None or call.get("state") != "running":
+            return
+        terminal_call = _terminal_trace_call(
+            call,
+            result=result,
+            duration_ms=duration_ms,
+            status=status,
+            error_type=error_type,
+        )
+        context["calls"][terminal_call["call_id"]] = terminal_call
+        payload_context = dict(context)
+    _enqueue_trace_update(payload_context, call=terminal_call)
+
+
+def _on_post_llm_call(
+    task_id: str = "",
+    session_id: str = "",
+    turn_id: str = "",
+    **_kwargs: Any,
+) -> None:
+    with _TRACE_CONTEXT_LOCK:
+        context = _trace_context(task_id, session_id)
+        if (
+            context is None
+            or not context.get("started")
+            or context.get("terminal")
+            or (turn_id and context.get("turn_id") not in {None, turn_id})
+        ):
+            return
+        context["terminal"] = True
+        payload_context = dict(context)
+    _enqueue_trace_update(payload_context, turn_status="completed")
 
 
 def _post_decision(*, event: object, decision: str, short_code: str) -> None:
@@ -195,7 +553,11 @@ def _rewrite_with_source_context(event: object) -> dict[str, str] | None:
     return {"action": "rewrite", "text": rewritten}
 
 
-def _pre_gateway_dispatch(event: object, **_kwargs: object) -> dict[str, str] | None:
+def _pre_gateway_dispatch(
+    event: object,
+    session_store: object | None = None,
+    **_kwargs: object,
+) -> dict[str, str] | None:
     text = str(getattr(event, "text", ""))
     source = getattr(event, "source", None)
     if _is_configured_system(source):
@@ -219,6 +581,7 @@ def _pre_gateway_dispatch(event: object, **_kwargs: object) -> dict[str, str] | 
         if _is_configured_queue(source):
             logger.warning("Dropped non-command message from Docket control queue")
             return {"action": "skip", "reason": "invalid-docket-control"}
+        _register_trace_context(event, session_store)
         return _rewrite_with_source_context(event)
 
     allowed_actor = os.environ.get("DOCKET_OPERATOR_DISCORD_USER_ID", "")
@@ -751,7 +1114,10 @@ def _render_embed(
                         row=0,
                     )
                 )
-            if decisions != {"approve", "reject"} or len(approval_ids) != 1 or len(tokens) != 1:
+            valid_decisions = decisions == {"approve", "reject"} or (
+                decisions == {"reject"} and "proposal_action" in kinds
+            )
+            if not valid_decisions or len(approval_ids) != 1 or len(tokens) != 1:
                 raise PluginAPIError("invalid_control", "Approval pair is inconsistent", 422)
         if "local_action" in kinds:
             if kinds != {"local_action"}:
@@ -935,7 +1301,7 @@ def _render_embed(
                 transition = str(control["transition"])
                 labels = {
                     "proposal_edit": "Edit",
-                    "proposal_refresh": "Refresh",
+                    "proposal_refresh": "Rebuild preview",
                     "proposal_snooze": "Snooze until tomorrow",
                 }
                 fields = {
@@ -1375,6 +1741,160 @@ async def _post_system_log(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "request_id": request_id,
         "log_id": log_id,
+        "guild_id": guild_id,
+        "channel_id": channel_id,
+        "message_id": str(message.id),
+        "render_sha256": render_sha256,
+        "created": created,
+    }
+
+
+async def _put_mcp_trace(trace_id: uuid.UUID, payload: dict[str, Any]) -> dict[str, Any]:
+    import discord
+
+    request_id = _require_request_id(payload)
+    if str(payload.get("trace_id", "")) != str(trace_id):
+        raise PluginAPIError("invalid_mcp_trace", "Trace path and body differ", 422)
+    guild_id, channel_id = _validate_system_target(
+        payload.get("guild_id"), payload.get("channel_id")
+    )
+    raw_render = payload.get("render")
+    if not isinstance(raw_render, dict):
+        raise PluginAPIError("invalid_mcp_trace", "render must be an object", 422)
+    status = _safe_text(raw_render.get("status"), 16, "status")
+    if status not in {"Running", "Completed", "Failed", "Interrupted"}:
+        raise PluginAPIError("invalid_mcp_trace", "Trace status is invalid", 422)
+    raw_calls = raw_render.get("calls")
+    if not isinstance(raw_calls, list) or len(raw_calls) > 20:
+        raise PluginAPIError("invalid_mcp_trace", "Trace calls exceed their bound", 422)
+    calls: list[dict[str, Any]] = []
+    expected_ordinal = 1
+    for raw_call in raw_calls:
+        if not isinstance(raw_call, dict):
+            raise PluginAPIError("invalid_mcp_trace", "Trace call must be an object", 422)
+        try:
+            ordinal = int(raw_call.get("ordinal"))
+            elapsed_ms = int(raw_call.get("elapsed_ms"))
+        except (TypeError, ValueError) as exc:
+            raise PluginAPIError(
+                "invalid_mcp_trace", "Trace call numeric fields are invalid", 422
+            ) from exc
+        tool_name = _safe_text(raw_call.get("tool_name"), 128, "tool_name")
+        state = _safe_text(raw_call.get("state"), 16, "state")
+        outcome = _safe_text(raw_call.get("outcome"), 64, "outcome")
+        if (
+            ordinal != expected_ordinal
+            or tool_name not in _DOCKET_MCP_TOOL_NAMES
+            or state not in {"running", "succeeded", "failed", "timed_out"}
+            or outcome
+            not in (_TRACE_DISPOSITIONS | _TRACE_ERROR_CODES | {"running", "failed", "timed_out"})
+            or elapsed_ms < 0
+            or elapsed_ms > 600_000
+        ):
+            raise PluginAPIError("invalid_mcp_trace", "Trace call binding is invalid", 422)
+        calls.append(
+            {
+                "ordinal": ordinal,
+                "tool_name": tool_name,
+                "state": state,
+                "elapsed_ms": elapsed_ms,
+                "outcome": outcome,
+            }
+        )
+        expected_ordinal += 1
+    try:
+        overflow_count = int(raw_render.get("overflow_count", 0))
+    except (TypeError, ValueError) as exc:
+        raise PluginAPIError("invalid_mcp_trace", "overflow_count is invalid", 422) from exc
+    if overflow_count < 0 or overflow_count > 80:
+        raise PluginAPIError("invalid_mcp_trace", "overflow_count exceeds its bound", 422)
+    render = {
+        "title": _safe_text(raw_render.get("title"), 256, "title"),
+        "summary": _safe_text(raw_render.get("summary"), 2000, "summary"),
+        "status": status,
+        "calls": calls,
+        "overflow_count": overflow_count,
+        "updated_at": _safe_text(raw_render.get("updated_at"), 64, "updated_at"),
+    }
+    calculated = hashlib.sha256(
+        json.dumps(render, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+    ).hexdigest()
+    render_sha256 = str(payload.get("render_sha256", ""))
+    if not hmac.compare_digest(calculated, render_sha256):
+        raise PluginAPIError("invalid_mcp_trace", "MCP trace digest differs", 422)
+
+    _loop, _adapter, client = _discord_runtime()
+    try:
+        channel = await client.fetch_channel(int(channel_id))
+    except discord.NotFound as exc:
+        raise PluginAPIError("system_channel_not_found", "System channel was not found") from exc
+    if not isinstance(channel, discord.TextChannel) or str(channel.guild.id) != guild_id:
+        raise PluginAPIError("invalid_system_channel", "Configured system channel is invalid")
+    trace_ref = base64.urlsafe_b64encode(trace_id.bytes).decode().rstrip("=")
+    marker = f"Docket tool trace · ref {trace_ref}"
+    footer = marker
+    colors = {
+        "Running": 0x5B8DEF,
+        "Completed": 0x3BA55D,
+        "Failed": 0xC94F4F,
+        "Interrupted": 0xD6A756,
+    }
+    embed = discord.Embed(
+        title=_escaped(render["title"], 256),
+        description=_escaped(render["summary"], 2000),
+        color=colors[status],
+    )
+    embed.add_field(name="Status", value=status, inline=False)
+    state_labels = {
+        "running": "Running",
+        "succeeded": "Succeeded",
+        "failed": "Failed",
+        "timed_out": "Timed out",
+    }
+    for call in calls:
+        terminal = call["state"] != "running"
+        details = state_labels[call["state"]]
+        if terminal:
+            details += f" · {call['elapsed_ms']} ms · {call['outcome'].replace('_', ' ')}"
+        embed.add_field(
+            name=f"{call['ordinal']}. {call['tool_name']}",
+            value=_escaped(details, 256),
+            inline=False,
+        )
+    if overflow_count:
+        embed.add_field(
+            name="Additional calls",
+            value=f"{overflow_count} omitted from this bounded view",
+            inline=False,
+        )
+    embed.add_field(name="Updated", value=_escaped(render["updated_at"], 64), inline=False)
+    embed.set_footer(text=footer)
+    bot_id = getattr(getattr(client, "user", None), "id", None)
+    matches = []
+    async for candidate in channel.history(limit=None, oldest_first=True):
+        if marker in _message_marker(candidate):
+            matches.append(candidate)
+    if len(matches) > 1 or any(candidate.author.id != bot_id for candidate in matches):
+        raise PluginAPIError(
+            "mcp_trace_marker_conflict", "MCP trace marker is foreign-owned or ambiguous"
+        )
+    message = matches[0] if matches else None
+    created = message is None
+    if message is None:
+        message = await channel.send(
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions.none(),
+            silent=True,
+        )
+    else:
+        message = await message.edit(
+            content=None,
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    return {
+        "request_id": request_id,
+        "trace_id": str(trace_id),
         "guild_id": guild_id,
         "channel_id": channel_id,
         "message_id": str(message.id),
@@ -1989,6 +2509,10 @@ class _PluginRequestHandler(BaseHTTPRequestHandler):
             elif method == "POST" and self.path == "/internal/docket/discord/notifications":
                 with _operation_lock(f"calendar-reminder:{payload.get('notification_id')}"):
                     result = _run_on_discord(_post_calendar_reminder(payload))
+            elif method == "PUT" and (match := _MCP_TRACE_PATH.fullmatch(self.path)):
+                trace_id = uuid.UUID(match.group(1))
+                with _operation_lock(f"mcp-trace:{trace_id}"):
+                    result = _run_on_discord(_put_mcp_trace(trace_id, payload))
             elif method == "PUT" and (match := _THREAD_LIFECYCLE_PATH.fullmatch(self.path)):
                 daily_thread_id = uuid.UUID(match.group(1))
                 result = _run_on_discord(_set_thread_lifecycle(daily_thread_id, payload))
@@ -2096,6 +2620,10 @@ def _validate_channel_lanes() -> None:
 def register(ctx: object) -> None:
     _validate_channel_lanes()
     ctx.register_hook("pre_gateway_dispatch", _pre_gateway_dispatch)
+    ctx.register_hook("pre_tool_call", _on_pre_tool_call)
+    ctx.register_hook("post_tool_call", _on_post_tool_call)
+    ctx.register_hook("post_llm_call", _on_post_llm_call)
+    _start_trace_delivery_worker()
     _start_projection_server()
     skills_dir = Path(__file__).parent / "skills"
     for child in sorted(skills_dir.iterdir()):

@@ -178,6 +178,8 @@ class Approval(TimestampMixin, Base):
     response_message_id: Mapped[str | None] = mapped_column(String(64))
     discord_interaction_id: Mapped[str | None] = mapped_column(String(255), unique=True)
     response_note: Mapped[str | None] = mapped_column(String(1000))
+    refresh_required_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    refresh_reason_code: Mapped[str | None] = mapped_column(String(128))
     consumed_operation_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("operations.id", name="fk_approvals_consumed_operation", use_alter=True)
     )

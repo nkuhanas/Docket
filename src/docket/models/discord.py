@@ -1,7 +1,9 @@
 import uuid
 from datetime import date, datetime
+from typing import Any
 
 from sqlalchemy import (
+    JSON,
     CheckConstraint,
     Date,
     DateTime,
@@ -90,3 +92,35 @@ class DiscordProjection(TimestampMixin, Base):
     reviewed_through_page: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
     last_error_code: Mapped[str | None] = mapped_column(String(128))
+
+
+class DiscordMcpTrace(TimestampMixin, Base):
+    __tablename__ = "discord_mcp_traces"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('running', 'completed', 'failed', 'interrupted')",
+            name="ck_discord_mcp_traces_status",
+        ),
+        CheckConstraint(
+            "last_ordinal BETWEEN 0 AND 100",
+            name="ck_discord_mcp_traces_last_ordinal",
+        ),
+        UniqueConstraint(
+            "guild_id",
+            "source_channel_id",
+            "source_message_id",
+            name="uq_discord_mcp_trace_source",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    guild_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_channel_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_message_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    actor_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="running", nullable=False)
+    calls: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    last_ordinal: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

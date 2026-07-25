@@ -147,7 +147,13 @@ class ApprovalService:
                 message="The interaction thread does not match the stored projection context.",
             )
         signing_key = settings.read_secret(settings.interaction_signing_key_file).encode()
-        if revision.action_type == "calendar_apply_term_schedule":
+        if (
+            revision.action_type == "calendar_apply_term_schedule"
+            and not (
+                approval.refresh_required_at is not None
+                and request.decision == "reject"
+            )
+        ):
             page_count = (int(revision.preview.get("item_count", 0)) + 9) // 10
             valid = (
                 projection.view_action_revision_id == revision.id
@@ -527,7 +533,47 @@ class ApprovalService:
                         "The approval remains pending."
                     ),
                 )
-            self._validate_current_targets(revision, queue_item)
+            try:
+                self._validate_current_targets(revision, queue_item)
+            except DocketError as exc:
+                if exc.code == "target_version_changed":
+                    if approval.refresh_required_at is None:
+                        approval.refresh_required_at = now
+                        approval.refresh_reason_code = exc.code
+                        self.session.add(
+                            AuditEvent(
+                                event_type="approval.refresh_required",
+                                entity_type="approval",
+                                entity_id=approval.id,
+                                actor_type="plugin",
+                                actor_id=request.discord_user_id,
+                                request_id=request.request_id,
+                                data={
+                                    "action_revision_id": str(revision.id),
+                                    "reason_code": exc.code,
+                                },
+                            )
+                        )
+                        self.session.add(
+                            OutboxEvent(
+                                event_type="discord.projection.refresh_requested",
+                                aggregate_type="queue_item",
+                                aggregate_id=queue_item.id,
+                                deduplication_key=(
+                                    f"discord_projection:{queue_item.id}:"
+                                    f"refresh-required:{approval.id}"
+                                ),
+                                payload={
+                                    "queue_item_id": str(queue_item.id),
+                                    "action_id": str(action.id),
+                                    "approval_id": str(approval.id),
+                                    "status": "refresh_required",
+                                },
+                                status=OutboxStatus.PENDING.value,
+                            )
+                        )
+                    raise
+                raise
         approval.responded_at = request.responded_at
         approval.response_user_id = request.discord_user_id
         approval.response_guild_id = request.guild_id

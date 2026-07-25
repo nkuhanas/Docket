@@ -290,3 +290,31 @@ zero. Both queue cards completed, all four queued/terminal system-log events
 and all four projection refreshes delivered, and PostgreSQL contained no
 pending/running/reconciliation operation or pending/delivering outbox row.
 This closes the aggregate Milestone 3.6 operator-present gate.
+
+## Operational trace and contextual rebuild closure
+
+The post-gate operational pass removed proactive Refresh controls from healthy
+standalone and aggregate cards. A failed approval with
+`target_version_changed` now commits `approvals.refresh_required_at`, audits
+`approval.refresh_required`, and edits the same pending card to show a concise
+staleness reason plus **Reject** and **Rebuild preview** only. Rebuild remains
+the existing signed `proposal_refresh` transition, but it now fails closed
+unless Docket marked that exact approval stale. It creates a replacement
+immutable revision/approval and resets aggregate review; rejection remains
+available without mutable Calendar freshness.
+
+Migration `0011` also adds one durable `discord_mcp_traces` row per trusted
+Docket-chat source message. Plugin `0.14.0` observes only allowlisted
+`mcp__docket__docket_*` calls through the pinned Hermes pre-tool, post-tool, and
+post-LLM hooks. It forwards no arguments, results, source body, model response,
+or raw provider content. Docket enforces deterministic source binding,
+monotonic call identity/state, a 100-call storage safety bound, twenty visible
+rows plus overflow, and closed outcomes, then creates/edits one quiet
+`docket-system` trace through its durable outbox.
+
+Automated evidence covers hook redaction, non-Docket exclusion, plugin
+create/edit idempotency, trace replay and terminal non-regression, overflow,
+healthy-card control absence, stale-card transition, and standalone/aggregate
+replacement behavior. The complete suite contains 214 passing tests before the
+release commit. Live operator verification remains to confirm the first
+deployed trace card and one stale approval/rebuild interaction.

@@ -12,7 +12,6 @@ from docket.security import (
     issue_projection_approval_token,
     issue_projection_decision_approval_token,
     issue_projection_local_action_token,
-    issue_projection_proposal_control_token,
     issue_projection_review_navigation_token,
 )
 
@@ -122,6 +121,216 @@ def test_non_command_queue_message_is_dropped_before_model(plugin_module, monkey
     result = plugin_module._pre_gateway_dispatch(event)
 
     assert result == {"action": "skip", "reason": "invalid-docket-control"}
+
+
+@pytest.mark.adversarial
+def test_docket_mcp_hooks_emit_only_bounded_trace_metadata(
+    plugin_module, monkeypatch
+) -> None:
+    actor = "111111111111111111"
+    guild = "222222222222222222"
+    chat = "333333333333333333"
+    message_id = "444444444444444444"
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", chat)
+    monkeypatch.setenv("DOCKET_QUEUE_CHANNEL_ID", "555555555555555555")
+    monkeypatch.setenv("DOCKET_SYSTEM_CHANNEL_ID", "666666666666666666")
+    emitted = []
+    monkeypatch.setattr(
+        plugin_module,
+        "_enqueue_trace_update",
+        lambda context, **kwargs: emitted.append((dict(context), kwargs)),
+    )
+    event = SimpleNamespace(
+        text="Find my term.",
+        message_id=message_id,
+        source=SimpleNamespace(
+            platform="discord",
+            user_id=actor,
+            guild_id=guild,
+            chat_id=chat,
+        ),
+    )
+    store = SimpleNamespace(
+        get_or_create_session=lambda _source: SimpleNamespace(session_id="session-1")
+    )
+
+    rewritten = plugin_module._pre_gateway_dispatch(event, session_store=store)
+    assert rewritten is not None and rewritten["action"] == "rewrite"
+    plugin_module._on_pre_tool_call(
+        tool_name="mcp__docket__docket_search_records",
+        args={"query": "secret query body"},
+        task_id="session-1",
+        session_id="session-1",
+        tool_call_id="call-1",
+        turn_id="turn-1",
+    )
+    plugin_module._on_post_tool_call(
+        tool_name="mcp__docket__docket_search_records",
+        result='{"ok":true,"records":[{"title":"secret result body"}]}',
+        task_id="session-1",
+        session_id="session-1",
+        tool_call_id="call-1",
+        turn_id="turn-1",
+        duration_ms=42,
+        status="succeeded",
+    )
+    plugin_module._on_post_llm_call(
+        task_id="session-1",
+        session_id="session-1",
+        turn_id="turn-1",
+        assistant_response="secret model response",
+    )
+
+    assert len(emitted) == 3
+    running = emitted[0][1]["call"]
+    terminal = emitted[1][1]["call"]
+    assert running == {
+        "call_id": "call-1",
+        "ordinal": 1,
+        "tool_name": "docket_search_records",
+        "state": "running",
+        "elapsed_ms": 0,
+        "disposition": None,
+        "error_code": None,
+    }
+    assert terminal["state"] == "succeeded"
+    assert terminal["elapsed_ms"] == 42
+    assert emitted[2][1] == {"turn_status": "completed"}
+    assert "secret query body" not in str(emitted)
+    assert "secret result body" not in str(emitted)
+    assert "secret model response" not in str(emitted)
+
+    plugin_module._on_pre_tool_call(
+        tool_name="terminal",
+        task_id="session-1",
+        tool_call_id="call-2",
+        turn_id="turn-1",
+    )
+    assert len(emitted) == 3
+
+
+@pytest.mark.asyncio
+async def test_mcp_trace_projection_creates_then_edits_one_system_message(
+    plugin_module, monkeypatch
+) -> None:
+    guild_id = "222222222222222222"
+    channel_id = "333333333333333333"
+    trace_id = uuid.uuid4()
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild_id)
+    monkeypatch.setenv("DOCKET_SYSTEM_CHANNEL_ID", channel_id)
+
+    class FakeEmbed:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+            self.fields = []
+            self.footer = None
+
+        def add_field(self, **kwargs) -> None:
+            self.fields.append(kwargs)
+
+        def set_footer(self, **kwargs) -> None:
+            self.footer = SimpleNamespace(text=kwargs["text"])
+
+    class FakeMessage:
+        def __init__(self, embed) -> None:
+            self.id = 555555555555555555
+            self.author = SimpleNamespace(id=999999999999999999)
+            self.embeds = [embed]
+            self.edit_count = 0
+
+        async def edit(self, *, embed, **_kwargs):
+            self.embeds = [embed]
+            self.edit_count += 1
+            return self
+
+    class FakeTextChannel:
+        def __init__(self) -> None:
+            self.guild = SimpleNamespace(id=int(guild_id))
+            self.messages = []
+
+        async def history(self, **_kwargs):
+            for message in self.messages:
+                yield message
+
+        async def send(self, *, embed, **_kwargs):
+            message = FakeMessage(embed)
+            self.messages.append(message)
+            return message
+
+    channel = FakeTextChannel()
+    client = SimpleNamespace(
+        user=SimpleNamespace(id=999999999999999999),
+        fetch_channel=lambda _channel_id: None,
+    )
+
+    async def fetch_channel(_channel_id):
+        return channel
+
+    client.fetch_channel = fetch_channel
+    fake_discord = SimpleNamespace(
+        Embed=FakeEmbed,
+        TextChannel=FakeTextChannel,
+        NotFound=type("NotFound", (Exception,), {}),
+        AllowedMentions=SimpleNamespace(none=lambda: None),
+        utils=SimpleNamespace(
+            escape_mentions=lambda value: value,
+            escape_markdown=lambda value: value,
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "discord", fake_discord)
+    monkeypatch.setattr(
+        plugin_module,
+        "_discord_runtime",
+        lambda: (None, None, client),
+    )
+    render = {
+        "title": "Docket tool activity",
+        "summary": "Trusted docket-chat request\n1 Docket call",
+        "status": "Completed",
+        "calls": [
+            {
+                "ordinal": 1,
+                "tool_name": "docket_search_records",
+                "state": "succeeded",
+                "elapsed_ms": 42,
+                "outcome": "succeeded",
+            }
+        ],
+        "overflow_count": 0,
+        "updated_at": "<t:1784940000:F> · <t:1784940000:R>",
+    }
+    digest = plugin_module.hashlib.sha256(
+        plugin_module.json.dumps(
+            render,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+    ).hexdigest()
+    payload = {
+        "request_id": str(uuid.uuid4()),
+        "trace_id": str(trace_id),
+        "guild_id": guild_id,
+        "channel_id": channel_id,
+        "render": render,
+        "render_sha256": digest,
+    }
+
+    first = await plugin_module._put_mcp_trace(trace_id, payload)
+    second = await plugin_module._put_mcp_trace(
+        trace_id,
+        {**payload, "request_id": str(uuid.uuid4())},
+    )
+
+    assert first["created"] is True
+    assert second["created"] is False
+    assert len(channel.messages) == 1
+    assert channel.messages[0].edit_count == 1
+    assert channel.messages[0].embeds[0].fields[1]["name"] == (
+        "1. docket_search_records"
+    )
 
 
 @pytest.mark.adversarial
@@ -677,13 +886,6 @@ def test_plugin_accepts_only_bound_persistent_review_navigation(plugin_module, m
         expires_at=expires_at,
         signing_key=b"test-signing-key",
     )
-    refresh_token = issue_projection_proposal_control_token(
-        revision_id,
-        projection_id,
-        "refresh",
-        expires_at,
-        b"test-signing-key",
-    )
     _embed, view = plugin_module._render_embed(
         projection_id,
         {
@@ -706,14 +908,6 @@ def test_plugin_accepts_only_bound_persistent_review_navigation(plugin_module, m
                     "target_page": 1,
                     "token": token,
                 },
-                {
-                    "kind": "proposal_action",
-                    "transition": "proposal_refresh",
-                    "label": "Refresh",
-                    "row": 3,
-                    "action_revision_id": str(revision_id),
-                    "token": refresh_token,
-                },
             ],
             "projection_version": 3,
             "render_sha256": "a" * 64,
@@ -721,10 +915,7 @@ def test_plugin_accepts_only_bound_persistent_review_navigation(plugin_module, m
         },
     )
 
-    assert {item.custom_id for item in view.items} == {
-        f"dkt:n:{token}",
-        f"dkt:p:{refresh_token}",
-    }
+    assert {item.custom_id for item in view.items} == {f"dkt:n:{token}"}
     with pytest.raises(plugin_module.PluginAPIError, match="binding does not match"):
         plugin_module._render_embed(
             projection_id,

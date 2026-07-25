@@ -354,7 +354,12 @@ class ProposalControlService:
                 message="Only a signed Refresh control may request a Calendar refresh.",
             )
         projection = self._projection(request)
-        revision, _action, _approval, _queue_item, _field = self._bound_state(request, projection)
+        revision, _action, approval, _queue_item, _field = self._bound_state(request, projection)
+        if approval.refresh_required_at is None:
+            raise DocketError(
+                code="proposal_refresh_unavailable",
+                message="This proposal has not been marked stale by Docket.",
+            )
         calendar_id = revision.parameters.get("calendar_id")
         if revision.account_id is None or not isinstance(calendar_id, str):
             raise DocketError(
@@ -710,6 +715,11 @@ class ProposalControlService:
         *,
         refresh_started_at: datetime | None,
     ) -> dict[str, object]:
+        if approval.refresh_required_at is None:
+            raise DocketError(
+                code="proposal_refresh_unavailable",
+                message="This proposal has not been marked stale by Docket.",
+            )
         if refresh_started_at is None or revision.account_id is None:
             raise DocketError(
                 code="proposal_refresh_required",

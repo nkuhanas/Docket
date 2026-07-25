@@ -823,7 +823,6 @@ def test_proposal_selects_and_custom_modal_replace_the_revision_in_place(
             "string_select",
             "proposal_action",
             "proposal_action",
-            "proposal_action",
         ]
         priority_control = next(
             control for control in controls if control.get("field") == "priority"
@@ -990,28 +989,8 @@ def test_refresh_rebinds_conflicts_and_edit_modal_replaces_typed_fields(
         message_id = projection.message_id
         thread_id = thread.thread_id
         controls = backend.messages[str(projection.id)]["controls"]
-        refresh_control = next(
-            control for control in controls if control.get("transition") == "proposal_refresh"
-        )
-
-    refresh_request = LocalActionResponse(
-        request_id=uuid.uuid4(),
-        discord_interaction_id="proposal-refresh",
-        discord_user_id=settings.operator_discord_user_id,
-        guild_id=settings.discord_guild_id,
-        channel_id=thread_id,
-        parent_channel_id=settings.queue_channel_id,
-        projection_id=projection_id,
-        message_id=message_id,
-        responded_at=datetime.now(UTC),
-        action_revision_id=proposed.action_revision_id,
-        action_token=refresh_control["token"],
-        transition="proposal_refresh",
-    )
-    with session_factory() as session:
-        assert ProposalControlService(session).prepare_refresh(refresh_request) == (
-            account_id,
-            settings.google_calendar_id,
+        assert not any(
+            control.get("transition") == "proposal_refresh" for control in controls
         )
     refresh_started = datetime.now(UTC)
     with session_factory.begin() as session:
@@ -1046,6 +1025,55 @@ def test_refresh_rebinds_conflicts_and_edit_modal_replaces_typed_fields(
                 provider_etag='"fresh"',
                 synced_at=refresh_started + timedelta(seconds=1),
             )
+        )
+    stale: DocketError | None = None
+    with session_factory.begin() as session:
+        try:
+            _approve(
+                session,
+                short_code=proposed.short_code,
+                interaction_id="proposal-stale-approval",
+            )
+        except DocketError as exc:
+            stale = exc
+    assert stale is not None and stale.code == "target_version_changed"
+    assert runner.run_due_once() is True
+    with session_factory() as session:
+        approval = session.get(Approval, proposed.approval_id)
+        assert approval is not None and approval.refresh_required_at is not None
+        projected = backend.messages[str(projection_id)]
+        assert [control["label"] for control in projected["controls"]] == [
+            "Reject",
+            "Rebuild preview",
+        ]
+        assert any(
+            field["name"] == "Calendar state changed"
+            for field in projected["embed"]["fields"]
+        )
+        refresh_control = next(
+            control
+            for control in projected["controls"]
+            if control.get("transition") == "proposal_refresh"
+        )
+
+    refresh_request = LocalActionResponse(
+        request_id=uuid.uuid4(),
+        discord_interaction_id="proposal-refresh",
+        discord_user_id=settings.operator_discord_user_id,
+        guild_id=settings.discord_guild_id,
+        channel_id=thread_id,
+        parent_channel_id=settings.queue_channel_id,
+        projection_id=projection_id,
+        message_id=message_id,
+        responded_at=datetime.now(UTC),
+        action_revision_id=proposed.action_revision_id,
+        action_token=refresh_control["token"],
+        transition="proposal_refresh",
+    )
+    with session_factory() as session:
+        assert ProposalControlService(session).prepare_refresh(refresh_request) == (
+            account_id,
+            settings.google_calendar_id,
         )
     with session_factory.begin() as session:
         refreshed = ProposalControlService(session).respond(
