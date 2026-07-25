@@ -1,0 +1,332 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$ROOT"
+
+DOCKER_COMMAND=()
+
+die() {
+    printf 'docket: %s\n' "$*" >&2
+    exit 1
+}
+
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || die "required command is missing: $1"
+}
+
+init_docker() {
+    if ((${#DOCKER_COMMAND[@]})); then
+        return
+    fi
+    require_command docker
+    if docker info >/dev/null 2>&1; then
+        DOCKER_COMMAND=(docker)
+    elif command -v sudo >/dev/null 2>&1 && sudo -n docker info >/dev/null 2>&1; then
+        DOCKER_COMMAND=(
+            sudo -n
+            --preserve-env=DOCKET_SERVICE_ENV_FILE,DOCKET_BUILD_REVISION,DOCKET_PORT
+            --preserve-env=DOCKET_DISCORD_PROJECTION_ENABLED,DOCKET_CREDENTIALS_DIR
+            docker
+        )
+    else
+        die "Docker is unavailable; grant access or run 'sudo -v' first"
+    fi
+}
+
+docker_engine() {
+    init_docker
+    "${DOCKER_COMMAND[@]}" "$@"
+}
+
+compose() {
+    init_docker
+    "${DOCKER_COMMAND[@]}" compose "$@"
+}
+
+safe_test_environment() {
+    mkdir -p "$ROOT/.runtime"
+    export DOCKET_ENVIRONMENT=test
+    export DOCKET_DATABASE_URL="sqlite+pysqlite:///$ROOT/.runtime/check.db"
+    export DOCKET_AUTO_CREATE_SCHEMA=true
+    export DOCKET_CALENDAR_READS_ENABLED=false
+    export DOCKET_EXTERNAL_WRITES_ENABLED=false
+    export DOCKET_DISCORD_PROJECTION_ENABLED=false
+    export DOCKET_TO_HERMES_TOKEN_FILE="$ROOT/secrets/smoke/docket_to_hermes_token"
+    export HERMES_TO_DOCKET_TOKEN_FILE="$ROOT/secrets/smoke/hermes_to_docket_token"
+    export DOCKET_INTERACTION_SIGNING_KEY_FILE="$ROOT/secrets/smoke/interaction_signing_key"
+    export GOOGLE_OAUTH_CLIENT_FILE="$ROOT/secrets/smoke/google_oauth_client.json"
+    export GOOGLE_OAUTH_TOKEN_FILE="$ROOT/secrets/smoke/google_oauth_token.json"
+}
+
+check() {
+    require_command uv
+    safe_test_environment
+    uv sync --frozen
+    uv run pytest
+    uv run ruff check .
+    uv run mypy
+}
+
+compose_smoke() (
+    require_command uv
+    init_docker
+
+    local project=${DOCKET_SMOKE_PROJECT:-docket-smoke-${UID:-local}}
+    local port=${DOCKET_SMOKE_PORT:-18080}
+    export DOCKET_SERVICE_ENV_FILE="$ROOT/.env.example"
+    export DOCKET_BUILD_REVISION
+    DOCKET_BUILD_REVISION=$(git rev-parse HEAD 2>/dev/null || printf unknown)
+    export DOCKET_PORT="$port"
+    export DOCKET_DISCORD_PROJECTION_ENABLED=false
+    export DOCKET_CREDENTIALS_DIR="$ROOT/secrets/smoke"
+    export DOCKET_SMOKE_URL="http://127.0.0.1:$port"
+
+    smoke_compose() {
+        compose --project-name "$project" --env-file "$ROOT/.env.example" "$@"
+    }
+    cleanup() {
+        smoke_compose down --volumes --remove-orphans >/dev/null 2>&1 || true
+    }
+    trap cleanup EXIT INT TERM
+
+    cleanup
+    uv sync --frozen
+    smoke_compose config --quiet
+    smoke_compose up -d --build --wait --wait-timeout 180 postgres docket
+    uv run python scripts/compose-mcp-smoke.py
+)
+
+build_image() {
+    init_docker
+    local revision
+    local short_revision
+    local image_id
+    revision=$(git rev-parse HEAD 2>/dev/null || printf unknown)
+    short_revision=${revision:0:12}
+    export DOCKET_BUILD_REVISION="$revision"
+    compose config --quiet
+    compose build docket
+    image_id=$(docker_engine image inspect docket-docket:latest --format '{{.Id}}')
+    [[ -n "$image_id" ]] || die "Docket image was built but could not be identified"
+    docker_engine image tag "$image_id" "docket-docket:$short_revision"
+    printf 'Built docket-docket:%s (%s)\n' "$short_revision" "$image_id"
+}
+
+env_value() {
+    local key=$1
+    awk -v key="$key" 'index($0, key "=") == 1 { print substr($0, length(key) + 2); exit }' \
+        "$ROOT/.env"
+}
+
+operational_counts() {
+    compose exec -T postgres psql -U docket -d docket -Atc \
+        "select
+           (select count(*) from operations
+             where status in ('pending','running','reconciliation_required'))
+           || ' ' ||
+           (select count(*) from outbox_events
+             where status in ('pending','delivering'));"
+}
+
+assert_operationally_idle() {
+    local counts
+    local operations
+    local outbox
+    counts=$(operational_counts)
+    read -r operations outbox <<<"$counts"
+    [[ "$operations" == "0" ]] ||
+        die "deployment blocked: $operations active or reconciliation-required operation(s)"
+    [[ "$outbox" == "0" ]] ||
+        die "deployment blocked: $outbox pending or delivering outbox event(s)"
+}
+
+wait_for_operational_idle() {
+    local attempt
+    local counts
+    for attempt in {1..30}; do
+        counts=$(operational_counts)
+        if [[ "$counts" == "0 0" ]]; then
+            return
+        fi
+        sleep 1
+    done
+    assert_operationally_idle
+}
+
+repository_name() {
+    gh repo view --json nameWithOwner --jq .nameWithOwner
+}
+
+predeploy() {
+    require_command git
+    require_command gh
+    [[ -f "$ROOT/.env" ]] || die "deployment requires $ROOT/.env"
+    [[ "$(env_value DOCKET_ENVIRONMENT)" == "production" ]] ||
+        die "deployment requires DOCKET_ENVIRONMENT=production"
+    [[ -z "$(git status --porcelain)" ]] || die "deployment requires a clean worktree"
+    [[ "$(git branch --show-current)" == "main" ]] || die "deployment requires the main branch"
+
+    git fetch --quiet origin main
+    local revision
+    local upstream
+    local repo
+    local conclusion
+    revision=$(git rev-parse HEAD)
+    upstream=$(git rev-parse origin/main)
+    [[ "$revision" == "$upstream" ]] || die "HEAD must exactly match origin/main"
+    repo=$(repository_name)
+    conclusion=$(
+        gh run list \
+            --repo "$repo" \
+            --workflow CI \
+            --commit "$revision" \
+            --limit 1 \
+            --json status,conclusion \
+            --jq 'if length == 0 then "missing" else .[0].status + ":" + (.[0].conclusion // "") end'
+    )
+    [[ "$conclusion" == "completed:success" ]] ||
+        die "CI for $revision is not green (state: $conclusion)"
+
+    init_docker
+    [[ -n "$(compose ps -q postgres)" ]] || die "the production PostgreSQL service is not running"
+    assert_operationally_idle
+    printf 'Predeploy passed for %s at %s\n' "$repo" "$revision"
+}
+
+backup_database() {
+    local revision
+    local timestamp
+    local destination
+    revision=$(git rev-parse --short=12 HEAD)
+    timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+    destination="$ROOT/backups/docket-$timestamp-$revision.dump"
+    mkdir -p "$ROOT/backups"
+    umask 077
+    compose exec -T postgres pg_dump -U docket -d docket --format=custom >"$destination"
+    [[ -s "$destination" ]] || die "database backup is empty: $destination"
+    printf '%s\n' "$destination"
+}
+
+wait_for_docket() {
+    local attempt
+    for attempt in {1..60}; do
+        if compose exec -T docket python -c \
+            "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)" \
+            >/dev/null 2>&1; then
+            return
+        fi
+        sleep 2
+    done
+    die "Docket did not become healthy within 120 seconds"
+}
+
+wait_for_hermes() {
+    local first_line=$1
+    local attempt
+    local segment
+    for attempt in {1..60}; do
+        if [[ -f "$ROOT/.runtime/hermes/logs/agent.log" ]]; then
+            segment=$(tail -n +"$first_line" "$ROOT/.runtime/hermes/logs/agent.log")
+            if rg -q '\[Discord\] Connected as ' <<<"$segment" &&
+                rg -q 'registered 20 tool\(s\)' <<<"$segment" &&
+                rg -q 'Gateway running with 1 platform\(s\)' <<<"$segment"; then
+                return
+            fi
+        fi
+        sleep 2
+    done
+    die "Hermes did not connect to Discord with the expected MCP registry within 120 seconds"
+}
+
+postdeploy() {
+    local expected_plugin_version
+    local plugin_line
+    wait_for_docket
+    compose exec -T docket ./.venv/bin/alembic current | rg -q '\(head\)' ||
+        die "Docket database is not at the Alembic head"
+    expected_plugin_version=$(
+        awk '$1 == "version:" { print $2; exit }' \
+            "$ROOT/hermes/plugin/docket_discord/plugin.yaml"
+    )
+    plugin_line=$(compose exec -T hermes hermes plugins list --plain --no-bundled |
+        rg 'docket-discord')
+    rg -q "enabled[[:space:]]+user[[:space:]]+$expected_plugin_version[[:space:]]+docket-discord" \
+        <<<"$plugin_line" ||
+        die "Hermes did not load docket-discord $expected_plugin_version"
+    compose exec -T hermes python -c \
+        "import socket; s=socket.create_connection(('127.0.0.1',8787),3); s.close()" ||
+        die "Hermes projection listener is unreachable"
+    wait_for_operational_idle
+}
+
+deploy() {
+    predeploy
+    local backup
+    local old_container
+    local old_image
+    local rollback_tag
+    local log_first_line=1
+    local revision
+    local timestamp
+
+    revision=$(git rev-parse --short=12 HEAD)
+    timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+    backup=$(backup_database)
+    printf 'Database backup created: %s\n' "$backup"
+    old_container=$(compose ps -q docket)
+    if [[ -n "$old_container" ]]; then
+        old_image=$(docker_engine inspect --format '{{.Image}}' "$old_container")
+        rollback_tag="docket-docket:rollback-$timestamp"
+        docker_engine image tag "$old_image" "$rollback_tag"
+        printf 'Previous image retained as %s\n' "$rollback_tag"
+    else
+        rollback_tag="none"
+    fi
+    if [[ -f "$ROOT/.runtime/hermes/logs/agent.log" ]]; then
+        log_first_line=$(( $(wc -l <"$ROOT/.runtime/hermes/logs/agent.log") + 1 ))
+    fi
+
+    build_image
+    compose up -d --no-build --force-recreate docket hermes
+    wait_for_hermes "$log_first_line"
+    postdeploy
+    printf 'Deployed %s\nBackup: %s\nPrevious image: %s\n' \
+        "$revision" "$backup" "$rollback_tag"
+}
+
+status() {
+    printf 'Source: %s\n' "$(git log -1 --oneline)"
+    init_docker
+    compose ps
+    if [[ -n "$(compose ps -q postgres)" ]]; then
+        local counts
+        counts=$(operational_counts)
+        printf 'Active operations / pending outbox: %s\n' "$counts"
+    fi
+}
+
+usage() {
+    cat <<'EOF'
+Usage: scripts/docket COMMAND
+
+Commands:
+  check           Run the frozen test, lint, and type-check suite safely.
+  compose-smoke   Build and smoke an isolated dummy Postgres+Docket stack.
+  build           Validate Compose and build a revision-labelled Docket image.
+  predeploy       Verify source, CI, environment, and durable-state gates.
+  deploy          Back up PostgreSQL, rebuild/recreate, and verify the live stack.
+  status          Show source, service, and bounded durable-state status.
+EOF
+}
+
+case "${1:-}" in
+    check) check ;;
+    compose-smoke) compose_smoke ;;
+    build) build_image ;;
+    predeploy) predeploy ;;
+    deploy) deploy ;;
+    status) status ;;
+    -h|--help|help) usage ;;
+    *) usage >&2; exit 2 ;;
+esac

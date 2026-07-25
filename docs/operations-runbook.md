@@ -589,6 +589,32 @@ valid bearer is necessary but not sufficient for a store operation.
 
 ## Reload and rebuild matrix
 
+Use the checked-in lifecycle entry point instead of reconstructing the common
+sequences from this runbook:
+
+```bash
+scripts/docket check
+scripts/docket compose-smoke
+scripts/docket build
+scripts/docket predeploy
+scripts/docket deploy
+scripts/docket status
+```
+
+`compose-smoke` is forced onto a separate Compose project, volume, port, dummy
+credential directory, and `.env.example`; it is safe when the production
+`.env` exists. `predeploy` requires a clean `main` exactly equal to
+`origin/main`, successful GitHub CI for that SHA, production mode, and drained
+operations/outbox state. `deploy` then writes a PostgreSQL custom-format backup
+under ignored `backups/`, retains the old image with a timestamped rollback
+tag, rebuilds and recreates Docket and Hermes, and verifies Docket health,
+Alembic head, the Discord gateway, the twenty-tool MCP registry, the declared
+Hermes plugin version, its private listener, and drained durable state.
+
+The image tag is recovery evidence, not permission to downgrade a migrated
+database. Restore or migrate the database according to the affected revision
+before running older application code.
+
 | Change | Required action | Why |
 | --- | --- | --- |
 | Docket Python source or dependency lock | `docker compose up -d --build docket` | Source and virtual environment are image layers |

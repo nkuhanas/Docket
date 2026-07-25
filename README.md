@@ -42,27 +42,26 @@ basic smoke also cannot contact Discord.
 ## Quick smoke
 
 ```bash
-test -f .env || cp .env.example .env
-uv sync
-uv run alembic upgrade head
-uv run pytest
-uv run ruff check .
-uv run mypy
-docker compose up --build -d postgres docket
-uv run python scripts/compose-mcp-smoke.py
+scripts/docket check
+scripts/docket compose-smoke
 ```
 
-Compose publishes Docket only on `127.0.0.1:8000`; it is not exposed on the
-host's external interfaces. The Docket container applies Alembic migrations
-before starting the API. The MCP smoke uses the checked-in dummy service token
-and a fake provider, and makes no Discord or Google calls.
+The Compose smoke uses a separate `docket-smoke-*` project, volume, and host
+port `18080`, and forces `.env.example` plus the checked-in dummy credentials.
+It never loads the live service `.env`, Discord, or Google adapters. The Docket
+container applies Alembic migrations before starting the API, and the MCP smoke
+checks health, authentication, the exact tool registry, storage, and search.
 
-If Docker reports permission denied for `/var/run/docker.sock`, prefix the
-Compose commands with `sudo`; that is required by this host's current group
-configuration.
+If Docker reports permission denied for `/var/run/docker.sock`, run `sudo -v`
+once before the lifecycle command; it will use non-interactive `sudo docker`
+afterward. Do not run the raw Compose smoke sequence manually against a
+configured production `.env`.
 
-Do not run the Compose smoke against a configured production `.env`; it is
-deliberately restricted to the checked-in dummy credential set.
+Development and deployment conventions are recorded in
+[`CONTRIBUTING.md`](CONTRIBUTING.md). On the configured host,
+`scripts/docket predeploy` performs read-only source, CI, environment, and
+durable-state checks. `scripts/docket deploy` additionally creates a PostgreSQL
+backup, rebuilds and recreates Docket and Hermes, and verifies the live stack.
 
 ## Private search for Hermes
 

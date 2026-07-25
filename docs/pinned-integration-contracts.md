@@ -12,7 +12,7 @@ the candidate container's real classes and one live Discord message.
 | Hermes Agent | tag `v2026.7.20`; deployed and configured image digest `sha256:f7b35053268f532f98955195c909f15a230470fbcbdacaa9fdecb95707dad04a`; OCI revision label `3ef6bbd201263d354fd83ec55b3c306ded2eb72a` | The digest is the runtime pin. `HERMES_SOURCE_COMMIT` mirrors the OCI revision for traceability but still has no enforcement role. |
 | discord.py inside Hermes | `2.7.1` | Docket relies on public-thread, embed, view, raw interaction, and archived-history behavior from this bundled version. |
 | MCP Python SDK / FastMCP | `mcp==1.28.1`, locked in `uv.lock` | Python package is exact, but transport and schema behavior also depend on the application mount and Hermes adapter. |
-| Docket Python base | `python:3.12-slim` | Minor line is pinned, image digest is not; future rebuilds can receive a different base image. |
+| Docket Python base | `python:3.12-slim` | Minor line is pinned, image digest is not; future rebuilds can receive a different base image. The built image carries the exact Git revision in `org.opencontainers.image.revision`. |
 | PostgreSQL | `postgres:16.9-bookworm` | Version tag is pinned, image digest is not; persistent-volume semantics survive image replacement. |
 | SearXNG | dated tag plus SHA-256 image digest | This is the strongest container pin in the stack; keep both tag and digest when upgrading. |
 | Local developer runtime | selected by `uv` on the host | It may differ from Docket's Python 3.12 container and Hermes's internal Python runtime. Container verification remains authoritative. |

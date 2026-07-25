@@ -21,3 +21,7 @@ USER docket
 
 EXPOSE 8000
 CMD ["./.venv/bin/uvicorn", "docket.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+ARG DOCKET_BUILD_REVISION=unknown
+LABEL org.opencontainers.image.source="https://github.com/nkuhanas/Docket" \
+      org.opencontainers.image.revision="${DOCKET_BUILD_REVISION}"

@@ -18,7 +18,10 @@ services:
     networks: [docket-internal]
 
   docket:
-    build: .
+    build:
+      context: .
+      args:
+        DOCKET_BUILD_REVISION: ${DOCKET_BUILD_REVISION:-unknown}
     restart: unless-stopped
     user: "${DOCKET_UID:-10001}:${DOCKET_GID:-10001}"
     command:
@@ -26,7 +29,7 @@ services:
       - -c
       - ./.venv/bin/alembic upgrade head && exec ./.venv/bin/uvicorn docket.main:app --host 0.0.0.0 --port 8000
     env_file:
-      - path: .env
+      - path: ${DOCKET_SERVICE_ENV_FILE:-.env}
         required: false
     environment:
       DOCKET_DATABASE_URL: ${DOCKET_DATABASE_URL:-postgresql+psycopg://docket:docket-smoke@postgres:5432/docket}
