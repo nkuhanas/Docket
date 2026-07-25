@@ -51,6 +51,12 @@ _PROJECTION_EVENTS = {
     "discord.projection.requested",
     "discord.projection.refresh_requested",
 }
+_STANDALONE_CALENDAR_ACTIONS = {
+    "calendar_create_event",
+    "calendar_update_event",
+    "calendar_update_reminders",
+    "calendar_cancel_event",
+}
 logger = structlog.get_logger(__name__)
 
 
@@ -1558,17 +1564,11 @@ class DiscordProjectionRunner:
                     "inline": False,
                 }
             )
-        fields = [
-            {
-                "name": self._bounded(str(field["name"]), 256),
-                "value": self._bounded(str(field["value"]), 1024),
-                "inline": bool(field.get("inline", False)),
-            }
-            for field in fields[:25]
-        ]
         display_title = queue_item.title
         subject: str | None = None
+        standalone_calendar_card = False
         if revision is not None and calendar_action:
+            standalone_calendar_card = revision.action_type in _STANDALONE_CALENDAR_ACTIONS
             event = revision.preview.get("event")
             if isinstance(event, dict) and event.get("title"):
                 subject = str(event["title"])
@@ -1591,15 +1591,32 @@ class DiscordProjectionRunner:
                 approval,
                 operation,
             )
-        description = queue_item.summary
+            if standalone_calendar_card and subject:
+                fields.insert(
+                    0,
+                    {
+                        "name": "Name",
+                        "value": subject,
+                        "inline": False,
+                    },
+                )
+        fields = [
+            {
+                "name": self._bounded(str(field["name"]), 256),
+                "value": self._bounded(str(field["value"]), 1024),
+                "inline": bool(field.get("inline", False)),
+            }
+            for field in fields[:25]
+        ]
+        description: str | None = queue_item.summary
         if calendar_action:
-            state_description = queue_item.summary
+            state_description: str | None = queue_item.summary
             if approval is not None and approval.status == ApprovalStatus.PENDING.value:
                 state_description = "Review the details below. Nothing changes until you approve."
             elif action is not None and action.status == "rejected":
                 state_description = "Rejected. No Calendar change was made."
             elif operation is not None and operation.status == "succeeded":
-                state_description = "Completed on your configured Docket calendar."
+                state_description = None
             elif operation is not None and operation.status in {
                 "failed",
                 "partial_failed",
@@ -1608,7 +1625,12 @@ class DiscordProjectionRunner:
                 state_description = "This Calendar operation needs attention."
             elif operation is not None and operation.status in {"pending", "running"}:
                 state_description = "Approved and waiting for Calendar execution."
-            description = f"{subject}\n{state_description}" if subject else state_description
+            if standalone_calendar_card:
+                description = state_description
+            elif subject and state_description:
+                description = f"{subject}\n{state_description}"
+            else:
+                description = subject or state_description
         color = 0xD6A756
         if revision is not None and revision.action_type == "calendar_cancel_event":
             color = 0xC0392B
@@ -1648,7 +1670,7 @@ class DiscordProjectionRunner:
             color = 0x747F8D
         embed = {
             "title": self._bounded(display_title, 256),
-            "description": self._bounded(description, 4096),
+            "description": self._bounded(description, 4096) if description else None,
             "fields": fields,
             "color": color,
             "timestamp": (

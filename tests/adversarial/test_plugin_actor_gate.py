@@ -487,6 +487,7 @@ def test_reminder_fields_localize_instants_but_preserve_all_day_dates(
 ) -> None:
     timed = plugin_module._calendar_reminder_fields(
         {
+            "summary": "Timed event",
             "start": "<t:1785439800:F> · <t:1785439800:R>",
             "end": "<t:1785440700:F>",
             "timezone": "America/Los_Angeles",
@@ -494,12 +495,14 @@ def test_reminder_fields_localize_instants_but_preserve_all_day_dates(
         }
     )
     assert timed == [
+        ("Name", "Timed event", False),
         ("Starts", "<t:1785439800:F> · <t:1785439800:R>", False),
         ("Ends", "<t:1785440700:F>", False),
     ]
 
     all_day = plugin_module._calendar_reminder_fields(
         {
+            "summary": "All-day event",
             "start": "2026-07-30",
             "end": "2026-07-31",
             "timezone": "America/Los_Angeles",
@@ -507,6 +510,7 @@ def test_reminder_fields_localize_instants_but_preserve_all_day_dates(
         }
     )
     assert all_day == [
+        ("Name", "All-day event", False),
         ("Start date", "2026-07-30", True),
         ("End date (exclusive)", "2026-07-31", True),
         ("Calendar timezone", "America/Los_Angeles", False),
@@ -524,8 +528,9 @@ def test_plugin_rejects_aliased_channel_lanes(plugin_module, monkeypatch) -> Non
 
 def test_failed_item_can_render_one_canonical_ignore_control(plugin_module, monkeypatch) -> None:
     class FakeEmbed:
-        def __init__(self, **_kwargs) -> None:
+        def __init__(self, **kwargs) -> None:
             self.footer = None
+            self.description = kwargs.get("description")
 
         def add_field(self, **_kwargs) -> None:
             return None
@@ -594,6 +599,30 @@ def test_failed_item_can_render_one_canonical_ignore_control(plugin_module, monk
     assert "ref " in _embed.footer
     assert "render:" not in _embed.footer
     assert "components:" not in _embed.footer
+
+    terminal_embed, terminal_view = plugin_module._render_embed(
+        projection_id,
+        {
+            "embed": {
+                "title": "Event updated",
+                "description": None,
+                "fields": [
+                    {
+                        "name": "Name",
+                        "value": "Check my email",
+                        "inline": False,
+                    }
+                ],
+                "color": 1,
+            },
+            "controls": [],
+            "projection_version": 2,
+            "render_sha256": "c" * 64,
+            "component_sha256": "d" * 64,
+        },
+    )
+    assert terminal_embed.description is None
+    assert terminal_view is None
 
 
 def test_plugin_accepts_only_bound_persistent_review_navigation(plugin_module, monkeypatch) -> None:

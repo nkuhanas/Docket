@@ -345,8 +345,9 @@ def test_update_card_prioritizes_operator_changes_and_terminal_state(
         fields = {field["name"]: field["value"] for field in projected["embed"]["fields"]}
         assert projected["embed"]["title"] == "Review event update"
         assert projected["embed"]["description"] == (
-            "Check my email\nReview the details below. Nothing changes until you approve."
+            "Review the details below. Nothing changes until you approve."
         )
+        assert fields["Name"] == "Check my email"
         assert fields["When"] == (
             "Starts <t:1785439800:F>\n"
             "Ends <t:1785440700:F>"
@@ -377,10 +378,9 @@ def test_update_card_prioritizes_operator_changes_and_terminal_state(
     fields = {field["name"]: field["value"] for field in projected["embed"]["fields"]}
     assert projected["message_id"] == message_id
     assert projected["embed"]["title"] == "Event updated"
-    assert projected["embed"]["description"] == (
-        "Check my email\nCompleted on your configured Docket calendar."
-    )
+    assert projected["embed"]["description"] is None
     assert projected["embed"]["color"] == 0x3BA55D
+    assert fields["Name"] == "Check my email"
     assert fields["Delta · Reminders"].endswith("After: 5 minutes")
     assert {
         "Status",
@@ -516,8 +516,9 @@ def test_proposal_selects_and_custom_modal_replace_the_revision_in_place(
         fields = {field["name"]: field["value"] for field in projected["embed"]["fields"]}
         assert projected["embed"]["title"] == "Review new event"
         assert projected["embed"]["description"] == (
-            "Check my email\nReview the details below. Nothing changes until you approve."
+            "Review the details below. Nothing changes until you approve."
         )
+        assert fields["Name"] == "Check my email"
         assert fields["When"] == (
             "Starts <t:1785438000:F>\n"
             "Ends <t:1785438900:F>"

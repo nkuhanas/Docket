@@ -555,13 +555,16 @@ def _escaped(value: str, maximum: int) -> str:
 
 
 def _calendar_reminder_fields(render: dict[str, Any]) -> list[tuple[str, str, bool]]:
+    identity = [("Name", str(render["summary"]), False)]
     if bool(render["is_all_day"]):
         return [
+            *identity,
             ("Start date", str(render["start"]), True),
             ("End date (exclusive)", str(render["end"]), True),
             ("Calendar timezone", str(render["timezone"]), False),
         ]
     return [
+        *identity,
         ("Starts", str(render["start"]), False),
         ("Ends", str(render["end"]), False),
     ]
@@ -653,13 +656,18 @@ def _render_embed(
     }:
         raise PluginAPIError("invalid_embed", "Embed model contains unsupported fields", 422)
     title = _safe_text(model.get("title"), 256, "title")
-    description = _safe_text(model.get("description"), 4096, "description")
+    description_value = model.get("description")
+    description = (
+        _safe_text(description_value, 4096, "description")
+        if description_value is not None
+        else None
+    )
     fields = model.get("fields", [])
     if not isinstance(fields, list) or len(fields) > 25:
         raise PluginAPIError("invalid_embed", "Embed field count exceeds its bound", 422)
     escaped_title = _escaped(title, 256)
-    escaped_description = _escaped(description, 4096)
-    aggregate = len(escaped_title) + len(escaped_description)
+    escaped_description = _escaped(description, 4096) if description is not None else None
+    aggregate = len(escaped_title) + len(escaped_description or "")
     timestamp_value = model.get("timestamp")
     try:
         timestamp = (
@@ -1451,13 +1459,12 @@ async def _post_calendar_reminder(payload: dict[str, Any]) -> dict[str, Any]:
         title = "Calendar reminder"
     embed = discord.Embed(
         title=title,
-        description=_escaped(summary, 512),
         color=0x4F8CC9 if not render["late"] else 0xD6A756,
     )
     for field_name, field_value, inline in _calendar_reminder_fields(render):
         embed.add_field(
             name=field_name,
-            value=_escaped(field_value, 128),
+            value=_escaped(field_value, 512 if field_name == "Name" else 128),
             inline=inline,
         )
     if location is not None:

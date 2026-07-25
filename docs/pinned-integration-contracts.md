@@ -48,7 +48,7 @@ on every request. Docket's callback uses the independent
 
 Hermes performs overlapping plugin discovery during this pin's startup. Each
 discovery pass imports an isolated plugin module, so module globals alone cannot
-prevent a transient second bind. Plugin `0.10.0` starts the private HTTP server
+prevent a transient second bind. Plugin `0.11.0` starts the private HTTP server
 under a background supervisor: an `EADDRINUSE` defers that copy without failing
 plugin registration, and it retries if the process that temporarily owned the
 port exits. Healthy startup may contain one `startup deferred` line, followed
@@ -91,10 +91,13 @@ Pinned outbound assumptions to revalidate:
   message; raw request/provider payloads and per-item progress never cross this
   seam.
 
-Plugin `0.10.0` renders timed reminder start/end values as Docket-supplied native
-Discord timestamps and omits a redundant timezone field. All-day reminders
-instead render fixed start/end dates plus the Calendar timezone. Timestamp
-tokens do not grant mention authority and `AllowedMentions.none()` remains set.
+Plugin `0.11.0` renders timed reminder start/end values as Docket-supplied native
+Discord timestamps, puts the event subject under the native `Name` field, and
+omits a redundant timezone field. All-day reminders instead render fixed
+start/end dates plus the Calendar timezone. Projection embeds may omit their
+description when a successful terminal title and `Name` field are sufficient.
+Timestamp tokens do not grant mention authority and `AllowedMentions.none()`
+remains set.
 
 The current Docket deployment runs one Uvicorn process containing both the
 trusted callback routes and the projection worker. A successful component
