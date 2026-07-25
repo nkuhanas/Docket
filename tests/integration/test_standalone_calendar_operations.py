@@ -705,6 +705,14 @@ def test_recurring_series_cancellation_binds_master_and_cleans_every_instance(
             )
         assert stale.value.code == "target_version_changed"
         link.provider_etag = '"series-current"'
+        sync_state = session.scalar(
+            select(CalendarSyncState).where(
+                CalendarSyncState.account_id == account_id,
+                CalendarSyncState.calendar_id == settings.google_calendar_id,
+            )
+        )
+        assert sync_state is not None and sync_state.last_success_at is not None
+        sync_state.last_success_at = sync_state.last_success_at + timedelta(seconds=1)
         session.flush()
         operation_id = _approve(
             session,

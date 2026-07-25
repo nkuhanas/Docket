@@ -287,12 +287,19 @@ class ApprovalService:
                     CalendarSyncState.calendar_id == revision.parameters.get("calendar_id"),
                 )
             )
+            binds_complete_snapshot = revision.action_type not in {
+                "calendar_cancel_event",
+                "calendar_update_reminders",
+            }
             if (
                 sync_state is None
                 or sync_state.status != "current"
                 or sync_state.last_success_at is None
-                or _as_utc(sync_state.last_success_at).isoformat()
-                != calendar_target.get("last_success_at")
+                or (
+                    binds_complete_snapshot
+                    and _as_utc(sync_state.last_success_at).isoformat()
+                    != calendar_target.get("last_success_at")
+                )
                 or (utc_now() - _as_utc(sync_state.last_success_at)).total_seconds()
                 > get_settings().calendar_stale_seconds
             ):

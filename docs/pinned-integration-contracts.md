@@ -329,6 +329,12 @@ Existing-event mutations distinguish one occurrence or non-recurring event
 `recurring_event_id` returned by the bounded lookup; occurrence/master
 substitution fails closed. The master identity and ETag live on the exact
 Docket `calendar_links` row rather than an expanded occurrence cache row.
+Cancellation and reminder-only approvals require a current, non-stale complete
+cache plus the exact bound event/master ETag, but do not require the cache's
+`last_success_at` to remain byte-for-byte unchanged. A later harmless complete
+refresh therefore cannot invalidate an earlier independent card. Create,
+event-content update, and aggregate schedule approvals remain bound to the
+exact complete snapshot because their conflict previews depend on it.
 The rule list supplies current canonical identities for diagnosis after session
 compaction, avoiding a past-session search. Reminder destinations are fixed:
 Docket binds Google popup plus the due-date queue thread internally.
