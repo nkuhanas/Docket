@@ -701,6 +701,11 @@ configuration. Diff template changes explicitly before applying, restart Hermes
 after active-config changes, and send `/reload-mcp` in existing sessions after a
 tool/schema change.
 
+`scripts/docket deploy` runs this synchronization before recreating Hermes. This
+is a release invariant: the gateway readiness gate compares its startup registry
+with the tool contract, so a stale active allowlist fails the deployment instead
+of silently hiding newly published tools.
+
 Preparation rewrites the ignored Hermes `.env` from the credential files and
 maps `DOCKET_OPERATOR_DISCORD_USER_ID` to Hermes' `DISCORD_ALLOWED_USERS`. It
 does not carry forward `DISCORD_HOME_CHANNEL`. Compose repeats the operator

@@ -300,6 +300,7 @@ deploy() {
     else
         rollback_tag="none"
     fi
+    "$ROOT/scripts/prepare-hermes-home.sh"
     if [[ -f "$ROOT/.runtime/hermes/logs/agent.log" ]]; then
         log_first_line=$(( $(wc -l <"$ROOT/.runtime/hermes/logs/agent.log") + 1 ))
     fi
