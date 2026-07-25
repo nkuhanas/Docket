@@ -215,6 +215,8 @@ backup_database() {
     umask 077
     compose exec -T postgres pg_dump -U docket -d docket --format=custom >"$destination"
     [[ -s "$destination" ]] || die "database backup is empty: $destination"
+    chmod 600 "$destination" ||
+        die "could not restrict database backup permissions: $destination"
     printf '%s\n' "$destination"
 }
 
