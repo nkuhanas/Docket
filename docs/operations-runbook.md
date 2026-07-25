@@ -629,7 +629,7 @@ credential directory, and `.env.example`; it is safe when the production
 operations/outbox state. `deploy` then writes a PostgreSQL custom-format backup
 under ignored `backups/`, retains the old image with a timestamped rollback
 tag, rebuilds and recreates Docket and Hermes, and verifies Docket health,
-Alembic head, the Discord gateway, the twenty-tool MCP registry, the declared
+Alembic head, the Discord gateway, the 22-tool MCP registry, the declared
 Hermes plugin version, its private listener, and drained durable state.
 
 The image tag is recovery evidence, not permission to downgrade a migrated

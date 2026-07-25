@@ -236,12 +236,17 @@ wait_for_docket() {
 wait_for_hermes() {
     local first_line=$1
     local attempt
+    local expected_tool_count
     local segment
+    expected_tool_count=$(
+        uv run python -c \
+            "import runpy; print(len(runpy.run_path('scripts/compose-mcp-smoke.py')['EXPECTED_TOOLS']))"
+    )
     for attempt in {1..60}; do
         if [[ -f "$ROOT/.runtime/hermes/logs/agent.log" ]]; then
             segment=$(tail -n +"$first_line" "$ROOT/.runtime/hermes/logs/agent.log")
             if rg -q '\[Discord\] Connected as ' <<<"$segment" &&
-                rg -q 'registered 20 tool\(s\)' <<<"$segment" &&
+                rg -q "registered ${expected_tool_count} tool\\(s\\)" <<<"$segment" &&
                 rg -q 'Gateway running with 1 platform\(s\)' <<<"$segment"; then
                 return
             fi
