@@ -2,8 +2,9 @@
 
 This record covers the Full Calendar control closure release deployed on
 2026-07-22. The private implementation specification remains outside this
-repository. Automated and deployment evidence is complete; operator-present
-Google/Discord smokes are intentionally still pending.
+repository. Automated and deployment evidence is complete. The operator-present
+standalone Google/Discord lifecycle is complete; aggregate schedule execution
+remains pending.
 
 ## Migration and identity contract
 
@@ -192,7 +193,7 @@ existing projection and Discord message in one attempt. Projection
 `20bfb771-26a9-4238-8736-fa154f0915e9` advanced from version 1 to 2 without
 creating a proposal, approval, thread, or message.
 
-The remaining operator-present gate is:
+The remaining aggregate operator-present gate is:
 
 1. inspect every immutable item through Review items, approve once, and verify
    the expected Calendar series, ten-minute Google popups, activated Docket
@@ -200,7 +201,36 @@ The remaining operator-present gate is:
 2. repeat the same proposal from a new Discord message before approval in a
    separate harmless smoke and verify Docket points to the existing card rather
    than projecting a second one; and
-3. remove the disposable events through typed, separately approved Docket
-   cancellation proposals.
+3. remove the resulting disposable series through typed, separately approved
+   Docket cancellation proposals.
 
 No live gate result should be inferred from the automated fake-provider suite.
+
+## Standalone production lifecycle closure
+
+On 2026-07-24, with production Calendar writes explicitly enabled and the
+operator present, one disposable standalone event completed the full typed
+lifecycle:
+
+1. `calendar_create_event` created the event on Google in one operation attempt,
+   linked it to Docket, configured the canonical reminder plan, and projected
+   terminal queue and system state.
+2. `calendar_update_event` changed its time and reminder lead in place in one
+   operation attempt. The same provider event and Docket link were retained.
+3. `calendar_cancel_event` was explicitly proposed through a destructive card
+   and approved by the configured operator. Approval was consumed by operation
+   `f36c7cd2-213f-409f-9e0f-374574affb49`, which succeeded on its first
+   attempt.
+
+After cancellation, the generalized Calendar link snapshot and current cache
+row both reported `cancelled`. The ten-minute and five-minute canonical reminder
+rules were disabled at version 2, and both materialized notifications were
+cancelled with `reminder_rule_disabled`. The terminal queue projection delivered
+at version 3, both operation lifecycle system-log events delivered on their
+first attempt, and PostgreSQL contained no pending/running/reconciliation
+operation or pending/delivering outbox row.
+
+This closes the live standalone create, edit, reminder replacement, and
+cancellation portion of the Milestone 3.6 gate. It does not substitute for the
+remaining aggregate schedule execution, duplicate-proposal, per-item reminder,
+and cleanup evidence above.
