@@ -495,7 +495,7 @@ def test_reminder_fields_localize_instants_but_preserve_all_day_dates(
         }
     )
     assert timed == [
-        ("Name", "Timed event", False),
+        ("Title", "Timed event", False),
         ("Starts", "<t:1785439800:F> · <t:1785439800:R>", False),
         ("Ends", "<t:1785440700:F>", False),
     ]
@@ -510,7 +510,7 @@ def test_reminder_fields_localize_instants_but_preserve_all_day_dates(
         }
     )
     assert all_day == [
-        ("Name", "All-day event", False),
+        ("Title", "All-day event", False),
         ("Start date", "2026-07-30", True),
         ("End date (exclusive)", "2026-07-31", True),
         ("Calendar timezone", "America/Los_Angeles", False),
@@ -608,7 +608,7 @@ def test_failed_item_can_render_one_canonical_ignore_control(plugin_module, monk
                 "description": None,
                 "fields": [
                     {
-                        "name": "Name",
+                        "name": "Title",
                         "value": "Check my email",
                         "inline": False,
                     }

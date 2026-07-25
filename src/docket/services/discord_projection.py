@@ -1595,7 +1595,7 @@ class DiscordProjectionRunner:
                 fields.insert(
                     0,
                     {
-                        "name": "Name",
+                        "name": "Title",
                         "value": subject,
                         "inline": False,
                     },

@@ -555,7 +555,7 @@ def _escaped(value: str, maximum: int) -> str:
 
 
 def _calendar_reminder_fields(render: dict[str, Any]) -> list[tuple[str, str, bool]]:
-    identity = [("Name", str(render["summary"]), False)]
+    identity = [("Title", str(render["summary"]), False)]
     if bool(render["is_all_day"]):
         return [
             *identity,
@@ -1464,7 +1464,7 @@ async def _post_calendar_reminder(payload: dict[str, Any]) -> dict[str, Any]:
     for field_name, field_value, inline in _calendar_reminder_fields(render):
         embed.add_field(
             name=field_name,
-            value=_escaped(field_value, 512 if field_name == "Name" else 128),
+            value=_escaped(field_value, 512 if field_name == "Title" else 128),
             inline=inline,
         )
     if location is not None:

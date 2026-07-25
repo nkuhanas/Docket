@@ -347,7 +347,8 @@ def test_update_card_prioritizes_operator_changes_and_terminal_state(
         assert projected["embed"]["description"] == (
             "Review the details below. Nothing changes until you approve."
         )
-        assert fields["Name"] == "Check my email"
+        assert fields["Title"] == "Check my email"
+        assert "Name" not in fields
         assert fields["When"] == (
             "Starts <t:1785439800:F>\n"
             "Ends <t:1785440700:F>"
@@ -380,7 +381,8 @@ def test_update_card_prioritizes_operator_changes_and_terminal_state(
     assert projected["embed"]["title"] == "Event updated"
     assert projected["embed"]["description"] is None
     assert projected["embed"]["color"] == 0x3BA55D
-    assert fields["Name"] == "Check my email"
+    assert fields["Title"] == "Check my email"
+    assert "Name" not in fields
     assert fields["Delta · Reminders"].endswith("After: 5 minutes")
     assert {
         "Status",
@@ -518,7 +520,8 @@ def test_proposal_selects_and_custom_modal_replace_the_revision_in_place(
         assert projected["embed"]["description"] == (
             "Review the details below. Nothing changes until you approve."
         )
-        assert fields["Name"] == "Check my email"
+        assert fields["Title"] == "Check my email"
+        assert "Name" not in fields
         assert fields["When"] == (
             "Starts <t:1785438000:F>\n"
             "Ends <t:1785438900:F>"
