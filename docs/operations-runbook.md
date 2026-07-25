@@ -376,8 +376,9 @@ compatibility tools for already-durable aggregate history. Docket continues to
 serve their schemas so stored revisions and audit history remain readable, but
 the active Hermes allowlist excludes them. Do not use them for new imports,
 edits, drops, or restores. If one of their pending approvals expires, the worker
-resolves its queue item as `legacy_approval_expired`, supersedes Snooze/Ignore,
-refreshes the latest card once, and excludes it from subsequent carryover.
+resolves its queue item as `legacy_approval_expired`, cancels its unactivated
+reminder-plan rows, supersedes Snooze/Ignore, refreshes the latest card once,
+and excludes it from subsequent carryover.
 
 After approval, inspect the parent and item ledger without printing private
 event content:

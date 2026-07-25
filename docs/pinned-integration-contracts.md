@@ -394,8 +394,9 @@ Milestone 3.6 schemas for compatibility with existing durable history. They are
 excluded from the active Hermes allowlist as well as from the active skill, so
 the model cannot select them for new imports, edits, drops, or restores.
 Expired pending proposals from this compatibility workflow are terminalized
-with queue resolution `legacy_approval_expired`; their local Snooze/Ignore
-controls are superseded and they do not participate in later carryover.
+with queue resolution `legacy_approval_expired`; their unactivated reminder
+plans are cancelled, their local Snooze/Ignore controls are superseded, and
+they do not participate in later carryover.
 
 The Discord plugin understands editable proposal-control token fields by
 compact numeric codes shared with Docket. Adding a token field requires

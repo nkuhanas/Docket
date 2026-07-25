@@ -174,7 +174,8 @@ That is the intended stale-preview recovery path, not a provider retry.
 
 The smoke also exposed one compatibility leak: an expired Milestone 3.6
 whole-term proposal was still eligible for daily carryover. The worker now
-terminalizes such queue items as `legacy_approval_expired`, supersedes their
-local controls, refreshes the latest card, and never carries them again. The
-legacy endpoints remain on Docket's 22-tool server registry for stored history,
-but Hermes' normal model allowlist contains only the 20 current tools.
+terminalizes such queue items as `legacy_approval_expired`, cancels unactivated
+reminder plans, supersedes local controls, refreshes the latest card, and never
+carries them again. The legacy endpoints remain on Docket's 22-tool server
+registry for stored history, but Hermes' normal model allowlist contains only
+the 20 current tools.

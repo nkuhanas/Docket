@@ -301,6 +301,12 @@ def test_expired_legacy_schedule_is_retired_without_daily_carryover(
         approval = session.get(Approval, proposal.approval_id)
         assert approval is not None
         approval.expires_at = now - timedelta(seconds=1)
+        reminder_plans = session.scalars(
+            select(CalendarReminderPlan).where(
+                CalendarReminderPlan.action_revision_id == approval.action_revision_id
+            )
+        ).all()
+        assert {plan.status for plan in reminder_plans} == {"planned"}
 
     rollover = RolloverService(session_factory, settings)
     assert rollover.expire_due_approvals(now) == 1
@@ -310,8 +316,14 @@ def test_expired_legacy_schedule_is_retired_without_daily_carryover(
         queue_item = session.get(QueueItem, proposal.queue_item_id)
         action = session.get(Action, proposal.action_id)
         projection = session.scalar(select(DiscordProjection))
+        reminder_plans = session.scalars(
+            select(CalendarReminderPlan).where(
+                CalendarReminderPlan.action_revision_id == approval.action_revision_id
+            )
+        ).all()
         assert queue_item is not None and queue_item.status == "pending"
         assert action is not None and action.status == "expired"
+        assert {plan.status for plan in reminder_plans} == {"cancelled"}
         assert projection is not None
         assert {
             control["action_type"]
@@ -345,8 +357,34 @@ def test_expired_legacy_schedule_is_retired_without_daily_carryover(
         assert action is not None and action.status == "expired"
         assert {local_action.status for local_action in local_actions} == {"superseded"}
         assert audit is not None
+        assert audit.data["cancelled_reminder_plan_count"] == 0
         assert projection is not None
         assert backend.messages[str(projection.id)]["controls"] == []
+
+    with session_factory.begin() as session:
+        reminder_plans = session.scalars(
+            select(CalendarReminderPlan).where(
+                CalendarReminderPlan.action_revision_id == approval.action_revision_id
+            )
+        ).all()
+        for reminder_plan in reminder_plans:
+            reminder_plan.status = "planned"
+    assert rollover.retire_expired_legacy_proposals(now) == 0
+    with session_factory() as session:
+        reminder_plans = session.scalars(
+            select(CalendarReminderPlan).where(
+                CalendarReminderPlan.action_revision_id == approval.action_revision_id
+            )
+        ).all()
+        cleanup_audit = session.scalar(
+            select(AuditEvent).where(
+                AuditEvent.event_type == "queue_item.legacy_reminder_plans_cancelled",
+                AuditEvent.entity_id == proposal.queue_item_id,
+            )
+        )
+        assert {plan.status for plan in reminder_plans} == {"cancelled"}
+        assert cleanup_audit is not None
+        assert cleanup_audit.data["cancelled_reminder_plan_count"] == 2
 
     assert rollover.run_due_once(now + timedelta(days=1))
     with session_factory() as session:

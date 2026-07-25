@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -23,6 +23,7 @@ from docket.models import (
     ActionRevision,
     Approval,
     AuditEvent,
+    CalendarReminderPlan,
     CommandRequest,
     DiscordDailyThread,
     DiscordProjection,
@@ -218,6 +219,7 @@ class RolloverService:
             action.status = ActionStatus.EXPIRED.value
             queue_item.status = QueueItemStatus.PENDING.value
             queue_item.version += 1
+            self._cancel_unactivated_reminder_plans(session, action.id)
             QueueService(session, self.settings).enqueue_refresh(queue_item, "approval_expired")
             session.add(
                 AuditEvent(
@@ -236,18 +238,63 @@ class RolloverService:
         with self.session_factory.begin() as session:
             return self._expire_due_approvals(session, now)
 
+    @staticmethod
+    def _cancel_unactivated_reminder_plans(session: Session, action_id: uuid.UUID) -> int:
+        plans = session.scalars(
+            select(CalendarReminderPlan)
+            .join(
+                ActionRevision,
+                ActionRevision.id == CalendarReminderPlan.action_revision_id,
+            )
+            .where(
+                ActionRevision.action_id == action_id,
+                CalendarReminderPlan.status.in_(("planned", "reconciliation_required")),
+            )
+        ).all()
+        for plan in plans:
+            plan.status = "cancelled"
+        return len(plans)
+
     def _retire_expired_legacy_proposals(self, session: Session, now: datetime) -> int:
         rows = session.execute(
             select(QueueItem, Action)
             .join(Action, Action.queue_item_id == QueueItem.id)
             .where(
-                QueueItem.status.in_(_UNRESOLVED),
                 Action.action_type == _LEGACY_SCHEDULE_ACTION,
                 Action.status == ActionStatus.EXPIRED.value,
+                or_(
+                    QueueItem.status.in_(_UNRESOLVED),
+                    and_(
+                        QueueItem.status == QueueItemStatus.COMPLETED.value,
+                        QueueItem.resolution_code == "legacy_approval_expired",
+                    ),
+                ),
             )
         ).all()
         retired = 0
         for queue_item, action in rows:
+            cancelled_reminder_plan_count = self._cancel_unactivated_reminder_plans(
+                session,
+                action.id,
+            )
+            if (
+                queue_item.status == QueueItemStatus.COMPLETED.value
+                and queue_item.resolution_code == "legacy_approval_expired"
+            ):
+                if cancelled_reminder_plan_count:
+                    session.add(
+                        AuditEvent(
+                            event_type="queue_item.legacy_reminder_plans_cancelled",
+                            entity_type="queue_item",
+                            entity_id=queue_item.id,
+                            actor_type="docket",
+                            data={
+                                "action_id": str(action.id),
+                                "cancelled_reminder_plan_count": cancelled_reminder_plan_count,
+                            },
+                        )
+                    )
+                continue
             queue_item.status = QueueItemStatus.COMPLETED.value
             queue_item.resolved_at = now
             queue_item.resolution_code = "legacy_approval_expired"
@@ -276,6 +323,7 @@ class RolloverService:
                         "action_id": str(action.id),
                         "version": queue_item.version,
                         "resolution_code": queue_item.resolution_code,
+                        "cancelled_reminder_plan_count": cancelled_reminder_plan_count,
                     },
                 )
             )
