@@ -4,8 +4,8 @@ This record covers the Full Calendar control closure release deployed on
 2026-07-22. The private implementation specification remains outside this
 repository. Automated and deployment evidence is complete. The operator-present
 standalone Google/Discord lifecycle is complete. Aggregate schedule creation
-and duplicate suppression are complete; safe recurring-series cleanup remains
-pending deployment and operator approval.
+and duplicate suppression are complete, and both disposable recurring series
+were safely removed through separately approved whole-series cancellations.
 
 ## Migration and identity contract
 
@@ -203,7 +203,7 @@ The aggregate operator-present gate is:
    separate harmless smoke and verify Docket points to the existing card rather
    than projecting a second one — **complete**; and
 3. remove the resulting disposable series through typed, separately approved
-   Docket cancellation proposals — **pending**.
+   Docket cancellation proposals — **complete**.
 
 No live gate result should be inferred from the automated fake-provider suite.
 
@@ -232,9 +232,9 @@ first attempt, and PostgreSQL contained no pending/running/reconciliation
 operation or pending/delivering outbox row.
 
 This closes the live standalone create, edit, reminder replacement, and
-cancellation portion of the Milestone 3.6 gate. It does not substitute for the
-remaining aggregate schedule execution, duplicate-proposal, per-item reminder,
-and cleanup evidence above.
+cancellation portion of the Milestone 3.6 gate. The aggregate evidence below
+separately closes schedule execution, duplicate suppression, per-item reminders,
+and recurring-series cleanup.
 
 ## Aggregate creation evidence and recurring-series cleanup guard
 
@@ -260,12 +260,33 @@ express the entire series. Branch `fix/recurring-series-targets` adds explicit
 `event|series` mutation scope, exact master reads and ETag promotion, scope
 substitution rejection, approval revalidation, whole-series cache/reminder
 convergence, generated-schema guidance, and fake-provider regression coverage.
-No cleanup proposal was sent under the ambiguous contract. Deployment,
-`/reload-mcp`, two separate destructive cards, and post-approval provider/cache/
-reminder verification remain required before this section is closed.
+No cleanup proposal was sent under the ambiguous contract.
 
 The recurring-series release candidate passed `scripts/docket check` with 210
 tests, Ruff, and mypy; Skill Creator validation; `git diff --check`;
 `docker compose config --quiet`; and the isolated dummy-provider Compose/MCP
-smoke. These automated results establish the fail-closed contract but do not
-claim the two production series have been cancelled.
+smoke. It was deployed as `c142cb8`, Hermes loaded plugin `0.13.0`, and the
+operator reloaded the active 20-tool MCP registry.
+
+The two cleanup proposals each used `target_scope=series`, a distinct
+Docket-linked recurring master, and the current exact master ETag. Creating the
+second proposal advanced the complete-cache timestamp and exposed a narrower
+approval defect: the first independent cancellation card was rejected even
+though its master and all occurrences were unchanged. No approval was consumed
+and no provider operation occurred. Commit `7ad4277` makes cancel and
+reminder-only approvals require a current non-stale cache plus their exact
+event/master ETag without requiring equality of global `last_success_at`;
+conflict-sensitive create/update/schedule approvals retain exact-snapshot
+binding. The focused regression and complete 210-test suite passed before
+deployment.
+
+After that deployment, the operator approved the two destructive cards
+separately. Operations `751cc47c-ee93-48bc-80a1-8bb290924385` and
+`c6c13ead-8785-42e6-91b6-46543498a320` each succeeded in one attempt. Direct
+bounded Google reads reported both masters `cancelled`; both Docket links were
+closed with null provider ETags; and the 17 active occurrences, one enabled
+canonical reminder rule, and 17 pending notifications per series converged to
+zero. Both queue cards completed, all four queued/terminal system-log events
+and all four projection refreshes delivered, and PostgreSQL contained no
+pending/running/reconciliation operation or pending/delivering outbox row.
+This closes the aggregate Milestone 3.6 operator-present gate.
