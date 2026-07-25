@@ -96,24 +96,35 @@ Completed on 2026-07-24:
 * **Post-restore unchanged repeat:** the record-side correction held version 5
   and Hermes issued no update, but reconciliation proposed two updates because
   Google had reordered the semantically equal RRULE properties in its create
-  responses. The card was left unapproved. Reconciliation now canonicalizes
-  recurrence property, multi-value, and line order before comparison; the
-  integration regression uses Google's observed ordering.
-
-Remaining:
-
-```text
-reject stale false-positive card -> unchanged repeat
-```
+  responses. The false-positive card was rejected without creating an
+  operation. Reconciliation now canonicalizes recurrence property, multi-value,
+  and line order before comparison; the integration regression uses Google's
+  observed ordering.
+* **Drop:** approved exactly two independent cancellation items. Both Google
+  deletions succeeded on their first attempts, and Docket archived the course
+  only after the second cancellation completed.
+* **Restore:** reactivated the same canonical course identity at version 5 and
+  approved exactly two creates. Google returned fresh provider event IDs for
+  `lecture` and `lab`; both links were confirmed with the normal ten-minute
+  reminder plan.
+* **Final unchanged repeat:** Hermes called search, account/profile resolution,
+  current-record read, and course reconciliation without storing or updating
+  the record. Reconciliation refreshed the current Google state with `GET`
+  requests, returned `no_op`, created no action or operation, and performed no
+  provider `POST`, `PATCH`, or `DELETE`. The course remained active at version
+  5 with both provider identities unchanged.
 
 During the gate, confirm:
 
-* each proposal appears in the current ISO queue thread;
-* course review pages show only operationally relevant fields;
-* `docket-system` receives redacted MCP traces and rich lifecycle entries;
-* partial or uncertain cancellation never archives the course;
-* the completed drop archives exactly once;
-* restore retains the course record identity and creates fresh Google series;
-* an unchanged final re-import/reconciliation produces no duplicate series.
+* [x] each proposal appears in the current ISO queue thread;
+* [x] course review pages show only operationally relevant fields;
+* [x] `docket-system` receives redacted MCP traces and rich lifecycle entries;
+* [x] partial or uncertain cancellation never archives the course;
+* [x] the completed drop archives exactly once;
+* [x] restore retains the course record identity and creates fresh Google
+  series;
+* [x] an unchanged final re-import/reconciliation produces no duplicate
+  series.
 
-Do not proceed to Gmail ingestion until this gate is recorded here.
+The Milestone 3.7 operator-present gate is complete. Gmail ingestion remains
+deferred behind the calendar-control milestones.
