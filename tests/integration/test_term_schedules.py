@@ -45,6 +45,7 @@ from docket.services.approvals import ApprovalService
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.operations import OperationRunner
 from docket.services.proposal_controls import ProposalControlService
+from docket.services.rollover import RolloverService
 from docket.services.schedule_actions import TermScheduleActionService
 from docket.services.schedules import TermScheduleService
 
@@ -275,6 +276,86 @@ def _navigate_schedule_card(
     assert result["target_view"] == control["target_view"]
     assert runner.run_due_once()
     return control, result
+
+
+@pytest.mark.integration
+def test_expired_legacy_schedule_is_retired_without_daily_carryover(
+    session_factory: sessionmaker[Session],
+) -> None:
+    proposal, _account_id = _store_and_propose(
+        session_factory,
+        store_message_id="300000000000000001",
+        proposal_message_id="300000000000000002",
+    )
+    settings = get_settings()
+    backend = FakeDiscordBackend()
+    runner = DiscordProjectionRunner(
+        session_factory,
+        FakeDiscordProjectionAdapter(backend),
+        settings,
+    )
+    while runner.run_due_once():
+        pass
+    now = datetime.now(UTC)
+    with session_factory.begin() as session:
+        approval = session.get(Approval, proposal.approval_id)
+        assert approval is not None
+        approval.expires_at = now - timedelta(seconds=1)
+
+    rollover = RolloverService(session_factory, settings)
+    assert rollover.expire_due_approvals(now) == 1
+    while runner.run_due_once():
+        pass
+    with session_factory() as session:
+        queue_item = session.get(QueueItem, proposal.queue_item_id)
+        action = session.get(Action, proposal.action_id)
+        projection = session.scalar(select(DiscordProjection))
+        assert queue_item is not None and queue_item.status == "pending"
+        assert action is not None and action.status == "expired"
+        assert projection is not None
+        assert {
+            control["action_type"]
+            for control in backend.messages[str(projection.id)]["controls"]
+        } == {"snooze_queue_item", "ignore_queue_item"}
+
+    assert rollover.retire_expired_legacy_proposals(now) == 1
+    assert rollover.retire_expired_legacy_proposals(now) == 0
+    while runner.run_due_once():
+        pass
+    with session_factory() as session:
+        queue_item = session.get(QueueItem, proposal.queue_item_id)
+        action = session.get(Action, proposal.action_id)
+        projection = session.scalar(select(DiscordProjection))
+        local_actions = session.scalars(
+            select(Action).where(
+                Action.queue_item_id == proposal.queue_item_id,
+                Action.action_type.in_(("snooze_queue_item", "ignore_queue_item")),
+            )
+        ).all()
+        audit = session.scalar(
+            select(AuditEvent).where(
+                AuditEvent.event_type == "queue_item.legacy_proposal_retired",
+                AuditEvent.entity_id == proposal.queue_item_id,
+            )
+        )
+        assert queue_item is not None
+        assert queue_item.status == "completed"
+        assert queue_item.resolution_code == "legacy_approval_expired"
+        assert queue_item.resolved_at == now.replace(tzinfo=None)
+        assert action is not None and action.status == "expired"
+        assert {local_action.status for local_action in local_actions} == {"superseded"}
+        assert audit is not None
+        assert projection is not None
+        assert backend.messages[str(projection.id)]["controls"] == []
+
+    assert rollover.run_due_once(now + timedelta(days=1))
+    with session_factory() as session:
+        projection_count = session.scalar(
+            select(func.count(DiscordProjection.id)).where(
+                DiscordProjection.queue_item_id == proposal.queue_item_id
+            )
+        )
+        assert projection_count == 1
 
 
 @pytest.mark.integration

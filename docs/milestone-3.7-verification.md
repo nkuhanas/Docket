@@ -30,7 +30,8 @@ remains outside this repository.
 * Standalone timed and all-day events materialize an omitted timezone from
   `DOCKET_TIMEZONE`; an explicit IANA timezone retains precedence.
 * `docket_store_term_schedule` and `docket_propose_term_schedule` remain
-  available only for compatibility with existing durable history.
+  available on the MCP server only for compatibility with existing durable
+  history; Hermes does not register them as model-visible tools.
 
 No schema migration is required. Existing action, operation, operation-item,
 record-status, Calendar-link snapshot, audit, and outbox columns already admit
@@ -59,7 +60,7 @@ Validation completed before deployment:
 ```text
 ruff check .  -> passed
 mypy          -> passed (65 source files)
-pytest -q     -> 229 passed, 1 dependency deprecation warning
+pytest -q     -> 230 passed, 1 dependency deprecation warning
 skill check   -> Skill is valid
 ```
 
@@ -68,7 +69,9 @@ deprecation; it is unrelated to this milestone.
 
 ## MCP and Hermes contract
 
-The generated and allowlisted surface contains 22 tools. The additions are:
+The generated server compatibility surface contains 22 tools. The active Hermes
+allowlist contains 20 and deliberately excludes the two legacy whole-term
+tools. The Milestone 3.7 additions are:
 
 * `docket_restore_record`
 * `docket_propose_course_reconciliation`
@@ -153,3 +156,25 @@ overlapping conflict set. A newer equivalent refresh or an unrelated course
 proposal/write no longer invalidates the card. A changed provider target or a
 new overlapping conflict still fails closed and requires review of a rebuilt
 preview. Integration coverage proves both sides of that boundary.
+
+## Post-gate standalone recurring lifecycle
+
+Completed on 2026-07-25 against the configured Docket Calendar:
+
+* created a standalone recurring event with the default Los Angeles timezone
+  and ten-minute unified reminder;
+* updated its recurring time in place;
+* cancelled the linked provider series; and
+* recreated it with a fresh provider identity.
+
+Every approved operation reached Google once and completed successfully. The
+first create card had remained open beyond Calendar freshness, so approval
+failed closed and the same card was rebuilt before the successful decision.
+That is the intended stale-preview recovery path, not a provider retry.
+
+The smoke also exposed one compatibility leak: an expired Milestone 3.6
+whole-term proposal was still eligible for daily carryover. The worker now
+terminalizes such queue items as `legacy_approval_expired`, supersedes their
+local controls, refreshes the latest card, and never carries them again. The
+legacy endpoints remain on Docket's 22-tool server registry for stored history,
+but Hermes' normal model allowlist contains only the 20 current tools.

@@ -42,6 +42,7 @@ _UNRESOLVED = {
     QueueItemStatus.FAILED.value,
     QueueItemStatus.RECONCILIATION_REQUIRED.value,
 }
+_LEGACY_SCHEDULE_ACTION = "calendar_apply_term_schedule"
 
 
 class RolloverService:
@@ -235,6 +236,57 @@ class RolloverService:
         with self.session_factory.begin() as session:
             return self._expire_due_approvals(session, now)
 
+    def _retire_expired_legacy_proposals(self, session: Session, now: datetime) -> int:
+        rows = session.execute(
+            select(QueueItem, Action)
+            .join(Action, Action.queue_item_id == QueueItem.id)
+            .where(
+                QueueItem.status.in_(_UNRESOLVED),
+                Action.action_type == _LEGACY_SCHEDULE_ACTION,
+                Action.status == ActionStatus.EXPIRED.value,
+            )
+        ).all()
+        retired = 0
+        for queue_item, action in rows:
+            queue_item.status = QueueItemStatus.COMPLETED.value
+            queue_item.resolved_at = now
+            queue_item.resolution_code = "legacy_approval_expired"
+            queue_item.resolution_note = (
+                "The compatibility whole-term proposal expired without approval."
+            )
+            queue_item.snoozed_until = None
+            queue_item.snooze_local_date = None
+            queue_item.version += 1
+            ensure_local_actions(
+                session,
+                queue_item,
+                projection_date=self._local_now(now).date(),
+            )
+            QueueService(session, self.settings).enqueue_refresh(
+                queue_item,
+                "legacy_approval_expired",
+            )
+            session.add(
+                AuditEvent(
+                    event_type="queue_item.legacy_proposal_retired",
+                    entity_type="queue_item",
+                    entity_id=queue_item.id,
+                    actor_type="docket",
+                    data={
+                        "action_id": str(action.id),
+                        "version": queue_item.version,
+                        "resolution_code": queue_item.resolution_code,
+                    },
+                )
+            )
+            retired += 1
+        return retired
+
+    def retire_expired_legacy_proposals(self, now: datetime | None = None) -> int:
+        now = now or utc_now()
+        with self.session_factory.begin() as session:
+            return self._retire_expired_legacy_proposals(session, now)
+
     def _renew_expired_action(self, session: Session, queue_item: QueueItem, now: datetime) -> bool:
         action = session.scalar(
             select(Action).where(
@@ -384,6 +436,7 @@ class RolloverService:
             else:
                 savepoint.commit()
             self._expire_due_approvals(session, now)
+            self._retire_expired_legacy_proposals(session, now)
             daily_thread = self._ensure_thread_row(session, local_date)
 
             woken = 0

@@ -240,7 +240,7 @@ wait_for_hermes() {
     local segment
     expected_tool_count=$(
         uv run python -c \
-            "import runpy; print(len(runpy.run_path('scripts/compose-mcp-smoke.py')['EXPECTED_TOOLS']))"
+            "import runpy; from pathlib import Path; m=runpy.run_path('scripts/sync_hermes_docket_config.py'); print(len(m['_tool_block'](Path('hermes/config.example.yaml').read_text()).splitlines()))"
     )
     for attempt in {1..60}; do
         if [[ -f "$ROOT/.runtime/hermes/logs/agent.log" ]]; then

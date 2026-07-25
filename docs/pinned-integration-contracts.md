@@ -376,7 +376,9 @@ a provider event created seconds earlier. `prefer_cache` remains correct only
 when that bounded lag is acceptable.
 The active and template allowlists are synchronized by
 `scripts/prepare-hermes-home.sh`, but an existing Hermes session still requires
-`/reload-mcp` after deployment.
+`/reload-mcp` after deployment. The allowlist is intentionally a strict subset
+of the MCP server registry: Docket retains a 22-tool compatibility surface,
+while Hermes registers 20 model-visible tools.
 
 `docket_propose_course_reconciliation` accepts one active course UUID/version,
 `sync|drop`, configured account/calendar, optional unified reminder plan, and
@@ -388,8 +390,12 @@ cancelled. `docket_restore_record` is a separate optimistic local transition;
 it never contacts Google.
 
 `docket_store_term_schedule` and `docket_propose_term_schedule` retain their
-Milestone 3.6 schemas for compatibility with existing durable history. The
-active skill must not use them for new imports, edits, drops, or restores.
+Milestone 3.6 schemas for compatibility with existing durable history. They are
+excluded from the active Hermes allowlist as well as from the active skill, so
+the model cannot select them for new imports, edits, drops, or restores.
+Expired pending proposals from this compatibility workflow are terminalized
+with queue resolution `legacy_approval_expired`; their local Snooze/Ignore
+controls are superseded and they do not participate in later carryover.
 
 The Discord plugin understands editable proposal-control token fields by
 compact numeric codes shared with Docket. Adding a token field requires

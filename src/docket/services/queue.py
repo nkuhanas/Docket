@@ -98,6 +98,16 @@ def ensure_local_actions(
 ) -> list[ActionRevision]:
     """Materialize the server-owned local choices for an actionable queue item."""
     if queue_item.status not in {QueueItemStatus.PENDING.value, QueueItemStatus.FAILED.value}:
+        stale_actions = session.scalars(
+            select(Action).where(
+                Action.queue_item_id == queue_item.id,
+                Action.action_type.in_(tuple(_ACTION_ORDER)),
+                Action.status == ActionStatus.AVAILABLE.value,
+            )
+        ).all()
+        for stale_action in stale_actions:
+            stale_action.status = ActionStatus.SUPERSEDED.value
+        session.flush()
         return []
     action_types = (
         ("snooze_queue_item", "ignore_queue_item")

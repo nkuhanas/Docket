@@ -47,7 +47,12 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
         for line in include_block.splitlines()
         if line.strip()
     }
-    assert configured_names == names
+    legacy_compatibility_tools = {
+        "docket_store_term_schedule",
+        "docket_propose_term_schedule",
+    }
+    assert configured_names == names - legacy_compatibility_tools
+    assert configured_names.isdisjoint(legacy_compatibility_tools)
     smoke_contract = runpy.run_path("scripts/compose-mcp-smoke.py")
     assert smoke_contract["EXPECTED_TOOLS"] == names
     store_description = " ".join((tools["docket_store_record"].description or "").split())

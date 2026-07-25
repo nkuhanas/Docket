@@ -121,10 +121,14 @@ Expected results:
 
 * PostgreSQL and Docket are healthy; Hermes and SearXNG are running.
 * `docket-discord` `0.15.5` is `enabled`.
-* Hermes connects to `http://docket:8000/mcp/` and discovers exactly 22 tools,
-  including `docket_store_record`, `docket_restore_record`,
-  `docket_propose_course_reconciliation`,
+* `hermes mcp test docket` connects to `http://docket:8000/mcp/` and discovers
+  the 22-tool compatibility surface, including `docket_store_record`,
+  `docket_restore_record`, `docket_propose_course_reconciliation`,
   `docket_propose_calendar_event`, and the Calendar/queue read tools.
+* The running Hermes gateway registers 20 model-visible Docket tools. Its
+  allowlist intentionally omits legacy `docket_store_term_schedule` and
+  `docket_propose_term_schedule`; those endpoints remain server-visible only
+  for existing durable history.
 * Logs contain no startup, plugin-load, MCP-authentication, or migration error.
 
 After an MCP tool, schema, or allowlist change, send `/reload-mcp` in the active
@@ -156,7 +160,7 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Proposal returns `action_unavailable` | Inspect the named stable meeting and missing-fields detail | Incomplete dates, local times, timezone, or no selected weekday in range |
 | Proposal returns `calendar_not_allowed` | Compare the exact ID returned by `docket_list_accounts` with `GOOGLE_CALENDAR_ID` | Display name or different calendar substituted for the configured opaque ID |
 | A standalone event uses the wrong timezone | Inspect the immutable timing payload for an explicit timezone, then compare `DOCKET_TIMEZONE` in the Docket container | The operator supplied another zone, Hermes sent an unintended override, or the configured default differs from the expected local zone |
-| Bulk course input uses `docket_store_term_schedule` or produces one aggregate schedule card | Inspect the active skill and MCP registry, then run `/reload-mcp` | Hermes cached the legacy aggregate workflow or the course reconciliation/restore tools are absent from its allowlist |
+| Bulk course input uses `docket_store_term_schedule` or produces one aggregate schedule card | Confirm the server still discovers 22 tools but the running Hermes gateway registers only the 20 active tools, then run `/reload-mcp` | Hermes retained a stale model registry or the deployed allowlist still exposes the legacy aggregate workflow |
 | Schedule proposal returns `calendar_schedule_outside_fresh_window` | Compare the term/meeting bounds with `calendar_sync_states.window_start/window_end` | The fresh complete Calendar snapshot does not cover the whole proposed schedule |
 | Schedule batch is `partial_failed` | Inspect the parent result and only its failed `operation_items`; do not replay succeeded siblings | One or more provider items failed definitively after other items succeeded |
 | Schedule batch is `reconciliation_required` | Inspect the uncertain item, its attempts, and provider correlation (`operation_items.id`) | A provider call may have succeeded without a durable acknowledgement |
@@ -176,6 +180,7 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Daily thread exists but is hidden until **Join Thread** is used | Inspect the latest thread-ensure acknowledgement for the exact configured `operator_user_id` and `operator_joined=true`, then check Hermes for `daily_thread_member_add_failed` | Pre-`0.10.0` plugin, Hermes was not restarted, operator ID mismatch, missing `SEND_MESSAGES_IN_THREADS`, parent-channel access failure, archived-thread race, or Discord member limit |
 | Hermes ignores the configured operator inside a Docket daily thread | Confirm the event exposes the queue as `parent_chat_id`, the thread exists in `discord_daily_threads`, plugin `0.15.5` is active, and the operator is still the sole allowed user | Old control-only plugin, foreign thread, parent-ID event-shape drift, or Hermes/plugin authorization mismatch |
 | No rollover occurs after 07:00 local | Inspect `system:daily_rollover:ISO-DATE`, worker heartbeat, timezone, and rollover hour | Worker unavailable, wrong timezone/hour, or a prior command already owns the date |
+| An expired whole-term compatibility proposal keeps appearing in new daily threads | Inspect the queue item's resolution code, its legacy `calendar_apply_term_schedule` action, local Snooze/Ignore actions, and the latest projection refresh | Pre-retirement worker code or a failed terminal projection edit; an expired legacy proposal must resolve once as `legacy_approval_expired`, supersede local controls, and never carry again |
 | Duplicate daily thread or card | Stop retries and inspect exact name/owner or footer-marker collisions | Archived lookup drift, manually copied marker, lost binding, or plugin concurrency regression |
 | Button says the control is unauthorized/stale | Compare stored control projection with actual parent/thread/message and actor | Copied/old card, wrong operator, changed thread parent, projection refresh, or callback drift |
 | Snoozed item does not return | Compare `snoozed_until`, `snooze_local_date`, local timezone, and the day's rollover audit | Wake time has not arrived, rollover did not run, or the item was resolved separately |
@@ -367,8 +372,12 @@ and review-complete fields are omitted, and the card exposes **Approve**,
 proposals retain paged review and must traverse every page before decision.
 
 `docket_store_term_schedule` and `docket_propose_term_schedule` remain legacy
-compatibility tools for already-durable aggregate history. Do not use them for
-new imports, edits, drops, or restores.
+compatibility tools for already-durable aggregate history. Docket continues to
+serve their schemas so stored revisions and audit history remain readable, but
+the active Hermes allowlist excludes them. Do not use them for new imports,
+edits, drops, or restores. If one of their pending approvals expires, the worker
+resolves its queue item as `legacy_approval_expired`, supersedes Snooze/Ignore,
+refreshes the latest card once, and excludes it from subsequent carryover.
 
 After approval, inspect the parent and item ledger without printing private
 event content:
@@ -662,8 +671,9 @@ credential directory, and `.env.example`; it is safe when the production
 operations/outbox state. `deploy` then writes a PostgreSQL custom-format backup
 under ignored `backups/`, retains the old image with a timestamped rollback
 tag, rebuilds and recreates Docket and Hermes, and verifies Docket health,
-Alembic head, the Discord gateway, the 22-tool MCP registry, the declared
-Hermes plugin version, its private listener, and drained durable state.
+Alembic head, the Discord gateway, the 22-tool Docket compatibility registry,
+the 20-tool Hermes model registry, the declared Hermes plugin version, its
+private listener, and drained durable state.
 
 The image tag is recovery evidence, not permission to downgrade a migrated
 database. Restore or migrate the database according to the affected revision
