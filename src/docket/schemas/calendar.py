@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BeforeValidator, Field, field_validator, model_validator
 
+from docket.config import get_settings
 from docket.schemas.records import (
     DiscordId,
     DiscordRequestKey,
@@ -37,6 +38,10 @@ OperatorTag = Annotated[
 
 def _default_reminder_channels() -> list[CalendarReminderChannel]:
     return ["google_popup", "docket_queue"]
+
+
+def _configured_timezone() -> str:
+    return get_settings().timezone
 
 
 class CalendarReminderPlanInput(StrictModel):
@@ -72,7 +77,15 @@ class TimedEventTiming(StrictModel):
     kind: Literal["timed"]
     start_local: datetime
     end_local: datetime
-    timezone: str = Field(min_length=1, max_length=128)
+    timezone: str = Field(
+        default_factory=_configured_timezone,
+        min_length=1,
+        max_length=128,
+        description=(
+            "Explicit IANA timezone. Omit to inherit Docket's configured "
+            "DOCKET_TIMEZONE."
+        ),
+    )
     fold: Literal[0, 1] | None = None
 
     @field_validator("timezone")
@@ -126,7 +139,15 @@ class AllDayEventTiming(StrictModel):
     kind: Literal["all_day"]
     start_date: date
     end_date: date
-    timezone: str = Field(default="America/Los_Angeles", min_length=1, max_length=128)
+    timezone: str = Field(
+        default_factory=_configured_timezone,
+        min_length=1,
+        max_length=128,
+        description=(
+            "Explicit IANA timezone. Omit to inherit Docket's configured "
+            "DOCKET_TIMEZONE."
+        ),
+    )
 
     @field_validator("timezone")
     @classmethod

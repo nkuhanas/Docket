@@ -3,7 +3,9 @@ from datetime import date, datetime
 import pytest
 from pydantic import ValidationError
 
+from docket.config import get_settings
 from docket.schemas.calendar import (
+    AllDayEventTiming,
     CalendarProfileInput,
     CalendarRecurrenceInput,
     CalendarReminderPlanInput,
@@ -42,6 +44,43 @@ def test_timed_event_rejects_dst_gap() -> None:
             end_local=datetime(2026, 3, 8, 2, 45),
             timezone="America/Los_Angeles",
         )
+
+
+def test_standalone_timing_defaults_to_configured_timezone(monkeypatch) -> None:
+    monkeypatch.setenv("DOCKET_TIMEZONE", "America/New_York")
+    get_settings.cache_clear()
+    try:
+        timed = TimedEventTiming(
+            kind="timed",
+            start_local=datetime(2026, 7, 30, 12, 0),
+            end_local=datetime(2026, 7, 30, 12, 15),
+        )
+        all_day = AllDayEventTiming(
+            kind="all_day",
+            start_date=date(2026, 7, 30),
+            end_date=date(2026, 7, 31),
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert timed.timezone == "America/New_York"
+    assert all_day.timezone == "America/New_York"
+
+
+def test_explicit_standalone_timezone_overrides_configured_default(monkeypatch) -> None:
+    monkeypatch.setenv("DOCKET_TIMEZONE", "America/New_York")
+    get_settings.cache_clear()
+    try:
+        timing = TimedEventTiming(
+            kind="timed",
+            start_local=datetime(2026, 7, 30, 12, 0),
+            end_local=datetime(2026, 7, 30, 12, 15),
+            timezone="Europe/London",
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert timing.timezone == "Europe/London"
 
 
 def test_timed_event_requires_fold_for_ambiguous_time() -> None:

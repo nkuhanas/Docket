@@ -148,6 +148,21 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
     assert lookup_properties["relative_day"]["anyOf"][0]["enum"] == ["today", "tomorrow"]
     assert lookup_properties["limit"]["maximum"] == 100
 
+    calendar_proposal_definitions = tools["docket_propose_calendar_event"].inputSchema[
+        "$defs"
+    ]
+    calendar_proposal_description = " ".join(
+        (tools["docket_propose_calendar_event"].description or "").split()
+    )
+    assert "inherits Docket's configured ``DOCKET_TIMEZONE``" in (
+        calendar_proposal_description
+    )
+    timed_timing = calendar_proposal_definitions["TimedEventTiming"]
+    assert "timezone" not in timed_timing["required"]
+    assert "DOCKET_TIMEZONE" in timed_timing["properties"]["timezone"]["description"]
+    all_day_timing = calendar_proposal_definitions["AllDayEventTiming"]
+    assert "timezone" not in all_day_timing["required"]
+
     list_rules = tools["docket_list_reminder_rules"]
     list_rules_description = " ".join((list_rules.description or "").split())
     assert "rather than conversational memory or a past-session search" in (list_rules_description)

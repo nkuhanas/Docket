@@ -169,6 +169,10 @@ recurring series, use `target_scope: series` with the master
 `recurring_event_id` returned by the fresh Calendar lookup. Never substitute an
 occurrence ID when the operator asked to update, change reminders on, or cancel
 the whole series, and never infer whole-series scope from conversational memory.
+For a standalone timed or all-day event, preserve an explicitly supplied IANA
+timezone. When the operator omits timezone, omit it from the timing payload so
+Docket deterministically materializes its configured `DOCKET_TIMEZONE`; do not
+ask for a timezone merely to restate that default.
 A complete current trusted request may be
 proposed in the same turn when `docket_get_calendar_profile` reports
 `proposal_mode: suggest`. Under `explicit_only`, propose only when the current

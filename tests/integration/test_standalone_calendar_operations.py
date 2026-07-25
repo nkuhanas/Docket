@@ -135,7 +135,6 @@ def _create_request(account: Account, message_id: str) -> ProposeCalendarEventIn
                         "kind": "timed",
                         "start_local": "2026-07-30T12:00:00",
                         "end_local": "2026-07-30T12:15:00",
-                        "timezone": "America/Los_Angeles",
                     },
                     "location": "Desk",
                     "notes": "Operator-authored private note",

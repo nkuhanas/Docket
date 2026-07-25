@@ -32,6 +32,9 @@ def test_manual_intent_skill_preserves_calendar_freshness_and_explicit_reminders
     assert "`target_scope: series`" in skill
     assert "master `recurring_event_id`" in skill
     assert "Never substitute an occurrence ID" in skill
+    assert "omit it from the timing payload" in skill
+    assert "configured `DOCKET_TIMEZONE`" in skill
+    assert "do not ask for a timezone merely to restate that default" in skill
 
 
 def test_manual_intent_skill_keeps_durable_output_out_of_chat() -> None:

@@ -27,6 +27,8 @@ remains outside this repository.
   thread; trusted writes and redacted MCP traces bind the actual stored thread,
   while the queue root, foreign threads, other actors, and system channel remain
   denied.
+* Standalone timed and all-day events materialize an omitted timezone from
+  `DOCKET_TIMEZONE`; an explicit IANA timezone retains precedence.
 * `docket_store_term_schedule` and `docket_propose_term_schedule` remain
   available only for compatibility with existing durable history.
 
@@ -57,7 +59,7 @@ Validation completed before deployment:
 ```text
 ruff check .  -> passed
 mypy          -> passed (65 source files)
-pytest -q     -> 226 passed, 1 dependency deprecation warning
+pytest -q     -> 228 passed, 1 dependency deprecation warning
 skill check   -> Skill is valid
 ```
 
@@ -71,7 +73,7 @@ The generated and allowlisted surface contains 22 tools. The additions are:
 * `docket_restore_record`
 * `docket_propose_course_reconciliation`
 
-Hermes plugin `0.15.3` recognizes both in redacted MCP traces. The
+Hermes plugin `0.15.4` recognizes both in redacted MCP traces. The
 `docket-manual-intent` skill now treats bulk input as resumable per-course
 orchestration, allocates a distinct intent index to every write/proposal,
 requires explicit drop, recognizes materially equal updates before writing,

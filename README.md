@@ -12,7 +12,8 @@ daily-thread cards, system logs, redacted MCP traces, and Hermes integration.
 Detailed implementation specifications are maintained privately and excluded
 from Git. Calendar lookups resolve `today` and `tomorrow` inside Docket's
 configured timezone, so Hermes does not need terminal access to derive
-local-day bounds.
+local-day bounds. Standalone Calendar events also inherit that configured
+timezone when the operator omits one; an explicit IANA timezone always wins.
 
 ## Operational documentation
 
