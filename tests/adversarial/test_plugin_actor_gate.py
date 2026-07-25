@@ -12,6 +12,7 @@ from docket.security import (
     issue_projection_approval_token,
     issue_projection_decision_approval_token,
     issue_projection_local_action_token,
+    issue_projection_proposal_control_token,
     issue_projection_review_navigation_token,
 )
 
@@ -916,6 +917,94 @@ def test_plugin_accepts_only_bound_persistent_review_navigation(plugin_module, m
     )
 
     assert {item.custom_id for item in view.items} == {f"dkt:n:{token}"}
+    approval_id = uuid.uuid4()
+    reject_token = issue_projection_approval_token(
+        approval_id,
+        projection_id,
+        expires_at,
+        b"test-signing-key",
+    )
+    rebuild_token = issue_projection_proposal_control_token(
+        revision_id,
+        projection_id,
+        "refresh",
+        expires_at,
+        b"test-signing-key",
+    )
+    _embed, stale_view = plugin_module._render_embed(
+        projection_id,
+        {
+            "embed": {
+                "title": "Calendar state changed",
+                "description": "Rebuild before approval.",
+                "fields": [],
+                "color": 1,
+            },
+            "controls": [
+                {
+                    "kind": "approval",
+                    "decision": "reject",
+                    "label": "Reject",
+                    "approval_id": str(approval_id),
+                    "token": reject_token,
+                },
+                {
+                    "kind": "proposal_action",
+                    "transition": "proposal_refresh",
+                    "label": "Rebuild preview",
+                    "row": 3,
+                    "action_revision_id": str(revision_id),
+                    "token": rebuild_token,
+                },
+            ],
+            "projection_version": 4,
+            "render_sha256": "a" * 64,
+            "component_sha256": "b" * 64,
+        },
+    )
+    assert {item.custom_id for item in stale_view.items} == {
+        f"dkt:r:{reject_token}",
+        f"dkt:p:{rebuild_token}",
+    }
+    edit_token = issue_projection_proposal_control_token(
+        revision_id,
+        projection_id,
+        "edit",
+        expires_at,
+        b"test-signing-key",
+    )
+    with pytest.raises(plugin_module.PluginAPIError, match="Approval pair"):
+        plugin_module._render_embed(
+            projection_id,
+            {
+                "embed": {
+                    "title": "Forged stale controls",
+                    "description": None,
+                    "fields": [],
+                    "color": 1,
+                },
+                "controls": [
+                    {
+                        "kind": "approval",
+                        "decision": "reject",
+                        "label": "Reject",
+                        "approval_id": str(approval_id),
+                        "token": reject_token,
+                    },
+                    {
+                        "kind": "proposal_action",
+                        "transition": "proposal_edit",
+                        "label": "Edit",
+                        "row": 3,
+                        "action_revision_id": str(revision_id),
+                        "token": edit_token,
+                    },
+                ],
+                "projection_version": 4,
+                "render_sha256": "a" * 64,
+                "component_sha256": "b" * 64,
+            },
+        )
     with pytest.raises(plugin_module.PluginAPIError, match="binding does not match"):
         plugin_module._render_embed(
             projection_id,

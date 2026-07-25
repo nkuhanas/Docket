@@ -1114,8 +1114,15 @@ def _render_embed(
                         row=0,
                     )
                 )
+            proposal_actions = [
+                item
+                for item in controls
+                if isinstance(item, dict) and item.get("kind") == "proposal_action"
+            ]
             valid_decisions = decisions == {"approve", "reject"} or (
-                decisions == {"reject"} and "proposal_action" in kinds
+                decisions == {"reject"}
+                and len(proposal_actions) == 1
+                and proposal_actions[0].get("transition") == "proposal_refresh"
             )
             if not valid_decisions or len(approval_ids) != 1 or len(tokens) != 1:
                 raise PluginAPIError("invalid_control", "Approval pair is inconsistent", 422)
