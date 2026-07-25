@@ -71,3 +71,25 @@ A later day boundary can add live evidence for carryover. Automated tests
 already cover interaction replay, copied-card and forged-context rejection,
 restart stability, stale-control retirement, archival, carryover, and
 projection-failure handling without risking a real provider write.
+
+## Operator thread-membership closure
+
+On 2026-07-24, plugin `0.10.0` made configured-operator membership part of the
+trusted daily-thread ensure contract. Docket sends only its configured operator
+ID; the plugin independently compares that value with its own configured
+identity, activates the exact bot-owned thread, and calls Discord's idempotent
+thread-member endpoint before acknowledging. Docket accepts the acknowledgement
+only when the same operator ID is echoed with `operator_joined=true`.
+
+The full suite passed with 208 tests plus repository-wide lint and strict source
+typing. Live deployment recreated Docket and Hermes, loaded plugin `0.10.0`,
+reconnected Yuuka to Discord, and retained the private listener on port 8787.
+A durable refresh then re-ensured the existing July 24 thread and joined the
+configured operator on its first attempt. The stored thread, projection, card,
+and Discord message identities were reused; the thread verification timestamp
+advanced, no replacement card was necessary, and no operation or outbox work
+remained pending.
+
+Membership lets Discord clients discover the thread and maintain per-thread
+read/notification state. Docket does not and cannot override the operator's
+personal server, channel, thread, or device notification settings.
