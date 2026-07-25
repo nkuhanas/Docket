@@ -577,19 +577,23 @@ class DiscordProjectionRunner:
         if not isinstance(before, dict):
             return None
         changes: list[str] = []
+
+        def add_delta(label: str, old_value: str, new_value: str) -> None:
+            changes.append(f"{label}\nBefore: {old_value}\nAfter: {new_value}")
+
         if isinstance(event, dict):
             old_title = str(before.get("summary") or "Untitled")
             new_title = str(event.get("title") or "Untitled")
             if old_title != new_title:
-                changes.append(f"Title: {old_title} → {new_title}")
+                add_delta("Title", old_title, new_title)
             old_timing = self._provider_timing(before)
             new_timing = self._standalone_timing_compact(event)
             if old_timing != new_timing:
-                changes.append(f"Time: {old_timing} → {new_timing}")
+                add_delta("Time", old_timing, new_timing)
             old_location = str(before.get("location") or "No location")
             new_location = str(event.get("location") or "No location")
             if old_location != new_location:
-                changes.append(f"Location: {old_location} → {new_location}")
+                add_delta("Location", old_location, new_location)
         reminder_disposition = preview.get("reminder_disposition")
         if action_type == "calendar_update_reminders" or reminder_disposition in {
             "replace",
@@ -598,8 +602,8 @@ class DiscordProjectionRunner:
             old_reminders = self._reminder_lead_text(before.get("provider_reminders"))
             new_reminders = self._reminder_lead_text(preview.get("reminder_plan"))
             if old_reminders != new_reminders:
-                changes.append(f"Reminders: {old_reminders} → {new_reminders}")
-        return "\n".join(changes) or None
+                add_delta("Reminders", old_reminders, new_reminders)
+        return "\n\n".join(changes) or None
 
     @staticmethod
     def _calendar_state_title(
@@ -958,7 +962,7 @@ class DiscordProjectionRunner:
             if changes is not None:
                 fields.append(
                     {
-                        "name": "Changes",
+                        "name": "Delta",
                         "value": changes,
                         "inline": False,
                     }
