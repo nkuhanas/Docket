@@ -3,6 +3,7 @@ from __future__ import annotations
 import time as monotonic_time
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as datetime_time
 from threading import Thread
@@ -28,6 +29,8 @@ from docket.models import (
 )
 from docket.models.base import utc_now
 from docket.providers.google.calendar import (
+    CalendarEventRequest,
+    CalendarEventResult,
     CalendarProviderError,
     CalendarReadProvider,
     CalendarSnapshotEvent,
@@ -112,6 +115,15 @@ def _normalized_reminder_state(
         "provider_use_default": use_default,
         "provider_popup_lead_seconds": provider_leads,
     }
+
+
+@dataclass(frozen=True, slots=True)
+class _LinkedSeriesSnapshot:
+    link_id: uuid.UUID
+    expected_provider_etag: str | None
+    expected_provider_correlation: str
+    external_event_id: str
+    result: CalendarEventResult | None
 
 
 class CalendarSyncService:
@@ -309,6 +321,78 @@ class CalendarSyncService:
             transient=False,
         )
 
+    def _linked_series_targets(
+        self,
+        account_id: uuid.UUID,
+        calendar_id: str,
+    ) -> list[tuple[uuid.UUID, str | None, str, str]]:
+        with self.session_factory() as session:
+            links = list(
+                session.scalars(
+                    select(CalendarLink).where(
+                        CalendarLink.account_id == account_id,
+                        CalendarLink.calendar_id == calendar_id,
+                        CalendarLink.recurrence_kind == "recurring",
+                    )
+                )
+            )
+        active = [
+            (
+                link.id,
+                link.provider_etag,
+                link.provider_correlation,
+                link.external_event_id,
+            )
+            for link in links
+            if link.synced_snapshot.get("status") != "cancelled"
+        ]
+        if len(active) > self.settings.calendar_linked_series_max_reads:
+            raise CalendarProviderError(
+                "calendar_linked_series_too_large",
+                "Linked recurring Calendar targets exceeded the configured exact-read bound.",
+                transient=False,
+            )
+        return active
+
+    def _fetch_linked_series(
+        self,
+        account_id: uuid.UUID,
+        calendar_id: str,
+    ) -> list[_LinkedSeriesSnapshot]:
+        results: list[_LinkedSeriesSnapshot] = []
+        for (
+            link_id,
+            expected_etag,
+            expected_correlation,
+            external_event_id,
+        ) in self._linked_series_targets(
+            account_id, calendar_id
+        ):
+            result = self.provider.get_event(
+                CalendarEventRequest(
+                    calendar_id=calendar_id,
+                    provider_correlation=f"calendar-sync-series:{link_id}",
+                    summary="",
+                    external_event_id=external_event_id,
+                )
+            )
+            if result is not None and result.external_event_id != external_event_id:
+                raise CalendarProviderError(
+                    "calendar_snapshot_series_identity_mismatch",
+                    "A linked recurring Calendar lookup returned a different identity.",
+                    transient=False,
+                )
+            results.append(
+                _LinkedSeriesSnapshot(
+                    link_id=link_id,
+                    expected_provider_etag=expected_etag,
+                    expected_provider_correlation=expected_correlation,
+                    external_event_id=external_event_id,
+                    result=result,
+                )
+            )
+        return results
+
     @staticmethod
     def _cancel_notification(session: Session, notification: ScheduledNotification) -> None:
         notification.status = "cancelled"
@@ -326,6 +410,7 @@ class CalendarSyncService:
         window_start: datetime,
         window_end: datetime,
         events: list[CalendarSnapshotEvent],
+        linked_series: list[_LinkedSeriesSnapshot],
     ) -> None:
         now = _aware(self.clock()).astimezone(UTC)
         generation = uuid.uuid4()
@@ -362,6 +447,45 @@ class CalendarSyncService:
                     )
                 ).all()
             }
+            for series in linked_series:
+                link = session.get(CalendarLink, series.link_id)
+                if (
+                    link is None
+                    or link.account_id != state.account_id
+                    or link.calendar_id != state.calendar_id
+                    or link.external_event_id != series.external_event_id
+                    or link.provider_etag != series.expected_provider_etag
+                    or link.provider_correlation
+                    != series.expected_provider_correlation
+                ):
+                    continue
+                cancelled = (
+                    series.result is None
+                    or series.result.snapshot.get("status") == "cancelled"
+                )
+                if cancelled:
+                    link.provider_etag = None
+                    link.synced_snapshot = {
+                        **link.synced_snapshot,
+                        "status": "cancelled",
+                    }
+                    rules = session.scalars(
+                        select(ReminderRule).where(
+                            ReminderRule.account_id == state.account_id,
+                            ReminderRule.calendar_id == state.calendar_id,
+                            ReminderRule.scope == "event",
+                            ReminderRule.provider_event_id
+                            == series.external_event_id,
+                            ReminderRule.enabled.is_(True),
+                        )
+                    ).all()
+                    for rule in rules:
+                        rule.enabled = False
+                        rule.version += 1
+                else:
+                    assert series.result is not None
+                    link.provider_etag = series.result.provider_etag
+                    link.synced_snapshot = dict(series.result.snapshot)
             seen: set[str] = set()
             for event in events:
                 seen.add(event.provider_event_id)
@@ -512,7 +636,15 @@ class CalendarSyncService:
         state_id, lease_token, window_start, window_end = claimed
         try:
             events = self._fetch(calendar_id, window_start, window_end)
-            self._promote(state_id, lease_token, window_start, window_end, events)
+            linked_series = self._fetch_linked_series(account_id, calendar_id)
+            self._promote(
+                state_id,
+                lease_token,
+                window_start,
+                window_end,
+                events,
+                linked_series,
+            )
         except CalendarProviderError as exc:
             self._mark_failed(state_id, lease_token, exc.code)
         except Exception:

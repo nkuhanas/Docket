@@ -80,6 +80,12 @@ class Settings(BaseSettings):
     calendar_snapshot_max_events: int = Field(
         default=10000, ge=1, le=100000, alias="DOCKET_CALENDAR_SNAPSHOT_MAX_EVENTS"
     )
+    calendar_linked_series_max_reads: int = Field(
+        default=250,
+        ge=1,
+        le=1000,
+        alias="DOCKET_CALENDAR_LINKED_SERIES_MAX_READS",
+    )
     calendar_require_fresh_wait_seconds: float = Field(
         default=10.0, gt=0, le=10, alias="DOCKET_CALENDAR_REQUIRE_FRESH_WAIT_SECONDS"
     )

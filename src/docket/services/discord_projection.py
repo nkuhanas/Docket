@@ -580,10 +580,17 @@ class DiscordProjectionRunner:
         action_type: str,
     ) -> list[dict[str, Any]]:
         if action_type == "calendar_cancel_event":
+            target = preview.get("target")
+            scope = target.get("scope") if isinstance(target, dict) else "event"
             return [
                 {
                     "name": "Delta",
-                    "value": "Remove this event from your configured Docket calendar.",
+                    "value": (
+                        "Remove this entire recurring series from your configured "
+                        "Docket calendar."
+                        if scope == "series"
+                        else "Remove this event from your configured Docket calendar."
+                    ),
                     "inline": False,
                 }
             ]
@@ -632,6 +639,7 @@ class DiscordProjectionRunner:
         action: Action | None,
         approval: Approval | None,
         operation: Operation | None,
+        target_scope: str = "event",
     ) -> str:
         labels = {
             "calendar_create_meeting": (
@@ -666,6 +674,10 @@ class DiscordProjectionRunner:
             action_type,
             ("Calendar change", "Calendar change", "Calendar change completed"),
         )
+        if action_type == "calendar_cancel_event" and target_scope == "series":
+            review_subject = "recurring-series cancellation"
+            outcome_subject = "Recurring-series cancellation"
+            completed = "Recurring series cancelled"
         if approval is not None and approval.status == ApprovalStatus.PENDING.value:
             return f"Review {review_subject}"
         if action is not None and action.status == "rejected":
@@ -1590,6 +1602,7 @@ class DiscordProjectionRunner:
                 action,
                 approval,
                 operation,
+                str(revision.preview.get("target", {}).get("scope", "event")),
             )
             if standalone_calendar_card and subject:
                 fields.insert(

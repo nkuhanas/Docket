@@ -138,7 +138,13 @@ calendar ID. Use `docket_propose_action` for a stored course meeting.
 Use `docket_propose_calendar_event` for a standalone create, complete
 replacement update, unified reminder change, or explicit cancellation. Supply
 the complete generated discriminated proposal schema; never synthesize raw
-Google event JSON or RRULE text. A complete current trusted request may be
+Google event JSON or RRULE text. For one occurrence or a non-recurring event,
+use `target_scope: event` with its exact `provider_event_id`. For an entire
+recurring series, use `target_scope: series` with the master
+`recurring_event_id` returned by the fresh Calendar lookup. Never substitute an
+occurrence ID when the operator asked to update, change reminders on, or cancel
+the whole series, and never infer whole-series scope from conversational memory.
+A complete current trusted request may be
 proposed in the same turn when `docket_get_calendar_profile` reports
 `proposal_mode: suggest`. Under `explicit_only`, propose only when the current
 operator message explicitly asks for the corresponding Calendar create,

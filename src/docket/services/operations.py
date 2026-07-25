@@ -505,14 +505,19 @@ class OperationRunner:
         result: CalendarEventResult,
     ) -> None:
         revision, _action, _queue_item = OperationRunner._bound_entities(session, operation)
-        row = session.scalar(
-            select(CalendarEventCache).where(
-                CalendarEventCache.account_id == operation.account_id,
-                CalendarEventCache.calendar_id == revision.parameters["calendar_id"],
-                CalendarEventCache.provider_event_id == result.external_event_id,
+        rows = list(
+            session.scalars(
+                select(CalendarEventCache).where(
+                    CalendarEventCache.account_id == operation.account_id,
+                    CalendarEventCache.calendar_id == revision.parameters["calendar_id"],
+                    or_(
+                        CalendarEventCache.provider_event_id == result.external_event_id,
+                        CalendarEventCache.recurring_event_id == result.external_event_id,
+                    ),
+                )
             )
         )
-        if row is not None:
+        for row in rows:
             row.status = "cancelled"
             row.provider_etag = None
             row.provider_reminders = {

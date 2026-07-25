@@ -25,7 +25,11 @@ from docket.providers.discord import (
     FakeDiscordBackend,
     FakeDiscordProjectionAdapter,
 )
-from docket.providers.google.calendar import CalendarSnapshotEvent, CalendarSnapshotPage
+from docket.providers.google.calendar import (
+    CalendarEventResult,
+    CalendarSnapshotEvent,
+    CalendarSnapshotPage,
+)
 from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.schemas.calendar import (
     CalendarLookupInput,
@@ -155,6 +159,126 @@ def test_paginated_snapshot_promotes_atomically_and_partial_failure_preserves_pr
             ("event-a", "A2"),
             ("event-c", "C1"),
         ]
+
+
+@pytest.mark.integration
+def test_missing_linked_series_master_closes_link_rules_and_notifications(
+    session_factory,
+) -> None:
+    base = datetime(2026, 7, 22, 14, tzinfo=UTC)
+    settings = get_settings().model_copy(update={"calendar_reads_enabled": True})
+    account_id = _account(session_factory)
+    provider = FakeCalendarProvider()
+    master_id = "linked-series-master"
+    provider.events[master_id] = CalendarEventResult(
+        external_event_id=master_id,
+        provider_etag='"master-current"',
+        provider_request_id="master-read",
+        snapshot={
+            "status": "confirmed",
+            "summary": "Linked series",
+            "location": "Building 14",
+            "start": {
+                "dateTime": "2026-07-23T09:00:00",
+                "timeZone": "America/Los_Angeles",
+            },
+            "end": {
+                "dateTime": "2026-07-23T10:00:00",
+                "timeZone": "America/Los_Angeles",
+            },
+            "recurrence": ["RRULE:FREQ=WEEKLY;COUNT=2"],
+            "reminders": {
+                "useDefault": False,
+                "overrides": [{"method": "popup", "minutes": 10}],
+            },
+            "docket_correlation": "linked-series-create",
+        },
+    )
+    provider.put_snapshot_event(
+        CalendarSnapshotEvent(
+            provider_event_id="linked-series-instance",
+            recurring_event_id=master_id,
+            original_start_at=base + timedelta(days=1),
+            status="confirmed",
+            summary="Linked series",
+            location="Building 14",
+            is_all_day=False,
+            start_at=base + timedelta(days=1),
+            end_at=base + timedelta(days=1, hours=1),
+            timezone="America/Los_Angeles",
+            recurrence_kind="recurring",
+            provider_reminders={
+                "useDefault": False,
+                "overrides": [{"method": "popup", "minutes": 10}],
+            },
+            provider_etag='"instance-current"',
+        )
+    )
+    with session_factory.begin() as session:
+        session.add(
+            CalendarLink(
+                record_id=None,
+                meeting_id=None,
+                origin_kind="standalone",
+                logical_key="standalone:linked-series",
+                account_id=account_id,
+                calendar_id=settings.google_calendar_id,
+                external_event_id=master_id,
+                provider_etag='"master-old"',
+                provider_correlation="linked-series-create",
+                last_synced_version=1,
+                recurrence_kind="recurring",
+                system_tags=["recurring", "timed", "standalone"],
+                operator_tags=[],
+                priority="normal",
+                priority_basis="default",
+                reminder_plan_sha256="linked-series-plan",
+                synced_snapshot={"status": "confirmed"},
+            )
+        )
+        session.add(
+            ReminderRule(
+                account_id=account_id,
+                calendar_id=settings.google_calendar_id,
+                scope="event",
+                provider_event_id=master_id,
+                lead_seconds=600,
+                queue_channel_id=settings.queue_channel_id,
+                source_kind="canonical_plan",
+                enabled=True,
+                created_by_actor_id=settings.operator_discord_user_id,
+            )
+        )
+    sync = CalendarSyncService(session_factory, provider, settings, clock=lambda: base)
+    assert sync.sync_target(account_id, settings.google_calendar_id, force=True)
+    with session_factory() as session:
+        link = session.scalar(
+            select(CalendarLink).where(CalendarLink.external_event_id == master_id)
+        )
+        rule = session.scalar(
+            select(ReminderRule).where(ReminderRule.provider_event_id == master_id)
+        )
+        notifications = list(session.scalars(select(ScheduledNotification)))
+        assert link is not None and link.provider_etag == '"master-current"'
+        assert rule is not None and rule.enabled
+        assert len(notifications) == 1 and notifications[0].status == "pending"
+
+    provider.events.pop(master_id)
+    assert sync.sync_target(account_id, settings.google_calendar_id, force=True)
+    with session_factory() as session:
+        link = session.scalar(
+            select(CalendarLink).where(CalendarLink.external_event_id == master_id)
+        )
+        rule = session.scalar(
+            select(ReminderRule).where(ReminderRule.provider_event_id == master_id)
+        )
+        notifications = list(session.scalars(select(ScheduledNotification)))
+        assert link is not None
+        assert link.provider_etag is None
+        assert link.synced_snapshot["status"] == "cancelled"
+        assert rule is not None and not rule.enabled and rule.version == 2
+        assert len(notifications) == 1
+        assert notifications[0].status == "cancelled"
 
 
 @pytest.mark.integration

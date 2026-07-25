@@ -153,11 +153,25 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
     assert "both Google popup and Docket's due-date ISO queue thread" in (
         calendar_proposal_description
     )
+    assert 'use ``target_scope="series"``' in calendar_proposal_description
+    assert "never pass an occurrence ID" in calendar_proposal_description
     assert "never mutates Google Calendar" in calendar_proposal_description
     calendar_proposal_properties = calendar_proposal.inputSchema["properties"]
     assert calendar_proposal_properties["request_key"]["pattern"].startswith("^discord:")
     proposal_definition = calendar_proposal_properties["proposal"]
     assert proposal_definition["discriminator"]["propertyName"] == "kind"
+    proposal_definitions = calendar_proposal.inputSchema["$defs"]
+    for definition_name in (
+        "UpdateCalendarEventProposal",
+        "UpdateCalendarRemindersProposal",
+        "CancelCalendarEventProposal",
+    ):
+        assert proposal_definitions[definition_name]["properties"]["target_scope"] == {
+            "default": "event",
+            "enum": ["event", "series"],
+            "title": "Target Scope",
+            "type": "string",
+        }
 
     schedule_proposal = tools["docket_propose_term_schedule"]
     schedule_proposal_description = " ".join((schedule_proposal.description or "").split())
