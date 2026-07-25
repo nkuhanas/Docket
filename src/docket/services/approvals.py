@@ -23,6 +23,7 @@ from docket.models import (
     Approval,
     AuditEvent,
     CalendarEventCache,
+    CalendarLink,
     CalendarReminderPlan,
     CalendarScheduleSnapshot,
     CalendarSyncState,
@@ -306,20 +307,57 @@ class ApprovalService:
             isinstance(calendar_target, dict)
             and calendar_target.get("provider_event_id") is not None
         ):
-            event = self.session.scalar(
-                select(CalendarEventCache).where(
-                    CalendarEventCache.account_id == revision.account_id,
-                    CalendarEventCache.calendar_id == revision.parameters.get("calendar_id"),
-                    CalendarEventCache.provider_event_id == calendar_target["provider_event_id"],
+            if calendar_target.get("target_scope") == "series":
+                link = self.session.scalar(
+                    select(CalendarLink).where(
+                        CalendarLink.account_id == revision.account_id,
+                        CalendarLink.calendar_id
+                        == revision.parameters.get("calendar_id"),
+                        CalendarLink.external_event_id
+                        == calendar_target["provider_event_id"],
+                    )
                 )
-            )
-            if (
-                event is None
-                or event.status == "cancelled"
-                or event.provider_etag != calendar_target.get("provider_etag")
-                or event.has_attendees
-                or event.organizer_is_self is False
-            ):
+                instances = list(
+                    self.session.scalars(
+                        select(CalendarEventCache).where(
+                            CalendarEventCache.account_id == revision.account_id,
+                            CalendarEventCache.calendar_id
+                            == revision.parameters.get("calendar_id"),
+                            CalendarEventCache.recurring_event_id
+                            == calendar_target["provider_event_id"],
+                            CalendarEventCache.status != "cancelled",
+                        )
+                    )
+                )
+                changed = (
+                    link is None
+                    or link.recurrence_kind != "recurring"
+                    or link.provider_etag != calendar_target.get("provider_etag")
+                    or link.synced_snapshot.get("status") == "cancelled"
+                    or not instances
+                    or any(
+                        event.has_attendees or event.organizer_is_self is False
+                        for event in instances
+                    )
+                )
+            else:
+                event = self.session.scalar(
+                    select(CalendarEventCache).where(
+                        CalendarEventCache.account_id == revision.account_id,
+                        CalendarEventCache.calendar_id
+                        == revision.parameters.get("calendar_id"),
+                        CalendarEventCache.provider_event_id
+                        == calendar_target["provider_event_id"],
+                    )
+                )
+                changed = (
+                    event is None
+                    or event.status == "cancelled"
+                    or event.provider_etag != calendar_target.get("provider_etag")
+                    or event.has_attendees
+                    or event.organizer_is_self is False
+                )
+            if changed:
                 raise DocketError(
                     code="target_version_changed",
                     message="The Calendar event changed after the approval preview was created.",

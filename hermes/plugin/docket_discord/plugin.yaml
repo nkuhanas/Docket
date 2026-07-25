@@ -1,5 +1,5 @@
 name: docket-discord
-version: 0.12.0
+version: 0.13.0
 description: Trusted Discord provenance, operator-thread membership, projection, and approval bridge for Docket
 provides_hooks:
   - pre_gateway_dispatch

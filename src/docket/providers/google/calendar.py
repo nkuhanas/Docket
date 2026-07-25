@@ -287,6 +287,8 @@ class CalendarProvider(Protocol):
 
 
 class CalendarReadProvider(Protocol):
+    def get_event(self, request: CalendarEventRequest) -> CalendarEventResult | None: ...
+
     def list_events_page(
         self,
         *,

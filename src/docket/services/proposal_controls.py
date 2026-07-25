@@ -753,28 +753,39 @@ class ProposalControlService:
         target: CalendarEventCache | None = None
         external_event_id = parameters.get("external_event_id")
         if isinstance(external_event_id, str):
-            matches = list(
-                self.session.scalars(
-                    select(CalendarEventCache).where(
-                        CalendarEventCache.account_id == revision.account_id,
-                        CalendarEventCache.calendar_id == calendar_id,
-                        CalendarEventCache.provider_event_id == external_event_id,
-                        CalendarEventCache.status != "cancelled",
+            from docket.services.calendar_actions import (
+                CalendarActionService,
+                _provider_snapshot,
+            )
+
+            if parameters.get("target_scope") == "series":
+                target, _link = CalendarActionService(self.session)._target_series(
+                    revision.account_id,
+                    calendar_id,
+                    external_event_id,
+                )
+            else:
+                matches = list(
+                    self.session.scalars(
+                        select(CalendarEventCache).where(
+                            CalendarEventCache.account_id == revision.account_id,
+                            CalendarEventCache.calendar_id == calendar_id,
+                            CalendarEventCache.provider_event_id == external_event_id,
+                            CalendarEventCache.status != "cancelled",
+                        )
                     )
                 )
-            )
-            if len(matches) != 1:
-                raise DocketError(
-                    code="calendar_event_changed",
-                    message="The proposal target no longer resolves to one current event.",
-                )
-            target = matches[0]
-            if target.has_attendees or target.organizer_is_self is False:
-                raise DocketError(
-                    code="calendar_event_not_private",
-                    message="The refreshed event is no longer safe for private control.",
-                )
-            from docket.services.calendar_actions import _provider_snapshot
+                if len(matches) != 1:
+                    raise DocketError(
+                        code="calendar_event_changed",
+                        message="The proposal target no longer resolves to one current event.",
+                    )
+                target = matches[0]
+                if target.has_attendees or target.organizer_is_self is False:
+                    raise DocketError(
+                        code="calendar_event_not_private",
+                        message="The refreshed event is no longer safe for private control.",
+                    )
 
             before = _provider_snapshot(target)
             parameters["provider_etag"] = target.provider_etag
@@ -810,6 +821,7 @@ class ProposalControlService:
             "last_success_at": _aware(state.last_success_at).isoformat(),
             "provider_event_id": target.provider_event_id if target else None,
             "provider_etag": target.provider_etag if target else None,
+            "target_scope": parameters.get("target_scope", "event"),
         }
         if (
             sha256_json(parameters) == revision.parameters_sha256

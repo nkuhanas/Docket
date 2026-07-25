@@ -48,7 +48,7 @@ on every request. Docket's callback uses the independent
 
 Hermes performs overlapping plugin discovery during this pin's startup. Each
 discovery pass imports an isolated plugin module, so module globals alone cannot
-prevent a transient second bind. Plugin `0.12.0` starts the private HTTP server
+prevent a transient second bind. Plugin `0.13.0` starts the private HTTP server
 under a background supervisor: an `EADDRINUSE` defers that copy without failing
 plugin registration, and it retries if the process that temporarily owned the
 port exits. Healthy startup may contain one `startup deferred` line, followed
@@ -91,7 +91,7 @@ Pinned outbound assumptions to revalidate:
   message; raw request/provider payloads and per-item progress never cross this
   seam.
 
-Plugin `0.12.0` renders timed reminder start/end values as Docket-supplied native
+Plugin `0.13.0` renders timed reminder start/end values as Docket-supplied native
 Discord timestamps, puts the event subject under the native `Title` field, and
 omits a redundant timezone field. All-day reminders instead render fixed
 start/end dates plus the Calendar timezone. Projection embeds may omit their
@@ -323,6 +323,12 @@ lookup, redacted sync status, profile reads/writes, canonical reminder-rule
 listing, standalone proposals, and aggregate term-schedule proposals all use
 generated typed schemas. Reminder mutations exist only inside an approved
 Calendar proposal; there is no model-visible direct rule-write/disable tool.
+Existing-event mutations distinguish one occurrence or non-recurring event
+(`target_scope=event`) from a whole Docket-owned recurring series
+(`target_scope=series`). Series scope accepts only the master
+`recurring_event_id` returned by the bounded lookup; occurrence/master
+substitution fails closed. The master identity and ETag live on the exact
+Docket `calendar_links` row rather than an expanded occurrence cache row.
 The rule list supplies current canonical identities for diagnosis after session
 compaction, avoiding a past-session search. Reminder destinations are fixed:
 Docket binds Google popup plus the due-date queue thread internally.
@@ -404,6 +410,16 @@ pagination. Its Google partial-response selector requests only page tokens,
 calendar timezone, and the event identity/status/summary/location/time/recurrence/
 ETag/update fields admitted by the cache; descriptions, attendees, conferencing,
 organizers, attachments, and arbitrary extended properties are not requested.
+Because that expanded read does not return recurring masters, each complete
+generation also exact-reads every active Docket-linked recurring master. The
+master snapshot and ETag promote in the same transaction as its occurrences.
+This second walk is capped by
+`DOCKET_CALENDAR_LINKED_SERIES_MAX_READS` (250 by default); exceeding it fails
+the generation closed instead of issuing an unbounded request fan-out.
+The pre-read link ETag and provider correlation form the compare guard, so a
+concurrent approved mutation wins over an older synchronization result. A
+missing/cancelled master closes the link and disables its canonical reminder
+rules; a provider error fails the whole generation and retains the prior one.
 It never combines rolling-window bounds with a provider sync token.
 Only a complete in-memory page walk enters the database promotion transaction;
 any timeout, malformed page, repeated identity/token, authorization failure, or

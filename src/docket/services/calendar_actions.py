@@ -329,6 +329,14 @@ class CalendarActionService:
                 details={"provider_event_id": provider_event_id},
             )
         target = matches[0]
+        if target.recurrence_kind == "recurring" and target.recurring_event_id is None:
+            raise DocketError(
+                code="calendar_series_scope_required",
+                message=(
+                    "A recurring master requires explicit series scope; "
+                    "one occurrence requires its exact provider event ID."
+                ),
+            )
         if target.has_attendees or target.organizer_is_self is False:
             raise DocketError(
                 code="calendar_event_not_private",
@@ -337,6 +345,101 @@ class CalendarActionService:
                 ),
             )
         return target
+
+    def _target_series(
+        self,
+        account_id: uuid.UUID,
+        calendar_id: str,
+        provider_event_id: str,
+    ) -> tuple[CalendarEventCache, CalendarLink]:
+        link = self._existing_link(account_id, calendar_id, provider_event_id)
+        if (
+            link is None
+            or link.recurrence_kind != "recurring"
+            or link.provider_etag is None
+            or link.synced_snapshot.get("status") == "cancelled"
+        ):
+            raise DocketError(
+                code="calendar_series_not_found",
+                message="The exact Docket-linked recurring series could not be resolved safely.",
+            )
+        instances = list(
+            self.session.scalars(
+                select(CalendarEventCache).where(
+                    CalendarEventCache.account_id == account_id,
+                    CalendarEventCache.calendar_id == calendar_id,
+                    CalendarEventCache.recurring_event_id == provider_event_id,
+                    CalendarEventCache.status != "cancelled",
+                )
+            )
+        )
+        if not instances:
+            raise DocketError(
+                code="calendar_series_not_found",
+                message="The recurring series has no current instances in Docket's fresh cache.",
+            )
+        if any(row.has_attendees or row.organizer_is_self is False for row in instances):
+            raise DocketError(
+                code="calendar_event_not_private",
+                message=(
+                    "Docket will not modify an attendee-bearing or externally organized series."
+                ),
+            )
+        representative = min(
+            instances,
+            key=lambda row: (
+                _as_utc(row.start_at)
+                if row.start_at is not None
+                else datetime.combine(
+                    row.start_date or date.max,
+                    time.min,
+                    tzinfo=ZoneInfo(row.timezone or get_settings().timezone),
+                ).astimezone(UTC),
+                row.provider_event_id,
+            ),
+        )
+        snapshot = link.synced_snapshot
+        reminders = snapshot.get("reminders")
+        target = CalendarEventCache(
+            account_id=account_id,
+            calendar_id=calendar_id,
+            provider_event_id=provider_event_id,
+            snapshot_generation=representative.snapshot_generation,
+            recurring_event_id=None,
+            status=str(snapshot.get("status") or representative.status),
+            summary=(
+                str(snapshot["summary"])
+                if isinstance(snapshot.get("summary"), str)
+                else representative.summary
+            ),
+            location=(
+                str(snapshot["location"])
+                if isinstance(snapshot.get("location"), str)
+                else representative.location
+            ),
+            is_all_day=representative.is_all_day,
+            start_at=representative.start_at,
+            end_at=representative.end_at,
+            start_date=representative.start_date,
+            end_date=representative.end_date,
+            timezone=representative.timezone,
+            provider_etag=link.provider_etag,
+            provider_updated_at=representative.provider_updated_at,
+            synced_at=representative.synced_at,
+            has_attendees=False,
+            organizer_is_self=True,
+            recurrence_kind="recurring",
+            system_tags=list(link.system_tags),
+            operator_tags=list(link.operator_tags),
+            priority=link.priority,
+            priority_basis=link.priority_basis,
+            provider_reminders=(
+                dict(reminders)
+                if isinstance(reminders, dict)
+                else dict(representative.provider_reminders)
+            ),
+        )
+        return target, link
 
     def _conflicts(
         self,
@@ -358,7 +461,10 @@ class CalendarActionService:
         ).all()
         conflicts: list[dict[str, Any]] = []
         for row in rows:
-            if row.provider_event_id == exclude_provider_event_id:
+            if exclude_provider_event_id is not None and exclude_provider_event_id in {
+                row.provider_event_id,
+                row.recurring_event_id,
+            }:
                 continue
             if row.is_all_day:
                 if row.start_date is None or row.end_date is None:
@@ -449,6 +555,7 @@ class CalendarActionService:
         event: StandaloneCalendarEventInput | None = None
         conflicts: list[dict[str, Any]] = []
         logical_key: str
+        target_scope = "event"
 
         if isinstance(proposal, CreateCalendarEventProposal):
             event = proposal.event.model_copy(update={"reminder_plan": None})
@@ -467,12 +574,20 @@ class CalendarActionService:
                 event=event,
             )
         else:
-            target = self._target_event(
-                account.id, request.calendar_id, proposal.provider_event_id
-            )
-            link = self._existing_link(
-                account.id, request.calendar_id, proposal.provider_event_id
-            )
+            target_scope = proposal.target_scope
+            if target_scope == "series":
+                target, link = self._target_series(
+                    account.id,
+                    request.calendar_id,
+                    proposal.provider_event_id,
+                )
+            else:
+                target = self._target_event(
+                    account.id, request.calendar_id, proposal.provider_event_id
+                )
+                link = self._existing_link(
+                    account.id, request.calendar_id, proposal.provider_event_id
+                )
             logical_key = (
                 link.logical_key
                 if link is not None
@@ -522,6 +637,7 @@ class CalendarActionService:
             "reminder_plan_sha256": plan_sha256,
             "priority": priority,
             "priority_basis": priority_basis,
+            "target_scope": target_scope,
         }
         if isinstance(proposal, UpdateCalendarEventProposal):
             parameters["reminder_disposition"] = proposal.reminder_disposition
@@ -551,6 +667,7 @@ class CalendarActionService:
                     target.provider_event_id if target is not None else None
                 ),
                 "provider_etag": target.provider_etag if target is not None else None,
+                "target_scope": target_scope,
                 "reason": parameters.get("reason"),
             }
         )
@@ -560,6 +677,7 @@ class CalendarActionService:
                 "account_id": str(account.id),
                 "calendar_id": request.calendar_id,
                 "logical_key": logical_key,
+                "scope": target_scope,
             },
             "event": event_payload,
             "before": _provider_snapshot(target) if target is not None else None,
@@ -652,6 +770,7 @@ class CalendarActionService:
                 else None,
                 "provider_event_id": target.provider_event_id if target else None,
                 "provider_etag": target.provider_etag if target else None,
+                "target_scope": target_scope,
             },
         }
         revision = ActionRevision(

@@ -3,8 +3,9 @@
 This record covers the Full Calendar control closure release deployed on
 2026-07-22. The private implementation specification remains outside this
 repository. Automated and deployment evidence is complete. The operator-present
-standalone Google/Discord lifecycle is complete; aggregate schedule execution
-remains pending.
+standalone Google/Discord lifecycle is complete. Aggregate schedule creation
+and duplicate suppression are complete; safe recurring-series cleanup remains
+pending deployment and operator approval.
 
 ## Migration and identity contract
 
@@ -193,16 +194,16 @@ existing projection and Discord message in one attempt. Projection
 `20bfb771-26a9-4238-8736-fa154f0915e9` advanced from version 1 to 2 without
 creating a proposal, approval, thread, or message.
 
-The remaining aggregate operator-present gate is:
+The aggregate operator-present gate is:
 
 1. inspect every immutable item through Review items, approve once, and verify
    the expected Calendar series, ten-minute Google popups, activated Docket
-   rules, and no output in chat or the queue root;
+   rules, and no output in chat or the queue root — **complete**;
 2. repeat the same proposal from a new Discord message before approval in a
    separate harmless smoke and verify Docket points to the existing card rather
-   than projecting a second one; and
+   than projecting a second one — **complete**; and
 3. remove the resulting disposable series through typed, separately approved
-   Docket cancellation proposals.
+   Docket cancellation proposals — **pending**.
 
 No live gate result should be inferred from the automated fake-provider suite.
 
@@ -234,3 +235,37 @@ This closes the live standalone create, edit, reminder replacement, and
 cancellation portion of the Milestone 3.6 gate. It does not substitute for the
 remaining aggregate schedule execution, duplicate-proposal, per-item reminder,
 and cleanup evidence above.
+
+## Aggregate creation evidence and recurring-series cleanup guard
+
+On 2026-07-24, the operator approved one disposable two-item DKT 933 / AGGEXEC
+term-schedule proposal after reviewing its immutable carousel. The parent
+operation and both item operations succeeded exactly once. Google contained the
+two expected weekly series, each with the canonical ten-minute popup plan.
+After the next complete read, Docket contained 17 confirmed occurrences and 17
+pending daily-thread notifications per series. The proposal and terminal state
+routed to the ISO daily thread, one lifecycle entry converged in
+`docket-system`, and no operation or projection outbox work remained active.
+
+A separate pending-proposal replay smoke emitted
+`action.duplicate_suppressed`, reused the original action/card, and created no
+second queue item, approval, provider operation, or Discord message. It was
+rejected without provider mutation.
+
+Cleanup preflight exposed an important scope gap before any destructive call:
+the bounded Google read uses expanded occurrences, while the linked recurring
+master identity existed only in `calendar_links`. The old standalone
+cancellation schema could therefore bind one occurrence but could not safely
+express the entire series. Branch `fix/recurring-series-targets` adds explicit
+`event|series` mutation scope, exact master reads and ETag promotion, scope
+substitution rejection, approval revalidation, whole-series cache/reminder
+convergence, generated-schema guidance, and fake-provider regression coverage.
+No cleanup proposal was sent under the ambiguous contract. Deployment,
+`/reload-mcp`, two separate destructive cards, and post-approval provider/cache/
+reminder verification remain required before this section is closed.
+
+The recurring-series release candidate passed `scripts/docket check` with 210
+tests, Ruff, and mypy; Skill Creator validation; `git diff --check`;
+`docker compose config --quiet`; and the isolated dummy-provider Compose/MCP
+smoke. These automated results establish the fail-closed contract but do not
+claim the two production series have been cancelled.

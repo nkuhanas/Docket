@@ -29,13 +29,20 @@ from docket.models import (
     ScheduledNotification,
 )
 from docket.providers.discord import FakeDiscordBackend, FakeDiscordProjectionAdapter
+from docket.providers.google.calendar import (
+    CalendarEventRequest,
+    CalendarEventResult,
+    CalendarSnapshotEvent,
+)
 from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.schemas.actions import ProposeCalendarEventInput
 from docket.services.approvals import ApprovalService
 from docket.services.calendar_actions import CalendarActionService
+from docket.services.calendar_sync import CalendarSyncService
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.operations import OperationRunner
 from docket.services.proposal_controls import ProposalControlService
+from docket.services.reminders import materialize_reminders
 from docket.services.rollover import RolloverService
 
 
@@ -486,6 +493,256 @@ def test_reminder_disable_and_cancellation_converge_both_projections(
         assert event is not None and event.status == "cancelled"
         assert operation is not None and operation.status == "succeeded"
         assert provider_event_id not in provider.events
+
+
+@pytest.mark.integration
+def test_recurring_series_cancellation_binds_master_and_cleans_every_instance(
+    session_factory: sessionmaker[Session],
+) -> None:
+    settings = get_settings().model_copy(update={"calendar_reads_enabled": True})
+    now = datetime.now(UTC)
+    provider = FakeCalendarProvider()
+    with session_factory.begin() as session:
+        account = _seed_target(session)
+        account_id = account.id
+        master = provider.create_event(
+            CalendarEventRequest(
+                calendar_id=settings.google_calendar_id,
+                provider_correlation="series-create",
+                summary="Disposable recurring series",
+                event_spec={
+                    "title": "Disposable recurring series",
+                    "timing": {
+                        "kind": "timed",
+                        "start_local": "2026-08-26T04:00:00",
+                        "end_local": "2026-08-26T04:15:00",
+                        "timezone": "America/Los_Angeles",
+                    },
+                    "location": "Test Room",
+                    "notes": None,
+                    "operator_tags": [],
+                    "priority": "normal",
+                    "recurrence": {
+                        "frequency": "weekly",
+                        "interval": 1,
+                        "weekdays": ["WE"],
+                        "month_days": [],
+                        "count": 2,
+                        "until_date": None,
+                        "excluded_dates": [],
+                        "additional_dates": [],
+                    },
+                },
+                reminder_plan={
+                    "delivery_channels": ["google_popup", "docket_queue"],
+                    "lead_seconds": [600],
+                },
+                logical_key="standalone:series",
+                priority="normal",
+                priority_basis="default",
+                reminder_plan_sha256="series-reminder-plan",
+                origin_kind="standalone",
+                operation_type="calendar_create_event",
+            )
+        )
+        session.add(
+            CalendarLink(
+                record_id=None,
+                meeting_id=None,
+                account_id=account.id,
+                calendar_id=settings.google_calendar_id,
+                external_event_id=master.external_event_id,
+                provider_etag=master.provider_etag,
+                provider_correlation="series-create",
+                last_synced_version=1,
+                origin_kind="standalone",
+                logical_key="standalone:series",
+                recurrence_kind="recurring",
+                system_tags=["recurring", "timed", "standalone"],
+                operator_tags=[],
+                priority="normal",
+                priority_basis="default",
+                reminder_plan_sha256="series-reminder-plan",
+                synced_snapshot=master.snapshot,
+            )
+        )
+    refreshed_master = CalendarEventResult(
+        external_event_id=master.external_event_id,
+        provider_etag='"series-current"',
+        provider_request_id="series-read",
+        snapshot={**master.snapshot, "status": "confirmed"},
+    )
+    provider.events[master.external_event_id] = refreshed_master
+
+    first_start = now + timedelta(days=30)
+    for index in range(2):
+        start = first_start + timedelta(days=index * 7)
+        provider.put_snapshot_event(
+            CalendarSnapshotEvent(
+                provider_event_id=f"series-instance-{index}",
+                recurring_event_id=master.external_event_id,
+                original_start_at=start,
+                status="confirmed",
+                summary="Disposable recurring series",
+                location="Test Room",
+                is_all_day=False,
+                start_at=start,
+                end_at=start + timedelta(minutes=15),
+                timezone="America/Los_Angeles",
+                recurrence_kind="recurring",
+                system_tags=("recurring", "timed"),
+                provider_reminders={
+                    "useDefault": False,
+                    "overrides": [{"method": "popup", "minutes": 10}],
+                },
+                provider_etag=f'"series-instance-{index}"',
+                provider_updated_at=now,
+            )
+        )
+    sync = CalendarSyncService(
+        session_factory,
+        provider,
+        settings,
+        clock=lambda: now,
+    )
+    assert sync.sync_target(account_id, settings.google_calendar_id, force=True)
+
+    with session_factory.begin() as session:
+        account = session.get(Account, account_id)
+        assert account is not None
+        with pytest.raises(DocketError) as wrong_master_scope:
+            CalendarActionService(session).propose(
+                _event_request(
+                    account,
+                    "676666666666666665",
+                    {
+                        "kind": "cancel",
+                        "provider_event_id": master.external_event_id,
+                        "target_scope": "event",
+                        "reason": "This must not bind a recurring master as one event.",
+                    },
+                )
+            )
+        assert wrong_master_scope.value.code == "calendar_event_not_found"
+        with pytest.raises(DocketError) as wrong_occurrence_scope:
+            CalendarActionService(session).propose(
+                _event_request(
+                    account,
+                    "676666666666666664",
+                    {
+                        "kind": "cancel",
+                        "provider_event_id": "series-instance-0",
+                        "target_scope": "series",
+                        "reason": "This must not bind one occurrence as a series.",
+                    },
+                )
+            )
+        assert wrong_occurrence_scope.value.code == "calendar_series_not_found"
+
+    with session_factory.begin() as session:
+        rule = ReminderRule(
+            account_id=account_id,
+            calendar_id=settings.google_calendar_id,
+            scope="event",
+            provider_event_id=master.external_event_id,
+            lead_seconds=600,
+            queue_channel_id=settings.queue_channel_id,
+            enabled=True,
+            version=1,
+            created_by_actor_id=settings.operator_discord_user_id,
+            source_kind="canonical_plan",
+        )
+        session.add(rule)
+        session.flush()
+        assert materialize_reminders(session, now=now, settings=settings) == 2
+        account = session.get(Account, account_id)
+        assert account is not None
+        proposal = CalendarActionService(session).propose(
+            _event_request(
+                account,
+                "676666666666666666",
+                {
+                    "kind": "cancel",
+                    "provider_event_id": master.external_event_id,
+                    "target_scope": "series",
+                    "reason": "Disposable recurring-series smoke is complete.",
+                },
+            )
+        )
+        assert proposal.preview["target"]["scope"] == "series"
+        assert proposal.preview["before"]["provider_event_id"] == master.external_event_id
+        assert proposal.preview["before"]["provider_etag"] == '"series-current"'
+        assert proposal.preview["classification"]["recurrence_kind"] == "recurring"
+
+    backend = FakeDiscordBackend()
+    projection_runner = DiscordProjectionRunner(
+        session_factory,
+        FakeDiscordProjectionAdapter(backend),
+        settings,
+    )
+    assert projection_runner.run_due_once()
+    projected = next(iter(backend.messages.values()))
+    assert projected["embed"]["title"] == "Review recurring-series cancellation"
+    fields = {field["name"]: field["value"] for field in projected["embed"]["fields"]}
+    assert fields["Delta"] == (
+        "Remove this entire recurring series from your configured Docket calendar."
+    )
+
+    with session_factory.begin() as session:
+        link = session.scalar(
+            select(CalendarLink).where(
+                CalendarLink.external_event_id == master.external_event_id
+            )
+        )
+        assert link is not None and link.provider_etag == '"series-current"'
+        link.provider_etag = '"series-changed-after-preview"'
+        session.flush()
+        with pytest.raises(DocketError) as stale:
+            _approve(
+                session,
+                short_code=proposal.short_code,
+                interaction_id="series-stale-approval",
+            )
+        assert stale.value.code == "target_version_changed"
+        link.provider_etag = '"series-current"'
+        session.flush()
+        operation_id = _approve(
+            session,
+            short_code=proposal.short_code,
+            interaction_id="series-cancel-approval",
+        )
+    runner = OperationRunner(session_factory, provider)
+    assert runner.run_due_once()
+
+    with session_factory() as session:
+        operation = session.get(Operation, operation_id)
+        link = session.scalar(
+            select(CalendarLink).where(
+                CalendarLink.external_event_id == master.external_event_id
+            )
+        )
+        instances = list(
+            session.scalars(
+                select(CalendarEventCache).where(
+                    CalendarEventCache.recurring_event_id == master.external_event_id
+                )
+            )
+        )
+        rules = list(
+            session.scalars(
+                select(ReminderRule).where(
+                    ReminderRule.provider_event_id == master.external_event_id
+                )
+            )
+        )
+        notifications = list(session.scalars(select(ScheduledNotification)))
+        assert operation is not None and operation.status == "succeeded"
+        assert link is not None and link.synced_snapshot["status"] == "cancelled"
+        assert master.external_event_id not in provider.events
+        assert len(instances) == 2
+        assert all(instance.status == "cancelled" for instance in instances)
+        assert rules and all(not rule.enabled for rule in rules)
+        assert notifications and all(item.status == "cancelled" for item in notifications)
 
 
 @pytest.mark.integration

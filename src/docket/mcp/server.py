@@ -457,6 +457,10 @@ def docket_propose_calendar_event(
     stored proposal profile, and derives an immutable approval preview. Reminder plans
     always project to both Google popup and Docket's due-date ISO queue thread; an empty
     lead list disables both. The result is only a persistent Discord proposal card.
+    For one occurrence or a non-recurring event, use ``target_scope="event"`` with that
+    event's ``provider_event_id``. For an entire Docket-owned recurring series, use
+    ``target_scope="series"`` with the ``recurring_event_id`` returned by Calendar
+    lookup; never pass an occurrence ID when the operator asked for the whole series.
     This tool never records approval and never mutates Google Calendar.
     """
     try:

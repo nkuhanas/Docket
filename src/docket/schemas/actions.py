@@ -25,6 +25,7 @@ StandaloneCalendarActionType = Literal[
     "calendar_update_reminders",
     "calendar_cancel_event",
 ]
+CalendarMutationScope = Literal["event", "series"]
 
 
 class CalendarMeetingActionParameters(StrictModel):
@@ -57,6 +58,7 @@ class CreateCalendarEventProposal(StrictModel):
 class UpdateCalendarEventProposal(StrictModel):
     kind: Literal["update"]
     provider_event_id: str = Field(min_length=1, max_length=1024)
+    target_scope: CalendarMutationScope = "event"
     replacement: StandaloneCalendarEventInput
     reminder_disposition: CalendarReminderDisposition = "preserve"
     reminder_plan: CalendarReminderPlanInput | None = None
@@ -77,12 +79,14 @@ class UpdateCalendarEventProposal(StrictModel):
 class UpdateCalendarRemindersProposal(StrictModel):
     kind: Literal["reminders"]
     provider_event_id: str = Field(min_length=1, max_length=1024)
+    target_scope: CalendarMutationScope = "event"
     reminder_plan: CalendarReminderPlanInput
 
 
 class CancelCalendarEventProposal(StrictModel):
     kind: Literal["cancel"]
     provider_event_id: str = Field(min_length=1, max_length=1024)
+    target_scope: CalendarMutationScope = "event"
     reason: str = Field(min_length=1, max_length=1000)
 
 

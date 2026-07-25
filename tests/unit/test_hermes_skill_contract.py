@@ -28,6 +28,10 @@ def test_manual_intent_skill_preserves_calendar_freshness_and_explicit_reminders
     assert "both Google popup and the ISO thread" in skill
     assert "ISO thread" in skill
     assert "never search past sessions for a rule UUID or version" in skill
+    assert "`target_scope: event`" in skill
+    assert "`target_scope: series`" in skill
+    assert "master `recurring_event_id`" in skill
+    assert "Never substitute an occurrence ID" in skill
 
 
 def test_manual_intent_skill_keeps_durable_output_out_of_chat() -> None:

@@ -114,13 +114,13 @@ Run the Hermes plugin-list probe only after the gateway log reports that Discord
 is connected and the gateway is running. Do not parallelize it with a Hermes
 restart: this pinned CLI imports user plugins, whose registration has the side
 effect of binding the private projection port. A startup-time probe can contend
-with the gateway on port 8787. Plugin `0.12.0` retries that bind, but avoiding the
+with the gateway on port 8787. Plugin `0.13.0` retries that bind, but avoiding the
 race keeps startup and diagnostics unambiguous.
 
 Expected results:
 
 * PostgreSQL and Docket are healthy; Hermes and SearXNG are running.
-* `docket-discord` `0.12.0` is `enabled`.
+* `docket-discord` `0.13.0` is `enabled`.
 * Hermes connects to `http://docket:8000/mcp/` and discovers exactly twenty
   tools, including `docket_store_term_schedule`,
   `docket_propose_term_schedule`, `docket_store_record`,
@@ -182,14 +182,15 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Approval is consumed but no Calendar link appears | Inspect operation status, next attempt, attempts, and worker log | Worker stopped, provider failure, backoff, or reconciliation required |
 | Operation is `reconciliation_required` | Inspect attempt error and provider correlation; never force a create retry | Timeout/crash may have reached Google, or reconciliation found conflicting matches |
 | Update creates a second event | Stop external calls and compare action type, link, idempotency key, and external event ID | Update was proposed as create, link was missing, or execution contract regressed |
+| A recurring-series proposal fails or targets one occurrence | Inspect `target_scope`, the fresh lookup's `recurring_event_id`, the linked master ETag/snapshot, and the active MCP schema; then restart/reload MCP if stale | Hermes supplied an occurrence ID for series scope, a master ID for event scope, the master exact-read has not promoted, or the pre-series schema/skill is still active |
 | Calendar lookup is empty or stale | Inspect `calendar_sync_states`, its covered window, and the prior cache generation before changing credentials | Read gate disabled, sync due/leased, OAuth failure, partial page walk, or requested range outside the cache |
 | A newly created provider event is absent from a healthy current-day lookup | Compare `last_success_at` with the event creation time, then retry the same bounded lookup with `require_fresh` | `prefer_cache` returned before the next five-minute synchronization; healthy and covered do not imply read-after-provider-write consistency |
 | Hermes calls a terminal or time tool around a today/tomorrow Calendar lookup | Inspect the active lookup schema/result for `relative_day`, `start_local`, and `end_local`, then restart Hermes and run `/reload-mcp` | The active session cached the prior MCP schema or old manual-intent guidance |
-| Reminder does not arrive | Inspect rule version, event cache identity, scheduled row, bound daily thread, notification outbox, and plugin `0.12.0` logs | Rule disabled, event moved/cancelled, stale event already began, queue binding changed, thread ensure failed, or Discord retry |
-| External action has no `docket-system` lifecycle entry | Inspect `discord.system_log.requested` outbox rows and the plugin `system-logs` endpoint before posting a manual summary | Plugin not recreated at `0.12.0`, system target mismatch, retry backoff, or marker ownership conflict; canonical operation/audit state remains authoritative |
+| Reminder does not arrive | Inspect rule version, event cache identity, scheduled row, bound daily thread, notification outbox, and plugin `0.13.0` logs | Rule disabled, event moved/cancelled, stale event already began, queue binding changed, thread ensure failed, or Discord retry |
+| External action has no `docket-system` lifecycle entry | Inspect `discord.system_log.requested` outbox rows and the plugin `system-logs` endpoint before posting a manual summary | Plugin not recreated at `0.13.0`, system target mismatch, retry backoff, or marker ownership conflict; canonical operation/audit state remains authoritative |
 | Queue card exposes provider IDs, ETags, hashes, enum action names, or freshness timestamps | Stop treating the card as an operator-safe surface and inspect the deterministic renderer | Diagnostic metadata leaked into the projection; keep it in PostgreSQL/runbook queries and render only decision-relevant labels |
 | Calendar card repeats Status/Execution/Effect, uses the event subject as its long title/description, or dumps a generic Before record | Inspect the state-oriented renderer and rebuild/recreate Docket | Pre-polish image or renderer regression; standalone subjects belong under `Title`, successful terminal state needs no description, and updates use bounded `Delta · Property` fields with separate Before/After lines |
-| A timed card, reminder, or system entry displays raw `<t:...>` text or a manual IANA timezone | Confirm the value is in an embed description/field, Hermes runs plugin `0.12.0`, and the token survived escaping unchanged | Old renderer/plugin, malformed milliseconds or timestamp style, or a Discord-client rendering regression; all-day and recurrence-definition timezone text is intentionally exempt |
+| A timed card, reminder, or system entry displays raw `<t:...>` text or a manual IANA timezone | Confirm the value is in an embed description/field, Hermes runs plugin `0.13.0`, and the token survived escaping unchanged | Old renderer/plugin, malformed milliseconds or timestamp style, or a Discord-client rendering regression; all-day and recurrence-definition timezone text is intentionally exempt |
 | Duplicate reminder appears | Stop retries and compare notification ID, event-start key, outbox dedupe key, and `docket-calendar-reminder:<uuid>` footer marker | Marker collision, manual copy, lost binding, or plugin idempotency regression |
 
 ## Missing trusted Discord context
@@ -450,7 +451,7 @@ from discord_projections order by created_at desc limit 20;'
 First failure points:
 
 * `discord_transport_error` or `discord_runtime_unavailable`: verify Hermes is
-  running, plugin `0.12.0` is enabled, port 8787 is exposed only internally, and
+  running, plugin `0.13.0` is enabled, port 8787 is exposed only internally, and
   Hermes was recreated after Compose environment changes. The default ten
   attempts cover ordinary Hermes startup; do not reduce the window without
   measuring the pinned runtime's initialization time.
@@ -485,7 +486,7 @@ print("projection listener reachable")'
 Hermes plugin edits require a gateway restart. `/reload-mcp` is still required
 for MCP tool/schema changes, but it does not reload this Python plugin.
 
-The pinned Hermes runtime performs overlapping plugin discovery. Plugin `0.12.0`
+The pinned Hermes runtime performs overlapping plugin discovery. Plugin `0.13.0`
 therefore starts port 8787 under a retrying supervisor: one discovery pass may
 log that startup is deferred because the port is in use, but plugin loading must
 still succeed and one listener must remain reachable. A warning that the plugin
@@ -703,6 +704,11 @@ select provider_event_id, status, is_all_day, start_at, start_date,
        recurring_event_id, synced_at
 from calendar_event_cache order by coalesce(start_at, start_date::timestamp)
 limit 50;
+select external_event_id, recurrence_kind, provider_etag,
+       synced_snapshot->>'status' as provider_status
+from calendar_links
+where recurrence_kind = 'recurring'
+order by updated_at desc limit 20;
 select id, scope, provider_event_id, lead_seconds, queue_channel_id, enabled, version
 from reminder_rules order by updated_at desc limit 20;
 select id, reminder_rule_id, provider_event_id, event_start_key,
@@ -720,6 +726,14 @@ First failure points:
 * `failed` with no `last_success_at` means no complete snapshot has ever
   promoted. Check the read gate, OAuth status, exact Calendar ID, and Google
   response class.
+* Expanded recurring occurrences are not their master. A whole-series update,
+  reminder change, or cancellation must bind `target_scope=series` to the
+  Docket-linked master `external_event_id`; never substitute one occurrence's
+  `provider_event_id`. A null/stale master ETag blocks proposal or approval.
+* `calendar_linked_series_too_large` means active Docket-owned recurring masters
+  exceeded the configured exact-read cap. Reconcile/close obsolete links or
+  deliberately raise `DOCKET_CALENDAR_LINKED_SERIES_MAX_READS`; do not bypass
+  master reads or present an occurrence ETag as the series version.
 * `missed_stale_calendar` means the event was first dispatchable only after it
   had begun. Docket intentionally did not emit a misleading on-time reminder.
 * A notification in `delivering` is coupled to its outbox row. Recover/retry the

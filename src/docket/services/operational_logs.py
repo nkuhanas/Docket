@@ -40,6 +40,9 @@ def _subject(revision: ActionRevision) -> str:
     event = preview.get("event")
     if isinstance(event, dict) and event.get("title"):
         return str(event["title"])
+    before = preview.get("before")
+    if isinstance(before, dict) and before.get("summary"):
+        return str(before["summary"])
     course = preview.get("course")
     if isinstance(course, dict):
         values = [
@@ -77,7 +80,13 @@ def enqueue_action_system_log(
 ) -> None:
     if state not in _STATE_TITLES:
         return
-    effect = _ACTION_LABELS.get(revision.action_type, "Calendar change")
+    target = revision.preview.get("target")
+    target_scope = target.get("scope") if isinstance(target, dict) else None
+    effect = (
+        "Cancel recurring series"
+        if revision.action_type == "calendar_cancel_event" and target_scope == "series"
+        else _ACTION_LABELS.get(revision.action_type, "Calendar change")
+    )
     summary = f"{effect} · {_subject(revision)}"
     detail = _result_detail(result)
     if detail is not None:
