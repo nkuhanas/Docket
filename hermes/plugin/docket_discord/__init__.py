@@ -1343,7 +1343,7 @@ def _render_embed(
                     )
                 transition = str(control["transition"])
                 labels = {
-                    "proposal_edit": "Edit",
+                    "proposal_edit": "Edit details",
                     "proposal_refresh": "Rebuild preview",
                     "proposal_snooze": "Snooze until tomorrow",
                 }
@@ -1354,7 +1354,7 @@ def _render_embed(
                 }
                 if transition not in labels or control["label"] != labels[transition]:
                     raise PluginAPIError("invalid_control", "Proposal action is not canonical", 422)
-                expected_row = 4 if transition == "proposal_snooze" else 3
+                expected_row = 0 if transition == "proposal_snooze" else 3
                 if int(control["row"]) != expected_row:
                     raise PluginAPIError("invalid_control", "Proposal action row is invalid", 422)
                 revision_id = uuid.UUID(str(control["action_revision_id"]))
@@ -1372,7 +1372,11 @@ def _render_embed(
                 view.add_item(
                     discord.ui.Button(
                         label=labels[transition],
-                        style=discord.ButtonStyle.secondary,
+                        style=(
+                            discord.ButtonStyle.primary
+                            if transition == "proposal_snooze"
+                            else discord.ButtonStyle.secondary
+                        ),
                         custom_id=f"dkt:p:{token}",
                         row=expected_row,
                     )
@@ -2185,7 +2189,7 @@ async def _open_event_edit_modal(
 
     class EventEditModal(discord.ui.Modal):
         def __init__(self) -> None:
-            super().__init__(title="Edit Calendar proposal", timeout=300)
+            super().__init__(title="Edit event details", timeout=300)
             self.title_input = discord.ui.TextInput(
                 label="New title",
                 placeholder="Leave blank to preserve",

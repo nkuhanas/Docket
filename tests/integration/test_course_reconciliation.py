@@ -285,6 +285,7 @@ def test_course_add_change_partial_drop_restore_and_unchanged_reimport(
         "Reject",
         "Snooze until tomorrow",
     ]
+    assert projected["controls"][2]["row"] == 0
     with session_factory() as session:
         projection = session.scalar(select(DiscordProjection))
         assert projection is not None

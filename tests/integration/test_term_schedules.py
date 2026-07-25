@@ -637,6 +637,7 @@ def test_aggregate_card_persists_review_then_exposes_decision_without_revision_c
             "Back to review",
             "Snooze until tomorrow",
         ]
+        assert projected["controls"][3]["row"] == 0
         assert any(field["name"] == "Review complete" for field in projected["embed"]["fields"])
         reject_control = next(
             control for control in projected["controls"] if control.get("decision") == "reject"

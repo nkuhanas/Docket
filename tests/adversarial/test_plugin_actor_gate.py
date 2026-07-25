@@ -872,6 +872,124 @@ def test_failed_item_can_render_one_canonical_ignore_control(plugin_module, monk
     assert terminal_view is None
 
 
+def test_proposal_snooze_joins_decisions_as_a_primary_button(
+    plugin_module, monkeypatch
+) -> None:
+    class FakeEmbed:
+        def __init__(self, **_kwargs) -> None:
+            self.footer = None
+
+        def add_field(self, **_kwargs) -> None:
+            return None
+
+        def set_footer(self, **kwargs) -> None:
+            self.footer = kwargs["text"]
+
+    class FakeView:
+        def __init__(self, **_kwargs) -> None:
+            self.items = []
+
+        def add_item(self, item) -> None:
+            self.items.append(item)
+
+    class FakeButton:
+        def __init__(self, **kwargs) -> None:
+            self.label = kwargs["label"]
+            self.style = kwargs["style"]
+            self.custom_id = kwargs["custom_id"]
+            self.row = kwargs["row"]
+
+    button_styles = SimpleNamespace(success=1, danger=2, secondary=3, primary=4)
+    fake_discord = SimpleNamespace(
+        Embed=FakeEmbed,
+        ButtonStyle=button_styles,
+        ui=SimpleNamespace(View=FakeView, Button=FakeButton),
+        utils=SimpleNamespace(
+            escape_mentions=lambda value: value,
+            escape_markdown=lambda value: value,
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "discord", fake_discord)
+    approval_id = uuid.uuid4()
+    revision_id = uuid.uuid4()
+    projection_id = uuid.uuid4()
+    expires_at = datetime.now(UTC) + timedelta(days=1)
+    approval_token = issue_projection_approval_token(
+        approval_id,
+        projection_id,
+        expires_at,
+        b"test-signing-key",
+    )
+    edit_token = issue_projection_proposal_control_token(
+        revision_id,
+        projection_id,
+        "edit",
+        expires_at,
+        b"test-signing-key",
+    )
+    snooze_token = issue_projection_proposal_control_token(
+        revision_id,
+        projection_id,
+        "snooze",
+        expires_at,
+        b"test-signing-key",
+    )
+
+    _embed, view = plugin_module._render_embed(
+        projection_id,
+        {
+            "embed": {
+                "title": "Review new event",
+                "description": None,
+                "fields": [],
+                "color": 1,
+            },
+            "controls": [
+                {
+                    "kind": "approval",
+                    "decision": "approve",
+                    "label": "Approve",
+                    "approval_id": str(approval_id),
+                    "token": approval_token,
+                },
+                {
+                    "kind": "approval",
+                    "decision": "reject",
+                    "label": "Reject",
+                    "approval_id": str(approval_id),
+                    "token": approval_token,
+                },
+                {
+                    "kind": "proposal_action",
+                    "transition": "proposal_edit",
+                    "label": "Edit details",
+                    "row": 3,
+                    "action_revision_id": str(revision_id),
+                    "token": edit_token,
+                },
+                {
+                    "kind": "proposal_action",
+                    "transition": "proposal_snooze",
+                    "label": "Snooze until tomorrow",
+                    "row": 0,
+                    "action_revision_id": str(revision_id),
+                    "token": snooze_token,
+                },
+            ],
+            "projection_version": 1,
+            "render_sha256": "a" * 64,
+            "component_sha256": "b" * 64,
+        },
+    )
+
+    assert [(item.label, item.style, item.row) for item in view.items] == [
+        ("Approve", button_styles.success, 0),
+        ("Reject", button_styles.danger, 0),
+        ("Edit details", button_styles.secondary, 3),
+        ("Snooze until tomorrow", button_styles.primary, 0),
+    ]
+
+
 def test_plugin_accepts_only_bound_persistent_review_navigation(plugin_module, monkeypatch) -> None:
     class FakeEmbed:
         def __init__(self, **_kwargs) -> None:
@@ -1031,7 +1149,7 @@ def test_plugin_accepts_only_bound_persistent_review_navigation(plugin_module, m
                     {
                         "kind": "proposal_action",
                         "transition": "proposal_edit",
-                        "label": "Edit",
+                        "label": "Edit details",
                         "row": 3,
                         "action_revision_id": str(revision_id),
                         "token": edit_token,

@@ -72,7 +72,10 @@ superseded, or materially changed proposals are not reused.
 Cards are deterministic Docket render models. They include bounded status,
 timing, recurrence/tags, priority, reminder plan, target, conflicts, freshness,
 and execution state. Standalone cards expose signed Priority and Reminder
-selects plus Edit, Refresh, Snooze, Approve, and Reject where applicable.
+selects plus **Edit details**, Refresh, Snooze, Approve, and Reject where
+applicable. Selects apply immediately; **Edit details** opens the bounded
+title/location/tag/custom-reminder modal. Proposal Snooze is a blue button on
+the primary decision row.
 Aggregate cards summarize create/update/no-op counts and expose at most five
 ten-item, read-only Review pages; failed/uncertain terminal batches expose View
 failures. Selects and modals create immutable replacement revisions, supersede

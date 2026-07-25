@@ -49,7 +49,7 @@ on every request. Docket's callback uses the independent
 
 Hermes performs overlapping plugin discovery during this pin's startup. Each
 discovery pass imports an isolated plugin module, so module globals alone cannot
-prevent a transient second bind. Plugin `0.15.4` starts the private HTTP server
+prevent a transient second bind. Plugin `0.15.5` starts the private HTTP server
 under a background supervisor: an `EADDRINUSE` defers that copy without failing
 plugin registration, and it retries if the process that temporarily owned the
 port exits. Healthy startup may contain one `startup deferred` line, followed
@@ -106,7 +106,7 @@ Pinned outbound assumptions to revalidate:
   through its durable outbox; the plugin never posts hook output directly to
   Discord.
 
-Plugin `0.15.4` renders timed reminder start/end values as Docket-supplied native
+Plugin `0.15.5` renders timed reminder start/end values as Docket-supplied native
 Discord timestamps, puts the event subject under the native `Title` field, and
 omits a redundant timezone field. All-day reminders instead render fixed
 start/end dates plus the Calendar timezone. Projection embeds may omit their
@@ -404,7 +404,8 @@ are mandatory after changes.
 
 Healthy batch Summary contains one `review_navigation` **Begin review**
 button. Healthy Decision combines two approval buttons, one
-`review_navigation` **Back to review**, and **Snooze until tomorrow**. Review
+`review_navigation` **Back to review**, and a blue **Snooze until tomorrow**
+button on the same primary row as **Approve** and **Reject**. Review
 pages contain navigation only. After an approval fails Docket's target-version
 check, the same card contains a reject-only approval control plus one
 `proposal_action` **Rebuild preview** button. The renderer accepts that exact
@@ -414,6 +415,11 @@ every item against the newly complete Calendar generation, creates a replacement
 revision/approval and per-item reminder plans, and resets the same projection
 to Summary. Restart Hermes after changing this component contract, then
 exercise the stale-card renderer and a real callback.
+
+Standalone Priority and Reminder selects apply immediately by creating a new
+immutable proposal revision. **Edit details** is a separate bounded modal for
+title, location, operator tags, and custom reminder leads; it is not an apply
+button for either select.
 
 ## Google Calendar REST contract
 

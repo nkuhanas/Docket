@@ -810,6 +810,21 @@ def test_proposal_selects_and_custom_modal_replace_the_revision_in_place(
             "proposal_action",
             "proposal_action",
         ]
+        edit_control = next(
+            control
+            for control in controls
+            if control.get("transition") == "proposal_edit"
+        )
+        snooze_control = next(
+            control
+            for control in controls
+            if control.get("transition") == "proposal_snooze"
+        )
+        assert (edit_control["label"], edit_control["row"]) == ("Edit details", 3)
+        assert (snooze_control["label"], snooze_control["row"]) == (
+            "Snooze until tomorrow",
+            0,
+        )
         priority_control = next(
             control for control in controls if control.get("field") == "priority"
         )

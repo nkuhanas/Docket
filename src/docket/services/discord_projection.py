@@ -1525,7 +1525,7 @@ class DiscordProjectionRunner:
                             "kind": "proposal_action",
                             "transition": "proposal_snooze",
                             "label": "Snooze until tomorrow",
-                            "row": 4,
+                            "row": 0,
                             "action_revision_id": str(revision.id),
                             "token": issue_projection_proposal_control_token(
                                 revision.id,
@@ -1582,7 +1582,7 @@ class DiscordProjectionRunner:
                         {
                             "kind": "proposal_action",
                             "transition": "proposal_edit",
-                            "label": "Edit",
+                            "label": "Edit details",
                             "row": 3,
                             "action_revision_id": str(revision.id),
                             "token": issue_projection_proposal_control_token(
@@ -1599,7 +1599,7 @@ class DiscordProjectionRunner:
                         "kind": "proposal_action",
                         "transition": "proposal_snooze",
                         "label": "Snooze until tomorrow",
-                        "row": 4,
+                        "row": 0,
                         "action_revision_id": str(revision.id),
                         "token": issue_projection_proposal_control_token(
                             revision.id,
