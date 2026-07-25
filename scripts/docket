@@ -201,7 +201,17 @@ backup_database() {
     revision=$(git rev-parse --short=12 HEAD)
     timestamp=$(date -u +%Y%m%dT%H%M%SZ)
     destination="$ROOT/backups/docket-$timestamp-$revision.dump"
-    mkdir -p "$ROOT/backups"
+    if [[ ! -d "$ROOT/backups" ]]; then
+        mkdir -p "$ROOT/backups"
+    fi
+    if [[ ! -w "$ROOT/backups" ]]; then
+        command -v sudo >/dev/null 2>&1 ||
+            die "backup directory is not writable and sudo is unavailable: $ROOT/backups"
+        sudo -n chown -- "$(id -u):$(id -g)" "$ROOT/backups" ||
+            die "could not assign the backup directory to the invoking operator"
+        sudo -n chmod 700 "$ROOT/backups" ||
+            die "could not restrict backup directory permissions"
+    fi
     umask 077
     compose exec -T postgres pg_dump -U docket -d docket --format=custom >"$destination"
     [[ -s "$destination" ]] || die "database backup is empty: $destination"

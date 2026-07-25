@@ -54,11 +54,12 @@ contract change.
 - no operation is pending, running, or awaiting reconciliation;
 - no outbox delivery is pending.
 
-The command creates a PostgreSQL custom-format backup before rebuilding,
-retains the previous image under a timestamped rollback tag, applies migrations
-through Docket startup, and verifies Docket health, Alembic head, the Hermes
-gateway, the pinned plugin version, the 20-tool MCP registry, the private
-projection listener, and drained durable work.
+The command prepares the ignored backup directory for the invoking operator,
+creates a PostgreSQL custom-format backup before rebuilding, retains the
+previous image under a timestamped rollback tag, applies migrations through
+Docket startup, and verifies Docket health, Alembic head, the Hermes gateway,
+the pinned plugin version, the 20-tool MCP registry, the private projection
+listener, and drained durable work.
 
 An image rollback does not reverse a database migration. Use the backup and the
 migration-specific recovery procedure rather than blindly retagging an older
