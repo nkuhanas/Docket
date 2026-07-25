@@ -339,10 +339,15 @@ archived only when the complete cancellation ledger succeeds. Re-add uses
 IDs for the current stable meetings.
 
 Healthy course Summary and Decision views do not expose a refresh control. If
-review outlives the Calendar generation bound into the proposal, approval fails
-closed and the same card exposes **Reject** plus **Rebuild preview**. Rebuild
-refreshes Calendar, recompiles the current course, supersedes the approval, and
-resets the same message to Summary. Traverse the replacement review again.
+review outlives the Calendar freshness window, or the course's record version,
+linked provider identity/ETag, or actual conflict set changes, approval fails
+closed and the same card exposes **Reject** plus **Rebuild preview**. A newer
+complete refresh or an unrelated course proposal/write does not invalidate the
+card by itself. If every card in a new multi-course import reports stale on its
+first approval, inspect `target_versions.calendar_snapshot` for legacy global
+timestamp binding before rebuilding cards individually. Rebuild refreshes
+Calendar, recompiles the current course, supersedes the approval, and resets the
+same message to Summary. Traverse the replacement review again.
 
 `docket_store_term_schedule` and `docket_propose_term_schedule` remain legacy
 compatibility tools for already-durable aggregate history. Do not use them for

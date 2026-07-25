@@ -42,6 +42,10 @@ from docket.security import (
     verify_projection_approval_token,
     verify_projection_decision_approval_token,
 )
+from docket.services.course_reconciliation import (
+    CourseReconciliationService,
+    course_reconciliation_dependency_sha256,
+)
 from docket.services.operational_logs import enqueue_action_system_log
 from docket.services.operations import OperationRunner
 
@@ -269,6 +273,7 @@ class ApprovalService:
             )
         queue_target = revision.target_versions.get("queue_item", {})
         record_target = revision.target_versions.get("record")
+        record: Record | None = None
         if record_target is not None:
             try:
                 record_id = uuid.UUID(str(record_target.get("id")))
@@ -298,9 +303,15 @@ class ApprovalService:
                     CalendarSyncState.calendar_id == revision.parameters.get("calendar_id"),
                 )
             )
+            course_scoped = revision.action_type in {
+                "calendar_reconcile_course",
+                "calendar_drop_course",
+            }
             binds_complete_snapshot = revision.action_type not in {
                 "calendar_cancel_event",
                 "calendar_update_reminders",
+                "calendar_reconcile_course",
+                "calendar_drop_course",
             }
             if (
                 sync_state is None
@@ -321,6 +332,47 @@ class ApprovalService:
                         "after the approval preview was created."
                     ),
                 )
+            if course_scoped:
+                assert account is not None and record is not None
+                expected_dependency = course_reconciliation_dependency_sha256(
+                    revision.parameters
+                )
+                stored_dependency = calendar_target.get("course_dependency_sha256")
+                if (
+                    stored_dependency is not None
+                    and stored_dependency != expected_dependency
+                ):
+                    raise DocketError(
+                        code="approval_binding_mismatch",
+                        message="The immutable course dependency hash no longer matches.",
+                    )
+                try:
+                    current_dependency = CourseReconciliationService(
+                        self.session
+                    ).current_approval_dependency_sha256(
+                        revision_parameters=revision.parameters,
+                        record=record,
+                        account=account,
+                        state=sync_state,
+                    )
+                except DocketError as exc:
+                    if exc.code == "approval_binding_mismatch":
+                        raise
+                    raise DocketError(
+                        code="target_version_changed",
+                        message=(
+                            "The course's Calendar targets or conflicts changed "
+                            "after the approval preview was created."
+                        ),
+                    ) from exc
+                if current_dependency != expected_dependency:
+                    raise DocketError(
+                        code="target_version_changed",
+                        message=(
+                            "The course's Calendar targets or conflicts changed "
+                            "after the approval preview was created."
+                        ),
+                    )
         if (
             isinstance(calendar_target, dict)
             and calendar_target.get("provider_event_id") is not None

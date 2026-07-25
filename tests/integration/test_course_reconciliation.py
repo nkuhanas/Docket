@@ -11,6 +11,7 @@ from docket.domain.errors import DocketError
 from docket.internal_api.schemas import ApprovalResponse
 from docket.models import (
     Account,
+    CalendarEventCache,
     CalendarLink,
     CalendarSyncState,
     Operation,
@@ -577,3 +578,121 @@ def test_empty_course_reconciliation_cancels_links_without_archiving(
     with session_factory() as session:
         record = session.get(Record, course_id)
         assert record is not None and record.status == "active" and record.version == 2
+
+
+@pytest.mark.integration
+def test_course_approval_tolerates_unrelated_snapshot_refresh(
+    session_factory: sessionmaker[Session],
+) -> None:
+    settings = get_settings()
+    with session_factory.begin() as session:
+        course_id, account_id = _seed_course(session)
+        proposal = _propose(
+            session,
+            record_id=course_id,
+            version=1,
+            account_id=account_id,
+            message_id="655555555555555555",
+        )
+
+    with session_factory.begin() as session:
+        state = session.scalar(
+            select(CalendarSyncState).where(
+                CalendarSyncState.account_id == account_id,
+                CalendarSyncState.calendar_id == settings.google_calendar_id,
+            )
+        )
+        assert state is not None and state.last_success_at is not None
+        refreshed_at = state.last_success_at + timedelta(seconds=1)
+        generation = uuid.uuid4()
+        state.snapshot_generation = generation
+        state.last_attempt_at = refreshed_at
+        state.last_success_at = refreshed_at
+        session.add(
+            CalendarEventCache(
+                account_id=account_id,
+                calendar_id=settings.google_calendar_id,
+                provider_event_id="unrelated-course-write",
+                snapshot_generation=generation,
+                status="confirmed",
+                summary="Unrelated approved course",
+                location="Elsewhere",
+                is_all_day=False,
+                start_at=datetime(2026, 8, 24, 20, 0, tzinfo=UTC),
+                end_at=datetime(2026, 8, 24, 20, 50, tzinfo=UTC),
+                timezone="America/Los_Angeles",
+                recurrence_kind="one_time",
+                system_tags=["one_time", "timed", "course_meeting"],
+                operator_tags=[],
+                priority="normal",
+                priority_basis="default",
+                provider_reminders={},
+                provider_etag='"unrelated-course"',
+                synced_at=refreshed_at,
+            )
+        )
+
+    with session_factory.begin() as session:
+        operation_id = _approve(session, proposal, "course-refresh-unrelated")
+
+    with session_factory() as session:
+        operation = session.get(Operation, operation_id)
+        assert operation is not None and operation.status == "pending"
+
+
+@pytest.mark.integration
+def test_course_approval_rejects_changed_conflict_dependency(
+    session_factory: sessionmaker[Session],
+) -> None:
+    settings = get_settings()
+    with session_factory.begin() as session:
+        course_id, account_id = _seed_course(session)
+        proposal = _propose(
+            session,
+            record_id=course_id,
+            version=1,
+            account_id=account_id,
+            message_id="666666666666666666",
+        )
+
+    with session_factory.begin() as session:
+        state = session.scalar(
+            select(CalendarSyncState).where(
+                CalendarSyncState.account_id == account_id,
+                CalendarSyncState.calendar_id == settings.google_calendar_id,
+            )
+        )
+        assert state is not None and state.last_success_at is not None
+        refreshed_at = state.last_success_at + timedelta(seconds=1)
+        generation = uuid.uuid4()
+        state.snapshot_generation = generation
+        state.last_attempt_at = refreshed_at
+        state.last_success_at = refreshed_at
+        session.add(
+            CalendarEventCache(
+                account_id=account_id,
+                calendar_id=settings.google_calendar_id,
+                provider_event_id="new-course-conflict",
+                snapshot_generation=generation,
+                status="confirmed",
+                summary="Newly synchronized conflict",
+                location="Elsewhere",
+                is_all_day=False,
+                start_at=datetime(2026, 8, 24, 16, 10, tzinfo=UTC),
+                end_at=datetime(2026, 8, 24, 16, 20, tzinfo=UTC),
+                timezone="America/Los_Angeles",
+                recurrence_kind="one_time",
+                system_tags=["one_time", "timed", "external"],
+                operator_tags=[],
+                priority="normal",
+                priority_basis="default",
+                provider_reminders={},
+                provider_etag='"course-conflict"',
+                synced_at=refreshed_at,
+            )
+        )
+
+    with pytest.raises(DocketError) as stale, session_factory.begin() as session:
+        _approve(session, proposal, "course-refresh-conflict")
+    assert stale.value.code == "target_version_changed"
+    assert "targets or conflicts changed" in stale.value.message

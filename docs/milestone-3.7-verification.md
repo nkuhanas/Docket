@@ -49,7 +49,7 @@ Validation completed before deployment:
 ```text
 ruff check .  -> passed
 mypy          -> passed (65 source files)
-pytest -q     -> 219 passed, 1 dependency deprecation warning
+pytest -q     -> 221 passed, 1 dependency deprecation warning
 skill check   -> Skill is valid
 ```
 
@@ -128,3 +128,18 @@ During the gate, confirm:
 
 The Milestone 3.7 operator-present gate is complete. Gmail ingestion remains
 deferred behind the calendar-control milestones.
+
+## Post-gate live import correction
+
+The first real eight-course import exposed an approval-freshness coupling that
+the single-course gate could not reveal. Each per-course proposal performed a
+fresh complete Calendar read, advancing the global `last_success_at`; the first
+course card therefore reported stale before any provider write, and approving
+one rebuilt card would invalidate its independent siblings.
+
+Course approvals now require a current complete cache but bind only the
+course's record version, linked provider identities/ETags, effects, and actual
+overlapping conflict set. A newer equivalent refresh or an unrelated course
+proposal/write no longer invalidates the card. A changed provider target or a
+new overlapping conflict still fails closed and requires review of a rebuilt
+preview. Integration coverage proves both sides of that boundary.

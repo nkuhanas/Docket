@@ -52,6 +52,50 @@ def _aware(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
+def course_reconciliation_dependency_sha256(parameters: dict[str, Any]) -> str:
+    """Hash only provider state that can change one course's approved effect."""
+
+    dependencies: list[dict[str, Any]] = []
+    raw_items = parameters.get("items")
+    if not isinstance(raw_items, list):
+        raise DocketError(
+            code="approval_binding_mismatch",
+            message="The course action contains an invalid item manifest.",
+        )
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            raise DocketError(
+                code="approval_binding_mismatch",
+                message="The course action contains an invalid item manifest.",
+            )
+        item_parameters = raw_item.get("parameters")
+        conflicts = raw_item.get("conflicts", [])
+        if not isinstance(item_parameters, dict) or not isinstance(conflicts, list):
+            raise DocketError(
+                code="approval_binding_mismatch",
+                message="The course action contains invalid provider dependencies.",
+            )
+        dependencies.append(
+            {
+                "item_key": raw_item.get("item_key"),
+                "effect": raw_item.get("effect"),
+                "operation_type": raw_item.get("operation_type"),
+                "external_event_id": item_parameters.get("external_event_id"),
+                "provider_etag": item_parameters.get("provider_etag"),
+                "conflicts": sorted(conflicts, key=sha256_json),
+            }
+        )
+    return sha256_json(
+        {
+            "calendar_id": parameters.get("calendar_id"),
+            "record_id": parameters.get("record_id"),
+            "record_version": parameters.get("record_version"),
+            "mode": parameters.get("mode"),
+            "items": sorted(dependencies, key=lambda item: str(item["item_key"])),
+        }
+    )
+
+
 class CourseReconciliationService:
     """Compile one canonical course against its independently linked meetings."""
 
@@ -608,6 +652,45 @@ class CourseReconciliationService:
         )
         return parameters, preview, material_fingerprint
 
+    def current_approval_dependency_sha256(
+        self,
+        *,
+        revision_parameters: dict[str, Any],
+        record: Record,
+        account: Account,
+        state: CalendarSyncState,
+    ) -> str:
+        """Recompile one course against the current cache for approval validation."""
+
+        mode = revision_parameters.get("mode")
+        calendar_id = revision_parameters.get("calendar_id")
+        reminder_plan = revision_parameters.get("reminder_plan")
+        reason = revision_parameters.get("reason")
+        if (
+            mode not in {"sync", "drop"}
+            or not isinstance(calendar_id, str)
+            or not isinstance(reminder_plan, dict)
+            or (reason is not None and not isinstance(reason, str))
+        ):
+            raise DocketError(
+                code="approval_binding_mismatch",
+                message="The course action contains invalid reconciliation parameters.",
+            )
+        canonical_plan = CalendarReminderPlanInput.model_validate(reminder_plan).model_dump(
+            mode="json"
+        )
+        current_parameters, _, _ = self._compile_material(
+            record=record,
+            course=CourseData.model_validate(record.data),
+            mode=mode,
+            account=account,
+            calendar_id=calendar_id,
+            reminder_plan=canonical_plan,
+            state=state,
+            reason=reason,
+        )
+        return course_reconciliation_dependency_sha256(current_parameters)
+
     def propose(self, request: ProposeCourseReconciliationInput) -> dict[str, Any]:
         validate_configured_discord_source(request.source, request.actor_id)
         command, replay = self._start_command(request)
@@ -776,6 +859,9 @@ class CourseReconciliationService:
                 },
                 "calendar_snapshot": {
                     "last_success_at": _aware(state.last_success_at).isoformat(),
+                    "course_dependency_sha256": course_reconciliation_dependency_sha256(
+                        parameters
+                    ),
                 },
             },
             created_by_actor_type=request.actor_type,

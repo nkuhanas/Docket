@@ -448,6 +448,10 @@ concurrent approved mutation wins over an older synchronization result. A
 missing/cancelled master closes the link and disables its canonical reminder
 rules; a provider error fails the whole generation and retains the prior one.
 It never combines rolling-window bounds with a provider sync token.
+Per-course approvals bind their record version, linked provider identities and
+ETags, and the conflicts that overlap that course. They require a current
+complete cache but do not bind equality of its global refresh timestamp, so an
+unrelated course proposal or write cannot make every sibling card stale.
 Only a complete in-memory page walk enters the database promotion transaction;
 any timeout, malformed page, repeated identity/token, authorization failure, or
 bound exhaustion leaves the prior generation intact and reports it stale.
