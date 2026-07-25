@@ -1124,7 +1124,7 @@ def test_exhausted_reminder_delivery_fails_and_emits_one_system_alert(
     )
     account_id = _account(session_factory)
     provider = FakeCalendarProvider()
-    provider.put_snapshot_event(_timed("failed-delivery", base + timedelta(minutes=5)))
+    provider.put_snapshot_event(_timed("failed-delivery", base + timedelta(minutes=10)))
     sync = CalendarSyncService(session_factory, provider, settings, clock=lambda: base)
     assert sync.sync_target(account_id, settings.google_calendar_id, force=True)
 
@@ -1144,7 +1144,9 @@ def test_exhausted_reminder_delivery_fails_and_emits_one_system_alert(
         )
         rule_id = result.rule_id
     assert ReminderDispatcher(
-        session_factory, settings, clock=lambda: base + timedelta(seconds=1)
+        session_factory,
+        settings,
+        clock=lambda: base + timedelta(minutes=5, seconds=1),
     ).run_due_once()
 
     class FailingAdapter(FakeDiscordProjectionAdapter):
