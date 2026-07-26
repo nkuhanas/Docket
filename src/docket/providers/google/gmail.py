@@ -37,6 +37,15 @@ class GmailCursorInvalid(GmailProviderError):
         )
 
 
+class GmailUnknownOutcome(GmailProviderError):
+    def __init__(self) -> None:
+        super().__init__(
+            "gmail_unknown_outcome",
+            "Gmail did not confirm whether the label change was applied.",
+            transient=False,
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class GmailMessageMetadata:
     message_id: str
@@ -70,6 +79,23 @@ class GmailClaimedContent:
     attachments: tuple[dict[str, Any], ...]
 
 
+@dataclass(frozen=True, slots=True)
+class GmailMutationRequest:
+    message_id: str
+    source_version: str
+    remove_label_id: str
+    provider_correlation: str
+
+
+@dataclass(frozen=True, slots=True)
+class GmailMutationResult:
+    message_id: str
+    source_version: str
+    label_ids: tuple[str, ...]
+    provider_request_id: str | None = None
+    disposition: str = "modified"
+
+
 class GmailReadProvider(Protocol):
     def scan_page(
         self,
@@ -79,6 +105,12 @@ class GmailReadProvider(Protocol):
     ) -> GmailScanPage: ...
 
     def read_message(self, message_id: str) -> GmailClaimedContent: ...
+
+
+class GmailMutationProvider(Protocol):
+    def mutate_message(self, request: GmailMutationRequest) -> GmailMutationResult: ...
+
+    def get_label_state(self, request: GmailMutationRequest) -> GmailMutationResult: ...
 
 
 def _normalized_sender(raw_value: object) -> str | None:
@@ -245,6 +277,7 @@ class GoogleGmailProvider:
         url: str,
         *,
         params: Mapping[str, str | Sequence[str]] | None = None,
+        json: Mapping[str, object] | None = None,
     ) -> httpx.Response:
         try:
             response = httpx.request(
@@ -252,6 +285,7 @@ class GoogleGmailProvider:
                 url,
                 headers={"Authorization": self._authorization_header()},
                 params=params,
+                json=json,
                 timeout=self.timeout_seconds,
             )
         except httpx.HTTPError as exc:
@@ -270,7 +304,11 @@ class GoogleGmailProvider:
             code = (
                 "google_auth_invalid"
                 if response.status_code in {401, 403}
-                else "gmail_rejected"
+                else (
+                    "gmail_message_not_found"
+                    if response.status_code == 404
+                    else "gmail_rejected"
+                )
             )
             raise GmailProviderError(
                 code,
@@ -278,6 +316,91 @@ class GoogleGmailProvider:
                 transient=False,
             )
         return response
+
+    @staticmethod
+    def _mutation_result(
+        metadata: GmailMessageMetadata,
+        *,
+        provider_request_id: str | None,
+        disposition: str,
+    ) -> GmailMutationResult:
+        return GmailMutationResult(
+            message_id=metadata.message_id,
+            source_version=metadata.source_version,
+            label_ids=metadata.label_ids,
+            provider_request_id=provider_request_id,
+            disposition=disposition,
+        )
+
+    def get_label_state(self, request: GmailMutationRequest) -> GmailMutationResult:
+        metadata = self._message_metadata(request.message_id)
+        if metadata is None:
+            raise GmailProviderError(
+                "gmail_message_not_found",
+                "The Gmail message no longer exists.",
+                transient=False,
+            )
+        return self._mutation_result(
+            metadata,
+            provider_request_id=None,
+            disposition="observed",
+        )
+
+    def mutate_message(self, request: GmailMutationRequest) -> GmailMutationResult:
+        current = self.get_label_state(request)
+        if request.remove_label_id not in current.label_ids:
+            return GmailMutationResult(
+                message_id=current.message_id,
+                source_version=current.source_version,
+                label_ids=current.label_ids,
+                provider_request_id=current.provider_request_id,
+                disposition="already_applied",
+            )
+        url = self._url(f"messages/{quote(request.message_id, safe='')}/modify")
+        try:
+            response = httpx.request(
+                "POST",
+                url,
+                headers={"Authorization": self._authorization_header()},
+                json={
+                    "addLabelIds": [],
+                    "removeLabelIds": [request.remove_label_id],
+                },
+                timeout=self.timeout_seconds,
+            )
+        except httpx.HTTPError as exc:
+            raise GmailUnknownOutcome() from exc
+        if response.status_code in {408, 429} or response.status_code >= 500:
+            raise GmailUnknownOutcome()
+        if response.status_code >= 400:
+            code = (
+                "google_auth_invalid"
+                if response.status_code in {401, 403}
+                else (
+                    "gmail_message_not_found"
+                    if response.status_code == 404
+                    else "gmail_rejected"
+                )
+            )
+            raise GmailProviderError(
+                code,
+                f"Gmail returned HTTP {response.status_code}.",
+                transient=False,
+            )
+        document = response.json()
+        if not isinstance(document, dict):
+            raise GmailUnknownOutcome()
+        metadata = _metadata(document)
+        if (
+            metadata.message_id != request.message_id
+            or request.remove_label_id in metadata.label_ids
+        ):
+            raise GmailUnknownOutcome()
+        return self._mutation_result(
+            metadata,
+            provider_request_id=response.headers.get("x-request-id"),
+            disposition="modified",
+        )
 
     def _profile_history_id(self) -> tuple[str, str | None]:
         response = self._request("GET", self._url("profile"))
@@ -303,7 +426,7 @@ class GoogleGmailProvider:
                 },
             )
         except GmailProviderError as exc:
-            if exc.code == "gmail_rejected":
+            if exc.code == "gmail_message_not_found":
                 return None
             raise
         document = response.json()
@@ -394,7 +517,7 @@ class GoogleGmailProvider:
         try:
             response = self._request("GET", self._url("history"), params=parameters)
         except GmailProviderError as exc:
-            if exc.code == "gmail_rejected":
+            if exc.code in {"gmail_rejected", "gmail_message_not_found"}:
                 raise GmailCursorInvalid() from exc
             raise
         document = response.json()

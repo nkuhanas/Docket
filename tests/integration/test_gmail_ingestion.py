@@ -9,6 +9,7 @@ from docket.models import (
     Account,
     AuditEvent,
     ConnectorCheckpoint,
+    OutboxEvent,
     SourceItem,
 )
 from docket.providers.google.fake_gmail import FakeGmailProvider
@@ -142,3 +143,70 @@ def test_active_scan_lease_prevents_concurrent_claim(session_factory) -> None:
 
     assert not result.claimed
     assert provider.scan_calls == 0
+
+
+@pytest.mark.integration
+def test_scan_selects_gmail_capable_account_after_other_google_account(
+    session_factory,
+) -> None:
+    with session_factory.begin() as session:
+        session.add(
+            Account(
+                provider="google",
+                external_account_id="calendar-only",
+                capabilities=["calendar"],
+                enabled=True,
+            )
+        )
+    gmail_account = _account(session_factory)
+    provider = FakeGmailProvider()
+    provider.add_message(message_id="gmail-capable-account")
+
+    result = GmailIngestionService(
+        session_factory,
+        provider,
+        _settings(),
+    ).run_due_once(force=True)
+
+    assert result.completed
+    with session_factory() as session:
+        checkpoint = session.scalar(select(ConnectorCheckpoint))
+        assert checkpoint is not None
+        assert checkpoint.account_id == gmail_account.id
+
+
+@pytest.mark.integration
+def test_stale_gmail_checkpoint_emits_one_redacted_alert_per_episode(
+    session_factory,
+) -> None:
+    account = _account(session_factory)
+    settings = _settings().model_copy(update={"gmail_stale_seconds": 300})
+    stale_success = datetime.now(UTC) - timedelta(hours=1)
+    with session_factory.begin() as session:
+        session.add(
+            ConnectorCheckpoint(
+                account_id=account.id,
+                stream="gmail:inbox",
+                cursor={"mode": "history", "history_id": "10"},
+                last_success_at=stale_success,
+                last_error_code="gmail_transient",
+            )
+        )
+    service = GmailIngestionService(
+        session_factory,
+        FakeGmailProvider(),
+        settings,
+    )
+
+    assert service.evaluate_staleness() == 1
+    assert service.evaluate_staleness() == 1
+
+    with session_factory() as session:
+        alerts = session.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.event_type == "discord.system_alert.requested"
+            )
+        ).all()
+        assert len(alerts) == 1
+        assert alerts[0].payload["error_code"] == "gmail_transient"
+        assert "message" not in str(alerts[0].payload).casefold()

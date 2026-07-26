@@ -5,20 +5,28 @@ import pytest
 from sqlalchemy import select
 
 from docket.config import get_settings
-from docket.domain.errors import ActionDisabled, DocketError
+from docket.domain.errors import DocketError
+from docket.internal_api.schemas import ApprovalResponse
 from docket.models import (
     Account,
+    Action,
+    Approval,
+    ExecutionAttempt,
+    Operation,
     OutboxEvent,
     QueueItem,
     QueueItemSource,
     SourceItem,
 )
+from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.providers.google.fake_gmail import FakeGmailProvider
 from docket.schemas.triage import (
     SubmitTriageDecisionInput,
     TriageActionProposal,
 )
+from docket.services.approvals import ApprovalService
 from docket.services.gmail_ingestion import GmailIngestionService
+from docket.services.operations import OperationRunner
 from docket.services.triage import TriageService
 
 
@@ -125,8 +133,9 @@ def test_claim_read_and_semantic_dedup_never_persist_body(session_factory) -> No
 
 
 @pytest.mark.integration
-def test_disabled_gmail_action_cannot_be_materialized_from_source_content(
+def test_untrusted_content_can_only_propose_a_pending_gmail_action(
     session_factory,
+    monkeypatch,
 ) -> None:
     provider = FakeGmailProvider()
     provider.add_message(
@@ -136,6 +145,10 @@ def test_disabled_gmail_action_cannot_be_materialized_from_source_content(
     )
     _stage(session_factory, provider)
     service = TriageService(session_factory, provider, _settings())
+    monkeypatch.setattr(
+        "docket.services.triage.issue_short_code",
+        lambda *_args, **_kwargs: "ABCDEFGH",
+    )
     claim = service.claim_batch()
     source_id = str(claim["sources"][0]["source_id"])
     request = _actionable(source_id, str(claim["claim_token"]))
@@ -143,14 +156,22 @@ def test_disabled_gmail_action_cannot_be_materialized_from_source_content(
         TriageActionProposal(action_type="gmail_archive_message")
     ]
 
-    with pytest.raises(ActionDisabled):
-        service.submit_decision(request)
+    result = service.submit_decision(request)
 
     with session_factory() as session:
         source = session.scalar(select(SourceItem))
         assert source is not None
-        assert source.status == "claimed"
-        assert session.scalar(select(QueueItem)) is None
+        assert source.status == "classified"
+        queue_item = session.scalar(select(QueueItem))
+        action = session.scalar(select(Action))
+        approval = session.scalar(select(Approval))
+        assert queue_item is not None
+        assert queue_item.status == "awaiting_approval"
+        assert action is not None and action.status == "approval_pending"
+        assert approval is not None and approval.status == "pending"
+        assert session.scalar(select(Operation)) is None
+        assert provider.mutation_calls == 0
+        assert result["action_proposals"][0]["action_type"] == "gmail_archive_message"
 
 
 @pytest.mark.integration
@@ -173,3 +194,388 @@ def test_expired_claim_is_reclaimed_and_old_token_fails(session_factory) -> None
             claim_token=uuid.UUID(str(first["claim_token"])),
         )
     assert raised.value.code == "triage_claim_invalid"
+
+
+def _writable_settings():
+    return _settings().model_copy(
+        update={
+            "external_writes_enabled": True,
+            "gmail_writes_enabled": True,
+        }
+    )
+
+
+def _propose_gmail_action(
+    session_factory,
+    provider: FakeGmailProvider,
+    *,
+    action_type: str,
+    monkeypatch,
+) -> tuple[object, str]:
+    settings = _writable_settings()
+    monkeypatch.setattr(
+        "docket.services.triage.issue_short_code",
+        lambda *_args, **_kwargs: "ABCDEFGH",
+    )
+    _stage(session_factory, provider)
+    service = TriageService(session_factory, provider, settings)
+    claim = service.claim_batch()
+    source_id = str(claim["sources"][0]["source_id"])
+    request = _actionable(source_id, str(claim["claim_token"]))
+    request.action_proposals = [
+        TriageActionProposal(action_type=action_type)  # type: ignore[arg-type]
+    ]
+    result = service.submit_decision(request)
+    return settings, str(result["queue_item_id"])
+
+
+def _approve_gmail_action(session_factory, settings, *, interaction_id: str) -> uuid.UUID:
+    with session_factory.begin() as session:
+        result = ApprovalService(session).respond(
+            ApprovalResponse(
+                request_id=uuid.uuid4(),
+                discord_interaction_id=interaction_id,
+                approval_id=None,
+                approval_token=None,
+                short_code="ABCDEFGH",
+                decision="approve",
+                discord_user_id=settings.operator_discord_user_id,
+                guild_id=settings.discord_guild_id,
+                channel_id=settings.queue_channel_id,
+                message_id="222222222222222222",
+                responded_at=datetime.now(UTC),
+            )
+        )
+        return uuid.UUID(str(result["operation_id"]))
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("action_type", "removed_label", "resolution"),
+    [
+        ("gmail_archive_message", "INBOX", "gmail_archived"),
+        ("gmail_mark_read", "UNREAD", "gmail_marked_read"),
+    ],
+)
+def test_approved_gmail_mutation_executes_exact_message(
+    session_factory,
+    monkeypatch,
+    action_type,
+    removed_label,
+    resolution,
+) -> None:
+    provider = FakeGmailProvider()
+    provider.add_message(
+        message_id="disposable-message",
+        thread_id="disposable-thread",
+        source_version="11",
+        sender="Test Sender <sender@example.com>",
+        subject="Disposable Gmail mutation",
+        body_text="Provider content cannot approve this action.",
+    )
+    settings, _queue_id = _propose_gmail_action(
+        session_factory,
+        provider,
+        action_type=action_type,
+        monkeypatch=monkeypatch,
+    )
+    monkeypatch.setattr(
+        "docket.services.approvals.get_settings",
+        lambda: settings,
+    )
+    operation_id = _approve_gmail_action(
+        session_factory,
+        settings,
+        interaction_id=f"gmail-{action_type}-approval",
+    )
+    runner = OperationRunner(
+        session_factory,
+        FakeCalendarProvider(),
+        gmail_provider=provider,
+        execution_enabled=False,
+        gmail_execution_enabled=True,
+    )
+
+    assert runner.run_due_once()
+
+    assert removed_label not in provider.messages["disposable-message"].label_ids
+    with session_factory() as session:
+        operation = session.get(Operation, operation_id)
+        queue_item = session.scalar(select(QueueItem))
+        source = session.scalar(select(SourceItem))
+        assert operation is not None and operation.status == "succeeded"
+        assert queue_item is not None
+        assert queue_item.status == "completed"
+        assert queue_item.resolution_code == resolution
+        assert source is not None
+        assert removed_label not in source.minimal_headers["label_ids"]
+        assert source.minimal_headers["provider_observed_version"] == "12"
+
+
+@pytest.mark.integration
+def test_gmail_unknown_outcome_reconciles_from_label_state(
+    session_factory,
+    monkeypatch,
+) -> None:
+    provider = FakeGmailProvider()
+    provider.add_message(
+        message_id="unknown-after-write",
+        source_version="4",
+        subject="Unknown outcome",
+    )
+    settings, _queue_id = _propose_gmail_action(
+        session_factory,
+        provider,
+        action_type="gmail_archive_message",
+        monkeypatch=monkeypatch,
+    )
+    monkeypatch.setattr(
+        "docket.services.approvals.get_settings",
+        lambda: settings,
+    )
+    operation_id = _approve_gmail_action(
+        session_factory,
+        settings,
+        interaction_id="gmail-unknown-approval",
+    )
+    provider.unknown_after_write_once = True
+    runner = OperationRunner(
+        session_factory,
+        FakeCalendarProvider(),
+        gmail_provider=provider,
+        execution_enabled=False,
+        gmail_execution_enabled=True,
+        consistency_window_seconds=0,
+    )
+
+    assert runner.run_due_once()
+    with session_factory() as session:
+        operation = session.get(Operation, operation_id)
+        assert operation is not None
+        assert operation.status == "reconciliation_required"
+
+    assert runner.reconcile_once()
+    with session_factory() as session:
+        operation = session.get(Operation, operation_id)
+        assert operation is not None
+        assert operation.status == "succeeded"
+        assert operation.result is not None
+        assert operation.result["disposition"] == "reconciled"
+    assert provider.mutation_calls == 1
+
+
+@pytest.mark.integration
+def test_gmail_crash_after_provider_call_reconciles_without_duplicate_write(
+    session_factory,
+    monkeypatch,
+) -> None:
+    provider = FakeGmailProvider()
+    provider.add_message(
+        message_id="crash-after-write",
+        source_version="7",
+        subject="Crash-window mutation",
+    )
+    settings, _queue_id = _propose_gmail_action(
+        session_factory,
+        provider,
+        action_type="gmail_archive_message",
+        monkeypatch=monkeypatch,
+    )
+    monkeypatch.setattr(
+        "docket.services.approvals.get_settings",
+        lambda: settings,
+    )
+    operation_id = _approve_gmail_action(
+        session_factory,
+        settings,
+        interaction_id="gmail-crash-window-approval",
+    )
+    runner = OperationRunner(
+        session_factory,
+        FakeCalendarProvider(),
+        gmail_provider=provider,
+        execution_enabled=False,
+        gmail_execution_enabled=True,
+        consistency_window_seconds=0,
+    )
+
+    claim = runner.claim_due()
+    assert claim is not None
+    runner.mark_provider_call_started(claim)
+    provider.mutate_message(claim.gmail_request())
+    with session_factory.begin() as session:
+        operation = session.get(Operation, operation_id)
+        assert operation is not None
+        operation.leased_until = datetime.now(UTC) - timedelta(seconds=1)
+
+    assert runner.recover_expired_leases() == 1
+    assert runner.reconcile_once()
+
+    with session_factory() as session:
+        operation = session.get(Operation, operation_id)
+        attempts = session.scalars(
+            select(ExecutionAttempt)
+            .where(ExecutionAttempt.operation_id == operation_id)
+            .order_by(ExecutionAttempt.attempt_number)
+        ).all()
+        assert operation is not None
+        assert operation.status == "succeeded"
+        assert [attempt.status for attempt in attempts] == ["unknown", "succeeded"]
+        assert attempts[-1].kind == "reconcile"
+    assert provider.mutation_calls == 1
+
+
+@pytest.mark.integration
+def test_permanent_gmail_reconciliation_error_fails_without_retry(
+    session_factory,
+    monkeypatch,
+) -> None:
+    provider = FakeGmailProvider()
+    provider.add_message(
+        message_id="reconciliation-auth-failure",
+        source_version="3",
+        subject="Permanent reconciliation failure",
+    )
+    settings, _queue_id = _propose_gmail_action(
+        session_factory,
+        provider,
+        action_type="gmail_archive_message",
+        monkeypatch=monkeypatch,
+    )
+    monkeypatch.setattr(
+        "docket.services.approvals.get_settings",
+        lambda: settings,
+    )
+    operation_id = _approve_gmail_action(
+        session_factory,
+        settings,
+        interaction_id="gmail-permanent-reconcile-approval",
+    )
+    provider.unknown_after_write_once = True
+    runner = OperationRunner(
+        session_factory,
+        FakeCalendarProvider(),
+        gmail_provider=provider,
+        execution_enabled=False,
+        gmail_execution_enabled=True,
+        consistency_window_seconds=0,
+    )
+
+    assert runner.run_due_once()
+    provider.permanent_label_state_once = True
+    assert runner.reconcile_once()
+
+    with session_factory() as session:
+        operation = session.get(Operation, operation_id)
+        queue_item = session.scalar(select(QueueItem))
+        assert operation is not None
+        assert operation.status == "failed"
+        assert operation.last_error_code == "google_auth_invalid"
+        assert operation.next_attempt_at is None
+        assert queue_item is not None and queue_item.status == "failed"
+        alerts = session.scalars(
+            select(OutboxEvent).where(
+                OutboxEvent.event_type == "discord.system_log.requested"
+            )
+        ).all()
+        assert alerts
+    assert provider.mutation_calls == 1
+
+
+@pytest.mark.integration
+def test_disabled_gmail_gate_leaves_approval_pending(
+    session_factory,
+    monkeypatch,
+) -> None:
+    provider = FakeGmailProvider()
+    provider.add_message(message_id="gate-disabled", source_version="1")
+    _settings_used, _queue_id = _propose_gmail_action(
+        session_factory,
+        provider,
+        action_type="gmail_archive_message",
+        monkeypatch=monkeypatch,
+    )
+    disabled = _settings()
+    monkeypatch.setattr(
+        "docket.services.approvals.get_settings",
+        lambda: disabled,
+    )
+
+    with pytest.raises(DocketError) as raised:
+        _approve_gmail_action(
+            session_factory,
+            disabled,
+            interaction_id="gmail-disabled-approval",
+        )
+    assert raised.value.code == "external_writes_disabled"
+    with session_factory() as session:
+        approval = session.scalar(select(Approval))
+        assert approval is not None and approval.status == "pending"
+        assert session.scalar(select(Operation)) is None
+    assert provider.mutation_calls == 0
+
+
+@pytest.mark.integration
+def test_newer_staged_message_version_invalidates_gmail_approval(
+    session_factory,
+    monkeypatch,
+) -> None:
+    provider = FakeGmailProvider()
+    provider.add_message(message_id="stale-message", source_version="1")
+    settings, _queue_id = _propose_gmail_action(
+        session_factory,
+        provider,
+        action_type="gmail_archive_message",
+        monkeypatch=monkeypatch,
+    )
+    with session_factory.begin() as session:
+        original = session.scalar(select(SourceItem))
+        assert original is not None
+        session.add(
+            SourceItem(
+                account_id=original.account_id,
+                provider="gmail",
+                external_object_id=original.external_object_id,
+                external_parent_id=original.external_parent_id,
+                source_version="2",
+                source_fingerprint="f" * 64,
+                received_at=datetime.now(UTC),
+                minimal_headers={"label_ids": ["INBOX", "UNREAD"]},
+                status="staged",
+            )
+        )
+    monkeypatch.setattr(
+        "docket.services.approvals.get_settings",
+        lambda: settings,
+    )
+
+    failure: DocketError | None = None
+    with session_factory.begin() as session:
+        try:
+            ApprovalService(session).respond(
+                ApprovalResponse(
+                    request_id=uuid.uuid4(),
+                    discord_interaction_id="gmail-stale-approval",
+                    approval_id=None,
+                    approval_token=None,
+                    short_code="ABCDEFGH",
+                    decision="approve",
+                    discord_user_id=settings.operator_discord_user_id,
+                    guild_id=settings.discord_guild_id,
+                    channel_id=settings.queue_channel_id,
+                    message_id="222222222222222222",
+                    responded_at=datetime.now(UTC),
+                )
+            )
+        except DocketError as exc:
+            failure = exc
+    assert failure is not None
+    assert failure.code == "target_version_changed"
+    with session_factory() as session:
+        approval = session.scalar(
+            select(Approval).order_by(Approval.created_at)
+        )
+        assert approval is not None
+        assert approval.status == "pending"
+        assert approval.refresh_required_at is not None
+        assert session.scalar(select(Operation)) is None

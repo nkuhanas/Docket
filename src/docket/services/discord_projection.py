@@ -452,6 +452,8 @@ class DiscordProjectionRunner:
             "calendar_cancel_event": "Cancel event",
             "calendar_reconcile_course": "Synchronize course",
             "calendar_drop_course": "Drop course",
+            "gmail_archive_message": "Archive message",
+            "gmail_mark_read": "Mark message as read",
         }
         return labels.get(value, value.replace("_", " ").title())
 
@@ -1219,6 +1221,21 @@ class DiscordProjectionRunner:
                     }
                 )
             if not calendar_action:
+                source = preview.get("source")
+                if isinstance(source, dict):
+                    source_lines: list[str] = []
+                    if source.get("sender"):
+                        source_lines.append(f"From: {source['sender']}")
+                    if source.get("subject"):
+                        source_lines.append(f"Subject: {source['subject']}")
+                    if source_lines:
+                        fields.append(
+                            {
+                                "name": "Email",
+                                "value": "\n".join(source_lines),
+                                "inline": False,
+                            }
+                        )
                 fields.append(
                     {
                         "name": "Effect",
@@ -1388,13 +1405,25 @@ class DiscordProjectionRunner:
             ).encode()
             if refresh_required:
                 assert revision is not None
+                gmail_action = revision.action_type.startswith("gmail_")
                 fields.insert(
                     0,
                     {
-                        "name": "Calendar state changed",
+                        "name": (
+                            "Email state changed"
+                            if gmail_action
+                            else "Calendar state changed"
+                        ),
                         "value": (
-                            "This preview is stale. Rebuild it from current Calendar state "
-                            "before approval, or reject it."
+                            (
+                                "A newer Gmail version was staged. Reject this stale "
+                                "proposal and review the newer queue state."
+                            )
+                            if gmail_action
+                            else (
+                                "This preview is stale. Rebuild it from current Calendar "
+                                "state before approval, or reject it."
+                            )
                         ),
                         "inline": False,
                     },
@@ -1409,8 +1438,11 @@ class DiscordProjectionRunner:
                         "label": "Reject",
                         "approval_id": str(approval.id),
                         "token": token,
-                    },
-                    {
+                    }
+                ]
+                if not gmail_action:
+                    controls.append(
+                        {
                         "kind": "proposal_action",
                         "transition": "proposal_refresh",
                         "label": "Rebuild preview",
@@ -1423,8 +1455,8 @@ class DiscordProjectionRunner:
                             approval.expires_at,
                             signing_key,
                         ),
-                    },
-                ]
+                        }
+                    )
             elif revision is not None and revision.action_type in BATCH_CALENDAR_ACTION_TYPES:
                 page_count = self._schedule_page_count(revision)
                 common: _NavigationCommon = {
@@ -1893,6 +1925,7 @@ class DiscordProjectionRunner:
             approval: Approval | None = None
             operation: Operation | None = None
             local_revisions: list[tuple[Action, ActionRevision]] = []
+            external_revisions: list[tuple[Action, ActionRevision]] = []
             account_label: str | None = None
             for candidate in actions:
                 candidate_revision = session.scalar(
@@ -1907,25 +1940,50 @@ class DiscordProjectionRunner:
                     if candidate.status == "available":
                         local_revisions.append((candidate, candidate_revision))
                     continue
-                if action is None:
-                    action = candidate
-                    revision = candidate_revision
-                    approval = session.scalar(
-                        select(Approval).where(Approval.action_revision_id == candidate_revision.id)
+                external_revisions.append((candidate, candidate_revision))
+            if external_revisions:
+                selected = next(
+                    (
+                        item
+                        for item in external_revisions
+                        if item[0].status == "approval_pending"
+                    ),
+                    None,
+                )
+                if selected is None:
+                    selected = next(
+                        (
+                            item
+                            for item in external_revisions
+                            if item[0].status
+                            in {
+                                "ready",
+                                "executing",
+                                "reconciliation_required",
+                                "failed",
+                            }
+                        ),
+                        external_revisions[-1],
                     )
-                    operation = session.scalar(
-                        select(Operation)
-                        .where(Operation.action_revision_id == candidate_revision.id)
-                        .order_by(Operation.created_at.desc())
-                        .limit(1)
+                action, revision = selected
+                approval = session.scalar(
+                    select(Approval).where(
+                        Approval.action_revision_id == revision.id
                     )
-                    account = session.get(Account, candidate_revision.account_id)
-                    if account is not None:
-                        account_label = (
-                            account.display_name
-                            or account.email_address
-                            or account.external_account_id
-                        )
+                )
+                operation = session.scalar(
+                    select(Operation)
+                    .where(Operation.action_revision_id == revision.id)
+                    .order_by(Operation.created_at.desc())
+                    .limit(1)
+                )
+                account = session.get(Account, revision.account_id)
+                if account is not None:
+                    account_label = (
+                        account.display_name
+                        or account.email_address
+                        or account.external_account_id
+                    )
             revision_changed = revision is None or projection.view_action_revision_id != revision.id
             if revision is None:
                 projection.view_action_revision_id = None
@@ -2065,6 +2123,8 @@ class DiscordProjectionRunner:
                 .where(
                     Action.queue_item_id == projection.queue_item_id,
                     ActionRevision.revision == Action.current_revision,
+                    Action.status == "approval_pending",
+                    Approval.status == ApprovalStatus.PENDING.value,
                 )
                 .order_by(Action.display_order, Approval.created_at.desc())
                 .limit(1)

@@ -10,6 +10,7 @@ from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.gmail_ingestion import GmailIngestionService
 from docket.services.operations import OperationRunner
 from docket.services.reminders import ReminderDispatcher
+from docket.services.retention import RetentionService
 from docket.services.rollover import RolloverService
 
 logger = structlog.get_logger(__name__)
@@ -36,6 +37,8 @@ class WorkerRuntime:
         backup_poll_seconds: float = 60.0,
         gmail_ingestion_service: GmailIngestionService | None = None,
         gmail_scan_poll_seconds: float = 60.0,
+        retention_service: RetentionService | None = None,
+        retention_poll_seconds: float = 3600.0,
     ) -> None:
         self.heartbeat_seconds = heartbeat_seconds
         self.operation_runner = operation_runner
@@ -54,6 +57,8 @@ class WorkerRuntime:
         self.backup_poll_seconds = backup_poll_seconds
         self.gmail_ingestion_service = gmail_ingestion_service
         self.gmail_scan_poll_seconds = gmail_scan_poll_seconds
+        self.retention_service = retention_service
+        self.retention_poll_seconds = retention_poll_seconds
         self.last_heartbeat: datetime | None = None
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -146,6 +151,7 @@ class WorkerRuntime:
         next_reminder_dispatch = 0.0
         next_backup = 0.0
         next_gmail_scan = 0.0
+        next_retention = 0.0
         while not self._stop.is_set():
             self.last_heartbeat = datetime.now(UTC)
             now = time.monotonic()
@@ -187,7 +193,15 @@ class WorkerRuntime:
                     await asyncio.to_thread(
                         self.gmail_ingestion_service.run_due_once
                     )
+                    await asyncio.to_thread(
+                        self.gmail_ingestion_service.evaluate_staleness
+                    )
                     next_gmail_scan = now + self.gmail_scan_poll_seconds
+                if self.retention_service is not None and now >= next_retention:
+                    await asyncio.to_thread(
+                        self.retention_service.run_due_once
+                    )
+                    next_retention = now + self.retention_poll_seconds
             except Exception:
                 logger.exception("worker_iteration_failed")
             try:

@@ -33,9 +33,10 @@ from docket.models import (
     QueueItem,
     Record,
     ReminderRule,
+    SourceItem,
 )
 from docket.models.base import utc_now
-from docket.policy import BATCH_CALENDAR_ACTION_TYPES
+from docket.policy import BATCH_CALENDAR_ACTION_TYPES, GMAIL_MUTATION_ACTION_TYPES
 from docket.providers.google.calendar import (
     CalendarEventRequest,
     CalendarEventResult,
@@ -43,6 +44,13 @@ from docket.providers.google.calendar import (
     CalendarProviderError,
     CalendarUnknownOutcome,
     event_matches_request,
+)
+from docket.providers.google.gmail import (
+    GmailMutationProvider,
+    GmailMutationRequest,
+    GmailMutationResult,
+    GmailProviderError,
+    GmailUnknownOutcome,
 )
 from docket.services.operational_logs import enqueue_action_system_log
 
@@ -71,6 +79,7 @@ class ClaimedOperation:
             if event_spec is not None
             else str(self.parameters.get("summary") or before.get("summary") or "Docket event")
         )
+
         schedule = self.parameters.get("schedule")
         reminder_plan = self.parameters.get("reminder_plan")
         return CalendarEventRequest(
@@ -90,6 +99,14 @@ class ClaimedOperation:
             operation_type=self.operation_type,
         )
 
+    def gmail_request(self) -> GmailMutationRequest:
+        return GmailMutationRequest(
+            message_id=str(self.parameters["message_id"]),
+            source_version=str(self.parameters["source_version"]),
+            remove_label_id=str(self.parameters["remove_label_id"]),
+            provider_correlation=self.provider_correlation,
+        )
+
 
 class OperationRunner:
     def __init__(
@@ -97,17 +114,21 @@ class OperationRunner:
         session_factory: sessionmaker[Session],
         provider: CalendarProvider,
         *,
+        gmail_provider: GmailMutationProvider | None = None,
         lease_seconds: int = 60,
         max_attempts: int = 5,
         consistency_window_seconds: int = 30,
         execution_enabled: bool = True,
+        gmail_execution_enabled: bool = False,
     ) -> None:
         self.session_factory = session_factory
         self.provider = provider
+        self.gmail_provider = gmail_provider
         self.lease_seconds = lease_seconds
         self.max_attempts = max_attempts
         self.consistency_window_seconds = consistency_window_seconds
         self.execution_enabled = execution_enabled
+        self.gmail_execution_enabled = gmail_execution_enabled
 
     @staticmethod
     def _bound_entities(
@@ -131,10 +152,25 @@ class OperationRunner:
             if reconcile
             else OperationStatus.PENDING.value
         )
+        eligible_types: set[str] = set()
+        if self.execution_enabled:
+            eligible_types.update(
+                {
+                    "calendar_create_event",
+                    "calendar_update_event",
+                    "calendar_update_reminders",
+                    "calendar_cancel_event",
+                }
+            )
+        if self.gmail_execution_enabled and self.gmail_provider is not None:
+            eligible_types.update(GMAIL_MUTATION_ACTION_TYPES)
+        if not eligible_types:
+            return None
         operation = session.scalar(
             select(Operation)
             .where(
                 Operation.status == desired_status,
+                Operation.operation_type.in_(eligible_types),
                 Operation.operation_type.not_in(BATCH_CALENDAR_ACTION_TYPES),
                 or_(Operation.next_attempt_at.is_(None), Operation.next_attempt_at <= now),
                 or_(Operation.leased_until.is_(None), Operation.leased_until < now),
@@ -239,20 +275,26 @@ class OperationRunner:
         )
 
     def claim_due(self) -> ClaimedOperation | None:
-        if not self.execution_enabled:
+        if not self.execution_enabled and not self.gmail_execution_enabled:
             return None
         with self.session_factory.begin() as session:
-            return self._claim_batch_item(session, reconcile=False) or self._claim(
-                session, reconcile=False
+            batch = (
+                self._claim_batch_item(session, reconcile=False)
+                if self.execution_enabled
+                else None
             )
+            return batch or self._claim(session, reconcile=False)
 
     def claim_reconciliation(self) -> ClaimedOperation | None:
-        if not self.execution_enabled:
+        if not self.execution_enabled and not self.gmail_execution_enabled:
             return None
         with self.session_factory.begin() as session:
-            return self._claim_batch_item(session, reconcile=True) or self._claim(
-                session, reconcile=True
+            batch = (
+                self._claim_batch_item(session, reconcile=True)
+                if self.execution_enabled
+                else None
             )
+            return batch or self._claim(session, reconcile=True)
 
     def mark_provider_call_started(self, claim: ClaimedOperation) -> None:
         with self.session_factory.begin() as session:
@@ -1043,6 +1085,129 @@ class OperationRunner:
             )
         )
 
+    @staticmethod
+    def _apply_gmail_success(
+        session: Session,
+        operation: Operation,
+        attempt: ExecutionAttempt,
+        result: GmailMutationResult,
+    ) -> None:
+        revision, action, queue_item = OperationRunner._bound_entities(session, operation)
+        parameters = revision.parameters
+        if result.message_id != parameters.get("message_id"):
+            raise DocketError(
+                code="gmail_result_binding_mismatch",
+                message="Gmail returned a result for a different message.",
+            )
+        try:
+            source_id = uuid.UUID(str(parameters["source_item_id"]))
+        except ValueError as exc:
+            raise DocketError(
+                code="invalid_operation_state",
+                message="The Gmail operation has an invalid source binding.",
+            ) from exc
+        source = session.get(SourceItem, source_id)
+        if (
+            source is None
+            or source.account_id != operation.account_id
+            or source.external_object_id != result.message_id
+            or source.source_version != parameters.get("source_version")
+        ):
+            raise DocketError(
+                code="gmail_source_binding_mismatch",
+                message="The Gmail operation source binding is no longer valid.",
+            )
+        headers = dict(source.minimal_headers)
+        headers["label_ids"] = list(result.label_ids)
+        headers["provider_observed_version"] = result.source_version
+        source.minimal_headers = headers
+        now = utc_now()
+        attempt.status = AttemptStatus.SUCCEEDED.value
+        attempt.provider_request_id = (
+            result.provider_request_id or attempt.provider_request_id
+        )
+        attempt.response_summary = {
+            "disposition": result.disposition,
+            "removed_label_id": parameters["remove_label_id"],
+            "source_version": result.source_version,
+        }
+        attempt.completed_at = now
+        operation.status = OperationStatus.SUCCEEDED.value
+        operation.lease_token = None
+        operation.leased_until = None
+        operation.next_attempt_at = None
+        operation.result = {
+            "message_id": result.message_id,
+            "source_version": result.source_version,
+            "removed_label_id": parameters["remove_label_id"],
+            "disposition": result.disposition,
+        }
+        operation.last_error_code = None
+        operation.last_error_message = None
+        action.status = ActionStatus.SUCCEEDED.value
+        pending_sibling = session.scalar(
+            select(Action.id).where(
+                Action.queue_item_id == queue_item.id,
+                Action.id != action.id,
+                Action.status == ActionStatus.APPROVAL_PENDING.value,
+            )
+        )
+        if pending_sibling is not None:
+            queue_item.status = QueueItemStatus.AWAITING_APPROVAL.value
+            queue_item.resolved_at = None
+            queue_item.resolution_code = None
+        else:
+            queue_item.status = QueueItemStatus.COMPLETED.value
+            queue_item.resolved_at = now
+            queue_item.resolution_code = (
+                "gmail_archived"
+                if operation.operation_type == "gmail_archive_message"
+                else "gmail_marked_read"
+            )
+        queue_item.version += 1
+        session.add(
+            AuditEvent(
+                event_type="operation.succeeded",
+                entity_type="operation",
+                entity_id=operation.id,
+                actor_type="docket",
+                actor_id=None,
+                request_id=None,
+                data={
+                    "action_revision_id": str(revision.id),
+                    "attempt_id": str(attempt.id),
+                    "message_id": result.message_id,
+                    "source_version": result.source_version,
+                    "parameters_sha256": revision.parameters_sha256,
+                    "disposition": result.disposition,
+                },
+            )
+        )
+        session.add(
+            OutboxEvent(
+                event_type="discord.projection.refresh_requested",
+                aggregate_type="queue_item",
+                aggregate_id=queue_item.id,
+                deduplication_key=(
+                    f"discord_projection:{queue_item.id}:operation:{operation.id}:ok"
+                ),
+                payload={
+                    "queue_item_id": str(queue_item.id),
+                    "action_id": str(action.id),
+                    "operation_id": str(operation.id),
+                    "status": "succeeded",
+                },
+                status=OutboxStatus.PENDING.value,
+            )
+        )
+        enqueue_action_system_log(
+            session,
+            action=action,
+            revision=revision,
+            state="succeeded",
+            result=operation.result,
+        )
+
     def finish_success(self, claim: ClaimedOperation, result: CalendarEventResult) -> None:
         with self.session_factory.begin() as session:
             operation = session.get(Operation, claim.operation_id)
@@ -1069,7 +1234,34 @@ class OperationRunner:
                 )
             self._apply_success(session, operation, attempt, result)
 
-    def finish_error(self, claim: ClaimedOperation, error: CalendarProviderError) -> None:
+    def finish_gmail_success(
+        self,
+        claim: ClaimedOperation,
+        result: GmailMutationResult,
+    ) -> None:
+        with self.session_factory.begin() as session:
+            operation = session.get(Operation, claim.operation_id)
+            attempt = session.get(ExecutionAttempt, claim.attempt_id)
+            if operation is None or attempt is None:
+                raise DocketError(
+                    code="operation_lease_lost",
+                    message="Operation lease was lost.",
+                )
+            if (
+                claim.operation_item_id is not None
+                or operation.lease_token != claim.lease_token
+            ):
+                raise DocketError(
+                    code="operation_lease_lost",
+                    message="Operation lease was lost.",
+                )
+            self._apply_gmail_success(session, operation, attempt, result)
+
+    def finish_error(
+        self,
+        claim: ClaimedOperation,
+        error: CalendarProviderError | GmailProviderError,
+    ) -> None:
         with self.session_factory.begin() as session:
             operation = session.get(Operation, claim.operation_id)
             attempt = session.get(ExecutionAttempt, claim.attempt_id)
@@ -1090,7 +1282,7 @@ class OperationRunner:
                 now = utc_now()
                 attempt.status = (
                     AttemptStatus.UNKNOWN.value
-                    if isinstance(error, CalendarUnknownOutcome)
+                    if isinstance(error, (CalendarUnknownOutcome, GmailUnknownOutcome))
                     else AttemptStatus.FAILED.value
                 )
                 attempt.error_code = error.code
@@ -1099,7 +1291,7 @@ class OperationRunner:
                 item.lease_token = None
                 item.leased_until = None
                 item.last_error_code = error.code
-                if isinstance(error, CalendarUnknownOutcome):
+                if isinstance(error, (CalendarUnknownOutcome, GmailUnknownOutcome)):
                     item.status = "reconciliation_required"
                     item.next_attempt_at = now
                 elif error.transient and item.attempt_count < self.max_attempts:
@@ -1136,7 +1328,9 @@ class OperationRunner:
                             "attempt_id": str(attempt.id),
                             "item_key": item.item_key,
                             "error_code": error.code,
-                            "unknown_outcome": isinstance(error, CalendarUnknownOutcome),
+                            "unknown_outcome": isinstance(
+                                error, (CalendarUnknownOutcome, GmailUnknownOutcome)
+                            ),
                             "will_retry": item.status in {"pending", "reconciliation_required"},
                         },
                     )
@@ -1171,7 +1365,7 @@ class OperationRunner:
             now = utc_now()
             attempt.status = (
                 AttemptStatus.UNKNOWN.value
-                if isinstance(error, CalendarUnknownOutcome)
+                if isinstance(error, (CalendarUnknownOutcome, GmailUnknownOutcome))
                 else AttemptStatus.FAILED.value
             )
             attempt.error_code = error.code
@@ -1181,7 +1375,7 @@ class OperationRunner:
             operation.leased_until = None
             operation.last_error_code = error.code
             operation.last_error_message = error.safe_message
-            if isinstance(error, CalendarUnknownOutcome):
+            if isinstance(error, (CalendarUnknownOutcome, GmailUnknownOutcome)):
                 operation.status = OperationStatus.RECONCILIATION_REQUIRED.value
                 operation.next_attempt_at = now
                 action.status = ActionStatus.RECONCILIATION_REQUIRED.value
@@ -1197,6 +1391,18 @@ class OperationRunner:
                 operation.next_attempt_at = None
                 action.status = ActionStatus.FAILED.value
                 queue_item.status = QueueItemStatus.FAILED.value
+                if (
+                    revision.action_type in GMAIL_MUTATION_ACTION_TYPES
+                    and session.scalar(
+                        select(Action.id).where(
+                            Action.queue_item_id == queue_item.id,
+                            Action.id != action.id,
+                            Action.status == ActionStatus.APPROVAL_PENDING.value,
+                        )
+                    )
+                    is not None
+                ):
+                    queue_item.status = QueueItemStatus.AWAITING_APPROVAL.value
             if operation.status in {
                 OperationStatus.FAILED.value,
                 OperationStatus.RECONCILIATION_REQUIRED.value,
@@ -1214,6 +1420,49 @@ class OperationRunner:
                 ):
                     plan.status = plan_status
             queue_item.version += 1
+            if revision.action_type in GMAIL_MUTATION_ACTION_TYPES:
+                session.add(
+                    AuditEvent(
+                        event_type="operation.failed",
+                        entity_type="operation",
+                        entity_id=operation.id,
+                        actor_type="docket",
+                        actor_id=None,
+                        request_id=None,
+                        data={
+                            "action_revision_id": str(revision.id),
+                            "attempt_id": str(attempt.id),
+                            "error_code": error.code,
+                            "unknown_outcome": isinstance(
+                                error,
+                                (CalendarUnknownOutcome, GmailUnknownOutcome),
+                            ),
+                            "will_retry": operation.status
+                            in {
+                                OperationStatus.PENDING.value,
+                                OperationStatus.RECONCILIATION_REQUIRED.value,
+                            },
+                        },
+                    )
+                )
+                session.add(
+                    OutboxEvent(
+                        event_type="discord.projection.refresh_requested",
+                        aggregate_type="queue_item",
+                        aggregate_id=queue_item.id,
+                        deduplication_key=(
+                            f"discord_projection:{queue_item.id}:operation:"
+                            f"{operation.id}:attempt:{operation.attempt_count}:error"
+                        ),
+                        payload={
+                            "queue_item_id": str(queue_item.id),
+                            "action_id": str(action.id),
+                            "operation_id": str(operation.id),
+                            "status": operation.status,
+                        },
+                        status=OutboxStatus.PENDING.value,
+                    )
+                )
             if operation.status in {
                 OperationStatus.FAILED.value,
                 OperationStatus.RECONCILIATION_REQUIRED.value,
@@ -1231,17 +1480,37 @@ class OperationRunner:
         if claim is None:
             return False
         self.mark_provider_call_started(claim)
+        if claim.operation_type in GMAIL_MUTATION_ACTION_TYPES:
+            if self.gmail_provider is None:
+                self.finish_error(
+                    claim,
+                    GmailProviderError(
+                        "gmail_provider_disabled",
+                        "The Gmail mutation provider is disabled.",
+                        transient=False,
+                    ),
+                )
+                return True
+            try:
+                gmail_result = self.gmail_provider.mutate_message(
+                    claim.gmail_request()
+                )
+            except GmailProviderError as exc:
+                self.finish_error(claim, exc)
+            else:
+                self.finish_gmail_success(claim, gmail_result)
+            return True
         request = claim.calendar_request()
         try:
             if claim.operation_type == "calendar_create_event":
-                result = self.provider.create_event(request)
+                calendar_result = self.provider.create_event(request)
             elif claim.operation_type in {
                 "calendar_update_event",
                 "calendar_update_reminders",
             }:
-                result = self.provider.update_event(request)
+                calendar_result = self.provider.update_event(request)
             elif claim.operation_type == "calendar_cancel_event":
-                result = self.provider.cancel_event(request)
+                calendar_result = self.provider.cancel_event(request)
             else:
                 raise CalendarProviderError(
                     "unsupported_operation",
@@ -1251,7 +1520,7 @@ class OperationRunner:
         except CalendarProviderError as exc:
             self.finish_error(claim, exc)
         else:
-            self.finish_success(claim, result)
+            self.finish_success(claim, calendar_result)
         return True
 
     def recover_expired_leases(self) -> int:
@@ -1509,13 +1778,63 @@ class OperationRunner:
         claim = self.claim_reconciliation()
         if claim is None:
             return False
-        request = claim.calendar_request()
+        if claim.operation_type in GMAIL_MUTATION_ACTION_TYPES:
+            if self.gmail_provider is None:
+                self.finish_error(
+                    claim,
+                    GmailProviderError(
+                        "gmail_provider_disabled",
+                        "The Gmail mutation provider is disabled.",
+                        transient=False,
+                    ),
+                )
+                return True
+            gmail_request = claim.gmail_request()
+            try:
+                gmail_current = self.gmail_provider.get_label_state(gmail_request)
+            except GmailProviderError as exc:
+                if exc.transient:
+                    self._defer_reconciliation(
+                        claim,
+                        error_code=exc.code,
+                        delay_seconds=8,
+                    )
+                else:
+                    self.finish_error(claim, exc)
+                return True
+            if gmail_request.remove_label_id not in gmail_current.label_ids:
+                self.finish_gmail_success(
+                    claim,
+                    GmailMutationResult(
+                        message_id=gmail_current.message_id,
+                        source_version=gmail_current.source_version,
+                        label_ids=gmail_current.label_ids,
+                        provider_request_id=gmail_current.provider_request_id,
+                        disposition="reconciled",
+                    ),
+                )
+                return True
+            age = self._claim_age(claim)
+            if age.total_seconds() >= self.consistency_window_seconds:
+                self._finish_reconciliation_no_match(claim)
+            else:
+                remaining = max(
+                    1,
+                    self.consistency_window_seconds - int(age.total_seconds()),
+                )
+                self._defer_reconciliation(
+                    claim,
+                    error_code="gmail_consistency_window",
+                    delay_seconds=remaining,
+                )
+            return True
+        calendar_request = claim.calendar_request()
         try:
             if claim.operation_type == "calendar_create_event":
-                matches = self.provider.find_by_correlation(request)
+                matches = self.provider.find_by_correlation(calendar_request)
             else:
-                current = self.provider.get_event(request)
-                matches = [current] if current is not None else []
+                calendar_current = self.provider.get_event(calendar_request)
+                matches = [calendar_current] if calendar_current is not None else []
         except CalendarProviderError as exc:
             if exc.transient:
                 self._defer_reconciliation(claim, error_code=exc.code, delay_seconds=8)
@@ -1528,16 +1847,16 @@ class OperationRunner:
                     matches[0]
                     if matches
                     else CalendarEventResult(
-                        external_event_id=str(request.external_event_id),
+                        external_event_id=str(calendar_request.external_event_id),
                         provider_etag=None,
                         provider_request_id=None,
-                        snapshot={**request.snapshot(), "status": "cancelled"},
+                        snapshot={**calendar_request.snapshot(), "status": "cancelled"},
                     )
                 )
                 self.finish_success(claim, cancelled)
                 return True
-            current = matches[0]
-            if current.provider_etag != request.provider_etag:
+            calendar_current = matches[0]
+            if calendar_current.provider_etag != calendar_request.provider_etag:
                 self._finish_reconciliation_conflict(claim, match_count=1)
                 return True
             age = self._claim_age(claim)
@@ -1554,7 +1873,11 @@ class OperationRunner:
                     delay_seconds=remaining,
                 )
             return True
-        exact = [match for match in matches if event_matches_request(match, request)]
+        exact = [
+            match
+            for match in matches
+            if event_matches_request(match, calendar_request)
+        ]
         if len(matches) == 1 and len(exact) == 1:
             self.finish_success(claim, exact[0])
         elif len(matches) == 0:

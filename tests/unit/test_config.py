@@ -33,3 +33,25 @@ def test_encrypted_backup_requires_age_recipient() -> None:
         DOCKET_BACKUP_AGE_RECIPIENT="age1configured",
     )
     assert settings.backup_enabled
+
+
+def test_gmail_writes_require_both_ingestion_and_global_write_gate() -> None:
+    with pytest.raises(ValidationError, match="Gmail writes require"):
+        Settings(
+            DOCKET_GMAIL_WRITES_ENABLED=True,
+            DOCKET_GMAIL_INGESTION_ENABLED=False,
+            DOCKET_EXTERNAL_WRITES_ENABLED=True,
+        )
+    with pytest.raises(ValidationError, match="Gmail writes require"):
+        Settings(
+            DOCKET_GMAIL_WRITES_ENABLED=True,
+            DOCKET_GMAIL_INGESTION_ENABLED=True,
+            DOCKET_EXTERNAL_WRITES_ENABLED=False,
+        )
+
+    settings = Settings(
+        DOCKET_GMAIL_WRITES_ENABLED=True,
+        DOCKET_GMAIL_INGESTION_ENABLED=True,
+        DOCKET_EXTERNAL_WRITES_ENABLED=True,
+    )
+    assert settings.gmail_writes_enabled

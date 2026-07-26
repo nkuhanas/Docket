@@ -7,7 +7,11 @@ from docket.providers.google.gmail import (
     GmailClaimedContent,
     GmailCursorInvalid,
     GmailMessageMetadata,
+    GmailMutationRequest,
+    GmailMutationResult,
+    GmailProviderError,
     GmailScanPage,
+    GmailUnknownOutcome,
 )
 
 
@@ -22,6 +26,13 @@ class FakeGmailProvider:
         self.invalidate_next_history_cursor = False
         self.scan_calls = 0
         self.read_calls = 0
+        self.mutation_calls = 0
+        self.label_state_calls = 0
+        self.transient_before_write_once = False
+        self.permanent_before_write_once = False
+        self.unknown_after_write_once = False
+        self.transient_label_state_once = False
+        self.permanent_label_state_once = False
 
     def add_message(
         self,
@@ -113,3 +124,93 @@ class FakeGmailProvider:
     def read_message(self, message_id: str) -> GmailClaimedContent:
         self.read_calls += 1
         return self.messages[message_id]
+
+    @staticmethod
+    def _next_version(value: str) -> str:
+        try:
+            return str(int(value) + 1)
+        except ValueError:
+            return f"{value}.1"
+
+    def get_label_state(self, request: GmailMutationRequest) -> GmailMutationResult:
+        self.label_state_calls += 1
+        if self.transient_label_state_once:
+            self.transient_label_state_once = False
+            raise GmailProviderError(
+                "gmail_transient",
+                "Fake Gmail was temporarily unavailable.",
+                transient=True,
+            )
+        if self.permanent_label_state_once:
+            self.permanent_label_state_once = False
+            raise GmailProviderError(
+                "google_auth_invalid",
+                "Fake Gmail authorization is unavailable.",
+                transient=False,
+            )
+        try:
+            message = self.messages[request.message_id]
+        except KeyError as exc:
+            raise GmailProviderError(
+                "gmail_message_not_found",
+                "The Gmail message no longer exists.",
+                transient=False,
+            ) from exc
+        return GmailMutationResult(
+            message_id=message.message_id,
+            source_version=message.source_version,
+            label_ids=message.label_ids,
+            provider_request_id=f"fake-gmail-read-{self.label_state_calls}",
+            disposition="observed",
+        )
+
+    def mutate_message(self, request: GmailMutationRequest) -> GmailMutationResult:
+        self.mutation_calls += 1
+        if self.transient_before_write_once:
+            self.transient_before_write_once = False
+            raise GmailProviderError(
+                "gmail_transient",
+                "Fake Gmail was temporarily unavailable.",
+                transient=True,
+            )
+        if self.permanent_before_write_once:
+            self.permanent_before_write_once = False
+            raise GmailProviderError(
+                "gmail_rejected",
+                "Fake Gmail rejected the mutation.",
+                transient=False,
+            )
+        current = self.get_label_state(request)
+        if request.remove_label_id not in current.label_ids:
+            return GmailMutationResult(
+                message_id=current.message_id,
+                source_version=current.source_version,
+                label_ids=current.label_ids,
+                provider_request_id=f"fake-gmail-modify-{self.mutation_calls}",
+                disposition="already_applied",
+            )
+        message = self.messages[request.message_id]
+        labels = tuple(
+            label for label in message.label_ids if label != request.remove_label_id
+        )
+        version = self._next_version(message.source_version)
+        self.messages[request.message_id] = GmailClaimedContent(
+            message_id=message.message_id,
+            thread_id=message.thread_id,
+            source_version=version,
+            sender=message.sender,
+            subject=message.subject,
+            label_ids=labels,
+            body_text=message.body_text,
+            attachments=message.attachments,
+        )
+        if self.unknown_after_write_once:
+            self.unknown_after_write_once = False
+            raise GmailUnknownOutcome()
+        return GmailMutationResult(
+            message_id=message.message_id,
+            source_version=version,
+            label_ids=labels,
+            provider_request_id=f"fake-gmail-modify-{self.mutation_calls}",
+            disposition="modified",
+        )

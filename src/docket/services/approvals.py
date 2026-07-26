@@ -33,9 +33,10 @@ from docket.models import (
     OutboxEvent,
     QueueItem,
     Record,
+    SourceItem,
 )
 from docket.models.base import utc_now
-from docket.policy import BATCH_CALENDAR_ACTION_TYPES
+from docket.policy import BATCH_CALENDAR_ACTION_TYPES, GMAIL_MUTATION_ACTION_TYPES
 from docket.security import (
     short_code_sha256,
     verify_projection_approval_token,
@@ -254,6 +255,9 @@ class ApprovalService:
         revision: ActionRevision,
         queue_item: QueueItem,
     ) -> None:
+        if revision.action_type in GMAIL_MUTATION_ACTION_TYPES:
+            self._validate_current_gmail_target(revision, queue_item)
+            return
         account = self.session.get(Account, revision.account_id)
         if (
             account is None
@@ -434,6 +438,75 @@ class ApprovalService:
                 message="The queue item changed after the approval preview was created.",
             )
 
+    def _validate_current_gmail_target(
+        self,
+        revision: ActionRevision,
+        queue_item: QueueItem,
+    ) -> None:
+        account = self.session.get(Account, revision.account_id)
+        if (
+            account is None
+            or not account.enabled
+            or account.provider != "google"
+            or "gmail" not in account.capabilities
+        ):
+            raise DocketError(
+                code="target_account_changed",
+                message="The selected Gmail account is no longer enabled.",
+            )
+        target = revision.target_versions.get("source_item")
+        if not isinstance(target, dict):
+            raise DocketError(
+                code="approval_binding_mismatch",
+                message="The Gmail action has no immutable source binding.",
+            )
+        try:
+            source_id = uuid.UUID(str(target.get("id")))
+        except ValueError as exc:
+            raise DocketError(
+                code="approval_binding_mismatch",
+                message="The Gmail action has an invalid source binding.",
+            ) from exc
+        source = self.session.get(SourceItem, source_id)
+        classification = source.classification if source is not None else None
+        if (
+            source is None
+            or source.account_id != revision.account_id
+            or source.external_object_id != target.get("message_id")
+            or source.source_version != target.get("source_version")
+            or str(source.account_id) != target.get("account_id")
+            or source.status != "classified"
+            or not isinstance(classification, dict)
+            or classification.get("queue_item_id") != str(queue_item.id)
+            or revision.parameters.get("source_item_id") != str(source.id)
+            or revision.parameters.get("message_id") != source.external_object_id
+            or revision.parameters.get("source_version") != source.source_version
+        ):
+            raise DocketError(
+                code="target_version_changed",
+                message=(
+                    "The Gmail source changed after the approval preview was created."
+                ),
+            )
+        newer = self.session.scalar(
+            select(SourceItem.id)
+            .where(
+                SourceItem.account_id == source.account_id,
+                SourceItem.provider == "gmail",
+                SourceItem.external_object_id == source.external_object_id,
+                SourceItem.id != source.id,
+                SourceItem.created_at > source.created_at,
+            )
+            .limit(1)
+        )
+        if newer is not None:
+            raise DocketError(
+                code="target_version_changed",
+                message=(
+                    "A newer Gmail message version was staged after this preview."
+                ),
+            )
+
     @staticmethod
     def _idempotency_key(revision: ActionRevision) -> str:
         parameters = revision.parameters
@@ -467,6 +540,16 @@ class ApprovalService:
                 f"calendar:{parameters['mode']}-course:{revision.account_id}:"
                 f"{parameters['record_id']}:{parameters['record_version']}:"
                 f"{revision.parameters_sha256}"
+            )
+        if revision.action_type == "gmail_archive_message":
+            return (
+                f"gmail:archive:{revision.account_id}:"
+                f"{parameters['message_id']}:{parameters['source_version']}"
+            )
+        if revision.action_type == "gmail_mark_read":
+            return (
+                f"gmail:mark_read:{revision.account_id}:"
+                f"{parameters['message_id']}:{parameters['source_version']}"
             )
         raise DocketError(
             code="invalid_approval_state",
@@ -526,7 +609,18 @@ class ApprovalService:
         self._validate_invariant_binding(approval, revision, action, queue_item)
         if request.decision == "approve":
             settings = get_settings()
-            if settings.calendar_write_mode() == "disabled":
+            if (
+                revision.action_type in GMAIL_MUTATION_ACTION_TYPES
+                and not settings.gmail_writes_enabled
+            ):
+                raise DocketError(
+                    code="external_writes_disabled",
+                    message="Gmail writes are disabled. The approval remains pending.",
+                )
+            if (
+                revision.action_type not in GMAIL_MUTATION_ACTION_TYPES
+                and settings.calendar_write_mode() == "disabled"
+            ):
                 raise DocketError(
                     code="external_writes_disabled",
                     message=(
@@ -588,9 +682,24 @@ class ApprovalService:
         if request.decision == "reject":
             approval.status = ApprovalStatus.REJECTED.value
             action.status = ActionStatus.REJECTED.value
-            queue_item.status = QueueItemStatus.COMPLETED.value
-            queue_item.resolved_at = now
-            queue_item.resolution_code = "approval_rejected"
+            pending_sibling = self.session.scalar(
+                select(Action.id).where(
+                    Action.queue_item_id == queue_item.id,
+                    Action.id != action.id,
+                    Action.status == ActionStatus.APPROVAL_PENDING.value,
+                )
+            )
+            if (
+                revision.action_type in GMAIL_MUTATION_ACTION_TYPES
+                and pending_sibling is not None
+            ):
+                queue_item.status = QueueItemStatus.AWAITING_APPROVAL.value
+                queue_item.resolved_at = None
+                queue_item.resolution_code = None
+            else:
+                queue_item.status = QueueItemStatus.COMPLETED.value
+                queue_item.resolved_at = now
+                queue_item.resolution_code = "approval_rejected"
             queue_item.version += 1
             for plan in self.session.scalars(
                 select(CalendarReminderPlan).where(

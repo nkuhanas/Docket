@@ -230,6 +230,9 @@ async def test_triage_surface_is_separate_and_strictly_bounded() -> None:
     }
     assert configured_names == names
     assert "cli: []" in template
+    assert "cron: []" in template
+    assert "discord:" not in template
+    assert "plugins:\n  enabled: []" in template
     assert "/triage-mcp/" in template
     read_description = " ".join(
         (tools["docket_read_claimed_source"].description or "").split()

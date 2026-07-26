@@ -27,6 +27,7 @@ from docket.providers.google import FakeGoogleProvider
 from docket.providers.google.factory import (
     build_calendar_read_provider,
     build_calendar_write_provider,
+    build_gmail_mutation_provider,
     build_gmail_read_provider,
 )
 from docket.providers.google.gmail_runtime import configure_gmail_read_provider
@@ -38,6 +39,7 @@ from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.gmail_ingestion import GmailIngestionService
 from docket.services.operations import OperationRunner
 from docket.services.reminders import ReminderDispatcher
+from docket.services.retention import RetentionService
 from docket.services.rollover import RolloverService
 from docket.worker import WorkerRuntime
 
@@ -61,6 +63,7 @@ calendar_read_provider = build_calendar_read_provider(settings)
 configure_calendar_read_provider(calendar_read_provider)
 calendar_sync_service = CalendarSyncService(get_session_factory(), calendar_read_provider, settings)
 gmail_read_provider = build_gmail_read_provider(settings)
+gmail_mutation_provider = build_gmail_mutation_provider(settings)
 if gmail_read_provider is not None:
     configure_gmail_read_provider(gmail_read_provider)
 discord_projection_runner = (
@@ -80,7 +83,9 @@ worker = WorkerRuntime(
     OperationRunner(
         get_session_factory(),
         calendar_write_provider,
+        gmail_provider=gmail_mutation_provider,
         execution_enabled=settings.calendar_write_mode() != "disabled",
+        gmail_execution_enabled=settings.gmail_writes_enabled,
     ),
     operation_poll_seconds=settings.operation_poll_seconds,
     reconciliation_poll_seconds=settings.reconciliation_poll_seconds,
@@ -109,6 +114,12 @@ worker = WorkerRuntime(
         else None
     ),
     gmail_scan_poll_seconds=settings.gmail_scan_poll_seconds,
+    retention_service=(
+        RetentionService(get_session_factory(), settings)
+        if settings.retention_enabled
+        else None
+    ),
+    retention_poll_seconds=settings.retention_poll_seconds,
 )
 
 

@@ -15,6 +15,8 @@ _ACTION_LABELS = {
     "calendar_cancel_event": "Cancel event",
     "calendar_reconcile_course": "Synchronize course",
     "calendar_drop_course": "Drop course",
+    "gmail_archive_message": "Archive message",
+    "gmail_mark_read": "Mark message as read",
 }
 _STATE_TITLES = {
     "queued": "Calendar change queued",
@@ -36,6 +38,12 @@ _STATE_SEVERITIES = {
 
 def _subject(revision: ActionRevision) -> str:
     preview = revision.preview
+    source = preview.get("source")
+    if isinstance(source, dict):
+        if source.get("subject"):
+            return str(source["subject"])
+        if source.get("sender"):
+            return str(source["sender"])
     event = preview.get("event")
     if isinstance(event, dict) and event.get("title"):
         return str(event["title"])
@@ -77,6 +85,7 @@ def enqueue_action_system_log(
 ) -> None:
     if state not in _STATE_TITLES:
         return
+    gmail_action = revision.action_type.startswith("gmail_")
     target = revision.preview.get("target")
     target_scope = target.get("scope") if isinstance(target, dict) else None
     effect = (
@@ -105,11 +114,15 @@ def enqueue_action_system_log(
             aggregate_id=action.id,
             deduplication_key=deduplication_key,
             payload={
-                "title": _STATE_TITLES[state],
+                "title": (
+                    _STATE_TITLES[state].replace("Calendar", "Gmail")
+                    if gmail_action
+                    else _STATE_TITLES[state]
+                ),
                 "summary": summary,
                 "status": state,
                 "severity": _STATE_SEVERITIES[state],
-                "subsystem": "Calendar",
+                "subsystem": "Gmail" if gmail_action else "Calendar",
                 "occurred_at": (occurred_at or utc_now()).isoformat(),
             },
             status=OutboxStatus.PENDING.value,

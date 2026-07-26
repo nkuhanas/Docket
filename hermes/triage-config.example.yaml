@@ -18,6 +18,7 @@ display:
 
 platform_toolsets:
   cli: []
+  cron: []
 
 plugins:
   enabled: []

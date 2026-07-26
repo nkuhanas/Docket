@@ -149,6 +149,15 @@ class Settings(BaseSettings):
         ge=300,
         alias="DOCKET_GMAIL_STALE_SECONDS",
     )
+    retention_enabled: bool = Field(
+        default=True,
+        alias="DOCKET_RETENTION_ENABLED",
+    )
+    retention_poll_seconds: float = Field(
+        default=3600.0,
+        ge=60,
+        alias="DOCKET_RETENTION_POLL_SECONDS",
+    )
     backup_enabled: bool = Field(default=False, alias="DOCKET_BACKUP_ENABLED")
     backup_directory: Path = Field(
         default=Path("/var/lib/docket/backups"),

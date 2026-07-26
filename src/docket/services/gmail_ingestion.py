@@ -10,10 +10,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from docket.config import Settings, get_settings
 from docket.domain.canonical import sha256_json
+from docket.domain.enums import OutboxStatus
 from docket.models import (
     Account,
     AuditEvent,
     ConnectorCheckpoint,
+    OutboxEvent,
     SourceItem,
 )
 from docket.models.base import utc_now
@@ -95,7 +97,7 @@ class GmailIngestionService:
     def _claim(self, *, force: bool) -> GmailScanClaim | None:
         now = utc_now()
         with self.session_factory.begin() as session:
-            account = session.scalar(
+            accounts = session.scalars(
                 select(Account)
                 .where(
                     Account.provider == "google",
@@ -103,9 +105,16 @@ class GmailIngestionService:
                 )
                 .order_by(Account.created_at)
                 .with_for_update(skip_locked=True)
-                .limit(1)
+            ).all()
+            account = next(
+                (
+                    candidate
+                    for candidate in accounts
+                    if "gmail" in candidate.capabilities
+                ),
+                None,
             )
-            if account is None or "gmail" not in account.capabilities:
+            if account is None:
                 return None
             checkpoint = session.scalar(
                 select(ConnectorCheckpoint)
@@ -260,6 +269,7 @@ class GmailIngestionService:
         )
 
     def _release_with_error(self, claim: GmailScanClaim, error_code: str) -> None:
+        now = utc_now()
         with self.session_factory.begin() as session:
             checkpoint = session.get(ConnectorCheckpoint, claim.checkpoint_id)
             if checkpoint is None or checkpoint.lease_token != claim.lease_token:
@@ -267,6 +277,7 @@ class GmailIngestionService:
             checkpoint.last_error_code = error_code[:128]
             checkpoint.lease_token = None
             checkpoint.leased_until = None
+            self._ensure_stale_alert(session, checkpoint, now)
             session.add(
                 AuditEvent(
                     event_type="gmail.scan_failed",
@@ -277,6 +288,73 @@ class GmailIngestionService:
                     data={"error_code": checkpoint.last_error_code},
                 )
             )
+
+    def _ensure_stale_alert(
+        self,
+        session: Session,
+        checkpoint: ConnectorCheckpoint,
+        now: datetime,
+    ) -> bool:
+        stale = (
+            checkpoint.last_success_at is None
+            or (now - _aware(checkpoint.last_success_at)).total_seconds()
+            > self.settings.gmail_stale_seconds
+        )
+        if not stale:
+            return False
+        episode = (
+            _aware(checkpoint.last_success_at).isoformat()
+            if checkpoint.last_success_at is not None
+            else "never"
+        )
+        key = f"discord_system_alert:gmail_stale:{checkpoint.id}:{episode}"
+        if (
+            session.scalar(
+                select(OutboxEvent.id).where(
+                    OutboxEvent.deduplication_key == key
+                )
+            )
+            is None
+        ):
+            session.add(
+                OutboxEvent(
+                    id=uuid.uuid5(uuid.NAMESPACE_URL, key),
+                    event_type="discord.system_alert.requested",
+                    aggregate_type="connector_checkpoint",
+                    aggregate_id=checkpoint.id,
+                    deduplication_key=key,
+                    payload={
+                        "title": "Docket Gmail ingestion is stale",
+                        "summary": (
+                            "New email may not be staged yet. Docket retained its "
+                            "committed cursor and did not discard pending sources."
+                        ),
+                        "error_code": (
+                            checkpoint.last_error_code
+                            or "gmail_ingestion_stale"
+                        ),
+                        "occurred_at": now.isoformat(),
+                    },
+                    status=OutboxStatus.PENDING.value,
+                )
+            )
+        return True
+
+    def evaluate_staleness(self) -> int:
+        if not self.settings.gmail_ingestion_enabled:
+            return 0
+        now = utc_now()
+        count = 0
+        with self.session_factory.begin() as session:
+            checkpoints = session.scalars(
+                select(ConnectorCheckpoint).where(
+                    ConnectorCheckpoint.stream == _GMAIL_STREAM
+                )
+            ).all()
+            for checkpoint in checkpoints:
+                if self._ensure_stale_alert(session, checkpoint, now):
+                    count += 1
+        return count
 
     def run_due_once(self, *, force: bool = False) -> GmailScanRunResult:
         if not self.settings.gmail_ingestion_enabled:

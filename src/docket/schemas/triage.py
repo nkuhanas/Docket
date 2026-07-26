@@ -61,4 +61,7 @@ class SubmitTriageDecisionInput(BaseModel):
             )
         if self.decision == "ignore" and self.action_proposals:
             raise ValueError("Ignored sources cannot propose actions")
+        action_types = [proposal.action_type for proposal in self.action_proposals]
+        if len(action_types) != len(set(action_types)):
+            raise ValueError("Each Gmail action type may be proposed at most once")
         return self

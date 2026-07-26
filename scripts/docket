@@ -51,6 +51,10 @@ safe_test_environment() {
     export DOCKET_AUTO_CREATE_SCHEMA=true
     export DOCKET_CALENDAR_READS_ENABLED=false
     export DOCKET_EXTERNAL_WRITES_ENABLED=false
+    export DOCKET_GMAIL_INGESTION_ENABLED=false
+    export DOCKET_GMAIL_WRITES_ENABLED=false
+    export DOCKET_BACKUP_ENABLED=false
+    export DOCKET_BACKUP_AGE_RECIPIENT=
     export DOCKET_DISCORD_PROJECTION_ENABLED=false
     export DOCKET_TO_HERMES_TOKEN_FILE="$ROOT/secrets/smoke/docket_to_hermes_token"
     export HERMES_TO_DOCKET_TOKEN_FILE="$ROOT/secrets/smoke/hermes_to_docket_token"
@@ -329,6 +333,17 @@ encrypted_backup() {
     compose exec -T docket ./.venv/bin/python -m docket.backup_cli backup
 }
 
+gmail_triage_setup() {
+    init_docker
+    DOCKET_HERMES_HOME="$ROOT/.runtime/hermes" \
+        "$ROOT/scripts/setup-hermes-triage.sh"
+}
+
+soak() {
+    init_docker
+    compose exec -T docket ./.venv/bin/python -m docket.soak_cli "$1"
+}
+
 verify_restore() {
     "$ROOT/scripts/verify-restore.sh" "${1:-}"
 }
@@ -345,6 +360,10 @@ Commands:
   deploy          Back up PostgreSQL, rebuild/recreate, and verify the live stack.
   backup          Create or confirm today's encrypted PostgreSQL backup.
   verify-restore  Restore an encrypted backup into disposable PostgreSQL and verify it.
+  setup-triage    Install the isolated Hermes Gmail-triage profile and cron.
+  soak-start      Start or report the current durable 72-hour soak.
+  soak-status     Report soak duration, gate checks, and visible incidents.
+  soak-complete   Complete the soak only after duration and every gate pass.
   status          Show source, service, and bounded durable-state status.
 EOF
 }
@@ -357,6 +376,10 @@ case "${1:-}" in
     deploy) deploy ;;
     backup) encrypted_backup ;;
     verify-restore) verify_restore "${2:-}" ;;
+    setup-triage) gmail_triage_setup ;;
+    soak-start) soak start ;;
+    soak-status) soak status ;;
+    soak-complete) soak complete ;;
     status) status ;;
     -h|--help|help) usage ;;
     *) usage >&2; exit 2 ;;

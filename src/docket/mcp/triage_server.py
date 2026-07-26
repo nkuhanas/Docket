@@ -127,9 +127,9 @@ def docket_submit_triage_decision(
 ) -> dict[str, Any]:
     """Classify a claimed source and transactionally deduplicate its queue event.
 
-    Gmail action types are server-derived typed proposals and remain rejected
-    while the Gmail write gate is disabled. Source content cannot change risk,
-    account binding, approval policy, or provider authority.
+    Gmail action types become immutable pending proposals. A disabled Gmail
+    write gate prevents their approval from creating operations. Source content
+    cannot change risk, account binding, approval policy, or provider authority.
     """
     try:
         request = SubmitTriageDecisionInput(

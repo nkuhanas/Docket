@@ -121,6 +121,12 @@ COURSE_CALENDAR_ACTION_TYPES = frozenset(
         "calendar_drop_course",
     }
 )
+GMAIL_MUTATION_ACTION_TYPES = frozenset(
+    {
+        "gmail_archive_message",
+        "gmail_mark_read",
+    }
+)
 
 
 def get_action_definition(action_type: str, *, require_enabled: bool = True) -> ActionDefinition:

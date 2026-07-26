@@ -31,6 +31,12 @@ EXPECTED_TOOLS = {
     "docket_ignore_queue_item",
     "docket_get_action",
 }
+EXPECTED_TRIAGE_TOOLS = {
+    "docket_claim_triage_batch",
+    "docket_read_claimed_source",
+    "docket_search_related_records",
+    "docket_submit_triage_decision",
+}
 
 
 def _token() -> str:
@@ -54,6 +60,8 @@ async def smoke() -> None:
         assert body["google_oauth"] == "dummy"
         assert body["calendar_reads_enabled"] is False
         assert body["external_writes_enabled"] is False
+        assert body["gmail_ingestion_enabled"] is False
+        assert body["gmail_writes_enabled"] is False
 
         provider = await client.get(f"{base_url}/health/smoke-provider")
         provider.raise_for_status()
@@ -109,7 +117,21 @@ async def smoke() -> None:
                 )
                 assert not searched.isError, searched
 
-    print("Compose MCP smoke passed: dummy provider, auth, allowlist, create, and search")
+        async with streamable_http_client(
+            f"{base_url}/triage-mcp/",
+            http_client=client,
+        ) as streams:
+            read_stream, write_stream, _ = streams
+            async with ClientSession(read_stream, write_stream) as session:
+                await session.initialize()
+                triage_tools = await session.list_tools()
+                triage_names = {tool.name for tool in triage_tools.tools}
+                assert triage_names == EXPECTED_TRIAGE_TOOLS, triage_names
+
+    print(
+        "Compose MCP smoke passed: dummy provider, auth, isolated allowlists, "
+        "create, and search"
+    )
 
 
 if __name__ == "__main__":
