@@ -272,7 +272,7 @@ class BackupService:
                 .with_for_update()
             )
             if run is not None:
-                if run.status == "succeeded":
+                if run.status == "succeeded" and not force:
                     return None
                 if (
                     run.status == "running"

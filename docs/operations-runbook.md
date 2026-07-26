@@ -1060,6 +1060,10 @@ check is zero. Failed or unknown attempts and system alerts are retained as
 visible incident counts even when recovered; inspect them before accepting the
 completion audit.
 
+The unattended backup worker remains once per local day. The explicit
+`scripts/docket backup` command is intentionally forced and replaces the
+retained same-day artifact after a migration or other consequential change.
+
 ## Private SearXNG routing
 
 The expected URL from Hermes is:

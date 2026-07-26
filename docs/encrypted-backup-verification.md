@@ -67,3 +67,8 @@ The rollout is intentionally two stage:
 
 Keep an offline copy of the private restore identity. A backup without that
 identity is intentionally unrecoverable.
+
+The unattended worker still creates at most one successful backup per local
+day. An explicit `scripts/docket backup` is a force operation: after a migration
+or another consequential same-day change, it replaces that day's retained
+encrypted artifact and manifest with a fresh dump at the current schema.

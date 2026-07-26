@@ -71,19 +71,23 @@ def test_daily_backup_is_durable_and_idempotent(session_factory, tmp_path) -> No
 
     assert service.run_due_once()
     assert not service.run_due_once()
-    assert executor.calls == [(date(2026, 7, 26), clock(), "0014")]
+    assert service.run_due_once(force=True)
+    assert executor.calls == [
+        (date(2026, 7, 26), clock(), "0014"),
+        (date(2026, 7, 26), clock(), "0014"),
+    ]
 
     with session_factory() as session:
         run = session.scalar(select(BackupRun))
-        audit = session.scalar(
+        audits = session.scalars(
             select(AuditEvent).where(AuditEvent.event_type == "backup.succeeded")
-        )
+        ).all()
         assert run is not None
         assert run.status == "succeeded"
-        assert run.attempt_count == 1
+        assert run.attempt_count == 2
         assert run.ciphertext_sha256 == "a" * 64
         assert run.lease_token is None
-        assert audit is not None
+        assert len(audits) == 2
 
 
 def test_backup_failure_retries_and_emits_one_alert(session_factory, tmp_path) -> None:
