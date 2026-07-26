@@ -1,4 +1,5 @@
 import stat
+from pathlib import Path
 
 import pytest
 
@@ -8,6 +9,13 @@ from docket.production_config import (
     configure_database_credentials,
     configure_searxng_secret,
 )
+
+
+def test_backup_setup_script_uses_installed_entry_point() -> None:
+    script = Path("scripts/setup-backup-age.sh").read_text(encoding="utf-8")
+
+    assert "uv run docket-production-config" in script
+    assert "python -m docket.production_config" not in script
 
 
 def test_configure_database_credentials_is_atomic_and_secret(tmp_path) -> None:

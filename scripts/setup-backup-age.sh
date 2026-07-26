@@ -48,7 +48,7 @@ recipient=$(
         docket-docket:latest \
         age-keygen -y /run/identity
 )
-uv run python -m docket.production_config \
+uv run docket-production-config \
     --env-file "$ROOT/.env" \
     --backup-only \
     --backup-age-recipient "$recipient"
