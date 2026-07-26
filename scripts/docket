@@ -344,6 +344,11 @@ soak() {
     compose exec -T docket ./.venv/bin/python -m docket.soak_cli "$1"
 }
 
+gmail() {
+    init_docker
+    compose exec -T docket ./.venv/bin/python -m docket.gmail_cli "$1"
+}
+
 verify_restore() {
     "$ROOT/scripts/verify-restore.sh" "${1:-}"
 }
@@ -361,6 +366,8 @@ Commands:
   backup          Create or confirm today's encrypted PostgreSQL backup.
   verify-restore  Restore an encrypted backup into disposable PostgreSQL and verify it.
   setup-triage    Install the isolated Hermes Gmail-triage profile and cron.
+  gmail-status    Report Gmail gates, checkpoint freshness, and source counts.
+  gmail-scan      Force one bounded metadata scan; never invokes semantic triage.
   soak-start      Start or report the current durable 72-hour soak.
   soak-status     Report soak duration, gate checks, and visible incidents.
   soak-complete   Complete the soak only after duration and every gate pass.
@@ -377,6 +384,8 @@ case "${1:-}" in
     backup) encrypted_backup ;;
     verify-restore) verify_restore "${2:-}" ;;
     setup-triage) gmail_triage_setup ;;
+    gmail-status) gmail status ;;
+    gmail-scan) gmail scan ;;
     soak-start) soak start ;;
     soak-status) soak status ;;
     soak-complete) soak complete ;;

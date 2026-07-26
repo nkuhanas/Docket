@@ -41,3 +41,14 @@ def test_gmail_triage_installer_pins_an_isolated_profile_and_local_delivery() ->
     assert "plugins:\n  enabled: []" in config
     assert "discord:" not in config
     assert "Return only `[SILENT]` after a normal run." in skill
+
+
+def test_operator_script_separates_gmail_scan_from_semantic_triage() -> None:
+    script = Path("scripts/docket").read_text(encoding="utf-8")
+    gmail_cli = Path("src/docket/gmail_cli.py").read_text(encoding="utf-8")
+
+    assert "gmail-status) gmail status" in script
+    assert "gmail-scan) gmail scan" in script
+    assert "GmailIngestionService" in gmail_cli
+    assert "TriageService" not in gmail_cli
+    assert "read_message(" not in gmail_cli

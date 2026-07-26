@@ -951,7 +951,26 @@ DOCKET_GMAIL_INGESTION_ENABLED=true
 DOCKET_GMAIL_WRITES_ENABLED=false
 ```
 
-Recreate Docket after changing these values, then install the isolated profile:
+Pause the triage job before changing these values so no body can be read before
+the staged metadata count is inspected:
+
+```bash
+sudo docker compose exec -T hermes hermes cron list --all
+sudo docker compose exec -T hermes hermes cron pause JOB_ID
+scripts/docket gmail-status
+```
+
+Recreate Docket after changing the values, then force exactly one bounded
+metadata scan:
+
+```bash
+scripts/docket gmail-scan
+scripts/docket gmail-status
+```
+
+`gmail-scan` never invokes Hermes or reads a message body. Review the observed
+and staged counts before resuming or manually running semantic triage. Then
+install or revalidate the isolated profile:
 
 ```bash
 scripts/docket setup-triage
