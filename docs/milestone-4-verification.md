@@ -121,7 +121,9 @@ scripts/docket compose-smoke
 
 The repository test suite must be green before deployment. Compose smoke must
 report disabled Gmail read/write gates and exactly four tools on
-`/triage-mcp/`.
+`/triage-mcp/`. Named operator controls now resolve exactly one
+`Docket Gmail triage` job before showing status, pausing, queueing a one-shot
+run, or resuming the schedule; paused jobs remain discoverable.
 
 ## Controlled live gate
 
@@ -130,7 +132,9 @@ Keep Gmail writes disabled for the first deployment.
 1. Install the isolated profile with `scripts/docket setup-triage`.
 2. Enable only `DOCKET_GMAIL_INGESTION_ENABLED=true` and recreate Docket.
 3. Send one disposable test email to the authorized Google account.
-4. Force or wait for one scan, then run the named triage cron once.
+4. Force one metadata scan with `scripts/docket gmail-scan`, inspect its bounded
+   status, then queue one named triage pass with
+   `scripts/docket gmail-triage-run`.
 5. Verify one immutable source version, one classification, no stored body, and
    one queue projection.
 6. Send a malicious disposable email that claims to approve or invoke tools.
@@ -152,14 +156,14 @@ live evidence here. Do not add send/reply.
 Automated and fake-provider evidence is complete. On 2026-07-26 the isolated
 profile was installed against pinned Hermes `v2026.7.20`. Live inspection
 showed all built-in toolsets disabled and only the four allowlisted triage MCP
-tools. The root gateway owns one active 30-minute no-agent job, and a forced run
-completed successfully through the fixed profile launcher while both Gmail
-gates were disabled.
+tools. The root gateway owns one 30-minute no-agent job, currently paused for
+the metadata inspection gate, and a forced run completed successfully through
+the fixed profile launcher while both Gmail gates were disabled.
 
-Revision `254bcc781012` is deployed at migration `0015` with read and write
-Gmail gates false. Health reports the Gmail provider disabled, the retention
-worker recorded its first audited run, and a fresh schema-`0015` encrypted
-backup restored successfully.
+Runtime revision `47da23ff309c` is deployed at migration `0015` with read and
+write Gmail gates false. Health reports the Gmail provider disabled, the
+retention worker recorded its first audited run, and a fresh schema-`0015`
+encrypted backup restored successfully.
 
 Read-only Gmail ingestion has not yet been enabled, and the operator-present
 disposable archive has not yet run. Milestone 4 therefore remains open.

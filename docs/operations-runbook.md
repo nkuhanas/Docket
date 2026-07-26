@@ -955,8 +955,8 @@ Pause the triage job before changing these values so no body can be read before
 the staged metadata count is inspected:
 
 ```bash
-sudo docker compose exec -T hermes hermes cron list --all
-sudo docker compose exec -T hermes hermes cron pause JOB_ID
+scripts/docket gmail-triage-status
+scripts/docket gmail-triage-pause
 scripts/docket gmail-status
 ```
 
@@ -974,7 +974,7 @@ install or revalidate the isolated profile:
 
 ```bash
 scripts/docket setup-triage
-sudo docker compose exec -T hermes hermes cron list
+scripts/docket gmail-triage-status
 ```
 
 The named job must be `Docket Gmail triage`, run the fixed no-agent launcher,
@@ -990,6 +990,22 @@ Expect exactly four tools. The same profile must show no plugins and no Discord
 gateway. If the model credential did not clone into the profile, repair that
 credential through Hermes' profile/auth flow; never copy messaging or Docket
 internal-approval credentials into the profile.
+
+After inspecting the staged metadata, queue exactly one isolated semantic pass:
+
+```bash
+scripts/docket gmail-triage-run
+scripts/docket gmail-triage-status
+```
+
+This is the first command in the rollout that permits transient message-body
+reads. Keep the recurring job paused until that run's durable outcomes and
+redacted logs are verified. Resume the 30-minute schedule only after the
+operator-present read-only gate is clean:
+
+```bash
+scripts/docket gmail-triage-resume
+```
 
 Inspect only bounded metadata:
 

@@ -339,6 +339,53 @@ gmail_triage_setup() {
         "$ROOT/scripts/setup-hermes-triage.sh"
 }
 
+gmail_triage_job_id() {
+    local job_name="Docket Gmail triage"
+    local listing
+    local -a job_ids=()
+
+    listing=$(compose exec -T hermes env NO_COLOR=1 hermes cron list --all)
+    mapfile -t job_ids < <(
+        awk -v wanted="$job_name" '
+            /^  [[:alnum:]]+/ {
+                candidate = $1
+                next
+            }
+            /^[[:space:]]+Name:/ {
+                name = $0
+                sub(/^[[:space:]]+Name:[[:space:]]*/, "", name)
+                if (name == wanted) {
+                    print candidate
+                }
+            }
+        ' <<<"$listing"
+    )
+    ((${#job_ids[@]} == 1)) ||
+        die "expected exactly one '$job_name' cron job; found ${#job_ids[@]}"
+    printf '%s\n' "${job_ids[0]}"
+}
+
+gmail_triage_control() {
+    local command=$1
+    local job_id
+
+    init_docker
+    job_id=$(gmail_triage_job_id)
+    case "$command" in
+        status)
+            compose exec -T hermes env NO_COLOR=1 hermes cron list --all
+            compose exec -T hermes env NO_COLOR=1 hermes cron runs --limit 10 "$job_id"
+            compose exec -T hermes env NO_COLOR=1 hermes cron status
+            ;;
+        pause|resume|run)
+            compose exec -T hermes hermes cron "$command" "$job_id"
+            ;;
+        *)
+            die "unsupported Gmail triage control: $command"
+            ;;
+    esac
+}
+
 soak() {
     init_docker
     compose exec -T docket ./.venv/bin/python -m docket.soak_cli "$1"
@@ -368,6 +415,10 @@ Commands:
   setup-triage    Install the isolated Hermes Gmail-triage profile and cron.
   gmail-status    Report Gmail gates, checkpoint freshness, and source counts.
   gmail-scan      Force one bounded metadata scan; never invokes semantic triage.
+  gmail-triage-status  Verify the single triage job and show its recent runs.
+  gmail-triage-pause   Pause semantic triage without changing Gmail ingestion.
+  gmail-triage-run     Queue one isolated semantic-triage run.
+  gmail-triage-resume  Resume the isolated 30-minute semantic-triage schedule.
   soak-start      Start or report the current durable 72-hour soak.
   soak-status     Report soak duration, gate checks, and visible incidents.
   soak-complete   Complete the soak only after duration and every gate pass.
@@ -386,6 +437,10 @@ case "${1:-}" in
     setup-triage) gmail_triage_setup ;;
     gmail-status) gmail status ;;
     gmail-scan) gmail scan ;;
+    gmail-triage-status) gmail_triage_control status ;;
+    gmail-triage-pause) gmail_triage_control pause ;;
+    gmail-triage-run) gmail_triage_control run ;;
+    gmail-triage-resume) gmail_triage_control resume ;;
     soak-start) soak start ;;
     soak-status) soak status ;;
     soak-complete) soak complete ;;
