@@ -21,6 +21,7 @@ from docket.models import (
 )
 from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.providers.google.fake_gmail import FakeGmailProvider
+from docket.providers.google.gmail import GmailProviderError
 from docket.schemas.triage import (
     ProposeClassifiedGmailActionInput,
     SubmitTriageDecisionInput,
@@ -28,6 +29,7 @@ from docket.schemas.triage import (
 )
 from docket.services.approvals import ApprovalService
 from docket.services.gmail_ingestion import GmailIngestionService
+from docket.services.gmail_recovery import GmailRecoveryService
 from docket.services.operations import OperationRunner
 from docket.services.triage import TriageService
 
@@ -276,8 +278,7 @@ def test_operator_can_idempotently_propose_archive_for_exact_classified_source(
             len(
                 session.scalars(
                     select(OutboxEvent).where(
-                        OutboxEvent.event_type
-                        == "discord.projection.refresh_requested"
+                        OutboxEvent.event_type == "discord.projection.refresh_requested"
                     )
                 ).all()
             )
@@ -616,6 +617,96 @@ def test_gmail_crash_after_provider_call_reconciles_without_duplicate_write(
         assert operation.status == "succeeded"
         assert [attempt.status for attempt in attempts] == ["unknown", "succeeded"]
         assert attempts[-1].kind == "reconcile"
+    assert provider.mutation_calls == 1
+
+
+@pytest.mark.integration
+def test_known_post_call_invalid_response_enters_read_only_reconciliation(
+    session_factory,
+    monkeypatch,
+) -> None:
+    class HistoricalInvalidResponseProvider(FakeGmailProvider):
+        def mutate_message(self, request):
+            super().mutate_message(request)
+            raise GmailProviderError(
+                "gmail_invalid_response",
+                "Gmail returned a message without a source version.",
+                transient=False,
+            )
+
+    provider = HistoricalInvalidResponseProvider()
+    provider.add_message(
+        message_id="missing-history-id",
+        source_version="12",
+        subject="Post-write metadata recovery",
+    )
+    settings, _queue_id = _propose_gmail_action(
+        session_factory,
+        provider,
+        action_type="gmail_archive_message",
+        monkeypatch=monkeypatch,
+    )
+    monkeypatch.setattr(
+        "docket.services.approvals.get_settings",
+        lambda: settings,
+    )
+    operation_id = _approve_gmail_action(
+        session_factory,
+        settings,
+        interaction_id="gmail-invalid-response-approval",
+    )
+    runner = OperationRunner(
+        session_factory,
+        FakeCalendarProvider(),
+        gmail_provider=provider,
+        execution_enabled=False,
+        gmail_execution_enabled=True,
+        consistency_window_seconds=0,
+    )
+
+    assert runner.run_due_once()
+    assert "INBOX" not in provider.messages["missing-history-id"].label_ids
+    with session_factory() as session:
+        operation = session.get(Operation, operation_id)
+        assert operation is not None
+        assert operation.status == "failed"
+        assert operation.last_error_code == "gmail_invalid_response"
+
+    request_key = "operator:gmail-reconcile:missing-history-id"
+    recovery = GmailRecoveryService(session_factory)
+    requested = recovery.request_reconciliation(
+        operation_id=operation_id,
+        request_key=request_key,
+        actor_id=settings.operator_discord_user_id,
+    )
+    replayed = recovery.request_reconciliation(
+        operation_id=operation_id,
+        request_key=request_key,
+        actor_id=settings.operator_discord_user_id,
+    )
+    assert requested["disposition"] == "reconciliation_requested"
+    assert replayed["disposition"] == "replayed_request"
+
+    assert runner.reconcile_once()
+    with session_factory() as session:
+        operation = session.get(Operation, operation_id)
+        queue_item = session.scalar(select(QueueItem))
+        action = session.scalar(select(Action))
+        attempts = session.scalars(
+            select(ExecutionAttempt)
+            .where(ExecutionAttempt.operation_id == operation_id)
+            .order_by(ExecutionAttempt.attempt_number)
+        ).all()
+        assert operation is not None
+        assert operation.status == "succeeded"
+        assert operation.result is not None
+        assert operation.result["disposition"] == "reconciled"
+        assert queue_item is not None
+        assert queue_item.status == "completed"
+        assert queue_item.resolution_code == "gmail_archived"
+        assert action is not None and action.status == "succeeded"
+        assert [attempt.kind for attempt in attempts] == ["execute", "reconcile"]
+        assert [attempt.status for attempt in attempts] == ["failed", "succeeded"]
     assert provider.mutation_calls == 1
 
 

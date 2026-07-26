@@ -17,6 +17,7 @@ from docket.models import Account, ConnectorCheckpoint, SourceItem
 from docket.providers.google.factory import build_gmail_read_provider
 from docket.schemas.triage import ProposeClassifiedGmailActionInput
 from docket.services.gmail_ingestion import GmailIngestionService
+from docket.services.gmail_recovery import GmailRecoveryService
 from docket.services.triage import TriageService
 
 
@@ -132,6 +133,28 @@ def _propose_archive(
     return 0, result
 
 
+def _recover_operation(
+    *,
+    operation_id: uuid.UUID,
+    request_key: str,
+) -> tuple[int, dict[str, object]]:
+    settings = get_settings()
+    if not settings.gmail_writes_enabled:
+        return 2, {
+            "error": "gmail_writes_disabled",
+            "message": "Gmail writes must remain enabled during reconciliation.",
+        }
+    try:
+        result = GmailRecoveryService(get_session_factory()).request_reconciliation(
+            operation_id=operation_id,
+            request_key=request_key,
+            actor_id=settings.operator_discord_user_id,
+        )
+    except DocketError as exc:
+        return 1, exc.as_dict()
+    return 0, result
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="docket-gmail")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -141,6 +164,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     archive.add_argument("source_id", type=uuid.UUID)
     archive.add_argument("expected_source_version")
     archive.add_argument("request_key")
+    recovery = subparsers.add_parser("reconcile-operation")
+    recovery.add_argument("operation_id", type=uuid.UUID)
+    recovery.add_argument("request_key")
     arguments = parser.parse_args(argv)
     settings = get_settings()
     configure_database(settings.database_url)
@@ -150,6 +176,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         exit_code, output = _propose_archive(
             source_id=arguments.source_id,
             expected_source_version=arguments.expected_source_version,
+            request_key=arguments.request_key,
+        )
+    elif arguments.command == "reconcile-operation":
+        exit_code, output = _recover_operation(
+            operation_id=arguments.operation_id,
             request_key=arguments.request_key,
         )
     else:

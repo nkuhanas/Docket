@@ -180,9 +180,7 @@ def _metadata(document: dict[str, Any]) -> GmailMessageMetadata:
             else ()
         ),
         size_estimate=(
-            int(document["sizeEstimate"])
-            if isinstance(document.get("sizeEstimate"), int)
-            else None
+            int(document["sizeEstimate"]) if isinstance(document.get("sizeEstimate"), int) else None
         ),
     )
 
@@ -305,9 +303,7 @@ class GoogleGmailProvider:
                 "google_auth_invalid"
                 if response.status_code in {401, 403}
                 else (
-                    "gmail_message_not_found"
-                    if response.status_code == 404
-                    else "gmail_rejected"
+                    "gmail_message_not_found" if response.status_code == 404 else "gmail_rejected"
                 )
             )
             raise GmailProviderError(
@@ -377,9 +373,7 @@ class GoogleGmailProvider:
                 "google_auth_invalid"
                 if response.status_code in {401, 403}
                 else (
-                    "gmail_message_not_found"
-                    if response.status_code == 404
-                    else "gmail_rejected"
+                    "gmail_message_not_found" if response.status_code == 404 else "gmail_rejected"
                 )
             )
             raise GmailProviderError(
@@ -387,18 +381,22 @@ class GoogleGmailProvider:
                 f"Gmail returned HTTP {response.status_code}.",
                 transient=False,
             )
-        document = response.json()
-        if not isinstance(document, dict):
-            raise GmailUnknownOutcome()
-        metadata = _metadata(document)
+        try:
+            observed = self.get_label_state(request)
+        except GmailProviderError as exc:
+            raise GmailUnknownOutcome() from exc
         if (
-            metadata.message_id != request.message_id
-            or request.remove_label_id in metadata.label_ids
+            observed.message_id != request.message_id
+            or request.remove_label_id in observed.label_ids
         ):
             raise GmailUnknownOutcome()
-        return self._mutation_result(
-            metadata,
-            provider_request_id=response.headers.get("x-request-id"),
+        return GmailMutationResult(
+            message_id=observed.message_id,
+            source_version=observed.source_version,
+            label_ids=observed.label_ids,
+            provider_request_id=(
+                response.headers.get("x-request-id") or observed.provider_request_id
+            ),
             disposition="modified",
         )
 

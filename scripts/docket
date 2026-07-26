@@ -434,6 +434,8 @@ Commands:
   gmail-scan      Force one bounded metadata scan; never invokes semantic triage.
   gmail-propose-archive SOURCE_ID SOURCE_VERSION REQUEST_KEY
                   Propose archiving one exact classified Gmail source version.
+  gmail-reconcile-operation OPERATION_ID REQUEST_KEY
+                  Reconcile a known post-call Gmail invalid-response failure.
   gmail-triage-status  Verify the single triage job and show its recent runs.
   gmail-triage-pause   Pause semantic triage without changing Gmail ingestion.
   gmail-triage-run     Queue one isolated semantic-triage run.
@@ -458,6 +460,9 @@ case "${1:-}" in
     gmail-scan) gmail scan ;;
     gmail-propose-archive)
         gmail propose-archive "${2:-}" "${3:-}" "${4:-}"
+        ;;
+    gmail-reconcile-operation)
+        gmail reconcile-operation "${2:-}" "${3:-}"
         ;;
     gmail-triage-status) gmail_triage_control status ;;
     gmail-triage-pause) gmail_triage_control pause ;;

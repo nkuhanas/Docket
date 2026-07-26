@@ -1070,6 +1070,20 @@ state. If the operation is `reconciliation_required`, let Docket refetch label
 state. Do not click twice, manually change the Gmail label as a recovery step,
 or force the operation back to pending.
 
+An older runtime may have accepted Gmail's HTTP 200 label mutation while
+rejecting a response that omitted `historyId` as `gmail_invalid_response`. Do
+not repeat the mutation or edit its operation row. After deploying the
+post-write metadata-refetch fix, promote only that exact failed operation into
+read-only provider reconciliation:
+
+```bash
+scripts/docket gmail-reconcile-operation OPERATION_UUID OPERATOR_REQUEST_KEY
+```
+
+The command refuses every other failure signature and requires durable evidence
+that an execution call began. Reconciliation then observes current Gmail labels
+before deciding the operation outcome.
+
 ## Retention and the 72-hour soak
 
 The retention worker runs at most once per Los Angeles local day and records

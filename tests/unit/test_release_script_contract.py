@@ -53,14 +53,14 @@ def test_operator_script_separates_gmail_scan_from_semantic_triage() -> None:
     assert "gmail-triage-resume) gmail_triage_control resume" in script
     assert "gmail-propose-archive)" in script
     assert 'gmail propose-archive "${2:-}" "${3:-}" "${4:-}"' in script
+    assert "gmail-reconcile-operation)" in script
+    assert 'gmail reconcile-operation "${2:-}" "${3:-}"' in script
     assert "expected exactly one '$job_name' cron job" in script
     assert "hermes cron list --all" in script
     assert "one-shot triage requires the recurring job to be paused" in script
     assert "/opt/data/scripts/docket-gmail-triage.sh" in script
     assert "GmailIngestionService" in gmail_cli
-    scan_function = gmail_cli.split("def _scan", 1)[1].split(
-        "def _propose_archive", 1
-    )[0]
+    scan_function = gmail_cli.split("def _scan", 1)[1].split("def _propose_archive", 1)[0]
     assert "TriageService" not in scan_function
     assert "read_message(" not in gmail_cli
     assert "DOCKET_GMAIL_TRIAGE_SOURCE_ALLOWLIST='[]'" in script
