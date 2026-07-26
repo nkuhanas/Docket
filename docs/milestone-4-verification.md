@@ -87,9 +87,10 @@ consuming the approval or creating an operation. Automated tests and Compose
 smokes explicitly force both Gmail settings false and never inherit production
 credentials.
 
-The static Gmail action-registry entries remain disabled until the controlled
-live gate passes. OAuth possession of `gmail.modify` does not enable runtime
-authority.
+The static Gmail action-registry entries were enabled only after the controlled
+live gate passed. OAuth possession of `gmail.modify` does not enable runtime
+authority: every provider mutation still requires the runtime write gate and a
+current, operator-approved immutable action revision.
 
 ## Automated evidence
 
@@ -164,9 +165,9 @@ tools. The root gateway owns one 30-minute no-agent job, currently paused for
 the metadata inspection gate, and a forced run completed successfully through
 the fixed profile launcher while both Gmail gates were disabled.
 
-Runtime revision `5ab5b468286f` is deployed at migration `0015`. Read-only Gmail
-ingestion is enabled, Gmail writes are disabled, and the checkpoint is current
-in history mode. The initial bounded recovery scan persisted unique source
+Runtime revision `feb35fa55f74` is deployed at migration `0015`. Gmail
+ingestion and approval-gated writes are enabled, the checkpoint is current in
+history mode, and the initial bounded recovery scan persisted unique source
 metadata without a body/content field.
 
 On 2026-07-26 an operator-present semantic pass was constrained by a
@@ -178,5 +179,24 @@ unselected staged source remained untouched. The temporary source scope was
 then removed and health reports a zero scope count. The recurring triage job
 remains paused.
 
-The operator-present disposable archive and write/reconciliation gate have not
-yet run. Milestone 4 therefore remains open.
+The operator-present disposable archive gate ran on 2026-07-26 against exact
+source version `783209`. One card produced one consumed approval, one action,
+and one operation. Gmail accepted the modify request once and removed `INBOX`,
+but its HTTP 200 response omitted `historyId`; the first runtime classified
+that response-shape gap as `gmail_invalid_response`. A read-only provider check
+confirmed the label change and observed version `783306`.
+
+Revision `feb35fa55f74` now refetches full message metadata after every
+successful modify and treats an unconfirmed post-write refetch as an unknown
+outcome. A constrained operator recovery command promoted only the durable
+known-error signature into reconciliation. The same operation then completed
+from one label-state read with disposition `reconciled`; no second modify
+occurred. Durable evidence contains one failed execute attempt, one successful
+reconcile attempt, final resolution `gmail_archived`, and delivered queued,
+failed, and completed lifecycle logs in `#docket-system`. Replaying the
+original proposal request returned the same identifiers and created no second
+action, approval, operation, or provider effect.
+
+The controlled live gate is complete and the static archive/mark-read action
+definitions are enabled. Gmail send/reply remains absent. Milestone 4 remains
+open only for ordinary scoped rollout and the 72-hour soak.

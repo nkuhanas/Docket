@@ -66,14 +66,14 @@ ACTION_REGISTRY: dict[str, ActionDefinition] = {
             "gmail_archive_message",
             RiskClass.EXTERNAL_PRIVATE_WRITE,
             "gmail",
-            ActionAvailability.DISABLED,
+            ActionAvailability.ENABLED,
             requires_account=True,
         ),
         ActionDefinition(
             "gmail_mark_read",
             RiskClass.EXTERNAL_PRIVATE_WRITE,
             "gmail",
-            ActionAvailability.DISABLED,
+            ActionAvailability.ENABLED,
             requires_account=True,
         ),
         ActionDefinition(

@@ -10,9 +10,9 @@ def test_server_derives_external_write_risk() -> None:
     assert definition.risk_class is RiskClass.EXTERNAL_PRIVATE_WRITE
 
 
-def test_gmail_writes_remain_disabled_until_milestone_gate() -> None:
-    with pytest.raises(ActionDisabled):
-        get_action_definition("gmail_archive_message")
+def test_approval_gated_gmail_actions_are_enabled_after_live_gate() -> None:
+    assert get_action_definition("gmail_archive_message").executor == "gmail"
+    assert get_action_definition("gmail_mark_read").executor == "gmail"
 
 
 def test_outbound_communication_is_disabled() -> None:
