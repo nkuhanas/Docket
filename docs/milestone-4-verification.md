@@ -163,10 +163,19 @@ tools. The root gateway owns one 30-minute no-agent job, currently paused for
 the metadata inspection gate, and a forced run completed successfully through
 the fixed profile launcher while both Gmail gates were disabled.
 
-Runtime revision `47da23ff309c` is deployed at migration `0015` with read and
-write Gmail gates false. Health reports the Gmail provider disabled, the
-retention worker recorded its first audited run, and a fresh schema-`0015`
-encrypted backup restored successfully.
+Runtime revision `5ab5b468286f` is deployed at migration `0015`. Read-only Gmail
+ingestion is enabled, Gmail writes are disabled, and the checkpoint is current
+in history mode. The initial bounded recovery scan persisted unique source
+metadata without a body/content field.
 
-Read-only Gmail ingestion has not yet been enabled, and the operator-present
-disposable archive has not yet run. Milestone 4 therefore remains open.
+On 2026-07-26 an operator-present semantic pass was constrained by a
+server-enforced two-source UUID scope. One benign disposable message produced
+one delivered queue projection in the correct dated thread; one adversarial
+message claiming authority was ignored. No Gmail action, approval, operation,
+or provider write was created, no tested body phrase persisted, and every
+unselected staged source remained untouched. The temporary source scope was
+then removed and health reports a zero scope count. The recurring triage job
+remains paused.
+
+The operator-present disposable archive and write/reconciliation gate have not
+yet run. Milestone 4 therefore remains open.
