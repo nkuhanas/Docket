@@ -144,8 +144,9 @@ Keep Gmail writes disabled for the first deployment.
    Verify it creates no operation and performs no provider write.
 7. Set `DOCKET_GMAIL_WRITES_ENABLED=true` while leaving the global external
    write gate true, then recreate Docket.
-8. Create an archive proposal for one disposable message, approve it on the
-   Docket card, and verify `INBOX` is absent in Gmail.
+8. Create an archive proposal with `scripts/docket gmail-propose-archive` for
+   one exact classified disposable source, approve it on the Docket card, and
+   verify `INBOX` is absent in Gmail.
 9. Verify the operation succeeded or reconciled, the approval was consumed
    once, the exact source version was updated with provider-observed labels,
    and redacted lifecycle evidence reached `#docket-system`.

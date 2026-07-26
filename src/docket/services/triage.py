@@ -13,15 +13,17 @@ from docket.domain.canonical import sha256_json
 from docket.domain.enums import (
     ActionStatus,
     ApprovalStatus,
+    CommandStatus,
     OutboxStatus,
     QueueItemStatus,
 )
-from docket.domain.errors import DocketError
+from docket.domain.errors import DocketError, IdempotencyConflict
 from docket.models import (
     Action,
     ActionRevision,
     Approval,
     AuditEvent,
+    CommandRequest,
     OutboxEvent,
     QueueItem,
     QueueItemSource,
@@ -30,8 +32,12 @@ from docket.models import (
 from docket.models.base import utc_now
 from docket.policy import get_action_definition
 from docket.providers.google.gmail import GmailClaimedContent, GmailReadProvider
-from docket.schemas.triage import SubmitTriageDecisionInput
+from docket.schemas.triage import (
+    ProposeClassifiedGmailActionInput,
+    SubmitTriageDecisionInput,
+)
 from docket.security import issue_short_code, short_code_sha256
+from docket.services.queue import QueueService
 
 
 def _aware(value: datetime) -> datetime:
@@ -104,9 +110,7 @@ class TriageService:
             )
             if self.settings.gmail_triage_source_allowlist:
                 statement = statement.where(
-                    SourceItem.id.in_(
-                        self.settings.gmail_triage_source_allowlist
-                    )
+                    SourceItem.id.in_(self.settings.gmail_triage_source_allowlist)
                 )
             sources = session.scalars(
                 statement.order_by(
@@ -251,9 +255,7 @@ class TriageService:
         actions = session.scalars(
             select(Action).where(
                 Action.queue_item_id == queue_item.id,
-                Action.action_type.in_(
-                    ("gmail_archive_message", "gmail_mark_read")
-                ),
+                Action.action_type.in_(("gmail_archive_message", "gmail_mark_read")),
                 Action.status == ActionStatus.APPROVAL_PENDING.value,
             )
         ).all()
@@ -283,18 +285,16 @@ class TriageService:
         queue_item: QueueItem,
         source: SourceItem,
         action_types: Sequence[str],
+        actor_type: str,
+        actor_id: str,
     ) -> list[dict[str, str]]:
         if not action_types:
             return []
         now = utc_now()
-        signing_key = self.settings.read_secret(
-            self.settings.interaction_signing_key_file
-        ).encode()
+        signing_key = self.settings.read_secret(self.settings.interaction_signing_key_file).encode()
         source_headers = dict(source.minimal_headers)
         source_labels = {
-            str(value)
-            for value in source_headers.get("label_ids", [])
-            if isinstance(value, str)
+            str(value) for value in source_headers.get("label_ids", []) if isinstance(value, str)
         }
         materialized: list[dict[str, str]] = []
         for display_order, action_type in enumerate(action_types, start=10):
@@ -304,9 +304,7 @@ class TriageService:
                     code="invalid_triage_action",
                     message="The proposed action is not a Gmail mutation.",
                 )
-            remove_label_id = (
-                "INBOX" if action_type == "gmail_archive_message" else "UNREAD"
-            )
+            remove_label_id = "INBOX" if action_type == "gmail_archive_message" else "UNREAD"
             if remove_label_id not in source_labels:
                 session.add(
                     AuditEvent(
@@ -339,9 +337,7 @@ class TriageService:
                     "sender": source_headers.get("sender"),
                     "subject": source_headers.get("subject"),
                     "received_at": (
-                        source.received_at.isoformat()
-                        if source.received_at is not None
-                        else None
+                        source.received_at.isoformat() if source.received_at is not None else None
                     ),
                 },
                 "effect": (
@@ -381,14 +377,12 @@ class TriageService:
                         "source_version": source.source_version,
                     },
                 },
-                created_by_actor_type="hermes",
-                created_by_actor_id="hermes-triage",
+                created_by_actor_type=actor_type,
+                created_by_actor_id=actor_id,
             )
             session.add(revision)
             session.flush()
-            expires_at = now + timedelta(
-                seconds=self.settings.approval_ttl_seconds
-            )
+            expires_at = now + timedelta(seconds=self.settings.approval_ttl_seconds)
             approval_id = uuid.uuid4()
             short_code = issue_short_code(approval_id, expires_at, signing_key)
             approval = Approval(
@@ -406,8 +400,8 @@ class TriageService:
                     event_type="action.proposed",
                     entity_type="action",
                     entity_id=action.id,
-                    actor_type="hermes",
-                    actor_id="hermes-triage",
+                    actor_type=actor_type,
+                    actor_id=actor_id,
                     data={
                         "action_type": action_type,
                         "revision": revision.revision,
@@ -429,6 +423,250 @@ class TriageService:
         if materialized:
             queue_item.status = QueueItemStatus.AWAITING_APPROVAL.value
         return materialized
+
+    @staticmethod
+    def _finish_operator_command(
+        command: CommandRequest,
+        result: dict[str, Any],
+    ) -> None:
+        command.status = CommandStatus.SUCCEEDED.value
+        command.result = result
+        command.completed_at = utc_now()
+
+    @staticmethod
+    def _matching_gmail_proposal(
+        session: Session,
+        *,
+        queue_item: QueueItem,
+        source: SourceItem,
+        action_type: str,
+    ) -> dict[str, str] | None:
+        actions = session.scalars(
+            select(Action)
+            .where(
+                Action.queue_item_id == queue_item.id,
+                Action.action_type == action_type,
+                Action.status.in_(
+                    (
+                        ActionStatus.APPROVAL_PENDING.value,
+                        ActionStatus.READY.value,
+                        ActionStatus.EXECUTING.value,
+                        ActionStatus.RECONCILIATION_REQUIRED.value,
+                    )
+                ),
+            )
+            .order_by(Action.created_at.desc(), Action.id.desc())
+        ).all()
+        for action in actions:
+            revision = session.scalar(
+                select(ActionRevision).where(
+                    ActionRevision.action_id == action.id,
+                    ActionRevision.revision == action.current_revision,
+                )
+            )
+            if (
+                revision is None
+                or revision.parameters.get("source_item_id") != str(source.id)
+                or revision.parameters.get("source_version") != source.source_version
+            ):
+                continue
+            approval = session.scalar(
+                select(Approval).where(
+                    Approval.action_revision_id == revision.id,
+                    Approval.status.in_(
+                        (
+                            ApprovalStatus.PENDING.value,
+                            ApprovalStatus.APPROVED.value,
+                            ApprovalStatus.CONSUMED.value,
+                        )
+                    ),
+                )
+            )
+            return {
+                "action_id": str(action.id),
+                "action_revision_id": str(revision.id),
+                "approval_id": str(approval.id) if approval is not None else "",
+                "action_type": action_type,
+            }
+        return None
+
+    def propose_classified_gmail_action(
+        self,
+        request: ProposeClassifiedGmailActionInput,
+    ) -> dict[str, Any]:
+        """Publish one operator-authorized, exact-version Gmail proposal."""
+
+        definition = get_action_definition(
+            request.action_type,
+            require_enabled=False,
+        )
+        if definition.executor != "gmail":
+            raise DocketError(
+                code="invalid_triage_action",
+                message="The proposed action is not a Gmail mutation.",
+            )
+        payload = request.model_dump(mode="json")
+        input_sha256 = sha256_json(payload)
+        operation_name = "docket_propose_classified_gmail_action"
+        with self.session_factory.begin() as session:
+            existing_command = session.scalar(
+                select(CommandRequest)
+                .where(CommandRequest.request_key == request.request_key)
+                .with_for_update()
+            )
+            if existing_command is not None:
+                if (
+                    existing_command.operation_name != operation_name
+                    or existing_command.input_sha256 != input_sha256
+                ):
+                    raise IdempotencyConflict(
+                        request.request_key,
+                        existing_operation=existing_command.operation_name,
+                        attempted_operation=operation_name,
+                    )
+                if (
+                    existing_command.status == CommandStatus.SUCCEEDED.value
+                    and existing_command.result is not None
+                ):
+                    replay = dict(existing_command.result)
+                    replay["disposition"] = "replayed_request"
+                    return replay
+                raise DocketError(
+                    code="request_in_progress",
+                    message="The Gmail proposal request has not completed successfully.",
+                )
+            command = CommandRequest(
+                request_key=request.request_key,
+                operation_name=operation_name,
+                input_sha256=input_sha256,
+                actor_type="operator",
+                actor_id=request.actor_id,
+                status=CommandStatus.IN_PROGRESS.value,
+            )
+            session.add(command)
+            session.flush()
+
+            source = session.scalar(
+                select(SourceItem).where(SourceItem.id == request.source_id).with_for_update()
+            )
+            if source is None:
+                raise DocketError(
+                    code="source_item_not_found",
+                    message="The selected Gmail source does not exist.",
+                )
+            classification = source.classification
+            if (
+                source.status != "classified"
+                or not isinstance(classification, dict)
+                or classification.get("decision") != "actionable"
+            ):
+                raise DocketError(
+                    code="source_not_actionable",
+                    message="The selected Gmail source is not an actionable classification.",
+                )
+            if source.source_version != request.expected_source_version:
+                raise DocketError(
+                    code="source_version_changed",
+                    message="The selected Gmail source version is no longer current.",
+                )
+            newer_source = session.scalar(
+                select(SourceItem.id)
+                .where(
+                    SourceItem.account_id == source.account_id,
+                    SourceItem.provider == "gmail",
+                    SourceItem.external_object_id == source.external_object_id,
+                    SourceItem.id != source.id,
+                    SourceItem.created_at > source.created_at,
+                )
+                .limit(1)
+            )
+            if newer_source is not None:
+                raise DocketError(
+                    code="source_version_changed",
+                    message="A newer Gmail message version is already staged.",
+                )
+            try:
+                queue_item_id = uuid.UUID(str(classification.get("queue_item_id")))
+            except ValueError as exc:
+                raise DocketError(
+                    code="source_queue_binding_invalid",
+                    message="The classified Gmail source has no valid queue binding.",
+                ) from exc
+            queue_item = session.scalar(
+                select(QueueItem).where(QueueItem.id == queue_item_id).with_for_update()
+            )
+            source_link = session.get(
+                QueueItemSource,
+                {
+                    "queue_item_id": queue_item_id,
+                    "source_item_id": source.id,
+                },
+            )
+            if queue_item is None or source_link is None:
+                raise DocketError(
+                    code="source_queue_binding_invalid",
+                    message="The classified Gmail source queue binding is missing.",
+                )
+
+            matching = self._matching_gmail_proposal(
+                session,
+                queue_item=queue_item,
+                source=source,
+                action_type=request.action_type,
+            )
+            if matching is not None:
+                result = {
+                    "request_id": str(command.id),
+                    "source_id": str(source.id),
+                    "source_version": source.source_version,
+                    "queue_item_id": str(queue_item.id),
+                    "queue_item_version": queue_item.version,
+                    "status": queue_item.status,
+                    "disposition": "existing_proposal",
+                    "action_proposal": matching,
+                }
+                self._finish_operator_command(command, result)
+                return result
+            if queue_item.status != QueueItemStatus.PENDING.value:
+                raise DocketError(
+                    code="queue_item_not_proposable",
+                    message="The Gmail queue item is not pending and cannot be proposed.",
+                    details={"status": queue_item.status},
+                )
+
+            previous_version = queue_item.version
+            queue_item.version += 1
+            materialized = self._materialize_gmail_actions(
+                session,
+                queue_item=queue_item,
+                source=source,
+                action_types=[request.action_type],
+                actor_type="operator",
+                actor_id=request.actor_id,
+            )
+            if not materialized:
+                queue_item.version = previous_version
+                disposition = "no_op"
+                action_proposal = None
+            else:
+                QueueService(session, self.settings).enqueue_refresh(
+                    queue_item,
+                    "gmail_action_proposed",
+                )
+                disposition = "proposed"
+                action_proposal = materialized[0]
+            result = {
+                "request_id": str(command.id),
+                "source_id": str(source.id),
+                "source_version": source.source_version,
+                "queue_item_id": str(queue_item.id),
+                "queue_item_version": queue_item.version,
+                "status": queue_item.status,
+                "disposition": disposition,
+                "action_proposal": action_proposal,
+            }
+            self._finish_operator_command(command, result)
+            return result
 
     def submit_decision(
         self,
@@ -483,9 +721,7 @@ class TriageService:
             assert request.priority is not None
             assert request.semantic_event_type is not None
             anchor = source.external_parent_id or source.external_object_id
-            deduplication_key = (
-                f"gmail:{source.account_id}:{anchor}:{request.semantic_event_type}"
-            )
+            deduplication_key = f"gmail:{source.account_id}:{anchor}:{request.semantic_event_type}"
             queue_item = session.scalar(
                 select(QueueItem)
                 .where(QueueItem.deduplication_key == deduplication_key)
@@ -525,12 +761,17 @@ class TriageService:
                 session.flush()
             material_fingerprint = self._material_fingerprint(session, queue_item.id)
             changed = queue_item.material_fingerprint != material_fingerprint
-            if not created and changed and queue_item.status in {
-                "pending",
-                "awaiting_approval",
-                "failed",
-                "snoozed",
-            }:
+            if (
+                not created
+                and changed
+                and queue_item.status
+                in {
+                    "pending",
+                    "awaiting_approval",
+                    "failed",
+                    "snoozed",
+                }
+            ):
                 queue_item.category = request.category
                 queue_item.title = request.title
                 queue_item.summary = request.summary
@@ -544,20 +785,14 @@ class TriageService:
                     queue_item.received_at = max(received_candidates)
                 queue_item.version += 1
             queue_item.material_fingerprint = material_fingerprint
-            action_types = [
-                proposal.action_type for proposal in request.action_proposals
-            ]
+            action_types = [proposal.action_type for proposal in request.action_proposals]
             materialized_actions: list[dict[str, str]] = []
-            if (
-                action_types
-                and queue_item.status
-                in {
-                    QueueItemStatus.PENDING.value,
-                    QueueItemStatus.AWAITING_APPROVAL.value,
-                    QueueItemStatus.FAILED.value,
-                    QueueItemStatus.SNOOZED.value,
-                }
-            ):
+            if action_types and queue_item.status in {
+                QueueItemStatus.PENDING.value,
+                QueueItemStatus.AWAITING_APPROVAL.value,
+                QueueItemStatus.FAILED.value,
+                QueueItemStatus.SNOOZED.value,
+            }:
                 if changed and not created:
                     self._supersede_pending_gmail_actions(session, queue_item)
                 materialized_actions = self._materialize_gmail_actions(
@@ -565,6 +800,8 @@ class TriageService:
                     queue_item=queue_item,
                     source=source,
                     action_types=action_types,
+                    actor_type="hermes",
+                    actor_id="hermes-triage",
                 )
             source.status = "classified"
             source.classification = {
@@ -573,9 +810,7 @@ class TriageService:
                 "priority": request.priority,
                 "semantic_event_type": request.semantic_event_type,
                 "queue_item_id": str(queue_item.id),
-                "action_types": [
-                    proposal.action_type for proposal in request.action_proposals
-                ],
+                "action_types": [proposal.action_type for proposal in request.action_proposals],
             }
             source.claim_token = None
             source.claimed_by = None
@@ -605,9 +840,7 @@ class TriageService:
                 "queue_item_id": str(queue_item.id),
                 "queue_item_version": queue_item.version,
                 "disposition": (
-                    "created"
-                    if created
-                    else ("material_update" if changed else "deduplicated")
+                    "created" if created else ("material_update" if changed else "deduplicated")
                 ),
                 "action_proposals": materialized_actions,
             }

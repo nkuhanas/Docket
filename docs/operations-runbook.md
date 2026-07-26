@@ -1050,11 +1050,25 @@ DOCKET_GMAIL_INGESTION_ENABLED=true
 DOCKET_GMAIL_WRITES_ENABLED=true
 ```
 
-Recreate Docket, use one disposable message, and approve only its current card.
-Verify the exact Gmail label and durable operation state. If the operation is
-`reconciliation_required`, let Docket refetch label state. Do not click twice,
-manually change the Gmail label as a recovery step, or force the operation back
-to pending.
+Recreate Docket, then publish the one authorized archive proposal against the
+disposable source's exact stored UUID and version:
+
+```bash
+scripts/docket gmail-propose-archive \
+  SOURCE_UUID SOURCE_VERSION OPERATOR_REQUEST_KEY
+```
+
+The command accepts only an already-classified actionable source, rejects a
+newer staged version, binds the immutable action revision to the supplied
+version, deduplicates an existing active proposal, and never returns an
+approval secret. It refreshes the existing daily-thread card rather than
+creating an unrelated queue item. Replaying the same request key returns the
+same result; reusing it with different input is an idempotency conflict.
+
+Approve only that card. Verify the exact Gmail label and durable operation
+state. If the operation is `reconciliation_required`, let Docket refetch label
+state. Do not click twice, manually change the Gmail label as a recovery step,
+or force the operation back to pending.
 
 ## Retention and the 72-hour soak
 

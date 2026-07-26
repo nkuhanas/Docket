@@ -5,11 +5,12 @@ import pytest
 from sqlalchemy import select
 
 from docket.config import get_settings
-from docket.domain.errors import DocketError
+from docket.domain.errors import DocketError, IdempotencyConflict
 from docket.internal_api.schemas import ApprovalResponse
 from docket.models import (
     Account,
     Action,
+    ActionRevision,
     Approval,
     ExecutionAttempt,
     Operation,
@@ -21,6 +22,7 @@ from docket.models import (
 from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.providers.google.fake_gmail import FakeGmailProvider
 from docket.schemas.triage import (
+    ProposeClassifiedGmailActionInput,
     SubmitTriageDecisionInput,
     TriageActionProposal,
 )
@@ -140,28 +142,20 @@ def test_claim_batch_honors_operator_source_allowlist(session_factory) -> None:
     _stage(session_factory, provider)
     with session_factory() as session:
         target = session.scalar(
-            select(SourceItem).where(
-                SourceItem.external_object_id == "inside-scope"
-            )
+            select(SourceItem).where(SourceItem.external_object_id == "inside-scope")
         )
         assert target is not None
         target_id = target.id
 
-    settings = _settings().model_copy(
-        update={"gmail_triage_source_allowlist": [target_id]}
-    )
+    settings = _settings().model_copy(update={"gmail_triage_source_allowlist": [target_id]})
     service = TriageService(session_factory, provider, settings)
 
     claim = service.claim_batch()
-    assert [source["external_object_id"] for source in claim["sources"]] == [
-        "inside-scope"
-    ]
+    assert [source["external_object_id"] for source in claim["sources"]] == ["inside-scope"]
     assert service.claim_batch()["sources"] == []
     with session_factory() as session:
         statuses = dict(
-            session.execute(
-                select(SourceItem.external_object_id, SourceItem.status)
-            ).all()
+            session.execute(select(SourceItem.external_object_id, SourceItem.status)).all()
         )
         assert statuses == {
             "inside-scope": "claimed",
@@ -189,9 +183,7 @@ def test_untrusted_content_can_only_propose_a_pending_gmail_action(
     claim = service.claim_batch()
     source_id = str(claim["sources"][0]["source_id"])
     request = _actionable(source_id, str(claim["claim_token"]))
-    request.action_proposals = [
-        TriageActionProposal(action_type="gmail_archive_message")
-    ]
+    request.action_proposals = [TriageActionProposal(action_type="gmail_archive_message")]
 
     result = service.submit_decision(request)
 
@@ -209,6 +201,171 @@ def test_untrusted_content_can_only_propose_a_pending_gmail_action(
         assert session.scalar(select(Operation)) is None
         assert provider.mutation_calls == 0
         assert result["action_proposals"][0]["action_type"] == "gmail_archive_message"
+
+
+@pytest.mark.integration
+def test_operator_can_idempotently_propose_archive_for_exact_classified_source(
+    session_factory,
+    monkeypatch,
+) -> None:
+    provider = FakeGmailProvider()
+    provider.add_message(
+        message_id="operator-authorized",
+        source_version="11",
+        subject="Operator archive smoke",
+    )
+    _stage(session_factory, provider)
+    settings = _settings()
+    service = TriageService(session_factory, provider, settings)
+    claim = service.claim_batch()
+    source_id = str(claim["sources"][0]["source_id"])
+    classified = service.submit_decision(_actionable(source_id, str(claim["claim_token"])))
+    monkeypatch.setattr(
+        "docket.services.triage.issue_short_code",
+        lambda *_args, **_kwargs: "ABCDEFGH",
+    )
+    request = ProposeClassifiedGmailActionInput(
+        request_key="operator:gmail-archive:smoke:11",
+        source_id=source_id,
+        expected_source_version="11",
+        action_type="gmail_archive_message",
+        actor_id=settings.operator_discord_user_id,
+    )
+
+    proposed = service.propose_classified_gmail_action(request)
+    replayed = service.propose_classified_gmail_action(request)
+    duplicate_request = request.model_copy(
+        update={"request_key": "operator:gmail-archive:smoke:11:duplicate"}
+    )
+    deduplicated = service.propose_classified_gmail_action(duplicate_request)
+
+    assert proposed["disposition"] == "proposed"
+    assert replayed["disposition"] == "replayed_request"
+    assert deduplicated["disposition"] == "existing_proposal"
+    assert replayed["action_proposal"] == proposed["action_proposal"]
+    assert deduplicated["action_proposal"] == proposed["action_proposal"]
+    assert proposed["queue_item_version"] == 2
+    with session_factory() as session:
+        queue_item = session.get(
+            QueueItem,
+            uuid.UUID(str(classified["queue_item_id"])),
+        )
+        action = session.scalar(select(Action))
+        approval = session.scalar(select(Approval))
+        revision = session.scalar(select(ActionRevision))
+        refresh = session.scalar(
+            select(OutboxEvent).where(
+                OutboxEvent.event_type == "discord.projection.refresh_requested"
+            )
+        )
+        assert queue_item is not None
+        assert queue_item.status == "awaiting_approval"
+        assert queue_item.version == 2
+        assert action is not None and action.status == "approval_pending"
+        assert approval is not None and approval.status == "pending"
+        assert revision is not None
+        assert revision.parameters["source_item_id"] == source_id
+        assert revision.parameters["source_version"] == "11"
+        assert revision.target_versions["queue_item"]["version"] == 2
+        assert revision.created_by_actor_type == "operator"
+        assert revision.created_by_actor_id == settings.operator_discord_user_id
+        assert refresh is not None
+        assert refresh.deduplication_key.endswith(":state:2")
+        assert len(session.scalars(select(Action)).all()) == 1
+        assert (
+            len(
+                session.scalars(
+                    select(OutboxEvent).where(
+                        OutboxEvent.event_type
+                        == "discord.projection.refresh_requested"
+                    )
+                ).all()
+            )
+            == 1
+        )
+        assert session.scalar(select(Operation)) is None
+        assert provider.mutation_calls == 0
+
+
+@pytest.mark.integration
+def test_operator_gmail_proposal_rejects_reused_key_and_stale_source(
+    session_factory,
+) -> None:
+    provider = FakeGmailProvider()
+    provider.add_message(
+        message_id="operator-stale",
+        source_version="1",
+    )
+    _stage(session_factory, provider)
+    settings = _settings()
+    service = TriageService(session_factory, provider, settings)
+    claim = service.claim_batch()
+    source_id = str(claim["sources"][0]["source_id"])
+    service.submit_decision(_actionable(source_id, str(claim["claim_token"])))
+    first = ProposeClassifiedGmailActionInput(
+        request_key="operator:gmail-archive:stale:1",
+        source_id=source_id,
+        expected_source_version="wrong",
+        action_type="gmail_archive_message",
+        actor_id=settings.operator_discord_user_id,
+    )
+    with pytest.raises(DocketError) as stale:
+        service.propose_classified_gmail_action(first)
+    assert stale.value.code == "source_version_changed"
+
+    first.expected_source_version = "1"
+    result = service.propose_classified_gmail_action(first)
+    assert result["disposition"] == "proposed"
+    conflict = first.model_copy(update={"action_type": "gmail_mark_read"})
+    with pytest.raises(IdempotencyConflict):
+        service.propose_classified_gmail_action(conflict)
+
+
+@pytest.mark.integration
+def test_operator_gmail_proposal_suppresses_provider_no_op(
+    session_factory,
+) -> None:
+    provider = FakeGmailProvider()
+    provider.add_message(
+        message_id="already-archived",
+        source_version="8",
+        label_ids=("UNREAD",),
+    )
+    _stage(session_factory, provider)
+    settings = _settings()
+    service = TriageService(session_factory, provider, settings)
+    claim = service.claim_batch()
+    source_id = str(claim["sources"][0]["source_id"])
+    classified = service.submit_decision(_actionable(source_id, str(claim["claim_token"])))
+
+    result = service.propose_classified_gmail_action(
+        ProposeClassifiedGmailActionInput(
+            request_key="operator:gmail-archive:no-op:8",
+            source_id=source_id,
+            expected_source_version="8",
+            action_type="gmail_archive_message",
+            actor_id=settings.operator_discord_user_id,
+        )
+    )
+
+    assert result["disposition"] == "no_op"
+    assert result["action_proposal"] is None
+    assert result["queue_item_version"] == 1
+    with session_factory() as session:
+        queue_item = session.get(
+            QueueItem,
+            uuid.UUID(str(classified["queue_item_id"])),
+        )
+        assert queue_item is not None and queue_item.status == "pending"
+        assert session.scalar(select(Action)) is None
+        assert (
+            session.scalar(
+                select(OutboxEvent).where(
+                    OutboxEvent.event_type == "discord.projection.refresh_requested"
+                )
+            )
+            is None
+        )
 
 
 @pytest.mark.integration
@@ -511,9 +668,7 @@ def test_permanent_gmail_reconciliation_error_fails_without_retry(
         assert operation.next_attempt_at is None
         assert queue_item is not None and queue_item.status == "failed"
         alerts = session.scalars(
-            select(OutboxEvent).where(
-                OutboxEvent.event_type == "discord.system_log.requested"
-            )
+            select(OutboxEvent).where(OutboxEvent.event_type == "discord.system_log.requested")
         ).all()
         assert alerts
     assert provider.mutation_calls == 1
@@ -609,9 +764,7 @@ def test_newer_staged_message_version_invalidates_gmail_approval(
     assert failure is not None
     assert failure.code == "target_version_changed"
     with session_factory() as session:
-        approval = session.scalar(
-            select(Approval).order_by(Approval.created_at)
-        )
+        approval = session.scalar(select(Approval).order_by(Approval.created_at))
         assert approval is not None
         assert approval.status == "pending"
         assert approval.refresh_required_at is not None

@@ -410,7 +410,7 @@ soak() {
 
 gmail() {
     init_docker
-    compose exec -T docket ./.venv/bin/python -m docket.gmail_cli "$1"
+    compose exec -T docket ./.venv/bin/python -m docket.gmail_cli "$@"
 }
 
 verify_restore() {
@@ -432,6 +432,8 @@ Commands:
   setup-triage    Install the isolated Hermes Gmail-triage profile and cron.
   gmail-status    Report Gmail gates, checkpoint freshness, and source counts.
   gmail-scan      Force one bounded metadata scan; never invokes semantic triage.
+  gmail-propose-archive SOURCE_ID SOURCE_VERSION REQUEST_KEY
+                  Propose archiving one exact classified Gmail source version.
   gmail-triage-status  Verify the single triage job and show its recent runs.
   gmail-triage-pause   Pause semantic triage without changing Gmail ingestion.
   gmail-triage-run     Queue one isolated semantic-triage run.
@@ -454,6 +456,9 @@ case "${1:-}" in
     setup-triage) gmail_triage_setup ;;
     gmail-status) gmail status ;;
     gmail-scan) gmail scan ;;
+    gmail-propose-archive)
+        gmail propose-archive "${2:-}" "${3:-}" "${4:-}"
+        ;;
     gmail-triage-status) gmail_triage_control status ;;
     gmail-triage-pause) gmail_triage_control pause ;;
     gmail-triage-run) gmail_triage_control run ;;

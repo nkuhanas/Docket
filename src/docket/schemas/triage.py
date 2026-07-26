@@ -1,4 +1,5 @@
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -24,6 +25,22 @@ class TriageActionProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     action_type: GmailActionType
+
+
+class ProposeClassifiedGmailActionInput(BaseModel):
+    """Operator-authorized proposal against one exact classified source version."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_key: str = Field(
+        min_length=1,
+        max_length=512,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9:._/-]*$",
+    )
+    source_id: UUID
+    expected_source_version: str = Field(min_length=1, max_length=255)
+    action_type: GmailActionType
+    actor_id: str = Field(min_length=1, max_length=255)
 
 
 class SubmitTriageDecisionInput(BaseModel):
