@@ -6,6 +6,8 @@ from docket.providers.google.calendar import (
 )
 from docket.providers.google.disabled_calendar import DisabledCalendarProvider
 from docket.providers.google.fake_calendar import FakeCalendarProvider
+from docket.providers.google.fake_gmail import FakeGmailProvider
+from docket.providers.google.gmail import GmailReadProvider, GoogleGmailProvider
 
 
 def build_calendar_write_provider(settings: Settings) -> CalendarProvider:
@@ -21,3 +23,12 @@ def build_calendar_read_provider(settings: Settings) -> CalendarReadProvider:
     if settings.calendar_reads_enabled:
         return GoogleCalendarProvider(str(settings.google_oauth_token_file))
     return FakeCalendarProvider()
+
+
+def build_gmail_read_provider(settings: Settings) -> GmailReadProvider | None:
+    mode = settings.gmail_provider_mode()
+    if mode == "google":
+        return GoogleGmailProvider(str(settings.google_oauth_token_file))
+    if mode == "fake":
+        return FakeGmailProvider()
+    return None

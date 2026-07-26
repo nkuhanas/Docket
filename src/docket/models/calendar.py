@@ -45,7 +45,9 @@ class QueueItem(TimestampMixin, Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    primary_source_item_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    primary_source_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("source_items.id", ondelete="RESTRICT")
+    )
     deduplication_key: Mapped[str] = mapped_column(String(512), unique=True, nullable=False)
     material_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     category: Mapped[str] = mapped_column(String(128), nullable=False)

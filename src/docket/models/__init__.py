@@ -25,6 +25,7 @@ from docket.models.core import (
     RecordSource,
 )
 from docket.models.discord import DiscordDailyThread, DiscordMcpTrace, DiscordProjection
+from docket.models.gmail import ConnectorCheckpoint, QueueItemSource, SourceItem
 
 __all__ = [
     "Account",
@@ -40,6 +41,7 @@ __all__ = [
     "CalendarReminderPlan",
     "CalendarSyncState",
     "CommandRequest",
+    "ConnectorCheckpoint",
     "DiscordDailyThread",
     "DiscordMcpTrace",
     "DiscordProjection",
@@ -48,8 +50,10 @@ __all__ = [
     "OperationItem",
     "OutboxEvent",
     "QueueItem",
+    "QueueItemSource",
     "Record",
     "RecordSource",
     "ReminderRule",
     "ScheduledNotification",
+    "SourceItem",
 ]

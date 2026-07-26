@@ -92,6 +92,63 @@ class Settings(BaseSettings):
     reminder_dispatch_interval_seconds: float = Field(
         default=30.0, gt=0, alias="DOCKET_REMINDER_DISPATCH_INTERVAL_SECONDS"
     )
+    gmail_ingestion_enabled: bool = Field(
+        default=False,
+        alias="DOCKET_GMAIL_INGESTION_ENABLED",
+    )
+    gmail_writes_enabled: bool = Field(
+        default=False,
+        alias="DOCKET_GMAIL_WRITES_ENABLED",
+    )
+    gmail_scan_poll_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        alias="DOCKET_GMAIL_SCAN_POLL_SECONDS",
+    )
+    gmail_scan_interval_seconds: int = Field(
+        default=1800,
+        ge=60,
+        alias="DOCKET_GMAIL_SCAN_INTERVAL_SECONDS",
+    )
+    gmail_scan_lease_seconds: int = Field(
+        default=300,
+        ge=30,
+        alias="DOCKET_GMAIL_SCAN_LEASE_SECONDS",
+    )
+    gmail_triage_lease_seconds: int = Field(
+        default=900,
+        ge=60,
+        alias="DOCKET_TRIAGE_LEASE_SECONDS",
+    )
+    gmail_recovery_overlap_days: int = Field(
+        default=7,
+        ge=1,
+        le=30,
+        alias="DOCKET_GMAIL_RECOVERY_OVERLAP_DAYS",
+    )
+    gmail_scan_max_pages: int = Field(
+        default=100,
+        ge=1,
+        le=1000,
+        alias="DOCKET_GMAIL_SCAN_MAX_PAGES",
+    )
+    gmail_scan_max_messages: int = Field(
+        default=5000,
+        ge=100,
+        le=50000,
+        alias="DOCKET_GMAIL_SCAN_MAX_MESSAGES",
+    )
+    gmail_claim_batch_size: int = Field(
+        default=20,
+        ge=1,
+        le=20,
+        alias="DOCKET_GMAIL_CLAIM_BATCH_SIZE",
+    )
+    gmail_stale_seconds: int = Field(
+        default=7200,
+        ge=300,
+        alias="DOCKET_GMAIL_STALE_SECONDS",
+    )
     backup_enabled: bool = Field(default=False, alias="DOCKET_BACKUP_ENABLED")
     backup_directory: Path = Field(
         default=Path("/var/lib/docket/backups"),
@@ -195,6 +252,12 @@ class Settings(BaseSettings):
                 "DOCKET_BACKUP_AGE_RECIPIENT must contain an age recipient "
                 "when encrypted backups are enabled"
             )
+        if self.gmail_writes_enabled and (
+            not self.gmail_ingestion_enabled or not self.external_writes_enabled
+        ):
+            raise ValueError(
+                "Gmail writes require both Gmail ingestion and external writes"
+            )
         return self
 
     @staticmethod
@@ -222,6 +285,13 @@ class Settings(BaseSettings):
             return "google"
         if self.environment is Environment.PRODUCTION:
             return "disabled"
+        return "fake"
+
+    def gmail_provider_mode(self) -> Literal["google", "fake", "disabled"]:
+        if not self.gmail_ingestion_enabled:
+            return "disabled"
+        if self.environment is Environment.PRODUCTION:
+            return "google"
         return "fake"
 
 

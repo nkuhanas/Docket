@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from docket.mcp import mcp
+from docket.mcp import mcp, triage_mcp
 
 
 @pytest.mark.integration
@@ -188,3 +188,51 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
         "suggest",
         "off",
     ]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_triage_surface_is_separate_and_strictly_bounded() -> None:
+    interactive_names = {tool.name for tool in await mcp.list_tools()}
+    tools = {tool.name: tool for tool in await triage_mcp.list_tools()}
+    names = set(tools)
+    assert names == {
+        "docket_claim_triage_batch",
+        "docket_read_claimed_source",
+        "docket_search_related_records",
+        "docket_submit_triage_decision",
+    }
+    assert names.isdisjoint(interactive_names)
+    assert not any(
+        forbidden in name
+        for name in names
+        for forbidden in (
+            "approve",
+            "execute",
+            "calendar",
+            "discord",
+            "gmail_modify",
+            "record_update",
+            "terminal",
+        )
+    )
+    template = Path("hermes/triage-config.example.yaml").read_text(
+        encoding="utf-8"
+    )
+    include_block = template.split("    tools:\n      include:\n", 1)[1].split(
+        "      prompts:",
+        1,
+    )[0]
+    configured_names = {
+        line.removeprefix("        - ").strip()
+        for line in include_block.splitlines()
+        if line.strip()
+    }
+    assert configured_names == names
+    assert "cli: []" in template
+    assert "/triage-mcp/" in template
+    read_description = " ".join(
+        (tools["docket_read_claimed_source"].description or "").split()
+    )
+    assert "explicitly untrusted data" in read_description
+    assert "never stored" in read_description

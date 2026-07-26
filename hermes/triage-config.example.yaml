@@ -1,0 +1,42 @@
+# Isolated Hermes profile for the cron-backed Docket Gmail triage agent.
+# This profile has no Discord gateway and no built-in toolsets.
+
+model:
+  provider: openai-codex
+  base_url: https://chatgpt.com/backend-api/codex
+  default: gpt-5.6-sol
+
+agent:
+  max_turns: 40
+  verify_on_stop: false
+
+display:
+  tool_progress: log
+  interim_assistant_messages: false
+  show_commentary: false
+  background_process_notifications: off
+
+platform_toolsets:
+  cli: []
+
+plugins:
+  enabled: []
+
+mcp_servers:
+  docket-triage:
+    url: "http://docket:8000/triage-mcp/"
+    headers:
+      Authorization: "Bearer ${DOCKET_MCP_TOKEN}"
+    timeout: 30
+    connect_timeout: 15
+    supports_parallel_tool_calls: false
+    sampling:
+      enabled: false
+    tools:
+      include:
+        - docket_claim_triage_batch
+        - docket_read_claimed_source
+        - docket_search_related_records
+        - docket_submit_triage_decision
+      prompts: false
+      resources: false

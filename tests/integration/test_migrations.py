@@ -41,8 +41,11 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
         "queue_items",
         "audit_events",
         "backup_runs",
+        "connector_checkpoints",
         "discord_daily_threads",
         "discord_projections",
+        "queue_item_sources",
+        "source_items",
     }.issubset(set(inspect(engine).get_table_names()))
     assert "calendar_schedule_snapshots" not in inspect(engine).get_table_names()
     assert "synced_snapshot" in {
