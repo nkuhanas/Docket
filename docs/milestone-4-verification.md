@@ -165,7 +165,7 @@ tools. The root gateway owns one 30-minute no-agent job, currently paused for
 the metadata inspection gate, and a forced run completed successfully through
 the fixed profile launcher while both Gmail gates were disabled.
 
-Runtime revision `feb35fa55f74` is deployed at migration `0015`. Gmail
+Runtime revision `d4c969ac5634` is deployed at migration `0015`. Gmail
 ingestion and approval-gated writes are enabled, the checkpoint is current in
 history mode, and the initial bounded recovery scan persisted unique source
 metadata without a body/content field.
