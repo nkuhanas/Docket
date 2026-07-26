@@ -369,6 +369,7 @@ gmail_triage_job_id() {
 gmail_triage_control() {
     local command=$1
     local job_id
+    local listing
 
     init_docker
     job_id=$(gmail_triage_job_id)
@@ -378,8 +379,23 @@ gmail_triage_control() {
             compose exec -T hermes env NO_COLOR=1 hermes cron runs --limit 10 "$job_id"
             compose exec -T hermes env NO_COLOR=1 hermes cron status
             ;;
-        pause|resume|run)
+        pause|resume)
             compose exec -T hermes hermes cron "$command" "$job_id"
+            ;;
+        run)
+            listing=$(compose exec -T hermes env NO_COLOR=1 hermes cron list --all)
+            awk -v job_id="$job_id" '
+                $1 == job_id && index($0, "[paused]") {
+                    found = 1
+                }
+                END {
+                    exit(found ? 0 : 1)
+                }
+            ' <<<"$listing" ||
+                die "one-shot triage requires the recurring job to be paused"
+            compose exec -T hermes env \
+                PATH=/opt/hermes/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+                /opt/data/scripts/docket-gmail-triage.sh
             ;;
         *)
             die "unsupported Gmail triage control: $command"

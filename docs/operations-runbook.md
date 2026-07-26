@@ -1007,7 +1007,9 @@ scripts/docket gmail-triage-status
 
 This is the first command in the rollout that permits transient message-body
 reads. Keep the recurring job paused until that run's durable outcomes and
-redacted logs are verified. Resume the 30-minute schedule only after the
+redacted logs are verified. The command refuses to run if the recurring job is
+active and invokes the fixed isolated launcher directly; it does not temporarily
+resume or alter the schedule. Resume the 30-minute schedule only after the
 operator-present read-only gate is clean:
 
 ```bash

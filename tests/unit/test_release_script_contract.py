@@ -57,6 +57,8 @@ def test_operator_script_separates_gmail_scan_from_semantic_triage() -> None:
     assert "gmail-triage-resume) gmail_triage_control resume" in script
     assert "expected exactly one '$job_name' cron job" in script
     assert "hermes cron list --all" in script
+    assert "one-shot triage requires the recurring job to be paused" in script
+    assert "/opt/data/scripts/docket-gmail-triage.sh" in script
     assert "GmailIngestionService" in gmail_cli
     assert "TriageService" not in gmail_cli
     assert "read_message(" not in gmail_cli
