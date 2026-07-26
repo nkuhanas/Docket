@@ -32,6 +32,8 @@ def test_gmail_triage_installer_pins_an_isolated_profile_and_local_delivery() ->
     assert "--no-agent" in script
     assert "--deliver log" in script
     assert "--deliver discord" not in script
+    assert script.count("hermes cron list --all") == 2
+    assert "hermes cron list)" not in script
     assert "mcp test docket-triage" in script
     assert "hermes -p docket-triage" in launcher
     assert "--skills docket-triage" in launcher

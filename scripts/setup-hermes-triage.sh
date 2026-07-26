@@ -72,7 +72,7 @@ chmod 700 \
 chmod 600 "$PROFILE_CONFIG" "$PROFILE_ENV" "$PROFILE_SKILL_DIR/SKILL.md"
 chmod 700 "$LAUNCHER"
 
-job_listing=$(compose exec -T hermes env NO_COLOR=1 hermes cron list)
+job_listing=$(compose exec -T hermes env NO_COLOR=1 hermes cron list --all)
 if ! printf '%s\n' "$job_listing" | grep -F "$JOB_NAME" >/dev/null; then
     compose exec -T hermes hermes cron create \
         "every 30m" \
@@ -83,7 +83,7 @@ if ! printf '%s\n' "$job_listing" | grep -F "$JOB_NAME" >/dev/null; then
 fi
 
 compose exec -T hermes hermes -p "$PROFILE_NAME" mcp test docket-triage
-job_listing=$(compose exec -T hermes env NO_COLOR=1 hermes cron list)
+job_listing=$(compose exec -T hermes env NO_COLOR=1 hermes cron list --all)
 printf '%s\n' "$job_listing"
 printf '%s\n' "$job_listing" | grep -F "$JOB_NAME" >/dev/null || {
     echo "The root gateway cannot see the Docket Gmail triage job." >&2
