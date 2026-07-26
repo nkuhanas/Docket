@@ -19,6 +19,9 @@ Start here when operating or changing the deployed stack:
   control, independent course reconciliation, and durable batch history.
 * [Milestone 3.7 verification](milestone-3.7-verification.md) — independent
   course reconciliation, durable drop, restore, and the operator-present gate.
+* [Milestone 4 Gmail verification](milestone-4-verification.md) — deterministic
+  ingestion, isolated semantic triage, approved label mutations, and the
+  controlled live gate.
 * [Production Calendar write-gate verification](calendar-write-gate-verification.md)
   — fail-closed production writes, paused execution, stale rejection, and the
   deployed pending-card state.

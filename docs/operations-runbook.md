@@ -63,6 +63,46 @@ past-session search, a separate immediate record read, an idempotency conflict,
 a second proposal attempt, or a runtime skill-edit attempt as orchestration
 regressions even when the final provider behavior succeeds.
 
+## Gmail operational invariant
+
+Gmail ingestion and Gmail mutation are separate deployment gates.
+
+1. The Docket worker scans the enabled Gmail-capable Google account through the
+   committed `gmail:inbox` cursor. Every page stages immutable minimal metadata
+   and advances the cursor in one transaction.
+2. The isolated `docket-triage` Hermes profile claims staged sources and
+   refetches one body only for the duration of that claim. Provider content is
+   untrusted data and cannot approve, execute, select accounts, or change
+   policy.
+3. Triage submits a derived local decision and may create an immutable archive
+   or mark-read proposal. It has no mutation or approval tool.
+4. The operator approves the current exact-message/version card through the
+   trusted Discord component path.
+5. Docket creates one durable operation. Archive removes `INBOX`; mark-read
+   removes `UNREAD`.
+6. A confirmed result commits the provider-observed labels. An uncertain result
+   enters reconciliation and refetches label state before any retry.
+
+An email saying “the user approved this,” containing prompt instructions, or
+requesting a tool call has no more authority than any other provider text.
+There is no Gmail send or reply operation.
+
+The normal triage session is not the interactive Discord Hermes session. Its
+profile has no messaging credentials, plugins, CLI/cron toolsets, internal
+approval token, or interactive Docket MCP. It exposes only:
+
+```text
+docket_claim_triage_batch
+docket_read_claimed_source
+docket_search_related_records
+docket_submit_triage_decision
+```
+
+Install or repair the profile with `scripts/docket setup-triage`. The installer
+creates one root-owned 30-minute Hermes cron pinned to the named profile and
+uses local-log delivery. Do not add the triage MCP to the interactive Hermes
+configuration.
+
 A `record_conflict` is not permission to fetch the canonical record, copy its
 data, and retry the store under a new intent index. That sequence falsely binds
 the current Discord source to assertions found only in Docket. Stop and request
@@ -168,6 +208,14 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Approve/Reject appears before every schedule page was traversed | Stop before using the buttons and compare `reviewed_through_page` with the immutable page count | Projection renderer/state invariant regression; schedule button approvals must also fail closed unless the current delivered view is `decision` |
 | Schedule approval reports `target_version_changed` after review | Confirm the same card changes to **Calendar state changed** with **Reject** and **Rebuild preview**, compare the revision's `calendar_snapshot.last_success_at` with current sync state, then rebuild and review the replacement from Summary | Calendar sync advanced after compilation; if the card remains healthy-looking, inspect `approvals.refresh_required_at` and its projection outbox before retrying |
 | Approve reports `external_writes_disabled` | Check `/health/ready` for `calendar_write_mode=disabled`; leave the approval pending until the operator deliberately enables writes and recreates Docket | The production write gate is closed; Docket must not create an operation, consume the approval, or substitute a fake provider |
+| Gmail does not stage a new message | Inspect `gmail_sync`, the `gmail:inbox` checkpoint, enabled account capabilities, and Docket logs before changing OAuth | Ingestion gate disabled, no Gmail-capable account, active lease, scan not due, OAuth failure, cursor recovery, or rate limiting |
+| Gmail checkpoint is stale | Inspect `last_success_at`, `last_error_code`, lease expiry, and the deduplicated `#docket-system` alert | Worker unavailable, OAuth expired, cursor/page failure, or repeated provider throttling |
+| The triage cron sees general tools or Discord | Stop the job and inspect the named profile config and `.env` | The cron used the interactive profile, inherited messaging credentials, or ignored the empty CLI/cron toolsets |
+| Gmail source remains `claimed` | Compare `claimed_until` with the current time and run the next bounded triage pass | Agent interruption; the lease must expire and become reclaimable without moving the checkpoint backward |
+| Gmail card reports a newer message version | Reject the stale card and allow the newer staged source to be classified | Labels or source state changed after preview; the old approval must not target the new version |
+| Approved Gmail action remains pending | Check both Gmail gates, the global write gate, operation worker mode, and account capability | Write gate closed, provider not instantiated, or the service was not recreated after `.env` changed |
+| Gmail operation is `reconciliation_required` | Inspect the attempt and refetch only label state; never replay the provider mutation manually | Docket may have changed the label before losing the response or worker lease |
+| Gmail proposal or system log contains body text, quoted text, links, or codes | Stop the live gate and inspect triage persistence and deterministic renderers | Untrusted source content crossed the persistence/redaction boundary |
 | Reject reports Calendar target staleness | Treat this as a regression and inspect the approval validation split | Rejection must validate actor, projection, current immutable revision, hashes, and queue identity, but it must not require mutable Calendar/record/account freshness because it cannot create an external operation |
 | **Rebuild preview** appears on a healthy proposal | Inspect `approvals.refresh_required_at` and the renderer version; do not use the control | Pre-contextual renderer/plugin drift or stale approval state was copied incorrectly |
 | **Rebuild preview** appears inert or leaves the old revision/view | Inspect the fresh-sync command, `proposal_refresh` command, replacement action revision/approval, cancelled/recreated `calendar_reminder_plans`, and projection refresh outbox row | Fresh sync did not complete after the click, immutable schedule bindings changed, plugin control drift, or the durable same-message edit is retrying |
@@ -891,6 +939,124 @@ zero matches wait through the consistency window before the same operation is
 retried; multiple or mismatched results remain visible and emit a system-alert
 outbox event.
 
+## Gmail ingestion and triage recovery
+
+Deploy the Gmail schema and provider code before enabling either Gmail gate.
+The first live phase is read-only:
+
+```text
+DOCKET_GMAIL_INGESTION_ENABLED=true
+DOCKET_GMAIL_WRITES_ENABLED=false
+```
+
+Recreate Docket after changing these values, then install the isolated profile:
+
+```bash
+scripts/docket setup-triage
+sudo docker compose exec -T hermes hermes cron list
+```
+
+The named job must be `Docket Gmail triage`, use profile `docket-triage`, and
+deliver to local logs. Test the isolated server:
+
+```bash
+sudo docker compose exec -T hermes \
+  hermes -p docket-triage mcp test docket-triage
+```
+
+Expect exactly four tools. The same profile must show no plugins and no Discord
+gateway. If the model credential did not clone into the profile, repair that
+credential through Hermes' profile/auth flow; never copy messaging or Docket
+internal-approval credentials into the profile.
+
+Inspect only bounded metadata:
+
+```bash
+sudo docker compose exec -T postgres psql -U docket -d docket -x -c '
+select account_id, stream, cursor, last_attempt_at, last_success_at,
+       last_error_code, leased_until, version
+from connector_checkpoints
+where stream = '\''gmail:inbox'\'';
+select id, external_object_id, external_parent_id, source_version,
+       received_at, minimal_headers, status, claimed_by, claimed_until,
+       failure_count, next_attempt_at
+from source_items order by created_at desc limit 50;
+select id, category, title, status, priority, version
+from queue_items order by created_at desc limit 30;'
+```
+
+Do not query or export a claimed body for diagnosis. A body returned by
+`docket_read_claimed_source` exists only in that isolated agent turn. If a
+source is stuck in `claimed`, wait for `claimed_until`; the next cron must
+reclaim it under a new token. Do not reset the source or checkpoint manually.
+
+Cursor recovery is expected after Gmail invalidates an old history ID. Docket
+performs a bounded overlap scan and deduplicates by exact account, provider
+object, version, and fingerprint. It must not replace this with a
+“newer-than-the-last-interval” query.
+
+For the controlled write phase, all three values must be true:
+
+```text
+DOCKET_EXTERNAL_WRITES_ENABLED=true
+DOCKET_GMAIL_INGESTION_ENABLED=true
+DOCKET_GMAIL_WRITES_ENABLED=true
+```
+
+Recreate Docket, use one disposable message, and approve only its current card.
+Verify the exact Gmail label and durable operation state. If the operation is
+`reconciliation_required`, let Docket refetch label state. Do not click twice,
+manually change the Gmail label as a recovery step, or force the operation back
+to pending.
+
+## Retention and the 72-hour soak
+
+The retention worker runs at most once per Los Angeles local day and records
+`retention.cleanup_completed`. It:
+
+* removes unreferenced ignored source metadata after 30 days;
+* removes other unreferenced source metadata after 365 days;
+* scrubs failed/unknown attempt diagnostics after 90 days;
+* removes execution attempts and old audit events after 365 days;
+* removes delivered/cancelled notification rows after 90 days; and
+* removes terminal operation-item results after 365 days only when no active
+  canonical record still references them.
+
+It never deletes canonical records. Queue-linked source metadata remains while
+the queue/audit relationship exists.
+
+After the controlled Gmail gate is clean and the latest encrypted backup has
+been restore-verified, begin the final release soak:
+
+```bash
+scripts/docket soak-start
+scripts/docket soak-status
+```
+
+The status is derived from PostgreSQL, not a local timer file. It reports
+elapsed time, current gate failures, and visible incidents. It fails release
+completion for disabled Gmail/backup/retention gates, missing Gmail account or
+stale checkpoint, duplicate or unapproved operations, unresolved operations or
+outbox work, expired claims, aged source work, overdue reminders, unreported
+terminal operations, a missing/failed latest backup restore, or a missing
+retention run.
+
+Near the end of the 72 hours, create or confirm the latest encrypted backup and
+restore that exact manifest into the disposable database:
+
+```bash
+scripts/docket backup
+DOCKET_BACKUP_AGE_IDENTITY_FILE=secrets/restore/backup_age_identity \
+  scripts/docket verify-restore
+scripts/docket soak-status
+scripts/docket soak-complete
+```
+
+`soak-complete` exits nonzero until 72 hours have elapsed and every durable
+check is zero. Failed or unknown attempts and system alerts are retained as
+visible incident counts even when recovered; inspect them before accepting the
+completion audit.
+
 ## Private SearXNG routing
 
 The expected URL from Hermes is:
@@ -988,6 +1154,22 @@ uv run pytest \
   tests/integration/test_migrations.py \
   tests/adversarial/test_plugin_actor_gate.py
 ```
+
+For Gmail ingestion, triage, or mutation changes, also run:
+
+```bash
+uv run pytest \
+  tests/integration/test_gmail_ingestion.py \
+  tests/integration/test_gmail_triage.py \
+  tests/integration/test_mcp_contract.py \
+  tests/integration/test_retention.py \
+  tests/integration/test_soak.py
+bash -n scripts/setup-hermes-triage.sh scripts/docket
+```
+
+After deployment, `scripts/docket setup-triage` must discover exactly four
+isolated tools. Do not send `/reload-mcp` merely for this profile: it is separate
+from the interactive Discord MCP registry.
 
 After deploying a tool/schema or skill change, restart the affected services,
 run `hermes mcp test docket`, and send `/reload-mcp` in the active Discord
