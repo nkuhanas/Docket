@@ -199,4 +199,20 @@ action, approval, operation, or provider effect.
 
 The controlled live gate is complete and the static archive/mark-read action
 definitions are enabled. Gmail send/reply remains absent. Milestone 4 remains
-open only for ordinary scoped rollout and the 72-hour soak.
+open only for the measured 72-hour soak.
+
+After explicit operator authorization, one isolated semantic turn drained the
+remaining backlog in server-bounded claims. All 90 known source versions are
+terminal: 32 classified and 58 ignored, with zero staged, claimed, or failed
+sources. The pass created 30 delivered queue projections and no Gmail action,
+approval, or provider operation. The server-side source scope remained empty.
+The 30-minute isolated triage job was then resumed.
+
+The encrypted artifact
+`docket-2026-07-26-20260726T085456Z.dump.age` restored successfully into
+disposable PostgreSQL at schema `0015`. The durable 72-hour soak started at
+`2026-07-26T10:34:34.175239+00:00`. At start, every authorization, operation,
+outbox, source-work, connector, and restore-verification check was zero. The
+expected time-zero checks `backup_not_during_soak` and
+`retention_run_missing` remain nonzero until their first scheduled in-window
+runs.
