@@ -40,6 +40,7 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
         "outbox_events",
         "queue_items",
         "audit_events",
+        "backup_runs",
         "discord_daily_threads",
         "discord_projections",
     }.issubset(set(inspect(engine).get_table_names()))

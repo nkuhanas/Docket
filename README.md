@@ -64,6 +64,30 @@ Development and deployment conventions are recorded in
 durable-state checks. `scripts/docket deploy` additionally creates a PostgreSQL
 backup, rebuilds and recreates Docket and Hermes, and verifies the live stack.
 
+## Encrypted backups and restore verification
+
+The deploy command retains its immediate mode-`0600` pre-migration dump.
+Docket's durable backup worker separately creates one daily PostgreSQL
+custom-format dump encrypted to a public `age` recipient, writes a checksum and
+manifest, retains seven daily plus four weekly recovery points, and reports
+failure in `#docket-system`.
+
+After building the current image, initialize the restore-only identity and
+enable encrypted backups:
+
+```bash
+scripts/setup-backup-age.sh
+scripts/docket deploy
+scripts/docket backup
+DOCKET_BACKUP_AGE_IDENTITY_FILE=secrets/restore/backup_age_identity \
+  scripts/docket verify-restore
+```
+
+The setup stores only the public recipient in `.env`. The private identity
+lives under ignored `secrets/restore/`, is not mounted into routine services,
+and is mounted only into the disposable restore-verification container. Keep an
+offline copy; losing it makes encrypted backups unreadable.
+
 ## Private search for Hermes
 
 SearXNG is included as a network-private Compose service with JSON results

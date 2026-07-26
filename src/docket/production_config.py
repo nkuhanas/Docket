@@ -11,6 +11,7 @@ from pathlib import Path
 
 _KEY_PATTERN = re.compile(r"^([A-Z][A-Z0-9_]*)=")
 _SECRET_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_AGE_RECIPIENT_PATTERN = re.compile(r"^age1[023456789acdefghjklmnpqrstuvwxyz]{20,}$")
 
 
 class ProductionConfigError(RuntimeError):
@@ -107,6 +108,22 @@ def configure_searxng_secret(*, credentials_dir: Path, rotate: bool) -> Path:
     return secret_file
 
 
+def configure_backup_age_recipient(*, env_file: Path, recipient: str) -> None:
+    if not env_file.is_file():
+        raise ProductionConfigError(f"Environment file not found: {env_file}")
+    if _AGE_RECIPIENT_PATTERN.fullmatch(recipient) is None:
+        raise ProductionConfigError("Backup age recipient is invalid")
+    current = env_file.read_text(encoding="utf-8")
+    updated = _replace_env_values(
+        current,
+        {
+            "DOCKET_BACKUP_ENABLED": "true",
+            "DOCKET_BACKUP_AGE_RECIPIENT": recipient,
+        },
+    )
+    _atomic_write(env_file, updated, 0o600)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="docket-production-config",
@@ -115,8 +132,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
     parser.add_argument("--credentials-dir", type=Path, default=Path("secrets/local"))
     parser.add_argument("--rotate", action="store_true")
+    parser.add_argument("--backup-only", action="store_true")
+    parser.add_argument("--backup-age-recipient")
     arguments = parser.parse_args(argv)
     try:
+        if arguments.backup_only:
+            if arguments.backup_age_recipient is None:
+                raise ProductionConfigError(
+                    "--backup-only requires --backup-age-recipient"
+                )
+            configure_backup_age_recipient(
+                env_file=arguments.env_file,
+                recipient=arguments.backup_age_recipient,
+            )
+            print("Encrypted backup recipient installed; private identity remains separate")
+            return 0
         password_file = configure_database_credentials(
             env_file=arguments.env_file,
             credentials_dir=arguments.credentials_dir,
@@ -126,6 +156,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             credentials_dir=arguments.credentials_dir,
             rotate=arguments.rotate,
         )
+        if arguments.backup_age_recipient is not None:
+            configure_backup_age_recipient(
+                env_file=arguments.env_file,
+                recipient=arguments.backup_age_recipient,
+            )
     except (OSError, ProductionConfigError) as exc:
         print(f"Production credential setup failed: {exc}", file=sys.stderr)
         return 1

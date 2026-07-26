@@ -18,6 +18,7 @@ from docket.models.calendar import (
 from docket.models.core import (
     Account,
     AuditEvent,
+    BackupRun,
     CommandRequest,
     OutboxEvent,
     Record,
@@ -31,6 +32,7 @@ __all__ = [
     "ActionRevision",
     "Approval",
     "AuditEvent",
+    "BackupRun",
     "Base",
     "CalendarEventCache",
     "CalendarLink",

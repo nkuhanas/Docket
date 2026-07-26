@@ -14,5 +14,7 @@ backups/
 .runtime/
 secrets/local/*
 !secrets/local/README.md
+secrets/restore/*
+!secrets/restore/README.md
 *.log
 spec-*.md

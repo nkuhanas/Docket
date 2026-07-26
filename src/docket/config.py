@@ -92,6 +92,43 @@ class Settings(BaseSettings):
     reminder_dispatch_interval_seconds: float = Field(
         default=30.0, gt=0, alias="DOCKET_REMINDER_DISPATCH_INTERVAL_SECONDS"
     )
+    backup_enabled: bool = Field(default=False, alias="DOCKET_BACKUP_ENABLED")
+    backup_directory: Path = Field(
+        default=Path("/var/lib/docket/backups"),
+        alias="DOCKET_BACKUP_DIRECTORY",
+    )
+    backup_age_recipient: str | None = Field(
+        default=None,
+        alias="DOCKET_BACKUP_AGE_RECIPIENT",
+    )
+    backup_hour: int = Field(default=3, ge=0, le=23, alias="DOCKET_BACKUP_HOUR")
+    backup_poll_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        alias="DOCKET_BACKUP_POLL_SECONDS",
+    )
+    backup_lease_seconds: int = Field(
+        default=900,
+        ge=60,
+        alias="DOCKET_BACKUP_LEASE_SECONDS",
+    )
+    backup_retry_seconds: int = Field(
+        default=3600,
+        ge=60,
+        alias="DOCKET_BACKUP_RETRY_SECONDS",
+    )
+    backup_daily_retention: int = Field(
+        default=7,
+        ge=1,
+        le=31,
+        alias="DOCKET_BACKUP_DAILY_RETENTION",
+    )
+    backup_weekly_retention: int = Field(
+        default=4,
+        ge=0,
+        le=52,
+        alias="DOCKET_BACKUP_WEEKLY_RETENTION",
+    )
 
     operator_discord_user_id: str = Field(
         default="000000000000000001", alias="DOCKET_OPERATOR_DISCORD_USER_ID"
@@ -150,6 +187,14 @@ class Settings(BaseSettings):
             ):
                 if identifier.startswith("000000"):
                     raise ValueError("Production cannot use smoke Discord identifiers")
+        if self.backup_enabled and (
+            self.backup_age_recipient is None
+            or not self.backup_age_recipient.startswith("age1")
+        ):
+            raise ValueError(
+                "DOCKET_BACKUP_AGE_RECIPIENT must contain an age recipient "
+                "when encrypted backups are enabled"
+            )
         return self
 
     @staticmethod

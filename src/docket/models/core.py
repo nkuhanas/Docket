@@ -161,3 +161,29 @@ class AuditEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
+
+
+class BackupRun(TimestampMixin, Base):
+    __tablename__ = "backup_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('running', 'succeeded', 'failed')",
+            name="ck_backup_runs_status",
+        ),
+        UniqueConstraint("local_date", name="uq_backup_runs_local_date"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    local_date: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    artifact_name: Mapped[str | None] = mapped_column(String(255))
+    manifest_name: Mapped[str | None] = mapped_column(String(255))
+    ciphertext_sha256: Mapped[str | None] = mapped_column(String(64))
+    ciphertext_bytes: Mapped[int | None] = mapped_column(Integer)
+    error_code: Mapped[str | None] = mapped_column(String(128))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_token: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    leased_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -3,6 +3,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import structlog
 import uvicorn
@@ -20,7 +21,7 @@ from docket.database import (
 )
 from docket.internal_api import router as internal_router
 from docket.mcp import mcp
-from docket.models import CalendarSyncState
+from docket.models import BackupRun, CalendarSyncState
 from docket.providers.discord import HttpDiscordProjectionAdapter
 from docket.providers.google import FakeGoogleProvider
 from docket.providers.google.factory import (
@@ -29,6 +30,7 @@ from docket.providers.google.factory import (
 )
 from docket.providers.google.runtime import configure_calendar_read_provider
 from docket.services.accounts import AccountService
+from docket.services.backups import BackupService
 from docket.services.calendar_sync import CalendarSyncService
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.operations import OperationRunner
@@ -85,6 +87,12 @@ worker = WorkerRuntime(
     calendar_sync_poll_seconds=settings.calendar_sync_poll_seconds,
     reminder_dispatcher=ReminderDispatcher(get_session_factory(), settings),
     reminder_dispatch_poll_seconds=settings.reminder_dispatch_interval_seconds,
+    backup_service=(
+        BackupService(get_session_factory(), settings)
+        if settings.backup_enabled
+        else None
+    ),
+    backup_poll_seconds=settings.backup_poll_seconds,
 )
 
 
@@ -141,6 +149,9 @@ def health_ready(response: Response) -> dict[str, Any]:
                 CalendarSyncState.account_id, CalendarSyncState.calendar_id
             )
         ).all()
+        latest_backup = session.scalar(
+            select(BackupRun).order_by(BackupRun.local_date.desc()).limit(1)
+        )
     google_oauth = settings.google_oauth_status()
     if (
         settings.external_writes_enabled or settings.calendar_reads_enabled
@@ -180,8 +191,20 @@ def health_ready(response: Response) -> dict[str, Any]:
     calendar_degraded = settings.calendar_reads_enabled and (
         not sync_detail or any(bool(item["stale"]) for item in sync_detail)
     )
+    local_now = now.astimezone(ZoneInfo(settings.timezone))
+    backup_degraded = settings.backup_enabled and (
+        (latest_backup is not None and latest_backup.status == "failed")
+        or (
+            local_now.hour >= settings.backup_hour
+            and (
+                latest_backup is None
+                or latest_backup.local_date != local_now.date()
+                or latest_backup.status != "succeeded"
+            )
+        )
+    )
     return {
-        "status": ("degraded" if calendar_degraded else "ok"),
+        "status": ("degraded" if calendar_degraded or backup_degraded else "ok"),
         "database": "ready",
         "worker": "ready" if worker.is_healthy() else "starting",
         "credential_mode": settings.credential_mode(),
@@ -189,6 +212,28 @@ def health_ready(response: Response) -> dict[str, Any]:
         "calendar_reads_enabled": settings.calendar_reads_enabled,
         "external_writes_enabled": settings.external_writes_enabled,
         "calendar_write_mode": settings.calendar_write_mode(),
+        "encrypted_backup": {
+            "enabled": settings.backup_enabled,
+            "status": (
+                latest_backup.status
+                if latest_backup is not None
+                else ("not_due" if settings.backup_enabled else "disabled")
+            ),
+            "local_date": (
+                latest_backup.local_date.isoformat()
+                if latest_backup is not None
+                else None
+            ),
+            "completed_at": (
+                latest_backup.completed_at.isoformat()
+                if latest_backup is not None and latest_backup.completed_at is not None
+                else None
+            ),
+            "error_code": (
+                latest_backup.error_code if latest_backup is not None else None
+            ),
+            "degraded": backup_degraded,
+        },
         "calendar_sync": sync_detail,
     }
 

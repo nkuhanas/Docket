@@ -648,6 +648,9 @@ scripts/docket compose-smoke
 scripts/docket build
 scripts/docket predeploy
 scripts/docket deploy
+scripts/docket backup
+DOCKET_BACKUP_AGE_IDENTITY_FILE=secrets/restore/backup_age_identity \
+  scripts/docket verify-restore
 scripts/docket status
 ```
 
@@ -661,6 +664,16 @@ tag, rebuilds and recreates Docket and Hermes, and verifies Docket health,
 Alembic head, the Discord gateway, the matching 19-tool Docket and Hermes
 registries, the declared Hermes plugin version, its private listener, and
 drained durable state.
+
+The deploy-time custom dump is an immediate local rollback safeguard. The
+independent durable backup worker must also be enabled with
+`scripts/setup-backup-age.sh`; it produces encrypted artifacts, SHA-256
+checksums, and manifests under ignored `backups/`. `backup` forces or confirms
+today's durable run. `verify-restore` checks the ciphertext hash, mounts the
+private identity only into a one-off container, restores into a separate
+ephemeral PostgreSQL container, verifies the Alembic revision and bounded
+integrity queries, destroys the disposable database, and records the result in
+audit. Never place the private age identity in `.env` or `secrets/local/`.
 
 The image tag is recovery evidence, not permission to downgrade a migrated
 database. Restore or migrate the database according to the affected revision
@@ -934,6 +947,14 @@ uv run mypy
 sudo docker compose ps
 sudo docker compose exec -T hermes hermes plugins list --plain --no-bundled
 sudo docker compose exec -T hermes hermes mcp test docket
+```
+
+After backup, database, or migration changes, also run:
+
+```bash
+scripts/docket backup
+DOCKET_BACKUP_AGE_IDENTITY_FILE=secrets/restore/backup_age_identity \
+  scripts/docket verify-restore
 ```
 
 For Milestone 3 queue/lifecycle changes, also run:

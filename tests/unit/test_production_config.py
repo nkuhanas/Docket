@@ -4,6 +4,7 @@ import pytest
 
 from docket.production_config import (
     ProductionConfigError,
+    configure_backup_age_recipient,
     configure_database_credentials,
     configure_searxng_secret,
 )
@@ -87,3 +88,22 @@ def test_invalid_existing_searxng_secret_is_rejected(tmp_path) -> None:
 
     with pytest.raises(ProductionConfigError, match="SearXNG"):
         configure_searxng_secret(credentials_dir=credentials_dir, rotate=False)
+
+
+def test_backup_recipient_is_public_configuration(tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("DOCKET_BACKUP_ENABLED=false\n", encoding="utf-8")
+    recipient = "age1" + "q" * 58
+
+    configure_backup_age_recipient(env_file=env_file, recipient=recipient)
+
+    content = env_file.read_text(encoding="utf-8")
+    assert "DOCKET_BACKUP_ENABLED=true" in content
+    assert f"DOCKET_BACKUP_AGE_RECIPIENT={recipient}" in content
+
+
+def test_invalid_backup_recipient_is_rejected(tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("", encoding="utf-8")
+    with pytest.raises(ProductionConfigError, match="recipient"):
+        configure_backup_age_recipient(env_file=env_file, recipient="not-an-age-key")

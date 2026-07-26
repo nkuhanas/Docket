@@ -103,3 +103,11 @@ def test_internal_api_and_mcp_require_distinct_tokens(session_factory) -> None:
         assert ready.json()["calendar_reads_enabled"] is False
         assert ready.json()["external_writes_enabled"] is False
         assert ready.json()["google_oauth"] == "dummy"
+        assert ready.json()["encrypted_backup"] == {
+            "enabled": False,
+            "status": "disabled",
+            "local_date": None,
+            "completed_at": None,
+            "error_code": None,
+            "degraded": False,
+        }

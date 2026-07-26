@@ -22,3 +22,14 @@ def test_channel_lanes_must_be_pairwise_distinct(left: str, right: str) -> None:
 
     with pytest.raises(ValidationError, match="must be distinct"):
         Settings(**values)  # type: ignore[arg-type]
+
+
+def test_encrypted_backup_requires_age_recipient() -> None:
+    with pytest.raises(ValidationError, match="DOCKET_BACKUP_AGE_RECIPIENT"):
+        Settings(DOCKET_BACKUP_ENABLED=True)
+
+    settings = Settings(
+        DOCKET_BACKUP_ENABLED=True,
+        DOCKET_BACKUP_AGE_RECIPIENT="age1configured",
+    )
+    assert settings.backup_enabled

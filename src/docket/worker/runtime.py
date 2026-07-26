@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 import structlog
 
+from docket.services.backups import BackupService
 from docket.services.calendar_sync import CalendarSyncService
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.operations import OperationRunner
@@ -30,6 +31,8 @@ class WorkerRuntime:
         calendar_sync_poll_seconds: float = 60.0,
         reminder_dispatcher: ReminderDispatcher | None = None,
         reminder_dispatch_poll_seconds: float = 30.0,
+        backup_service: BackupService | None = None,
+        backup_poll_seconds: float = 60.0,
     ) -> None:
         self.heartbeat_seconds = heartbeat_seconds
         self.operation_runner = operation_runner
@@ -44,6 +47,8 @@ class WorkerRuntime:
         self.calendar_sync_poll_seconds = calendar_sync_poll_seconds
         self.reminder_dispatcher = reminder_dispatcher
         self.reminder_dispatch_poll_seconds = reminder_dispatch_poll_seconds
+        self.backup_service = backup_service
+        self.backup_poll_seconds = backup_poll_seconds
         self.last_heartbeat: datetime | None = None
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -134,6 +139,7 @@ class WorkerRuntime:
         next_rollover = 0.0
         next_calendar_sync = 0.0
         next_reminder_dispatch = 0.0
+        next_backup = 0.0
         while not self._stop.is_set():
             self.last_heartbeat = datetime.now(UTC)
             now = time.monotonic()
@@ -165,6 +171,9 @@ class WorkerRuntime:
                 if self.reminder_dispatcher is not None and now >= next_reminder_dispatch:
                     await asyncio.to_thread(self.reminder_dispatcher.run_due_once)
                     next_reminder_dispatch = now + self.reminder_dispatch_poll_seconds
+                if self.backup_service is not None and now >= next_backup:
+                    await asyncio.to_thread(self.backup_service.run_due_once)
+                    next_backup = now + self.backup_poll_seconds
             except Exception:
                 logger.exception("worker_iteration_failed")
             try:
