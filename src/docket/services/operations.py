@@ -441,7 +441,6 @@ class OperationRunner:
                     ReminderRule.calendar_id == parameters["calendar_id"],
                     ReminderRule.scope == "event",
                     ReminderRule.provider_event_id == result.external_event_id,
-                    ReminderRule.source_kind == "canonical_plan",
                 )
             )
         )
@@ -464,7 +463,6 @@ class OperationRunner:
                     provider_event_id=result.external_event_id,
                     lead_seconds=lead_seconds,
                     queue_channel_id=get_settings().queue_channel_id,
-                    source_kind="canonical_plan",
                     enabled=True,
                     created_by_actor_id=(
                         revision.created_by_actor_id or get_settings().operator_discord_user_id

@@ -465,10 +465,6 @@ class ReminderRule(TimestampMixin, Base):
             name="ck_reminder_rules_scope_event",
         ),
         CheckConstraint("lead_seconds >= 0", name="ck_reminder_rules_lead_seconds"),
-        CheckConstraint(
-            "source_kind IN ('legacy_explicit', 'canonical_plan')",
-            name="ck_reminder_rules_source_kind",
-        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -480,7 +476,6 @@ class ReminderRule(TimestampMixin, Base):
     provider_event_id: Mapped[str | None] = mapped_column(String(1024))
     lead_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
     queue_channel_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    source_kind: Mapped[str] = mapped_column(String(32), default="legacy_explicit", nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     created_by_actor_id: Mapped[str] = mapped_column(String(64), nullable=False)

@@ -72,10 +72,7 @@ def _normalized_reminder_state(
 ) -> dict[str, Any]:
     use_default, provider_leads = _provider_popup_leads(row.provider_reminders)
     enabled = [rule for rule in rules if rule.enabled]
-    canonical_leads = sorted(
-        {rule.lead_seconds for rule in enabled if rule.source_kind == "canonical_plan"}
-    )
-    has_noncanonical = any(rule.source_kind != "canonical_plan" for rule in enabled)
+    canonical_leads = sorted({rule.lead_seconds for rule in enabled})
     expected_plan = {
         "delivery_channels": ["google_popup", "docket_queue"],
         "lead_seconds": canonical_leads,
@@ -83,7 +80,6 @@ def _normalized_reminder_state(
     if link is not None and link.reminder_plan_sha256 is not None:
         synchronized = (
             not use_default
-            and not has_noncanonical
             and provider_leads == canonical_leads
             and sha256_json(expected_plan) == link.reminder_plan_sha256
         )

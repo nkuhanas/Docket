@@ -244,7 +244,6 @@ def test_missing_linked_series_master_closes_link_rules_and_notifications(
                 provider_event_id=master_id,
                 lead_seconds=600,
                 queue_channel_id=settings.queue_channel_id,
-                source_kind="canonical_plan",
                 enabled=True,
                 created_by_actor_id=settings.operator_discord_user_id,
             )
@@ -363,7 +362,6 @@ def test_calendar_lookup_reports_tags_priority_and_dual_projection_reminder_stat
                 provider_event_id="classified-event",
                 lead_seconds=600,
                 queue_channel_id=settings.queue_channel_id,
-                source_kind="canonical_plan",
                 enabled=True,
                 created_by_actor_id=settings.operator_discord_user_id,
             )

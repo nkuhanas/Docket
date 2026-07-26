@@ -331,17 +331,17 @@ record already existed, while the retired `docket_remember_record` name blurred
 natural-language intent with the tool's persistence responsibility.
 
 Calendar proposals are also generated from strict Pydantic input. The model
-supplies a stable meeting ID, exact record version, account UUID, and calendar
-ID; Docket derives risk, executable schedule, hashes, preview, target versions,
-approval references, and operation idempotency. The short code remains durable
-for break-glass operations but is removed from the model-facing MCP result,
-which instead supplies button-card guidance. No model-visible tool records
-approval or directly calls Google.
+supplies an exact course record/version or standalone event specification,
+account UUID, and calendar ID; Docket derives stable logical item identities,
+risk, executable effects, hashes, preview, target versions, approval references,
+and operation idempotency. The short code remains durable for break-glass
+operations but is removed from the model-facing MCP result, which instead
+supplies button-card guidance. No model-visible tool records approval or
+directly calls Google.
 
 Calendar lookups and control do not expose a provider client. Bounded cache
 lookup, redacted sync status, profile reads/writes, canonical reminder-rule
-listing, standalone proposals, per-course reconciliation, restore, and legacy
-aggregate term-schedule proposals all use
+listing, standalone proposals, per-course reconciliation, and restore all use
 generated typed schemas. Reminder mutations exist only inside an approved
 Calendar proposal; there is no model-visible direct rule-write/disable tool.
 Existing-event mutations distinguish one occurrence or non-recurring event

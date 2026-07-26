@@ -37,6 +37,11 @@ cancels its unactivated reminder plans, and drops
 `calendar_schedule_snapshots`. Ordinary action, queue, outbox, and audit rows
 remain as inert operational history.
 
+Follow-up alpha cleanup migration `0013` removes the disabled pre-unified
+reminder-rule rows and their obsolete scheduled notifications, then drops the
+source-kind compatibility discriminator. Current approved unified reminder
+rules and Calendar links are unchanged; audit rows remain inert history.
+
 ## Automated evidence
 
 The integration lifecycle uses the stateful fake Calendar adapter and proves:

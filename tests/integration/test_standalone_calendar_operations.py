@@ -267,7 +267,6 @@ def test_standalone_create_executes_with_unified_reminder_plan(
         }
         assert [plan.status for plan in plans] == ["activated", "activated"]
         assert [rule.lead_seconds for rule in rules] == [300, 600]
-        assert all(rule.source_kind == "canonical_plan" for rule in rules)
         assert len(notifications) == 2
         provider_event = provider.events[link.external_event_id]
         assert provider_event.snapshot["reminders"] == event.provider_reminders
@@ -643,7 +642,6 @@ def test_recurring_series_cancellation_binds_master_and_cleans_every_instance(
             enabled=True,
             version=1,
             created_by_actor_id=settings.operator_discord_user_id,
-            source_kind="canonical_plan",
         )
         session.add(rule)
         session.flush()
