@@ -8,6 +8,8 @@ PROFILE_DIR="$HERMES_HOME_DIR/profiles/$PROFILE_NAME"
 PROFILE_CONFIG="$PROFILE_DIR/config.yaml"
 PROFILE_ENV="$PROFILE_DIR/.env"
 PROFILE_SKILL_DIR="$PROFILE_DIR/skills/docket-triage"
+LAUNCHER_DIR="$HERMES_HOME_DIR/scripts"
+LAUNCHER="$LAUNCHER_DIR/docket-gmail-triage.sh"
 JOB_NAME="Docket Gmail triage"
 
 if [ ! -s "$HERMES_HOME_DIR/config.yaml" ] || [ ! -s "$HERMES_HOME_DIR/.env" ]; then
@@ -55,26 +57,40 @@ fi
 mv "$config_tmp" "$PROFILE_CONFIG"
 mv "$env_tmp" "$PROFILE_ENV"
 rm -rf "$PROFILE_DIR/plugins" "$PROFILE_DIR/skills"
-mkdir -p "$PROFILE_SKILL_DIR"
+mkdir -p "$PROFILE_SKILL_DIR" "$LAUNCHER_DIR"
 cp \
     "$ROOT/hermes/plugin/docket_discord/skills/docket-triage/SKILL.md" \
     "$PROFILE_SKILL_DIR/SKILL.md"
+cp "$ROOT/hermes/scripts/docket-gmail-triage.sh" "$LAUNCHER"
 rm -f "$PROFILE_DIR/SOUL.md"
 touch "$PROFILE_DIR/.no-skills"
-chmod 700 "$PROFILE_DIR" "$PROFILE_DIR/skills" "$PROFILE_SKILL_DIR"
+chmod 700 \
+    "$PROFILE_DIR" \
+    "$PROFILE_DIR/skills" \
+    "$PROFILE_SKILL_DIR" \
+    "$LAUNCHER_DIR"
 chmod 600 "$PROFILE_CONFIG" "$PROFILE_ENV" "$PROFILE_SKILL_DIR/SKILL.md"
+chmod 700 "$LAUNCHER"
 
 job_listing=$(compose exec -T hermes env NO_COLOR=1 hermes cron list)
 if ! printf '%s\n' "$job_listing" | grep -F "$JOB_NAME" >/dev/null; then
     compose exec -T hermes hermes cron create \
         "every 30m" \
-        "Run the Docket Gmail triage skill now. Drain bounded claimed work and return [SILENT] after a normal run." \
-        --profile "$PROFILE_NAME" \
-        --skill docket-triage \
+        --script "docket-gmail-triage.sh" \
+        --no-agent \
         --deliver log \
         --name "$JOB_NAME"
 fi
 
 compose exec -T hermes hermes -p "$PROFILE_NAME" mcp test docket-triage
-compose exec -T hermes env NO_COLOR=1 hermes cron list
+job_listing=$(compose exec -T hermes env NO_COLOR=1 hermes cron list)
+printf '%s\n' "$job_listing"
+printf '%s\n' "$job_listing" | grep -F "$JOB_NAME" >/dev/null || {
+    echo "The root gateway cannot see the Docket Gmail triage job." >&2
+    exit 1
+}
+compose exec -T hermes hermes cron status | grep -F "Gateway is running" >/dev/null || {
+    echo "The root Hermes gateway cron ticker is not running." >&2
+    exit 1
+}
 echo "Installed isolated Hermes profile and cron job: $JOB_NAME"

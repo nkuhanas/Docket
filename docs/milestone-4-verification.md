@@ -57,9 +57,11 @@ docket_search_related_records
 docket_submit_triage_decision
 ```
 
-The root Hermes cron invokes that pinned profile every 30 minutes and delivers
-the result to local logs only. Normal completion is `[SILENT]`. Install or
-repair it with:
+The root Hermes cron invokes a fixed no-agent launcher every 30 minutes. That
+launcher starts the pinned profile as a separate one-shot agent and delivers the
+result to local logs only. The root scheduler never runs the interactive model
+for this job, while the child model receives only the isolated profile. Normal
+completion is `[SILENT]`. Install or repair it with:
 
 ```bash
 scripts/docket setup-triage
@@ -147,7 +149,12 @@ live evidence here. Do not add send/reply.
 
 ## Current status
 
-Automated and fake-provider evidence is complete. The isolated profile has not
-yet been installed against the production container, read-only Gmail ingestion
-has not yet been enabled, and the operator-present disposable archive has not
-yet run. Milestone 4 therefore remains open.
+Automated and fake-provider evidence is complete. On 2026-07-26 the isolated
+profile was installed against pinned Hermes `v2026.7.20`. Live inspection
+showed all built-in toolsets disabled and only the four allowlisted triage MCP
+tools. The root gateway owns one active 30-minute no-agent job, and a forced run
+completed successfully through the fixed profile launcher while both Gmail
+gates were disabled.
+
+Read-only Gmail ingestion has not yet been enabled, and the operator-present
+disposable archive has not yet run. Milestone 4 therefore remains open.

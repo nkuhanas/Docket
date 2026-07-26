@@ -99,9 +99,11 @@ docket_submit_triage_decision
 ```
 
 Install or repair the profile with `scripts/docket setup-triage`. The installer
-creates one root-owned 30-minute Hermes cron pinned to the named profile and
-uses local-log delivery. Do not add the triage MCP to the interactive Hermes
-configuration.
+creates one root-owned 30-minute no-agent cron whose only script is the
+repository-owned launcher for a `docket-triage` one-shot. The root scheduler
+does not run the interactive model for this job; the child model sees only the
+isolated profile. Delivery is local-log only. Do not add the triage MCP to the
+interactive Hermes configuration.
 
 A `record_conflict` is not permission to fetch the canonical record, copy its
 data, and retry the store under a new intent index. That sequence falsely binds
@@ -956,8 +958,9 @@ scripts/docket setup-triage
 sudo docker compose exec -T hermes hermes cron list
 ```
 
-The named job must be `Docket Gmail triage`, use profile `docket-triage`, and
-deliver to local logs. Test the isolated server:
+The named job must be `Docket Gmail triage`, run the fixed no-agent launcher,
+and deliver to local logs. The root `hermes cron status` must report that the
+gateway ticker is running. Test the isolated server:
 
 ```bash
 sudo docker compose exec -T hermes \

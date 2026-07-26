@@ -22,14 +22,20 @@ def test_gmail_triage_installer_pins_an_isolated_profile_and_local_delivery() ->
     skill = Path(
         "hermes/plugin/docket_discord/skills/docket-triage/SKILL.md"
     ).read_text(encoding="utf-8")
+    launcher = Path("hermes/scripts/docket-gmail-triage.sh").read_text(
+        encoding="utf-8"
+    )
 
     assert "hermes profile create" in script
     assert "--clone --no-alias" in script
-    assert '--profile "$PROFILE_NAME"' in script
-    assert "--skill docket-triage" in script
+    assert '--script "docket-gmail-triage.sh"' in script
+    assert "--no-agent" in script
     assert "--deliver log" in script
     assert "--deliver discord" not in script
     assert "mcp test docket-triage" in script
+    assert "hermes -p docket-triage" in launcher
+    assert "--skills docket-triage" in launcher
+    assert "--oneshot" in launcher
     assert "cli: []" in config
     assert "cron: []" in config
     assert "plugins:\n  enabled: []" in config
