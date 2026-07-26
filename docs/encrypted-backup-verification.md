@@ -54,6 +54,12 @@ inside the one-off verification container, restored with
 revision, and ran bounded integrity queries over command, audit, and
 in-progress operation state.
 
+After migration `0015` was deployed on 2026-07-26, an explicit same-day backup
+created `docket-2026-07-26-20260726T085456Z.dump.age`. The same verifier checked
+its manifest and ciphertext, restored it into a new disposable PostgreSQL 16.9
+database, and confirmed schema `0015` at Alembic head. This proves the current
+Gmail schema rather than relying on the earlier `0014` artifact.
+
 ## Production activation
 
 The rollout is intentionally two stage:

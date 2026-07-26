@@ -156,5 +156,10 @@ tools. The root gateway owns one active 30-minute no-agent job, and a forced run
 completed successfully through the fixed profile launcher while both Gmail
 gates were disabled.
 
+Revision `254bcc781012` is deployed at migration `0015` with read and write
+Gmail gates false. Health reports the Gmail provider disabled, the retention
+worker recorded its first audited run, and a fresh schema-`0015` encrypted
+backup restored successfully.
+
 Read-only Gmail ingestion has not yet been enabled, and the operator-present
 disposable archive has not yet run. Milestone 4 therefore remains open.
