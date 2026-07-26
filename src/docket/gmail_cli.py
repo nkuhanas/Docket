@@ -41,6 +41,9 @@ def _status() -> dict[str, object]:
         "gmail_ingestion_enabled": settings.gmail_ingestion_enabled,
         "gmail_writes_enabled": settings.gmail_writes_enabled,
         "provider_mode": settings.gmail_provider_mode(),
+        "triage_source_allowlist_count": len(
+            settings.gmail_triage_source_allowlist
+        ),
         "gmail_account_count": len(accounts),
         "checkpoints": [
             {

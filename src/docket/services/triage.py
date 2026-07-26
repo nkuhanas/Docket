@@ -85,26 +85,35 @@ class TriageService:
         claim_token = uuid.uuid4()
         claimed_until = now + timedelta(seconds=self.settings.gmail_triage_lease_seconds)
         with self.session_factory.begin() as session:
-            sources = session.scalars(
-                select(SourceItem)
-                .where(
-                    or_(
-                        SourceItem.status == "staged",
-                        (
-                            (SourceItem.status == "claimed")
-                            & (SourceItem.claimed_until.is_not(None))
-                            & (SourceItem.claimed_until < now)
-                        ),
-                        (
-                            (SourceItem.status == "failed")
-                            & or_(
-                                SourceItem.next_attempt_at.is_(None),
-                                SourceItem.next_attempt_at <= now,
-                            )
-                        ),
+            statement = select(SourceItem).where(
+                or_(
+                    SourceItem.status == "staged",
+                    (
+                        (SourceItem.status == "claimed")
+                        & (SourceItem.claimed_until.is_not(None))
+                        & (SourceItem.claimed_until < now)
+                    ),
+                    (
+                        (SourceItem.status == "failed")
+                        & or_(
+                            SourceItem.next_attempt_at.is_(None),
+                            SourceItem.next_attempt_at <= now,
+                        )
+                    ),
+                )
+            )
+            if self.settings.gmail_triage_source_allowlist:
+                statement = statement.where(
+                    SourceItem.id.in_(
+                        self.settings.gmail_triage_source_allowlist
                     )
                 )
-                .order_by(SourceItem.received_at, SourceItem.created_at, SourceItem.id)
+            sources = session.scalars(
+                statement.order_by(
+                    SourceItem.received_at,
+                    SourceItem.created_at,
+                    SourceItem.id,
+                )
                 .with_for_update(skip_locked=True)
                 .limit(self.settings.gmail_claim_batch_size)
             ).all()

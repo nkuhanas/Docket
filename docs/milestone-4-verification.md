@@ -123,7 +123,10 @@ The repository test suite must be green before deployment. Compose smoke must
 report disabled Gmail read/write gates and exactly four tools on
 `/triage-mcp/`. Named operator controls now resolve exactly one
 `Docket Gmail triage` job before showing status, pausing, queueing a one-shot
-run, or resuming the schedule; paused jobs remain discoverable.
+run, or resuming the schedule; paused jobs remain discoverable. A temporary
+server-enforced source UUID allowlist can constrain an operator-present semantic
+pass without trusting the model to avoid the rest of a staged backlog. Health
+exposes only its count, and the final soak rejects any remaining scope.
 
 ## Controlled live gate
 

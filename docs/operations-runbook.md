@@ -991,6 +991,13 @@ gateway. If the model credential did not clone into the profile, repair that
 credential through Hermes' profile/auth flow; never copy messaging or Docket
 internal-approval credentials into the profile.
 
+When a live gate must inspect only explicitly selected disposable sources from
+a larger staged backlog, set `DOCKET_GMAIL_TRIAGE_SOURCE_ALLOWLIST` to a JSON
+array of their exact Docket source UUIDs and recreate Docket. Both
+`gmail-status` and `/health/ready` report only the scope count, never the IDs.
+The claim query enforces the scope before any provider body is refetched.
+Remove the setting and recreate Docket before ordinary backlog processing.
+
 After inspecting the staged metadata, queue exactly one isolated semantic pass:
 
 ```bash
@@ -1093,7 +1100,8 @@ scripts/docket soak-complete
 `soak-complete` exits nonzero until 72 hours have elapsed and every durable
 check is zero. Failed or unknown attempts and system alerts are retained as
 visible incident counts even when recovered; inspect them before accepting the
-completion audit.
+completion audit. An active Gmail triage source allowlist also fails the soak;
+the disposable-test scope must not become a permanent production filter.
 
 The unattended backup worker remains once per local day. The explicit
 `scripts/docket backup` command is intentionally forced and replaces the

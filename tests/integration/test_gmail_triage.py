@@ -133,6 +133,43 @@ def test_claim_read_and_semantic_dedup_never_persist_body(session_factory) -> No
 
 
 @pytest.mark.integration
+def test_claim_batch_honors_operator_source_allowlist(session_factory) -> None:
+    provider = FakeGmailProvider()
+    provider.add_message(message_id="outside-scope", source_version="1")
+    provider.add_message(message_id="inside-scope", source_version="1")
+    _stage(session_factory, provider)
+    with session_factory() as session:
+        target = session.scalar(
+            select(SourceItem).where(
+                SourceItem.external_object_id == "inside-scope"
+            )
+        )
+        assert target is not None
+        target_id = target.id
+
+    settings = _settings().model_copy(
+        update={"gmail_triage_source_allowlist": [target_id]}
+    )
+    service = TriageService(session_factory, provider, settings)
+
+    claim = service.claim_batch()
+    assert [source["external_object_id"] for source in claim["sources"]] == [
+        "inside-scope"
+    ]
+    assert service.claim_batch()["sources"] == []
+    with session_factory() as session:
+        statuses = dict(
+            session.execute(
+                select(SourceItem.external_object_id, SourceItem.status)
+            ).all()
+        )
+        assert statuses == {
+            "inside-scope": "claimed",
+            "outside-scope": "staged",
+        }
+
+
+@pytest.mark.integration
 def test_untrusted_content_can_only_propose_a_pending_gmail_action(
     session_factory,
     monkeypatch,

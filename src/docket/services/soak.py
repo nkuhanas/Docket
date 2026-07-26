@@ -91,6 +91,9 @@ class SoakService:
                                 self.settings.gmail_ingestion_enabled
                             ),
                             "gmail_writes_enabled": self.settings.gmail_writes_enabled,
+                            "gmail_triage_source_allowlist_count": len(
+                                self.settings.gmail_triage_source_allowlist
+                            ),
                             "external_writes_enabled": (
                                 self.settings.external_writes_enabled
                             ),
@@ -300,6 +303,9 @@ class SoakService:
                     not self.settings.gmail_ingestion_enabled
                 ),
                 "gmail_writes_disabled": int(not self.settings.gmail_writes_enabled),
+                "gmail_triage_source_scope_active": len(
+                    self.settings.gmail_triage_source_allowlist
+                ),
                 "external_writes_disabled": int(
                     not self.settings.external_writes_enabled
                 ),

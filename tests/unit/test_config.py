@@ -1,3 +1,5 @@
+import uuid
+
 import pytest
 from pydantic import ValidationError
 
@@ -55,3 +57,13 @@ def test_gmail_writes_require_both_ingestion_and_global_write_gate() -> None:
         DOCKET_EXTERNAL_WRITES_ENABLED=True,
     )
     assert settings.gmail_writes_enabled
+
+
+def test_gmail_triage_source_allowlist_parses_exact_uuid_scope() -> None:
+    source_id = uuid.uuid4()
+
+    settings = Settings(
+        DOCKET_GMAIL_TRIAGE_SOURCE_ALLOWLIST=[str(source_id)],
+    )
+
+    assert settings.gmail_triage_source_allowlist == [source_id]

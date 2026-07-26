@@ -60,3 +60,4 @@ def test_operator_script_separates_gmail_scan_from_semantic_triage() -> None:
     assert "GmailIngestionService" in gmail_cli
     assert "TriageService" not in gmail_cli
     assert "read_message(" not in gmail_cli
+    assert "DOCKET_GMAIL_TRIAGE_SOURCE_ALLOWLIST='[]'" in script

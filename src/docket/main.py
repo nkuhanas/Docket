@@ -285,6 +285,9 @@ def health_ready(response: Response) -> dict[str, Any]:
         "external_writes_enabled": settings.external_writes_enabled,
         "gmail_ingestion_enabled": settings.gmail_ingestion_enabled,
         "gmail_writes_enabled": settings.gmail_writes_enabled,
+        "gmail_triage_source_allowlist_count": len(
+            settings.gmail_triage_source_allowlist
+        ),
         "gmail_provider_mode": settings.gmail_provider_mode(),
         "calendar_write_mode": settings.calendar_write_mode(),
         "encrypted_backup": {

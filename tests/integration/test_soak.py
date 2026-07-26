@@ -1,3 +1,4 @@
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -89,6 +90,15 @@ def test_soak_completion_requires_duration_and_durable_operational_gates(
                 ),
             ]
         )
+
+    scoped_status = SoakService(
+        session_factory,
+        settings.model_copy(
+            update={"gmail_triage_source_allowlist": [uuid.uuid4()]}
+        ),
+    ).status()
+    assert scoped_status.checks["gmail_triage_source_scope_active"] == 1
+    assert not scoped_status.ready_to_complete
 
     status = service.status()
     assert status.elapsed_seconds >= 72 * 60 * 60

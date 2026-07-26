@@ -1,3 +1,4 @@
+import uuid
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -143,6 +144,10 @@ class Settings(BaseSettings):
         ge=1,
         le=20,
         alias="DOCKET_GMAIL_CLAIM_BATCH_SIZE",
+    )
+    gmail_triage_source_allowlist: list[uuid.UUID] = Field(
+        default_factory=list,
+        alias="DOCKET_GMAIL_TRIAGE_SOURCE_ALLOWLIST",
     )
     gmail_stale_seconds: int = Field(
         default=7200,
