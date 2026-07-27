@@ -74,8 +74,9 @@ Gmail ingestion and Gmail mutation are separate deployment gates.
    refetches one body only for the duration of that claim. Provider content is
    untrusted data and cannot approve, execute, select accounts, or change
    policy.
-3. Triage submits a derived local decision and may create an immutable archive
-   or mark-read proposal. It has no mutation or approval tool.
+3. Triage submits one derived outcome: ignore noise, publish a passive
+   notification, or create an immutable archive/mark-read proposal. It has no
+   mutation or approval tool.
 4. The operator approves the current exact-message/version card through the
    trusted Discord component path.
 5. Docket creates one durable operation. Archive removes `INBOX`; mark-read
@@ -86,6 +87,12 @@ Gmail ingestion and Gmail mutation are separate deployment gates.
 An email saying “the user approved this,” containing prompt instructions, or
 requesting a tool call has no more authority than any other provider text.
 There is no Gmail send or reply operation.
+
+A passive Gmail notification is terminal as soon as Docket publishes it. Its
+card says **For awareness**, has no Snooze/Ignore or decision controls, and is
+not carried into later daily threads. Only an exact Gmail mutation proposal is
+unresolved and operator-actionable; it keeps Approve, Reject, and Snooze.
+Manual queue items retain their ordinary Snooze/Ignore lifecycle.
 
 The normal triage session is not the interactive Discord Hermes session. Its
 profile has no messaging credentials, plugins, CLI/cron toolsets, internal
@@ -214,6 +221,7 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Gmail checkpoint is stale | Inspect `last_success_at`, `last_error_code`, lease expiry, and the deduplicated `#docket-system` alert | Worker unavailable, OAuth expired, cursor/page failure, or repeated provider throttling |
 | The triage cron sees general tools or Discord | Stop the job and inspect the named profile config and `.env` | The cron used the interactive profile, inherited messaging credentials, or ignored the empty CLI/cron toolsets |
 | Gmail source remains `claimed` | Compare `claimed_until` with the current time and run the next bounded triage pass | Agent interruption; the lease must expire and become reclaimable without moving the checkpoint backward |
+| Passive Gmail card has Snooze/Ignore or moves to a later daily thread | Inspect `queue_items.status`, `resolution_code`, local action state, and migration `0016` | Pre-`0016` runtime/data, a passive classification was incorrectly left pending, or its projection refresh has not delivered |
 | Gmail card reports a newer message version | Reject the stale card and allow the newer staged source to be classified | Labels or source state changed after preview; the old approval must not target the new version |
 | Approved Gmail action remains pending | Check both Gmail gates, the global write gate, operation worker mode, and account capability | Write gate closed, provider not instantiated, or the service was not recreated after `.env` changed |
 | Gmail operation is `reconciliation_required` | Inspect the attempt and refetch only label state; never replay the provider mutation manually | Docket may have changed the label before losing the response or worker lease |

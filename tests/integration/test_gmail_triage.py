@@ -126,7 +126,11 @@ def test_claim_read_and_semantic_dedup_never_persist_body(session_factory) -> No
         assert queue_item is not None
         assert queue_item.version == 2
         assert queue_item.title == "Updated registration deadline"
+        assert queue_item.status == "completed"
+        assert queue_item.resolution_code == "gmail_notification"
+        assert queue_item.resolved_at is not None
         assert len(session.scalars(select(QueueItemSource)).all()) == 2
+        assert session.scalar(select(Action)) is None
         assert len(session.scalars(select(OutboxEvent)).all()) == 2
         persisted = [
             repr(source.minimal_headers) + repr(source.classification)
@@ -203,6 +207,53 @@ def test_untrusted_content_can_only_propose_a_pending_gmail_action(
         assert session.scalar(select(Operation)) is None
         assert provider.mutation_calls == 0
         assert result["action_proposals"][0]["action_type"] == "gmail_archive_message"
+
+
+@pytest.mark.integration
+def test_later_passive_classification_supersedes_pending_gmail_acknowledgement(
+    session_factory,
+    monkeypatch,
+) -> None:
+    provider = FakeGmailProvider()
+    provider.add_message(
+        message_id="ack-required",
+        thread_id="transition-thread",
+        source_version="1",
+        subject="Action required",
+    )
+    provider.add_message(
+        message_id="resolved-update",
+        thread_id="transition-thread",
+        source_version="2",
+        subject="No action required",
+    )
+    _stage(session_factory, provider)
+    service = TriageService(session_factory, provider, _settings())
+    monkeypatch.setattr(
+        "docket.services.triage.issue_short_code",
+        lambda *_args, **_kwargs: "ABCDEFGH",
+    )
+    claim = service.claim_batch()
+    sources = list(claim["sources"])
+    first = _actionable(str(sources[0]["source_id"]), str(claim["claim_token"]))
+    first.action_proposals = [TriageActionProposal(action_type="gmail_archive_message")]
+    service.submit_decision(first)
+    second = _actionable(str(sources[1]["source_id"]), str(claim["claim_token"]))
+    second.title = "Resolved update"
+
+    result = service.submit_decision(second)
+
+    assert result["disposition"] == "material_update"
+    assert result["action_proposals"] == []
+    with session_factory() as session:
+        queue_item = session.scalar(select(QueueItem))
+        action = session.scalar(select(Action))
+        approval = session.scalar(select(Approval))
+        assert queue_item is not None
+        assert queue_item.status == "completed"
+        assert queue_item.resolution_code == "gmail_notification"
+        assert action is not None and action.status == "superseded"
+        assert approval is not None and approval.status == "superseded"
 
 
 @pytest.mark.integration
@@ -357,7 +408,8 @@ def test_operator_gmail_proposal_suppresses_provider_no_op(
             QueueItem,
             uuid.UUID(str(classified["queue_item_id"])),
         )
-        assert queue_item is not None and queue_item.status == "pending"
+        assert queue_item is not None and queue_item.status == "completed"
+        assert queue_item.resolution_code == "gmail_notification"
         assert session.scalar(select(Action)) is None
         assert (
             session.scalar(

@@ -162,6 +162,56 @@ def test_failed_queue_item_only_exposes_valid_local_controls(session) -> None:
     )
 
 
+def test_passive_gmail_notification_renders_without_local_controls(
+    session_factory,
+) -> None:
+    with session_factory.begin() as session:
+        item = _pending_item()
+        item.status = "completed"
+        item.resolved_at = datetime(2026, 7, 22, 16, 5, tzinfo=UTC)
+        item.resolution_code = "gmail_notification"
+        item.resolution_note = "Notification delivered; no operator acknowledgement is required."
+        session.add(item)
+        session.flush()
+        session.add(
+            OutboxEvent(
+                event_type="discord.projection.requested",
+                aggregate_type="queue_item",
+                aggregate_id=item.id,
+                deduplication_key=f"discord_projection:{item.id}:gmail-notification",
+                payload={
+                    "queue_item_id": str(item.id),
+                    "target_local_date": "2026-07-22",
+                },
+                status="pending",
+            )
+        )
+        item_id = item.id
+
+    backend = FakeDiscordBackend()
+    runner = DiscordProjectionRunner(
+        session_factory,
+        FakeDiscordProjectionAdapter(backend),
+        get_settings(),
+    )
+
+    assert runner.run_due_once()
+    with session_factory() as session:
+        projection = session.scalar(
+            select(DiscordProjection).where(DiscordProjection.queue_item_id == item_id)
+        )
+        assert projection is not None
+        message = backend.messages[str(projection.id)]
+        assert message["controls"] == []
+        assert (
+            next(
+                field["value"] for field in message["embed"]["fields"] if field["name"] == "Status"
+            )
+            == "For awareness"
+        )
+        assert session.scalar(select(Action).where(Action.queue_item_id == item_id)) is None
+
+
 def test_queue_reads_filter_and_return_primary_source_identity(session) -> None:
     source_item_id = uuid.uuid4()
     matching = _pending_item()

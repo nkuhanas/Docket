@@ -998,7 +998,11 @@ class DiscordProjectionRunner:
                 [
                     {
                         "name": "Status",
-                        "value": self._status_label(queue_item.status),
+                        "value": (
+                            "For awareness"
+                            if queue_item.resolution_code == "gmail_notification"
+                            else self._status_label(queue_item.status)
+                        ),
                         "inline": True,
                     },
                     {

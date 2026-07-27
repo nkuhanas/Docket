@@ -39,6 +39,9 @@ from docket.schemas.triage import (
 from docket.security import issue_short_code, short_code_sha256
 from docket.services.queue import QueueService
 
+PASSIVE_GMAIL_RESOLUTION_CODE = "gmail_notification"
+PASSIVE_GMAIL_RESOLUTION_NOTE = "Notification delivered; no operator acknowledgement is required."
+
 
 def _aware(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
@@ -246,6 +249,26 @@ class TriageService:
                     status=OutboxStatus.PENDING.value,
                 )
             )
+
+    @staticmethod
+    def _complete_passive_notification(
+        queue_item: QueueItem,
+        *,
+        resolved_at: datetime,
+    ) -> None:
+        queue_item.status = QueueItemStatus.COMPLETED.value
+        queue_item.resolved_at = resolved_at
+        queue_item.resolution_code = PASSIVE_GMAIL_RESOLUTION_CODE
+        queue_item.resolution_note = PASSIVE_GMAIL_RESOLUTION_NOTE
+        queue_item.snoozed_until = None
+        queue_item.snooze_local_date = None
+
+    @staticmethod
+    def _is_passive_notification(queue_item: QueueItem) -> bool:
+        return (
+            queue_item.status == QueueItemStatus.COMPLETED.value
+            and queue_item.resolution_code == PASSIVE_GMAIL_RESOLUTION_CODE
+        )
 
     def _supersede_pending_gmail_actions(
         self,
@@ -627,7 +650,8 @@ class TriageService:
                 }
                 self._finish_operator_command(command, result)
                 return result
-            if queue_item.status != QueueItemStatus.PENDING.value:
+            passive_notification = self._is_passive_notification(queue_item)
+            if queue_item.status != QueueItemStatus.PENDING.value and not passive_notification:
                 raise DocketError(
                     code="queue_item_not_proposable",
                     message="The Gmail queue item is not pending and cannot be proposed.",
@@ -635,7 +659,18 @@ class TriageService:
                 )
 
             previous_version = queue_item.version
+            previous_lifecycle = (
+                queue_item.status,
+                queue_item.resolved_at,
+                queue_item.resolution_code,
+                queue_item.resolution_note,
+            )
             queue_item.version += 1
+            if passive_notification:
+                queue_item.status = QueueItemStatus.PENDING.value
+                queue_item.resolved_at = None
+                queue_item.resolution_code = None
+                queue_item.resolution_note = None
             materialized = self._materialize_gmail_actions(
                 session,
                 queue_item=queue_item,
@@ -646,6 +681,12 @@ class TriageService:
             )
             if not materialized:
                 queue_item.version = previous_version
+                (
+                    queue_item.status,
+                    queue_item.resolved_at,
+                    queue_item.resolution_code,
+                    queue_item.resolution_note,
+                ) = previous_lifecycle
                 disposition = "no_op"
                 action_proposal = None
             else:
@@ -720,6 +761,8 @@ class TriageService:
             assert request.summary is not None
             assert request.priority is not None
             assert request.semantic_event_type is not None
+            action_types = [proposal.action_type for proposal in request.action_proposals]
+            now = utc_now()
             anchor = source.external_parent_id or source.external_object_id
             deduplication_key = f"gmail:{source.account_id}:{anchor}:{request.semantic_event_type}"
             queue_item = session.scalar(
@@ -736,9 +779,16 @@ class TriageService:
                     category=request.category,
                     title=request.title,
                     summary=request.summary,
-                    status="pending",
+                    status=(
+                        QueueItemStatus.PENDING.value
+                        if action_types
+                        else QueueItemStatus.COMPLETED.value
+                    ),
                     priority=request.priority,
                     received_at=source.received_at,
+                    resolved_at=None if action_types else now,
+                    resolution_code=None if action_types else PASSIVE_GMAIL_RESOLUTION_CODE,
+                    resolution_note=None if action_types else PASSIVE_GMAIL_RESOLUTION_NOTE,
                     version=1,
                 )
                 session.add(queue_item)
@@ -761,16 +811,20 @@ class TriageService:
                 session.flush()
             material_fingerprint = self._material_fingerprint(session, queue_item.id)
             changed = queue_item.material_fingerprint != material_fingerprint
+            passive_notification = self._is_passive_notification(queue_item)
             if (
                 not created
                 and changed
-                and queue_item.status
-                in {
-                    "pending",
-                    "awaiting_approval",
-                    "failed",
-                    "snoozed",
-                }
+                and (
+                    queue_item.status
+                    in {
+                        QueueItemStatus.PENDING.value,
+                        QueueItemStatus.AWAITING_APPROVAL.value,
+                        QueueItemStatus.FAILED.value,
+                        QueueItemStatus.SNOOZED.value,
+                    }
+                    or passive_notification
+                )
             ):
                 queue_item.category = request.category
                 queue_item.title = request.title
@@ -785,16 +839,34 @@ class TriageService:
                     queue_item.received_at = max(received_candidates)
                 queue_item.version += 1
             queue_item.material_fingerprint = material_fingerprint
-            action_types = [proposal.action_type for proposal in request.action_proposals]
             materialized_actions: list[dict[str, str]] = []
+            if (
+                action_types
+                and changed
+                and not created
+                and (
+                    queue_item.status
+                    in {
+                        QueueItemStatus.PENDING.value,
+                        QueueItemStatus.AWAITING_APPROVAL.value,
+                        QueueItemStatus.FAILED.value,
+                        QueueItemStatus.SNOOZED.value,
+                    }
+                    or passive_notification
+                )
+            ):
+                self._supersede_pending_gmail_actions(session, queue_item)
+                if passive_notification:
+                    queue_item.status = QueueItemStatus.PENDING.value
+                    queue_item.resolved_at = None
+                    queue_item.resolution_code = None
+                    queue_item.resolution_note = None
             if action_types and queue_item.status in {
                 QueueItemStatus.PENDING.value,
                 QueueItemStatus.AWAITING_APPROVAL.value,
                 QueueItemStatus.FAILED.value,
                 QueueItemStatus.SNOOZED.value,
             }:
-                if changed and not created:
-                    self._supersede_pending_gmail_actions(session, queue_item)
                 materialized_actions = self._materialize_gmail_actions(
                     session,
                     queue_item=queue_item,
@@ -803,6 +875,23 @@ class TriageService:
                     actor_type="hermes",
                     actor_id="hermes-triage",
                 )
+            if (
+                not materialized_actions
+                and (not action_types or created or changed)
+                and (
+                    queue_item.status
+                    in {
+                        QueueItemStatus.PENDING.value,
+                        QueueItemStatus.AWAITING_APPROVAL.value,
+                        QueueItemStatus.FAILED.value,
+                        QueueItemStatus.SNOOZED.value,
+                    }
+                    or self._is_passive_notification(queue_item)
+                )
+            ):
+                if changed and not created and not action_types:
+                    self._supersede_pending_gmail_actions(session, queue_item)
+                self._complete_passive_notification(queue_item, resolved_at=now)
             source.status = "classified"
             source.classification = {
                 "decision": "actionable",
@@ -831,6 +920,7 @@ class TriageService:
                         "semantic_event_type": request.semantic_event_type,
                         "created": created,
                         "material_changed": changed,
+                        "requires_acknowledgement": bool(materialized_actions),
                     },
                 )
             )
