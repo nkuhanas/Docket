@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12,<3.15"
 dependencies = [
   "alembic==1.18.5",
-  "fastapi==0.139.2",
+  "fastapi==0.141.1",
   "google-auth-oauthlib==1.4.0",
   "httpx==0.28.1",
   "mcp==1.28.1",
