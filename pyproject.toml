@@ -9,7 +9,7 @@ description = "Durable personal operations service for Hermes Agent"
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
 dependencies = [
-  "alembic==1.18.5",
+  "alembic==1.19.0",
   "fastapi==0.139.2",
   "google-auth-oauthlib==1.4.0",
   "httpx==0.28.1",
