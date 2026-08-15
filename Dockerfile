@@ -1,4 +1,4 @@
-FROM postgres:16.9-bookworm AS postgres-client
+FROM postgres:18.0-bookworm AS postgres-client
 
 FROM python:3.12-slim-bookworm
 
