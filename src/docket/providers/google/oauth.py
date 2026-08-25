@@ -6,6 +6,7 @@ import tempfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
+from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 CALENDAR_EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events"
 DOCS_SCOPE = "https://www.googleapis.com/auth/documents"
@@ -42,10 +43,19 @@ class OAuthCredentials(Protocol):
 
 
 class OAuthFlow(Protocol):
+    redirect_uri: str
+    credentials: OAuthCredentials
+
     def run_local_server(self, **kwargs: Any) -> OAuthCredentials: ...
+
+    def authorization_url(self, **kwargs: Any) -> tuple[str, str]: ...
+
+    def fetch_token(self, **kwargs: Any) -> Any: ...
 
 
 FlowFactory = Callable[[Path, Sequence[str]], OAuthFlow]
+AuthorizationURLHandler = Callable[[str], None]
+CallbackURLReader = Callable[[], str]
 
 
 def resolve_scopes(profiles: Sequence[str]) -> tuple[str, ...]:
@@ -168,6 +178,9 @@ def perform_setup(
     timeout_seconds: int,
     force: bool,
     callback_host: str = "127.0.0.1",
+    manual_callback: bool = False,
+    authorization_url_handler: AuthorizationURLHandler | None = None,
+    callback_url_reader: CallbackURLReader | None = None,
     flow_factory: FlowFactory = _default_flow_factory,
 ) -> tuple[str, ...]:
     validate_client_file(client_file)
@@ -186,16 +199,55 @@ def perform_setup(
 
     scopes = resolve_scopes(profiles)
     flow = flow_factory(client_file, scopes)
-    credentials = flow.run_local_server(
-        host=callback_host,
-        port=port,
-        open_browser=open_browser,
-        access_type="offline",
-        include_granted_scopes="false",
-        prompt="consent",
-        timeout_seconds=timeout_seconds,
-        authorization_prompt_message="Open this URL to authorize Docket:\n{url}",
-        success_message="Docket authorization completed. You may close this window.",
-    )
+    authorization_options = {
+        "access_type": "offline",
+        "include_granted_scopes": "false",
+        "prompt": "consent",
+    }
+    if manual_callback:
+        if port == 0:
+            raise GoogleOAuthSetupError("Manual remote OAuth requires a fixed callback port")
+        if authorization_url_handler is None or callback_url_reader is None:
+            raise GoogleOAuthSetupError("Manual remote OAuth prompt is unavailable")
+        flow.redirect_uri = f"http://{callback_host}:{port}/"
+        authorization_url, expected_state = flow.authorization_url(**authorization_options)
+        authorization_url_handler(authorization_url)
+        callback_url = callback_url_reader().strip()
+        parsed = urlsplit(callback_url)
+        try:
+            callback_port = parsed.port
+        except ValueError as exc:
+            raise GoogleOAuthSetupError("OAuth callback URL has an invalid port") from exc
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname != callback_host
+            or callback_port != port
+            or parsed.path != "/"
+        ):
+            raise GoogleOAuthSetupError(
+                "OAuth callback URL does not match Docket's loopback redirect"
+            )
+        if query.get("state") != [expected_state]:
+            raise GoogleOAuthSetupError("OAuth callback state does not match this setup run")
+        if query.get("error"):
+            raise GoogleOAuthSetupError("Google authorization was denied or failed")
+        if len(query.get("code", [])) != 1:
+            raise GoogleOAuthSetupError("OAuth callback URL is missing its one-time code")
+        authorization_response = urlunsplit(
+            ("https", parsed.netloc, parsed.path, parsed.query, parsed.fragment)
+        )
+        flow.fetch_token(authorization_response=authorization_response)
+        credentials = flow.credentials
+    else:
+        credentials = flow.run_local_server(
+            host=callback_host,
+            port=port,
+            open_browser=open_browser,
+            timeout_seconds=timeout_seconds,
+            authorization_prompt_message="Open this URL to authorize Docket:\n{url}",
+            success_message="Docket authorization completed. You may close this window.",
+            **authorization_options,
+        )
     _write_credentials(token_file, credentials, scopes)
     return scopes

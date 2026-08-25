@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import os
-import shlex
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -56,14 +56,9 @@ def _parser() -> argparse.ArgumentParser:
         "--remote",
         action="store_true",
         help=(
-            "Use a fixed loopback callback port for authorization through an "
-            "SSH local-forward; implies --no-browser"
+            "Authorize in a local browser and securely paste the failed "
+            "loopback callback URL; implies --no-browser"
         ),
-    )
-    setup.add_argument(
-        "--ssh-target",
-        default=os.environ.get("DOCKET_OAUTH_SSH_TARGET"),
-        help="SSH destination shown in remote-mode tunnel instructions",
     )
     setup.add_argument("--port", type=int, default=0, help="Local callback port; 0 chooses one")
     setup.add_argument("--timeout-seconds", type=int, default=300)
@@ -74,17 +69,23 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _remote_instructions(port: int, ssh_target: str | None) -> str:
-    target = shlex.quote(ssh_target) if ssh_target else "<your-ssh-target>"
-    return "\n".join(
-        (
-            "Remote OAuth mode enabled.",
-            "On the computer running your browser, keep this tunnel open:",
-            f"  ssh -N -L {port}:127.0.0.1:{port} {target}",
-            "Then open the authorization URL printed below in that browser.",
-            "The Google redirect will return through the tunnel to Docket.",
-        )
+def _show_remote_authorization_url(url: str) -> None:
+    print(
+        "\n".join(
+            (
+                "Remote OAuth mode enabled; no SSH port forwarding is required.",
+                "Open this URL in your local browser:",
+                url,
+                "After consent, localhost is expected to fail to load.",
+                "Copy the complete URL from the browser address bar and return here.",
+            )
+        ),
+        flush=True,
     )
+
+
+def _read_remote_callback_url() -> str:
+    return getpass.getpass("Paste the complete failed localhost URL (input hidden): ")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -103,10 +104,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     profiles = arguments.scope_profile or DEFAULT_SCOPE_PROFILES
     port = arguments.port
-    if arguments.remote:
-        if port == 0:
-            port = DEFAULT_REMOTE_CALLBACK_PORT
-        print(_remote_instructions(port, arguments.ssh_target), flush=True)
+    if arguments.remote and port == 0:
+        port = DEFAULT_REMOTE_CALLBACK_PORT
     try:
         scopes = perform_setup(
             client_file=client_file,
@@ -117,6 +116,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             timeout_seconds=arguments.timeout_seconds,
             force=arguments.force,
             callback_host="127.0.0.1",
+            manual_callback=arguments.remote,
+            authorization_url_handler=(
+                _show_remote_authorization_url if arguments.remote else None
+            ),
+            callback_url_reader=(_read_remote_callback_url if arguments.remote else None),
         )
     except GoogleOAuthSetupError as exc:
         print(f"Google OAuth setup failed: {exc}", file=sys.stderr)

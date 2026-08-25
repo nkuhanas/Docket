@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from docket.google_oauth_cli import DEFAULT_REMOTE_CALLBACK_PORT, _remote_instructions
+from docket.google_oauth_cli import DEFAULT_REMOTE_CALLBACK_PORT
 from docket.providers.google.oauth import (
     CALENDAR_EVENTS_SCOPE,
     DEFAULT_SCOPE_PROFILES,
@@ -57,10 +57,18 @@ class FakeFlow:
     def __init__(self, calls: dict[str, Any], credentials: FakeCredentials | None = None) -> None:
         self.calls = calls
         self.credentials = credentials or FakeCredentials()
+        self.redirect_uri = ""
 
     def run_local_server(self, **kwargs: Any) -> FakeCredentials:
         self.calls.update(kwargs)
         return self.credentials
+
+    def authorization_url(self, **kwargs: Any) -> tuple[str, str]:
+        self.calls["authorization_options"] = kwargs
+        return "https://accounts.google.test/authorize", "expected-state"
+
+    def fetch_token(self, **kwargs: Any) -> None:
+        self.calls["fetch_token"] = kwargs
 
 
 def test_setup_generates_refresh_token_file_atomically(tmp_path) -> None:
@@ -95,14 +103,59 @@ def test_setup_generates_refresh_token_file_atomically(tmp_path) -> None:
     assert calls["host"] == "127.0.0.1"
 
 
-def test_remote_instructions_use_fixed_loopback_tunnel() -> None:
-    instructions = _remote_instructions(
-        DEFAULT_REMOTE_CALLBACK_PORT,
-        "docket-user@docket-host",
+def test_remote_setup_exchanges_validated_manual_callback(tmp_path) -> None:
+    client_file = tmp_path / "client.json"
+    token_file = tmp_path / "token.json"
+    _write_client(client_file)
+    calls: dict[str, Any] = {}
+    displayed: list[str] = []
+
+    perform_setup(
+        client_file=client_file,
+        token_file=token_file,
+        profiles=["workspace"],
+        open_browser=False,
+        port=DEFAULT_REMOTE_CALLBACK_PORT,
+        timeout_seconds=60,
+        force=False,
+        manual_callback=True,
+        authorization_url_handler=displayed.append,
+        callback_url_reader=lambda: (
+            "http://127.0.0.1:8765/?state=expected-state&code=one-time-code"
+        ),
+        flow_factory=lambda _client, _scopes: FakeFlow(calls),
     )
 
-    assert "ssh -N -L 8765:127.0.0.1:8765 docket-user@docket-host" in instructions
-    assert "open the authorization URL" in instructions
+    assert displayed == ["https://accounts.google.test/authorize"]
+    assert calls["fetch_token"] == {
+        "authorization_response": (
+            "https://127.0.0.1:8765/?state=expected-state&code=one-time-code"
+        )
+    }
+    assert authorized_user_file_status(token_file) == "configured"
+
+
+def test_remote_setup_rejects_callback_from_another_run(tmp_path) -> None:
+    client_file = tmp_path / "client.json"
+    token_file = tmp_path / "token.json"
+    _write_client(client_file)
+
+    with pytest.raises(GoogleOAuthSetupError, match="state does not match"):
+        perform_setup(
+            client_file=client_file,
+            token_file=token_file,
+            profiles=["workspace"],
+            open_browser=False,
+            port=DEFAULT_REMOTE_CALLBACK_PORT,
+            timeout_seconds=60,
+            force=False,
+            manual_callback=True,
+            authorization_url_handler=lambda _url: None,
+            callback_url_reader=lambda: (
+                "http://127.0.0.1:8765/?state=wrong-state&code=one-time-code"
+            ),
+            flow_factory=lambda _client, _scopes: FakeFlow({}),
+        )
 
 
 def test_setup_rejects_non_loopback_callback_host(tmp_path) -> None:

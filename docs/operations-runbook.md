@@ -880,28 +880,22 @@ uv run docket-google-auth status --credentials-dir secrets/local
 scripts/setup-google-oauth.sh
 ```
 
-From a remote shell, use Google's loopback redirect through an SSH local
-forward. First, on the computer running the browser, keep this command open:
+From a remote shell, use the manual loopback-callback flow. Run this on the
+Docket host and open the printed authorization URL in the local browser:
 
 ```bash
-ssh -N -L 8765:127.0.0.1:8765 USER@DOCKET_HOST
-```
-
-Then run this on the Docket host and open the printed authorization URL in the
-local browser:
-
-```bash
-scripts/setup-google-oauth.sh --force --remote \
-  --ssh-target USER@DOCKET_HOST
+scripts/setup-google-oauth.sh --force --remote
 ```
 
 The wrapper selects `--remote` automatically when it detects no GUI/browser
-environment. Remote mode always binds Docket to `127.0.0.1`, uses fixed port
-`8765`, and never exposes the callback listener on a LAN or public interface.
-The SSH target is used only to print instructions; it is not stored in the
-credential file. Google redirects the local browser to the local end of the
-tunnel, which carries the callback to Docket. Keep both commands running until
-the token-write confirmation appears.
+environment. Remote mode does not start a callback listener and requires no SSH
+port forwarding. It registers the loopback redirect
+`http://127.0.0.1:8765/`, then uses PKCE and a per-run OAuth state value. After
+consent, the local browser is expected to show a connection failure. Copy the
+complete URL from its address bar and paste it into Docket's hidden-input
+prompt. Docket rejects a different host, port, path, state, missing code, or
+denied authorization before exchanging the one-time code. Never paste that URL
+into chat, logs, shell arguments, or shell history.
 
 The default approved bundle requests Calendar events, Gmail modify, Sheets,
 and Docs together. Possessing those scopes does not expose corresponding MCP

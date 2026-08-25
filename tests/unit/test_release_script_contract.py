@@ -73,4 +73,4 @@ def test_google_oauth_wrapper_auto_selects_remote_mode_without_a_browser() -> No
     assert "WAYLAND_DISPLAY" in script
     assert "BROWSER" in script
     assert 'set -- --remote "$@"' in script
-    assert "--ssh-target USER@HOST" in script
+    assert "No SSH tunnel is required" in script

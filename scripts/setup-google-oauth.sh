@@ -17,7 +17,7 @@ if [ "$browser_mode_set" = false ] &&
     [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}${BROWSER:-}" ]; then
     printf '%s\n' \
         'No local browser session detected; selecting remote OAuth mode.' \
-        'Use --ssh-target USER@HOST to print a ready-to-copy tunnel command.' >&2
+        'No SSH tunnel is required; follow the callback-URL paste prompt.' >&2
     set -- --remote "$@"
 fi
 
