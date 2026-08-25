@@ -880,6 +880,29 @@ uv run docket-google-auth status --credentials-dir secrets/local
 scripts/setup-google-oauth.sh
 ```
 
+From a remote shell, use Google's loopback redirect through an SSH local
+forward. First, on the computer running the browser, keep this command open:
+
+```bash
+ssh -N -L 8765:127.0.0.1:8765 USER@DOCKET_HOST
+```
+
+Then run this on the Docket host and open the printed authorization URL in the
+local browser:
+
+```bash
+scripts/setup-google-oauth.sh --force --remote \
+  --ssh-target USER@DOCKET_HOST
+```
+
+The wrapper selects `--remote` automatically when it detects no GUI/browser
+environment. Remote mode always binds Docket to `127.0.0.1`, uses fixed port
+`8765`, and never exposes the callback listener on a LAN or public interface.
+The SSH target is used only to print instructions; it is not stored in the
+credential file. Google redirects the local browser to the local end of the
+tunnel, which carries the callback to Docket. Keep both commands running until
+the token-write confirmation appears.
+
 The default approved bundle requests Calendar events, Gmail modify, Sheets,
 and Docs together. Possessing those scopes does not expose corresponding MCP
 tools. Provider actions remain limited by implemented Docket adapters and the

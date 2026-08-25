@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 
+from docket.google_oauth_cli import DEFAULT_REMOTE_CALLBACK_PORT, _remote_instructions
 from docket.providers.google.oauth import (
     CALENDAR_EVENTS_SCOPE,
     DEFAULT_SCOPE_PROFILES,
@@ -91,6 +92,36 @@ def test_setup_generates_refresh_token_file_atomically(tmp_path) -> None:
     assert calls["include_granted_scopes"] == "false"
     assert calls["prompt"] == "consent"
     assert calls["open_browser"] is False
+    assert calls["host"] == "127.0.0.1"
+
+
+def test_remote_instructions_use_fixed_loopback_tunnel() -> None:
+    instructions = _remote_instructions(
+        DEFAULT_REMOTE_CALLBACK_PORT,
+        "docket-user@docket-host",
+    )
+
+    assert "ssh -N -L 8765:127.0.0.1:8765 docket-user@docket-host" in instructions
+    assert "open the authorization URL" in instructions
+
+
+def test_setup_rejects_non_loopback_callback_host(tmp_path) -> None:
+    client_file = tmp_path / "client.json"
+    token_file = tmp_path / "token.json"
+    _write_client(client_file)
+
+    with pytest.raises(GoogleOAuthSetupError, match="loopback-only"):
+        perform_setup(
+            client_file=client_file,
+            token_file=token_file,
+            profiles=["calendar"],
+            open_browser=False,
+            port=8765,
+            timeout_seconds=60,
+            force=False,
+            callback_host="0.0.0.0",
+            flow_factory=lambda _client, _scopes: FakeFlow({}),
+        )
 
 
 def test_setup_refuses_to_replace_existing_token_without_force(tmp_path) -> None:

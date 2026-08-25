@@ -64,3 +64,13 @@ def test_operator_script_separates_gmail_scan_from_semantic_triage() -> None:
     assert "TriageService" not in scan_function
     assert "read_message(" not in gmail_cli
     assert "DOCKET_GMAIL_TRIAGE_SOURCE_ALLOWLIST='[]'" in script
+
+
+def test_google_oauth_wrapper_auto_selects_remote_mode_without_a_browser() -> None:
+    script = Path("scripts/setup-google-oauth.sh").read_text(encoding="utf-8")
+
+    assert "DISPLAY" in script
+    assert "WAYLAND_DISPLAY" in script
+    assert "BROWSER" in script
+    assert 'set -- --remote "$@"' in script
+    assert "--ssh-target USER@HOST" in script

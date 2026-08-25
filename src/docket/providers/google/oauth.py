@@ -167,6 +167,7 @@ def perform_setup(
     port: int,
     timeout_seconds: int,
     force: bool,
+    callback_host: str = "127.0.0.1",
     flow_factory: FlowFactory = _default_flow_factory,
 ) -> tuple[str, ...]:
     validate_client_file(client_file)
@@ -180,11 +181,13 @@ def perform_setup(
         )
     if port < 0 or port > 65535:
         raise GoogleOAuthSetupError("OAuth callback port must be between 0 and 65535")
+    if callback_host not in {"127.0.0.1", "localhost"}:
+        raise GoogleOAuthSetupError("OAuth callback host must remain loopback-only")
 
     scopes = resolve_scopes(profiles)
     flow = flow_factory(client_file, scopes)
     credentials = flow.run_local_server(
-        host="localhost",
+        host=callback_host,
         port=port,
         open_browser=open_browser,
         access_type="offline",
