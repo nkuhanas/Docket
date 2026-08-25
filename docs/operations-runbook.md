@@ -802,6 +802,31 @@ configuration. Diff template changes explicitly before applying, restart Hermes
 after active-config changes, and send `/reload-mcp` in existing sessions after a
 tool/schema change.
 
+Hermes's OpenAI Codex OAuth is separate from Google Workspace OAuth. The main
+Discord agent and the isolated `docket-triage` profile must use independent
+device-code sessions because OAuth refresh rotation makes copying one
+`auth.json` between profiles unsafe. Repair the interactive agent remotely with:
+
+```bash
+scripts/docket setup-hermes-auth
+```
+
+The command prints `https://auth.openai.com/codex/device` and a short-lived
+code. Open that URL on any computer; no callback listener or SSH tunnel is
+required. It backs up the prior main auth state, replaces only the main Codex
+credential, verifies it, clears stale exhaustion state, and restarts Hermes.
+If the isolated classifier itself reports logged out, repair it with a separate
+authorization:
+
+```bash
+scripts/docket setup-hermes-auth --triage
+```
+
+Use `--all` only when both profiles need repair; it deliberately requires two
+browser approvals. Never copy the main OAuth file into the triage profile or
+vice versa. A failed or interrupted device-code exchange restores the prior
+target credential.
+
 `scripts/docket deploy` runs this synchronization before recreating Hermes. This
 is a release invariant: the gateway readiness gate compares its startup registry
 with the tool contract, so a stale active allowlist fails the deployment instead
@@ -1012,9 +1037,10 @@ sudo docker compose exec -T hermes \
 ```
 
 Expect exactly four tools. The same profile must show no plugins and no Discord
-gateway. If the model credential did not clone into the profile, repair that
-credential through Hermes' profile/auth flow; never copy messaging or Docket
-internal-approval credentials into the profile.
+gateway. If its model credential reports logged out, repair that credential
+with `scripts/docket setup-hermes-auth --triage`; never copy the main OAuth
+file, messaging credentials, or Docket internal-approval credentials into the
+profile.
 
 When a live gate must inspect only explicitly selected disposable sources from
 a larger staged backlog, set `DOCKET_GMAIL_TRIAGE_SOURCE_ALLOWLIST` to a JSON

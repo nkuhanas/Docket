@@ -340,6 +340,11 @@ gmail_triage_setup() {
         "$ROOT/scripts/setup-hermes-triage.sh"
 }
 
+hermes_oauth_setup() {
+    DOCKET_HERMES_HOME="$ROOT/.runtime/hermes" \
+        "$ROOT/scripts/setup-hermes-oauth.sh" "${1:---main}"
+}
+
 gmail_triage_job_id() {
     local job_name="Docket Gmail triage"
     local listing
@@ -430,6 +435,8 @@ Commands:
   backup          Create or confirm today's encrypted PostgreSQL backup.
   verify-restore  Restore an encrypted backup into disposable PostgreSQL and verify it.
   setup-triage    Install the isolated Hermes Gmail-triage profile and cron.
+  setup-hermes-auth [--main|--triage|--all]
+                  Reauthorize Hermes's OpenAI Codex model credential.
   gmail-status    Report Gmail gates, checkpoint freshness, and source counts.
   gmail-scan      Force one bounded metadata scan; never invokes semantic triage.
   gmail-propose-archive SOURCE_ID SOURCE_VERSION REQUEST_KEY
@@ -456,6 +463,7 @@ case "${1:-}" in
     backup) encrypted_backup ;;
     verify-restore) verify_restore "${2:-}" ;;
     setup-triage) gmail_triage_setup ;;
+    setup-hermes-auth) hermes_oauth_setup "${2:---main}" ;;
     gmail-status) gmail status ;;
     gmail-scan) gmail scan ;;
     gmail-propose-archive)

@@ -74,3 +74,19 @@ def test_google_oauth_wrapper_auto_selects_remote_mode_without_a_browser() -> No
     assert "BROWSER" in script
     assert 'set -- --remote "$@"' in script
     assert "No SSH tunnel is required" in script
+
+
+def test_hermes_oauth_recovery_keeps_main_and_triage_sessions_independent() -> None:
+    script = Path("scripts/setup-hermes-oauth.sh").read_text(encoding="utf-8")
+    operator = Path("scripts/docket").read_text(encoding="utf-8")
+
+    assert "auth logout openai-codex" in script
+    assert "auth add openai-codex" in script
+    assert "--type oauth" in script
+    assert "--no-browser" in script
+    assert "auth reset openai-codex" in script
+    assert "-p docket-triage" in script
+    assert "profiles/docket-triage/auth.json" in script
+    assert "Restored the prior" in script
+    assert "compose restart hermes" in script
+    assert "setup-hermes-auth) hermes_oauth_setup" in operator
