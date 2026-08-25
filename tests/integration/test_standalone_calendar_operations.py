@@ -121,7 +121,13 @@ def _approve(
     return uuid.UUID(result["operation_id"])
 
 
-def _create_request(account: Account, message_id: str) -> ProposeCalendarEventInput:
+def _create_request(
+    account: Account,
+    message_id: str,
+    *,
+    start_local: str = "2026-07-30T12:00:00",
+    end_local: str = "2026-07-30T12:15:00",
+) -> ProposeCalendarEventInput:
     settings = get_settings()
     return ProposeCalendarEventInput.model_validate(
         {
@@ -133,8 +139,8 @@ def _create_request(account: Account, message_id: str) -> ProposeCalendarEventIn
                     "title": "Check my email",
                     "timing": {
                         "kind": "timed",
-                        "start_local": "2026-07-30T12:00:00",
-                        "end_local": "2026-07-30T12:15:00",
+                        "start_local": start_local,
+                        "end_local": end_local,
                     },
                     "location": "Desk",
                     "notes": "Operator-authored private note",
@@ -399,13 +405,22 @@ def test_update_card_prioritizes_operator_changes_and_terminal_state(
 def test_reminder_disable_and_cancellation_converge_both_projections(
     session_factory: sessionmaker[Session],
 ) -> None:
+    future_start = (datetime.now(ZoneInfo("America/Los_Angeles")) + timedelta(days=30)).replace(
+        hour=12, minute=0, second=0, microsecond=0, tzinfo=None
+    )
+    future_end = future_start + timedelta(minutes=15)
     provider = FakeCalendarProvider()
     runner = OperationRunner(session_factory, provider)
     with session_factory.begin() as session:
         account = _seed_target(session)
         account_id = account.id
         created = CalendarActionService(session).propose(
-            _create_request(account, "444444444444444444")
+            _create_request(
+                account,
+                "444444444444444444",
+                start_local=future_start.isoformat(),
+                end_local=future_end.isoformat(),
+            )
         )
         _approve(
             session,
