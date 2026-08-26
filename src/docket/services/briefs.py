@@ -102,16 +102,23 @@ class DailyBriefService:
                 anchor_date = local.date()
         window = self._window(session, kind=kind, local_date=anchor_date)
         delayed_reason: str | None = None
-        if kind == "overnight" and window.status == "published":
-            kind = "waking"
-            anchor_date = local.date()
+        crossed_boundaries = 0
+        while window.status == "published":
+            crossed_boundaries += 1
+            if kind == "overnight":
+                kind = "waking"
+            else:
+                kind = "overnight"
+                anchor_date += timedelta(days=1)
             window = self._window(session, kind=kind, local_date=anchor_date)
-            delayed_reason = "delayed_after_morning_brief"
-        if kind == "waking" and window.status == "published":
-            kind = "overnight"
-            anchor_date = local.date() + timedelta(days=1)
-            window = self._window(session, kind=kind, local_date=anchor_date)
-            delayed_reason = "delayed_after_night_brief"
+        if crossed_boundaries == 1:
+            delayed_reason = (
+                "delayed_after_morning_brief"
+                if kind == "waking"
+                else "delayed_after_night_brief"
+            )
+        elif crossed_boundaries > 1:
+            delayed_reason = "delayed_after_multiple_briefs"
         membership = TriageWindowMembership(
             window_id=window.id,
             semantic_candidate_id=candidate.id,

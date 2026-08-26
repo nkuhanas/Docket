@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -15,7 +15,9 @@ from docket.models import (
     OutboxEvent,
     QueueItem,
     SemanticCandidate,
+    SourceItem,
     TriageWindow,
+    TriageWindowMembership,
 )
 from docket.providers.discord import FakeDiscordBackend, FakeDiscordProjectionAdapter
 from docket.providers.google.fake_gmail import FakeGmailProvider
@@ -40,6 +42,69 @@ def _settings():
             "waking_window_end_hour": 22,
         }
     )
+
+
+@pytest.mark.integration
+def test_delayed_candidate_advances_past_every_published_window(
+    session_factory,
+) -> None:
+    settings = _settings()
+    briefs = DailyBriefService(session_factory, settings)
+    with session_factory.begin() as session:
+        account = Account(
+            provider="google",
+            external_account_id="delayed-window-test",
+            capabilities=["gmail"],
+            enabled=True,
+        )
+        session.add(account)
+        session.flush()
+        source = SourceItem(
+            account_id=account.id,
+            provider="gmail",
+            external_object_id="delayed-source",
+            external_parent_id="delayed-thread",
+            source_version="1",
+            source_fingerprint="f" * 64,
+            received_at=datetime(2026, 8, 24, 19, 0, tzinfo=UTC),
+            status="classified",
+        )
+        session.add(source)
+        session.flush()
+        candidate = SemanticCandidate(
+            source_item_id=source.id,
+            candidate_index=0,
+            candidate_key="delayed-awareness",
+            semantic_key="e" * 64,
+            kind="information",
+            mutation="none",
+            title="Delayed material update",
+            summary="This source was classified after several brief boundaries.",
+            confidence=0.9,
+            status="resolved",
+        )
+        session.add(candidate)
+        session.flush()
+        for kind, local_date in (
+            ("waking", date(2026, 8, 24)),
+            ("overnight", date(2026, 8, 25)),
+            ("waking", date(2026, 8, 25)),
+        ):
+            briefs._window(session, kind=kind, local_date=local_date).status = "published"
+
+        membership = briefs.assign_candidate(
+            session,
+            candidate,
+            observed_at=source.received_at,
+        )
+        session.flush()
+        target = session.get(TriageWindow, membership.window_id)
+        assert target is not None
+        assert target.window_kind == "overnight"
+        assert target.local_date == date(2026, 8, 26)
+        assert target.status == "open"
+        assert membership.reason == "delayed_after_multiple_briefs"
+        assert session.scalar(select(TriageWindowMembership)) is membership
 
 
 @pytest.mark.integration

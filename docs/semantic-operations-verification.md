@@ -27,6 +27,10 @@ outside version control.
   Morning decisions remain separate canonical actions, but are reviewed and
   decided through one navigable Discord message rather than a per-email card
   stream.
+* Candidate window ownership is durable even when classification is delayed
+  across more than one already-published boundary. Docket advances the
+  candidate through each closed morning/night window until it reaches the next
+  open window; it never inserts new work into a brief that was already sent.
 * A terminal canonical decision cannot retain a live actionable Discord card.
   Duplicate interactions repair the exact clicked projection.
 
@@ -63,7 +67,8 @@ The repository gate exercises:
 * clicked-card convergence, duplicate-click repair, edit failure recovery, and
   restart reconciliation;
 * silent multi-source overnight triage, one idempotent morning brief, one night
-  closeout, delayed classification blocking, and missed-boundary catch-up;
+  closeout, delayed classification blocking, missed-boundary catch-up, and
+  multi-boundary delayed-source carry-forward without loss;
 * one-message morning review navigation, authenticated field edits, approval,
   local actions, child-operation completion, and aggregate-card refreshes with
   no separately published child cards;
