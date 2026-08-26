@@ -2261,6 +2261,8 @@ class DiscordProjectionRunner:
             child = session.get(QueueItem, candidate.queue_item_id)
             if child is None:
                 continue
+            if child.resolution_code == "newer_evidence_superseded_proposal":
+                continue
             state = self._action_state(session, child, projection_date=projection_date)
             if state["revision"] is not None or state["local_revisions"]:
                 entries.append(state)

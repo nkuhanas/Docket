@@ -180,7 +180,8 @@ class DailyBriefService:
     ) -> str:
         heading = "Overnight" if kind == "morning" else "Today"
         included = [candidate for candidate in candidates if candidate.kind != "noise"]
-        deduplicated: list[SemanticCandidate] = []
+        topic_order: list[str] = []
+        latest_by_topic: dict[str, SemanticCandidate] = {}
         seen_topics: set[str] = set()
         for candidate in included:
             resolution = candidate.resolution or {}
@@ -190,11 +191,11 @@ class DailyBriefService:
                 if canonical_event_id is not None
                 else f"{candidate.kind}:{' '.join(candidate.title.casefold().split())}"
             )
-            if topic_key in seen_topics:
-                continue
-            seen_topics.add(topic_key)
-            deduplicated.append(candidate)
-        included = deduplicated
+            if topic_key not in seen_topics:
+                seen_topics.add(topic_key)
+                topic_order.append(topic_key)
+            latest_by_topic[topic_key] = candidate
+        included = [latest_by_topic[topic_key] for topic_key in topic_order]
         if not included:
             return f"{heading}: no material changes or open items."
         grouped: dict[str, list[SemanticCandidate]] = {}

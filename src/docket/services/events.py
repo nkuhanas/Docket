@@ -18,6 +18,7 @@ from docket.models import (
     Approval,
     CalendarEventCache,
     CanonicalEvent,
+    DiscordProjection,
     EventObservation,
     OutboxEvent,
     ProviderEventBinding,
@@ -36,6 +37,10 @@ from docket.schemas.actions import (
     UpdateCalendarEventProposal,
 )
 from docket.schemas.calendar import StandaloneCalendarEventInput
+from docket.services.brief_projection import (
+    morning_brief_projection_for_queue_item,
+    projection_refresh_target,
+)
 from docket.services.calendar_actions import CalendarActionService, _occurrence_intervals
 from docket.services.queue import queue_projection_date
 
@@ -82,6 +87,11 @@ class CanonicalEventService:
         self.session = session
 
     def correlate(self, candidate: SemanticCandidate) -> list[CanonicalEvent]:
+        correlatable_statuses = (
+            ("proposed", "active", "cancelled")
+            if candidate.mutation == "cancel"
+            else ("proposed", "active")
+        )
         fields = candidate.fields
         correlation = fields.get("correlation")
         correlation = correlation if isinstance(correlation, dict) else {}
@@ -121,7 +131,7 @@ class CanonicalEventService:
                     self.session.scalars(
                         select(CanonicalEvent).where(
                             CanonicalEvent.id.in_(event_ids),
-                            CanonicalEvent.status.in_(("proposed", "active")),
+                            CanonicalEvent.status.in_(correlatable_statuses),
                         )
                     )
                 )
@@ -130,7 +140,9 @@ class CanonicalEventService:
         title_hint = correlation.get("title_hint") or candidate.title
         candidates = list(
             self.session.scalars(
-                select(CanonicalEvent).where(CanonicalEvent.status.in_(("proposed", "active")))
+                select(CanonicalEvent).where(
+                    CanonicalEvent.status.in_(correlatable_statuses)
+                )
             )
         )
         title_matches = [
@@ -490,21 +502,40 @@ class SemanticCandidateCompiler:
         *,
         reason: str,
     ) -> None:
-        revisions = session.scalars(
-            select(ActionRevision).where(
-                ActionRevision.parameters["canonical_event_id"].as_string()
-                == str(canonical_event.id)
+        action_ids = set(
+            session.scalars(
+                select(ActionRevision.action_id).where(
+                    ActionRevision.parameters["canonical_event_id"].as_string()
+                    == str(canonical_event.id)
+                )
             )
-        ).all()
-        for revision in revisions:
-            action = session.get(Action, revision.action_id)
+        )
+        for action_id in action_ids:
+            action = session.get(Action, action_id)
             if action is None or action.status != "approval_pending":
+                continue
+            revision = session.scalar(
+                select(ActionRevision).where(
+                    ActionRevision.action_id == action.id,
+                    ActionRevision.revision == action.current_revision,
+                )
+            )
+            if (
+                revision is None
+                or revision.parameters.get("canonical_event_id")
+                != str(canonical_event.id)
+            ):
                 continue
             approval = session.scalar(
                 select(Approval).where(
                     Approval.action_revision_id == revision.id,
                     Approval.status == "pending",
                 )
+            )
+            control_projection = (
+                session.get(DiscordProjection, approval.control_projection_id)
+                if approval is not None and approval.control_projection_id is not None
+                else None
             )
             if approval is not None:
                 approval.status = "superseded"
@@ -520,15 +551,44 @@ class SemanticCandidateCompiler:
                 queue_item.resolved_at = utc_now()
                 queue_item.resolution_code = reason
                 queue_item.version += 1
+                superseded_candidates = session.scalars(
+                    select(SemanticCandidate).where(
+                        SemanticCandidate.queue_item_id == queue_item.id,
+                        SemanticCandidate.status.in_(
+                            ("needs_clarification", "proposed", "executing")
+                        ),
+                    )
+                ).all()
+                for candidate in superseded_candidates:
+                    candidate.status = "resolved"
+                    candidate.resolution = {
+                        **(candidate.resolution or {}),
+                        "disposition": reason,
+                        "canonical_event_id": str(canonical_event.id),
+                    }
+                    candidate.version += 1
+                projection = control_projection or morning_brief_projection_for_queue_item(
+                    session,
+                    child_queue_item_id=queue_item.id,
+                )
+                refresh_target = projection_refresh_target(
+                    session,
+                    child_queue_item_id=queue_item.id,
+                    projection=projection,
+                )
                 session.add(
                     OutboxEvent(
                         event_type="discord.projection.refresh_requested",
                         aggregate_type="queue_item",
-                        aggregate_id=queue_item.id,
+                        aggregate_id=refresh_target.queue_item_id,
                         deduplication_key=(
-                            f"discord_projection:{queue_item.id}:superseded:{revision.id}"
+                            f"discord_projection:{refresh_target.queue_item_id}:"
+                            f"superseded:{revision.id}"
                         ),
-                        payload={"queue_item_id": str(queue_item.id), "status": "superseded"},
+                        payload={
+                            **refresh_target.payload(),
+                            "status": "superseded",
+                        },
                         status="pending",
                     )
                 )
@@ -753,11 +813,27 @@ class SemanticCandidateCompiler:
             }
             return
 
+        if candidate.mutation == "cancel" and canonical_event is not None and (
+            canonical_event.status == "cancelled"
+        ):
+            event_service.observe(
+                candidate=candidate,
+                canonical_event=canonical_event,
+                correlation_state="matched",
+                candidate_events=matches,
+            )
+            candidate.status = "resolved"
+            candidate.resolution = {
+                "disposition": "canonical_already_cancelled",
+                "canonical_event_id": str(canonical_event.id),
+            }
+            return
+
         if candidate.mutation == "create" and canonical_event is not None:
-            assert event is not None and isinstance(event_data, dict)
+            assert event is not None
             if provider_match is not None or _event_fingerprint(
                 canonical_event.event_spec
-            ) == _event_fingerprint(event_data):
+            ) == _event_fingerprint(event.model_dump(mode="json")):
                 event_service.observe(
                     candidate=candidate,
                     canonical_event=canonical_event,
@@ -775,6 +851,41 @@ class SemanticCandidateCompiler:
                 }
                 return
             effective_mutation = "update"
+
+        if (
+            effective_mutation == "update"
+            and canonical_event is not None
+            and event is not None
+            and _event_fingerprint(canonical_event.event_spec)
+            == _event_fingerprint(event.model_dump(mode="json"))
+        ):
+            provider_already_matches = binding is not None and (
+                self._cached_provider_event(
+                    session,
+                    account_id=account.id,
+                    event=event,
+                    provider_event_id=binding.provider_event_id,
+                    identity_only=False,
+                )
+                is not None
+            )
+            if binding is None or provider_already_matches:
+                event_service.observe(
+                    candidate=candidate,
+                    canonical_event=canonical_event,
+                    correlation_state="matched",
+                    candidate_events=matches,
+                )
+                candidate.status = "resolved"
+                candidate.resolution = {
+                    "disposition": (
+                        "calendar_already_matches"
+                        if provider_already_matches
+                        else "duplicate_observation"
+                    ),
+                    "canonical_event_id": str(canonical_event.id),
+                }
+                return
 
         if effective_mutation in {"update", "cancel"} and canonical_event is None:
             event_service.observe(

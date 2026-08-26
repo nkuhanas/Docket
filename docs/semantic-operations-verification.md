@@ -13,7 +13,9 @@ outside version control.
   candidates; it cannot authorize a provider mutation.
 * Inferred event creates, changes, and cancellations remain versioned
   formulations until the operator decides them. Existing matching Calendar
-  events and duplicate source threads converge without another proposal.
+  events, duplicate source threads, unchanged updates, and repeat cancellations
+  converge without another proposal. Materially newer evidence supersedes the
+  current immutable proposal revision, including an operator-edited revision.
 * Required provisional, unresolved, or ambiguous entities pause compilation.
   Explicit registration or correction persists the binding and resumes the
   same candidate.
@@ -50,17 +52,23 @@ The repository gate exercises:
 * entity creation, aliasing, correction, relationship preservation, merge, and
   clarification resumption;
 * zero-candidate extraction and duplicate-thread idempotency;
-* inferred proposal versioning, Calendar exact-match no-op, and cancellation
-  correlation without replacement event details;
+* inferred proposal adoption through one approval and one provider operation;
+* inferred proposal versioning, cross-source exact-match no-op, unchanged-update
+  no-op, pending-create update/cancellation reconciliation, and repeat
+  cancellation correlation without replacement event details;
+* independent Google Calendar edits recorded as provider divergence without
+  rewriting canonical event state;
 * source-safe Discord proposal rendering;
 * durable conflict bundles and partial provider failure;
 * clicked-card convergence, duplicate-click repair, edit failure recovery, and
   restart reconciliation;
-* silent overnight triage, one idempotent morning brief, one night closeout,
-  delayed classification blocking, and missed-boundary catch-up;
+* silent multi-source overnight triage, one idempotent morning brief, one night
+  closeout, delayed classification blocking, and missed-boundary catch-up;
 * one-message morning review navigation, authenticated field edits, approval,
   local actions, child-operation completion, and aggregate-card refreshes with
   no separately published child cards;
+* night closeout topic consolidation across sources, resolved outcomes,
+  unresolved obligations, and awareness without per-email replay;
 * migration `0023` cleanup of a residual snoozed housekeeping card.
 
 Run the complete gate with:

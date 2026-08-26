@@ -1,4 +1,5 @@
 import uuid
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from threading import Event
 from time import monotonic, sleep
@@ -15,8 +16,10 @@ from docket.models import (
     CalendarEventCache,
     CalendarLink,
     CalendarSyncState,
+    CanonicalEvent,
     DiscordDailyThread,
     OutboxEvent,
+    ProviderEventBinding,
     ReminderRule,
     ScheduledNotification,
 )
@@ -159,6 +162,82 @@ def test_paginated_snapshot_promotes_atomically_and_partial_failure_preserves_pr
             ("event-a", "A2"),
             ("event-c", "C1"),
         ]
+
+
+@pytest.mark.integration
+def test_independent_provider_edit_is_recorded_as_divergence_not_canonical_drift(
+    session_factory,
+) -> None:
+    base = datetime(2026, 7, 22, 14, tzinfo=UTC)
+    settings = get_settings().model_copy(update={"calendar_reads_enabled": True})
+    account_id = _account(session_factory)
+    with session_factory.begin() as session:
+        canonical = CanonicalEvent(
+            canonical_key="independent-provider-edit",
+            title="Canonical title",
+            status="active",
+            event_spec={
+                "title": "Canonical title",
+                "timing": {
+                    "kind": "timed",
+                    "start_local": "2026-07-23T09:00:00",
+                    "end_local": "2026-07-23T10:00:00",
+                },
+            },
+            authority="explicit_user",
+        )
+        session.add(canonical)
+        session.flush()
+        binding = ProviderEventBinding(
+            canonical_event_id=canonical.id,
+            account_id=account_id,
+            calendar_id=settings.google_calendar_id,
+            provider_event_id="independently-edited",
+            provider_etag='"provider-v1"',
+            status="active",
+            provider_snapshot={"summary": "Canonical title"},
+        )
+        session.add(binding)
+        session.flush()
+        canonical_id = canonical.id
+        binding_id = binding.id
+
+    provider = FakeCalendarProvider()
+    provider.put_snapshot_event(
+        replace(
+            _timed(
+                "independently-edited",
+                base + timedelta(days=1),
+                summary="Externally changed title",
+            ),
+            provider_etag='"provider-v2"',
+        )
+    )
+    sync = CalendarSyncService(session_factory, provider, settings, clock=lambda: base)
+    assert sync.sync_target(account_id, settings.google_calendar_id, force=True)
+
+    with session_factory() as session:
+        canonical = session.get(CanonicalEvent, canonical_id)
+        binding = session.get(ProviderEventBinding, binding_id)
+        cache = session.scalar(
+            select(CalendarEventCache).where(
+                CalendarEventCache.provider_event_id == "independently-edited"
+            )
+        )
+        audit = session.scalar(
+            select(AuditEvent).where(
+                AuditEvent.event_type == "calendar.provider_binding_diverged"
+            )
+        )
+        assert canonical is not None
+        assert canonical.title == "Canonical title"
+        assert canonical.event_spec["title"] == "Canonical title"
+        assert binding is not None and binding.status == "diverged"
+        assert binding.provider_etag == '"provider-v2"'
+        assert binding.independently_modified_at is not None
+        assert cache is not None and cache.summary == "Externally changed title"
+        assert audit is not None
+        assert session.scalar(select(OutboxEvent)) is None
 
 
 @pytest.mark.integration

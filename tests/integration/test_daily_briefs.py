@@ -55,6 +55,13 @@ def test_overnight_event_is_silent_until_idempotent_morning_brief(
         subject="Morning review",
         received_at=datetime(2026, 8, 26, 9, 0, tzinfo=UTC),
     )
+    provider.add_message(
+        message_id="overnight-awareness",
+        thread_id="overnight-awareness-thread",
+        source_version="1",
+        subject="Application received",
+        received_at=datetime(2026, 8, 26, 10, 0, tzinfo=UTC),
+    )
     now = datetime.now(UTC)
     with session_factory.begin() as session:
         account = Account(
@@ -86,9 +93,10 @@ def test_overnight_event_is_silent_until_idempotent_morning_brief(
     assert not briefs.run_due_once(morning)
     triage = TriageService(session_factory, provider, settings)
     claim = triage.claim_batch()
+    sources = {source["external_object_id"]: source for source in claim["sources"]}
     triage.submit_candidates(
         SubmitSemanticCandidatesInput(
-            source_id=str(claim["sources"][0]["source_id"]),
+            source_id=str(sources["overnight-event"]["source_id"]),
             claim_token=str(claim["claim_token"]),
             candidates=[
                 SemanticCandidateInput(
@@ -119,19 +127,35 @@ def test_overnight_event_is_silent_until_idempotent_morning_brief(
             ],
         )
     )
+    triage.submit_candidates(
+        SubmitSemanticCandidatesInput(
+            source_id=str(sources["overnight-awareness"]["source_id"]),
+            claim_token=str(claim["claim_token"]),
+            candidates=[
+                SemanticCandidateInput(
+                    candidate_key="application-received",
+                    kind="information",
+                    title="Application received",
+                    summary="The employer confirmed receipt; no action is required.",
+                    confidence=0.99,
+                )
+            ],
+        )
+    )
     compiler = SemanticCandidateCompiler(session_factory, settings)
+    assert compiler.run_due_once()
     assert compiler.run_due_once()
     assert compiler.run_due_once()
     with session_factory() as session:
         window = session.scalar(select(TriageWindow))
-        candidates = list(
-            session.scalars(select(SemanticCandidate).order_by(SemanticCandidate.candidate_index))
-        )
+        candidates = {
+            candidate.candidate_key: candidate
+            for candidate in session.scalars(select(SemanticCandidate))
+        }
         assert window is not None and window.window_kind == "overnight"
-        assert [candidate.status for candidate in candidates] == [
-            "proposed",
-            "needs_clarification",
-        ]
+        assert candidates["morning-review"].status == "proposed"
+        assert candidates["morning-clarification"].status == "needs_clarification"
+        assert candidates["application-received"].status == "resolved"
         assert session.scalar(select(OutboxEvent)) is None
 
     assert briefs.run_due_once(morning)
@@ -144,6 +168,8 @@ def test_overnight_event_is_silent_until_idempotent_morning_brief(
         assert len(queue_items) == 3
         assert queue_items[2].title == "Morning brief"
         assert "Calendar (2)" in queue_items[2].summary
+        assert "Awareness (1)" in queue_items[2].summary
+        assert "Application received" in queue_items[2].summary
         assert len(outbox) == 1
         assert outbox[0].aggregate_id == brief.queue_item_id
 
@@ -374,6 +400,13 @@ def test_night_brief_consolidates_daytime_action_and_awareness(
         subject="Daytime items",
         received_at=datetime(2026, 8, 26, 19, 0, tzinfo=UTC),
     )
+    provider.add_message(
+        message_id="daytime-summary-followup",
+        thread_id="daytime-followup-thread",
+        source_version="1",
+        subject="Application receipt follow-up",
+        received_at=datetime(2026, 8, 26, 20, 0, tzinfo=UTC),
+    )
     assert (
         GmailIngestionService(session_factory, provider, settings)
         .run_due_once(force=True)
@@ -381,9 +414,10 @@ def test_night_brief_consolidates_daytime_action_and_awareness(
     )
     triage = TriageService(session_factory, provider, settings)
     claim = triage.claim_batch()
+    sources = {source["external_object_id"]: source for source in claim["sources"]}
     triage.submit_candidates(
         SubmitSemanticCandidatesInput(
-            source_id=str(claim["sources"][0]["source_id"]),
+            source_id=str(sources["daytime-summary"]["source_id"]),
             claim_token=str(claim["claim_token"]),
             candidates=[
                 SemanticCandidateInput(
@@ -391,6 +425,13 @@ def test_night_brief_consolidates_daytime_action_and_awareness(
                     kind="task",
                     title="Submit department form",
                     summary="A department form needs a response.",
+                    confidence=0.9,
+                ),
+                SemanticCandidateInput(
+                    candidate_key="reply-department",
+                    kind="response",
+                    title="Reply to the department",
+                    summary="The department is waiting for a reply.",
                     confidence=0.9,
                 ),
                 SemanticCandidateInput(
@@ -403,9 +444,36 @@ def test_night_brief_consolidates_daytime_action_and_awareness(
             ],
         )
     )
+    triage.submit_candidates(
+        SubmitSemanticCandidatesInput(
+            source_id=str(sources["daytime-summary-followup"]["source_id"]),
+            claim_token=str(claim["claim_token"]),
+            candidates=[
+                SemanticCandidateInput(
+                    candidate_key="application-received-followup",
+                    kind="information",
+                    title="Application received",
+                    summary="The employer repeated the receipt confirmation.",
+                    confidence=0.99,
+                )
+            ],
+        )
+    )
     compiler = SemanticCandidateCompiler(session_factory, settings)
     assert compiler.run_due_once()
     assert compiler.run_due_once()
+    assert compiler.run_due_once()
+    assert compiler.run_due_once()
+
+    with session_factory.begin() as session:
+        completed = session.scalar(
+            select(QueueItem).where(QueueItem.title == "Submit department form")
+        )
+        assert completed is not None
+        completed.status = "completed"
+        completed.resolved_at = datetime.now(UTC)
+        completed.resolution_code = "acknowledged"
+        completed.version += 1
 
     # Simulate a restart after the 22:00 boundary. The missed closeout is still
     # due at 03:01 local time and must not be lost merely because the hour wrapped.
@@ -417,8 +485,10 @@ def test_night_brief_consolidates_daytime_action_and_awareness(
         assert night_brief is not None
         queue_item = session.get(QueueItem, night_brief.queue_item_id)
         assert queue_item is not None
-        assert "Still needs you (1)" in queue_item.summary
+        assert "Completed / resolved (1)" in queue_item.summary
         assert "Submit department form" in queue_item.summary
+        assert "Still needs you (1)" in queue_item.summary
+        assert "Reply to the department" in queue_item.summary
         assert "Awareness (1)" in queue_item.summary
         assert "Application received" in queue_item.summary
 
@@ -436,10 +506,23 @@ def test_night_brief_consolidates_daytime_action_and_awareness(
         if message["embed"]["title"] == "Submit department form"
     )
     assert action_card["embed"]["fields"] == []
-    assert {control["label"] for control in action_card["controls"]} == {
+    assert action_card["controls"] == []
+    unresolved_card = next(
+        message
+        for message in backend.messages.values()
+        if message["embed"]["title"] == "Reply to the department"
+    )
+    assert {control["label"] for control in unresolved_card["controls"]} == {
         "Snooze until tomorrow",
         "Acknowledge",
     }
     assert not any(
         message["embed"]["title"] == "Application received" for message in backend.messages.values()
+    )
+    assert (
+        sum(
+            message["embed"]["title"] == "Night brief"
+            for message in backend.messages.values()
+        )
+        == 1
     )

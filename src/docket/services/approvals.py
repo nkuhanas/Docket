@@ -50,6 +50,7 @@ from docket.security import (
 )
 from docket.services.brief_projection import (
     morning_brief_contains_queue_item,
+    morning_brief_projection_for_queue_item,
     projection_refresh_target,
 )
 from docket.services.course_reconciliation import (
@@ -753,10 +754,14 @@ class ApprovalService:
         response_projection = self._validate_projection_context(
             request, approval, revision, queue_item
         )
+        visible_projection = response_projection or morning_brief_projection_for_queue_item(
+            self.session,
+            child_queue_item_id=queue_item.id,
+        )
         refresh_target = projection_refresh_target(
             self.session,
             child_queue_item_id=queue_item.id,
-            projection=response_projection,
+            projection=visible_projection,
         )
         projection_target = refresh_target.payload()
         if approval.authorized_user_id != request.discord_user_id:
@@ -764,7 +769,7 @@ class ApprovalService:
                 code="unauthorized_approval_actor",
                 message="The Discord actor is not authorized for this approval.",
             )
-        if response_projection is not None and approval.status in {
+        if visible_projection is not None and approval.status in {
             ApprovalStatus.CONSUMED.value,
             ApprovalStatus.REJECTED.value,
         }:
@@ -778,7 +783,7 @@ class ApprovalService:
                     aggregate_id=refresh_target.queue_item_id,
                     deduplication_key=(
                         f"discord_projection:{refresh_target.queue_item_id}:repair:"
-                        f"{response_projection.id}:{request.discord_interaction_id}"
+                        f"{visible_projection.id}:{request.discord_interaction_id}"
                     ),
                     payload={
                         "action_id": str(action.id),
@@ -798,7 +803,7 @@ class ApprovalService:
                     actor_id=request.discord_user_id,
                     request_id=request.request_id,
                     data={
-                        "projection_id": str(response_projection.id),
+                        "projection_id": str(visible_projection.id),
                         "recorded_decision": recorded_decision,
                     },
                 )
@@ -862,7 +867,7 @@ class ApprovalService:
             revision,
             action,
             queue_item,
-            response_projection,
+            visible_projection,
         )
         if request.decision == "approve":
             settings = get_settings()

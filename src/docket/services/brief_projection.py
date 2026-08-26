@@ -79,6 +79,30 @@ def morning_brief_selects_queue_item(
     )
 
 
+def morning_brief_projection_for_queue_item(
+    session: Session,
+    *,
+    child_queue_item_id: uuid.UUID,
+) -> DiscordProjection | None:
+    """Return the live aggregate projection that currently contains a child item."""
+    return session.scalar(
+        select(DiscordProjection)
+        .join(DailyBrief, DailyBrief.queue_item_id == DiscordProjection.queue_item_id)
+        .join(DailyBriefItem, DailyBriefItem.brief_id == DailyBrief.id)
+        .join(
+            SemanticCandidate,
+            SemanticCandidate.id == DailyBriefItem.semantic_candidate_id,
+        )
+        .where(
+            DailyBrief.brief_kind == "morning",
+            SemanticCandidate.queue_item_id == child_queue_item_id,
+            DiscordProjection.status.in_(("pending", "delivered")),
+        )
+        .order_by(DiscordProjection.updated_at.desc(), DiscordProjection.id.desc())
+        .limit(1)
+    )
+
+
 def projection_refresh_target(
     session: Session,
     *,
@@ -121,6 +145,11 @@ def operation_projection_target(
         if approval is not None and approval.response_projection_id is not None
         else None
     )
+    if projection is None:
+        projection = morning_brief_projection_for_queue_item(
+            session,
+            child_queue_item_id=child_queue_item_id,
+        )
     return projection_refresh_target(
         session,
         child_queue_item_id=child_queue_item_id,

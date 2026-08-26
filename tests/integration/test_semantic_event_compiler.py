@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from docket.config import get_settings
 from docket.domain.enums import IntentAuthority
+from docket.internal_api.schemas import ApprovalResponse
 from docket.models import (
     Account,
     ActionRevision,
@@ -13,16 +14,25 @@ from docket.models import (
     CalendarEventCache,
     CalendarSyncState,
     CanonicalEvent,
+    DiscordDailyThread,
+    DiscordProjection,
     EventObservation,
+    Operation,
+    ProviderEventBinding,
     QueueItem,
     SemanticCandidate,
     SourceItem,
 )
+from docket.providers.discord import FakeDiscordBackend, FakeDiscordProjectionAdapter
+from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.providers.google.fake_gmail import FakeGmailProvider
 from docket.schemas.triage import SemanticCandidateInput, SubmitSemanticCandidatesInput
+from docket.services.approvals import ApprovalService
+from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.entities import EntityService
 from docket.services.events import SemanticCandidateCompiler
 from docket.services.gmail_ingestion import GmailIngestionService
+from docket.services.operations import OperationRunner
 from docket.services.triage import TriageService
 
 
@@ -140,6 +150,54 @@ def test_complete_inferred_event_becomes_one_version_bound_proposal(
             "subject": "Project review confirmed",
         }
         assert approval is not None and approval.status == "pending"
+
+    settings = _settings()
+    backend = FakeDiscordBackend()
+    projection_runner = DiscordProjectionRunner(
+        session_factory,
+        FakeDiscordProjectionAdapter(backend),
+        settings,
+    )
+    assert projection_runner.run_due_once()
+    with session_factory() as session:
+        projection = session.scalar(select(DiscordProjection))
+        thread = session.scalar(select(DiscordDailyThread))
+        assert projection is not None and projection.message_id is not None
+        assert thread is not None and thread.thread_id is not None
+        approval_control = next(
+            control
+            for control in backend.messages[str(projection.id)]["controls"]
+            if control.get("decision") == "approve"
+        )
+        response = ApprovalResponse(
+            request_id=uuid.uuid4(),
+            discord_interaction_id="inferred-event-approval",
+            approval_id=uuid.UUID(approval_control["approval_id"]),
+            approval_token=approval_control["token"],
+            short_code=None,
+            decision="approve",
+            discord_user_id=settings.operator_discord_user_id,
+            guild_id=settings.discord_guild_id,
+            channel_id=thread.thread_id,
+            parent_channel_id=settings.queue_channel_id,
+            projection_id=projection.id,
+            message_id=projection.message_id,
+            responded_at=datetime.now(UTC),
+        )
+    with session_factory.begin() as session:
+        accepted = ApprovalService(session).respond(response)
+        operation_id = uuid.UUID(accepted["operation_id"])
+        assert accepted["approval_status"] == "consumed"
+    assert OperationRunner(session_factory, FakeCalendarProvider()).run_due_once()
+    with session_factory() as session:
+        canonical = session.scalar(select(CanonicalEvent))
+        binding = session.scalar(select(ProviderEventBinding))
+        operation = session.get(Operation, operation_id)
+        approvals = list(session.scalars(select(Approval)))
+        assert canonical is not None and canonical.status == "active"
+        assert binding is not None and binding.canonical_event_id == canonical.id
+        assert operation is not None and operation.status == "succeeded"
+        assert len(approvals) == 1 and approvals[0].status == "consumed"
 
 
 @pytest.mark.integration
