@@ -69,6 +69,13 @@ def test_gmail_triage_source_allowlist_parses_exact_uuid_scope() -> None:
     assert settings.gmail_triage_source_allowlist == [source_id]
 
 
+def test_isolated_triage_defaults_fit_one_live_runner_pass() -> None:
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+
+    assert settings.gmail_claim_batch_size == 5
+    assert settings.gmail_triage_lease_seconds == 300
+
+
 def test_waking_window_is_one_ordered_local_day_interval() -> None:
     with pytest.raises(ValidationError, match="must start before it ends"):
         Settings(

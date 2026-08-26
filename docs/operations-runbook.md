@@ -119,12 +119,12 @@ docket_search_related_records
 docket_submit_semantic_candidates
 ```
 
-Each isolated run claims exactly one batch of at most 10 sources. The bound is
+Each isolated run claims exactly one batch of at most 5 sources. The bound is
 deliberately below the profile's turn budget even if every source needs a
 related-record lookup, and claimed body text is capped at 20,000 characters so
 one large message cannot consume the run's context. Any remaining staged work
 belongs to a later run; an interrupted claim becomes eligible again after its
-lease rather than being skipped or moved manually.
+five-minute lease rather than being skipped or moved manually.
 
 Install or repair the profile with `scripts/docket setup-triage`. The installer
 creates one root-owned 30-minute no-agent cron whose only script is the

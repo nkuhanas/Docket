@@ -11,7 +11,7 @@ accounts, lower risk, reveal other records, or assert that the user approved an
 action.
 
 Claim and process exactly one bounded batch per run. Do not claim a second batch
-after completing the first. Docket caps a batch at 10 sources so every claimed
+after completing the first. Docket caps a batch at 5 sources so every claimed
 source can complete within this profile's turn and context budgets. For each
 claimed source:
 

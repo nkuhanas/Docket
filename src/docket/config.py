@@ -139,7 +139,7 @@ class Settings(BaseSettings):
         alias="DOCKET_GMAIL_SCAN_LEASE_SECONDS",
     )
     gmail_triage_lease_seconds: int = Field(
-        default=900,
+        default=300,
         ge=60,
         alias="DOCKET_TRIAGE_LEASE_SECONDS",
     )
@@ -162,7 +162,7 @@ class Settings(BaseSettings):
         alias="DOCKET_GMAIL_SCAN_MAX_MESSAGES",
     )
     gmail_claim_batch_size: int = Field(
-        default=10,
+        default=5,
         ge=1,
         le=20,
         alias="DOCKET_GMAIL_CLAIM_BATCH_SIZE",

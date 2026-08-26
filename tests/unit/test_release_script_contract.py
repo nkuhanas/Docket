@@ -50,7 +50,7 @@ def test_gmail_triage_installer_pins_an_isolated_profile_and_local_delivery() ->
     assert "--skills docket-triage" in launcher
     assert "--oneshot" in launcher
     assert "exactly one bounded batch" in skill
-    assert "caps a batch at 10 sources" in skill
+    assert "caps a batch at 5 sources" in skill
     assert "cli: []" in config
     assert "cron: []" in config
     assert "plugins:\n  enabled: []" in config
