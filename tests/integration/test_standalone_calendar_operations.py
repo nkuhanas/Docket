@@ -1657,9 +1657,10 @@ def test_carried_forward_approval_refreshes_the_clicked_card_and_repairs_duplica
         )
 
     backend = FakeDiscordBackend()
+    projection_adapter = FakeDiscordProjectionAdapter(backend)
     projection_runner = DiscordProjectionRunner(
         session_factory,
-        FakeDiscordProjectionAdapter(backend),
+        projection_adapter,
         settings,
     )
     assert projection_runner.run_due_once()
@@ -1765,6 +1766,21 @@ def test_carried_forward_approval_refreshes_the_clicked_card_and_repairs_duplica
     with session_factory() as session:
         assert session.scalar(select(func.count(Operation.id))) == 1
 
+    projection_adapter.discard_next_projection_ack = True
+    assert projection_runner.run_due_once()
+    with session_factory.begin() as session:
+        refresh = session.scalar(
+            select(OutboxEvent).where(
+                OutboxEvent.deduplication_key
+                == (
+                    f"discord_projection:{proposed.queue_item_id}:approval:"
+                    f"{proposed.approval_id}:approve"
+                )
+            )
+        )
+        assert refresh is not None and refresh.status == "pending"
+        refresh.next_attempt_at = None
+    assert projection_runner.run_due_once()
     while projection_runner.run_due_once():
         pass
     assert backend.messages[str(current_id)]["controls"] == []
