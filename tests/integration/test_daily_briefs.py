@@ -74,6 +74,9 @@ def test_overnight_event_is_silent_until_idempotent_morning_brief(
         .run_due_once(force=True)
         .completed
     )
+    briefs = DailyBriefService(session_factory, settings)
+    morning = datetime(2026, 8, 26, 14, 1, tzinfo=UTC)
+    assert not briefs.run_due_once(morning)
     triage = TriageService(session_factory, provider, settings)
     claim = triage.claim_batch()
     triage.submit_candidates(
@@ -124,8 +127,6 @@ def test_overnight_event_is_silent_until_idempotent_morning_brief(
         ]
         assert session.scalar(select(OutboxEvent)) is None
 
-    briefs = DailyBriefService(session_factory, settings)
-    morning = datetime(2026, 8, 26, 14, 1, tzinfo=UTC)
     assert briefs.run_due_once(morning)
     assert not briefs.run_due_once(morning)
     with session_factory() as session:
@@ -225,7 +226,9 @@ def test_night_brief_consolidates_daytime_action_and_awareness(
     assert compiler.run_due_once()
     assert compiler.run_due_once()
 
-    night = datetime(2026, 8, 27, 5, 1, tzinfo=UTC)
+    # Simulate a restart after the 22:00 boundary. The missed closeout is still
+    # due at 03:01 local time and must not be lost merely because the hour wrapped.
+    night = datetime(2026, 8, 27, 10, 1, tzinfo=UTC)
     assert briefs.run_due_once(night)
     assert not briefs.run_due_once(night)
     with session_factory() as session:

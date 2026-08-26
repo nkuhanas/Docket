@@ -148,10 +148,15 @@ operator genuinely introduces a new identity; never populate a seed list.
 Persist an explicit synonym with `docket_add_entity_alias`, a relationship with
 `docket_relate_entities`, a duplicate correction with `docket_merge_entities`,
 and a wrong mention binding with `docket_rebind_entity_resolution`. A
-provisional or ambiguous result is not a permanent fact. Ask one concise
-clarifying question only when the unresolved identity is required to perform
-the requested operation; otherwise preserve the provisional resolution and
-continue with non-destructive work.
+provisional or ambiguous result is not a permanent fact. An identity the user
+explicitly establishes as the organizer, institution, course, participant,
+location, project, or service of an event is material to that event and must be
+resolved before the Calendar operation; never discard the binding merely
+because title and time are otherwise complete. Offer registration when there
+is no plausible match and ask which entity when several matches remain. Ask
+one concise clarifying question containing only the unresolved material facts.
+Optional low-value classification may remain unresolved and must not block
+otherwise safe work.
 
 Allocate intent indexes only to state-changing Docket operations actually
 requested by the message, in message order. Reads such as search, get, profile,
@@ -250,5 +255,6 @@ Los Angeles rollover. An explicit user request to dismiss a pending or failed
 item may call `docket_ignore_queue_item`. Use the trusted source context and a
 new intent index for either write. These are local Docket transitions: never
 claim they archived, marked read, or otherwise changed the source provider.
-The queue card's signed **Snooze until tomorrow** and **Ignore** buttons are the
-normal direct-interaction equivalents and do not invoke Hermes.
+Clarification cards use **Snooze until tomorrow** and **Ignore**. Genuine
+non-calendar obligations use **Snooze until tomorrow** and **Acknowledge**.
+These signed direct-interaction controls do not invoke Hermes.

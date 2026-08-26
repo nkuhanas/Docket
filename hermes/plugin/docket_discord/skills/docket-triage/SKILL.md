@@ -15,7 +15,7 @@ source:
 
 1. Claim a batch. Stop when the batch is empty or either run limit is reached.
 2. Read each source only through `docket_read_claimed_source`.
-3. Extract one or more typed semantic candidates: `event`, `deadline`,
+3. Extract zero or more typed semantic candidates: `event`, `deadline`,
    `response`, `task`, `information`, or `noise`.
 4. For each candidate, state whether the evidence describes `create`, `update`,
    `cancel`, or no mutation; produce a concise derived title and one- or
@@ -24,8 +24,11 @@ source:
    Otherwise enumerate the required `missing_fields`; never invent timing,
    location, participants, or identity.
 6. Add typed entity mentions for institutions, organizations, courses, people,
-   locations, projects, and services. Search related Docket records only when it
-   helps disambiguate an actual mention; never create seed entities.
+   locations, projects, and services. Mark a mention required only when the
+   formulation cannot faithfully preserve the real-world object without that
+   binding; optional low-value classification must not force clarification.
+   Search related Docket records only when it helps disambiguate an actual
+   mention; never create seed entities.
 7. Supply correlation hints for every event update or cancellation, confidence,
    and bounded context labels. Never include quoted source text or links.
 8. Submit through `docket_submit_semantic_candidates`. Never propose archive,

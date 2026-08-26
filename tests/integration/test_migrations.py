@@ -378,3 +378,84 @@ def test_legacy_reminder_cleanup_preserves_canonical_rules(tmp_path, monkeypatch
 
     engine.dispose()
     clear_settings_cache()
+
+
+@pytest.mark.integration
+def test_residual_snoozed_housekeeping_card_is_retired(tmp_path, monkeypatch) -> None:
+    database_path = tmp_path / "residual-housekeeping.db"
+    database_url = f"sqlite+pysqlite:///{database_path}"
+    monkeypatch.setenv("DOCKET_DATABASE_URL", database_url)
+    clear_settings_cache()
+    config = Config("alembic.ini")
+    command.upgrade(config, "0022")
+
+    engine = create_engine(database_url)
+    metadata = MetaData()
+    queue_items = Table("queue_items", metadata, autoload_with=engine)
+    actions = Table("actions", metadata, autoload_with=engine)
+    now = datetime.now(UTC)
+    queue_id = uuid.uuid4().hex
+    with engine.begin() as connection:
+        connection.execute(
+            queue_items.insert().values(
+                id=queue_id,
+                primary_source_item_id=None,
+                deduplication_key="gmail:residual-housekeeping",
+                material_fingerprint="a" * 64,
+                category="application_receipt",
+                title="Application received",
+                summary="An obsolete alpha housekeeping card.",
+                status="snoozed",
+                priority="normal",
+                presentation="proposal",
+                received_at=now,
+                snoozed_until=now,
+                snooze_local_date=now.date(),
+                resolved_at=None,
+                resolution_code=None,
+                resolution_note=None,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        connection.execute(
+            actions.insert().values(
+                id=uuid.uuid4().hex,
+                queue_item_id=queue_id,
+                record_id=None,
+                action_type="gmail_archive_message",
+                status="approval_pending",
+                current_revision=1,
+                display_order=10,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+    command.upgrade(config, "head")
+    migrated = MetaData()
+    migrated_queue_items = Table("queue_items", migrated, autoload_with=engine)
+    migrated_actions = Table("actions", migrated, autoload_with=engine)
+    with engine.connect() as connection:
+        queue = (
+            connection.execute(
+                select(migrated_queue_items).where(migrated_queue_items.c.id == queue_id)
+            )
+            .mappings()
+            .one()
+        )
+        assert queue["status"] == "completed"
+        assert queue["presentation"] == "awareness"
+        assert queue["resolution_code"] == "alpha_housekeeping_retired"
+        assert (
+            connection.scalar(
+                select(migrated_actions.c.status).where(
+                    migrated_actions.c.queue_item_id == queue_id
+                )
+            )
+            == "superseded"
+        )
+
+    engine.dispose()
+    clear_settings_cache()

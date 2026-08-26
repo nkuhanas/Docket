@@ -255,13 +255,27 @@ class TriageService:
                         "account_id": str(source.account_id),
                         "provider": source.provider,
                         "anchor": anchor,
-                        "source_item_id": str(source.id),
-                        "source_version": source.source_version,
-                        "candidate_key": candidate_input.candidate_key,
                         "kind": candidate_input.kind,
                         "mutation": candidate_input.mutation,
+                        "title": " ".join(candidate_input.title.casefold().split()),
+                        "fields": fields,
                     }
                 )
+                existing = session.scalar(
+                    select(SemanticCandidate).where(SemanticCandidate.semantic_key == semantic_key)
+                )
+                if existing is not None:
+                    persisted.append(
+                        {
+                            "candidate_id": str(existing.id),
+                            "candidate_key": candidate_input.candidate_key,
+                            "kind": existing.kind,
+                            "mutation": existing.mutation,
+                            "status": existing.status,
+                            "disposition": "matched_existing",
+                        }
+                    )
+                    continue
                 status = "suppressed" if candidate_input.kind == "noise" else "pending"
                 candidate = SemanticCandidate(
                     source_item_id=source.id,
@@ -291,11 +305,17 @@ class TriageService:
                         {
                             "mention": mention.name,
                             "role": mention.role,
+                            "required": mention.required,
                             "entity_class": mention.entity_class,
                             "state": resolution.state,
                             "resolution_id": str(resolution.resolution_id),
                             "entity_id": (
                                 str(resolution.resolved_entity.entity_id)
+                                if resolution.resolved_entity is not None
+                                else None
+                            ),
+                            "canonical_name": (
+                                resolution.resolved_entity.canonical_name
                                 if resolution.resolved_entity is not None
                                 else None
                             ),
@@ -324,6 +344,7 @@ class TriageService:
                         "kind": candidate.kind,
                         "mutation": candidate.mutation,
                         "status": candidate.status,
+                        "disposition": "created",
                     }
                 )
 

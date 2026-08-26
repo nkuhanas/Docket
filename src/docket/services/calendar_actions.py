@@ -39,6 +39,7 @@ from docket.models import (
     ProviderEventBinding,
     QueueItem,
     QueueItemSource,
+    SourceItem,
 )
 from docket.models.base import utc_now
 from docket.policy import get_action_definition
@@ -892,6 +893,18 @@ class CalendarActionService:
         }
         if isinstance(proposal, CancelCalendarEventProposal):
             preview["reason"] = proposal.reason
+        if isinstance(request, InferredCalendarEventInput):
+            source_item = self.session.get(SourceItem, request.source_item_id)
+            if source_item is None:
+                raise DocketError(
+                    code="source_item_not_found",
+                    message="The inferred formulation lost its source provenance.",
+                )
+            preview["source"] = {
+                "relationship": "Inferred from email",
+                "sender": source_item.minimal_headers.get("sender"),
+                "subject": source_item.minimal_headers.get("subject"),
+            }
         preview_sha256 = sha256_json(preview)
 
         now = utc_now()

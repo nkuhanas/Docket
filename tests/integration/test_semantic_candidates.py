@@ -112,3 +112,100 @@ def test_update_candidate_requires_correlation() -> None:
             summary="The meeting time changed.",
             confidence=0.8,
         )
+
+
+@pytest.mark.integration
+def test_empty_extraction_and_duplicate_thread_candidate_are_idempotent(
+    session_factory,
+) -> None:
+    provider = FakeGmailProvider()
+    provider.add_message(
+        message_id="empty-source",
+        thread_id="empty-thread",
+        source_version="1",
+        subject="No semantic content",
+    )
+    provider.add_message(
+        message_id="duplicate-one",
+        thread_id="shared-thread",
+        source_version="1",
+        subject="Interview confirmed",
+    )
+    provider.add_message(
+        message_id="duplicate-two",
+        thread_id="shared-thread",
+        source_version="1",
+        subject="Interview confirmed again",
+    )
+    with session_factory.begin() as session:
+        session.add(
+            Account(
+                provider="google",
+                external_account_id="semantic-dedupe-test",
+                capabilities=["gmail"],
+                enabled=True,
+            )
+        )
+    assert (
+        GmailIngestionService(session_factory, provider, _settings())
+        .run_due_once(force=True)
+        .completed
+    )
+    service = TriageService(session_factory, provider, _settings())
+    claim = service.claim_batch()
+    sources = {source["external_object_id"]: source for source in claim["sources"]}
+    token = str(claim["claim_token"])
+
+    empty = service.submit_candidates(
+        SubmitSemanticCandidatesInput(
+            source_id=str(sources["empty-source"]["source_id"]),
+            claim_token=token,
+            candidates=[],
+        )
+    )
+    assert empty["candidates"] == []
+
+    candidate = SemanticCandidateInput(
+        candidate_key="interview-first-wording",
+        kind="event",
+        mutation="create",
+        title="Acme interview",
+        summary="The interview is confirmed.",
+        event={
+            "title": "Acme interview",
+            "timing": {
+                "kind": "timed",
+                "start_local": "2026-09-03T15:00:00",
+                "end_local": "2026-09-03T16:00:00",
+            },
+        },
+        confidence=0.95,
+    )
+    created = service.submit_candidates(
+        SubmitSemanticCandidatesInput(
+            source_id=str(sources["duplicate-one"]["source_id"]),
+            claim_token=token,
+            candidates=[candidate],
+        )
+    )
+    matched = service.submit_candidates(
+        SubmitSemanticCandidatesInput(
+            source_id=str(sources["duplicate-two"]["source_id"]),
+            claim_token=token,
+            candidates=[
+                candidate.model_copy(
+                    update={
+                        "candidate_key": "interview-second-wording",
+                        "summary": "A second message confirms the same interview.",
+                        "confidence": 0.91,
+                    }
+                )
+            ],
+        )
+    )
+
+    assert created["candidates"][0]["disposition"] == "created"
+    assert matched["candidates"][0]["disposition"] == "matched_existing"
+    assert matched["candidates"][0]["candidate_id"] == created["candidates"][0]["candidate_id"]
+    with session_factory() as session:
+        assert len(session.scalars(select(SemanticCandidate)).all()) == 1

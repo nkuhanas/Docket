@@ -1235,6 +1235,146 @@ def test_explicit_conflict_resolution_new_wins_runs_a_durable_bundle(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize(
+    ("resolution", "expected_operation", "expected_queue_resolution"),
+    [
+        ("keep_both", True, "calendar_conflict_keep_both"),
+        ("keep_existing", False, "calendar_conflict_kept_existing"),
+    ],
+)
+def test_non_destructive_conflict_choices_preserve_the_selected_events(
+    session_factory: sessionmaker[Session],
+    resolution: str,
+    expected_operation: bool,
+    expected_queue_resolution: str,
+) -> None:
+    settings = get_settings()
+    with session_factory.begin() as session:
+        account = _seed_target(session)
+        session.add(
+            CalendarEventCache(
+                account_id=account.id,
+                calendar_id=settings.google_calendar_id,
+                provider_event_id="existing-nondestructive-conflict",
+                snapshot_generation=uuid.uuid4(),
+                status="confirmed",
+                summary="Existing focus block",
+                location="Desk",
+                is_all_day=False,
+                start_at=datetime(2026, 7, 30, 19, 5, tzinfo=UTC),
+                end_at=datetime(2026, 7, 30, 19, 20, tzinfo=UTC),
+                timezone="America/Los_Angeles",
+                recurrence_kind="one_time",
+                system_tags=["one_time", "timed", "external"],
+                operator_tags=[],
+                priority="normal",
+                priority_basis="default",
+                provider_reminders={},
+                provider_etag='"existing-etag"',
+                synced_at=datetime.now(UTC),
+                has_attendees=False,
+                organizer_is_self=True,
+            )
+        )
+        proposed = CalendarActionService(session).apply_explicit(
+            _create_request(
+                account,
+                "770000000000000001" if resolution == "keep_both" else "770000000000000002",
+            )
+        )
+        queue_item_id = proposed.queue_item_id
+
+    backend = FakeDiscordBackend()
+    projection_runner = DiscordProjectionRunner(
+        session_factory,
+        FakeDiscordProjectionAdapter(backend),
+        settings,
+    )
+    assert projection_runner.run_due_once()
+    with session_factory() as session:
+        projection = session.scalar(select(DiscordProjection))
+        thread = session.scalar(select(DiscordDailyThread))
+        assert projection is not None and projection.message_id is not None
+        assert thread is not None and thread.thread_id is not None
+        conflict_control = next(
+            control
+            for control in backend.messages[str(projection.id)]["controls"]
+            if control.get("field") == "conflict_resolution"
+        )
+        projection_id = projection.id
+        message_id = projection.message_id
+        thread_id = thread.thread_id
+
+    with session_factory.begin() as session:
+        selected = ProposalControlService(session).respond(
+            LocalActionResponse(
+                request_id=uuid.uuid4(),
+                discord_interaction_id=f"conflict-select-{resolution}",
+                discord_user_id=settings.operator_discord_user_id,
+                guild_id=settings.discord_guild_id,
+                channel_id=thread_id,
+                parent_channel_id=settings.queue_channel_id,
+                projection_id=projection_id,
+                message_id=message_id,
+                responded_at=datetime.now(UTC),
+                action_revision_id=proposed.action_revision_id,
+                action_token=conflict_control["token"],
+                transition="proposal_field_change",
+                field="conflict_resolution",
+                value=resolution,
+            )
+        )
+        assert selected["revision"] == 2
+    while projection_runner.run_due_once():
+        pass
+
+    with session_factory() as session:
+        projection = session.get(DiscordProjection, projection_id)
+        assert projection is not None and projection.message_id is not None
+        approval_control = next(
+            control
+            for control in backend.messages[str(projection.id)]["controls"]
+            if control.get("decision") == "approve"
+        )
+        response = ApprovalResponse(
+            request_id=uuid.uuid4(),
+            discord_interaction_id=f"approve-{resolution}",
+            approval_id=uuid.UUID(str(approval_control["approval_id"])),
+            approval_token=str(approval_control["token"]),
+            short_code=None,
+            decision="approve",
+            discord_user_id=settings.operator_discord_user_id,
+            guild_id=settings.discord_guild_id,
+            channel_id=thread_id,
+            parent_channel_id=settings.queue_channel_id,
+            projection_id=projection.id,
+            message_id=projection.message_id,
+            responded_at=datetime.now(UTC),
+        )
+    with session_factory.begin() as session:
+        accepted = ApprovalService(session).respond(response)
+        assert accepted["conflict_resolution"] == resolution
+        assert (accepted["operation_id"] is not None) is expected_operation
+
+    if expected_operation:
+        runner = OperationRunner(session_factory, FakeCalendarProvider())
+        assert runner.run_due_once()
+
+    with session_factory() as session:
+        queue_item = session.get(QueueItem, queue_item_id)
+        existing = session.scalar(
+            select(CalendarEventCache).where(
+                CalendarEventCache.provider_event_id == "existing-nondestructive-conflict"
+            )
+        )
+        bundle = session.scalar(select(OperationBundle))
+        assert queue_item is not None and queue_item.status == "completed"
+        assert queue_item.resolution_code == expected_queue_resolution
+        assert existing is not None and existing.status == "confirmed"
+        assert bundle is not None and bundle.status == "succeeded"
+
+
+@pytest.mark.integration
 def test_refresh_rebinds_conflicts_and_edit_modal_replaces_typed_fields(
     session_factory: sessionmaker[Session],
 ) -> None:

@@ -68,6 +68,7 @@ class EntityMentionInput(BaseModel):
     entity_class: EntityClass
     name: str = Field(min_length=1, max_length=512)
     role: str | None = Field(default=None, min_length=1, max_length=128)
+    required: bool = True
 
 
 class CandidateCorrelationInput(BaseModel):
@@ -127,7 +128,7 @@ class SubmitSemanticCandidatesInput(BaseModel):
 
     source_id: str
     claim_token: str
-    candidates: list[SemanticCandidateInput] = Field(min_length=1, max_length=10)
+    candidates: list[SemanticCandidateInput] = Field(max_length=10)
 
     @model_validator(mode="after")
     def candidate_keys_are_unique(self) -> "SubmitSemanticCandidatesInput":

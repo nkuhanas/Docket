@@ -1,4 +1,5 @@
 from docket.domain.enums import IntentAuthority
+from docket.models import EntityResolution
 from docket.services.entities import EntityService
 
 
@@ -50,6 +51,34 @@ def test_entity_registry_resolves_aliases_and_preserves_ambiguity(session) -> No
     assert corrected.state == "resolved"
     assert corrected.resolved_entity is not None
     assert corrected.resolved_entity.entity_id == robotics.entity_id
+    future = service.resolve(entity_class="organization", mention="Robotics Club")
+    assert future.state == "resolved"
+    assert future.resolved_entity is not None
+    assert future.resolved_entity.entity_id == robotics.entity_id
+
+    institution = service.create(
+        entity_class="institution",
+        canonical_name="California Polytechnic State University, San Luis Obispo",
+        attributes={},
+        authority=IntentAuthority.EXPLICIT_USER,
+    )
+    service.relate(
+        subject_entity_id=lab.entity_id,
+        predicate="affiliated_with",
+        object_entity_id=institution.entity_id,
+        authority=IntentAuthority.EXPLICIT_USER,
+    )
+    service.merge(
+        survivor_id=robotics.entity_id,
+        absorbed_id=lab.entity_id,
+        authority=IntentAuthority.EXPLICIT_USER,
+        actor_id="000000000000000001",
+    )
+    relationships = service.relationships(robotics.entity_id)
+    assert len(relationships) == 1
+    assert relationships[0]["predicate"] == "affiliated_with"
+    assert relationships[0]["subject"]["entity_id"] == str(robotics.entity_id)
+    assert relationships[0]["object"]["entity_id"] == str(institution.entity_id)
 
 
 def test_inferred_unknown_entity_is_explicitly_provisional(session) -> None:
@@ -63,3 +92,21 @@ def test_inferred_unknown_entity_is_explicitly_provisional(session) -> None:
     assert result.resolved_entity is not None
     assert result.resolved_entity.status == "provisional"
     assert result.resolved_entity.authority == "inferred"
+
+
+def test_explicit_registration_resolves_an_existing_unknown_mention(session) -> None:
+    service = EntityService(session)
+    unresolved = service.resolve(entity_class="organization", mention="PolyUAS")
+    assert unresolved.state == "unresolved"
+
+    entity = service.create(
+        entity_class="organization",
+        canonical_name="PolyUAS",
+        attributes={"context": "club"},
+        authority=IntentAuthority.EXPLICIT_USER,
+    )
+
+    persisted = session.get(EntityResolution, unresolved.resolution_id)
+    assert persisted is not None
+    assert persisted.state == "resolved"
+    assert persisted.resolved_entity_id == entity.entity_id

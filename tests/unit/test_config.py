@@ -67,3 +67,18 @@ def test_gmail_triage_source_allowlist_parses_exact_uuid_scope() -> None:
     )
 
     assert settings.gmail_triage_source_allowlist == [source_id]
+
+
+def test_waking_window_is_one_ordered_local_day_interval() -> None:
+    with pytest.raises(ValidationError, match="must start before it ends"):
+        Settings(
+            DOCKET_WAKING_WINDOW_START_HOUR=22,
+            DOCKET_WAKING_WINDOW_END_HOUR=7,
+        )
+
+    settings = Settings(
+        DOCKET_WAKING_WINDOW_START_HOUR=6,
+        DOCKET_WAKING_WINDOW_END_HOUR=23,
+    )
+    assert settings.waking_window_start_hour == 6
+    assert settings.waking_window_end_hour == 23

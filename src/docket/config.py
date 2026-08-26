@@ -268,8 +268,10 @@ class Settings(BaseSettings):
         }
         if len(channel_ids) != 3:
             raise ValueError("Docket chat, queue, and system channel IDs must be distinct")
-        if self.waking_window_start_hour == self.waking_window_end_hour:
-            raise ValueError("Docket's waking window must leave a non-empty quiet window")
+        if self.waking_window_start_hour >= self.waking_window_end_hour:
+            raise ValueError(
+                "Docket's waking window must start before it ends on the same local day"
+            )
         if self.environment is Environment.PRODUCTION:
             if self.auto_create_schema:
                 raise ValueError("DOCKET_AUTO_CREATE_SCHEMA must be false in production")

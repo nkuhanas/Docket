@@ -1342,22 +1342,24 @@ class DiscordProjectionRunner:
                         "inline": False,
                     }
                 )
+            source = preview.get("source")
+            if isinstance(source, dict):
+                source_lines: list[str] = []
+                if source.get("relationship"):
+                    source_lines.append(str(source["relationship"]))
+                if source.get("sender"):
+                    source_lines.append(f"From: {source['sender']}")
+                if source.get("subject"):
+                    source_lines.append(f"Subject: {source['subject']}")
+                if source_lines:
+                    fields.append(
+                        {
+                            "name": "Source",
+                            "value": "\n".join(source_lines),
+                            "inline": False,
+                        }
+                    )
             if not calendar_action:
-                source = preview.get("source")
-                if isinstance(source, dict):
-                    source_lines: list[str] = []
-                    if source.get("sender"):
-                        source_lines.append(f"From: {source['sender']}")
-                    if source.get("subject"):
-                        source_lines.append(f"Subject: {source['subject']}")
-                    if source_lines:
-                        fields.append(
-                            {
-                                "name": "Email",
-                                "value": "\n".join(source_lines),
-                                "inline": False,
-                            }
-                        )
                 fields.append(
                     {
                         "name": "Effect",

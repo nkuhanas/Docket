@@ -12,11 +12,16 @@ from docket.domain.enums import IntentAuthority
 from docket.domain.errors import DocketError
 from docket.models import (
     AuditEvent,
+    CanonicalEvent,
     Entity,
     EntityAlias,
     EntityRelation,
     EntityResolution,
+    OutboxEvent,
+    QueueItem,
+    SemanticCandidate,
 )
+from docket.models.base import utc_now
 from docket.schemas.entities import EntityResolutionResult, EntityResult
 from docket.schemas.triage import EntityClass
 
@@ -46,6 +51,24 @@ class EntityService:
         self.session = session
 
     def _matches(self, entity_class: EntityClass, normalized: str) -> list[Entity]:
+        corrected_ids = select(EntityResolution.corrected_resolution_id).where(
+            EntityResolution.entity_class == entity_class,
+            EntityResolution.normalized_mention == normalized,
+            EntityResolution.corrected_resolution_id.is_not(None),
+        )
+        correction = self.session.scalar(
+            select(EntityResolution)
+            .where(EntityResolution.id.in_(corrected_ids))
+            .order_by(EntityResolution.created_at.desc(), EntityResolution.id.desc())
+            .limit(1)
+        )
+        if correction is not None and correction.resolved_entity_id is not None:
+            corrected_entity = self.session.get(Entity, correction.resolved_entity_id)
+            if corrected_entity is not None and corrected_entity.status in {
+                "active",
+                "provisional",
+            }:
+                return [corrected_entity]
         alias_entity_ids = select(EntityAlias.entity_id).where(
             EntityAlias.normalized_alias == normalized
         )
@@ -63,6 +86,121 @@ class EntityService:
                 .order_by(Entity.status, Entity.canonical_name, Entity.id)
             )
         )
+
+    @staticmethod
+    def _resolved_candidate_fields(
+        candidate: SemanticCandidate,
+        *,
+        previous_resolution_id: uuid.UUID,
+        resolution_id: uuid.UUID,
+        entity: Entity,
+    ) -> None:
+        raw_resolutions = candidate.fields.get("entity_resolutions")
+        if not isinstance(raw_resolutions, list):
+            return
+        changed = False
+        resolutions: list[dict[str, Any]] = []
+        for raw in raw_resolutions:
+            if not isinstance(raw, dict):
+                continue
+            resolution = dict(raw)
+            if resolution.get("resolution_id") == str(previous_resolution_id):
+                resolution.update(
+                    {
+                        "state": "resolved",
+                        "resolution_id": str(resolution_id),
+                        "entity_id": str(entity.id),
+                        "canonical_name": entity.canonical_name,
+                        "candidate_entity_ids": [str(entity.id)],
+                    }
+                )
+                changed = True
+            resolutions.append(resolution)
+        if changed:
+            candidate.fields = {**candidate.fields, "entity_resolutions": resolutions}
+            candidate.version += 1
+
+    def _resume_candidate_if_ascertained(self, candidate: SemanticCandidate) -> None:
+        if candidate.status != "needs_clarification" or not isinstance(candidate.resolution, dict):
+            return
+        if candidate.resolution.get("reason") != "entity_resolution_required":
+            return
+        raw_resolutions = candidate.fields.get("entity_resolutions")
+        resolutions = raw_resolutions if isinstance(raw_resolutions, list) else []
+        unresolved = [
+            resolution
+            for resolution in resolutions
+            if isinstance(resolution, dict)
+            and resolution.get("required", True)
+            and resolution.get("state") != "resolved"
+        ]
+        if unresolved:
+            return
+        queue_item = (
+            self.session.get(QueueItem, candidate.queue_item_id)
+            if candidate.queue_item_id is not None
+            else None
+        )
+        if queue_item is not None and queue_item.status == "pending":
+            queue_item.status = "completed"
+            queue_item.resolved_at = utc_now()
+            queue_item.resolution_code = "clarification_resolved"
+            queue_item.version += 1
+            self.session.add(
+                OutboxEvent(
+                    event_type="discord.projection.refresh_requested",
+                    aggregate_type="queue_item",
+                    aggregate_id=queue_item.id,
+                    deduplication_key=(
+                        f"discord_projection:{queue_item.id}:clarification-resolved:"
+                        f"v{queue_item.version}"
+                    ),
+                    payload={"queue_item_id": str(queue_item.id)},
+                    status="pending",
+                )
+            )
+        candidate.status = "pending"
+        candidate.queue_item_id = None
+        candidate.next_attempt_at = utc_now()
+        candidate.resolution = {"disposition": "entity_resolution_completed"}
+        candidate.version += 1
+
+    def _resolve_waiting_mentions(
+        self,
+        entity: Entity,
+        *,
+        normalized_mentions: set[str],
+    ) -> None:
+        """Resume formulations waiting on an entity the operator just established."""
+        if entity.status != "active" or not normalized_mentions:
+            return
+        waiting = self.session.scalars(
+            select(EntityResolution).where(
+                EntityResolution.entity_class == entity.entity_class,
+                EntityResolution.normalized_mention.in_(normalized_mentions),
+                EntityResolution.state.in_(("unresolved", "provisional")),
+                or_(
+                    EntityResolution.resolved_entity_id.is_(None),
+                    EntityResolution.resolved_entity_id == entity.id,
+                ),
+            )
+        ).all()
+        for resolution in waiting:
+            resolution.state = "resolved"
+            resolution.resolved_entity_id = entity.id
+            resolution.candidate_entity_ids = [str(entity.id)]
+            if resolution.semantic_candidate_id is None:
+                continue
+            candidate = self.session.get(SemanticCandidate, resolution.semantic_candidate_id)
+            if candidate is None:
+                continue
+            self._resolved_candidate_fields(
+                candidate,
+                previous_resolution_id=resolution.id,
+                resolution_id=resolution.id,
+                entity=entity,
+            )
+            self._resume_candidate_if_ascertained(candidate)
 
     def resolve(
         self,
@@ -120,6 +258,40 @@ class EntityService:
             candidates=[serialize_entity(entity) for entity in matches],
         )
 
+    def relationships(self, entity_id: uuid.UUID) -> list[dict[str, Any]]:
+        entity = self.session.get(Entity, entity_id)
+        if entity is None or entity.status not in {"active", "provisional"}:
+            raise DocketError(code="entity_not_found", message="Active entity was not found.")
+        relations = self.session.scalars(
+            select(EntityRelation)
+            .where(
+                EntityRelation.status == "active",
+                or_(
+                    EntityRelation.subject_entity_id == entity_id,
+                    EntityRelation.object_entity_id == entity_id,
+                ),
+            )
+            .order_by(EntityRelation.predicate, EntityRelation.id)
+        ).all()
+        results: list[dict[str, Any]] = []
+        for relation in relations:
+            subject = self.session.get(Entity, relation.subject_entity_id)
+            object_ = self.session.get(Entity, relation.object_entity_id)
+            if subject is None or object_ is None:
+                continue
+            results.append(
+                {
+                    "relation_id": str(relation.id),
+                    "predicate": relation.predicate,
+                    "subject": serialize_entity(subject).model_dump(mode="json"),
+                    "object": serialize_entity(object_).model_dump(mode="json"),
+                    "attributes": dict(relation.attributes),
+                    "authority": relation.authority,
+                    "version": relation.version,
+                }
+            )
+        return results
+
     def create(
         self,
         *,
@@ -149,6 +321,7 @@ class EntityService:
                 existing.authority = authority.value
                 existing.attributes = {**existing.attributes, **attributes}
                 existing.version += 1
+            self._resolve_waiting_mentions(existing, normalized_mentions={normalized})
             return serialize_entity(existing)
         entity = Entity(
             entity_class=entity_class,
@@ -160,6 +333,7 @@ class EntityService:
         )
         self.session.add(entity)
         self.session.flush()
+        self._resolve_waiting_mentions(entity, normalized_mentions={normalized})
         self.session.add(
             AuditEvent(
                 event_type="entity.created",
@@ -245,6 +419,7 @@ class EntityService:
                 )
             )
             entity.version += 1
+        self._resolve_waiting_mentions(entity, normalized_mentions={normalized})
         return serialize_entity(entity)
 
     def relate(
@@ -329,6 +504,77 @@ class EntityService:
                 alias=absorbed.canonical_name,
                 authority=authority,
             )
+        relations = self.session.scalars(
+            select(EntityRelation).where(
+                EntityRelation.status == "active",
+                or_(
+                    EntityRelation.subject_entity_id == absorbed.id,
+                    EntityRelation.object_entity_id == absorbed.id,
+                ),
+            )
+        ).all()
+        for relation in relations:
+            subject_id = (
+                survivor.id
+                if relation.subject_entity_id == absorbed.id
+                else relation.subject_entity_id
+            )
+            object_id = (
+                survivor.id
+                if relation.object_entity_id == absorbed.id
+                else relation.object_entity_id
+            )
+            relation.status = "retracted"
+            relation.version += 1
+            if subject_id == object_id:
+                continue
+            self.relate(
+                subject_entity_id=subject_id,
+                predicate=relation.predicate,
+                object_entity_id=object_id,
+                authority=authority,
+                attributes=dict(relation.attributes),
+            )
+        resolutions = self.session.scalars(
+            select(EntityResolution).where(EntityResolution.resolved_entity_id == absorbed.id)
+        ).all()
+        for resolution in resolutions:
+            resolution.resolved_entity_id = survivor.id
+            resolution.candidate_entity_ids = [
+                str(survivor.id) if value == str(absorbed.id) else value
+                for value in resolution.candidate_entity_ids
+            ]
+            if resolution.semantic_candidate_id is not None:
+                candidate = self.session.get(SemanticCandidate, resolution.semantic_candidate_id)
+                if candidate is not None:
+                    self._resolved_candidate_fields(
+                        candidate,
+                        previous_resolution_id=resolution.id,
+                        resolution_id=resolution.id,
+                        entity=survivor,
+                    )
+                    self._resume_candidate_if_ascertained(candidate)
+        events = self.session.scalars(
+            select(CanonicalEvent).where(CanonicalEvent.entity_refs != [])
+        ).all()
+        for event in events:
+            changed = False
+            entity_refs: list[dict[str, Any]] = []
+            for raw in event.entity_refs:
+                entity_ref = dict(raw)
+                if entity_ref.get("entity_id") == str(absorbed.id):
+                    entity_ref.update(
+                        {
+                            "entity_id": str(survivor.id),
+                            "entity_class": survivor.entity_class,
+                            "canonical_name": survivor.canonical_name,
+                        }
+                    )
+                    changed = True
+                entity_refs.append(entity_ref)
+            if changed:
+                event.entity_refs = entity_refs
+                event.version += 1
         absorbed.status = "merged"
         absorbed.merged_into_id = survivor.id
         absorbed.version += 1
@@ -377,6 +623,16 @@ class EntityService:
         self.session.add(correction)
         self.session.flush()
         previous.corrected_resolution_id = correction.id
+        if previous.semantic_candidate_id is not None:
+            candidate = self.session.get(SemanticCandidate, previous.semantic_candidate_id)
+            if candidate is not None:
+                self._resolved_candidate_fields(
+                    candidate,
+                    previous_resolution_id=previous.id,
+                    resolution_id=correction.id,
+                    entity=entity,
+                )
+                self._resume_candidate_if_ascertained(candidate)
         self.session.add(
             AuditEvent(
                 event_type="entity_resolution.corrected",

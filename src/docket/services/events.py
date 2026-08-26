@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -16,6 +16,7 @@ from docket.models import (
     Action,
     ActionRevision,
     Approval,
+    CalendarEventCache,
     CanonicalEvent,
     EventObservation,
     OutboxEvent,
@@ -35,7 +36,7 @@ from docket.schemas.actions import (
     UpdateCalendarEventProposal,
 )
 from docket.schemas.calendar import StandaloneCalendarEventInput
-from docket.services.calendar_actions import CalendarActionService
+from docket.services.calendar_actions import CalendarActionService, _occurrence_intervals
 from docket.services.queue import queue_projection_date
 
 _SPACE = re.compile(r"\s+")
@@ -43,6 +44,10 @@ _SPACE = re.compile(r"\s+")
 
 def _normalized_title(value: str) -> str:
     return _SPACE.sub(" ", value.casefold().strip())
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def _event_fingerprint(event: dict[str, Any]) -> str:
@@ -54,6 +59,22 @@ def _event_fingerprint(event: dict[str, Any]) -> str:
             "location": event.get("location"),
         }
     )
+
+
+def _cache_snapshot(event: CalendarEventCache) -> dict[str, Any]:
+    return {
+        "status": event.status,
+        "summary": event.summary,
+        "location": event.location,
+        "is_all_day": event.is_all_day,
+        "start_at": event.start_at.isoformat() if event.start_at is not None else None,
+        "end_at": event.end_at.isoformat() if event.end_at is not None else None,
+        "start_date": event.start_date.isoformat() if event.start_date is not None else None,
+        "end_date": event.end_date.isoformat() if event.end_date is not None else None,
+        "timezone": event.timezone,
+        "recurrence_kind": event.recurrence_kind,
+        "provider_reminders": dict(event.provider_reminders),
+    }
 
 
 class CanonicalEventService:
@@ -143,7 +164,13 @@ class CanonicalEventService:
     ) -> CanonicalEvent:
         entity_resolutions = candidate.fields.get("entity_resolutions")
         entity_refs = (
-            [dict(value) for value in entity_resolutions if isinstance(value, dict)]
+            [
+                dict(value)
+                for value in entity_resolutions
+                if isinstance(value, dict)
+                and value.get("state") == "resolved"
+                and value.get("entity_id") is not None
+            ]
             if isinstance(entity_resolutions, list)
             else []
         )
@@ -167,6 +194,78 @@ class CanonicalEventService:
         self.session.add(canonical)
         self.session.flush()
         return canonical
+
+    def adopt_provider_event(
+        self,
+        candidate: SemanticCandidate,
+        *,
+        account_id: uuid.UUID,
+        calendar_id: str,
+        provider_event: CalendarEventCache,
+        event: StandaloneCalendarEventInput | None,
+    ) -> tuple[CanonicalEvent, ProviderEventBinding]:
+        existing_binding = self.session.scalar(
+            select(ProviderEventBinding).where(
+                ProviderEventBinding.account_id == account_id,
+                ProviderEventBinding.calendar_id == calendar_id,
+                ProviderEventBinding.provider_event_id == provider_event.provider_event_id,
+            )
+        )
+        if existing_binding is not None:
+            canonical = self.session.get(CanonicalEvent, existing_binding.canonical_event_id)
+            if canonical is None:
+                raise DocketError(
+                    code="canonical_event_not_found",
+                    message="The provider binding lost its canonical event.",
+                )
+            return canonical, existing_binding
+        entity_resolutions = candidate.fields.get("entity_resolutions")
+        entity_refs = (
+            [
+                dict(value)
+                for value in entity_resolutions
+                if isinstance(value, dict)
+                and value.get("state") == "resolved"
+                and value.get("entity_id") is not None
+            ]
+            if isinstance(entity_resolutions, list)
+            else []
+        )
+        snapshot = _cache_snapshot(provider_event)
+        canonical = CanonicalEvent(
+            canonical_key=(
+                f"provider:{account_id}:{calendar_id}:{provider_event.provider_event_id}"
+            ),
+            title=event.title if event is not None else provider_event.summary or candidate.title,
+            status="active",
+            event_spec=(
+                event.model_dump(mode="json")
+                if event is not None
+                else {"provider_snapshot": snapshot}
+            ),
+            reminder_plan=None,
+            entity_refs=entity_refs,
+            context_labels=[
+                str(value)
+                for value in candidate.fields.get("context_labels", [])
+                if isinstance(value, str)
+            ],
+            authority="canonical",
+        )
+        self.session.add(canonical)
+        self.session.flush()
+        binding = ProviderEventBinding(
+            canonical_event_id=canonical.id,
+            account_id=account_id,
+            calendar_id=calendar_id,
+            provider_event_id=provider_event.provider_event_id,
+            provider_etag=provider_event.provider_etag,
+            status="active",
+            provider_snapshot=snapshot,
+        )
+        self.session.add(binding)
+        self.session.flush()
+        return canonical, binding
 
     def observe(
         self,
@@ -265,6 +364,20 @@ class SemanticCandidateCompiler:
             )
             .where(TriageWindowMembership.semantic_candidate_id == candidate.id)
         )
+        entity_gaps = details.get("entity_gaps")
+        summary = candidate.summary
+        if reason == "entity_resolution_required" and isinstance(entity_gaps, list):
+            labels = [
+                f"{gap.get('entity_class')} “{gap.get('mention')}”"
+                for gap in entity_gaps
+                if isinstance(gap, dict)
+            ]
+            if labels:
+                summary = (
+                    "Confirm or register "
+                    + ", ".join(labels[:3])
+                    + " before Docket continues this formulation."
+                )
         queue_item = QueueItem(
             primary_source_item_id=candidate.source_item_id,
             deduplication_key=f"semantic_clarification:{candidate.id}",
@@ -273,7 +386,7 @@ class SemanticCandidateCompiler:
             ),
             category="clarification",
             title=f"Clarification needed · {candidate.title}"[:512],
-            summary=candidate.summary,
+            summary=summary,
             status="pending",
             priority="normal",
             presentation="clarification",
@@ -288,7 +401,7 @@ class SemanticCandidateCompiler:
                 relationship="primary",
             )
         )
-        if window is None or window.window_kind == "waking":
+        if window is None or window.window_kind == "waking" or window.status == "published":
             session.add(
                 OutboxEvent(
                     event_type="discord.projection.requested",
@@ -350,7 +463,7 @@ class SemanticCandidateCompiler:
                 relationship="primary",
             )
         )
-        if window is None or window.window_kind == "waking":
+        if window is None or window.window_kind == "waking" or window.status == "published":
             session.add(
                 OutboxEvent(
                     event_type="discord.projection.requested",
@@ -420,6 +533,77 @@ class SemanticCandidateCompiler:
                     )
                 )
 
+    @staticmethod
+    def _cache_matches_event(
+        cached: CalendarEventCache,
+        event: StandaloneCalendarEventInput,
+    ) -> bool:
+        if cached.status not in {"confirmed", "tentative"}:
+            return False
+        if cached.recurrence_kind != event.recurrence_kind:
+            return False
+        if _normalized_title(cached.summary or "") != _normalized_title(event.title):
+            return False
+        if event.location is not None and _normalized_title(
+            cached.location or ""
+        ) != _normalized_title(event.location):
+            return False
+        timing = event.model_dump(mode="json")["timing"]
+        if timing["kind"] == "all_day":
+            return (
+                cached.is_all_day
+                and cached.start_date is not None
+                and cached.end_date is not None
+                and cached.start_date.isoformat() == timing["start_date"]
+                and cached.end_date.isoformat() == timing["end_date"]
+            )
+        if cached.is_all_day or cached.start_at is None or cached.end_at is None:
+            return False
+        intervals = _occurrence_intervals(event)
+        return any(
+            _as_utc(cached.start_at) == start and _as_utc(cached.end_at) == end
+            for start, end in intervals
+        )
+
+    def _cached_provider_event(
+        self,
+        session: Session,
+        *,
+        account_id: uuid.UUID,
+        event: StandaloneCalendarEventInput | None,
+        provider_event_id: str | None,
+        identity_only: bool,
+    ) -> CalendarEventCache | None:
+        statement = select(CalendarEventCache).where(
+            CalendarEventCache.account_id == account_id,
+            CalendarEventCache.calendar_id == self.settings.google_calendar_id,
+            CalendarEventCache.status.in_(("confirmed", "tentative")),
+        )
+        if provider_event_id is not None:
+            statement = statement.where(
+                or_(
+                    CalendarEventCache.provider_event_id == provider_event_id,
+                    CalendarEventCache.recurring_event_id == provider_event_id,
+                )
+            )
+        elif event is None:
+            return None
+        rows = list(
+            session.scalars(
+                statement.order_by(
+                    CalendarEventCache.start_at,
+                    CalendarEventCache.start_date,
+                    CalendarEventCache.provider_event_id,
+                )
+            )
+        )
+        if identity_only and provider_event_id is not None:
+            return rows[0] if rows else None
+        if event is None:
+            return None
+        matches = [row for row in rows if self._cache_matches_event(row, event)]
+        return matches[0] if len(matches) == 1 else None
+
     def _compile_event(
         self,
         session: Session,
@@ -428,7 +612,12 @@ class SemanticCandidateCompiler:
     ) -> None:
         event_data = candidate.fields.get("event")
         missing_fields = candidate.fields.get("missing_fields")
-        if not isinstance(event_data, dict):
+        event = (
+            StandaloneCalendarEventInput.model_validate(event_data)
+            if isinstance(event_data, dict)
+            else None
+        )
+        if candidate.mutation in {"create", "update"} and event is None:
             self._clarification(
                 session,
                 candidate,
@@ -441,8 +630,8 @@ class SemanticCandidateCompiler:
                 settings=self.settings,
             )
             return
-        event = StandaloneCalendarEventInput.model_validate(event_data)
         effective_mutation = candidate.mutation
+        account = self._calendar_account(session, source)
         event_service = CanonicalEventService(session)
         matches = event_service.correlate(candidate)
         if len(matches) > 1:
@@ -463,10 +652,16 @@ class SemanticCandidateCompiler:
 
         canonical_event = matches[0] if matches else None
         binding: ProviderEventBinding | None = None
+        correlation = candidate.fields.get("correlation")
+        correlation = correlation if isinstance(correlation, dict) else {}
+        provider_event_id = correlation.get("provider_event_id")
+        provider_event_id = provider_event_id if isinstance(provider_event_id, str) else None
         if canonical_event is not None:
             binding = session.scalar(
                 select(ProviderEventBinding).where(
                     ProviderEventBinding.canonical_event_id == canonical_event.id,
+                    ProviderEventBinding.account_id == account.id,
+                    ProviderEventBinding.calendar_id == self.settings.google_calendar_id,
                     ProviderEventBinding.status.in_(("active", "diverged")),
                 )
             )
@@ -496,8 +691,73 @@ class SemanticCandidateCompiler:
                     }
                     return
 
+        provider_match: CalendarEventCache | None = None
+        if canonical_event is None:
+            provider_match = self._cached_provider_event(
+                session,
+                account_id=account.id,
+                event=event,
+                provider_event_id=provider_event_id,
+                identity_only=candidate.mutation in {"update", "cancel"},
+            )
+            if (
+                provider_match is None
+                and provider_event_id is not None
+                and candidate.mutation == "create"
+                and self._cached_provider_event(
+                    session,
+                    account_id=account.id,
+                    event=None,
+                    provider_event_id=provider_event_id,
+                    identity_only=True,
+                )
+                is not None
+            ):
+                self._clarification(
+                    session,
+                    candidate,
+                    reason="provider_event_details_mismatch",
+                    details={},
+                    settings=self.settings,
+                )
+                return
+            if provider_match is not None:
+                canonical_event, binding = event_service.adopt_provider_event(
+                    candidate,
+                    account_id=account.id,
+                    calendar_id=self.settings.google_calendar_id,
+                    provider_event=provider_match,
+                    event=event if candidate.mutation in {"create", "none"} else None,
+                )
+                matches = [canonical_event]
+
+        if candidate.mutation == "none":
+            event_service.observe(
+                candidate=candidate,
+                canonical_event=canonical_event,
+                correlation_state="matched" if canonical_event is not None else "unresolved",
+                candidate_events=matches,
+            )
+            candidate.status = "resolved"
+            candidate.resolution = {
+                "disposition": (
+                    "provider_confirmation_matched"
+                    if provider_match is not None
+                    else "canonical_confirmation_matched"
+                    if canonical_event is not None
+                    else "non_mutating_observation"
+                ),
+                "canonical_event_id": (
+                    str(canonical_event.id) if canonical_event is not None else None
+                ),
+            }
+            return
+
         if candidate.mutation == "create" and canonical_event is not None:
-            if _event_fingerprint(canonical_event.event_spec) == _event_fingerprint(event_data):
+            assert event is not None and isinstance(event_data, dict)
+            if provider_match is not None or _event_fingerprint(
+                canonical_event.event_spec
+            ) == _event_fingerprint(event_data):
                 event_service.observe(
                     candidate=candidate,
                     canonical_event=canonical_event,
@@ -506,7 +766,11 @@ class SemanticCandidateCompiler:
                 )
                 candidate.status = "resolved"
                 candidate.resolution = {
-                    "disposition": "duplicate_observation",
+                    "disposition": (
+                        "calendar_already_matches"
+                        if provider_match is not None
+                        else "duplicate_observation"
+                    ),
                     "canonical_event_id": str(canonical_event.id),
                 }
                 return
@@ -529,6 +793,7 @@ class SemanticCandidateCompiler:
             return
 
         if canonical_event is None:
+            assert event is not None
             canonical_event = event_service.create_from_candidate(candidate, event=event)
             correlation_state = "new"
         else:
@@ -555,12 +820,13 @@ class SemanticCandidateCompiler:
                     "canonical_event_id": str(canonical_event.id),
                 }
                 return
+            assert event is not None
             canonical_event.event_spec = event.model_dump(mode="json")
             canonical_event.title = event.title
             canonical_event.version += 1
             proposal: Any = CreateCalendarEventProposal(kind="create", event=event)
         elif effective_mutation == "update":
-            assert binding is not None
+            assert binding is not None and event is not None
             proposal = UpdateCalendarEventProposal(
                 kind="update",
                 provider_event_id=binding.provider_event_id,
@@ -574,9 +840,9 @@ class SemanticCandidateCompiler:
                 reason=candidate.summary,
             )
         else:
+            assert event is not None
             proposal = CreateCalendarEventProposal(kind="create", event=event)
 
-        account = self._calendar_account(session, source)
         window = session.scalar(
             select(TriageWindow)
             .join(
@@ -594,7 +860,11 @@ class SemanticCandidateCompiler:
                 semantic_candidate_id=candidate.id,
                 source_item_id=source.id,
                 request_key=f"gmail:{source.id}:{candidate.id}",
-                defer_projection=window is not None and window.window_kind == "overnight",
+                defer_projection=(
+                    window is not None
+                    and window.window_kind == "overnight"
+                    and window.status != "published"
+                ),
             )
         )
         candidate.status = "proposed"
@@ -625,6 +895,31 @@ class SemanticCandidateCompiler:
             if candidate.kind == "information":
                 candidate.status = "resolved"
                 candidate.resolution = {"disposition": "brief_eligible"}
+                return
+            raw_resolutions = candidate.fields.get("entity_resolutions")
+            resolutions = raw_resolutions if isinstance(raw_resolutions, list) else []
+            entity_gaps = [
+                {
+                    "mention": resolution.get("mention"),
+                    "entity_class": resolution.get("entity_class"),
+                    "role": resolution.get("role"),
+                    "state": resolution.get("state"),
+                    "resolution_id": resolution.get("resolution_id"),
+                    "candidate_entity_ids": resolution.get("candidate_entity_ids", []),
+                }
+                for resolution in resolutions
+                if isinstance(resolution, dict)
+                and resolution.get("required", True)
+                and resolution.get("state") != "resolved"
+            ]
+            if entity_gaps:
+                self._clarification(
+                    session,
+                    candidate,
+                    reason="entity_resolution_required",
+                    details={"entity_gaps": entity_gaps},
+                    settings=self.settings,
+                )
                 return
             if candidate.kind == "event":
                 self._compile_event(session, candidate, source)

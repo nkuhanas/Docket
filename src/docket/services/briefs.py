@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from docket.config import Settings, get_settings
@@ -18,6 +18,7 @@ from docket.models import (
     OutboxEvent,
     QueueItem,
     SemanticCandidate,
+    SourceItem,
     TriageWindow,
     TriageWindowMembership,
 )
@@ -306,6 +307,18 @@ class DailyBriefService:
             if existing is not None:
                 return False
             window = self._window(session, kind=window_kind, local_date=local_date)
+            unclassified_source = session.scalar(
+                select(SourceItem.id)
+                .where(
+                    SourceItem.status.in_(("staged", "claimed", "failed")),
+                    func.coalesce(SourceItem.received_at, SourceItem.created_at)
+                    >= window.starts_at,
+                    func.coalesce(SourceItem.received_at, SourceItem.created_at) < window.ends_at,
+                )
+                .limit(1)
+            )
+            if unclassified_source is not None:
+                return False
             memberships = list(
                 session.execute(
                     select(TriageWindowMembership, SemanticCandidate)
@@ -397,6 +410,20 @@ class DailyBriefService:
         published = False
         start = self.settings.waking_window_start_hour
         end = self.settings.waking_window_end_hour
+        with self.session_factory() as session:
+            due_windows = list(
+                session.execute(
+                    select(TriageWindow.window_kind, TriageWindow.local_date)
+                    .where(
+                        TriageWindow.status != "published",
+                        TriageWindow.ends_at <= instant.astimezone(UTC),
+                    )
+                    .order_by(TriageWindow.ends_at)
+                )
+            )
+        for window_kind, local_date in due_windows:
+            kind = "morning" if window_kind == "overnight" else "night"
+            published = self._publish(kind=kind, local_date=local_date) or published
         if instant.hour >= start:
             published = self._publish(kind="morning", local_date=instant.date()) or published
         if instant.hour >= end:

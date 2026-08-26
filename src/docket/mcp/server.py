@@ -169,11 +169,21 @@ def docket_resolve_entity(
     """
     try:
         with session_scope() as session:
-            result = EntityService(session).resolve(
+            service = EntityService(session)
+            result = service.resolve(
                 entity_class=entity_class,
                 mention=mention,
             )
-            return {"ok": True, "resolution": result.model_dump(mode="json")}
+            relationships = (
+                service.relationships(result.resolved_entity.entity_id)
+                if result.resolved_entity is not None
+                else []
+            )
+            return {
+                "ok": True,
+                "resolution": result.model_dump(mode="json"),
+                "relationships": relationships,
+            }
     except Exception as exc:
         return _error(exc)
 
