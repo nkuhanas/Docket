@@ -15,7 +15,10 @@ completing the first. Docket caps this profile's claim at one source so a model
 or provider timeout can strand at most one short-lived lease. For that source:
 
 1. Claim once. Stop when the result is empty or either run limit is reached.
-2. Read each source only through `docket_read_claimed_source`.
+2. Read the source only through `docket_read_claimed_source`. Use the
+   `source_id` and `claim_token` returned by that read for submission because
+   Docket may safely rebind a stale provider version. If `triage_required` is
+   false, stop without submitting or claiming again.
 3. Extract zero or more typed semantic candidates: `event`, `deadline`,
    `response`, `task`, `information`, or `noise`.
 4. For each candidate, state whether the evidence describes `create`, `update`,

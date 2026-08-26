@@ -158,7 +158,10 @@ def test_claim_batch_honors_operator_source_allowlist(session_factory) -> None:
 
     claim = service.claim_batch()
     assert [source["external_object_id"] for source in claim["sources"]] == ["inside-scope"]
-    assert service.claim_batch()["sources"] == []
+    replay = service.claim_batch()
+    assert replay["claim_token"] == claim["claim_token"]
+    assert replay["sources"] == claim["sources"]
+    assert replay["disposition"] == "active_claim_replayed"
     with session_factory() as session:
         statuses = dict(
             session.execute(select(SourceItem.external_object_id, SourceItem.status)).all()
@@ -167,6 +170,115 @@ def test_claim_batch_honors_operator_source_allowlist(session_factory) -> None:
             "inside-scope": "claimed",
             "outside-scope": "staged",
         }
+
+
+@pytest.mark.integration
+def test_worker_cannot_accumulate_multiple_active_claims(session_factory) -> None:
+    provider = FakeGmailProvider()
+    provider.add_message(message_id="first", source_version="1")
+    provider.add_message(message_id="second", source_version="1")
+    _stage(session_factory, provider)
+    settings = _settings().model_copy(update={"gmail_claim_batch_size": 1})
+    service = TriageService(session_factory, provider, settings)
+
+    first = service.claim_batch()
+    replay = service.claim_batch()
+
+    assert replay["claim_token"] == first["claim_token"]
+    assert replay["sources"] == first["sources"]
+    assert replay["disposition"] == "active_claim_replayed"
+    with session_factory() as session:
+        assert list(session.scalars(select(SourceItem.status)).all()).count("claimed") == 1
+
+
+@pytest.mark.integration
+def test_read_rebinds_changed_provider_version_without_persisting_body(
+    session_factory,
+) -> None:
+    provider = FakeGmailProvider()
+    provider.add_message(
+        message_id="versioned-message",
+        source_version="1",
+        subject="Original subject",
+        body_text="Original body",
+    )
+    _stage(session_factory, provider)
+    settings = _settings().model_copy(update={"gmail_claim_batch_size": 1})
+    service = TriageService(session_factory, provider, settings)
+    claim = service.claim_batch()
+    original_source_id = str(claim["sources"][0]["source_id"])
+    provider.add_message(
+        message_id="versioned-message",
+        source_version="2",
+        subject="Current subject",
+        body_text="Current body must remain transient.",
+    )
+
+    content = service.read_claimed_source(
+        source_id=uuid.UUID(original_source_id),
+        claim_token=uuid.UUID(str(claim["claim_token"])),
+    )
+
+    assert content["source_id"] != original_source_id
+    assert content["claim_token"] == claim["claim_token"]
+    assert content["triage_required"] is True
+    assert content["source_version"] == "2"
+    assert content["disposition"] == "claim_transferred_to_new_current_version"
+    with session_factory() as session:
+        sources = session.scalars(
+            select(SourceItem).order_by(SourceItem.source_version)
+        ).all()
+        assert [(source.source_version, source.status) for source in sources] == [
+            ("1", "ignored"),
+            ("2", "claimed"),
+        ]
+        assert sources[1].minimal_headers["subject"] == "Current subject"
+        assert "Current body" not in repr(sources[1].minimal_headers)
+
+
+@pytest.mark.integration
+def test_read_transfers_claim_to_already_staged_current_version(
+    session_factory,
+) -> None:
+    provider = FakeGmailProvider()
+    provider.add_message(
+        message_id="staged-versioned-message",
+        source_version="1",
+        subject="Original subject",
+    )
+    _stage(session_factory, provider)
+    settings = _settings().model_copy(update={"gmail_claim_batch_size": 1})
+    service = TriageService(session_factory, provider, settings)
+    claim = service.claim_batch()
+    original_source_id = str(claim["sources"][0]["source_id"])
+    provider.add_message(
+        message_id="staged-versioned-message",
+        source_version="2",
+        subject="Current subject",
+        body_text="Current transient body.",
+    )
+    scan = GmailIngestionService(session_factory, provider, settings).run_due_once(
+        force=True
+    )
+    assert scan.staged == 1
+
+    content = service.read_claimed_source(
+        source_id=uuid.UUID(original_source_id),
+        claim_token=uuid.UUID(str(claim["claim_token"])),
+    )
+
+    assert content["source_id"] != original_source_id
+    assert content["claim_token"] == claim["claim_token"]
+    assert content["disposition"] == "claim_transferred_to_current_version"
+    with session_factory() as session:
+        sources = session.scalars(
+            select(SourceItem).order_by(SourceItem.source_version)
+        ).all()
+        assert [(source.source_version, source.status) for source in sources] == [
+            ("1", "ignored"),
+            ("2", "claimed"),
+        ]
+        assert sources[1].claim_token == uuid.UUID(str(claim["claim_token"]))
 
 
 @pytest.mark.integration

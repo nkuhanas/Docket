@@ -125,6 +125,10 @@ remaining staged work belongs to a later run; an interrupted claim becomes
 eligible again after its five-minute lease rather than being skipped or moved
 manually. The launcher also converts a newly written Hermes request-failure
 dump into a failed cron execution instead of reporting a false success.
+Repeated claim calls by the same worker replay its one active lease rather than
+accumulating more work. If Gmail changed the message version after staging,
+Docket preserves the obsolete source as superseded and transfers the lease to
+a fresh current-version source without persisting the message body.
 `scripts/docket gmail-status` reports the active batch/lease settings plus
 claimed, expired, missing-expiry, and earliest/latest lease counts without
 exposing source identifiers or content.
