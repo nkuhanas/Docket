@@ -2849,10 +2849,11 @@ class DiscordProjectionRunner:
                 select(QueueItem)
                 .where(QueueItem.status.in_(repairable_statuses))
                 .order_by(QueueItem.updated_at.desc())
-                .limit(limit)
-            ).all()
+            ).yield_per(100)
             repair_count = 0
             for queue_item in queue_items:
+                if repair_count >= limit:
+                    break
                 row = session.execute(
                     select(DiscordProjection, DiscordDailyThread)
                     .join(
