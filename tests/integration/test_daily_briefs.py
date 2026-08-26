@@ -472,6 +472,13 @@ def test_night_brief_consolidates_daytime_action_and_awareness(
         subject="Application receipt follow-up",
         received_at=datetime(2026, 8, 26, 20, 0, tzinfo=UTC),
     )
+    provider.add_message(
+        message_id="different-application-receipt",
+        thread_id="different-application-thread",
+        source_version="1",
+        subject="Another application receipt",
+        received_at=datetime(2026, 8, 26, 20, 30, tzinfo=UTC),
+    )
     assert (
         GmailIngestionService(session_factory, provider, settings)
         .run_due_once(force=True)
@@ -504,6 +511,7 @@ def test_night_brief_consolidates_daytime_action_and_awareness(
                     kind="information",
                     title="Application received",
                     summary="The employer confirmed receipt.",
+                    topic_key="application:primary-employer",
                     confidence=0.99,
                 ),
             ],
@@ -519,12 +527,30 @@ def test_night_brief_consolidates_daytime_action_and_awareness(
                     kind="information",
                     title="Application received",
                     summary="The employer repeated the receipt confirmation.",
+                    topic_key="application:primary-employer",
+                    confidence=0.99,
+                )
+            ],
+        )
+    )
+    triage.submit_candidates(
+        SubmitSemanticCandidatesInput(
+            source_id=str(sources["different-application-receipt"]["source_id"]),
+            claim_token=str(claim["claim_token"]),
+            candidates=[
+                SemanticCandidateInput(
+                    candidate_key="different-application-received",
+                    kind="information",
+                    title="Application received",
+                    summary="A different employer confirmed a separate application.",
+                    topic_key="application:different-employer",
                     confidence=0.99,
                 )
             ],
         )
     )
     compiler = SemanticCandidateCompiler(session_factory, settings)
+    assert compiler.run_due_once()
     assert compiler.run_due_once()
     assert compiler.run_due_once()
     assert compiler.run_due_once()
@@ -554,8 +580,8 @@ def test_night_brief_consolidates_daytime_action_and_awareness(
         assert "Submit department form" in queue_item.summary
         assert "Still needs you (1)" in queue_item.summary
         assert "Reply to the department" in queue_item.summary
-        assert "Awareness (1)" in queue_item.summary
-        assert "Application received" in queue_item.summary
+        assert "Awareness (2)" in queue_item.summary
+        assert queue_item.summary.count("Application received") == 2
 
     backend = FakeDiscordBackend()
     projection_runner = DiscordProjectionRunner(

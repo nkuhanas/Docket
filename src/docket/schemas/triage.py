@@ -98,6 +98,12 @@ class SemanticCandidateInput(BaseModel):
     mutation: SemanticMutation = "none"
     title: str = Field(min_length=1, max_length=512)
     summary: str = Field(min_length=1, max_length=2000)
+    topic_key: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=256,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9:._/-]*$",
+    )
     event: StandaloneCalendarEventInput | None = None
     correlation: CandidateCorrelationInput | None = None
     entity_mentions: list[EntityMentionInput] = Field(default_factory=list, max_length=20)

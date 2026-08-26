@@ -21,7 +21,10 @@ claimed source:
    `response`, `task`, `information`, or `noise`.
 4. For each candidate, state whether the evidence describes `create`, `update`,
    `cancel`, or no mutation; produce a concise derived title and one- or
-   two-sentence summary.
+   two-sentence summary. Supply the same bounded `topic_key` only when separate
+   source items clearly concern the same real-world obligation, application,
+   event, or update. Similar generic titles alone are not evidence of one topic;
+   omit the key when correlation is uncertain.
 5. Include complete structured event details when the source supplies them.
    Otherwise enumerate the required `missing_fields`; never invent timing,
    location, participants, or identity.

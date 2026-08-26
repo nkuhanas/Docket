@@ -193,11 +193,13 @@ class DailyBriefService:
         for candidate in included:
             resolution = candidate.resolution or {}
             canonical_event_id = resolution.get("canonical_event_id")
-            topic_key = (
-                f"event:{canonical_event_id}"
-                if canonical_event_id is not None
-                else f"{candidate.kind}:{' '.join(candidate.title.casefold().split())}"
-            )
+            explicit_topic_key = candidate.fields.get("topic_key")
+            if canonical_event_id is not None:
+                topic_key = f"event:{canonical_event_id}"
+            elif isinstance(explicit_topic_key, str) and explicit_topic_key:
+                topic_key = f"{candidate.kind}:topic:{explicit_topic_key.casefold()}"
+            else:
+                topic_key = f"{candidate.kind}:candidate:{candidate.semantic_key}"
             if topic_key not in seen_topics:
                 seen_topics.add(topic_key)
                 topic_order.append(topic_key)

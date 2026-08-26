@@ -35,6 +35,9 @@ outside version control.
   at most 20,000 body characters per source. This keeps the claim set within
   the configured turn/context budgets, while a five-minute lease preserves
   recovery after interruption.
+* Non-event brief consolidation uses an explicit evidence-derived topic key,
+  never title equality alone. Related follow-ups can collapse to one outcome,
+  while unrelated obligations with the same generic title remain distinct.
 * A terminal canonical decision cannot retain a live actionable Discord card.
   Duplicate interactions repair the exact clicked projection.
 
