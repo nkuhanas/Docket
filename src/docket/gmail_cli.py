@@ -7,6 +7,7 @@ import uuid
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import asdict
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 
@@ -23,6 +24,7 @@ from docket.services.triage import TriageService
 
 def _status() -> dict[str, object]:
     settings = get_settings()
+    now = datetime.now(UTC)
     with get_session_factory()() as session:
         accounts = [
             account
@@ -40,11 +42,34 @@ def _status() -> dict[str, object]:
             .order_by(ConnectorCheckpoint.account_id)
         ).all()
         source_counts = Counter(session.scalars(select(SourceItem.status)).all())
+        claim_expiries = list(
+            session.scalars(
+                select(SourceItem.claimed_until)
+                .where(SourceItem.status == "claimed")
+                .order_by(SourceItem.claimed_until)
+            )
+        )
+    aware_expiries = [
+        value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+        for value in claim_expiries
+        if value is not None
+    ]
     return {
         "gmail_ingestion_enabled": settings.gmail_ingestion_enabled,
         "gmail_writes_enabled": settings.gmail_writes_enabled,
         "provider_mode": settings.gmail_provider_mode(),
         "triage_source_allowlist_count": len(settings.gmail_triage_source_allowlist),
+        "triage_claim_batch_size": settings.gmail_claim_batch_size,
+        "triage_lease_seconds": settings.gmail_triage_lease_seconds,
+        "claim_health": {
+            "claimed_count": source_counts.get("claimed", 0),
+            "expired_count": sum(value <= now for value in aware_expiries),
+            "missing_expiry_count": source_counts.get("claimed", 0) - len(aware_expiries),
+            "earliest_expiry": (
+                min(aware_expiries).isoformat() if aware_expiries else None
+            ),
+            "latest_expiry": max(aware_expiries).isoformat() if aware_expiries else None,
+        },
         "gmail_account_count": len(accounts),
         "checkpoints": [
             {

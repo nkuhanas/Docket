@@ -119,15 +119,18 @@ docket_search_related_records
 docket_submit_semantic_candidates
 ```
 
-Each isolated run claims exactly one batch of at most 5 sources. The bound is
-deliberately below the profile's turn budget even if every source needs a
-related-record lookup, and claimed body text is capped at 20,000 characters so
-one large message cannot consume the run's context. Any remaining staged work
-belongs to a later run; an interrupted claim becomes eligible again after its
-five-minute lease rather than being skipped or moved manually.
+Each isolated run claims exactly one source. Claimed body text is capped at
+20,000 characters so one large message cannot consume the run's context. Any
+remaining staged work belongs to a later run; an interrupted claim becomes
+eligible again after its five-minute lease rather than being skipped or moved
+manually. The launcher also converts a newly written Hermes request-failure
+dump into a failed cron execution instead of reporting a false success.
+`scripts/docket gmail-status` reports the active batch/lease settings plus
+claimed, expired, missing-expiry, and earliest/latest lease counts without
+exposing source identifiers or content.
 
 Install or repair the profile with `scripts/docket setup-triage`. The installer
-creates one root-owned 30-minute no-agent cron whose only script is the
+creates or reconciles one root-owned 5-minute no-agent cron whose only script is the
 repository-owned launcher for a `docket-triage` one-shot. The root scheduler
 does not run the interactive model for this job; the child model sees only the
 isolated profile. Delivery is local-log only. Do not add the triage MCP to the
@@ -1085,7 +1088,7 @@ This is the first command in the rollout that permits transient message-body
 reads. Keep the recurring job paused until that run's durable outcomes and
 redacted logs are verified. The command refuses to run if the recurring job is
 active and invokes the fixed isolated launcher directly; it does not temporarily
-resume or alter the schedule. Resume the 30-minute schedule only after the
+resume or alter the schedule. Resume the 5-minute schedule only after the
 operator-present read-only gate is clean:
 
 ```bash

@@ -72,7 +72,7 @@ def test_gmail_triage_source_allowlist_parses_exact_uuid_scope() -> None:
 def test_isolated_triage_defaults_fit_one_live_runner_pass() -> None:
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
 
-    assert settings.gmail_claim_batch_size == 5
+    assert settings.gmail_claim_batch_size == 1
     assert settings.gmail_triage_lease_seconds == 300
 
 

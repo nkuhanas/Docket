@@ -11,6 +11,7 @@ PROFILE_SKILL_DIR="$PROFILE_DIR/skills/docket-triage"
 LAUNCHER_DIR="$HERMES_HOME_DIR/scripts"
 LAUNCHER="$LAUNCHER_DIR/docket-gmail-triage.sh"
 JOB_NAME="Docket Gmail triage"
+JOB_SCHEDULE="every 5m"
 
 if [ ! -s "$HERMES_HOME_DIR/config.yaml" ] || [ ! -s "$HERMES_HOME_DIR/.env" ]; then
     echo "Prepare the primary Hermes home before installing triage." >&2
@@ -73,13 +74,36 @@ chmod 600 "$PROFILE_CONFIG" "$PROFILE_ENV" "$PROFILE_SKILL_DIR/SKILL.md"
 chmod 700 "$LAUNCHER"
 
 job_listing=$(compose exec -T hermes env NO_COLOR=1 hermes cron list --all)
-if ! printf '%s\n' "$job_listing" | grep -F "$JOB_NAME" >/dev/null; then
+job_ids=$(printf '%s\n' "$job_listing" | awk -v wanted="$JOB_NAME" '
+    /^[[:space:]]*[[:xdigit:]]{12}([[:space:]]|$)/ {
+        candidate = $1
+    }
+    /^[[:space:]]+Name:/ {
+        name = $0
+        sub(/^[[:space:]]+Name:[[:space:]]*/, "", name)
+        if (name == wanted) {
+            print candidate
+        }
+    }
+')
+job_count=$(printf '%s\n' "$job_ids" | awk 'NF { count += 1 } END { print count + 0 }')
+if [ "$job_count" -eq 0 ]; then
     compose exec -T hermes hermes cron create \
-        "every 30m" \
+        "$JOB_SCHEDULE" \
         --script "docket-gmail-triage.sh" \
         --no-agent \
         --deliver log \
         --name "$JOB_NAME"
+elif [ "$job_count" -eq 1 ]; then
+    compose exec -T hermes hermes cron edit "$job_ids" \
+        --schedule "$JOB_SCHEDULE" \
+        --script "docket-gmail-triage.sh" \
+        --no-agent \
+        --deliver log \
+        --name "$JOB_NAME"
+else
+    echo "Expected at most one '$JOB_NAME' cron job; found $job_count." >&2
+    exit 1
 fi
 
 mcp_test_output=$(compose exec -T hermes hermes -p "$PROFILE_NAME" mcp test docket-triage)

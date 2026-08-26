@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy import select
 
 from docket.config import get_settings
+from docket.gmail_cli import _status
 from docket.models import (
     Account,
     AuditEvent,
@@ -41,6 +42,41 @@ def _account(session_factory) -> Account:
         session.flush()
         session.expunge(account)
         return account
+
+
+@pytest.mark.integration
+def test_gmail_status_reports_bounded_claim_health(session_factory) -> None:
+    account = _account(session_factory)
+    now = datetime.now(UTC)
+    with session_factory.begin() as session:
+        for index, claimed_until in enumerate(
+            (now - timedelta(minutes=1), now + timedelta(minutes=4), None)
+        ):
+            session.add(
+                SourceItem(
+                    account_id=account.id,
+                    provider="gmail",
+                    external_object_id=f"claimed-{index}",
+                    source_version="1",
+                    source_fingerprint=str(index) * 64,
+                    status="claimed",
+                    claimed_until=claimed_until,
+                )
+            )
+
+    status = _status()
+
+    assert status["triage_claim_batch_size"] == 1
+    assert status["triage_lease_seconds"] == 300
+    health = status["claim_health"]
+    assert isinstance(health, dict)
+    assert health["claimed_count"] == 3
+    assert health["expired_count"] == 1
+    assert health["missing_expiry_count"] == 1
+    earliest = datetime.fromisoformat(str(health["earliest_expiry"]))
+    latest = datetime.fromisoformat(str(health["latest_expiry"]))
+    assert abs((earliest - (now - timedelta(minutes=1))).total_seconds()) < 1
+    assert abs((latest - (now + timedelta(minutes=4))).total_seconds()) < 1
 
 
 @pytest.mark.integration

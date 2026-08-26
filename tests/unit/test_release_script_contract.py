@@ -31,6 +31,8 @@ def test_gmail_triage_installer_pins_an_isolated_profile_and_local_delivery() ->
     assert "--no-agent" in script
     assert "--deliver log" in script
     assert "--deliver discord" not in script
+    assert 'JOB_SCHEDULE="every 5m"' in script
+    assert "hermes cron edit" in script
     assert script.count("hermes cron list --all") == 2
     assert "hermes cron list)" not in script
     assert "mcp test docket-triage" in script
@@ -49,8 +51,10 @@ def test_gmail_triage_installer_pins_an_isolated_profile_and_local_delivery() ->
     assert "hermes -p docket-triage" in launcher
     assert "--skills docket-triage" in launcher
     assert "--oneshot" in launcher
-    assert "exactly one bounded batch" in skill
-    assert "caps a batch at 5 sources" in skill
+    assert "request_dump_*.json" in launcher
+    assert "exhausted its model request retries" in launcher
+    assert "exactly one source per run" in skill
+    assert "caps this profile's claim at one source" in skill
     assert "cli: []" in config
     assert "cron: []" in config
     assert "plugins:\n  enabled: []" in config

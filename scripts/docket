@@ -447,7 +447,7 @@ Commands:
   gmail-triage-status  Verify the single triage job and show its recent runs.
   gmail-triage-pause   Pause semantic triage without changing Gmail ingestion.
   gmail-triage-run     Queue one isolated semantic-triage run.
-  gmail-triage-resume  Resume the isolated 30-minute semantic-triage schedule.
+  gmail-triage-resume  Resume the isolated 5-minute semantic-triage schedule.
   soak-start      Start or report the current durable 72-hour soak.
   soak-status     Report soak duration, gate checks, and visible incidents.
   soak-complete   Complete the soak only after duration and every gate pass.

@@ -31,9 +31,9 @@ outside version control.
   across more than one already-published boundary. Docket advances the
   candidate through each closed morning/night window until it reaches the next
   open window; it never inserts new work into a brief that was already sent.
-* Isolated model triage claims one batch of at most 5 sources per run and sees
-  at most 20,000 body characters per source. This keeps the claim set within
-  the configured turn/context budgets, while a five-minute lease preserves
+* Isolated model triage claims one source per run and sees at most 20,000 body
+  characters. This keeps a provider timeout from stranding more than one
+  short-lived claim, while the five-minute cadence and lease preserve bounded
   recovery after interruption.
 * Non-event brief consolidation uses an explicit evidence-derived topic key,
   never title equality alone. Related follow-ups can collapse to one outcome,
