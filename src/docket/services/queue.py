@@ -28,6 +28,7 @@ from docket.schemas.queue import (
     QueueMutationResult,
     SnoozeQueueItemInput,
 )
+from docket.services.brief_projection import projection_refresh_target
 from docket.services.source_context import validate_configured_discord_source
 
 _ACTION_ORDER = {
@@ -324,7 +325,32 @@ class QueueService:
             raise VersionConflict(str(item.id), expected_version, item.version)
         return item
 
-    def enqueue_refresh(self, item: QueueItem, reason: str) -> None:
+    def enqueue_refresh(
+        self,
+        item: QueueItem,
+        reason: str,
+        *,
+        projection: DiscordProjection | None = None,
+    ) -> None:
+        if projection is not None:
+            target = projection_refresh_target(
+                self.session,
+                child_queue_item_id=item.id,
+                projection=projection,
+            )
+            self.session.add(
+                OutboxEvent(
+                    event_type="discord.projection.refresh_requested",
+                    aggregate_type="queue_item",
+                    aggregate_id=target.queue_item_id,
+                    deduplication_key=(
+                        f"discord_projection:{target.queue_item_id}:state:{item.id}:v{item.version}"
+                    ),
+                    payload={**target.payload(), "reason": reason},
+                    status=OutboxStatus.PENDING.value,
+                )
+            )
+            return
         newest = self.session.execute(
             select(DiscordProjection, DiscordDailyThread)
             .join(

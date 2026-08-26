@@ -48,6 +48,10 @@ from docket.security import (
     verify_projection_approval_token,
     verify_projection_decision_approval_token,
 )
+from docket.services.brief_projection import (
+    morning_brief_contains_queue_item,
+    projection_refresh_target,
+)
 from docket.services.course_reconciliation import (
     CourseReconciliationService,
     course_reconciliation_dependency_sha256,
@@ -321,9 +325,19 @@ class ApprovalService:
             .where(DiscordProjection.id == request.projection_id)
             .with_for_update()
         )
+        aggregate_brief_binding = (
+            projection is not None
+            and projection.view_mode == "brief_review"
+            and projection.view_action_revision_id == revision.id
+            and morning_brief_contains_queue_item(
+                self.session,
+                brief_queue_item_id=projection.queue_item_id,
+                child_queue_item_id=queue_item.id,
+            )
+        )
         if (
             projection is None
-            or projection.queue_item_id != queue_item.id
+            or (projection.queue_item_id != queue_item.id and not aggregate_brief_binding)
             or projection.status != "delivered"
             or projection.message_id != request.message_id
             or (
@@ -386,20 +400,6 @@ class ApprovalService:
             )
         return projection
 
-    def _projection_target(self, projection: DiscordProjection | None) -> dict[str, str]:
-        if projection is None:
-            return {}
-        daily_thread = self.session.get(DiscordDailyThread, projection.daily_thread_id)
-        if daily_thread is None:
-            raise DocketError(
-                code="invalid_approval_projection",
-                message="The interaction thread binding is missing.",
-            )
-        return {
-            "projection_id": str(projection.id),
-            "target_local_date": daily_thread.local_date.isoformat(),
-        }
-
     def _load_bound_state(self, approval: Approval) -> tuple[ActionRevision, Action, QueueItem]:
         revision = self.session.get(ActionRevision, approval.action_revision_id)
         if revision is None:
@@ -418,6 +418,7 @@ class ApprovalService:
         revision: ActionRevision,
         action: Action,
         queue_item: QueueItem,
+        response_projection: DiscordProjection | None,
     ) -> None:
         if approval.status != ApprovalStatus.PENDING.value:
             raise DocketError(
@@ -446,6 +447,15 @@ class ApprovalService:
                 code="approval_binding_mismatch",
                 message="The approval is not bound to this queue item.",
             )
+        aggregate_brief_binding = (
+            response_projection is not None
+            and response_projection.queue_item_id != queue_item.id
+            and morning_brief_contains_queue_item(
+                self.session,
+                brief_queue_item_id=response_projection.queue_item_id,
+                child_queue_item_id=queue_item.id,
+            )
+        )
         projection = self.session.scalar(
             select(OutboxEvent).where(
                 OutboxEvent.aggregate_type == "queue_item",
@@ -458,7 +468,7 @@ class ApprovalService:
                 ),
             )
         )
-        if projection is None:
+        if projection is None and not aggregate_brief_binding:
             raise DocketError(
                 code="approval_projection_missing",
                 message="The approval does not have a matching projection request.",
@@ -556,7 +566,10 @@ class ApprovalService:
                         code="approval_binding_mismatch",
                         message="The Calendar formulation has no complete event binding.",
                     )
-                event = StandaloneCalendarEventInput.model_validate(event_data)
+                event = StandaloneCalendarEventInput.model_validate(
+                    event_data,
+                    context={"allow_explicit_priority": True},
+                )
                 current_conflicts = CalendarActionService(self.session)._conflicts(
                     account_id=revision.account_id,
                     calendar_id=str(revision.parameters["calendar_id"]),
@@ -740,7 +753,12 @@ class ApprovalService:
         response_projection = self._validate_projection_context(
             request, approval, revision, queue_item
         )
-        projection_target = self._projection_target(response_projection)
+        refresh_target = projection_refresh_target(
+            self.session,
+            child_queue_item_id=queue_item.id,
+            projection=response_projection,
+        )
+        projection_target = refresh_target.payload()
         if approval.authorized_user_id != request.discord_user_id:
             raise DocketError(
                 code="unauthorized_approval_actor",
@@ -757,13 +775,12 @@ class ApprovalService:
                 OutboxEvent(
                     event_type="discord.projection.refresh_requested",
                     aggregate_type="queue_item",
-                    aggregate_id=queue_item.id,
+                    aggregate_id=refresh_target.queue_item_id,
                     deduplication_key=(
-                        f"discord_projection:{queue_item.id}:repair:"
+                        f"discord_projection:{refresh_target.queue_item_id}:repair:"
                         f"{response_projection.id}:{request.discord_interaction_id}"
                     ),
                     payload={
-                        "queue_item_id": str(queue_item.id),
                         "action_id": str(action.id),
                         "approval_id": str(approval.id),
                         "status": "already_recorded",
@@ -826,10 +843,11 @@ class ApprovalService:
                 OutboxEvent(
                     event_type="discord.projection.refresh_requested",
                     aggregate_type="queue_item",
-                    aggregate_id=queue_item.id,
-                    deduplication_key=f"discord_projection:{queue_item.id}:expired:{approval.id}",
+                    aggregate_id=refresh_target.queue_item_id,
+                    deduplication_key=(
+                        f"discord_projection:{refresh_target.queue_item_id}:expired:{approval.id}"
+                    ),
                     payload={
-                        "queue_item_id": str(queue_item.id),
                         "action_id": str(action.id),
                         "approval_id": str(approval.id),
                         "status": "expired",
@@ -839,7 +857,13 @@ class ApprovalService:
                 )
             )
             raise DocketError(code="approval_expired", message="The approval has expired.")
-        self._validate_invariant_binding(approval, revision, action, queue_item)
+        self._validate_invariant_binding(
+            approval,
+            revision,
+            action,
+            queue_item,
+            response_projection,
+        )
         if request.decision == "approve":
             settings = get_settings()
             if (
@@ -885,13 +909,12 @@ class ApprovalService:
                             OutboxEvent(
                                 event_type="discord.projection.refresh_requested",
                                 aggregate_type="queue_item",
-                                aggregate_id=queue_item.id,
+                                aggregate_id=refresh_target.queue_item_id,
                                 deduplication_key=(
-                                    f"discord_projection:{queue_item.id}:"
+                                    f"discord_projection:{refresh_target.queue_item_id}:"
                                     f"refresh-required:{approval.id}"
                                 ),
                                 payload={
-                                    "queue_item_id": str(queue_item.id),
                                     "action_id": str(action.id),
                                     "approval_id": str(approval.id),
                                     "status": "refresh_required",
@@ -1144,12 +1167,12 @@ class ApprovalService:
             OutboxEvent(
                 event_type="discord.projection.refresh_requested",
                 aggregate_type="queue_item",
-                aggregate_id=queue_item.id,
+                aggregate_id=refresh_target.queue_item_id,
                 deduplication_key=(
-                    f"discord_projection:{queue_item.id}:approval:{approval.id}:{request.decision}"
+                    f"discord_projection:{refresh_target.queue_item_id}:approval:"
+                    f"{approval.id}:{request.decision}"
                 ),
                 payload={
-                    "queue_item_id": str(queue_item.id),
                     "action_id": str(action.id),
                     "approval_id": str(approval.id),
                     "decision": request.decision,

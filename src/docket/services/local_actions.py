@@ -25,6 +25,7 @@ from docket.security import (
     decode_projection_local_action_token,
     verify_projection_local_action_token,
 )
+from docket.services.brief_projection import morning_brief_selects_queue_item
 from docket.services.queue import QueueService, local_date_at_rollover
 
 
@@ -140,7 +141,11 @@ class LocalActionService:
 
         revision = self.session.get(ActionRevision, request.action_revision_id)
         action = self.session.get(Action, revision.action_id) if revision is not None else None
-        queue_item = self.session.get(QueueItem, projection.queue_item_id)
+        queue_item = (
+            self.session.get(QueueItem, action.queue_item_id)
+            if action is not None and action.queue_item_id is not None
+            else None
+        )
         if revision is None or action is None or queue_item is None:
             raise DocketError(
                 code="invalid_local_action_state", message="Local action is incomplete."
@@ -148,7 +153,16 @@ class LocalActionService:
         definition = get_action_definition(revision.action_type)
         if (
             definition.risk_class is not RiskClass.LOCAL_WRITE
-            or action.queue_item_id != queue_item.id
+            or (
+                projection.queue_item_id != queue_item.id
+                and (
+                    not morning_brief_selects_queue_item(
+                        self.session,
+                        projection=projection,
+                        child_queue_item_id=queue_item.id,
+                    )
+                )
+            )
             or action.current_revision != revision.revision
             or action.status != ActionStatus.AVAILABLE.value
             or token_queue_version != queue_item.version
@@ -225,7 +239,11 @@ class LocalActionService:
         ).all()
         for sibling in siblings:
             sibling.status = ActionStatus.SUPERSEDED.value
-        QueueService(self.session, self.settings).enqueue_refresh(queue_item, revision.action_type)
+        QueueService(self.session, self.settings).enqueue_refresh(
+            queue_item,
+            revision.action_type,
+            projection=projection,
+        )
         self.session.add(
             AuditEvent(
                 event_type=event_type,

@@ -798,7 +798,7 @@ def test_failed_item_can_render_one_canonical_ignore_control(plugin_module, monk
 
     fake_discord = SimpleNamespace(
         Embed=FakeEmbed,
-        ButtonStyle=SimpleNamespace(success=1, danger=2, secondary=3),
+        ButtonStyle=SimpleNamespace(success=1, danger=2, secondary=3, primary=4),
         ui=SimpleNamespace(View=FakeView, Button=FakeButton),
         utils=SimpleNamespace(
             escape_mentions=lambda value: value,
@@ -1014,7 +1014,7 @@ def test_plugin_accepts_only_bound_persistent_review_navigation(plugin_module, m
 
     fake_discord = SimpleNamespace(
         Embed=FakeEmbed,
-        ButtonStyle=SimpleNamespace(success=1, danger=2, secondary=3),
+        ButtonStyle=SimpleNamespace(success=1, danger=2, secondary=3, primary=4),
         ui=SimpleNamespace(
             View=FakeView,
             Button=FakeButton,
@@ -1120,6 +1120,99 @@ def test_plugin_accepts_only_bound_persistent_review_navigation(plugin_module, m
     assert {item.custom_id for item in stale_view.items} == {
         f"dkt:r:{reject_token}",
         f"dkt:p:{rebuild_token}",
+    }
+    brief_approval_token = issue_projection_approval_token(
+        approval_id,
+        projection_id,
+        expires_at,
+        b"test-signing-key",
+    )
+    brief_edit_token = issue_projection_proposal_control_token(
+        revision_id,
+        projection_id,
+        "edit",
+        expires_at,
+        b"test-signing-key",
+    )
+    brief_snooze_token = issue_projection_proposal_control_token(
+        revision_id,
+        projection_id,
+        "snooze",
+        expires_at,
+        b"test-signing-key",
+    )
+    brief_next_token = issue_projection_review_navigation_token(
+        action_revision_id=revision_id,
+        projection_id=projection_id,
+        projection_version=5,
+        source_view="brief_review",
+        source_page=1,
+        target_view="brief_review",
+        target_page=2,
+        actor_id=actor,
+        expires_at=expires_at,
+        signing_key=b"test-signing-key",
+    )
+    _embed, brief_view = plugin_module._render_embed(
+        projection_id,
+        {
+            "embed": {
+                "title": "Review new event",
+                "description": None,
+                "fields": [],
+                "color": 1,
+            },
+            "controls": [
+                {
+                    "kind": "approval",
+                    "decision": decision,
+                    "label": decision.title(),
+                    "approval_id": str(approval_id),
+                    "token": brief_approval_token,
+                }
+                for decision in ("approve", "reject")
+            ]
+            + [
+                {
+                    "kind": "proposal_action",
+                    "transition": "proposal_edit",
+                    "label": "Edit details",
+                    "row": 3,
+                    "action_revision_id": str(revision_id),
+                    "token": brief_edit_token,
+                },
+                {
+                    "kind": "proposal_action",
+                    "transition": "proposal_snooze",
+                    "label": "Snooze until tomorrow",
+                    "row": 0,
+                    "action_revision_id": str(revision_id),
+                    "token": brief_snooze_token,
+                },
+                {
+                    "kind": "review_navigation",
+                    "transition": "proposal_review_navigate",
+                    "label": "Next",
+                    "row": 4,
+                    "action_revision_id": str(revision_id),
+                    "source_view": "brief_review",
+                    "source_page": 1,
+                    "target_view": "brief_review",
+                    "target_page": 2,
+                    "token": brief_next_token,
+                },
+            ],
+            "projection_version": 5,
+            "render_sha256": "a" * 64,
+            "component_sha256": "b" * 64,
+        },
+    )
+    assert {item.custom_id for item in brief_view.items} == {
+        f"dkt:a:{brief_approval_token}",
+        f"dkt:r:{brief_approval_token}",
+        f"dkt:p:{brief_edit_token}",
+        f"dkt:p:{brief_snooze_token}",
+        f"dkt:n:{brief_next_token}",
     }
     edit_token = issue_projection_proposal_control_token(
         revision_id,
@@ -1248,7 +1341,11 @@ async def test_schedule_review_navigation_requests_persistent_message_update(
         assert local_action is True
         return {"ok": True}
 
+    async def fake_to_thread(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
     monkeypatch.setattr(plugin_module, "_post_button_response", fake_post)
+    monkeypatch.setattr(plugin_module.asyncio, "to_thread", fake_to_thread)
     response = FakeResponse()
     followup = FakeFollowup()
     interaction = SimpleNamespace(
@@ -1344,7 +1441,11 @@ async def test_accepted_duplicate_approval_disables_controls_and_requests_card_r
             "operation_id": str(uuid.uuid4()),
         }
 
+    async def fake_to_thread(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
     monkeypatch.setattr(plugin_module, "_post_button_response", fake_post)
+    monkeypatch.setattr(plugin_module.asyncio, "to_thread", fake_to_thread)
     response = FakeResponse()
     followup = FakeFollowup()
     message = FakeMessage()

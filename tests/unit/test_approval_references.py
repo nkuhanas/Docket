@@ -204,9 +204,9 @@ def test_review_navigation_token_binds_every_transition_dimension() -> None:
         projection_id=uuid.uuid4(),
         projection_version=12,
         source_view="schedule_review",
-        source_page=2,
+        source_page=60_000,
         target_view="schedule_review",
-        target_page=3,
+        target_page=60_001,
         actor_id="325761533034496010",
         expires_at=datetime.now(UTC).replace(microsecond=0) + timedelta(minutes=15),
     )
@@ -235,7 +235,7 @@ def test_review_navigation_token_binds_every_transition_dimension() -> None:
         reference=ReviewNavigationReference(
             **{
                 **reference.__dict__,
-                "target_page": 4,
+                "target_page": 60_002,
             }
         ),
         signing_key=b"test-signing-key",

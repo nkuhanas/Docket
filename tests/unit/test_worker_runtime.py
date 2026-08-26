@@ -17,6 +17,7 @@ class FakeOperationRunner:
     def recover_expired_leases(self) -> int:
         return 0
 
+
 class FakeProjectionRunner:
     def __init__(self) -> None:
         self._condition = threading.Condition()
@@ -56,6 +57,15 @@ class FakeProjectionRunner:
             return True
 
 
+async def _wait_for(projection: FakeProjectionRunner, field: str, minimum: int) -> bool:
+    deadline = asyncio.get_running_loop().time() + 1
+    while int(getattr(projection, field)) < minimum:
+        if asyncio.get_running_loop().time() >= deadline:
+            return False
+        await asyncio.sleep(0.01)
+    return True
+
+
 def _runtime(
     projection: FakeProjectionRunner,
     *,
@@ -72,34 +82,68 @@ def _runtime(
     )
 
 
-@pytest.mark.asyncio
-async def test_projection_wake_drains_committed_work_without_waiting_for_poll() -> None:
+async def _projection_wake_drains_committed_work_without_waiting_for_poll() -> None:
     projection = FakeProjectionRunner()
     runtime = _runtime(projection, projection_poll_seconds=60)
     await runtime.start()
     try:
-        assert await asyncio.to_thread(projection.wait_for, "calls", 1)
+        assert await _wait_for(projection, "calls", 1)
         projection.enqueue(3)
         started = time.monotonic()
-        wake_results = await asyncio.gather(
-            *[asyncio.to_thread(runtime.wake_discord_projection) for _ in range(3)]
-        )
+        wake_results: list[bool] = []
+        wake_threads = [
+            threading.Thread(
+                target=lambda: wake_results.append(runtime.wake_discord_projection())
+            )
+            for _ in range(3)
+        ]
+        for thread in wake_threads:
+            thread.start()
+        while any(thread.is_alive() for thread in wake_threads):
+            await asyncio.sleep(0.01)
+        for thread in wake_threads:
+            thread.join()
         assert wake_results == [True, True, True]
-        assert await asyncio.to_thread(projection.wait_for, "delivered", 3)
+        assert await _wait_for(projection, "delivered", 3)
         assert time.monotonic() - started < 1
     finally:
         await runtime.stop()
     assert runtime.wake_discord_projection() is False
 
 
-@pytest.mark.asyncio
-async def test_projection_poll_remains_a_lost_wake_fallback() -> None:
+async def _projection_poll_remains_a_lost_wake_fallback() -> None:
     projection = FakeProjectionRunner()
     runtime = _runtime(projection, projection_poll_seconds=0.05)
     await runtime.start()
     try:
-        assert await asyncio.to_thread(projection.wait_for, "calls", 1)
+        assert await _wait_for(projection, "calls", 1)
         projection.enqueue(1)
-        assert await asyncio.to_thread(projection.wait_for, "delivered", 1)
+        assert await _wait_for(projection, "delivered", 1)
     finally:
         await runtime.stop()
+
+
+def _run_without_default_executor(monkeypatch: pytest.MonkeyPatch, scenario) -> None:
+    async def inline_to_thread(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", inline_to_thread)
+    asyncio.run(scenario())
+
+
+def test_projection_wake_drains_committed_work_without_waiting_for_poll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _run_without_default_executor(
+        monkeypatch,
+        _projection_wake_drains_committed_work_without_waiting_for_poll,
+    )
+
+
+def test_projection_poll_remains_a_lost_wake_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _run_without_default_executor(
+        monkeypatch,
+        _projection_poll_remains_a_lost_wake_fallback,
+    )

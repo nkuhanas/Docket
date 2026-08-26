@@ -1,13 +1,17 @@
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
 
 from docket.config import get_settings
+from docket.internal_api.schemas import ApprovalResponse, LocalActionResponse
 from docket.models import (
     Account,
     CalendarSyncState,
     DailyBrief,
+    DiscordDailyThread,
+    DiscordProjection,
     OutboxEvent,
     QueueItem,
     SemanticCandidate,
@@ -16,10 +20,13 @@ from docket.models import (
 from docket.providers.discord import FakeDiscordBackend, FakeDiscordProjectionAdapter
 from docket.providers.google.fake_gmail import FakeGmailProvider
 from docket.schemas.triage import SemanticCandidateInput, SubmitSemanticCandidatesInput
+from docket.services.approvals import ApprovalService
 from docket.services.briefs import DailyBriefService
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.events import SemanticCandidateCompiler
 from docket.services.gmail_ingestion import GmailIngestionService
+from docket.services.local_actions import LocalActionService
+from docket.services.proposal_controls import ProposalControlService
 from docket.services.triage import TriageService
 
 
@@ -137,11 +144,8 @@ def test_overnight_event_is_silent_until_idempotent_morning_brief(
         assert len(queue_items) == 3
         assert queue_items[2].title == "Morning brief"
         assert "Calendar (2)" in queue_items[2].summary
-        assert len(outbox) == 3
+        assert len(outbox) == 1
         assert outbox[0].aggregate_id == brief.queue_item_id
-        assert {event.aggregate_id for event in outbox[1:]} == {
-            candidate.queue_item_id for candidate in candidates
-        }
 
     backend = FakeDiscordBackend()
     projection_runner = DiscordProjectionRunner(
@@ -153,7 +157,184 @@ def test_overnight_event_is_silent_until_idempotent_morning_brief(
     brief_card = next(iter(backend.messages.values()))
     assert brief_card["embed"]["title"] == "Morning brief"
     assert brief_card["embed"]["fields"] == []
-    assert brief_card["controls"] == []
+    assert [control["label"] for control in brief_card["controls"]] == ["Review decisions"]
+    assert len(backend.messages) == 1
+
+    with session_factory() as session:
+        projection = session.scalar(select(DiscordProjection))
+        thread = session.scalar(select(DiscordDailyThread))
+        assert projection is not None and projection.message_id is not None
+        assert thread is not None and thread.thread_id is not None
+        projection_id = projection.id
+        message_id = projection.message_id
+        thread_id = thread.thread_id
+        review = brief_card["controls"][0]
+    with session_factory.begin() as session:
+        ProposalControlService(session).respond(
+            LocalActionResponse(
+                request_id=uuid.uuid4(),
+                discord_interaction_id="morning-brief-review",
+                discord_user_id=settings.operator_discord_user_id,
+                guild_id=settings.discord_guild_id,
+                channel_id=thread_id,
+                parent_channel_id=settings.queue_channel_id,
+                projection_id=projection_id,
+                message_id=message_id,
+                responded_at=datetime.now(UTC),
+                action_revision_id=uuid.UUID(review["action_revision_id"]),
+                action_token=review["token"],
+                transition="proposal_review_navigate",
+                source_view="summary",
+                target_view="brief_review",
+                target_page=1,
+            )
+        )
+    while projection_runner.run_due_once():
+        pass
+    decision_card = backend.messages[str(projection_id)]
+    assert decision_card["embed"]["title"] == "Review new event"
+    assert next(
+        field["value"]
+        for field in decision_card["embed"]["fields"]
+        if field["name"] == "Morning brief review"
+    ) == "Decision 1 of 2"
+    assert {control["label"] for control in decision_card["controls"]} >= {
+        "Approve",
+        "Reject",
+        "Edit details",
+        "Snooze until tomorrow",
+        "Back to brief",
+        "Next",
+    }
+    assert {control.get("field") for control in decision_card["controls"]} >= {
+        "priority",
+        "reminder_preset",
+    }
+    priority_control = next(
+        control for control in decision_card["controls"] if control.get("field") == "priority"
+    )
+    proposal_revision_id = next(
+        control["action_revision_id"]
+        for control in decision_card["controls"]
+        if control.get("kind") == "proposal_action"
+    )
+    with session_factory.begin() as session:
+        ProposalControlService(session).respond(
+            LocalActionResponse(
+                request_id=uuid.uuid4(),
+                discord_interaction_id="morning-brief-priority",
+                discord_user_id=settings.operator_discord_user_id,
+                guild_id=settings.discord_guild_id,
+                channel_id=thread_id,
+                parent_channel_id=settings.queue_channel_id,
+                projection_id=projection_id,
+                message_id=message_id,
+                responded_at=datetime.now(UTC),
+                action_revision_id=uuid.UUID(proposal_revision_id),
+                action_token=priority_control["token"],
+                transition="proposal_field_change",
+                field="priority",
+                value="high",
+            )
+        )
+    while projection_runner.run_due_once():
+        pass
+    decision_card = backend.messages[str(projection_id)]
+    assert "High priority" in next(
+        field["value"]
+        for field in decision_card["embed"]["fields"]
+        if field["name"] == "Details"
+    )
+    approval_control = next(
+        control for control in decision_card["controls"] if control.get("decision") == "approve"
+    )
+    with session_factory.begin() as session:
+        ApprovalService(session).respond(
+            ApprovalResponse(
+                request_id=uuid.uuid4(),
+                discord_interaction_id="morning-brief-approve",
+                approval_id=uuid.UUID(approval_control["approval_id"]),
+                approval_token=approval_control["token"],
+                short_code=None,
+                decision="approve",
+                discord_user_id=settings.operator_discord_user_id,
+                guild_id=settings.discord_guild_id,
+                channel_id=thread_id,
+                parent_channel_id=settings.queue_channel_id,
+                projection_id=projection_id,
+                message_id=message_id,
+                responded_at=datetime.now(UTC),
+            )
+        )
+    while projection_runner.run_due_once():
+        pass
+    in_progress = backend.messages[str(projection_id)]
+    next_control = next(
+        control for control in in_progress["controls"] if control["label"] == "Next"
+    )
+    with session_factory.begin() as session:
+        ProposalControlService(session).respond(
+            LocalActionResponse(
+                request_id=uuid.uuid4(),
+                discord_interaction_id="morning-brief-next",
+                discord_user_id=settings.operator_discord_user_id,
+                guild_id=settings.discord_guild_id,
+                channel_id=thread_id,
+                parent_channel_id=settings.queue_channel_id,
+                projection_id=projection_id,
+                message_id=message_id,
+                responded_at=datetime.now(UTC),
+                action_revision_id=uuid.UUID(next_control["action_revision_id"]),
+                action_token=next_control["token"],
+                transition="proposal_review_navigate",
+                source_view="brief_review",
+                source_page=1,
+                target_view="brief_review",
+                target_page=2,
+            )
+        )
+    while projection_runner.run_due_once():
+        pass
+    clarification = backend.messages[str(projection_id)]
+    assert clarification["embed"]["title"].startswith("Clarification needed")
+    assert next(
+        field["value"]
+        for field in clarification["embed"]["fields"]
+        if field["name"] == "Morning brief review"
+    ) == "Decision 2 of 2"
+    assert {control["label"] for control in clarification["controls"]} == {
+        "Snooze until tomorrow",
+        "Ignore",
+        "Back to brief",
+        "Previous",
+    }
+    ignore_control = next(
+        control for control in clarification["controls"] if control["label"] == "Ignore"
+    )
+    with session_factory.begin() as session:
+        LocalActionService(session).respond(
+            LocalActionResponse(
+                request_id=uuid.uuid4(),
+                discord_interaction_id="morning-brief-ignore",
+                discord_user_id=settings.operator_discord_user_id,
+                guild_id=settings.discord_guild_id,
+                channel_id=thread_id,
+                parent_channel_id=settings.queue_channel_id,
+                projection_id=projection_id,
+                message_id=message_id,
+                responded_at=datetime.now(UTC),
+                action_revision_id=uuid.UUID(ignore_control["action_revision_id"]),
+                action_token=ignore_control["token"],
+            )
+        )
+    while projection_runner.run_due_once():
+        pass
+    ignored = backend.messages[str(projection_id)]
+    assert {control["label"] for control in ignored["controls"]} == {
+        "Back to brief",
+        "Previous",
+    }
+    assert len(backend.messages) == 1
 
 
 @pytest.mark.integration

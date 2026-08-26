@@ -10,9 +10,6 @@ from sqlalchemy.orm import Session, sessionmaker
 from docket.config import Settings, get_settings
 from docket.domain.canonical import sha256_json
 from docket.models import (
-    Action,
-    ActionRevision,
-    Approval,
     DailyBrief,
     DailyBriefItem,
     OutboxEvent,
@@ -222,79 +219,6 @@ class DailyBriefService:
                 lines.append(f"• {len(items) - 8} more")
         return "\n".join(lines)
 
-    @staticmethod
-    def _release_candidate_projection(
-        session: Session,
-        candidate: SemanticCandidate,
-        *,
-        local_date: date,
-    ) -> None:
-        if candidate.queue_item_id is None:
-            return
-        queue_item = session.get(QueueItem, candidate.queue_item_id)
-        if queue_item is None or queue_item.status not in {"pending", "awaiting_approval"}:
-            return
-        action = session.scalar(
-            select(Action).where(
-                Action.queue_item_id == queue_item.id,
-                Action.status == "approval_pending",
-            )
-        )
-        if action is None:
-            key = f"discord_projection:{queue_item.id}:released:{local_date.isoformat()}"
-            if not session.scalar(
-                select(OutboxEvent.id).where(OutboxEvent.deduplication_key == key)
-            ):
-                session.add(
-                    OutboxEvent(
-                        event_type="discord.projection.requested",
-                        aggregate_type="queue_item",
-                        aggregate_id=queue_item.id,
-                        deduplication_key=key,
-                        payload={
-                            "queue_item_id": str(queue_item.id),
-                            "target_local_date": local_date.isoformat(),
-                        },
-                        status="pending",
-                    )
-                )
-            return
-        revision = session.scalar(
-            select(ActionRevision).where(
-                ActionRevision.action_id == action.id,
-                ActionRevision.revision == action.current_revision,
-            )
-        )
-        if revision is None:
-            return
-        approval = session.scalar(
-            select(Approval).where(
-                Approval.action_revision_id == revision.id,
-                Approval.status == "pending",
-            )
-        )
-        if approval is None:
-            return
-        key = f"discord_projection:{queue_item.id}:released:{local_date.isoformat()}"
-        if session.scalar(select(OutboxEvent.id).where(OutboxEvent.deduplication_key == key)):
-            return
-        session.add(
-            OutboxEvent(
-                event_type="discord.projection.requested",
-                aggregate_type="queue_item",
-                aggregate_id=queue_item.id,
-                deduplication_key=key,
-                payload={
-                    "queue_item_id": str(queue_item.id),
-                    "action_id": str(action.id),
-                    "action_revision_id": str(revision.id),
-                    "approval_id": str(approval.id),
-                    "target_local_date": local_date.isoformat(),
-                },
-                status="pending",
-            )
-        )
-
     def _publish(self, *, kind: str, local_date: date) -> bool:
         window_kind = "overnight" if kind == "morning" else "waking"
         with self.session_factory.begin() as session:
@@ -396,13 +320,6 @@ class DailyBriefService:
                     status="pending",
                 )
             )
-            if kind == "morning":
-                for candidate in candidates:
-                    self._release_candidate_projection(
-                        session,
-                        candidate,
-                        local_date=local_date,
-                    )
             return True
 
     def run_due_once(self, now: datetime | None = None) -> bool:

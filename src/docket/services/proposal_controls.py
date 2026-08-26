@@ -27,12 +27,15 @@ from docket.models import (
     CalendarReminderPlan,
     CalendarSyncState,
     CommandRequest,
+    DailyBrief,
+    DailyBriefItem,
     DiscordDailyThread,
     DiscordProjection,
     Operation,
     OutboxEvent,
     QueueItem,
     Record,
+    SemanticCandidate,
 )
 from docket.models.base import utc_now
 from docket.policy import BATCH_CALENDAR_ACTION_TYPES, COURSE_CALENDAR_ACTION_TYPES
@@ -44,6 +47,10 @@ from docket.security import (
     short_code_sha256,
     verify_projection_proposal_control_token,
     verify_projection_review_navigation_token,
+)
+from docket.services.brief_projection import (
+    morning_brief_contains_queue_item,
+    projection_refresh_target,
 )
 
 _PRIORITIES = {"low", "normal", "high", "urgent"}
@@ -141,7 +148,11 @@ class ProposalControlService:
     ) -> tuple[ActionRevision, Action, Approval, QueueItem, str]:
         revision = self.session.get(ActionRevision, request.action_revision_id)
         action = self.session.get(Action, revision.action_id) if revision else None
-        queue_item = self.session.get(QueueItem, projection.queue_item_id)
+        queue_item = (
+            self.session.get(QueueItem, action.queue_item_id)
+            if action is not None and action.queue_item_id is not None
+            else None
+        )
         approval = (
             self.session.scalar(
                 select(Approval).where(Approval.action_revision_id == request.action_revision_id)
@@ -154,7 +165,18 @@ class ProposalControlService:
             or action is None
             or approval is None
             or queue_item is None
-            or action.queue_item_id != queue_item.id
+            or (
+                projection.queue_item_id != queue_item.id
+                and (
+                    projection.view_mode != "brief_review"
+                    or projection.view_action_revision_id != revision.id
+                    or not morning_brief_contains_queue_item(
+                        self.session,
+                        brief_queue_item_id=projection.queue_item_id,
+                        child_queue_item_id=queue_item.id,
+                    )
+                )
+            )
             or action.current_revision != revision.revision
             or sha256_json(revision.parameters) != revision.parameters_sha256
             or sha256_json(revision.preview) != revision.preview_sha256
@@ -273,6 +295,185 @@ class ProposalControlService:
                 message="Proposal control token is invalid.",
             )
         return revision, action, approval, queue_item, expected_field
+
+    def _brief_navigation_state(
+        self,
+        request: LocalActionResponse,
+        projection: DiscordProjection,
+    ) -> tuple[ActionRevision, Action, QueueItem]:
+        revision = self.session.get(ActionRevision, request.action_revision_id)
+        action = self.session.get(Action, revision.action_id) if revision is not None else None
+        queue_item = (
+            self.session.get(QueueItem, action.queue_item_id)
+            if action is not None and action.queue_item_id is not None
+            else None
+        )
+        if (
+            revision is None
+            or action is None
+            or queue_item is None
+            or action.current_revision != revision.revision
+            or projection.view_action_revision_id != revision.id
+            or not morning_brief_contains_queue_item(
+                self.session,
+                brief_queue_item_id=projection.queue_item_id,
+                child_queue_item_id=queue_item.id,
+            )
+        ):
+            raise DocketError(
+                code="stale_brief_navigation",
+                message="The morning brief changed after this navigation control was rendered.",
+            )
+        decoded = decode_projection_review_navigation_token(request.action_token)
+        expected = ReviewNavigationReference(
+            action_revision_id=revision.id,
+            projection_id=projection.id,
+            projection_version=projection.projection_version,
+            source_view=str(request.source_view),
+            source_page=request.source_page,
+            target_view=str(request.target_view),
+            target_page=request.target_page,
+            actor_id=str(int(request.discord_user_id)),
+            expires_at=decoded.expires_at if decoded is not None else utc_now(),
+        )
+        signing_key = self.settings.read_secret(self.settings.interaction_signing_key_file).encode()
+        if (
+            decoded is None
+            or decoded != expected
+            or utc_now() > decoded.expires_at
+            or not verify_projection_review_navigation_token(
+                request.action_token,
+                reference=expected,
+                signing_key=signing_key,
+            )
+        ):
+            raise DocketError(
+                code="invalid_proposal_control_token",
+                message="Morning brief navigation token does not match the current card.",
+            )
+        return revision, action, queue_item
+
+    def _navigate_brief(
+        self,
+        request: LocalActionResponse,
+        revision: ActionRevision,
+        action: Action,
+        projection: DiscordProjection,
+        command: CommandRequest,
+    ) -> dict[str, object]:
+        brief = self.session.scalar(
+            select(DailyBrief).where(
+                DailyBrief.queue_item_id == projection.queue_item_id,
+                DailyBrief.brief_kind == "morning",
+            )
+        )
+        if brief is None:
+            raise DocketError(
+                code="brief_review_unavailable",
+                message="The morning brief is unavailable.",
+            )
+        decision_count = len(
+            self.session.scalars(
+                select(SemanticCandidate.id)
+                .join(
+                    DailyBriefItem,
+                    DailyBriefItem.semantic_candidate_id == SemanticCandidate.id,
+                )
+                .where(
+                    DailyBriefItem.brief_id == brief.id,
+                    SemanticCandidate.queue_item_id.is_not(None),
+                )
+                .order_by(DailyBriefItem.display_order, SemanticCandidate.id)
+            ).all()
+        )
+        source_view = request.source_view
+        target_view = request.target_view
+        assert source_view is not None and target_view is not None
+        if projection.view_mode != source_view or projection.view_page != request.source_page:
+            raise DocketError(
+                code="stale_brief_navigation",
+                message="The morning brief moved after this navigation control was rendered.",
+            )
+        legal = False
+        if source_view == "summary" and target_view == "brief_review":
+            legal = request.target_page == 1 and decision_count >= 1
+        elif source_view == "brief_review" and target_view == "summary":
+            legal = request.source_page is not None and request.target_page is None
+        elif source_view == target_view == "brief_review":
+            legal = (
+                request.source_page is not None
+                and request.target_page is not None
+                and abs(request.target_page - request.source_page) == 1
+                and request.target_page <= decision_count
+            )
+        if not legal:
+            raise DocketError(
+                code="invalid_review_navigation",
+                message="That morning-brief transition is not adjacent to the current view.",
+            )
+        projection.view_mode = target_view
+        projection.view_page = request.target_page
+        projection.status = "pending"
+        daily_thread = self.session.get(DiscordDailyThread, projection.daily_thread_id)
+        if daily_thread is None:
+            raise DocketError(
+                code="invalid_proposal_control_projection",
+                message="The morning brief thread is unavailable.",
+            )
+        outbox_id = uuid.uuid4()
+        self.session.add(
+            OutboxEvent(
+                id=outbox_id,
+                event_type="discord.projection.refresh_requested",
+                aggregate_type="queue_item",
+                aggregate_id=projection.queue_item_id,
+                deduplication_key=(
+                    f"discord_projection:{projection.queue_item_id}:brief-review:"
+                    f"{request.discord_interaction_id}"
+                ),
+                payload={
+                    "queue_item_id": str(projection.queue_item_id),
+                    "projection_id": str(projection.id),
+                    "target_local_date": daily_thread.local_date.isoformat(),
+                    "reason": "morning_brief_navigation",
+                },
+                status=OutboxStatus.PENDING.value,
+            )
+        )
+        now = utc_now()
+        result: dict[str, object] = {
+            "ok": True,
+            "transition": request.transition,
+            "source_view": source_view,
+            "source_page": request.source_page,
+            "target_view": target_view,
+            "target_page": request.target_page,
+            "decision_count": decision_count,
+            "projection_id": str(projection.id),
+            "projection_outbox_id": str(outbox_id),
+        }
+        command.status = CommandStatus.SUCCEEDED.value
+        command.result = result
+        command.completed_at = now
+        self.session.add(
+            AuditEvent(
+                event_type="brief.review_navigated",
+                entity_type="action",
+                entity_id=action.id,
+                actor_type="plugin",
+                actor_id=request.discord_user_id,
+                request_id=command.id,
+                data={
+                    "projection_id": str(projection.id),
+                    "source_view": source_view,
+                    "source_page": request.source_page,
+                    "target_view": target_view,
+                    "target_page": request.target_page,
+                    "action_revision_id": str(revision.id),
+                },
+            )
+        )
+        return result
 
     @staticmethod
     def _command_payload(request: LocalActionResponse) -> dict[str, object]:
@@ -593,16 +794,26 @@ class ProposalControlService:
             expires_at=expires_at,
         )
         self.session.add(next_approval)
+        response_projection = (
+            self.session.get(DiscordProjection, request.projection_id)
+            if request.projection_id is not None
+            else None
+        )
+        refresh_target = projection_refresh_target(
+            self.session,
+            child_queue_item_id=queue_item.id,
+            projection=response_projection,
+        )
         self.session.add(
             OutboxEvent(
                 event_type="discord.projection.refresh_requested",
                 aggregate_type="queue_item",
-                aggregate_id=queue_item.id,
+                aggregate_id=refresh_target.queue_item_id,
                 deduplication_key=(
-                    f"discord_projection:{queue_item.id}:revision:{next_revision.revision}"
+                    f"discord_projection:{refresh_target.queue_item_id}:revision:{next_revision.id}"
                 ),
                 payload={
-                    "queue_item_id": str(queue_item.id),
+                    **refresh_target.payload(),
                     "action_id": str(action.id),
                     "action_revision_id": str(next_revision.id),
                     "approval_id": str(next_approval.id),
@@ -1263,6 +1474,27 @@ class ProposalControlService:
         if replay is not None:
             return replay
         projection = self._projection(request)
+        if request.transition == "proposal_review_navigate":
+            candidate_revision = self.session.get(ActionRevision, request.action_revision_id)
+            candidate_action = (
+                self.session.get(Action, candidate_revision.action_id)
+                if candidate_revision is not None
+                else None
+            )
+            if (
+                candidate_action is not None
+                and candidate_action.queue_item_id is not None
+                and candidate_action.queue_item_id != projection.queue_item_id
+            ):
+                revision, action, _queue_item = self._brief_navigation_state(request, projection)
+                command = self._start_command(request)
+                return self._navigate_brief(
+                    request,
+                    revision,
+                    action,
+                    projection,
+                    command,
+                )
         revision, action, approval, queue_item, _field = self._bound_state(request, projection)
         command = self._start_command(request)
         if request.transition not in {

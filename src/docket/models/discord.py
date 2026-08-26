@@ -53,12 +53,14 @@ class DiscordProjection(TimestampMixin, Base):
             name="ck_discord_projections_status",
         ),
         CheckConstraint(
-            "view_mode IN ('summary', 'schedule_review', 'decision', 'schedule_failures')",
+            "view_mode IN ('summary', 'schedule_review', 'decision', "
+            "'schedule_failures', 'brief_review')",
             name="ck_discord_projections_view_mode",
         ),
         CheckConstraint(
             "((view_mode IN ('schedule_review', 'schedule_failures') "
             "AND view_page BETWEEN 1 AND 5) OR "
+            "(view_mode = 'brief_review' AND view_page BETWEEN 1 AND 65535) OR "
             "(view_mode IN ('summary', 'decision') AND view_page IS NULL))",
             name="ck_discord_projections_view_page",
         ),

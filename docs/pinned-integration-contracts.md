@@ -49,7 +49,7 @@ on every request. Docket's callback uses the independent
 
 Hermes performs overlapping plugin discovery during this pin's startup. Each
 discovery pass imports an isolated plugin module, so module globals alone cannot
-prevent a transient second bind. Plugin `0.15.7` starts the private HTTP server
+prevent a transient second bind. Plugin `0.15.8` starts the private HTTP server
 under a background supervisor: an `EADDRINUSE` defers that copy without failing
 plugin registration, and it retries if the process that temporarily owned the
 port exits. Healthy startup may contain one `startup deferred` line, followed
@@ -106,7 +106,7 @@ Pinned outbound assumptions to revalidate:
   through its durable outbox; the plugin never posts hook output directly to
   Discord.
 
-Plugin `0.15.7` renders timed reminder start/end values as Docket-supplied native
+Plugin `0.15.8` renders timed reminder start/end values as Docket-supplied native
 Discord timestamps, puts the event subject under the native `Title` field, and
 omits a redundant timezone field. All-day reminders instead render fixed
 start/end dates plus the Calendar timezone. Projection embeds may omit their

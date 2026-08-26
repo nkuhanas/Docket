@@ -19,6 +19,8 @@ from docket.models import (
     Approval,
     AuditEvent,
     CalendarEventCache,
+    DailyBrief,
+    DailyBriefItem,
     DiscordDailyThread,
     DiscordMcpTrace,
     DiscordProjection,
@@ -27,6 +29,7 @@ from docket.models import (
     QueueItem,
     ReminderRule,
     ScheduledNotification,
+    SemanticCandidate,
 )
 from docket.models.base import utc_now
 from docket.policy import BATCH_CALENDAR_ACTION_TYPES
@@ -69,6 +72,16 @@ class _NavigationCommon(TypedDict):
     projection_version: int
     expires_at: datetime
     signing_key: bytes
+
+
+class _ProjectionActionState(TypedDict):
+    queue_item: QueueItem
+    action: Action | None
+    revision: ActionRevision | None
+    approval: Approval | None
+    operation: Operation | None
+    local_revisions: list[tuple[Action, ActionRevision]]
+    account_label: str | None
 
 
 def _aware(value: datetime) -> datetime:
@@ -1073,12 +1086,24 @@ class DiscordProjectionRunner:
         local_revisions: list[tuple[Action, ActionRevision]],
         account_label: str | None,
         projection: DiscordProjection,
+        brief_parent: QueueItem | None,
+        brief_index: int | None,
+        brief_count: int,
+        brief_navigation_revision: ActionRevision | None,
         projection_version: int,
         projection_date: date,
         latest_date: date,
     ) -> tuple[dict[str, Any], list[dict[str, Any]], str, str]:
         calendar_action = revision is not None and revision.action_type.startswith("calendar_")
         fields: list[dict[str, Any]] = []
+        if brief_parent is not None and brief_index is not None:
+            fields.append(
+                {
+                    "name": "Morning brief review",
+                    "value": f"Decision {brief_index} of {brief_count}",
+                    "inline": False,
+                }
+            )
         legacy_generic_card = not calendar_action and queue_item.presentation == "proposal"
         if legacy_generic_card:
             fields.extend(
@@ -1577,7 +1602,7 @@ class DiscordProjectionRunner:
                     )
             elif revision is not None and revision.action_type in BATCH_CALENDAR_ACTION_TYPES:
                 page_count = self._schedule_page_count(revision)
-                common: _NavigationCommon = {
+                schedule_common: _NavigationCommon = {
                     "revision": revision,
                     "projection": projection,
                     "projection_version": projection_version,
@@ -1587,7 +1612,7 @@ class DiscordProjectionRunner:
                 if projection.view_mode == "summary":
                     controls = [
                         self._review_navigation_control(
-                            **common,
+                            **schedule_common,
                             source_view="summary",
                             source_page=None,
                             target_view="schedule_review",
@@ -1600,7 +1625,7 @@ class DiscordProjectionRunner:
                     page = projection.view_page
                     controls = [
                         self._review_navigation_control(
-                            **common,
+                            **schedule_common,
                             source_view="schedule_review",
                             source_page=page,
                             target_view=("summary" if page == 1 else "schedule_review"),
@@ -1608,7 +1633,7 @@ class DiscordProjectionRunner:
                             label="Back to summary" if page == 1 else "Previous",
                         ),
                         self._review_navigation_control(
-                            **common,
+                            **schedule_common,
                             source_view="schedule_review",
                             source_page=page,
                             target_view=("decision" if page == page_count else "schedule_review"),
@@ -1656,7 +1681,7 @@ class DiscordProjectionRunner:
                     if not inline_course_review:
                         controls.append(
                             self._review_navigation_control(
-                                **common,
+                                **schedule_common,
                                 source_view="decision",
                                 source_page=None,
                                 target_view="schedule_review",
@@ -1812,7 +1837,7 @@ class DiscordProjectionRunner:
                 )
                 if isinstance(failures, list) and failures:
                     failure_page_count = (min(len(failures), 50) + 9) // 10
-                    common = {
+                    failure_common: _NavigationCommon = {
                         "revision": revision,
                         "projection": projection,
                         "projection_version": projection_version,
@@ -1822,7 +1847,7 @@ class DiscordProjectionRunner:
                     if projection.view_mode == "summary":
                         controls = [
                             self._review_navigation_control(
-                                **common,
+                                **failure_common,
                                 source_view="summary",
                                 source_page=None,
                                 target_view="schedule_failures",
@@ -1835,7 +1860,7 @@ class DiscordProjectionRunner:
                         page = projection.view_page
                         controls = [
                             self._review_navigation_control(
-                                **common,
+                                **failure_common,
                                 source_view="schedule_failures",
                                 source_page=page,
                                 target_view=("summary" if page == 1 else "schedule_failures"),
@@ -1846,7 +1871,7 @@ class DiscordProjectionRunner:
                         if page < failure_page_count:
                             controls.append(
                                 self._review_navigation_control(
-                                    **common,
+                                    **failure_common,
                                     source_view="schedule_failures",
                                     source_page=page,
                                     target_view="schedule_failures",
@@ -1891,6 +1916,94 @@ class DiscordProjectionRunner:
                         "token": token,
                     }
                 )
+        if brief_parent is not None:
+            if brief_index is not None:
+                controls = [
+                    control
+                    for control in controls
+                    if not (
+                        control.get("kind") == "proposal_action"
+                        and control.get("transition") == "proposal_edit"
+                        and control.get("row") == 4
+                    )
+                ]
+            navigation_controls: list[dict[str, Any]] = []
+            navigation_revision = brief_navigation_revision
+            if navigation_revision is not None and brief_count:
+                signing_key = self.settings.read_secret(
+                    self.settings.interaction_signing_key_file
+                ).encode()
+                local_midnight = datetime.combine(
+                    projection_date,
+                    datetime.min.time(),
+                    tzinfo=ZoneInfo(self.settings.timezone),
+                )
+                navigation_expires_at = (
+                    approval.expires_at
+                    if approval is not None and approval.status == ApprovalStatus.PENDING.value
+                    else local_midnight
+                    + timedelta(
+                        hours=self.settings.daily_rollover_hour,
+                        seconds=self.settings.local_action_ttl_seconds,
+                    )
+                )
+                brief_common: _NavigationCommon = {
+                    "revision": navigation_revision,
+                    "projection": projection,
+                    "projection_version": projection_version,
+                    "expires_at": navigation_expires_at,
+                    "signing_key": signing_key,
+                }
+                if brief_index is None:
+                    controls = []
+                    navigation_controls.append(
+                        self._review_navigation_control(
+                            **brief_common,
+                            source_view="summary",
+                            source_page=None,
+                            target_view="brief_review",
+                            target_page=1,
+                            label="Review decisions",
+                            row=4,
+                        )
+                    )
+                else:
+                    navigation_controls.append(
+                        self._review_navigation_control(
+                            **brief_common,
+                            source_view="brief_review",
+                            source_page=brief_index,
+                            target_view="summary",
+                            target_page=None,
+                            label="Back to brief",
+                            row=4,
+                        )
+                    )
+                    if brief_index > 1:
+                        navigation_controls.append(
+                            self._review_navigation_control(
+                                **brief_common,
+                                source_view="brief_review",
+                                source_page=brief_index,
+                                target_view="brief_review",
+                                target_page=brief_index - 1,
+                                label="Previous",
+                                row=4,
+                            )
+                        )
+                    if brief_index < brief_count:
+                        navigation_controls.append(
+                            self._review_navigation_control(
+                                **brief_common,
+                                source_view="brief_review",
+                                source_page=brief_index,
+                                target_view="brief_review",
+                                target_page=brief_index + 1,
+                                label="Next",
+                                row=4,
+                            )
+                        )
+            controls.extend(navigation_controls)
         if queue_item.status == "snoozed" and queue_item.snoozed_until is not None:
             fields.append(
                 {
@@ -2031,6 +2144,128 @@ class DiscordProjectionRunner:
         }
         return embed, controls, sha256_json(embed), sha256_json(controls)
 
+    @staticmethod
+    def _action_state(
+        session: Session,
+        queue_item: QueueItem,
+        *,
+        projection_date: date,
+    ) -> _ProjectionActionState:
+        ensure_local_actions(session, queue_item, projection_date=projection_date)
+        actions = session.scalars(
+            select(Action)
+            .where(Action.queue_item_id == queue_item.id)
+            .order_by(Action.display_order, Action.id)
+        ).all()
+        local_revisions: list[tuple[Action, ActionRevision]] = []
+        terminal_local_revisions: list[tuple[Action, ActionRevision]] = []
+        external_revisions: list[tuple[Action, ActionRevision]] = []
+        for candidate in actions:
+            candidate_revision = session.scalar(
+                select(ActionRevision).where(
+                    ActionRevision.action_id == candidate.id,
+                    ActionRevision.revision == candidate.current_revision,
+                )
+            )
+            if candidate_revision is None:
+                continue
+            if candidate_revision.risk_class == RiskClass.LOCAL_WRITE.value:
+                if candidate.status == "available":
+                    local_revisions.append((candidate, candidate_revision))
+                else:
+                    terminal_local_revisions.append((candidate, candidate_revision))
+                continue
+            external_revisions.append((candidate, candidate_revision))
+        action: Action | None = None
+        revision: ActionRevision | None = None
+        approval: Approval | None = None
+        operation: Operation | None = None
+        account_label: str | None = None
+        if external_revisions:
+            selected = next(
+                (item for item in external_revisions if item[0].status == "approval_pending"),
+                None,
+            )
+            if selected is None:
+                selected = next(
+                    (
+                        item
+                        for item in external_revisions
+                        if item[0].status
+                        in {
+                            "ready",
+                            "executing",
+                            "reconciliation_required",
+                            "failed",
+                        }
+                    ),
+                    external_revisions[-1],
+                )
+            action, revision = selected
+            approval = session.scalar(
+                select(Approval).where(Approval.action_revision_id == revision.id)
+            )
+            operation = session.scalar(
+                select(Operation)
+                .where(Operation.action_revision_id == revision.id)
+                .order_by(Operation.created_at.desc())
+                .limit(1)
+            )
+            account = session.get(Account, revision.account_id)
+            if account is not None:
+                account_label = (
+                    account.display_name or account.email_address or account.external_account_id
+                )
+        elif terminal_local_revisions:
+            action, revision = terminal_local_revisions[-1]
+        return {
+            "queue_item": queue_item,
+            "action": action,
+            "revision": revision,
+            "approval": approval,
+            "operation": operation,
+            "local_revisions": local_revisions,
+            "account_label": account_label,
+        }
+
+    def _morning_brief_entries(
+        self,
+        session: Session,
+        queue_item: QueueItem,
+        *,
+        projection_date: date,
+    ) -> list[_ProjectionActionState]:
+        brief = session.scalar(
+            select(DailyBrief).where(
+                DailyBrief.queue_item_id == queue_item.id,
+                DailyBrief.brief_kind == "morning",
+            )
+        )
+        if brief is None:
+            return []
+        candidates = session.scalars(
+            select(SemanticCandidate)
+            .join(
+                DailyBriefItem,
+                DailyBriefItem.semantic_candidate_id == SemanticCandidate.id,
+            )
+            .where(
+                DailyBriefItem.brief_id == brief.id,
+                SemanticCandidate.queue_item_id.is_not(None),
+            )
+            .order_by(DailyBriefItem.display_order, SemanticCandidate.id)
+        ).all()
+        entries: list[_ProjectionActionState] = []
+        for candidate in candidates:
+            assert candidate.queue_item_id is not None
+            child = session.get(QueueItem, candidate.queue_item_id)
+            if child is None:
+                continue
+            state = self._action_state(session, child, projection_date=projection_date)
+            if state["revision"] is not None or state["local_revisions"]:
+                entries.append(state)
+        return entries
+
     def _projection_request(
         self,
         event_id: uuid.UUID,
@@ -2065,127 +2300,118 @@ class DiscordProjectionRunner:
             )
             if latest_date is None:
                 latest_date = daily_thread.local_date
-            ensure_local_actions(
-                session,
-                queue_item,
-                projection_date=latest_date,
+            brief_parent = queue_item if queue_item.category == "morning_brief" else None
+            brief_entries = (
+                self._morning_brief_entries(
+                    session,
+                    queue_item,
+                    projection_date=latest_date,
+                )
+                if brief_parent is not None
+                else []
             )
-            actions = session.scalars(
-                select(Action)
-                .where(Action.queue_item_id == queue_item.id)
-                .order_by(Action.display_order, Action.id)
-            ).all()
-            action: Action | None = None
-            revision: ActionRevision | None = None
-            approval: Approval | None = None
-            operation: Operation | None = None
-            local_revisions: list[tuple[Action, ActionRevision]] = []
-            external_revisions: list[tuple[Action, ActionRevision]] = []
-            account_label: str | None = None
-            for candidate in actions:
-                candidate_revision = session.scalar(
-                    select(ActionRevision).where(
-                        ActionRevision.action_id == candidate.id,
-                        ActionRevision.revision == candidate.current_revision,
+            brief_count = len(brief_entries)
+            brief_index: int | None = None
+            brief_navigation_revision: ActionRevision | None = None
+            render_queue_item = queue_item
+            if brief_parent is not None:
+                if (
+                    projection.view_mode == "brief_review"
+                    and projection.view_page is not None
+                    and 1 <= projection.view_page <= brief_count
+                ):
+                    brief_index = projection.view_page
+                    state = brief_entries[brief_index - 1]
+                    render_queue_item = state["queue_item"]
+                else:
+                    projection.view_mode = "summary"
+                    projection.view_page = None
+                    projection.reviewed_through_page = 0
+                    state = {
+                        "queue_item": queue_item,
+                        "action": None,
+                        "revision": None,
+                        "approval": None,
+                        "operation": None,
+                        "local_revisions": [],
+                        "account_label": None,
+                    }
+                navigation_state = brief_entries[(brief_index or 1) - 1] if brief_entries else None
+                if navigation_state is not None:
+                    brief_navigation_revision = navigation_state["revision"]
+                    if brief_navigation_revision is None and navigation_state["local_revisions"]:
+                        brief_navigation_revision = navigation_state["local_revisions"][0][1]
+                projection.view_action_revision_id = (
+                    brief_navigation_revision.id if brief_navigation_revision is not None else None
+                )
+            else:
+                state = self._action_state(session, queue_item, projection_date=latest_date)
+                action = state["action"]
+                revision = state["revision"]
+                revision_changed = (
+                    revision is None or projection.view_action_revision_id != revision.id
+                )
+                if revision is None:
+                    projection.view_action_revision_id = None
+                    projection.view_mode = "summary"
+                    projection.view_page = None
+                    projection.reviewed_through_page = 0
+                elif revision_changed:
+                    projection.view_action_revision_id = revision.id
+                    inline_course_review = (
+                        action is not None
+                        and action.status == "approval_pending"
+                        and self._inline_course_review(revision)
                     )
-                )
-                if candidate_revision is None:
-                    continue
-                if candidate_revision.risk_class == RiskClass.LOCAL_WRITE.value:
-                    if candidate.status == "available":
-                        local_revisions.append((candidate, candidate_revision))
-                    continue
-                external_revisions.append((candidate, candidate_revision))
-            if external_revisions:
-                selected = next(
-                    (item for item in external_revisions if item[0].status == "approval_pending"),
-                    None,
-                )
-                if selected is None:
-                    selected = next(
-                        (
-                            item
-                            for item in external_revisions
-                            if item[0].status
-                            in {
-                                "ready",
-                                "executing",
-                                "reconciliation_required",
-                                "failed",
-                            }
-                        ),
-                        external_revisions[-1],
-                    )
-                action, revision = selected
-                approval = session.scalar(
-                    select(Approval).where(Approval.action_revision_id == revision.id)
-                )
-                operation = session.scalar(
-                    select(Operation)
-                    .where(Operation.action_revision_id == revision.id)
-                    .order_by(Operation.created_at.desc())
-                    .limit(1)
-                )
-                account = session.get(Account, revision.account_id)
-                if account is not None:
-                    account_label = (
-                        account.display_name or account.email_address or account.external_account_id
-                    )
-            revision_changed = revision is None or projection.view_action_revision_id != revision.id
-            if revision is None:
-                projection.view_action_revision_id = None
-                projection.view_mode = "summary"
-                projection.view_page = None
-                projection.reviewed_through_page = 0
-            elif revision_changed:
-                projection.view_action_revision_id = revision.id
-                inline_course_review = (
-                    action is not None
-                    and action.status == "approval_pending"
-                    and self._inline_course_review(revision)
-                )
-                projection.view_mode = (
-                    "decision"
-                    if inline_course_review
-                    else (
-                        "summary"
-                        if revision.action_type in BATCH_CALENDAR_ACTION_TYPES
+                    projection.view_mode = (
+                        "decision"
+                        if inline_course_review
                         else (
-                            "decision"
-                            if action is not None and action.status == "approval_pending"
-                            else "summary"
+                            "summary"
+                            if revision.action_type in BATCH_CALENDAR_ACTION_TYPES
+                            else (
+                                "decision"
+                                if action is not None and action.status == "approval_pending"
+                                else "summary"
+                            )
                         )
                     )
-                )
-                projection.view_page = None
-                projection.reviewed_through_page = (
-                    self._schedule_page_count(revision) if inline_course_review else 0
-                )
-            elif (
-                revision.action_type in BATCH_CALENDAR_ACTION_TYPES
-                and action is not None
-                and action.status == "approval_pending"
-                and projection.view_mode == "summary"
-                and self._inline_course_review(revision)
-            ):
-                projection.view_mode = "decision"
-                projection.view_page = None
-                projection.reviewed_through_page = self._schedule_page_count(revision)
-            elif (
-                revision.action_type in BATCH_CALENDAR_ACTION_TYPES
-                and action is not None
-                and action.status != "approval_pending"
-                and projection.view_mode in {"schedule_review", "decision"}
-            ):
-                projection.view_mode = "summary"
-                projection.view_page = None
-                projection.reviewed_through_page = 0
+                    projection.view_page = None
+                    projection.reviewed_through_page = (
+                        self._schedule_page_count(revision) if inline_course_review else 0
+                    )
+                elif (
+                    revision.action_type in BATCH_CALENDAR_ACTION_TYPES
+                    and action is not None
+                    and action.status == "approval_pending"
+                    and projection.view_mode == "summary"
+                    and self._inline_course_review(revision)
+                ):
+                    projection.view_mode = "decision"
+                    projection.view_page = None
+                    projection.reviewed_through_page = self._schedule_page_count(revision)
+                elif (
+                    revision.action_type in BATCH_CALENDAR_ACTION_TYPES
+                    and action is not None
+                    and action.status != "approval_pending"
+                    and projection.view_mode in {"schedule_review", "decision"}
+                ):
+                    projection.view_mode = "summary"
+                    projection.view_page = None
+                    projection.reviewed_through_page = 0
+
+            action = state["action"]
+            revision = state["revision"]
+            approval = state["approval"]
+            operation = state["operation"]
+            local_revisions = state["local_revisions"]
+            account_label = state["account_label"]
 
             def render(
                 version: int,
             ) -> tuple[dict[str, Any], list[dict[str, Any]], str, str]:
                 return self._render(
-                    queue_item,
+                    render_queue_item,
                     action,
                     revision,
                     approval,
@@ -2193,6 +2419,10 @@ class DiscordProjectionRunner:
                     local_revisions,
                     account_label,
                     projection,
+                    brief_parent,
+                    brief_index,
+                    brief_count,
+                    brief_navigation_revision,
                     version,
                     daily_thread.local_date,
                     latest_date,

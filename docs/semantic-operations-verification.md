@@ -22,6 +22,9 @@ outside version control.
   work rather than being reported as atomic success.
 * Normal overnight Gmail presentation is silent. Durable, timezone-bound
   morning and night windows publish at most one brief per kind and local date.
+  Morning decisions remain separate canonical actions, but are reviewed and
+  decided through one navigable Discord message rather than a per-email card
+  stream.
 * A terminal canonical decision cannot retain a live actionable Discord card.
   Duplicate interactions repair the exact clicked projection.
 
@@ -31,7 +34,9 @@ Migrations `0017` through `0022` introduce intent authority, typed semantic
 candidates, the entity registry, canonical events/provider bindings, durable
 brief windows, and operation bundles. Migration `0023` terminalizes residual
 pending, failed, or snoozed alpha Gmail archive/mark-read cards. Its downgrade
-deliberately does not recreate obsolete approval authority.
+deliberately does not recreate obsolete approval authority. Migration `0024`
+adds durable aggregate-brief review state and expands the signed navigation
+range without changing the canonical identity of any contained decision.
 
 The waking interval is configured once with
 `DOCKET_WAKING_WINDOW_START_HOUR`, `DOCKET_WAKING_WINDOW_END_HOUR`, and
@@ -53,6 +58,9 @@ The repository gate exercises:
   restart reconciliation;
 * silent overnight triage, one idempotent morning brief, one night closeout,
   delayed classification blocking, and missed-boundary catch-up;
+* one-message morning review navigation, authenticated field edits, approval,
+  local actions, child-operation completion, and aggregate-card refreshes with
+  no separately published child cards;
 * migration `0023` cleanup of a residual snoozed housekeeping card.
 
 Run the complete gate with:
@@ -83,8 +91,10 @@ accepted:
 6. Click an already-consumed card. The response should report the existing
    decision and the exact visible card should converge to terminal state.
 7. Observe one overnight and one waking-day boundary. Ordinary overnight
-   messages must not stream individually; each window emits no more than its
-   single cohesive brief.
+   messages must not stream individually. In the morning brief, traverse at
+   least two distinct decisions, complete one proposal and one awareness or
+   clarification action, and confirm every interaction updates the same single
+   Discord message. Each window must emit no more than its cohesive brief.
 
 Use the symptom table in [operations-runbook.md](operations-runbook.md) for the
 first diagnostic checks when any live behavior diverges.

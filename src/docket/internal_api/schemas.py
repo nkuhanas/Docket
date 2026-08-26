@@ -62,14 +62,16 @@ class LocalActionResponse(DiscordContext):
     field: Literal["priority", "reminder_preset", "conflict_resolution"] | None = None
     value: str | None = Field(default=None, min_length=1, max_length=64)
     modal_values: dict[str, str] | None = None
-    source_view: Literal["summary", "schedule_review", "decision", "schedule_failures"] | None = (
-        None
-    )
-    source_page: int | None = Field(default=None, ge=1, le=5)
-    target_view: Literal["summary", "schedule_review", "decision", "schedule_failures"] | None = (
-        None
-    )
-    target_page: int | None = Field(default=None, ge=1, le=5)
+    source_view: (
+        Literal["summary", "schedule_review", "decision", "schedule_failures", "brief_review"]
+        | None
+    ) = None
+    source_page: int | None = Field(default=None, ge=1, le=65_535)
+    target_view: (
+        Literal["summary", "schedule_review", "decision", "schedule_failures", "brief_review"]
+        | None
+    ) = None
+    target_page: int | None = Field(default=None, ge=1, le=65_535)
 
     @model_validator(mode="after")
     def require_projection_context(self) -> "LocalActionResponse":
@@ -106,9 +108,9 @@ class LocalActionResponse(DiscordContext):
                 or self.target_view is None
             ):
                 raise ValueError("proposal review navigation requires source and target views")
-            if (self.source_view in {"schedule_review", "schedule_failures"}) != (
+            if (self.source_view in {"schedule_review", "schedule_failures", "brief_review"}) != (
                 self.source_page is not None
-            ) or (self.target_view in {"schedule_review", "schedule_failures"}) != (
+            ) or (self.target_view in {"schedule_review", "schedule_failures", "brief_review"}) != (
                 self.target_page is not None
             ):
                 raise ValueError("review-page values must match their paginated views")

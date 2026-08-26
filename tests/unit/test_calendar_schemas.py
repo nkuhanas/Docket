@@ -136,18 +136,23 @@ def test_standalone_event_derives_classification_and_normalizes_tags() -> None:
 
 
 def test_standalone_initial_priority_is_conservative() -> None:
+    payload = {
+        "title": "Check my email",
+        "timing": {
+            "kind": "all_day",
+            "start_date": date(2026, 7, 30),
+            "end_date": date(2026, 7, 31),
+        },
+        "priority": "urgent",
+    }
     with pytest.raises(ValidationError, match="authenticated Priority control"):
-        StandaloneCalendarEventInput.model_validate(
-            {
-                "title": "Check my email",
-                "timing": {
-                    "kind": "all_day",
-                    "start_date": date(2026, 7, 30),
-                    "end_date": date(2026, 7, 31),
-                },
-                "priority": "urgent",
-            }
-        )
+        StandaloneCalendarEventInput.model_validate(payload)
+
+    explicitly_selected = StandaloneCalendarEventInput.model_validate(
+        payload,
+        context={"allow_explicit_priority": True},
+    )
+    assert explicitly_selected.priority == "urgent"
 
 
 def test_calendar_profile_normalizes_reminder_defaults() -> None:

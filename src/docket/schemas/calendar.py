@@ -3,7 +3,7 @@ from typing import Annotated, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BeforeValidator, Field, field_validator, model_validator
+from pydantic import BeforeValidator, Field, ValidationInfo, field_validator, model_validator
 
 from docket.config import get_settings
 from docket.schemas.records import (
@@ -235,8 +235,14 @@ class StandaloneCalendarEventInput(StrictModel):
         return sorted(normalized)
 
     @model_validator(mode="after")
-    def priority_and_recurrence_are_safe(self) -> "StandaloneCalendarEventInput":
-        if self.priority != "normal":
+    def priority_and_recurrence_are_safe(
+        self,
+        info: ValidationInfo,
+    ) -> "StandaloneCalendarEventInput":
+        allow_explicit_priority = bool(
+            info.context and info.context.get("allow_explicit_priority") is True
+        )
+        if self.priority != "normal" and not allow_explicit_priority:
             raise ValueError(
                 "initial proposals default to normal priority; use the authenticated "
                 "Priority control for a non-default value"

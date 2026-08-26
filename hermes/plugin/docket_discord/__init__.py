@@ -1023,22 +1023,23 @@ def _decode_review_navigation(
         2: "schedule_review",
         3: "decision",
         4: "schedule_failures",
+        5: "brief_review",
     }
     try:
         raw = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
-        if len(raw) != 65 or raw[0] != 5 or raw[37] not in views or raw[39] not in views:
+        if len(raw) != 67 or raw[0] != 7 or raw[37] not in views or raw[40] not in views:
             raise ValueError
-        source_page = raw[38] or None
-        target_page = raw[40] or None
+        source_page = int.from_bytes(raw[38:40], "big") or None
+        target_page = int.from_bytes(raw[41:43], "big") or None
         return (
             uuid.UUID(bytes=raw[1:17]),
             uuid.UUID(bytes=raw[17:33]),
             int.from_bytes(raw[33:37], "big"),
             views[raw[37]],
             source_page,
-            views[raw[39]],
+            views[raw[40]],
             target_page,
-            str(int.from_bytes(raw[41:49], "big")),
+            str(int.from_bytes(raw[43:51], "big")),
         )
     except (ValueError, UnicodeEncodeError) as exc:
         raise PluginAPIError("invalid_control", "Review navigation token is invalid", 422) from exc
@@ -1179,7 +1180,7 @@ def _render_embed(
             if not valid_decisions or len(approval_ids) != 1 or len(tokens) != 1:
                 raise PluginAPIError("invalid_control", "Approval pair is inconsistent", 422)
         if "local_action" in kinds:
-            if kinds != {"local_action"}:
+            if not kinds.issubset({"local_action", "review_navigation"}):
                 raise PluginAPIError(
                     "invalid_control", "Local controls cannot mix with proposal controls", 422
                 )
@@ -1232,11 +1233,17 @@ def _render_embed(
                 {"snooze_queue_item", "ignore_queue_item"},
                 {"acknowledge_queue_item"},
                 {"snooze_queue_item", "acknowledge_queue_item"},
-            ) or len(action_types) != len(controls):
+            ) or len(action_types) != len(
+                [
+                    item
+                    for item in controls
+                    if isinstance(item, dict) and item.get("kind") == "local_action"
+                ]
+            ):
                 raise PluginAPIError("invalid_control", "Local control set is inconsistent", 422)
         if "string_select" in kinds:
             if "local_action" in kinds or not kinds.issubset(
-                {"approval", "string_select", "proposal_action"}
+                {"approval", "string_select", "proposal_action", "review_navigation"}
             ):
                 raise PluginAPIError("invalid_control", "Control kinds are incompatible", 422)
             rows: set[int] = set()
@@ -1375,7 +1382,13 @@ def _render_embed(
                 }
                 if transition not in labels or control["label"] != labels[transition]:
                     raise PluginAPIError("invalid_control", "Proposal action is not canonical", 422)
-                expected_row = 0 if transition == "proposal_snooze" else 3
+                expected_row = (
+                    0
+                    if transition == "proposal_snooze"
+                    else 4
+                    if transition == "proposal_edit" and conflict_selects
+                    else 3
+                )
                 if int(control["row"]) != expected_row:
                     raise PluginAPIError("invalid_control", "Proposal action row is invalid", 422)
                 revision_id = uuid.UUID(str(control["action_revision_id"]))
@@ -1411,11 +1424,17 @@ def _render_embed(
             ):
                 raise PluginAPIError("invalid_control", "Proposal actions are duplicated", 422)
         if "review_navigation" in kinds:
-            if "local_action" in kinds or "string_select" in kinds:
+            if not kinds.issubset(
+                {
+                    "approval",
+                    "local_action",
+                    "string_select",
+                    "proposal_action",
+                    "review_navigation",
+                }
+            ):
                 raise PluginAPIError(
-                    "invalid_control",
-                    "Review navigation cannot mix with local actions or selects",
-                    422,
+                    "invalid_control", "Review navigation control mix is invalid", 422
                 )
             seen: set[tuple[str, int | None, str, int | None]] = set()
             projection_version = int(payload["projection_version"])
@@ -1485,8 +1504,12 @@ def _render_embed(
                 canonical_label: str | None = None
                 if source_view == "summary" and target_view == "schedule_review":
                     canonical_label = "Begin review"
+                elif source_view == "summary" and target_view == "brief_review":
+                    canonical_label = "Review decisions"
                 elif source_view == "summary" and target_view == "schedule_failures":
                     canonical_label = "View failures"
+                elif source_view == "brief_review" and target_view == "summary":
+                    canonical_label = "Back to brief"
                 elif source_view == "schedule_review" and target_view == "summary":
                     canonical_label = "Back to summary"
                 elif source_view == "schedule_failures" and target_view == "summary":
@@ -1510,7 +1533,8 @@ def _render_embed(
                 if (
                     canonical_label is None
                     or control["label"] != canonical_label
-                    or int(control["row"]) != 1
+                    or int(control["row"])
+                    != (4 if "brief_review" in {source_view, target_view} else 1)
                 ):
                     raise PluginAPIError(
                         "invalid_control",
@@ -1522,7 +1546,7 @@ def _render_embed(
                         label=canonical_label,
                         style=discord.ButtonStyle.secondary,
                         custom_id=f"dkt:n:{token}",
-                        row=1,
+                        row=(4 if "brief_review" in {source_view, target_view} else 1),
                     )
                 )
         if not kinds.issubset(

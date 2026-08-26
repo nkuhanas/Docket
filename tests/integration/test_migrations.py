@@ -85,6 +85,12 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
         if constraint["name"] == "ck_actions_status"
     )
     assert "partial_failed" in str(action_status["sqltext"])
+    projection_constraints = {
+        str(constraint["name"]): str(constraint["sqltext"])
+        for constraint in inspect(engine).get_check_constraints("discord_projections")
+    }
+    assert "brief_review" in projection_constraints["ck_discord_projections_view_mode"]
+    assert "65535" in projection_constraints["ck_discord_projections_view_page"]
 
     command.downgrade(config, "base")
     assert "records" not in inspect(engine).get_table_names()

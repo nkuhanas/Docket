@@ -9,7 +9,7 @@ _TOKEN_VERSION = 1
 _PROJECTION_TOKEN_VERSION = 2
 _LOCAL_ACTION_TOKEN_VERSION = 3
 _PROPOSAL_CONTROL_TOKEN_VERSION = 4
-_REVIEW_NAVIGATION_TOKEN_VERSION = 5
+_REVIEW_NAVIGATION_TOKEN_VERSION = 7
 _DECISION_APPROVAL_TOKEN_VERSION = 6
 _MAC_BYTES = 16
 _NAVIGATION_MAC_BYTES = 12
@@ -28,6 +28,7 @@ _REVIEW_VIEWS = {
     "schedule_review": 2,
     "decision": 3,
     "schedule_failures": 4,
+    "brief_review": 5,
 }
 _REVIEW_VIEW_NAMES = {value: key for key, value in _REVIEW_VIEWS.items()}
 
@@ -205,12 +206,12 @@ def verify_projection_decision_approval_token(
     )
 
 
-def _review_page_byte(value: int | None) -> int:
+def _review_page_bytes(value: int | None) -> bytes:
     if value is None:
-        return 0
-    if value < 1 or value > 5:
+        return b"\x00\x00"
+    if value < 1 or value >= 2**16:
         raise ValueError("review page is outside the signed token range")
-    return value
+    return value.to_bytes(2, "big")
 
 
 def _review_navigation_token_payload(
@@ -243,14 +244,10 @@ def _review_navigation_token_payload(
         + action_revision_id.bytes
         + projection_id.bytes
         + projection_version.to_bytes(4, "big")
-        + bytes(
-            [
-                source_code,
-                _review_page_byte(source_page),
-                target_code,
-                _review_page_byte(target_page),
-            ]
-        )
+        + bytes([source_code])
+        + _review_page_bytes(source_page)
+        + bytes([target_code])
+        + _review_page_bytes(target_page)
         + actor.to_bytes(8, "big")
         + expiry.to_bytes(4, "big")
     )
@@ -282,7 +279,7 @@ def issue_projection_review_navigation_token(
     )
     signature = hmac.digest(
         signing_key,
-        b"docket-projection-review-navigation-token-v1\x00" + payload,
+        b"docket-projection-review-navigation-token-v2\x00" + payload,
         "sha256",
     )
     return (
@@ -298,7 +295,7 @@ def decode_projection_review_navigation_token(
     except (ValueError, UnicodeEncodeError):
         return None
     canonical_token = base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
-    payload_length = 1 + 16 + 16 + 4 + 4 + 8 + 4
+    payload_length = 1 + 16 + 16 + 4 + 6 + 8 + 4
     if (
         not hmac.compare_digest(token, canonical_token)
         or len(raw) != payload_length + _NAVIGATION_MAC_BYTES
@@ -306,9 +303,9 @@ def decode_projection_review_navigation_token(
     ):
         return None
     source_view = _REVIEW_VIEW_NAMES.get(raw[37])
-    target_view = _REVIEW_VIEW_NAMES.get(raw[39])
-    source_page = raw[38] or None
-    target_page = raw[40] or None
+    target_view = _REVIEW_VIEW_NAMES.get(raw[40])
+    source_page = int.from_bytes(raw[38:40], "big") or None
+    target_page = int.from_bytes(raw[41:43], "big") or None
     if source_view is None or target_view is None:
         return None
     return ReviewNavigationReference(
@@ -319,8 +316,8 @@ def decode_projection_review_navigation_token(
         source_page=source_page,
         target_view=target_view,
         target_page=target_page,
-        actor_id=str(int.from_bytes(raw[41:49], "big")),
-        expires_at=datetime.fromtimestamp(int.from_bytes(raw[49:53], "big"), tz=UTC),
+        actor_id=str(int.from_bytes(raw[43:51], "big")),
+        expires_at=datetime.fromtimestamp(int.from_bytes(raw[51:55], "big"), tz=UTC),
     )
 
 
@@ -348,7 +345,7 @@ def verify_projection_review_navigation_token(
     payload, supplied_mac = raw[:-_NAVIGATION_MAC_BYTES], raw[-_NAVIGATION_MAC_BYTES:]
     expected_mac = hmac.digest(
         signing_key,
-        b"docket-projection-review-navigation-token-v1\x00" + expected_payload,
+        b"docket-projection-review-navigation-token-v2\x00" + expected_payload,
         "sha256",
     )[:_NAVIGATION_MAC_BYTES]
     return hmac.compare_digest(payload, expected_payload) and hmac.compare_digest(

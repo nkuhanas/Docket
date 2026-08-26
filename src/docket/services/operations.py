@@ -55,6 +55,7 @@ from docket.providers.google.gmail import (
     GmailProviderError,
     GmailUnknownOutcome,
 )
+from docket.services.brief_projection import operation_projection_target
 from docket.services.operational_logs import enqueue_action_system_log
 
 
@@ -767,16 +768,22 @@ class OperationRunner:
             )
         )
         if operation.bundle_id is None and queue_item.presentation != "suppressed":
+            refresh_target = operation_projection_target(
+                session,
+                child_queue_item_id=queue_item.id,
+                approval_id=operation.approval_id,
+            )
             session.add(
                 OutboxEvent(
                     event_type="discord.projection.refresh_requested",
                     aggregate_type="queue_item",
-                    aggregate_id=queue_item.id,
+                    aggregate_id=refresh_target.queue_item_id,
                     deduplication_key=(
-                        f"discord_projection:{queue_item.id}:operation:{operation.id}:ok"
+                        f"discord_projection:{refresh_target.queue_item_id}:operation:"
+                        f"{operation.id}:ok"
                     ),
                     payload={
-                        "queue_item_id": str(queue_item.id),
+                        **refresh_target.payload(),
                         "action_id": str(action.id),
                         "operation_id": str(operation.id),
                         "status": "succeeded",
@@ -935,6 +942,11 @@ class OperationRunner:
         parent_queue.version += 1
         if bundle.status == previous_status:
             return
+        refresh_target = operation_projection_target(
+            session,
+            child_queue_item_id=parent_queue.id,
+            approval_id=bundle.approval_id,
+        )
         session.add(
             AuditEvent(
                 event_type="operation_bundle.state_changed",
@@ -954,12 +966,13 @@ class OperationRunner:
             OutboxEvent(
                 event_type="discord.projection.refresh_requested",
                 aggregate_type="queue_item",
-                aggregate_id=parent_queue.id,
+                aggregate_id=refresh_target.queue_item_id,
                 deduplication_key=(
-                    f"discord_projection:{parent_queue.id}:bundle:{bundle.id}:v{bundle.version}"
+                    f"discord_projection:{refresh_target.queue_item_id}:bundle:"
+                    f"{bundle.id}:v{bundle.version}"
                 ),
                 payload={
-                    "queue_item_id": str(parent_queue.id),
+                    **refresh_target.payload(),
                     "action_id": str(parent_action.id),
                     "operation_bundle_id": str(bundle.id),
                     "status": bundle.status,
@@ -1687,49 +1700,53 @@ class OperationRunner:
             if operation.bundle_id is not None:
                 self._update_operation_bundle(session, operation)
                 return
-            if revision.action_type in GMAIL_MUTATION_ACTION_TYPES:
-                session.add(
-                    AuditEvent(
-                        event_type="operation.failed",
-                        entity_type="operation",
-                        entity_id=operation.id,
-                        actor_type="docket",
-                        actor_id=None,
-                        request_id=None,
-                        data={
-                            "action_revision_id": str(revision.id),
-                            "attempt_id": str(attempt.id),
-                            "error_code": error.code,
-                            "unknown_outcome": isinstance(
-                                error,
-                                (CalendarUnknownOutcome, GmailUnknownOutcome),
-                            ),
-                            "will_retry": operation.status
-                            in {
-                                OperationStatus.PENDING.value,
-                                OperationStatus.RECONCILIATION_REQUIRED.value,
-                            },
-                        },
-                    )
-                )
-                session.add(
-                    OutboxEvent(
-                        event_type="discord.projection.refresh_requested",
-                        aggregate_type="queue_item",
-                        aggregate_id=queue_item.id,
-                        deduplication_key=(
-                            f"discord_projection:{queue_item.id}:operation:"
-                            f"{operation.id}:attempt:{operation.attempt_count}:error"
+            session.add(
+                AuditEvent(
+                    event_type="operation.failed",
+                    entity_type="operation",
+                    entity_id=operation.id,
+                    actor_type="docket",
+                    actor_id=None,
+                    request_id=None,
+                    data={
+                        "action_revision_id": str(revision.id),
+                        "attempt_id": str(attempt.id),
+                        "error_code": error.code,
+                        "unknown_outcome": isinstance(
+                            error,
+                            (CalendarUnknownOutcome, GmailUnknownOutcome),
                         ),
-                        payload={
-                            "queue_item_id": str(queue_item.id),
-                            "action_id": str(action.id),
-                            "operation_id": str(operation.id),
-                            "status": operation.status,
+                        "will_retry": operation.status
+                        in {
+                            OperationStatus.PENDING.value,
+                            OperationStatus.RECONCILIATION_REQUIRED.value,
                         },
-                        status=OutboxStatus.PENDING.value,
-                    )
+                    },
                 )
+            )
+            refresh_target = operation_projection_target(
+                session,
+                child_queue_item_id=queue_item.id,
+                approval_id=operation.approval_id,
+            )
+            session.add(
+                OutboxEvent(
+                    event_type="discord.projection.refresh_requested",
+                    aggregate_type="queue_item",
+                    aggregate_id=refresh_target.queue_item_id,
+                    deduplication_key=(
+                        f"discord_projection:{refresh_target.queue_item_id}:operation:"
+                        f"{operation.id}:attempt:{operation.attempt_count}:error"
+                    ),
+                    payload={
+                        **refresh_target.payload(),
+                        "action_id": str(action.id),
+                        "operation_id": str(operation.id),
+                        "status": operation.status,
+                    },
+                    status=OutboxStatus.PENDING.value,
+                )
+            )
             if operation.status in {
                 OperationStatus.FAILED.value,
                 OperationStatus.RECONCILIATION_REQUIRED.value,
