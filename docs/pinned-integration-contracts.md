@@ -256,6 +256,12 @@ rewrites the active `.env`. It is a bootstrap helper, not a general config
 synchronizer. This distinction matters after a tool rename: the checked-in
 template can be correct while the running allowlist remains stale.
 
+Production deployment therefore runs the isolated triage installer after
+Hermes reconnects. The installer rewrites the active `docket-triage` profile
+from `hermes/triage-config.example.yaml`, refreshes its skill and launcher, and
+must discover exactly four tools before deployment succeeds. A successful root
+Hermes restart alone does not prove that the isolated profile is current.
+
 Hermes also has `.runtime/hermes/.env`, while Compose injects Docket integration
 values from the project `.env` through the service `environment` block. Compose
 environment values override same-name values from `env_file`.

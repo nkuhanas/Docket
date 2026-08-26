@@ -1,3 +1,4 @@
+import base64
 import json
 
 import httpx
@@ -7,6 +8,7 @@ from docket.providers.google.gmail import (
     GmailMutationRequest,
     GmailUnknownOutcome,
     GoogleGmailProvider,
+    _extract_content,
 )
 
 
@@ -41,6 +43,21 @@ def _request() -> GmailMutationRequest:
         remove_label_id="INBOX",
         provider_correlation="operation-1",
     )
+
+
+def test_claimed_body_is_bounded_for_isolated_triage_context() -> None:
+    body = "x" * 25000
+    encoded = base64.urlsafe_b64encode(body.encode()).decode().rstrip("=")
+
+    extracted, attachments = _extract_content(
+        {
+            "mimeType": "text/plain",
+            "body": {"data": encoded, "size": len(body)},
+        }
+    )
+
+    assert extracted == "x" * 20000
+    assert attachments == ()
 
 
 def test_modify_refetches_full_metadata_when_response_omits_history_id(

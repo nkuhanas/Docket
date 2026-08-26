@@ -313,6 +313,7 @@ deploy() {
     build_image
     compose up -d --no-build --force-recreate docket hermes
     wait_for_hermes "$log_first_line"
+    gmail_triage_setup
     postdeploy
     printf 'Deployed %s\nBackup: %s\nPrevious image: %s\n' \
         "$revision" "$backup" "$rollback_tag"

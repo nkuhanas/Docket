@@ -12,6 +12,9 @@ def test_hermes_readiness_uses_generated_mcp_tool_count() -> None:
     assert "registered 20 tool" not in script
     assert '"$ROOT/scripts/prepare-hermes-home.sh"' in deploy
     assert deploy.index('"$ROOT/scripts/prepare-hermes-home.sh"') < deploy.index("compose up -d")
+    assert "gmail_triage_setup" in deploy
+    assert deploy.index("compose up -d") < deploy.index("gmail_triage_setup")
+    assert deploy.index("gmail_triage_setup") < deploy.index("postdeploy")
 
 
 def test_gmail_triage_installer_pins_an_isolated_profile_and_local_delivery() -> None:
@@ -31,9 +34,23 @@ def test_gmail_triage_installer_pins_an_isolated_profile_and_local_delivery() ->
     assert script.count("hermes cron list --all") == 2
     assert "hermes cron list)" not in script
     assert "mcp test docket-triage" in script
+    assert "discovered_tool_count" in script
+    assert "must discover exactly four tools" in script
+    for tool in (
+        "docket_claim_triage_batch",
+        "docket_read_claimed_source",
+        "docket_search_related_records",
+        "docket_submit_semantic_candidates",
+    ):
+        assert tool in script
+        assert tool in config
+    assert "docket_submit_triage_decision" not in script
+    assert "docket_submit_triage_decision" not in config
     assert "hermes -p docket-triage" in launcher
     assert "--skills docket-triage" in launcher
     assert "--oneshot" in launcher
+    assert "exactly one bounded batch" in skill
+    assert "caps a batch at 10 sources" in skill
     assert "cli: []" in config
     assert "cron: []" in config
     assert "plugins:\n  enabled: []" in config

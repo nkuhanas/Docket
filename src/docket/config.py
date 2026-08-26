@@ -162,7 +162,7 @@ class Settings(BaseSettings):
         alias="DOCKET_GMAIL_SCAN_MAX_MESSAGES",
     )
     gmail_claim_batch_size: int = Field(
-        default=20,
+        default=10,
         ge=1,
         le=20,
         alias="DOCKET_GMAIL_CLAIM_BATCH_SIZE",

@@ -18,6 +18,7 @@ _MESSAGE_FIELDS = (
     "parts(headers(name,value),mimeType,filename,body(data,size,attachmentId),"
     "parts(headers(name,value),mimeType,filename,body(data,size,attachmentId))))"
 )
+_MAX_TRIAGE_BODY_CHARACTERS = 20000
 
 
 class GmailProviderError(RuntimeError):
@@ -232,7 +233,7 @@ def _extract_content(payload: object) -> tuple[str, tuple[dict[str, Any], ...]]:
 
     visit(payload)
     body_text = "\n".join(plain or fallback)
-    return body_text[:50000], tuple(attachments[:20])
+    return body_text[:_MAX_TRIAGE_BODY_CHARACTERS], tuple(attachments[:20])
 
 
 class GoogleGmailProvider:

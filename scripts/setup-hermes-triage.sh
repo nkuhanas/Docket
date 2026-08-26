@@ -82,7 +82,24 @@ if ! printf '%s\n' "$job_listing" | grep -F "$JOB_NAME" >/dev/null; then
         --name "$JOB_NAME"
 fi
 
-compose exec -T hermes hermes -p "$PROFILE_NAME" mcp test docket-triage
+mcp_test_output=$(compose exec -T hermes hermes -p "$PROFILE_NAME" mcp test docket-triage)
+printf '%s\n' "$mcp_test_output"
+for expected_tool in \
+    docket_claim_triage_batch \
+    docket_read_claimed_source \
+    docket_search_related_records \
+    docket_submit_semantic_candidates
+do
+    printf '%s\n' "$mcp_test_output" | grep -F "$expected_tool" >/dev/null || {
+        echo "The isolated profile did not discover $expected_tool." >&2
+        exit 1
+    }
+done
+discovered_tool_count=$(printf '%s\n' "$mcp_test_output" | grep -c '^    docket_' || true)
+if [ "$discovered_tool_count" -ne 4 ]; then
+    echo "The isolated profile must discover exactly four tools; found $discovered_tool_count." >&2
+    exit 1
+fi
 job_listing=$(compose exec -T hermes env NO_COLOR=1 hermes cron list --all)
 printf '%s\n' "$job_listing"
 printf '%s\n' "$job_listing" | grep -F "$JOB_NAME" >/dev/null || {

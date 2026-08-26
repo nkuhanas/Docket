@@ -31,6 +31,10 @@ outside version control.
   across more than one already-published boundary. Docket advances the
   candidate through each closed morning/night window until it reaches the next
   open window; it never inserts new work into a brief that was already sent.
+* Isolated model triage claims one batch of at most 10 sources per run and sees
+  at most 20,000 body characters per source. This keeps the claim set within
+  the configured turn/context budgets, while lease expiry preserves recovery
+  after interruption.
 * A terminal canonical decision cannot retain a live actionable Discord card.
   Duplicate interactions repair the exact clicked projection.
 

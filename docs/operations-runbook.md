@@ -119,6 +119,13 @@ docket_search_related_records
 docket_submit_semantic_candidates
 ```
 
+Each isolated run claims exactly one batch of at most 10 sources. The bound is
+deliberately below the profile's turn budget even if every source needs a
+related-record lookup, and claimed body text is capped at 20,000 characters so
+one large message cannot consume the run's context. Any remaining staged work
+belongs to a later run; an interrupted claim becomes eligible again after its
+lease rather than being skipped or moved manually.
+
 Install or repair the profile with `scripts/docket setup-triage`. The installer
 creates one root-owned 30-minute no-agent cron whose only script is the
 repository-owned launcher for a `docket-triage` one-shot. The root scheduler
@@ -235,6 +242,7 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Gmail does not stage a new message | Inspect `gmail_sync`, the `gmail:inbox` checkpoint, enabled account capabilities, and Docket logs before changing OAuth | Ingestion gate disabled, no Gmail-capable account, active lease, scan not due, OAuth failure, cursor recovery, or rate limiting |
 | Gmail checkpoint is stale | Inspect `last_success_at`, `last_error_code`, lease expiry, and the deduplicated `#docket-system` alert | Worker unavailable, OAuth expired, cursor/page failure, or repeated provider throttling |
 | The triage cron sees general tools or Discord | Stop the job and inspect the named profile config and `.env` | The cron used the interactive profile, inherited messaging credentials, or ignored the empty CLI/cron toolsets |
+| Triage claims sources but a completed run leaves most of that batch claimed | Run `scripts/docket setup-triage` and verify its four discovered tools include `docket_submit_semantic_candidates`; compare the active profile with `hermes/triage-config.example.yaml` | The isolated profile retained a removed submission tool across deployment, so Hermes could claim work but could not persist typed candidates |
 | Gmail source remains `claimed` | Compare `claimed_until` with the current time and run the next bounded triage pass | Agent interruption; the lease must expire and become reclaimable without moving the checkpoint backward |
 | Awareness Gmail card has controls or an application receipt asks for approval | Inspect `presentation`, semantic candidate kind/mutation, and migration `0023` | An alpha housekeeping card survived migration, or extraction incorrectly formulated an obligation/event |
 | Ordinary individual Gmail cards appear outside the waking window | Inspect the candidate's durable triage-window membership and brief state | Incorrect configured timezone/window, missing membership, or a projection was emitted without honoring overnight deferral |
