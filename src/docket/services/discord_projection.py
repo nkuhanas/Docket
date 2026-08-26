@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from docket.config import Settings
 from docket.domain.canonical import sha256_json
-from docket.domain.enums import ApprovalStatus, OutboxStatus, RiskClass
+from docket.domain.enums import ApprovalStatus, OutboxStatus, QueueItemStatus, RiskClass
 from docket.models import (
     Account,
     Action,
@@ -166,30 +166,58 @@ class DiscordProjectionRunner:
             if queue_item is None:
                 raise DiscordProjectionError("queue_item_missing", "Queue item is missing")
             requested_date = event.payload.get("target_local_date")
+            requested_projection = event.payload.get("projection_id")
             try:
-                local_date = (
+                parsed_date = (
                     date.fromisoformat(str(requested_date))
                     if requested_date is not None
-                    else self._local_date(queue_item, self.settings)
+                    else None
                 )
             except ValueError as exc:
                 raise DiscordProjectionError(
                     "invalid_projection_date", "Projection target date is invalid"
                 ) from exc
-            daily_thread = self._daily_thread_row(session, local_date)
-            requested_projection = event.payload.get("projection_id")
-            projection = (
-                session.get(DiscordProjection, uuid.UUID(str(requested_projection)))
-                if requested_projection is not None
-                else None
-            )
-            if projection is not None and (
-                projection.queue_item_id != queue_item.id
-                or projection.daily_thread_id != daily_thread.id
-            ):
-                raise DiscordProjectionError(
-                    "projection_target_changed", "Projection target binding changed"
-                )
+
+            projection: DiscordProjection | None = None
+            daily_thread: DiscordDailyThread | None = None
+            if requested_projection is not None:
+                try:
+                    projection_id = uuid.UUID(str(requested_projection))
+                except ValueError as exc:
+                    raise DiscordProjectionError(
+                        "invalid_projection", "Projection target is invalid"
+                    ) from exc
+                projection = session.get(DiscordProjection, projection_id)
+                if projection is None:
+                    raise DiscordProjectionError(
+                        "projection_missing", "Projection target is missing"
+                    )
+                daily_thread = session.get(DiscordDailyThread, projection.daily_thread_id)
+                if (
+                    projection.queue_item_id != queue_item.id
+                    or daily_thread is None
+                    or (parsed_date is not None and daily_thread.local_date != parsed_date)
+                ):
+                    raise DiscordProjectionError(
+                        "projection_target_changed", "Projection target binding changed"
+                    )
+            elif parsed_date is None and event.event_type == "discord.projection.refresh_requested":
+                latest = session.execute(
+                    select(DiscordProjection, DiscordDailyThread)
+                    .join(
+                        DiscordDailyThread,
+                        DiscordDailyThread.id == DiscordProjection.daily_thread_id,
+                    )
+                    .where(DiscordProjection.queue_item_id == queue_item.id)
+                    .order_by(DiscordDailyThread.local_date.desc())
+                    .limit(1)
+                ).one_or_none()
+                if latest is not None:
+                    projection, daily_thread = latest
+
+            if daily_thread is None:
+                local_date = parsed_date or self._local_date(queue_item, self.settings)
+                daily_thread = self._daily_thread_row(session, local_date)
             if projection is None:
                 projection = session.scalar(
                     select(DiscordProjection).where(
@@ -210,7 +238,7 @@ class DiscordProjectionRunner:
             event.payload = {
                 **event.payload,
                 "projection_id": str(projection.id),
-                "target_local_date": local_date.isoformat(),
+                "target_local_date": daily_thread.local_date.isoformat(),
             }
             return daily_thread.id, projection.id
 
@@ -2120,18 +2148,14 @@ class DiscordProjectionRunner:
             projection.message_id = str(ack["message_id"])
             projection.status = "delivered"
             projection.last_error_code = None
-            approval = session.scalar(
-                select(Approval)
-                .join(ActionRevision, ActionRevision.id == Approval.action_revision_id)
-                .join(Action, Action.id == ActionRevision.action_id)
-                .where(
-                    Action.queue_item_id == projection.queue_item_id,
-                    ActionRevision.revision == Action.current_revision,
-                    Action.status == "approval_pending",
-                    Approval.status == ApprovalStatus.PENDING.value,
+            approval = (
+                session.scalar(
+                    select(Approval).where(
+                        Approval.action_revision_id == projection.view_action_revision_id
+                    )
                 )
-                .order_by(Action.display_order, Approval.created_at.desc())
-                .limit(1)
+                if projection.view_action_revision_id is not None
+                else None
             )
             newest_projection = session.scalar(
                 select(DiscordProjection)
@@ -2809,3 +2833,82 @@ class DiscordProjectionRunner:
                 event.next_attempt_at = now
                 event.last_error_code = "projection_lease_expired"
             return len(events)
+
+    def enqueue_stale_projection_repairs(self, *, limit: int = 100) -> int:
+        """Repair newest cards that lag a durable non-pending queue transition."""
+        repairable_statuses = {
+            QueueItemStatus.EXECUTING.value,
+            QueueItemStatus.COMPLETED.value,
+            QueueItemStatus.FAILED.value,
+            QueueItemStatus.RECONCILIATION_REQUIRED.value,
+            QueueItemStatus.SNOOZED.value,
+            QueueItemStatus.IGNORED.value,
+        }
+        with self.session_factory.begin() as session:
+            queue_items = session.scalars(
+                select(QueueItem)
+                .where(QueueItem.status.in_(repairable_statuses))
+                .order_by(QueueItem.updated_at.desc())
+                .limit(limit)
+            ).all()
+            repair_count = 0
+            for queue_item in queue_items:
+                row = session.execute(
+                    select(DiscordProjection, DiscordDailyThread)
+                    .join(
+                        DiscordDailyThread,
+                        DiscordDailyThread.id == DiscordProjection.daily_thread_id,
+                    )
+                    .where(DiscordProjection.queue_item_id == queue_item.id)
+                    .order_by(DiscordDailyThread.local_date.desc())
+                    .limit(1)
+                ).one_or_none()
+                if row is None:
+                    continue
+                projection, daily_thread = row
+                if (
+                    projection.status != "delivered"
+                    or projection.updated_at >= queue_item.updated_at
+                ):
+                    continue
+                pending_refresh = session.scalar(
+                    select(OutboxEvent.id)
+                    .where(
+                        OutboxEvent.aggregate_type == "queue_item",
+                        OutboxEvent.aggregate_id == queue_item.id,
+                        OutboxEvent.event_type.in_(_PROJECTION_EVENTS),
+                        OutboxEvent.status.in_(
+                            {OutboxStatus.PENDING.value, OutboxStatus.DELIVERING.value}
+                        ),
+                    )
+                    .limit(1)
+                )
+                if pending_refresh is not None:
+                    continue
+                deduplication_key = (
+                    f"discord_projection:{queue_item.id}:converge:"
+                    f"{projection.id}:queue-v{queue_item.version}"
+                )
+                if session.scalar(
+                    select(OutboxEvent.id).where(
+                        OutboxEvent.deduplication_key == deduplication_key
+                    )
+                ) is not None:
+                    continue
+                session.add(
+                    OutboxEvent(
+                        event_type="discord.projection.refresh_requested",
+                        aggregate_type="queue_item",
+                        aggregate_id=queue_item.id,
+                        deduplication_key=deduplication_key,
+                        payload={
+                            "queue_item_id": str(queue_item.id),
+                            "projection_id": str(projection.id),
+                            "target_local_date": daily_thread.local_date.isoformat(),
+                            "reason": "projection_convergence",
+                        },
+                        status=OutboxStatus.PENDING.value,
+                    )
+                )
+                repair_count += 1
+            return repair_count

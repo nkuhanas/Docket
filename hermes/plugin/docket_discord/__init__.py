@@ -2453,14 +2453,30 @@ async def _on_docket_interaction(interaction: object) -> None:
                 "decision": decision,
             }
             result = await asyncio.to_thread(_post_button_response, payload)
+            recorded_decision = str(result.get("decision", decision))
             operation = result.get("operation_id")
-            acknowledgement = (
-                "Approved — queued for execution"
-                if decision == "approve"
-                else "Rejected — no external action queued"
-            )
-            if operation:
+            if result.get("already_recorded"):
+                recorded_label = (
+                    "approved" if recorded_decision == "approve" else "rejected"
+                )
+                acknowledgement = (
+                    f"Already {recorded_label} — refreshing this card"
+                )
+            else:
+                acknowledgement = (
+                    "Approved — queued for execution"
+                    if recorded_decision == "approve"
+                    else "Rejected — no external action queued"
+                )
+            if operation and not result.get("already_recorded"):
                 acknowledgement += f" ({str(operation)[:8]})"
+            try:
+                await message.edit(view=None)
+            except discord.HTTPException as exc:
+                logger.warning(
+                    "Docket accepted the decision but could not disable stale controls: %s",
+                    exc,
+                )
         await interaction.followup.send(acknowledgement, ephemeral=True)
     except PluginAPIError as exc:
         logger.warning("Docket button interaction failed: %s", exc.code)

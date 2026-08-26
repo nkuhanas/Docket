@@ -17,7 +17,6 @@ class FakeOperationRunner:
     def recover_expired_leases(self) -> int:
         return 0
 
-
 class FakeProjectionRunner:
     def __init__(self) -> None:
         self._condition = threading.Condition()
@@ -41,6 +40,9 @@ class FakeProjectionRunner:
             return processed
 
     def recover_expired_leases(self) -> int:
+        return 0
+
+    def enqueue_stale_projection_repairs(self) -> int:
         return 0
 
     def wait_for(self, field: str, minimum: int, timeout: float = 1.0) -> bool:

@@ -152,6 +152,7 @@ class WorkerRuntime:
         next_backup = 0.0
         next_gmail_scan = 0.0
         next_retention = 0.0
+        next_projection_repair = 0.0
         while not self._stop.is_set():
             self.last_heartbeat = datetime.now(UTC)
             now = time.monotonic()
@@ -171,6 +172,16 @@ class WorkerRuntime:
                     if self.calendar_sync_service is not None:
                         await asyncio.to_thread(self.calendar_sync_service.recover_expired_leases)
                     next_recovery = now + self.stale_lease_poll_seconds
+                if (
+                    self.discord_projection_runner is not None
+                    and now >= next_projection_repair
+                ):
+                    repairs = await asyncio.to_thread(
+                        self.discord_projection_runner.enqueue_stale_projection_repairs
+                    )
+                    if repairs:
+                        self.wake_discord_projection()
+                    next_projection_repair = now + 60.0
                 if self.rollover_service is not None and now >= next_rollover:
                     await asyncio.to_thread(self.rollover_service.expire_due_approvals)
                     await asyncio.to_thread(self.rollover_service.run_due_once)

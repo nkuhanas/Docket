@@ -1245,3 +1245,162 @@ def test_proposal_snooze_defers_the_fresh_approval_without_provider_work(
             control["kind"] == "approval"
             for control in backend.messages[str(newest.id)]["controls"]
         )
+
+
+@pytest.mark.integration
+def test_carried_forward_approval_refreshes_the_clicked_card_and_repairs_duplicates(
+    session_factory: sessionmaker[Session],
+) -> None:
+    settings = get_settings()
+    with session_factory.begin() as session:
+        account = _seed_target(session)
+        proposed = CalendarActionService(session).propose(
+            _create_request(account, "989898989898989898")
+        )
+
+    backend = FakeDiscordBackend()
+    projection_runner = DiscordProjectionRunner(
+        session_factory,
+        FakeDiscordProjectionAdapter(backend),
+        settings,
+    )
+    assert projection_runner.run_due_once()
+    with session_factory.begin() as session:
+        original = session.scalar(
+            select(DiscordProjection).where(
+                DiscordProjection.queue_item_id == proposed.queue_item_id
+            )
+        )
+        assert original is not None
+        original_thread = session.get(DiscordDailyThread, original.daily_thread_id)
+        assert original_thread is not None
+        carried_date = original_thread.local_date + timedelta(days=1)
+        session.add(
+            OutboxEvent(
+                event_type="discord.projection.requested",
+                aggregate_type="queue_item",
+                aggregate_id=proposed.queue_item_id,
+                deduplication_key=(
+                    f"discord_projection:{proposed.queue_item_id}:date:{carried_date}"
+                ),
+                payload={
+                    "queue_item_id": str(proposed.queue_item_id),
+                    "target_local_date": carried_date.isoformat(),
+                },
+                status="pending",
+            )
+        )
+        original_id = original.id
+    while projection_runner.run_due_once():
+        pass
+
+    with session_factory() as session:
+        rows = session.execute(
+            select(DiscordProjection, DiscordDailyThread)
+            .join(
+                DiscordDailyThread,
+                DiscordDailyThread.id == DiscordProjection.daily_thread_id,
+            )
+            .where(DiscordProjection.queue_item_id == proposed.queue_item_id)
+            .order_by(DiscordDailyThread.local_date)
+        ).all()
+        assert len(rows) == 2
+        current, current_thread = rows[-1]
+        assert current.id != original_id
+        assert backend.messages[str(original_id)]["controls"] == []
+        approval_control = next(
+            control
+            for control in backend.messages[str(current.id)]["controls"]
+            if control.get("kind") == "approval" and control.get("decision") == "approve"
+        )
+        assert current.message_id is not None and current_thread.thread_id is not None
+        response = ApprovalResponse(
+            request_id=uuid.uuid4(),
+            discord_interaction_id="carried-card-approval",
+            approval_id=uuid.UUID(str(approval_control["approval_id"])),
+            approval_token=str(approval_control["token"]),
+            short_code=None,
+            decision="approve",
+            discord_user_id=settings.operator_discord_user_id,
+            guild_id=settings.discord_guild_id,
+            channel_id=current_thread.thread_id,
+            parent_channel_id=settings.queue_channel_id,
+            projection_id=current.id,
+            message_id=current.message_id,
+            responded_at=datetime.now(UTC),
+        )
+        current_id = current.id
+        current_date = current_thread.local_date
+
+    with session_factory.begin() as session:
+        accepted = ApprovalService(session).respond(response)
+        assert accepted["approval_status"] == "consumed"
+        assert accepted.get("already_recorded") is None
+        operation_id = uuid.UUID(str(accepted["operation_id"]))
+
+    with session_factory() as session:
+        refresh = session.scalar(
+            select(OutboxEvent).where(
+                OutboxEvent.deduplication_key
+                == (
+                    f"discord_projection:{proposed.queue_item_id}:approval:"
+                    f"{proposed.approval_id}:approve"
+                )
+            )
+        )
+        assert refresh is not None
+        assert refresh.payload["projection_id"] == str(current_id)
+        assert refresh.payload["target_local_date"] == current_date.isoformat()
+
+    duplicate = response.model_copy(
+        update={
+            "request_id": uuid.uuid4(),
+            "discord_interaction_id": "carried-card-duplicate-approval",
+            "responded_at": datetime.now(UTC),
+        }
+    )
+    with session_factory.begin() as session:
+        repaired = ApprovalService(session).respond(duplicate)
+        assert repaired["already_recorded"] is True
+        assert repaired["decision"] == "approve"
+        assert uuid.UUID(str(repaired["operation_id"])) == operation_id
+    with session_factory() as session:
+        assert session.scalar(select(func.count(Operation.id))) == 1
+
+    while projection_runner.run_due_once():
+        pass
+    assert backend.messages[str(current_id)]["controls"] == []
+    assert backend.messages[str(original_id)]["controls"] == []
+
+    operation_runner = OperationRunner(session_factory, FakeCalendarProvider())
+    assert operation_runner.run_due_once()
+    while projection_runner.run_due_once():
+        pass
+    assert backend.messages[str(current_id)]["embed"]["title"] == "Event created"
+    assert backend.messages[str(original_id)]["controls"] == []
+    with session_factory() as session:
+        approval = session.get(Approval, proposed.approval_id)
+        assert approval is not None and approval.control_projection_id is None
+
+    with session_factory.begin() as session:
+        queue_item = session.get(QueueItem, proposed.queue_item_id)
+        current_projection = session.get(DiscordProjection, current_id)
+        assert queue_item is not None and current_projection is not None
+        current_projection.updated_at = queue_item.updated_at - timedelta(seconds=1)
+        queue_version = queue_item.version
+    assert projection_runner.enqueue_stale_projection_repairs() == 1
+    assert projection_runner.enqueue_stale_projection_repairs() == 0
+    with session_factory() as session:
+        repair = session.scalar(
+            select(OutboxEvent).where(
+                OutboxEvent.deduplication_key
+                == (
+                    f"discord_projection:{proposed.queue_item_id}:converge:"
+                    f"{current_id}:queue-v{queue_version}"
+                )
+            )
+        )
+        assert repair is not None
+        assert repair.payload["projection_id"] == str(current_id)
+        assert repair.payload["target_local_date"] == current_date.isoformat()
+    assert projection_runner.run_due_once()

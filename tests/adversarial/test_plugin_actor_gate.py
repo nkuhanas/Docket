@@ -1273,3 +1273,97 @@ async def test_schedule_review_navigation_requests_persistent_message_update(
     assert captured["action_revision_id"] == str(revision_id)
     assert captured["projection_id"] == str(projection_id)
     assert followup.sent == []
+
+
+@pytest.mark.asyncio
+async def test_accepted_duplicate_approval_disables_controls_and_requests_card_repair(
+    plugin_module, monkeypatch
+) -> None:
+    actor = "111111111111111111"
+    guild = "222222222222222222"
+    queue = "333333333333333333"
+    thread_id = "444444444444444444"
+    message_id = "555555555555555555"
+    approval_id = uuid.uuid4()
+    projection_id = uuid.uuid4()
+    token = issue_projection_approval_token(
+        approval_id,
+        projection_id,
+        datetime.now(UTC) + timedelta(days=1),
+        b"test-signing-key",
+    )
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_QUEUE_CHANNEL_ID", queue)
+
+    class FakeThread:
+        parent_id = int(queue)
+
+    class FakeHTTPException(Exception):
+        pass
+
+    class FakeResponse:
+        def __init__(self) -> None:
+            self.done = False
+
+        async def defer(self, **kwargs) -> None:
+            assert kwargs == {"ephemeral": True, "thinking": True}
+            self.done = True
+
+        def is_done(self) -> bool:
+            return self.done
+
+    class FakeFollowup:
+        def __init__(self) -> None:
+            self.sent: list[tuple[str, bool]] = []
+
+        async def send(self, content: str, *, ephemeral: bool) -> None:
+            self.sent.append((content, ephemeral))
+
+    class FakeMessage:
+        id = int(message_id)
+
+        def __init__(self) -> None:
+            self.edits: list[object] = []
+
+        async def edit(self, *, view) -> None:
+            self.edits.append(view)
+
+    fake_discord = SimpleNamespace(Thread=FakeThread, HTTPException=FakeHTTPException)
+    monkeypatch.setitem(sys.modules, "discord", fake_discord)
+    captured: dict[str, object] = {}
+
+    def fake_post(payload, *, local_action=False):
+        captured.update(payload)
+        assert local_action is False
+        return {
+            "ok": True,
+            "decision": "approve",
+            "approval_status": "consumed",
+            "already_recorded": True,
+            "operation_id": str(uuid.uuid4()),
+        }
+
+    monkeypatch.setattr(plugin_module, "_post_button_response", fake_post)
+    response = FakeResponse()
+    followup = FakeFollowup()
+    message = FakeMessage()
+    interaction = SimpleNamespace(
+        id=666666666666666666,
+        data={"custom_id": f"dkt:a:{token}"},
+        user=SimpleNamespace(id=int(actor)),
+        guild_id=int(guild),
+        channel_id=int(thread_id),
+        channel=FakeThread(),
+        message=message,
+        response=response,
+        followup=followup,
+    )
+
+    await plugin_module._on_docket_interaction(interaction)
+
+    assert captured["approval_id"] == str(approval_id)
+    assert captured["projection_id"] == str(projection_id)
+    assert captured["decision"] == "approve"
+    assert message.edits == [None]
+    assert followup.sent == [("Already approved — refreshing this card", True)]

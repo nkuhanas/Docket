@@ -118,9 +118,9 @@ class ApprovalService:
         approval: Approval,
         revision: ActionRevision,
         queue_item: QueueItem,
-    ) -> None:
+    ) -> DiscordProjection | None:
         if request.short_code is not None:
-            return
+            return None
         assert request.projection_id is not None
         assert request.approval_token is not None
         projection = self.session.scalar(
@@ -133,7 +133,13 @@ class ApprovalService:
             or projection.queue_item_id != queue_item.id
             or projection.status != "delivered"
             or projection.message_id != request.message_id
-            or approval.control_projection_id != projection.id
+            or (
+                approval.control_projection_id != projection.id
+                and not (
+                    approval.status != ApprovalStatus.PENDING.value
+                    and approval.response_projection_id == projection.id
+                )
+            )
         ):
             raise DocketError(
                 code="invalid_approval_projection",
@@ -185,6 +191,21 @@ class ApprovalService:
                 code="invalid_approval_token",
                 message="The approval token is invalid for the current card view.",
             )
+        return projection
+
+    def _projection_target(self, projection: DiscordProjection | None) -> dict[str, str]:
+        if projection is None:
+            return {}
+        daily_thread = self.session.get(DiscordDailyThread, projection.daily_thread_id)
+        if daily_thread is None:
+            raise DocketError(
+                code="invalid_approval_projection",
+                message="The interaction thread binding is missing.",
+            )
+        return {
+            "projection_id": str(projection.id),
+            "target_local_date": daily_thread.local_date.isoformat(),
+        }
 
     def _load_bound_state(self, approval: Approval) -> tuple[ActionRevision, Action, QueueItem]:
         revision = self.session.get(ActionRevision, approval.action_revision_id)
@@ -560,12 +581,70 @@ class ApprovalService:
         self._validate_context(request)
         approval = self._resolve(request)
         revision, action, queue_item = self._load_bound_state(approval)
-        self._validate_projection_context(request, approval, revision, queue_item)
+        response_projection = self._validate_projection_context(
+            request, approval, revision, queue_item
+        )
+        projection_target = self._projection_target(response_projection)
         if approval.authorized_user_id != request.discord_user_id:
             raise DocketError(
                 code="unauthorized_approval_actor",
                 message="The Discord actor is not authorized for this approval.",
             )
+        if (
+            response_projection is not None
+            and approval.status
+            in {ApprovalStatus.CONSUMED.value, ApprovalStatus.REJECTED.value}
+        ):
+            recorded_decision = (
+                "approve"
+                if approval.status == ApprovalStatus.CONSUMED.value
+                else "reject"
+            )
+            self.session.add(
+                OutboxEvent(
+                    event_type="discord.projection.refresh_requested",
+                    aggregate_type="queue_item",
+                    aggregate_id=queue_item.id,
+                    deduplication_key=(
+                        f"discord_projection:{queue_item.id}:repair:"
+                        f"{response_projection.id}:{request.discord_interaction_id}"
+                    ),
+                    payload={
+                        "queue_item_id": str(queue_item.id),
+                        "action_id": str(action.id),
+                        "approval_id": str(approval.id),
+                        "status": "already_recorded",
+                        **projection_target,
+                    },
+                    status=OutboxStatus.PENDING.value,
+                )
+            )
+            self.session.add(
+                AuditEvent(
+                    event_type="approval.projection_repair_requested",
+                    entity_type="approval",
+                    entity_id=approval.id,
+                    actor_type="plugin",
+                    actor_id=request.discord_user_id,
+                    request_id=request.request_id,
+                    data={
+                        "projection_id": str(response_projection.id),
+                        "recorded_decision": recorded_decision,
+                    },
+                )
+            )
+            return {
+                "ok": True,
+                "decision": recorded_decision,
+                "approval_id": str(approval.id),
+                "approval_status": approval.status,
+                "operation_id": (
+                    str(approval.consumed_operation_id)
+                    if approval.consumed_operation_id is not None
+                    else None
+                ),
+                "already_recorded": True,
+            }
         now = utc_now()
         if now > _as_utc(approval.expires_at):
             approval.status = ApprovalStatus.EXPIRED.value
@@ -601,6 +680,7 @@ class ApprovalService:
                         "action_id": str(action.id),
                         "approval_id": str(approval.id),
                         "status": "expired",
+                        **projection_target,
                     },
                     status=OutboxStatus.PENDING.value,
                 )
@@ -662,6 +742,7 @@ class ApprovalService:
                                     "action_id": str(action.id),
                                     "approval_id": str(approval.id),
                                     "status": "refresh_required",
+                                    **projection_target,
                                 },
                                 status=OutboxStatus.PENDING.value,
                             )
@@ -835,6 +916,7 @@ class ApprovalService:
                     "approval_id": str(approval.id),
                     "decision": request.decision,
                     "operation_id": str(operation.id) if operation else None,
+                    **projection_target,
                 },
                 status=OutboxStatus.PENDING.value,
             )
