@@ -24,8 +24,10 @@ from sqlalchemy.orm.mapper import Mapper
 from docket.domain.enums import (
     ActionStatus,
     ApprovalStatus,
+    IntentAuthority,
     OperationStatus,
     QueueItemStatus,
+    QueuePresentation,
 )
 from docket.models.base import Base, TimestampMixin, utc_now
 
@@ -42,6 +44,12 @@ class QueueItem(TimestampMixin, Base):
             "priority IN ('low', 'normal', 'high', 'urgent')",
             name="ck_queue_items_priority",
         ),
+        CheckConstraint(
+            "presentation IN ('proposal', 'conflict_resolution', 'clarification', "
+            "'action_required', 'awareness', 'terminal_outcome', 'system_alert', "
+            "'suppressed')",
+            name="ck_queue_items_presentation",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -57,6 +65,9 @@ class QueueItem(TimestampMixin, Base):
         String(32), default=QueueItemStatus.PENDING.value, nullable=False
     )
     priority: Mapped[str] = mapped_column(String(16), default="normal", nullable=False)
+    presentation: Mapped[str] = mapped_column(
+        String(32), default=QueuePresentation.PROPOSAL.value, nullable=False
+    )
     received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     snoozed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     snooze_local_date: Mapped[date | None] = mapped_column(Date)
@@ -100,6 +111,10 @@ class ActionRevision(Base):
     __tablename__ = "action_revisions"
     __table_args__ = (
         UniqueConstraint("action_id", "revision", name="uq_action_revisions_action_revision"),
+        CheckConstraint(
+            "authority IN ('explicit_user', 'canonical', 'inferred')",
+            name="ck_action_revisions_authority",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -116,6 +131,9 @@ class ActionRevision(Base):
     preview: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     preview_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     risk_class: Mapped[str] = mapped_column(String(32), nullable=False)
+    authority: Mapped[str] = mapped_column(
+        String(32), default=IntentAuthority.INFERRED.value, nullable=False
+    )
     target_versions: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_by_actor_type: Mapped[str] = mapped_column(String(32), nullable=False)
     created_by_actor_id: Mapped[str | None] = mapped_column(String(255))
@@ -187,6 +205,33 @@ class Approval(TimestampMixin, Base):
     )
 
 
+class OperationBundle(TimestampMixin, Base):
+    __tablename__ = "operation_bundles"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'running', 'succeeded', 'partial_failed', 'failed', "
+            "'reconciliation_required')",
+            name="ck_operation_bundles_status",
+        ),
+        CheckConstraint(
+            "resolution IN ('keep_both', 'new_wins', 'keep_existing')",
+            name="ck_operation_bundles_resolution",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    action_revision_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("action_revisions.id", ondelete="RESTRICT"), nullable=False
+    )
+    approval_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("approvals.id", ondelete="RESTRICT"), nullable=False
+    )
+    resolution: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+
 class Operation(TimestampMixin, Base):
     __tablename__ = "operations"
     __table_args__ = (
@@ -200,6 +245,12 @@ class Operation(TimestampMixin, Base):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     action_revision_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("action_revisions.id", ondelete="RESTRICT"), nullable=False
+    )
+    bundle_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("operation_bundles.id", ondelete="RESTRICT")
+    )
+    predecessor_operation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("operations.id", ondelete="RESTRICT")
     )
     approval_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("approvals.id", ondelete="RESTRICT")
@@ -310,6 +361,9 @@ class CalendarLink(TimestampMixin, Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    canonical_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("canonical_events.id", ondelete="SET NULL")
+    )
     record_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("records.id", ondelete="RESTRICT")
     )

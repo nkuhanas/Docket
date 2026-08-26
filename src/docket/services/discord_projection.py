@@ -169,9 +169,7 @@ class DiscordProjectionRunner:
             requested_projection = event.payload.get("projection_id")
             try:
                 parsed_date = (
-                    date.fromisoformat(str(requested_date))
-                    if requested_date is not None
-                    else None
+                    date.fromisoformat(str(requested_date)) if requested_date is not None else None
                 )
             except ValueError as exc:
                 raise DiscordProjectionError(
@@ -621,9 +619,7 @@ class DiscordProjectionRunner:
             "Preserve current provider reminders",
         }:
             return lead_text
-        return "\n".join(
-            f"{lead} beforehand" for lead in lead_text.split(", ")
-        )
+        return "\n".join(f"{lead} beforehand" for lead in lead_text.split(", "))
 
     def _calendar_delta_fields(
         self,
@@ -731,6 +727,14 @@ class DiscordProjectionRunner:
             return f"{outcome_subject} expired"
         if action is not None and action.status == "superseded":
             return f"{outcome_subject} superseded"
+        if action is not None and action.status in {
+            "failed",
+            "partial_failed",
+            "reconciliation_required",
+        }:
+            return f"{outcome_subject} needs attention"
+        if action is not None and action.status in {"ready", "executing"}:
+            return f"{outcome_subject} in progress"
         if operation is not None and operation.status == "succeeded":
             return completed
         if operation is not None and operation.status in {
@@ -767,9 +771,8 @@ class DiscordProjectionRunner:
         projection_id: uuid.UUID,
         signing_key: bytes,
     ) -> list[dict[str, Any]]:
-        if revision.action_type in BATCH_CALENDAR_ACTION_TYPES:
-            return []
-        if revision.action_type not in {
+        batch_action = revision.action_type in BATCH_CALENDAR_ACTION_TYPES
+        if not batch_action and revision.action_type not in {
             "calendar_create_event",
             "calendar_update_event",
             "calendar_update_reminders",
@@ -777,6 +780,60 @@ class DiscordProjectionRunner:
             return []
         controls: list[dict[str, Any]] = []
         classification = revision.preview.get("classification", {})
+        conflicts = revision.preview.get("conflicts")
+        if isinstance(conflicts, list) and conflicts:
+            selected_resolution = str(revision.preview.get("conflict_resolution") or "unresolved")
+            resolutions = [
+                (
+                    "Choose an outcome…",
+                    "unresolved",
+                    "A decision is required before this can run",
+                ),
+                ("Keep both", "keep_both", "Create or update without removing conflicts"),
+                ("Keep existing", "keep_existing", "Discard the proposed Calendar change"),
+            ]
+            if all(
+                isinstance(conflict, dict) and conflict.get("can_cancel") is True
+                for conflict in conflicts
+            ):
+                resolutions.insert(
+                    2,
+                    (
+                        "Proposed event wins",
+                        "new_wins",
+                        "Apply this change and cancel the listed conflicts",
+                    ),
+                )
+            token = issue_projection_proposal_control_token(
+                revision.id,
+                projection_id,
+                "conflict_resolution",
+                approval.expires_at,
+                signing_key,
+            )
+            controls.append(
+                {
+                    "kind": "string_select",
+                    "field": "conflict_resolution",
+                    "label": "Conflict outcome",
+                    "placeholder": "Conflict outcome",
+                    "row": 3,
+                    "min_values": 1,
+                    "max_values": 1,
+                    "token": token,
+                    "options": [
+                        {
+                            "label": label,
+                            "value": value,
+                            "description": description,
+                            "default": value == selected_resolution,
+                        }
+                        for label, value, description in resolutions
+                    ],
+                }
+            )
+        if batch_action:
+            return controls
         if revision.action_type in {
             "calendar_create_event",
             "calendar_update_event",
@@ -939,15 +996,16 @@ class DiscordProjectionRunner:
         if any(not isinstance(item, dict) for item in raw_items):
             return False
         rendered = [
-            self._schedule_item_field(item, index)
-            for index, item in enumerate(raw_items, start=1)
+            self._schedule_item_field(item, index) for index, item in enumerate(raw_items, start=1)
         ]
-        return all(
-            len(str(field["name"])) <= 256 and len(str(field["value"])) <= 1024
-            for field in rendered
-        ) and sum(
-            len(str(field["name"])) + len(str(field["value"])) for field in rendered
-        ) <= 3500
+        return (
+            all(
+                len(str(field["name"])) <= 256 and len(str(field["value"])) <= 1024
+                for field in rendered
+            )
+            and sum(len(str(field["name"])) + len(str(field["value"])) for field in rendered)
+            <= 3500
+        )
 
     def _course_date_range_text(self, date_range: dict[str, Any]) -> str:
         timezone_name = date_range.get("timezone", self.settings.timezone)
@@ -1021,7 +1079,8 @@ class DiscordProjectionRunner:
     ) -> tuple[dict[str, Any], list[dict[str, Any]], str, str]:
         calendar_action = revision is not None and revision.action_type.startswith("calendar_")
         fields: list[dict[str, Any]] = []
-        if not calendar_action:
+        legacy_generic_card = not calendar_action and queue_item.presentation == "proposal"
+        if legacy_generic_card:
             fields.extend(
                 [
                     {
@@ -1063,7 +1122,7 @@ class DiscordProjectionRunner:
                     },
                 ]
             )
-        if not calendar_action and queue_item.received_at is not None:
+        if legacy_generic_card and queue_item.received_at is not None:
             fields.append(
                 {
                     "name": "Received",
@@ -1079,7 +1138,7 @@ class DiscordProjectionRunner:
                     "inline": True,
                 }
             )
-        if not calendar_action and account_label is not None:
+        if legacy_generic_card and account_label is not None:
             fields.append({"name": "Account", "value": account_label, "inline": False})
         base_fields = list(fields)
         if revision is not None:
@@ -1102,12 +1161,8 @@ class DiscordProjectionRunner:
                 fields.append({"name": "Course", "value": course_label, "inline": False})
             course_date_ranges = preview.get("course_date_ranges")
             if isinstance(course_date_ranges, list) and course_date_ranges:
-                if len(course_date_ranges) == 1 and isinstance(
-                    course_date_ranges[0], dict
-                ):
-                    course_date_text = self._course_date_range_text(
-                        course_date_ranges[0]
-                    )
+                if len(course_date_ranges) == 1 and isinstance(course_date_ranges[0], dict):
+                    course_date_text = self._course_date_range_text(course_date_ranges[0])
                 else:
                     course_date_text = "Varies by meeting; review each change."
                 fields.append(
@@ -1154,6 +1209,28 @@ class DiscordProjectionRunner:
                     {
                         "name": "Details",
                         "value": type_text,
+                        "inline": False,
+                    }
+                )
+            entity_refs = preview.get("entity_refs")
+            context_labels = preview.get("context_labels")
+            context_lines: list[str] = []
+            if isinstance(entity_refs, list):
+                context_lines.extend(
+                    f"{str(value.get('role') or value.get('entity_class') or 'Related').title()}: "
+                    f"{value.get('canonical_name')}"
+                    for value in entity_refs
+                    if isinstance(value, dict) and value.get("canonical_name")
+                )
+            if isinstance(context_labels, list) and context_labels:
+                context_lines.append(
+                    "Context: " + ", ".join(str(value) for value in context_labels)
+                )
+            if context_lines:
+                fields.append(
+                    {
+                        "name": "Context",
+                        "value": "\n".join(context_lines),
                         "inline": False,
                     }
                 )
@@ -1243,6 +1320,19 @@ class DiscordProjectionRunner:
                         "inline": False,
                     }
                 )
+                resolution = preview.get("conflict_resolution")
+                if resolution in {"keep_both", "new_wins", "keep_existing"}:
+                    fields.append(
+                        {
+                            "name": "Selected outcome",
+                            "value": {
+                                "keep_both": "Keep both",
+                                "new_wins": "Proposed event wins",
+                                "keep_existing": "Keep existing event",
+                            }[str(resolution)],
+                            "inline": False,
+                        }
+                    )
             schedule = preview.get("schedule")
             if isinstance(schedule, dict):
                 fields.append(
@@ -1322,11 +1412,7 @@ class DiscordProjectionRunner:
                     if inline_course_review:
                         raw_items = revision.preview.get("items")
                         assert isinstance(raw_items, list)
-                        fields = [
-                            field
-                            for field in fields
-                            if field.get("name") != "Changes"
-                        ]
+                        fields = [field for field in fields if field.get("name") != "Changes"]
                         fields.extend(
                             self._schedule_item_field(item, index)
                             for index, item in enumerate(raw_items, start=1)
@@ -1442,9 +1528,7 @@ class DiscordProjectionRunner:
                     0,
                     {
                         "name": (
-                            "Email state changed"
-                            if gmail_action
-                            else "Calendar state changed"
+                            "Email state changed" if gmail_action else "Calendar state changed"
                         ),
                         "value": (
                             (
@@ -1475,18 +1559,18 @@ class DiscordProjectionRunner:
                 if not gmail_action:
                     controls.append(
                         {
-                        "kind": "proposal_action",
-                        "transition": "proposal_refresh",
-                        "label": "Rebuild preview",
-                        "row": 3,
-                        "action_revision_id": str(revision.id),
-                        "token": issue_projection_proposal_control_token(
-                            revision.id,
-                            projection.id,
-                            "refresh",
-                            approval.expires_at,
-                            signing_key,
-                        ),
+                            "kind": "proposal_action",
+                            "transition": "proposal_refresh",
+                            "label": "Rebuild preview",
+                            "row": 3,
+                            "action_revision_id": str(revision.id),
+                            "token": issue_projection_proposal_control_token(
+                                revision.id,
+                                projection.id,
+                                "refresh",
+                                approval.expires_at,
+                                signing_key,
+                            ),
                         }
                     )
             elif revision is not None and revision.action_type in BATCH_CALENDAR_ACTION_TYPES:
@@ -1539,14 +1623,26 @@ class DiscordProjectionRunner:
                         approval.expires_at,
                         signing_key,
                     )
+                    conflicts = revision.preview.get("conflicts")
+                    resolution_selected = revision.preview.get("conflict_resolution") in {
+                        "keep_both",
+                        "new_wins",
+                        "keep_existing",
+                    }
                     controls = [
-                        {
-                            "kind": "approval",
-                            "decision": "approve",
-                            "label": "Approve",
-                            "approval_id": str(approval.id),
-                            "token": token,
-                        },
+                        *(
+                            [
+                                {
+                                    "kind": "approval",
+                                    "decision": "approve",
+                                    "label": ("Apply resolution" if conflicts else "Approve"),
+                                    "approval_id": str(approval.id),
+                                    "token": token,
+                                }
+                            ]
+                            if not conflicts or resolution_selected
+                            else []
+                        ),
                         {
                             "kind": "approval",
                             "decision": "reject",
@@ -1582,6 +1678,14 @@ class DiscordProjectionRunner:
                             ),
                         }
                     )
+                    controls.extend(
+                        self._proposal_selects(
+                            revision,
+                            approval,
+                            projection.id,
+                            signing_key,
+                        )
+                    )
                 else:
                     raise DiscordProjectionError(
                         "invalid_schedule_review_state",
@@ -1591,14 +1695,24 @@ class DiscordProjectionRunner:
                 token = issue_projection_approval_token(
                     approval.id, projection.id, approval.expires_at, signing_key
                 )
+                conflicts = revision.preview.get("conflicts") if revision else None
+                resolution_selected = revision is not None and revision.preview.get(
+                    "conflict_resolution"
+                ) in {"keep_both", "new_wins", "keep_existing"}
                 controls = [
-                    {
-                        "kind": "approval",
-                        "decision": "approve",
-                        "label": "Approve",
-                        "approval_id": str(approval.id),
-                        "token": token,
-                    },
+                    *(
+                        [
+                            {
+                                "kind": "approval",
+                                "decision": "approve",
+                                "label": ("Apply resolution" if conflicts else "Approve"),
+                                "approval_id": str(approval.id),
+                                "token": token,
+                            }
+                        ]
+                        if not conflicts or resolution_selected
+                        else []
+                    ),
                     {
                         "kind": "approval",
                         "decision": "reject",
@@ -1629,7 +1743,12 @@ class DiscordProjectionRunner:
                             "kind": "proposal_action",
                             "transition": "proposal_edit",
                             "label": "Edit details",
-                            "row": 3,
+                            "row": (
+                                4
+                                if isinstance(revision.preview.get("conflicts"), list)
+                                and bool(revision.preview["conflicts"])
+                                else 3
+                            ),
                             "action_revision_id": str(revision.id),
                             "token": issue_projection_proposal_control_token(
                                 revision.id,
@@ -1761,6 +1880,8 @@ class DiscordProjectionRunner:
                         "label": (
                             "Snooze until tomorrow"
                             if local_revision.action_type == "snooze_queue_item"
+                            else "Acknowledge"
+                            if local_revision.action_type == "acknowledge_queue_item"
                             else "Ignore"
                         ),
                         "action_id": str(local_action.id),
@@ -1975,11 +2096,7 @@ class DiscordProjectionRunner:
                 external_revisions.append((candidate, candidate_revision))
             if external_revisions:
                 selected = next(
-                    (
-                        item
-                        for item in external_revisions
-                        if item[0].status == "approval_pending"
-                    ),
+                    (item for item in external_revisions if item[0].status == "approval_pending"),
                     None,
                 )
                 if selected is None:
@@ -1999,9 +2116,7 @@ class DiscordProjectionRunner:
                     )
                 action, revision = selected
                 approval = session.scalar(
-                    select(Approval).where(
-                        Approval.action_revision_id == revision.id
-                    )
+                    select(Approval).where(Approval.action_revision_id == revision.id)
                 )
                 operation = session.scalar(
                     select(Operation)
@@ -2012,9 +2127,7 @@ class DiscordProjectionRunner:
                 account = session.get(Account, revision.account_id)
                 if account is not None:
                     account_label = (
-                        account.display_name
-                        or account.email_address
-                        or account.external_account_id
+                        account.display_name or account.email_address or account.external_account_id
                     )
             revision_changed = revision is None or projection.view_action_revision_id != revision.id
             if revision is None:
@@ -2890,11 +3003,14 @@ class DiscordProjectionRunner:
                     f"discord_projection:{queue_item.id}:converge:"
                     f"{projection.id}:queue-v{queue_item.version}"
                 )
-                if session.scalar(
-                    select(OutboxEvent.id).where(
-                        OutboxEvent.deduplication_key == deduplication_key
+                if (
+                    session.scalar(
+                        select(OutboxEvent.id).where(
+                            OutboxEvent.deduplication_key == deduplication_key
+                        )
                     )
-                ) is not None:
+                    is not None
+                ):
                     continue
                 session.add(
                     OutboxEvent(

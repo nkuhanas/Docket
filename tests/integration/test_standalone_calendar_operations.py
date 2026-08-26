@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from docket.config import get_settings
+from docket.domain.enums import IntentAuthority
 from docket.domain.errors import DocketError
 from docket.internal_api.schemas import ApprovalResponse, LocalActionResponse
 from docket.models import (
@@ -19,10 +20,12 @@ from docket.models import (
     CalendarLink,
     CalendarReminderPlan,
     CalendarSyncState,
+    CanonicalEvent,
     CommandRequest,
     DiscordDailyThread,
     DiscordProjection,
     Operation,
+    OperationBundle,
     OutboxEvent,
     QueueItem,
     ReminderRule,
@@ -40,6 +43,7 @@ from docket.services.approvals import ApprovalService
 from docket.services.calendar_actions import CalendarActionService
 from docket.services.calendar_sync import CalendarSyncService
 from docket.services.discord_projection import DiscordProjectionRunner
+from docket.services.entities import EntityService
 from docket.services.operations import OperationRunner
 from docket.services.proposal_controls import ProposalControlService
 from docket.services.reminders import materialize_reminders
@@ -228,6 +232,109 @@ def test_materially_identical_pending_standalone_proposal_is_suppressed(
             )
             == 1
         )
+
+
+@pytest.mark.integration
+def test_explicit_create_update_entity_rebind_and_cancel_need_no_approval(
+    session_factory: sessionmaker[Session],
+) -> None:
+    settings = get_settings()
+    with session_factory.begin() as session:
+        account = _seed_target(session)
+        account_id = account.id
+        entities = EntityService(session)
+        polyuas = entities.create(
+            entity_class="organization",
+            canonical_name="PolyUAS",
+            attributes={"organization_type": "club"},
+            authority=IntentAuthority.EXPLICIT_USER,
+            actor_id=settings.operator_discord_user_id,
+        )
+        csai = entities.create(
+            entity_class="organization",
+            canonical_name="CSAI",
+            attributes={"organization_type": "club"},
+            authority=IntentAuthority.EXPLICIT_USER,
+            actor_id=settings.operator_discord_user_id,
+        )
+        create_payload = _create_request(account, "324444444444444444").model_dump(mode="json")
+        create_payload.update(
+            {
+                "entity_bindings": [{"entity_id": str(polyuas.entity_id), "role": "organization"}],
+                "context_labels": ["club"],
+            }
+        )
+        create = CalendarActionService(session).apply_explicit(
+            ProposeCalendarEventInput.model_validate(create_payload)
+        )
+        assert create.disposition == "execution_queued"
+        assert session.scalar(select(Approval)) is None
+
+    provider = FakeCalendarProvider()
+    runner = OperationRunner(session_factory, provider)
+    assert runner.run_due_once()
+    with session_factory() as session:
+        link = session.scalar(select(CalendarLink))
+        canonical = session.scalar(select(CanonicalEvent))
+        assert link is not None and canonical is not None
+        assert canonical.entity_refs[0]["canonical_name"] == "PolyUAS"
+        provider_event_id = link.external_event_id
+
+    with session_factory.begin() as session:
+        account = session.get(Account, account_id)
+        assert account is not None
+        update_payload = _event_request(
+            account,
+            "325555555555555555",
+            {
+                "kind": "update",
+                "provider_event_id": provider_event_id,
+                "replacement": {
+                    "title": "Check my email later",
+                    "timing": {
+                        "kind": "timed",
+                        "start_local": "2026-07-30T12:30:00",
+                        "end_local": "2026-07-30T12:45:00",
+                    },
+                    "location": "Desk",
+                },
+            },
+        ).model_dump(mode="json")
+        update_payload.update(
+            {
+                "entity_bindings": [{"entity_id": str(csai.entity_id), "role": "organization"}],
+                "context_labels": ["recruiting"],
+            }
+        )
+        update = CalendarActionService(session).apply_explicit(
+            ProposeCalendarEventInput.model_validate(update_payload)
+        )
+        assert update.disposition == "execution_queued"
+        assert session.scalar(select(Approval)) is None
+    assert runner.run_due_once()
+
+    with session_factory.begin() as session:
+        account = session.get(Account, account_id)
+        assert account is not None
+        cancel = CalendarActionService(session).apply_explicit(
+            _event_request(
+                account,
+                "326666666666666666",
+                {
+                    "kind": "cancel",
+                    "provider_event_id": provider_event_id,
+                    "reason": "Operator cancelled the event",
+                },
+            )
+        )
+        assert cancel.disposition == "execution_queued"
+        assert session.scalar(select(Approval)) is None
+    assert runner.run_due_once()
+    with session_factory() as session:
+        canonical = session.scalar(select(CanonicalEvent))
+        assert canonical is not None and canonical.status == "cancelled"
+        assert canonical.entity_refs[0]["canonical_name"] == "CSAI"
+        assert canonical.context_labels == ["recruiting"]
 
 
 @pytest.mark.integration
@@ -792,9 +899,7 @@ def test_proposal_selects_and_custom_modal_replace_the_revision_in_place(
         assert fields["When"] == ("Starts <t:1785438000:F>\nEnds <t:1785438900:F>")
         assert fields["Where"] == "Desk"
         assert fields["Details"] == "One-time · Normal priority\nTags: email"
-        assert fields["Notifications"] == (
-            "5 minutes beforehand\n10 minutes beforehand"
-        )
+        assert fields["Notifications"] == ("5 minutes beforehand\n10 minutes beforehand")
         assert fields["Conflicts"] == "None found"
         assert {
             "Status",
@@ -824,14 +929,10 @@ def test_proposal_selects_and_custom_modal_replace_the_revision_in_place(
             "proposal_action",
         ]
         edit_control = next(
-            control
-            for control in controls
-            if control.get("transition") == "proposal_edit"
+            control for control in controls if control.get("transition") == "proposal_edit"
         )
         snooze_control = next(
-            control
-            for control in controls
-            if control.get("transition") == "proposal_snooze"
+            control for control in controls if control.get("transition") == "proposal_snooze"
         )
         assert (edit_control["label"], edit_control["row"]) == ("Edit details", 3)
         assert (snooze_control["label"], snooze_control["row"]) == (
@@ -974,6 +1075,163 @@ def test_proposal_selects_and_custom_modal_replace_the_revision_in_place(
         assert [plan.lead_seconds for plan in current_plans] == [300, 900]
         assert all(plan.status == "planned" for plan in current_plans)
         assert backend.messages[str(projection_id)]["message_id"] == message_id
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("cancel_outcome", "expected_bundle_status"),
+    [("success", "succeeded"), ("permanent", "partial_failed")],
+)
+def test_explicit_conflict_resolution_new_wins_runs_a_durable_bundle(
+    session_factory: sessionmaker[Session],
+    cancel_outcome: str,
+    expected_bundle_status: str,
+) -> None:
+    settings = get_settings()
+    with session_factory.begin() as session:
+        account = _seed_target(session)
+        session.add(
+            CalendarEventCache(
+                account_id=account.id,
+                calendar_id=settings.google_calendar_id,
+                provider_event_id="existing-conflict",
+                snapshot_generation=uuid.uuid4(),
+                status="confirmed",
+                summary="Existing focus block",
+                location="Desk",
+                is_all_day=False,
+                start_at=datetime(2026, 7, 30, 19, 5, tzinfo=UTC),
+                end_at=datetime(2026, 7, 30, 19, 20, tzinfo=UTC),
+                timezone="America/Los_Angeles",
+                recurrence_kind="one_time",
+                system_tags=["one_time", "timed", "external"],
+                operator_tags=[],
+                priority="normal",
+                priority_basis="default",
+                provider_reminders={},
+                provider_etag='"existing-etag"',
+                synced_at=datetime.now(UTC),
+                has_attendees=False,
+                organizer_is_self=True,
+            )
+        )
+        proposed = CalendarActionService(session).apply_explicit(
+            _create_request(account, "779999999999999999")
+        )
+        assert proposed.disposition == "proposed"
+
+    backend = FakeDiscordBackend()
+    projection_runner = DiscordProjectionRunner(
+        session_factory,
+        FakeDiscordProjectionAdapter(backend),
+        settings,
+    )
+    assert projection_runner.run_due_once()
+    with session_factory() as session:
+        projection = session.scalar(select(DiscordProjection))
+        thread = session.scalar(select(DiscordDailyThread))
+        assert projection is not None and projection.message_id is not None
+        assert thread is not None and thread.thread_id is not None
+        conflict_control = next(
+            control
+            for control in backend.messages[str(projection.id)]["controls"]
+            if control.get("field") == "conflict_resolution"
+        )
+        assert [option["value"] for option in conflict_control["options"]] == [
+            "unresolved",
+            "keep_both",
+            "new_wins",
+            "keep_existing",
+        ]
+        projection_id = projection.id
+        message_id = projection.message_id
+        thread_id = thread.thread_id
+
+    selection = LocalActionResponse(
+        request_id=uuid.uuid4(),
+        discord_interaction_id="conflict-select-new-wins",
+        discord_user_id=settings.operator_discord_user_id,
+        guild_id=settings.discord_guild_id,
+        channel_id=thread_id,
+        parent_channel_id=settings.queue_channel_id,
+        projection_id=projection_id,
+        message_id=message_id,
+        responded_at=datetime.now(UTC),
+        action_revision_id=proposed.action_revision_id,
+        action_token=conflict_control["token"],
+        transition="proposal_field_change",
+        field="conflict_resolution",
+        value="new_wins",
+    )
+    with session_factory.begin() as session:
+        selected = ProposalControlService(session).respond(selection)
+        assert selected["revision"] == 2
+    while projection_runner.run_due_once():
+        pass
+
+    with session_factory() as session:
+        projection = session.get(DiscordProjection, projection_id)
+        assert projection is not None and projection.message_id is not None
+        thread = session.get(DiscordDailyThread, projection.daily_thread_id)
+        assert thread is not None and thread.thread_id is not None
+        approval_control = next(
+            control
+            for control in backend.messages[str(projection.id)]["controls"]
+            if control.get("decision") == "approve"
+        )
+        response = ApprovalResponse(
+            request_id=uuid.uuid4(),
+            discord_interaction_id="conflict-approve-new-wins",
+            approval_id=uuid.UUID(str(approval_control["approval_id"])),
+            approval_token=str(approval_control["token"]),
+            short_code=None,
+            decision="approve",
+            discord_user_id=settings.operator_discord_user_id,
+            guild_id=settings.discord_guild_id,
+            channel_id=thread.thread_id,
+            parent_channel_id=settings.queue_channel_id,
+            projection_id=projection.id,
+            message_id=projection.message_id,
+            responded_at=datetime.now(UTC),
+        )
+    with session_factory.begin() as session:
+        accepted = ApprovalService(session).respond(response)
+        assert accepted["conflict_resolution"] == "new_wins"
+        assert accepted["operation_bundle_status"] == "running"
+
+    provider = FakeCalendarProvider()
+    provider.next_cancel_outcome = cancel_outcome
+    operation_runner = OperationRunner(session_factory, provider)
+    assert operation_runner.run_due_once()
+    with session_factory() as session:
+        bundle = session.scalar(select(OperationBundle))
+        assert bundle is not None and bundle.status == "running"
+        operations = list(
+            session.scalars(
+                select(Operation)
+                .where(Operation.bundle_id == bundle.id)
+                .order_by(Operation.created_at, Operation.id)
+            )
+        )
+        assert [operation.status for operation in operations].count("succeeded") == 1
+        assert [operation.status for operation in operations].count("pending") == 1
+    assert operation_runner.run_due_once()
+    with session_factory() as session:
+        bundle = session.scalar(select(OperationBundle))
+        parent_queue = session.get(QueueItem, proposed.queue_item_id)
+        assert bundle is not None and bundle.status == expected_bundle_status
+        assert bundle.result["counts"]["succeeded"] == (2 if cancel_outcome == "success" else 1)
+        assert parent_queue is not None and parent_queue.status == (
+            "completed" if cancel_outcome == "success" else "failed"
+        )
+        existing = session.scalar(
+            select(CalendarEventCache).where(
+                CalendarEventCache.provider_event_id == "existing-conflict"
+            )
+        )
+        assert existing is not None and existing.status == (
+            "cancelled" if cancel_outcome == "success" else "confirmed"
+        )
 
 
 @pytest.mark.integration

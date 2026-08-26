@@ -76,10 +76,20 @@ CalendarEventProposal = Annotated[
 ]
 
 
+class EventEntityBindingInput(StrictModel):
+    entity_id: UUID
+    role: str = Field(min_length=1, max_length=128)
+
+
 class ProposeCalendarEventInput(StrictModel):
     account_id: UUID
     calendar_id: str = Field(min_length=1, max_length=1024)
     proposal: CalendarEventProposal
+    entity_bindings: list[EventEntityBindingInput] | None = Field(
+        default=None,
+        max_length=20,
+    )
+    context_labels: list[str] | None = Field(default=None, max_length=20)
     request_key: DiscordRequestKey
     source: RecordSourceInput
     actor_type: Literal["hermes"] = "hermes"
@@ -89,6 +99,23 @@ class ProposeCalendarEventInput(StrictModel):
     def request_matches_source(self) -> "ProposeCalendarEventInput":
         validate_discord_request_fields(self.request_key, self.source, self.actor_id)
         return self
+
+
+class InferredCalendarEventInput(StrictModel):
+    account_id: UUID
+    calendar_id: str = Field(min_length=1, max_length=1024)
+    proposal: CalendarEventProposal
+    canonical_event_id: UUID
+    semantic_candidate_id: UUID
+    source_item_id: UUID
+    request_key: str = Field(
+        min_length=1,
+        max_length=512,
+        pattern=r"^gmail:[A-Za-z0-9:._/-]+$",
+    )
+    actor_type: Literal["hermes"] = "hermes"
+    actor_id: Literal["hermes-triage"] = "hermes-triage"
+    defer_projection: bool = True
 
 
 class ProposeCourseReconciliationInput(StrictModel):
@@ -124,7 +151,20 @@ class ProposalResult(StrictModel):
     short_code: str
     expires_at: datetime
     preview: dict[str, Any]
-    projection_status: Literal["pending"] = "pending"
+    projection_status: Literal["pending", "deferred"] = "pending"
+
+
+class DirectExecutionResult(StrictModel):
+    request_id: UUID
+    disposition: Literal["execution_queued", "replayed_request"]
+    authority: Literal["explicit_user"] = "explicit_user"
+    queue_item_id: UUID
+    action_id: UUID
+    action_revision_id: UUID
+    operation_id: UUID
+    operation_status: Literal["pending", "running", "succeeded"]
+    presentation: Literal["suppressed"] = "suppressed"
+    conflicts: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class AccountResult(StrictModel):

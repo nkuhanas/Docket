@@ -55,6 +55,7 @@ _REMINDER_PRESETS: dict[str, list[int]] = {
     "30m": [1800],
     "1h": [3600],
 }
+_CONFLICT_RESOLUTIONS = {"unresolved", "keep_both", "new_wins", "keep_existing"}
 _EDITABLE_ACTIONS = {
     "calendar_create_event",
     "calendar_update_event",
@@ -452,6 +453,36 @@ class ProposalControlService:
                 if revision.action_type == "calendar_update_event"
                 else preview.get("reminder_disposition")
             )
+        elif request.field == "conflict_resolution":
+            assert request.value is not None
+            conflicts = preview.get("conflicts")
+            if (
+                request.value not in _CONFLICT_RESOLUTIONS
+                or not isinstance(conflicts, list)
+                or not conflicts
+            ):
+                raise DocketError(
+                    code="invalid_conflict_resolution",
+                    message="Conflict resolution is not valid for this proposal.",
+                )
+            if request.value == "unresolved":
+                raise DocketError(
+                    code="invalid_conflict_resolution",
+                    message="Choose a concrete conflict outcome.",
+                )
+            if request.value == "new_wins" and any(
+                not isinstance(conflict, dict) or conflict.get("can_cancel") is not True
+                for conflict in conflicts
+            ):
+                raise DocketError(
+                    code="unsafe_conflict_resolution",
+                    message=(
+                        "The proposed event cannot automatically replace an attendee-bearing "
+                        "or externally organized event."
+                    ),
+                )
+            parameters["conflict_resolution"] = request.value
+            preview["conflict_resolution"] = request.value
         else:
             raise DocketError(
                 code="invalid_proposal_field",
@@ -480,6 +511,7 @@ class ProposalControlService:
             preview=preview,
             preview_sha256=preview_sha256,
             risk_class=revision.risk_class,
+            authority=revision.authority,
             target_versions=target_versions,
             created_by_actor_type="plugin",
             created_by_actor_id=request.discord_user_id,

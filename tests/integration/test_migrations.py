@@ -224,7 +224,7 @@ def test_passive_gmail_notification_migration_removes_only_local_controls(
             ],
         )
 
-    command.upgrade(config, "head")
+    command.upgrade(config, "0016")
     migrated = MetaData()
     migrated_queue_items = Table("queue_items", migrated, autoload_with=engine)
     migrated_actions = Table("actions", migrated, autoload_with=engine)
@@ -361,23 +361,20 @@ def test_legacy_reminder_cleanup_preserves_canonical_rules(tmp_path, monkeypatch
     command.upgrade(config, "head")
     migrated = MetaData()
     migrated_rules = Table("reminder_rules", migrated, autoload_with=engine)
-    migrated_notifications = Table(
-        "scheduled_notifications", migrated, autoload_with=engine
-    )
+    migrated_notifications = Table("scheduled_notifications", migrated, autoload_with=engine)
     assert "source_kind" not in migrated_rules.c
     with engine.connect() as connection:
-        assert connection.scalars(select(migrated_rules.c.id)).all() == [
-            canonical_rule_id
-        ]
+        assert connection.scalars(select(migrated_rules.c.id)).all() == [canonical_rule_id]
         assert connection.scalars(select(migrated_notifications.c.id)).all() == []
 
     command.downgrade(config, "0012")
     downgraded = MetaData()
     downgraded_rules = Table("reminder_rules", downgraded, autoload_with=engine)
     with engine.connect() as connection:
-        assert connection.execute(
-            select(downgraded_rules.c.source_kind)
-        ).scalar_one() == "canonical_plan"
+        assert (
+            connection.execute(select(downgraded_rules.c.source_kind)).scalar_one()
+            == "canonical_plan"
+        )
 
     engine.dispose()
     clear_settings_cache()

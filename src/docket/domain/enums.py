@@ -35,6 +35,23 @@ class RiskClass(StrEnum):
     BULK = "bulk"
 
 
+class IntentAuthority(StrEnum):
+    EXPLICIT_USER = "explicit_user"
+    CANONICAL = "canonical"
+    INFERRED = "inferred"
+
+
+class QueuePresentation(StrEnum):
+    PROPOSAL = "proposal"
+    CONFLICT_RESOLUTION = "conflict_resolution"
+    CLARIFICATION = "clarification"
+    ACTION_REQUIRED = "action_required"
+    AWARENESS = "awareness"
+    TERMINAL_OUTCOME = "terminal_outcome"
+    SYSTEM_ALERT = "system_alert"
+    SUPPRESSED = "suppressed"
+
+
 class ActionAvailability(StrEnum):
     ENABLED = "enabled"
     DISABLED = "disabled"

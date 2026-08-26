@@ -12,6 +12,8 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
     tools = {tool.name: tool for tool in await mcp.list_tools()}
     names = set(tools)
     assert names == {
+        "docket_add_entity_alias",
+        "docket_create_entity",
         "docket_store_record",
         "docket_get_record",
         "docket_search_records",
@@ -24,13 +26,18 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
         "docket_get_calendar_profile",
         "docket_set_calendar_profile",
         "docket_list_reminder_rules",
-        "docket_propose_calendar_event",
-        "docket_propose_course_reconciliation",
+        "docket_merge_entities",
+        "docket_apply_calendar_intent",
+        "docket_apply_course_intent",
+        "docket_rebind_entity_resolution",
+        "docket_relate_entities",
+        "docket_resolve_entity",
         "docket_list_queue_items",
         "docket_get_queue_item",
         "docket_snooze_queue_item",
         "docket_ignore_queue_item",
         "docket_get_action",
+        "docket_update_entity",
     }
     assert not names.intersection(
         {"record_approval", "consume_approval", "execute_action", "raw_gmail_modify"}
@@ -115,15 +122,11 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
     assert lookup_properties["relative_day"]["anyOf"][0]["enum"] == ["today", "tomorrow"]
     assert lookup_properties["limit"]["maximum"] == 100
 
-    calendar_proposal_definitions = tools["docket_propose_calendar_event"].inputSchema[
-        "$defs"
-    ]
+    calendar_proposal_definitions = tools["docket_apply_calendar_intent"].inputSchema["$defs"]
     calendar_proposal_description = " ".join(
-        (tools["docket_propose_calendar_event"].description or "").split()
+        (tools["docket_apply_calendar_intent"].description or "").split()
     )
-    assert "inherits Docket's configured ``DOCKET_TIMEZONE``" in (
-        calendar_proposal_description
-    )
+    assert "inherits Docket's configured ``DOCKET_TIMEZONE``" in (calendar_proposal_description)
     timed_timing = calendar_proposal_definitions["TimedEventTiming"]
     assert "timezone" not in timed_timing["required"]
     assert "DOCKET_TIMEZONE" in timed_timing["properties"]["timezone"]["description"]
@@ -136,7 +139,7 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
     list_rules_properties = list_rules.inputSchema["properties"]
     assert list_rules_properties["limit"]["maximum"] == 100
 
-    calendar_proposal = tools["docket_propose_calendar_event"]
+    calendar_proposal = tools["docket_apply_calendar_intent"]
     calendar_proposal_description = " ".join((calendar_proposal.description or "").split())
     assert "create, update, reminder change, or cancellation" in (calendar_proposal_description)
     assert "both Google popup and Docket's due-date ISO queue thread" in (
@@ -144,7 +147,8 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
     )
     assert 'use ``target_scope="series"``' in calendar_proposal_description
     assert "never pass an occurrence ID" in calendar_proposal_description
-    assert "never mutates Google Calendar" in calendar_proposal_description
+    assert "durably queues the authorized provider operation" in (calendar_proposal_description)
+    assert "conflict-resolution card" in calendar_proposal_description
     calendar_proposal_properties = calendar_proposal.inputSchema["properties"]
     assert calendar_proposal_properties["request_key"]["pattern"].startswith("^discord:")
     proposal_definition = calendar_proposal_properties["proposal"]
@@ -166,9 +170,9 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
     restore_description = " ".join((restore.description or "").split())
     assert "Reactivate one archived canonical identity" in restore_description
     assert "does not itself recreate Google Calendar series" in restore_description
-    assert "docket_propose_course_reconciliation" in restore_description
+    assert "docket_apply_course_intent" in restore_description
 
-    course_proposal = tools["docket_propose_course_reconciliation"]
+    course_proposal = tools["docket_apply_course_intent"]
     course_description = " ".join((course_proposal.description or "").split())
     assert "one independent course record" in course_description
     assert "create, update, cancel, and no-op effects" in course_description
@@ -200,7 +204,7 @@ async def test_triage_surface_is_separate_and_strictly_bounded() -> None:
         "docket_claim_triage_batch",
         "docket_read_claimed_source",
         "docket_search_related_records",
-        "docket_submit_triage_decision",
+        "docket_submit_semantic_candidates",
     }
     assert names.isdisjoint(interactive_names)
     assert not any(
@@ -216,9 +220,7 @@ async def test_triage_surface_is_separate_and_strictly_bounded() -> None:
             "terminal",
         )
     )
-    template = Path("hermes/triage-config.example.yaml").read_text(
-        encoding="utf-8"
-    )
+    template = Path("hermes/triage-config.example.yaml").read_text(encoding="utf-8")
     include_block = template.split("    tools:\n      include:\n", 1)[1].split(
         "      prompts:",
         1,
@@ -234,8 +236,25 @@ async def test_triage_surface_is_separate_and_strictly_bounded() -> None:
     assert "discord:" not in template
     assert "plugins:\n  enabled: []" in template
     assert "/triage-mcp/" in template
-    read_description = " ".join(
-        (tools["docket_read_claimed_source"].description or "").split()
-    )
+    read_description = " ".join((tools["docket_read_claimed_source"].description or "").split())
     assert "explicitly untrusted data" in read_description
     assert "never stored" in read_description
+    submit = tools["docket_submit_semantic_candidates"]
+    submit_description = " ".join((submit.description or "").split())
+    assert "never authorize Gmail housekeeping" in submit_description
+    candidate = submit.inputSchema["$defs"]["SemanticCandidateInput"]
+    assert candidate["properties"]["kind"]["enum"] == [
+        "event",
+        "deadline",
+        "response",
+        "task",
+        "information",
+        "noise",
+    ]
+    assert candidate["properties"]["mutation"]["enum"] == [
+        "create",
+        "update",
+        "cancel",
+        "none",
+    ]
+    assert "action_types" not in submit.inputSchema["properties"]

@@ -8,12 +8,14 @@ from pydantic import Field
 
 from docket.config import get_settings
 from docket.database import get_session_factory, session_scope
-from docket.domain.enums import RecordStatus
+from docket.domain.enums import IntentAuthority, RecordStatus
 from docket.domain.errors import DocketError
 from docket.providers.google.runtime import get_calendar_read_provider
 from docket.schemas.actions import (
     CalendarEventProposal,
     CourseReconciliationMode,
+    DirectExecutionResult,
+    EventEntityBindingInput,
     ProposalResult,
     ProposeCalendarEventInput,
     ProposeCourseReconciliationInput,
@@ -47,16 +49,20 @@ from docket.schemas.records import (
     TermData,
     TermIdentity,
     UpdateRecordInput,
+    validate_discord_request_fields,
 )
+from docket.schemas.triage import EntityClass
 from docket.services.accounts import AccountService
 from docket.services.action_read import ActionReadService
 from docket.services.calendar_actions import CalendarActionService
 from docket.services.calendar_profile import CalendarProfileService
 from docket.services.calendar_sync import CalendarReadService, CalendarSyncService
 from docket.services.course_reconciliation import CourseReconciliationService
+from docket.services.entities import EntityService
 from docket.services.queue import QueueService
 from docket.services.records import RecordService, serialize_record
 from docket.services.reminders import ReminderRuleService
+from docket.services.source_context import validate_configured_discord_source
 
 mcp = FastMCP(
     "docket",
@@ -107,6 +113,23 @@ def _model_proposal_result(result: ProposalResult) -> dict[str, Any]:
     return payload
 
 
+def _model_calendar_intent_result(
+    result: ProposalResult | DirectExecutionResult,
+) -> dict[str, Any]:
+    if isinstance(result, ProposalResult):
+        return _model_proposal_result(result)
+    payload = result.model_dump(mode="json")
+    payload["execution_surface"] = {
+        "kind": "direct_operation",
+        "status": result.operation_status,
+        "operator_instruction": (
+            "The explicit command is durably queued. Do not ask for approval or claim "
+            "provider completion until Docket reports it."
+        ),
+    }
+    return payload
+
+
 def _model_course_reconciliation_result(result: dict[str, Any]) -> dict[str, Any]:
     payload = dict(result)
     payload.pop("short_code", None)
@@ -121,6 +144,196 @@ def _model_course_reconciliation_result(result: dict[str, Any]) -> dict[str, Any
             "typed_code_policy": "break_glass_only_not_for_agent_guidance",
         }
     return payload
+
+
+def _validate_entity_write(
+    session: Any,
+    *,
+    request_key: DiscordRequestKey,
+    source: RecordSourceInput,
+    actor_id: DiscordId,
+) -> None:
+    validate_discord_request_fields(request_key, source, actor_id)
+    validate_configured_discord_source(session, source, actor_id)
+
+
+@mcp.tool()
+def docket_resolve_entity(
+    entity_class: EntityClass,
+    mention: str,
+) -> dict[str, Any]:
+    """Resolve an entity mention against Docket's emergent canonical registry.
+
+    Returns resolved, unresolved, ambiguous, or provisional explicitly. It never
+    creates a seed list or silently picks among multiple matching identities.
+    """
+    try:
+        with session_scope() as session:
+            result = EntityService(session).resolve(
+                entity_class=entity_class,
+                mention=mention,
+            )
+            return {"ok": True, "resolution": result.model_dump(mode="json")}
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_create_entity(
+    entity_class: EntityClass,
+    canonical_name: str,
+    attributes: dict[str, Any],
+    request_key: DiscordRequestKey,
+    source: RecordSourceInput,
+    actor_id: DiscordId,
+) -> dict[str, Any]:
+    """Create or confirm one genuinely new canonical entity from current user intent."""
+    try:
+        with session_scope() as session:
+            _validate_entity_write(
+                session, request_key=request_key, source=source, actor_id=actor_id
+            )
+            result = EntityService(session).create(
+                entity_class=entity_class,
+                canonical_name=canonical_name,
+                attributes=attributes,
+                authority=IntentAuthority.EXPLICIT_USER,
+                actor_type="hermes",
+                actor_id=actor_id,
+            )
+            return {"ok": True, "entity": result.model_dump(mode="json")}
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_update_entity(
+    entity_id: uuid.UUID,
+    expected_version: int,
+    request_key: DiscordRequestKey,
+    source: RecordSourceInput,
+    actor_id: DiscordId,
+    canonical_name: str | None = None,
+    attributes: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Correct the name or attributes of one exact entity with optimistic versioning."""
+    try:
+        with session_scope() as session:
+            _validate_entity_write(
+                session, request_key=request_key, source=source, actor_id=actor_id
+            )
+            result = EntityService(session).update(
+                entity_id=entity_id,
+                expected_version=expected_version,
+                canonical_name=canonical_name,
+                attributes=attributes,
+                authority=IntentAuthority.EXPLICIT_USER,
+                actor_id=actor_id,
+            )
+            return {"ok": True, "entity": result.model_dump(mode="json")}
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_add_entity_alias(
+    entity_id: uuid.UUID,
+    alias: str,
+    request_key: DiscordRequestKey,
+    source: RecordSourceInput,
+    actor_id: DiscordId,
+) -> dict[str, Any]:
+    """Teach Docket an explicit alias for one exact canonical entity."""
+    try:
+        with session_scope() as session:
+            _validate_entity_write(
+                session, request_key=request_key, source=source, actor_id=actor_id
+            )
+            result = EntityService(session).add_alias(
+                entity_id=entity_id,
+                alias=alias,
+                authority=IntentAuthority.EXPLICIT_USER,
+            )
+            return {"ok": True, "entity": result.model_dump(mode="json")}
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_relate_entities(
+    subject_entity_id: uuid.UUID,
+    predicate: str,
+    object_entity_id: uuid.UUID,
+    request_key: DiscordRequestKey,
+    source: RecordSourceInput,
+    actor_id: DiscordId,
+    attributes: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Persist one typed relationship between two exact canonical entities."""
+    try:
+        with session_scope() as session:
+            _validate_entity_write(
+                session, request_key=request_key, source=source, actor_id=actor_id
+            )
+            relation_id = EntityService(session).relate(
+                subject_entity_id=subject_entity_id,
+                predicate=predicate,
+                object_entity_id=object_entity_id,
+                authority=IntentAuthority.EXPLICIT_USER,
+                attributes=attributes,
+            )
+            return {"ok": True, "relation_id": str(relation_id)}
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_merge_entities(
+    survivor_entity_id: uuid.UUID,
+    absorbed_entity_id: uuid.UUID,
+    request_key: DiscordRequestKey,
+    source: RecordSourceInput,
+    actor_id: DiscordId,
+) -> dict[str, Any]:
+    """Merge one duplicate identity into a selected survivor while preserving history."""
+    try:
+        with session_scope() as session:
+            _validate_entity_write(
+                session, request_key=request_key, source=source, actor_id=actor_id
+            )
+            result = EntityService(session).merge(
+                survivor_id=survivor_entity_id,
+                absorbed_id=absorbed_entity_id,
+                authority=IntentAuthority.EXPLICIT_USER,
+                actor_id=actor_id,
+            )
+            return {"ok": True, "entity": result.model_dump(mode="json")}
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_rebind_entity_resolution(
+    resolution_id: uuid.UUID,
+    entity_id: uuid.UUID,
+    request_key: DiscordRequestKey,
+    source: RecordSourceInput,
+    actor_id: DiscordId,
+) -> dict[str, Any]:
+    """Correct a prior mention resolution and preserve both the old and new bindings."""
+    try:
+        with session_scope() as session:
+            _validate_entity_write(
+                session, request_key=request_key, source=source, actor_id=actor_id
+            )
+            result = EntityService(session).rebind_resolution(
+                resolution_id=resolution_id,
+                entity_id=entity_id,
+                actor_id=actor_id,
+            )
+            return {"ok": True, "resolution": result.model_dump(mode="json")}
+    except Exception as exc:
+        return _error(exc)
 
 
 @mcp.tool()
@@ -239,7 +452,7 @@ def docket_archive_record(
     """Soft-archive an unlinked canonical record; physical deletion is not exposed.
 
     A course with active Calendar links must instead use
-    ``docket_propose_course_reconciliation`` in ``drop`` mode so every provider series
+    ``docket_apply_course_intent`` in ``drop`` mode so every provider series
     reaches a durable terminal cancellation before Docket archives the course.
     """
     try:
@@ -268,7 +481,7 @@ def docket_restore_record(
     """Reactivate one archived canonical identity without discarding its history.
 
     Restoring a course does not itself recreate Google Calendar series. After restore,
-    call ``docket_propose_course_reconciliation`` in ``sync`` mode; cancelled stable
+    call ``docket_apply_course_intent`` in ``sync`` mode; cancelled stable
     meeting links are then reused with fresh provider event identities.
     """
     try:
@@ -457,28 +670,34 @@ def docket_list_reminder_rules(
 
 
 @mcp.tool()
-def docket_propose_calendar_event(
+def docket_apply_calendar_intent(
     account_id: uuid.UUID,
     calendar_id: CalendarId,
     proposal: CalendarEventProposal,
     request_key: DiscordRequestKey,
     source: RecordSourceInput,
     actor_id: DiscordId,
+    entity_bindings: list[EventEntityBindingInput] | None = None,
+    context_labels: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Propose one standalone Calendar create, update, reminder change, or cancellation.
+    """Apply one explicit standalone Calendar create, update, reminder change, or cancellation.
 
     Docket refreshes its complete bounded Calendar snapshot, resolves exact existing
     targets, rejects unsafe attendee-bearing events, detects overlaps, applies the
-    stored proposal profile, and derives an immutable approval preview. Reminder plans
+    stored Calendar profile, and derives an immutable formulation. Reminder plans
     always project to both Google popup and Docket's due-date ISO queue thread; an empty
     lead list disables both. An omitted standalone timing timezone inherits Docket's
-    configured ``DOCKET_TIMEZONE``; an explicit IANA timezone wins. The result is only
-    a persistent Discord proposal card.
+    configured ``DOCKET_TIMEZONE``; an explicit IANA timezone wins. A sufficiently
+    ascertained command from the current operator executes directly. Exact overlaps
+    are advisory and produce a conflict-resolution card instead of failing or silently
+    choosing a winner.
     For one occurrence or a non-recurring event, use ``target_scope="event"`` with that
     event's ``provider_event_id``. For an entire Docket-owned recurring series, use
     ``target_scope="series"`` with the ``recurring_event_id`` returned by Calendar
     lookup; never pass an occurrence ID when the operator asked for the whole series.
-    This tool never records approval and never mutates Google Calendar.
+    The tool never records approval itself. It either durably queues the authorized
+    provider operation or returns a persistent Discord decision card when a genuine
+    conflict remains.
     """
     try:
         _calendar_read_service().list_events(
@@ -497,16 +716,18 @@ def docket_propose_calendar_event(
             request_key=request_key,
             source=source,
             actor_id=actor_id,
+            entity_bindings=entity_bindings,
+            context_labels=context_labels,
         )
         with session_scope() as session:
-            result = CalendarActionService(session).propose(request)
-            return {"ok": True, **_model_proposal_result(result)}
+            result = CalendarActionService(session).apply_explicit(request)
+            return {"ok": True, **_model_calendar_intent_result(result)}
     except Exception as exc:
         return _error(exc)
 
 
 @mcp.tool()
-def docket_propose_course_reconciliation(
+def docket_apply_course_intent(
     record_id: uuid.UUID,
     expected_record_version: int,
     mode: CourseReconciliationMode,
@@ -526,8 +747,9 @@ def docket_propose_course_reconciliation(
     Docket archives the course only after every linked active series is terminally
     cancelled. Omitted courses are never inferred as drops. After
     ``docket_restore_record``, ``sync`` reuses cancelled logical links with fresh Google
-    event identities. The tool refreshes Calendar state and creates at most one
-    per-course review card; provider writes occur only after its explicit approval.
+    event identities. The tool refreshes Calendar state and executes an explicit
+    operator instruction directly. Only an unresolved Calendar conflict creates a
+    resolution card.
     """
     try:
         _calendar_read_service().list_events(
@@ -552,7 +774,7 @@ def docket_propose_course_reconciliation(
             actor_id=actor_id,
         )
         with session_scope() as session:
-            result = CourseReconciliationService(session).propose(request)
+            result = CourseReconciliationService(session).apply_explicit(request)
             return {"ok": True, **_model_course_reconciliation_result(result)}
     except Exception as exc:
         return _error(exc)

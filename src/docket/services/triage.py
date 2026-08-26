@@ -27,6 +27,7 @@ from docket.models import (
     OutboxEvent,
     QueueItem,
     QueueItemSource,
+    SemanticCandidate,
     SourceItem,
 )
 from docket.models.base import utc_now
@@ -34,9 +35,12 @@ from docket.policy import get_action_definition
 from docket.providers.google.gmail import GmailClaimedContent, GmailReadProvider
 from docket.schemas.triage import (
     ProposeClassifiedGmailActionInput,
+    SubmitSemanticCandidatesInput,
     SubmitTriageDecisionInput,
 )
 from docket.security import issue_short_code, short_code_sha256
+from docket.services.briefs import DailyBriefService
+from docket.services.entities import EntityService
 from docket.services.queue import QueueService
 
 PASSIVE_GMAIL_RESOLUTION_CODE = "gmail_notification"
@@ -210,6 +214,148 @@ class TriageService:
                 lock=False,
             )
         return _untrusted_content(content)
+
+    def submit_candidates(
+        self,
+        request: SubmitSemanticCandidatesInput,
+    ) -> dict[str, Any]:
+        """Persist extraction output without granting it mutation authority."""
+        try:
+            source_id = uuid.UUID(request.source_id)
+            claim_token = uuid.UUID(request.claim_token)
+        except ValueError as exc:
+            raise DocketError(
+                code="invalid_triage_reference",
+                message="The source or claim reference is invalid.",
+            ) from exc
+
+        with self.session_factory.begin() as session:
+            source = self._validate_claim(
+                session,
+                source_id=source_id,
+                claim_token=claim_token,
+                lock=True,
+            )
+            persisted: list[dict[str, Any]] = []
+            anchor = source.external_parent_id or source.external_object_id
+            for index, candidate_input in enumerate(request.candidates):
+                fields = candidate_input.model_dump(
+                    mode="json",
+                    exclude={
+                        "candidate_key",
+                        "kind",
+                        "mutation",
+                        "title",
+                        "summary",
+                        "confidence",
+                    },
+                )
+                semantic_key = sha256_json(
+                    {
+                        "account_id": str(source.account_id),
+                        "provider": source.provider,
+                        "anchor": anchor,
+                        "source_item_id": str(source.id),
+                        "source_version": source.source_version,
+                        "candidate_key": candidate_input.candidate_key,
+                        "kind": candidate_input.kind,
+                        "mutation": candidate_input.mutation,
+                    }
+                )
+                status = "suppressed" if candidate_input.kind == "noise" else "pending"
+                candidate = SemanticCandidate(
+                    source_item_id=source.id,
+                    candidate_index=index,
+                    candidate_key=candidate_input.candidate_key,
+                    semantic_key=semantic_key,
+                    kind=candidate_input.kind,
+                    mutation=candidate_input.mutation,
+                    title=candidate_input.title,
+                    summary=candidate_input.summary,
+                    fields=fields,
+                    confidence=candidate_input.confidence,
+                    status=status,
+                )
+                session.add(candidate)
+                session.flush()
+                entity_resolutions: list[dict[str, Any]] = []
+                for mention in candidate_input.entity_mentions:
+                    resolution = EntityService(session).resolve(
+                        entity_class=mention.entity_class,
+                        mention=mention.name,
+                        source_item_id=source.id,
+                        semantic_candidate_id=candidate.id,
+                        allow_provisional=True,
+                    )
+                    entity_resolutions.append(
+                        {
+                            "mention": mention.name,
+                            "role": mention.role,
+                            "entity_class": mention.entity_class,
+                            "state": resolution.state,
+                            "resolution_id": str(resolution.resolution_id),
+                            "entity_id": (
+                                str(resolution.resolved_entity.entity_id)
+                                if resolution.resolved_entity is not None
+                                else None
+                            ),
+                            "candidate_entity_ids": [
+                                str(entity.entity_id) for entity in resolution.candidates
+                            ],
+                        }
+                    )
+                if entity_resolutions:
+                    candidate.fields = {
+                        **candidate.fields,
+                        "entity_resolutions": entity_resolutions,
+                    }
+                DailyBriefService(
+                    self.session_factory,
+                    self.settings,
+                ).assign_candidate(
+                    session,
+                    candidate,
+                    observed_at=source.received_at or utc_now(),
+                )
+                persisted.append(
+                    {
+                        "candidate_id": str(candidate.id),
+                        "candidate_key": candidate.candidate_key,
+                        "kind": candidate.kind,
+                        "mutation": candidate.mutation,
+                        "status": candidate.status,
+                    }
+                )
+
+            source.status = "classified"
+            source.classification = {
+                "schema_version": 2,
+                "candidate_ids": [item["candidate_id"] for item in persisted],
+                "candidate_count": len(persisted),
+            }
+            source.claim_token = None
+            source.claimed_by = None
+            source.claimed_until = None
+            session.add(
+                AuditEvent(
+                    event_type="gmail.semantic_candidates_extracted",
+                    entity_type="source_item",
+                    entity_id=source.id,
+                    actor_type="hermes",
+                    actor_id="hermes-triage",
+                    data={
+                        "candidate_count": len(persisted),
+                        "kinds": sorted({item["kind"] for item in persisted}),
+                        "mutations": sorted({item["mutation"] for item in persisted}),
+                    },
+                )
+            )
+            return {
+                "source_id": str(source.id),
+                "status": "classified",
+                "disposition": "candidates_persisted",
+                "candidates": persisted,
+            }
 
     @staticmethod
     def _material_fingerprint(
@@ -388,6 +534,7 @@ class TriageService:
                 preview=preview,
                 preview_sha256=sha256_json(preview),
                 risk_class=definition.risk_class.value,
+                authority="inferred",
                 target_versions={
                     "queue_item": {
                         "id": str(queue_item.id),

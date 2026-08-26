@@ -13,8 +13,10 @@ from docket.domain.enums import (
     ActionStatus,
     ApprovalStatus,
     CommandStatus,
+    OperationStatus,
     OutboxStatus,
     QueueItemStatus,
+    QueuePresentation,
     RecordStatus,
 )
 from docket.domain.errors import DocketError, IdempotencyConflict, VersionConflict
@@ -29,6 +31,8 @@ from docket.models import (
     CalendarReminderPlan,
     CalendarSyncState,
     CommandRequest,
+    Operation,
+    OperationItem,
     OutboxEvent,
     QueueItem,
     Record,
@@ -47,6 +51,9 @@ from docket.services.course_manifest import (
     current_calendar_material_snapshot,
     first_overlap,
 )
+from docket.services.operation_materialization import operation_idempotency_key
+from docket.services.operational_logs import enqueue_action_system_log
+from docket.services.operations import OperationRunner
 from docket.services.proposal_dedup import find_materially_identical_pending_proposal
 from docket.services.queue import queue_projection_date
 from docket.services.source_context import validate_configured_discord_source
@@ -108,7 +115,10 @@ class CourseReconciliationService:
         self.settings = get_settings()
 
     def _start_command(
-        self, request: ProposeCourseReconciliationInput
+        self,
+        request: ProposeCourseReconciliationInput,
+        *,
+        operation_name: str,
     ) -> tuple[CommandRequest, dict[str, Any] | None]:
         payload = request.model_dump(mode="json")
         input_sha256 = sha256_json(payload)
@@ -116,14 +126,11 @@ class CourseReconciliationService:
             select(CommandRequest).where(CommandRequest.request_key == request.request_key)
         )
         if existing is not None:
-            if (
-                existing.operation_name != "docket_propose_course_reconciliation"
-                or existing.input_sha256 != input_sha256
-            ):
+            if existing.operation_name != operation_name or existing.input_sha256 != input_sha256:
                 raise IdempotencyConflict(
                     request.request_key,
                     existing_operation=existing.operation_name,
-                    attempted_operation="docket_propose_course_reconciliation",
+                    attempted_operation=operation_name,
                 )
             if existing.status == CommandStatus.SUCCEEDED.value and existing.result is not None:
                 replay = dict(existing.result)
@@ -135,7 +142,7 @@ class CourseReconciliationService:
             )
         command = CommandRequest(
             request_key=request.request_key,
-            operation_name="docket_propose_course_reconciliation",
+            operation_name=operation_name,
             input_sha256=input_sha256,
             actor_type=request.actor_type,
             actor_id=request.actor_id,
@@ -163,12 +170,6 @@ class CourseReconciliationService:
             raise DocketError(
                 code="calendar_not_allowed",
                 message="Course reconciliation targets only the configured Docket calendar.",
-            )
-        profile = CalendarProfileService(self.session).get()
-        if profile.proposal_mode == "off":
-            raise DocketError(
-                code="calendar_proposals_disabled",
-                message="The Calendar profile suppresses new proposals.",
             )
         state = self.session.scalar(
             select(CalendarSyncState).where(
@@ -709,11 +710,37 @@ class CourseReconciliationService:
         return course_reconciliation_dependency_sha256(current_parameters)
 
     def propose(self, request: ProposeCourseReconciliationInput) -> dict[str, Any]:
+        """Internal compatibility surface for deterministic approval-path tests."""
+        return self._apply(
+            request,
+            force_decision=True,
+            operation_name="docket_propose_course_reconciliation",
+        )
+
+    def apply_explicit(self, request: ProposeCourseReconciliationInput) -> dict[str, Any]:
+        return self._apply(
+            request,
+            force_decision=False,
+            operation_name="docket_apply_course_intent",
+        )
+
+    def _apply(
+        self,
+        request: ProposeCourseReconciliationInput,
+        *,
+        force_decision: bool,
+        operation_name: str,
+    ) -> dict[str, Any]:
         validate_configured_discord_source(self.session, request.source, request.actor_id)
-        command, replay = self._start_command(request)
+        command, replay = self._start_command(request, operation_name=operation_name)
         if replay is not None:
             return replay
         account, state = self._validate_target(request)
+        if not force_decision and self.settings.calendar_write_mode() == "disabled":
+            raise DocketError(
+                code="external_writes_disabled",
+                message="External Calendar writes are disabled.",
+            )
         record, course = self._course(request)
         profile = CalendarProfileService(self.session).get()
         plan_model = request.reminder_plan or CalendarReminderPlanInput(
@@ -735,12 +762,10 @@ class CourseReconciliationService:
         items = parameters["items"]
         assert isinstance(counts, dict) and isinstance(items, list)
         conflicts = preview["conflicts"]
-        if isinstance(conflicts, list) and conflicts and profile.conflict_policy == "block":
-            raise DocketError(
-                code="calendar_conflict_blocked",
-                message="The Calendar profile blocks this conflicting course.",
-                details={"conflicts": conflicts[:10]},
-            )
+        assert isinstance(conflicts, list)
+        needs_decision = force_decision or bool(conflicts)
+        parameters["conflict_resolution"] = None if conflicts else "not_applicable"
+        preview["conflict_resolution"] = None if conflicts else "not_applicable"
         if request.mode == "sync" and counts == {
             "create": 0,
             "update": 0,
@@ -774,11 +799,15 @@ class CourseReconciliationService:
         parameters_sha256 = sha256_json(parameters)
         preview_sha256 = sha256_json(preview)
         now = utc_now()
-        matched = find_materially_identical_pending_proposal(
-            self.session,
-            category="calendar_course",
-            material_fingerprint=material_fingerprint,
-            now=now,
+        matched = (
+            find_materially_identical_pending_proposal(
+                self.session,
+                category="calendar_course",
+                material_fingerprint=material_fingerprint,
+                now=now,
+            )
+            if needs_decision
+            else None
         )
         if matched is not None:
             matched_result = matched.model_copy(update={"request_id": command.id})
@@ -841,8 +870,19 @@ class CourseReconciliationService:
                 f"{counts['create']} create, {counts['update']} update, "
                 f"{counts['cancel']} cancel, {counts['no_op']} unchanged"
             ),
-            status=QueueItemStatus.AWAITING_APPROVAL.value,
+            status=(
+                QueueItemStatus.AWAITING_APPROVAL.value
+                if needs_decision
+                else QueueItemStatus.EXECUTING.value
+            ),
             priority="normal",
+            presentation=(
+                QueuePresentation.CONFLICT_RESOLUTION.value
+                if conflicts
+                else QueuePresentation.PROPOSAL.value
+                if needs_decision
+                else QueuePresentation.SUPPRESSED.value
+            ),
             received_at=now,
         )
         self.session.add(queue_item)
@@ -851,7 +891,9 @@ class CourseReconciliationService:
             queue_item_id=queue_item.id,
             record_id=record.id,
             action_type=action_type,
-            status=ActionStatus.APPROVAL_PENDING.value,
+            status=(
+                ActionStatus.APPROVAL_PENDING.value if needs_decision else ActionStatus.READY.value
+            ),
             current_revision=1,
         )
         self.session.add(action)
@@ -867,6 +909,7 @@ class CourseReconciliationService:
             preview=preview,
             preview_sha256=preview_sha256,
             risk_class=get_action_definition(action_type).risk_class.value,
+            authority="explicit_user",
             target_versions={
                 "queue_item": {"id": str(queue_item.id), "version": queue_item.version},
                 "record": {
@@ -876,9 +919,7 @@ class CourseReconciliationService:
                 },
                 "calendar_snapshot": {
                     "last_success_at": _aware(state.last_success_at).isoformat(),
-                    "course_dependency_sha256": course_reconciliation_dependency_sha256(
-                        parameters
-                    ),
+                    "course_dependency_sha256": course_reconciliation_dependency_sha256(parameters),
                 },
             },
             created_by_actor_type=request.actor_type,
@@ -903,6 +944,119 @@ class CourseReconciliationService:
                             status="planned",
                         )
                     )
+        if not needs_decision:
+            operation_id = uuid.uuid4()
+            operation = Operation(
+                id=operation_id,
+                action_revision_id=revision.id,
+                approval_id=None,
+                idempotency_key=operation_idempotency_key(revision),
+                operation_type=revision.action_type,
+                account_id=account.id,
+                status=OperationStatus.PENDING.value,
+                provider_correlation=str(operation_id),
+                next_attempt_at=now,
+            )
+            self.session.add(operation)
+            self.session.flush()
+            for manifest_item in items:
+                item_key = str(manifest_item["item_key"])
+                item_parameters = dict(manifest_item["parameters"])
+                item_parameters["operation_type"] = manifest_item["operation_type"]
+                item_parameters_sha256 = sha256_json(item_parameters)
+                item_no_op = manifest_item["operation_type"] == "calendar_no_op"
+                self.session.add(
+                    OperationItem(
+                        operation_id=operation.id,
+                        item_key=item_key,
+                        item_type=str(manifest_item["operation_type"]),
+                        idempotency_key=(
+                            f"calendar:batch-item:{operation.id}:"
+                            f"{item_key}:{item_parameters_sha256}"
+                        ),
+                        parameters=item_parameters,
+                        parameters_sha256=item_parameters_sha256,
+                        status="succeeded" if item_no_op else "pending",
+                        next_attempt_at=None if item_no_op else now,
+                        result={"disposition": "no_op"} if item_no_op else None,
+                    )
+                )
+            all_no_op = all(item["operation_type"] == "calendar_no_op" for item in items)
+            if all_no_op:
+                operation.status = OperationStatus.SUCCEEDED.value
+                operation.next_attempt_at = None
+                operation.result = {
+                    "item_count": len(items),
+                    "counts": {
+                        "pending": 0,
+                        "running": 0,
+                        "succeeded": len(items),
+                        "failed": 0,
+                        "reconciliation_required": 0,
+                    },
+                    "failures": [],
+                }
+                if not OperationRunner._apply_course_transition(
+                    self.session,
+                    operation,
+                    revision,
+                    action,
+                    queue_item,
+                ):
+                    raise DocketError(
+                        code="course_archive_transition_conflict",
+                        message="The course changed before its archive transition.",
+                    )
+                action.status = ActionStatus.SUCCEEDED.value
+                queue_item.status = QueueItemStatus.COMPLETED.value
+                queue_item.resolved_at = now
+                queue_item.resolution_code = (
+                    "calendar_course_dropped"
+                    if request.mode == "drop"
+                    else "calendar_course_synchronized"
+                )
+            self.session.add(
+                AuditEvent(
+                    event_type="action.execution_queued",
+                    entity_type="action",
+                    entity_id=action.id,
+                    actor_type=request.actor_type,
+                    actor_id=request.actor_id,
+                    request_id=command.id,
+                    data={
+                        "action_type": action_type,
+                        "authority": "explicit_user",
+                        "operation_id": str(operation.id),
+                        "item_count": len(items),
+                    },
+                )
+            )
+            enqueue_action_system_log(
+                self.session,
+                action=action,
+                revision=revision,
+                state="succeeded" if all_no_op else "queued",
+                result=operation.result,
+            )
+            result = {
+                "request_id": str(command.id),
+                "disposition": "execution_queued" if not all_no_op else "no_op",
+                "authority": "explicit_user",
+                "record_id": str(record.id),
+                "record_version": record.version,
+                "queue_item_id": str(queue_item.id),
+                "action_id": str(action.id),
+                "action_revision_id": str(revision.id),
+                "operation_id": str(operation.id),
+                "operation_status": operation.status,
+                "counts": counts,
+                "conflicts": [],
+            }
+            command.status = CommandStatus.SUCCEEDED.value
+            command.result = result
+            command.completed_at = now
+            return result
+
         expires_at = now + timedelta(seconds=self.settings.approval_ttl_seconds)
         approval_id = uuid.uuid4()
         signing_key = self.settings.read_secret(self.settings.interaction_signing_key_file).encode()

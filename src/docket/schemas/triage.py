@@ -3,6 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from docket.schemas.calendar import StandaloneCalendarEventInput
 from docket.schemas.queue import QueuePriority
 
 TriageDecision = Literal["actionable", "ignore"]
@@ -19,6 +20,24 @@ TriageCategory = Literal[
     "general_action",
 ]
 GmailActionType = Literal["gmail_archive_message", "gmail_mark_read"]
+SemanticCandidateKind = Literal[
+    "event",
+    "deadline",
+    "response",
+    "task",
+    "information",
+    "noise",
+]
+SemanticMutation = Literal["create", "update", "cancel", "none"]
+EntityClass = Literal[
+    "institution",
+    "organization",
+    "course",
+    "person",
+    "location",
+    "project",
+    "service",
+]
 
 
 class TriageActionProposal(BaseModel):
@@ -41,6 +60,81 @@ class ProposeClassifiedGmailActionInput(BaseModel):
     expected_source_version: str = Field(min_length=1, max_length=255)
     action_type: GmailActionType
     actor_id: str = Field(min_length=1, max_length=255)
+
+
+class EntityMentionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    entity_class: EntityClass
+    name: str = Field(min_length=1, max_length=512)
+    role: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class CandidateCorrelationInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider_event_id: str | None = Field(default=None, min_length=1, max_length=1024)
+    title_hint: str | None = Field(default=None, min_length=1, max_length=512)
+    date_hint: str | None = Field(default=None, min_length=1, max_length=64)
+    sender_event_id: str | None = Field(default=None, min_length=1, max_length=512)
+
+    @model_validator(mode="after")
+    def at_least_one_hint(self) -> "CandidateCorrelationInput":
+        if not any((self.provider_event_id, self.title_hint, self.date_hint, self.sender_event_id)):
+            raise ValueError("correlation requires at least one stable hint")
+        return self
+
+
+class SemanticCandidateInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_key: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[a-z0-9][a-z0-9._-]*$",
+    )
+    kind: SemanticCandidateKind
+    mutation: SemanticMutation = "none"
+    title: str = Field(min_length=1, max_length=512)
+    summary: str = Field(min_length=1, max_length=2000)
+    event: StandaloneCalendarEventInput | None = None
+    correlation: CandidateCorrelationInput | None = None
+    entity_mentions: list[EntityMentionInput] = Field(default_factory=list, max_length=20)
+    context_labels: list[str] = Field(default_factory=list, max_length=20)
+    missing_fields: list[str] = Field(default_factory=list, max_length=20)
+    confidence: float = Field(ge=0, le=1)
+
+    @model_validator(mode="after")
+    def validate_candidate_shape(self) -> "SemanticCandidateInput":
+        if self.kind in {"information", "noise"} and self.mutation != "none":
+            raise ValueError("information and noise cannot request a mutation")
+        if self.mutation in {"update", "cancel"} and self.correlation is None:
+            raise ValueError("update and cancel candidates require correlation hints")
+        if (
+            self.kind == "event"
+            and self.mutation == "create"
+            and self.event is None
+            and not self.missing_fields
+        ):
+            raise ValueError("an event create needs a complete event or explicit missing fields")
+        if self.event is not None and self.kind != "event":
+            raise ValueError("structured event details are valid only for event candidates")
+        return self
+
+
+class SubmitSemanticCandidatesInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_id: str
+    claim_token: str
+    candidates: list[SemanticCandidateInput] = Field(min_length=1, max_length=10)
+
+    @model_validator(mode="after")
+    def candidate_keys_are_unique(self) -> "SubmitSemanticCandidatesInput":
+        keys = [candidate.candidate_key for candidate in self.candidates]
+        if len(keys) != len(set(keys)):
+            raise ValueError("candidate_key values must be unique within one source")
+        return self
 
 
 class SubmitTriageDecisionInput(BaseModel):

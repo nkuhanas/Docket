@@ -19,6 +19,7 @@ _PROPOSAL_FIELDS = {
     "reminder_preset": 2,
     "refresh": 3,
     "edit": 4,
+    "conflict_resolution": 5,
     "snooze": 6,
 }
 _PROPOSAL_FIELD_NAMES = {value: key for key, value in _PROPOSAL_FIELDS.items()}

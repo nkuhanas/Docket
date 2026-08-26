@@ -19,3 +19,4 @@ secrets/restore/*
 *.log
 spec-*.md
 /specs/
+/docs/docket-ontology-delta-*.md

@@ -11,11 +11,13 @@ from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
 from docket.models import (
     Account,
+    Action,
     ActionRevision,
     CalendarEventCache,
     CalendarProfile,
     CalendarReminderPlan,
     CalendarSyncState,
+    Operation,
     QueueItem,
 )
 from docket.schemas.actions import ProposeCalendarEventInput
@@ -169,7 +171,11 @@ def test_standalone_create_proposal_uses_profile_reminder_and_conflict_scan(
     )
     assert revision is not None and queue_item is not None
     assert revision.action_type == "calendar_create_event"
-    assert revision.parameters["logical_key"] == f"standalone:{result.request_id}"
+    assert revision.parameters["logical_key"].startswith("canonical_event:")
+    assert (
+        revision.parameters["logical_key"].removeprefix("canonical_event:")
+        == (revision.parameters["canonical_event_id"])
+    )
     assert revision.parameters["reminder_plan"]["lead_seconds"] == [600]
     assert revision.parameters["reminder_plan_sha256"] == sha256_json(
         revision.parameters["reminder_plan"]
@@ -184,7 +190,9 @@ def test_standalone_create_proposal_uses_profile_reminder_and_conflict_scan(
     assert replay.action_id == result.action_id
 
 
-def test_profile_block_policy_rejects_overlap(session: Session) -> None:
+def test_profile_block_policy_cannot_turn_overlap_into_validation_failure(
+    session: Session,
+) -> None:
     account, _state = calendar_fixture(session)
     cached_event(session, account)
     profile = CalendarProfileService(session).get()
@@ -192,10 +200,37 @@ def test_profile_block_policy_rejects_overlap(session: Session) -> None:
     assert stored is not None and profile.version == 1
     stored.conflict_policy = "block"
 
-    with pytest.raises(DocketError) as raised:
-        CalendarActionService(session).propose(create_request(account))
+    result = CalendarActionService(session).propose(create_request(account))
+    revision = session.get(ActionRevision, result.action_revision_id)
 
-    assert raised.value.code == "calendar_conflict_blocked"
+    assert revision is not None
+    assert revision.preview["conflicts"][0]["provider_event_id"] == "provider-event-1"
+
+
+def test_explicit_calendar_intent_queues_direct_operation_without_card(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    account, _state = calendar_fixture(session)
+    monkeypatch.setattr(
+        type(get_settings()),
+        "calendar_write_mode",
+        lambda _settings: "fake",
+    )
+
+    result = CalendarActionService(session).apply_explicit(create_request(account))
+    session.flush()
+
+    assert result.disposition == "execution_queued"
+    queue_item = session.get(QueueItem, result.queue_item_id)
+    action = session.get(Action, result.action_id)
+    revision = session.get(ActionRevision, result.action_revision_id)
+    operation = session.get(Operation, result.operation_id)
+    assert queue_item is not None and queue_item.presentation == "suppressed"
+    assert queue_item.status == "executing"
+    assert action is not None and action.status == "ready"
+    assert revision is not None and revision.authority == "explicit_user"
+    assert operation is not None and operation.approval_id is None
+    assert operation.status == "pending"
 
 
 def test_attendee_event_cannot_be_targeted(session: Session) -> None:

@@ -14,8 +14,11 @@ from docket.domain.enums import (
     ActionStatus,
     ApprovalStatus,
     CommandStatus,
+    IntentAuthority,
+    OperationStatus,
     OutboxStatus,
     QueueItemStatus,
+    QueuePresentation,
 )
 from docket.domain.errors import DocketError, IdempotencyConflict
 from docket.models import (
@@ -28,15 +31,22 @@ from docket.models import (
     CalendarLink,
     CalendarReminderPlan,
     CalendarSyncState,
+    CanonicalEvent,
     CommandRequest,
+    Entity,
+    Operation,
     OutboxEvent,
+    ProviderEventBinding,
     QueueItem,
+    QueueItemSource,
 )
 from docket.models.base import utc_now
 from docket.policy import get_action_definition
 from docket.schemas.actions import (
     CancelCalendarEventProposal,
     CreateCalendarEventProposal,
+    DirectExecutionResult,
+    InferredCalendarEventInput,
     ProposalResult,
     ProposeCalendarEventInput,
     UpdateCalendarEventProposal,
@@ -50,6 +60,8 @@ from docket.schemas.calendar import (
 )
 from docket.security import issue_approval_token, issue_short_code, short_code_sha256
 from docket.services.calendar_profile import CalendarProfileService
+from docket.services.operation_materialization import operation_idempotency_key
+from docket.services.operational_logs import enqueue_action_system_log
 from docket.services.proposal_dedup import find_materially_identical_pending_proposal
 from docket.services.queue import queue_projection_date
 from docket.services.source_context import validate_configured_discord_source
@@ -61,6 +73,12 @@ def _replayed_proposal(result: dict[str, Any]) -> ProposalResult:
     replayed = dict(result)
     replayed["disposition"] = "replayed_request"
     return ProposalResult.model_validate(replayed)
+
+
+def _replayed_direct(result: dict[str, Any]) -> DirectExecutionResult:
+    replayed = dict(result)
+    replayed["disposition"] = "replayed_request"
+    return DirectExecutionResult.model_validate(replayed)
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -204,24 +222,26 @@ class CalendarActionService:
         self.session = session
 
     def _start_command(
-        self, request: ProposeCalendarEventInput
-    ) -> tuple[CommandRequest, ProposalResult | None]:
+        self,
+        request: ProposeCalendarEventInput | InferredCalendarEventInput,
+        *,
+        operation_name: str,
+    ) -> tuple[CommandRequest, ProposalResult | DirectExecutionResult | None]:
         payload = request.model_dump(mode="json")
         input_sha256 = sha256_json(payload)
         existing = self.session.scalar(
             select(CommandRequest).where(CommandRequest.request_key == request.request_key)
         )
         if existing is not None:
-            if (
-                existing.operation_name != "docket_propose_calendar_event"
-                or existing.input_sha256 != input_sha256
-            ):
+            if existing.operation_name != operation_name or existing.input_sha256 != input_sha256:
                 raise IdempotencyConflict(
                     request.request_key,
                     existing_operation=existing.operation_name,
-                    attempted_operation="docket_propose_calendar_event",
+                    attempted_operation=operation_name,
                 )
             if existing.status == CommandStatus.SUCCEEDED.value and existing.result is not None:
+                if existing.result.get("operation_id") is not None:
+                    return existing, _replayed_direct(existing.result)
                 return existing, _replayed_proposal(existing.result)
             raise DocketError(
                 code="request_in_progress",
@@ -230,7 +250,7 @@ class CalendarActionService:
             )
         command = CommandRequest(
             request_key=request.request_key,
-            operation_name="docket_propose_calendar_event",
+            operation_name=operation_name,
             input_sha256=input_sha256,
             actor_type=request.actor_type,
             actor_id=request.actor_id,
@@ -240,14 +260,66 @@ class CalendarActionService:
         self.session.flush()
         return command, None
 
+    def _explicit_entity_bindings(
+        self,
+        request: ProposeCalendarEventInput | InferredCalendarEventInput,
+        canonical_event: CanonicalEvent | None,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        if isinstance(request, InferredCalendarEventInput):
+            return (
+                list(canonical_event.entity_refs) if canonical_event is not None else [],
+                list(canonical_event.context_labels) if canonical_event is not None else [],
+            )
+        if request.entity_bindings is None:
+            entity_refs = list(canonical_event.entity_refs) if canonical_event is not None else []
+        else:
+            entity_refs = []
+            seen: set[tuple[uuid.UUID, str]] = set()
+            for binding in request.entity_bindings:
+                key = (binding.entity_id, binding.role)
+                if key in seen:
+                    continue
+                seen.add(key)
+                entity = self.session.get(Entity, binding.entity_id)
+                if entity is None or entity.status != "active":
+                    raise DocketError(
+                        code="event_entity_unresolved",
+                        message=(
+                            "Every explicit event entity binding must reference one active "
+                            "canonical entity."
+                        ),
+                        details={"entity_id": str(binding.entity_id)},
+                    )
+                entity_refs.append(
+                    {
+                        "entity_id": str(entity.id),
+                        "entity_class": entity.entity_class,
+                        "canonical_name": entity.canonical_name,
+                        "role": binding.role,
+                    }
+                )
+        context_labels = (
+            list(request.context_labels)
+            if request.context_labels is not None
+            else list(canonical_event.context_labels)
+            if canonical_event is not None
+            else []
+        )
+        return entity_refs, context_labels
+
     @staticmethod
-    def _finish_command(command: CommandRequest, result: ProposalResult) -> None:
+    def _finish_command(
+        command: CommandRequest, result: ProposalResult | DirectExecutionResult
+    ) -> None:
         command.status = CommandStatus.SUCCEEDED.value
         command.result = result.model_dump(mode="json")
         command.completed_at = utc_now()
 
     def _validate_target(
-        self, request: ProposeCalendarEventInput
+        self,
+        request: ProposeCalendarEventInput | InferredCalendarEventInput,
+        *,
+        authority: IntentAuthority,
     ) -> tuple[Account, CalendarProfileResult, CalendarSyncState]:
         settings = get_settings()
         account = self.session.get(Account, request.account_id)
@@ -268,7 +340,7 @@ class CalendarActionService:
                 message="The requested calendar is not the configured Docket calendar.",
             )
         profile = CalendarProfileService(self.session).get()
-        if profile.proposal_mode == "off":
+        if profile.proposal_mode == "off" and authority == IntentAuthority.INFERRED:
             raise DocketError(
                 code="calendar_proposals_disabled",
                 message="The Calendar profile currently suppresses new proposals.",
@@ -468,9 +540,30 @@ class CalendarActionService:
             conflicts.append(
                 {
                     "provider_event_id": row.provider_event_id,
+                    "provider_etag": row.provider_etag,
                     "summary": row.summary,
                     "start_at": row_start.isoformat(),
                     "end_at": row_end.isoformat(),
+                    "can_cancel": not row.has_attendees and row.organizer_is_self is not False,
+                    "provider_before": {
+                        "provider_event_id": row.provider_event_id,
+                        "provider_etag": row.provider_etag,
+                        "status": row.status,
+                        "summary": row.summary,
+                        "location": row.location,
+                        "is_all_day": row.is_all_day,
+                        "start_at": row_start.isoformat(),
+                        "end_at": row_end.isoformat(),
+                        "start_date": row.start_date.isoformat() if row.start_date else None,
+                        "end_date": row.end_date.isoformat() if row.end_date else None,
+                        "timezone": row.timezone,
+                        "recurrence_kind": row.recurrence_kind,
+                        "system_tags": list(row.system_tags),
+                        "operator_tags": list(row.operator_tags),
+                        "priority": row.priority,
+                        "priority_basis": row.priority_basis,
+                        "provider_reminders": dict(row.provider_reminders),
+                    },
                 }
             )
             if len(conflicts) == 10:
@@ -526,11 +619,55 @@ class CalendarActionService:
         return CalendarReminderPlanInput(lead_seconds=[])
 
     def propose(self, request: ProposeCalendarEventInput) -> ProposalResult:
-        validate_configured_discord_source(self.session, request.source, request.actor_id)
-        command, replay = self._start_command(request)
+        result = self._formulate(
+            request,
+            authority=IntentAuthority.INFERRED,
+            operation_name="docket_propose_calendar_event",
+        )
+        if not isinstance(result, ProposalResult):
+            raise AssertionError("inferred Calendar intent bypassed its decision boundary")
+        return result
+
+    def apply_explicit(
+        self, request: ProposeCalendarEventInput
+    ) -> ProposalResult | DirectExecutionResult:
+        return self._formulate(
+            request,
+            authority=IntentAuthority.EXPLICIT_USER,
+            operation_name="docket_apply_calendar_intent",
+        )
+
+    def formulate_inferred(self, request: InferredCalendarEventInput) -> ProposalResult:
+        result = self._formulate(
+            request,
+            authority=IntentAuthority.INFERRED,
+            operation_name="docket_formulate_inferred_calendar_intent",
+        )
+        if not isinstance(result, ProposalResult):
+            raise AssertionError("inferred Calendar intent bypassed its decision boundary")
+        return result
+
+    def _formulate(
+        self,
+        request: ProposeCalendarEventInput | InferredCalendarEventInput,
+        *,
+        authority: IntentAuthority,
+        operation_name: str,
+    ) -> ProposalResult | DirectExecutionResult:
+        if isinstance(request, ProposeCalendarEventInput):
+            validate_configured_discord_source(self.session, request.source, request.actor_id)
+        command, replay = self._start_command(request, operation_name=operation_name)
         if replay is not None:
             return replay
-        account, profile, state = self._validate_target(request)
+        account, profile, state = self._validate_target(request, authority=authority)
+        if (
+            authority == IntentAuthority.EXPLICIT_USER
+            and get_settings().calendar_write_mode() == "disabled"
+        ):
+            raise DocketError(
+                code="external_writes_disabled",
+                message="External Calendar writes are disabled.",
+            )
         proposal = request.proposal
         action_type = self._action_type(proposal)
         definition = get_action_definition(action_type)
@@ -541,6 +678,7 @@ class CalendarActionService:
         conflicts: list[dict[str, Any]] = []
         logical_key: str
         target_scope = "event"
+        canonical_event: CanonicalEvent | None = None
 
         if isinstance(proposal, CreateCalendarEventProposal):
             event = proposal.event.model_copy(update={"reminder_plan": None})
@@ -586,12 +724,67 @@ class CalendarActionService:
                     event=event,
                     exclude_provider_event_id=target.provider_event_id,
                 )
-        if conflicts and profile.conflict_policy == "block":
-            raise DocketError(
-                code="calendar_conflict_blocked",
-                message="The Calendar profile blocks proposals with exact overlaps.",
-                details={"conflicts": conflicts},
+
+        requested_canonical_id = (
+            request.canonical_event_id if isinstance(request, InferredCalendarEventInput) else None
+        )
+        if requested_canonical_id is not None:
+            canonical_event = self.session.get(CanonicalEvent, requested_canonical_id)
+            if canonical_event is None:
+                raise DocketError(
+                    code="canonical_event_not_found",
+                    message="The inferred formulation lost its canonical event binding.",
+                )
+        elif target is not None:
+            binding = self.session.scalar(
+                select(ProviderEventBinding).where(
+                    ProviderEventBinding.account_id == account.id,
+                    ProviderEventBinding.calendar_id == request.calendar_id,
+                    ProviderEventBinding.provider_event_id == target.provider_event_id,
+                )
             )
+            canonical_event = (
+                self.session.get(CanonicalEvent, binding.canonical_event_id)
+                if binding is not None
+                else None
+            )
+        if canonical_event is None:
+            entity_refs, context_labels = self._explicit_entity_bindings(request, None)
+            canonical_event = CanonicalEvent(
+                canonical_key=f"{authority.value}:{command.id}",
+                title=(
+                    event.title
+                    if event is not None
+                    else (target.summary if target is not None else "Calendar event")
+                ),
+                status=(
+                    "proposed" if authority == IntentAuthority.INFERRED or conflicts else "active"
+                ),
+                event_spec=(
+                    event.model_dump(mode="json")
+                    if event is not None
+                    else {"provider_snapshot": _provider_snapshot(target)}
+                    if target is not None
+                    else {}
+                ),
+                reminder_plan=(
+                    reminder_plan.model_dump(mode="json") if reminder_plan is not None else None
+                ),
+                entity_refs=entity_refs,
+                context_labels=context_labels,
+                authority=authority.value,
+            )
+            self.session.add(canonical_event)
+            self.session.flush()
+        else:
+            entity_refs, context_labels = self._explicit_entity_bindings(
+                request,
+                canonical_event,
+            )
+        if link is None:
+            logical_key = f"canonical_event:{canonical_event.id}"
+        # Conflicts are advisory evidence. They may require an explicit resolution,
+        # but never make an otherwise valid formulation fail validation.
 
         plan_payload = reminder_plan.model_dump(mode="json") if reminder_plan is not None else None
         plan_sha256 = sha256_json(plan_payload) if plan_payload is not None else None
@@ -617,6 +810,10 @@ class CalendarActionService:
             "priority": priority,
             "priority_basis": priority_basis,
             "target_scope": target_scope,
+            "canonical_event_id": str(canonical_event.id),
+            "entity_refs": entity_refs,
+            "context_labels": context_labels,
+            "conflict_resolution": None if conflicts else "not_applicable",
         }
         if isinstance(proposal, UpdateCalendarEventProposal):
             parameters["reminder_disposition"] = proposal.reminder_disposition
@@ -645,6 +842,8 @@ class CalendarActionService:
                 "external_event_id": (target.provider_event_id if target is not None else None),
                 "provider_etag": target.provider_etag if target is not None else None,
                 "target_scope": target_scope,
+                "entity_refs": entity_refs,
+                "context_labels": context_labels,
                 "reason": parameters.get("reason"),
             }
         )
@@ -679,7 +878,10 @@ class CalendarActionService:
                 "priority": priority,
                 "priority_basis": priority_basis,
             },
+            "entity_refs": entity_refs,
+            "context_labels": context_labels,
             "conflicts": conflicts,
+            "conflict_resolution": None if conflicts else "not_applicable",
             "freshness": {
                 "last_success_at": _as_utc(state.last_success_at).isoformat()
                 if state.last_success_at
@@ -693,11 +895,16 @@ class CalendarActionService:
         preview_sha256 = sha256_json(preview)
 
         now = utc_now()
-        matched = find_materially_identical_pending_proposal(
-            self.session,
-            category="calendar_change",
-            material_fingerprint=material_fingerprint,
-            now=now,
+        needs_decision = authority == IntentAuthority.INFERRED or bool(conflicts)
+        matched = (
+            find_materially_identical_pending_proposal(
+                self.session,
+                category="calendar_change",
+                material_fingerprint=material_fingerprint,
+                now=now,
+            )
+            if needs_decision
+            else None
         )
         if matched is not None:
             result = matched.model_copy(update={"request_id": command.id})
@@ -719,22 +926,50 @@ class CalendarActionService:
             return result
 
         queue_item = QueueItem(
-            deduplication_key=f"manual_action:{request.request_key}",
+            primary_source_item_id=(
+                request.source_item_id if isinstance(request, InferredCalendarEventInput) else None
+            ),
+            deduplication_key=(
+                f"semantic_candidate:{request.semantic_candidate_id}"
+                if isinstance(request, InferredCalendarEventInput)
+                else f"manual_action:{request.request_key}"
+            ),
             material_fingerprint=material_fingerprint,
             category="calendar_change",
             title=self._queue_title(action_type, event, target),
             summary=self._queue_summary(action_type, event, target),
-            status=QueueItemStatus.AWAITING_APPROVAL.value,
+            status=(
+                QueueItemStatus.AWAITING_APPROVAL.value
+                if needs_decision
+                else QueueItemStatus.EXECUTING.value
+            ),
             priority=priority,
+            presentation=(
+                QueuePresentation.CONFLICT_RESOLUTION.value
+                if conflicts and authority == IntentAuthority.EXPLICIT_USER
+                else QueuePresentation.PROPOSAL.value
+                if needs_decision
+                else QueuePresentation.SUPPRESSED.value
+            ),
             received_at=utc_now(),
         )
         self.session.add(queue_item)
         self.session.flush()
+        if isinstance(request, InferredCalendarEventInput):
+            self.session.add(
+                QueueItemSource(
+                    queue_item_id=queue_item.id,
+                    source_item_id=request.source_item_id,
+                    relationship="primary",
+                )
+            )
         action = Action(
             queue_item_id=queue_item.id,
             record_id=link.record_id if link is not None else None,
             action_type=action_type,
-            status=ActionStatus.APPROVAL_PENDING.value,
+            status=(
+                ActionStatus.APPROVAL_PENDING.value if needs_decision else ActionStatus.READY.value
+            ),
             current_revision=1,
         )
         self.session.add(action)
@@ -748,6 +983,7 @@ class CalendarActionService:
                 "provider_event_id": target.provider_event_id if target else None,
                 "provider_etag": target.provider_etag if target else None,
                 "target_scope": target_scope,
+                "conflict_fingerprint": sha256_json(conflicts),
             },
         }
         revision = ActionRevision(
@@ -760,6 +996,7 @@ class CalendarActionService:
             preview=preview,
             preview_sha256=preview_sha256,
             risk_class=definition.risk_class.value,
+            authority=authority.value,
             target_versions=target_versions,
             created_by_actor_type=request.actor_type,
             created_by_actor_id=request.actor_id,
@@ -776,6 +1013,56 @@ class CalendarActionService:
                         status="planned",
                     )
                 )
+
+        if not needs_decision:
+            operation_id = uuid.uuid4()
+            operation = Operation(
+                id=operation_id,
+                action_revision_id=revision.id,
+                approval_id=None,
+                idempotency_key=operation_idempotency_key(revision),
+                operation_type=revision.action_type,
+                account_id=account.id,
+                status=OperationStatus.PENDING.value,
+                provider_correlation=str(operation_id),
+                next_attempt_at=now,
+            )
+            self.session.add(operation)
+            self.session.add(
+                AuditEvent(
+                    event_type="action.execution_queued",
+                    entity_type="action",
+                    entity_id=action.id,
+                    actor_type=request.actor_type,
+                    actor_id=request.actor_id,
+                    request_id=command.id,
+                    data={
+                        "action_type": action_type,
+                        "authority": authority.value,
+                        "operation_id": str(operation.id),
+                        "parameters_sha256": parameters_sha256,
+                        "preview_sha256": preview_sha256,
+                    },
+                )
+            )
+            enqueue_action_system_log(
+                self.session,
+                action=action,
+                revision=revision,
+                state="queued",
+            )
+            direct_result = DirectExecutionResult(
+                request_id=command.id,
+                disposition="execution_queued",
+                queue_item_id=queue_item.id,
+                action_id=action.id,
+                action_revision_id=revision.id,
+                operation_id=operation.id,
+                operation_status="pending",
+                conflicts=[],
+            )
+            self._finish_command(command, direct_result)
+            return direct_result
 
         expires_at = now + timedelta(seconds=get_settings().approval_ttl_seconds)
         approval_id = uuid.uuid4()
@@ -794,28 +1081,32 @@ class CalendarActionService:
             expires_at=expires_at,
         )
         self.session.add(approval)
-        self.session.add(
-            OutboxEvent(
-                event_type="discord.projection.requested",
-                aggregate_type="queue_item",
-                aggregate_id=queue_item.id,
-                deduplication_key=f"discord_projection:{queue_item.id}:1",
-                payload={
-                    "queue_item_id": str(queue_item.id),
-                    "action_id": str(action.id),
-                    "action_revision_id": str(revision.id),
-                    "approval_id": str(approval.id),
-                    "approval_token": approval_token,
-                    "short_code": short_code,
-                    "expires_at": expires_at.isoformat(),
-                    "preview": preview,
-                    "target_local_date": queue_projection_date(
-                        queue_item, get_settings()
-                    ).isoformat(),
-                },
-                status=OutboxStatus.PENDING.value,
-            )
+        defer_projection = (
+            isinstance(request, InferredCalendarEventInput) and request.defer_projection
         )
+        if not defer_projection:
+            self.session.add(
+                OutboxEvent(
+                    event_type="discord.projection.requested",
+                    aggregate_type="queue_item",
+                    aggregate_id=queue_item.id,
+                    deduplication_key=f"discord_projection:{queue_item.id}:1",
+                    payload={
+                        "queue_item_id": str(queue_item.id),
+                        "action_id": str(action.id),
+                        "action_revision_id": str(revision.id),
+                        "approval_id": str(approval.id),
+                        "approval_token": approval_token,
+                        "short_code": short_code,
+                        "expires_at": expires_at.isoformat(),
+                        "preview": preview,
+                        "target_local_date": queue_projection_date(
+                            queue_item, get_settings()
+                        ).isoformat(),
+                    },
+                    status=OutboxStatus.PENDING.value,
+                )
+            )
         self.session.add(
             AuditEvent(
                 event_type="action.proposed",
@@ -845,6 +1136,7 @@ class CalendarActionService:
             short_code=short_code,
             expires_at=expires_at,
             preview=preview,
+            projection_status="deferred" if defer_projection else "pending",
         )
         self._finish_command(command, result)
         return result

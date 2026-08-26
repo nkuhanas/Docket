@@ -20,10 +20,12 @@ from docket.domain.enums import OutboxStatus
 from docket.domain.errors import DocketError
 from docket.models import (
     Account,
+    AuditEvent,
     CalendarEventCache,
     CalendarLink,
     CalendarSyncState,
     OutboxEvent,
+    ProviderEventBinding,
     ReminderRule,
     ScheduledNotification,
 )
@@ -433,6 +435,15 @@ class CalendarSyncService:
                     )
                 ).all()
             }
+            bindings = {
+                row.provider_event_id: row
+                for row in session.scalars(
+                    select(ProviderEventBinding).where(
+                        ProviderEventBinding.account_id == state.account_id,
+                        ProviderEventBinding.calendar_id == state.calendar_id,
+                    )
+                ).all()
+            }
             for series in linked_series:
                 link = session.get(CalendarLink, series.link_id)
                 if (
@@ -521,6 +532,44 @@ class CalendarSyncService:
                 row.provider_etag = event.provider_etag
                 row.provider_updated_at = event.provider_updated_at
                 row.synced_at = now
+                binding = bindings.get(event.provider_event_id)
+                if (
+                    binding is not None
+                    and binding.status == "active"
+                    and binding.provider_etag is not None
+                    and event.provider_etag is not None
+                    and binding.provider_etag != event.provider_etag
+                ):
+                    previous_etag = binding.provider_etag
+                    binding.status = "diverged"
+                    binding.provider_etag = event.provider_etag
+                    binding.provider_snapshot = {
+                        "status": event.status,
+                        "summary": event.summary,
+                        "location": event.location,
+                        "start_at": _iso(event.start_at),
+                        "end_at": _iso(event.end_at),
+                        "start_date": (event.start_date.isoformat() if event.start_date else None),
+                        "end_date": event.end_date.isoformat() if event.end_date else None,
+                        "timezone": event.timezone,
+                        "reminders": dict(event.provider_reminders or {}),
+                    }
+                    binding.independently_modified_at = now
+                    binding.version += 1
+                    session.add(
+                        AuditEvent(
+                            event_type="calendar.provider_binding_diverged",
+                            entity_type="provider_event_binding",
+                            entity_id=binding.id,
+                            actor_type="provider",
+                            actor_id="google_calendar",
+                            data={
+                                "canonical_event_id": str(binding.canonical_event_id),
+                                "previous_provider_etag": previous_etag,
+                                "current_provider_etag": event.provider_etag,
+                            },
+                        )
+                    )
             removed = [row for event_id, row in existing.items() if event_id not in seen]
             if removed:
                 removed_ids = [row.id for row in removed]

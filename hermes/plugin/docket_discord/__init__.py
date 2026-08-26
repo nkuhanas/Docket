@@ -53,7 +53,10 @@ _MCP_TRACE_NAMESPACE = uuid.UUID("326f8ee5-f0d5-4d08-b777-31dbac1f8265")
 _DOCKET_TOOL_PREFIX = "mcp__docket__"
 _DOCKET_MCP_TOOL_NAMES = frozenset(
     {
+        "docket_add_entity_alias",
+        "docket_apply_calendar_intent",
         "docket_archive_record",
+        "docket_create_entity",
         "docket_get_action",
         "docket_get_calendar_profile",
         "docket_get_calendar_sync_status",
@@ -64,14 +67,18 @@ _DOCKET_MCP_TOOL_NAMES = frozenset(
         "docket_list_calendar_events",
         "docket_list_queue_items",
         "docket_list_reminder_rules",
-        "docket_propose_calendar_event",
-        "docket_propose_course_reconciliation",
+        "docket_merge_entities",
+        "docket_apply_course_intent",
+        "docket_rebind_entity_resolution",
+        "docket_relate_entities",
+        "docket_resolve_entity",
         "docket_restore_record",
         "docket_search_records",
         "docket_set_calendar_profile",
         "docket_snooze_queue_item",
         "docket_store_record",
         "docket_update_record",
+        "docket_update_entity",
     }
 )
 _TRACE_DISPOSITIONS = frozenset(
@@ -992,6 +999,7 @@ def _decode_proposal_control(token: str) -> tuple[uuid.UUID, uuid.UUID, str]:
         2: "reminder_preset",
         3: "refresh",
         4: "edit",
+        5: "conflict_resolution",
         6: "snooze",
     }
     try:
@@ -1152,10 +1160,21 @@ def _render_embed(
                 for item in controls
                 if isinstance(item, dict) and item.get("kind") == "proposal_action"
             ]
-            valid_decisions = decisions == {"approve", "reject"} or (
-                decisions == {"reject"}
-                and len(proposal_actions) == 1
-                and proposal_actions[0].get("transition") == "proposal_refresh"
+            conflict_selects = [
+                item
+                for item in controls
+                if isinstance(item, dict)
+                and item.get("kind") == "string_select"
+                and item.get("field") == "conflict_resolution"
+            ]
+            valid_decisions = (
+                decisions == {"approve", "reject"}
+                or (
+                    decisions == {"reject"}
+                    and len(proposal_actions) == 1
+                    and proposal_actions[0].get("transition") == "proposal_refresh"
+                )
+                or (decisions == {"reject"} and len(conflict_selects) == 1)
             )
             if not valid_decisions or len(approval_ids) != 1 or len(tokens) != 1:
                 raise PluginAPIError("invalid_control", "Approval pair is inconsistent", 422)
@@ -1182,6 +1201,7 @@ def _render_embed(
                 action_type = str(control["action_type"])
                 labels = {
                     "snooze_queue_item": "Snooze until tomorrow",
+                    "acknowledge_queue_item": "Acknowledge",
                     "ignore_queue_item": "Ignore",
                 }
                 if action_type not in labels or control["label"] != labels[action_type]:
@@ -1199,6 +1219,8 @@ def _render_embed(
                         style=(
                             discord.ButtonStyle.secondary
                             if action_type == "snooze_queue_item"
+                            else discord.ButtonStyle.success
+                            if action_type == "acknowledge_queue_item"
                             else discord.ButtonStyle.danger
                         ),
                         custom_id=f"dkt:l:{token}",
@@ -1208,6 +1230,8 @@ def _render_embed(
             if action_types not in (
                 {"ignore_queue_item"},
                 {"snooze_queue_item", "ignore_queue_item"},
+                {"acknowledge_queue_item"},
+                {"snooze_queue_item", "acknowledge_queue_item"},
             ) or len(action_types) != len(controls):
                 raise PluginAPIError("invalid_control", "Local control set is inconsistent", 422)
         if "string_select" in kinds:
@@ -1235,7 +1259,7 @@ def _render_embed(
                 }:
                     raise PluginAPIError("invalid_control", "Select descriptor is invalid", 422)
                 field = str(control["field"])
-                if field not in {"priority", "reminder_preset"}:
+                if field not in {"priority", "reminder_preset", "conflict_resolution"}:
                     raise PluginAPIError("invalid_control", "Select field is not allowlisted", 422)
                 row = int(control["row"])
                 if row not in {1, 2, 3, 4} or row in rows:
@@ -2363,7 +2387,7 @@ async def _on_docket_interaction(interaction: object) -> None:
             if proposal_field not in {"refresh", "snooze"}:
                 values = data.get("values", []) if isinstance(data, dict) else []
                 if (
-                    proposal_field not in {"priority", "reminder_preset"}
+                    proposal_field not in {"priority", "reminder_preset", "conflict_resolution"}
                     or not isinstance(values, list)
                     or len(values) != 1
                 ):
@@ -2407,6 +2431,8 @@ async def _on_docket_interaction(interaction: object) -> None:
             acknowledgement = (
                 "Snoozed until the next daily rollover"
                 if result.get("action_type") == "snooze_queue_item"
+                else "Acknowledged"
+                if result.get("action_type") == "acknowledge_queue_item"
                 else "Ignored"
             )
         elif proposal_control:
@@ -2456,12 +2482,8 @@ async def _on_docket_interaction(interaction: object) -> None:
             recorded_decision = str(result.get("decision", decision))
             operation = result.get("operation_id")
             if result.get("already_recorded"):
-                recorded_label = (
-                    "approved" if recorded_decision == "approve" else "rejected"
-                )
-                acknowledgement = (
-                    f"Already {recorded_label} — refreshing this card"
-                )
+                recorded_label = "approved" if recorded_decision == "approve" else "rejected"
+                acknowledgement = f"Already {recorded_label} — refreshing this card"
             else:
                 acknowledgement = (
                     "Approved — queued for execution"

@@ -3,10 +3,11 @@ from pathlib import Path
 SKILL_PATH = Path("hermes/plugin/docket_discord/skills/docket-manual-intent/SKILL.md")
 
 
-def test_manual_intent_skill_requires_button_first_approval_guidance() -> None:
+def test_manual_intent_skill_requires_authority_aware_execution_guidance() -> None:
     skill = " ".join(SKILL_PATH.read_text(encoding="utf-8").split())
 
-    assert "card's **Approve** or **Reject** button" in skill
+    assert "execute directly" in skill
+    assert "A conflict may instead return a resolution card" in skill
     assert "operator-runbook-only break-glass mechanism" in skill
     assert "intentionally absent from the model-facing proposal result" in skill
 
@@ -42,7 +43,7 @@ def test_manual_intent_skill_keeps_durable_output_out_of_chat() -> None:
 
     assert "request/response ingress" in skill
     assert "Never duplicate a proposal body" in skill
-    assert "do not duplicate that preview in chat" in skill
+    assert "Never duplicate a proposal body" in skill
     assert "Do not start a background terminal process" in skill
 
 
@@ -53,18 +54,18 @@ def test_manual_intent_skill_uses_independent_course_lifecycles() -> None:
     assert "ask one consolidated clarification question" in skill
     assert "Store or explicitly update each course/section as its own canonical record" in skill
     assert "one conflict or failure does not roll back successful siblings" in skill
-    assert "`docket_propose_course_reconciliation` in `sync` mode" in skill
+    assert "`docket_apply_course_intent` in `sync` mode" in skill
     assert "Omitting a previously stored course from a later import has no effect" in skill
-    assert "`docket_propose_course_reconciliation` in `drop` mode" in skill
+    assert "`docket_apply_course_intent` in `drop` mode" in skill
     assert "partial provider success leaves the course active for retry" in skill
     assert "`docket_restore_record`" in skill
     assert "docket_store_term_schedule" not in skill
     assert "docket_propose_term_schedule" not in skill
     assert "Do not call update merely to restate equal data" in skill
     assert "version-preserving no-op" in skill
-    assert "Under `off`, never propose" in skill
-    assert "Under `explicit_only`, propose only" in skill
-    assert "Cancellation is always explicit" in skill
+    assert "current message explicitly requests Calendar application" in skill
+    assert "proposal mode governs inferred suggestions" in skill
+    assert "Drop only from an explicit current operator request" in skill
     assert "meeting values take precedence over the associated term" in skill
     assert "leave it null so Docket can derive the corresponding term default" in skill
     assert "Never replace a shorter supplied course range" in skill

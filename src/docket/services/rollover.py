@@ -43,6 +43,8 @@ _UNRESOLVED = {
     QueueItemStatus.FAILED.value,
     QueueItemStatus.RECONCILIATION_REQUIRED.value,
 }
+
+
 class RolloverService:
     def __init__(
         self,
@@ -306,6 +308,7 @@ class RolloverService:
             preview=dict(old_revision.preview),
             preview_sha256=old_revision.preview_sha256,
             risk_class=old_revision.risk_class,
+            authority=old_revision.authority,
             target_versions=target_versions,
             created_by_actor_type="docket",
         )

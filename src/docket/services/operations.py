@@ -26,10 +26,13 @@ from docket.models import (
     CalendarLink,
     CalendarReminderPlan,
     CalendarSyncState,
+    CanonicalEvent,
     ExecutionAttempt,
     Operation,
+    OperationBundle,
     OperationItem,
     OutboxEvent,
+    ProviderEventBinding,
     QueueItem,
     Record,
     ReminderRule,
@@ -172,6 +175,14 @@ class OperationRunner:
                 Operation.status == desired_status,
                 Operation.operation_type.in_(eligible_types),
                 Operation.operation_type.not_in(BATCH_CALENDAR_ACTION_TYPES),
+                or_(
+                    Operation.predecessor_operation_id.is_(None),
+                    Operation.predecessor_operation_id.in_(
+                        select(Operation.id).where(
+                            Operation.status == OperationStatus.SUCCEEDED.value
+                        )
+                    ),
+                ),
                 or_(Operation.next_attempt_at.is_(None), Operation.next_attempt_at <= now),
                 or_(Operation.leased_until.is_(None), Operation.leased_until < now),
             )
@@ -279,9 +290,7 @@ class OperationRunner:
             return None
         with self.session_factory.begin() as session:
             batch = (
-                self._claim_batch_item(session, reconcile=False)
-                if self.execution_enabled
-                else None
+                self._claim_batch_item(session, reconcile=False) if self.execution_enabled else None
             )
             return batch or self._claim(session, reconcile=False)
 
@@ -290,9 +299,7 @@ class OperationRunner:
             return None
         with self.session_factory.begin() as session:
             batch = (
-                self._claim_batch_item(session, reconcile=True)
-                if self.execution_enabled
-                else None
+                self._claim_batch_item(session, reconcile=True) if self.execution_enabled else None
             )
             return batch or self._claim(session, reconcile=True)
 
@@ -602,6 +609,11 @@ class OperationRunner:
                 if not isinstance(classification, dict):
                     classification = {}
                 link = CalendarLink(
+                    canonical_event_id=(
+                        uuid.UUID(str(parameters["canonical_event_id"]))
+                        if parameters.get("canonical_event_id") is not None
+                        else None
+                    ),
                     record_id=None,
                     meeting_id=None,
                     origin_kind=(
@@ -616,9 +628,7 @@ class OperationRunner:
                     provider_etag=result.provider_etag,
                     provider_correlation=operation.provider_correlation,
                     last_synced_version=revision.revision,
-                    recurrence_kind=str(
-                        classification.get("recurrence_kind", "one_time")
-                    ),
+                    recurrence_kind=str(classification.get("recurrence_kind", "one_time")),
                     system_tags=list(classification.get("system_tags", [])),
                     operator_tags=list(classification.get("operator_tags", [])),
                     priority=str(parameters.get("priority", "normal")),
@@ -648,8 +658,71 @@ class OperationRunner:
                 link.synced_snapshot = result.snapshot
                 if parameters.get("reminder_plan_sha256") is not None:
                     link.reminder_plan_sha256 = parameters["reminder_plan_sha256"]
+                if (
+                    link.canonical_event_id is None
+                    and parameters.get("canonical_event_id") is not None
+                ):
+                    link.canonical_event_id = uuid.UUID(str(parameters["canonical_event_id"]))
             OperationRunner._upsert_calendar_cache(session, operation, result)
             OperationRunner._activate_reminder_plan(session, operation, result)
+        canonical_event_id = parameters.get("canonical_event_id")
+        if canonical_event_id is not None:
+            canonical_event = session.get(CanonicalEvent, uuid.UUID(str(canonical_event_id)))
+            if canonical_event is None:
+                raise DocketError(
+                    code="canonical_event_not_found",
+                    message="The operation lost its canonical event binding.",
+                )
+            event_spec = parameters.get("event")
+            if isinstance(event_spec, dict):
+                canonical_event.event_spec = dict(event_spec)
+                canonical_event.title = str(event_spec.get("title") or canonical_event.title)
+            reminder_plan = parameters.get("reminder_plan")
+            if isinstance(reminder_plan, dict):
+                canonical_event.reminder_plan = dict(reminder_plan)
+            entity_refs = parameters.get("entity_refs")
+            if isinstance(entity_refs, list):
+                canonical_event.entity_refs = [
+                    dict(value) for value in entity_refs if isinstance(value, dict)
+                ]
+            context_labels = parameters.get("context_labels")
+            if isinstance(context_labels, list):
+                canonical_event.context_labels = [str(value) for value in context_labels]
+            canonical_event.status = (
+                "cancelled" if operation.operation_type == "calendar_cancel_event" else "active"
+            )
+            canonical_event.version += 1
+            binding = session.scalar(
+                select(ProviderEventBinding).where(
+                    ProviderEventBinding.account_id == operation.account_id,
+                    ProviderEventBinding.calendar_id == parameters["calendar_id"],
+                    ProviderEventBinding.provider_event_id == result.external_event_id,
+                )
+            )
+            if binding is None:
+                binding = ProviderEventBinding(
+                    canonical_event_id=canonical_event.id,
+                    account_id=operation.account_id,
+                    calendar_id=str(parameters["calendar_id"]),
+                    provider_event_id=result.external_event_id,
+                    provider_etag=result.provider_etag,
+                    status=(
+                        "cancelled"
+                        if operation.operation_type == "calendar_cancel_event"
+                        else "active"
+                    ),
+                    provider_snapshot=dict(result.snapshot),
+                )
+                session.add(binding)
+            else:
+                binding.canonical_event_id = canonical_event.id
+                binding.provider_etag = result.provider_etag
+                binding.status = (
+                    "cancelled" if operation.operation_type == "calendar_cancel_event" else "active"
+                )
+                binding.provider_snapshot = dict(result.snapshot)
+                binding.independently_modified_at = None
+                binding.version += 1
         attempt.status = AttemptStatus.SUCCEEDED.value
         attempt.provider_request_id = result.provider_request_id or attempt.provider_request_id
         attempt.response_summary = {
@@ -693,28 +766,220 @@ class OperationRunner:
                 },
             )
         )
+        if operation.bundle_id is None and queue_item.presentation != "suppressed":
+            session.add(
+                OutboxEvent(
+                    event_type="discord.projection.refresh_requested",
+                    aggregate_type="queue_item",
+                    aggregate_id=queue_item.id,
+                    deduplication_key=(
+                        f"discord_projection:{queue_item.id}:operation:{operation.id}:ok"
+                    ),
+                    payload={
+                        "queue_item_id": str(queue_item.id),
+                        "action_id": str(action.id),
+                        "operation_id": str(operation.id),
+                        "status": "succeeded",
+                    },
+                    status=OutboxStatus.PENDING.value,
+                )
+            )
+        if operation.bundle_id is None:
+            enqueue_action_system_log(
+                session,
+                action=action,
+                revision=revision,
+                state="succeeded",
+                result=operation.result,
+            )
+        else:
+            OperationRunner._update_operation_bundle(session, operation)
+
+    @staticmethod
+    def _update_operation_bundle(session: Session, changed: Operation) -> None:
+        if changed.bundle_id is None:
+            return
+        bundle = session.get(OperationBundle, changed.bundle_id)
+        if bundle is None:
+            raise DocketError(
+                code="invalid_operation_state",
+                message="A bundled operation lost its durable bundle.",
+            )
+        operations = list(
+            session.scalars(
+                select(Operation)
+                .where(Operation.bundle_id == bundle.id)
+                .order_by(Operation.created_at, Operation.id)
+            )
+        )
+        if not operations:
+            raise DocketError(
+                code="invalid_operation_state",
+                message="An operation bundle has no durable operations.",
+            )
+        by_id = {operation.id: operation for operation in operations}
+        for operation in operations:
+            if operation.status != OperationStatus.PENDING.value:
+                continue
+            predecessor = (
+                by_id.get(operation.predecessor_operation_id)
+                if operation.predecessor_operation_id is not None
+                else None
+            )
+            if predecessor is None or predecessor.status not in {
+                OperationStatus.FAILED.value,
+                OperationStatus.PARTIAL_FAILED.value,
+            }:
+                continue
+            operation.status = OperationStatus.FAILED.value
+            operation.next_attempt_at = None
+            operation.last_error_code = "bundle_dependency_failed"
+            operation.last_error_message = (
+                "A required earlier operation failed; this operation was not attempted."
+            )
+            _revision, child_action, child_queue = OperationRunner._bound_entities(
+                session, operation
+            )
+            child_action.status = ActionStatus.FAILED.value
+            child_queue.status = QueueItemStatus.FAILED.value
+            child_queue.resolved_at = utc_now()
+            child_queue.resolution_code = "bundle_dependency_failed"
+            child_queue.version += 1
+
+        counts = {
+            state: sum(operation.status == state for operation in operations)
+            for state in (
+                OperationStatus.PENDING.value,
+                OperationStatus.RUNNING.value,
+                OperationStatus.SUCCEEDED.value,
+                OperationStatus.PARTIAL_FAILED.value,
+                OperationStatus.FAILED.value,
+                OperationStatus.RECONCILIATION_REQUIRED.value,
+            )
+        }
+        previous_status = bundle.status
+        if counts[OperationStatus.RECONCILIATION_REQUIRED.value]:
+            bundle.status = OperationStatus.RECONCILIATION_REQUIRED.value
+        elif counts[OperationStatus.PENDING.value] or counts[OperationStatus.RUNNING.value]:
+            bundle.status = "running"
+        elif counts[OperationStatus.FAILED.value] or counts[OperationStatus.PARTIAL_FAILED.value]:
+            bundle.status = (
+                OperationStatus.PARTIAL_FAILED.value
+                if counts[OperationStatus.SUCCEEDED.value]
+                or counts[OperationStatus.PARTIAL_FAILED.value]
+                else OperationStatus.FAILED.value
+            )
+        else:
+            bundle.status = OperationStatus.SUCCEEDED.value
+        bundle.result = {
+            "operation_count": len(operations),
+            "counts": counts,
+            "operations": [
+                {
+                    "operation_id": str(operation.id),
+                    "operation_type": operation.operation_type,
+                    "status": operation.status,
+                    "error_code": operation.last_error_code,
+                }
+                for operation in operations
+            ],
+        }
+        if bundle.status != previous_status:
+            bundle.version += 1
+
+        parent_revision = session.get(ActionRevision, bundle.action_revision_id)
+        if parent_revision is None:
+            raise DocketError(
+                code="invalid_operation_state",
+                message="An operation bundle lost its decision revision.",
+            )
+        parent_action = session.get(Action, parent_revision.action_id)
+        parent_queue = (
+            session.get(QueueItem, parent_action.queue_item_id)
+            if parent_action is not None and parent_action.queue_item_id is not None
+            else None
+        )
+        if parent_action is None or parent_queue is None:
+            raise DocketError(
+                code="invalid_operation_state",
+                message="An operation bundle lost its decision surface.",
+            )
+        if bundle.status == "running":
+            parent_action.status = ActionStatus.EXECUTING.value
+            parent_queue.status = QueueItemStatus.EXECUTING.value
+            parent_queue.resolved_at = None
+            parent_queue.resolution_code = None
+        elif bundle.status == OperationStatus.SUCCEEDED.value:
+            parent_action.status = ActionStatus.SUCCEEDED.value
+            parent_queue.status = QueueItemStatus.COMPLETED.value
+            parent_queue.resolved_at = utc_now()
+            parent_queue.resolution_code = f"calendar_conflict_{bundle.resolution}"
+        elif bundle.status == OperationStatus.RECONCILIATION_REQUIRED.value:
+            parent_action.status = ActionStatus.RECONCILIATION_REQUIRED.value
+            parent_queue.status = QueueItemStatus.RECONCILIATION_REQUIRED.value
+            parent_queue.resolved_at = None
+            parent_queue.resolution_code = None
+        else:
+            parent_action.status = (
+                ActionStatus.PARTIAL_FAILED.value
+                if bundle.status == OperationStatus.PARTIAL_FAILED.value
+                else ActionStatus.FAILED.value
+            )
+            parent_queue.status = QueueItemStatus.FAILED.value
+            parent_queue.resolved_at = utc_now()
+            parent_queue.resolution_code = (
+                "calendar_conflict_partial"
+                if bundle.status == OperationStatus.PARTIAL_FAILED.value
+                else "calendar_conflict_failed"
+            )
+        parent_queue.version += 1
+        if bundle.status == previous_status:
+            return
+        session.add(
+            AuditEvent(
+                event_type="operation_bundle.state_changed",
+                entity_type="operation_bundle",
+                entity_id=bundle.id,
+                actor_type="docket",
+                actor_id=None,
+                request_id=None,
+                data={
+                    "status": bundle.status,
+                    "resolution": bundle.resolution,
+                    "result": bundle.result,
+                },
+            )
+        )
         session.add(
             OutboxEvent(
                 event_type="discord.projection.refresh_requested",
                 aggregate_type="queue_item",
-                aggregate_id=queue_item.id,
-                deduplication_key=f"discord_projection:{queue_item.id}:operation:{operation.id}:ok",
+                aggregate_id=parent_queue.id,
+                deduplication_key=(
+                    f"discord_projection:{parent_queue.id}:bundle:{bundle.id}:v{bundle.version}"
+                ),
                 payload={
-                    "queue_item_id": str(queue_item.id),
-                    "action_id": str(action.id),
-                    "operation_id": str(operation.id),
-                    "status": "succeeded",
+                    "queue_item_id": str(parent_queue.id),
+                    "action_id": str(parent_action.id),
+                    "operation_bundle_id": str(bundle.id),
+                    "status": bundle.status,
                 },
                 status=OutboxStatus.PENDING.value,
             )
         )
-        enqueue_action_system_log(
-            session,
-            action=action,
-            revision=revision,
-            state="succeeded",
-            result=operation.result,
-        )
+        if bundle.status in {
+            OperationStatus.SUCCEEDED.value,
+            OperationStatus.PARTIAL_FAILED.value,
+            OperationStatus.FAILED.value,
+            OperationStatus.RECONCILIATION_REQUIRED.value,
+        }:
+            enqueue_action_system_log(
+                session,
+                action=parent_action,
+                revision=parent_revision,
+                state=bundle.status,
+                result=bundle.result,
+            )
 
     @staticmethod
     def _update_batch_parent(session: Session, operation: Operation) -> None:
@@ -801,7 +1066,9 @@ class OperationRunner:
                 queue_item,
             ):
                 queue_item.version += 1
-                if operation.status != previous_status:
+                if operation.bundle_id is not None:
+                    OperationRunner._update_operation_bundle(session, operation)
+                elif operation.status != previous_status:
                     enqueue_action_system_log(
                         session,
                         action=action,
@@ -822,7 +1089,9 @@ class OperationRunner:
                 else "calendar_schedule_synchronized"
             )
         queue_item.version += 1
-        if operation.status != previous_status and operation.status in {
+        if operation.bundle_id is not None:
+            OperationRunner._update_operation_bundle(session, operation)
+        elif operation.status != previous_status and operation.status in {
             OperationStatus.SUCCEEDED.value,
             OperationStatus.PARTIAL_FAILED.value,
             OperationStatus.FAILED.value,
@@ -1123,9 +1392,7 @@ class OperationRunner:
         source.minimal_headers = headers
         now = utc_now()
         attempt.status = AttemptStatus.SUCCEEDED.value
-        attempt.provider_request_id = (
-            result.provider_request_id or attempt.provider_request_id
-        )
+        attempt.provider_request_id = result.provider_request_id or attempt.provider_request_id
         attempt.response_summary = {
             "disposition": result.disposition,
             "removed_label_id": parameters["remove_label_id"],
@@ -1247,10 +1514,7 @@ class OperationRunner:
                     code="operation_lease_lost",
                     message="Operation lease was lost.",
                 )
-            if (
-                claim.operation_item_id is not None
-                or operation.lease_token != claim.lease_token
-            ):
+            if claim.operation_item_id is not None or operation.lease_token != claim.lease_token:
                 raise DocketError(
                     code="operation_lease_lost",
                     message="Operation lease was lost.",
@@ -1420,6 +1684,9 @@ class OperationRunner:
                 ):
                     plan.status = plan_status
             queue_item.version += 1
+            if operation.bundle_id is not None:
+                self._update_operation_bundle(session, operation)
+                return
             if revision.action_type in GMAIL_MUTATION_ACTION_TYPES:
                 session.add(
                     AuditEvent(
@@ -1492,9 +1759,7 @@ class OperationRunner:
                 )
                 return True
             try:
-                gmail_result = self.gmail_provider.mutate_message(
-                    claim.gmail_request()
-                )
+                gmail_result = self.gmail_provider.mutate_message(claim.gmail_request())
             except GmailProviderError as exc:
                 self.finish_error(claim, exc)
             else:
@@ -1873,11 +2138,7 @@ class OperationRunner:
                     delay_seconds=remaining,
                 )
             return True
-        exact = [
-            match
-            for match in matches
-            if event_matches_request(match, calendar_request)
-        ]
+        exact = [match for match in matches if event_matches_request(match, calendar_request)]
         if len(matches) == 1 and len(exact) == 1:
             self.finish_success(claim, exact[0])
         elif len(matches) == 0:

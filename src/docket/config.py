@@ -106,6 +106,28 @@ class Settings(BaseSettings):
         gt=0,
         alias="DOCKET_GMAIL_SCAN_POLL_SECONDS",
     )
+    semantic_candidate_poll_seconds: float = Field(
+        default=2.0,
+        gt=0,
+        alias="DOCKET_SEMANTIC_CANDIDATE_POLL_SECONDS",
+    )
+    waking_window_start_hour: int = Field(
+        default=7,
+        ge=0,
+        le=23,
+        alias="DOCKET_WAKING_WINDOW_START_HOUR",
+    )
+    waking_window_end_hour: int = Field(
+        default=22,
+        ge=0,
+        le=23,
+        alias="DOCKET_WAKING_WINDOW_END_HOUR",
+    )
+    daily_brief_poll_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        alias="DOCKET_DAILY_BRIEF_POLL_SECONDS",
+    )
     gmail_scan_interval_seconds: int = Field(
         default=1800,
         ge=60,
@@ -246,6 +268,8 @@ class Settings(BaseSettings):
         }
         if len(channel_ids) != 3:
             raise ValueError("Docket chat, queue, and system channel IDs must be distinct")
+        if self.waking_window_start_hour == self.waking_window_end_hour:
+            raise ValueError("Docket's waking window must leave a non-empty quiet window")
         if self.environment is Environment.PRODUCTION:
             if self.auto_create_schema:
                 raise ValueError("DOCKET_AUTO_CREATE_SCHEMA must be false in production")
@@ -259,8 +283,7 @@ class Settings(BaseSettings):
                 if identifier.startswith("000000"):
                     raise ValueError("Production cannot use smoke Discord identifiers")
         if self.backup_enabled and (
-            self.backup_age_recipient is None
-            or not self.backup_age_recipient.startswith("age1")
+            self.backup_age_recipient is None or not self.backup_age_recipient.startswith("age1")
         ):
             raise ValueError(
                 "DOCKET_BACKUP_AGE_RECIPIENT must contain an age recipient "
@@ -269,9 +292,7 @@ class Settings(BaseSettings):
         if self.gmail_writes_enabled and (
             not self.gmail_ingestion_enabled or not self.external_writes_enabled
         ):
-            raise ValueError(
-                "Gmail writes require both Gmail ingestion and external writes"
-            )
+            raise ValueError("Gmail writes require both Gmail ingestion and external writes")
         return self
 
     @staticmethod

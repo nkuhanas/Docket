@@ -34,8 +34,10 @@ from docket.providers.google.gmail_runtime import configure_gmail_read_provider
 from docket.providers.google.runtime import configure_calendar_read_provider
 from docket.services.accounts import AccountService
 from docket.services.backups import BackupService
+from docket.services.briefs import DailyBriefService
 from docket.services.calendar_sync import CalendarSyncService
 from docket.services.discord_projection import DiscordProjectionRunner
+from docket.services.events import SemanticCandidateCompiler
 from docket.services.gmail_ingestion import GmailIngestionService
 from docket.services.operations import OperationRunner
 from docket.services.reminders import ReminderDispatcher
@@ -99,9 +101,7 @@ worker = WorkerRuntime(
     reminder_dispatcher=ReminderDispatcher(get_session_factory(), settings),
     reminder_dispatch_poll_seconds=settings.reminder_dispatch_interval_seconds,
     backup_service=(
-        BackupService(get_session_factory(), settings)
-        if settings.backup_enabled
-        else None
+        BackupService(get_session_factory(), settings) if settings.backup_enabled else None
     ),
     backup_poll_seconds=settings.backup_poll_seconds,
     gmail_ingestion_service=(
@@ -114,10 +114,20 @@ worker = WorkerRuntime(
         else None
     ),
     gmail_scan_poll_seconds=settings.gmail_scan_poll_seconds,
-    retention_service=(
-        RetentionService(get_session_factory(), settings)
-        if settings.retention_enabled
+    semantic_candidate_compiler=(
+        SemanticCandidateCompiler(get_session_factory(), settings)
+        if settings.gmail_ingestion_enabled
         else None
+    ),
+    semantic_candidate_poll_seconds=settings.semantic_candidate_poll_seconds,
+    daily_brief_service=(
+        DailyBriefService(get_session_factory(), settings)
+        if settings.gmail_ingestion_enabled
+        else None
+    ),
+    daily_brief_poll_seconds=settings.daily_brief_poll_seconds,
+    retention_service=(
+        RetentionService(get_session_factory(), settings) if settings.retention_enabled else None
     ),
     retention_poll_seconds=settings.retention_poll_seconds,
 )
@@ -272,11 +282,7 @@ def health_ready(response: Response) -> dict[str, Any]:
         )
     )
     return {
-        "status": (
-            "degraded"
-            if calendar_degraded or gmail_degraded or backup_degraded
-            else "ok"
-        ),
+        "status": ("degraded" if calendar_degraded or gmail_degraded or backup_degraded else "ok"),
         "database": "ready",
         "worker": "ready" if worker.is_healthy() else "starting",
         "credential_mode": settings.credential_mode(),
@@ -285,9 +291,7 @@ def health_ready(response: Response) -> dict[str, Any]:
         "external_writes_enabled": settings.external_writes_enabled,
         "gmail_ingestion_enabled": settings.gmail_ingestion_enabled,
         "gmail_writes_enabled": settings.gmail_writes_enabled,
-        "gmail_triage_source_allowlist_count": len(
-            settings.gmail_triage_source_allowlist
-        ),
+        "gmail_triage_source_allowlist_count": len(settings.gmail_triage_source_allowlist),
         "gmail_provider_mode": settings.gmail_provider_mode(),
         "calendar_write_mode": settings.calendar_write_mode(),
         "encrypted_backup": {
@@ -298,18 +302,14 @@ def health_ready(response: Response) -> dict[str, Any]:
                 else ("not_due" if settings.backup_enabled else "disabled")
             ),
             "local_date": (
-                latest_backup.local_date.isoformat()
-                if latest_backup is not None
-                else None
+                latest_backup.local_date.isoformat() if latest_backup is not None else None
             ),
             "completed_at": (
                 latest_backup.completed_at.isoformat()
                 if latest_backup is not None and latest_backup.completed_at is not None
                 else None
             ),
-            "error_code": (
-                latest_backup.error_code if latest_backup is not None else None
-            ),
+            "error_code": (latest_backup.error_code if latest_backup is not None else None),
             "degraded": backup_degraded,
         },
         "calendar_sync": sync_detail,

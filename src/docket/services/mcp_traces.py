@@ -19,7 +19,10 @@ VISIBLE_TRACE_CALLS = 20
 
 DOCKET_MCP_TOOL_NAMES = frozenset(
     {
+        "docket_add_entity_alias",
+        "docket_apply_calendar_intent",
         "docket_archive_record",
+        "docket_create_entity",
         "docket_get_action",
         "docket_get_calendar_profile",
         "docket_get_calendar_sync_status",
@@ -30,14 +33,18 @@ DOCKET_MCP_TOOL_NAMES = frozenset(
         "docket_list_calendar_events",
         "docket_list_queue_items",
         "docket_list_reminder_rules",
-        "docket_propose_calendar_event",
-        "docket_propose_course_reconciliation",
+        "docket_merge_entities",
+        "docket_apply_course_intent",
+        "docket_rebind_entity_resolution",
+        "docket_relate_entities",
+        "docket_resolve_entity",
         "docket_restore_record",
         "docket_search_records",
         "docket_set_calendar_profile",
         "docket_snooze_queue_item",
         "docket_store_record",
         "docket_update_record",
+        "docket_update_entity",
     }
 )
 TRACE_DISPOSITIONS = frozenset(
@@ -49,6 +56,7 @@ TRACE_DISPOSITIONS = frozenset(
         "matched_existing",
         "no_op",
         "proposed",
+        "execution_queued",
         "replayed_request",
         "restored",
         "stored",

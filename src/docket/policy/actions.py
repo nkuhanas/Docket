@@ -95,6 +95,12 @@ ACTION_REGISTRY: dict[str, ActionDefinition] = {
             ActionAvailability.ENABLED,
         ),
         ActionDefinition(
+            "acknowledge_queue_item",
+            RiskClass.LOCAL_WRITE,
+            "docket",
+            ActionAvailability.ENABLED,
+        ),
+        ActionDefinition(
             "send_email",
             RiskClass.EXTERNAL_COMMUNICATION,
             None,

@@ -10,7 +10,7 @@ remains outside this repository.
 
 * A term supplies shared bounds and timezone; it does not own a schedule list.
 * Each course/section is one canonical record with stable child meeting IDs.
-* `docket_propose_course_reconciliation` derives create, update, cancel, and
+* `docket_apply_course_intent` derives create, update, cancel, and
   no-op items for one course.
 * `drop` persists independently retryable cancellation progress and archives
   only after every active link is confirmed cancelled.
@@ -78,7 +78,7 @@ The generated Docket surface and active Hermes allowlist contain the same 19
 tools. The Milestone 3.7 additions are:
 
 * `docket_restore_record`
-* `docket_propose_course_reconciliation`
+* `docket_apply_course_intent`
 
 Hermes plugin `0.15.6` recognizes both in redacted MCP traces. The
 `docket-manual-intent` skill now treats bulk input as resumable per-course

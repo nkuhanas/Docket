@@ -11,11 +11,14 @@ from docket.domain.errors import DocketError
 from docket.internal_api.schemas import ApprovalResponse
 from docket.models import (
     Account,
+    Approval,
     CalendarEventCache,
     CalendarLink,
     CalendarSyncState,
     DiscordProjection,
     Operation,
+    OperationItem,
+    QueueItem,
     Record,
 )
 from docket.providers.discord import FakeDiscordBackend, FakeDiscordProjectionAdapter
@@ -223,6 +226,44 @@ def _run_all(runner: OperationRunner) -> int:
 
 
 @pytest.mark.integration
+def test_explicit_course_intent_executes_without_redundant_approval(
+    session_factory: sessionmaker[Session],
+) -> None:
+    settings = get_settings()
+    with session_factory.begin() as session:
+        course_id, account_id = _seed_course(session)
+        result = CourseReconciliationService(session).apply_explicit(
+            ProposeCourseReconciliationInput(
+                record_id=course_id,
+                expected_record_version=1,
+                mode="sync",
+                account_id=account_id,
+                calendar_id=settings.google_calendar_id,
+                request_key=_request_key("543333333333333333"),
+                source=_source("543333333333333333"),
+                actor_id=settings.operator_discord_user_id,
+            )
+        )
+        assert result["disposition"] == "execution_queued"
+        assert result["authority"] == "explicit_user"
+        assert session.scalar(select(Approval)) is None
+        queue_item = session.get(QueueItem, uuid.UUID(result["queue_item_id"]))
+        assert queue_item is not None and queue_item.presentation == "suppressed"
+        operation_id = uuid.UUID(result["operation_id"])
+        items = list(
+            session.scalars(select(OperationItem).where(OperationItem.operation_id == operation_id))
+        )
+        assert len(items) == 2 and all(item.status == "pending" for item in items)
+
+    runner = OperationRunner(session_factory, FakeCalendarProvider())
+    assert runner.run_due_once()
+    assert runner.run_due_once()
+    with session_factory() as session:
+        operation = session.get(Operation, operation_id)
+        assert operation is not None and operation.status == "succeeded"
+
+
+@pytest.mark.integration
 def test_course_add_change_partial_drop_restore_and_unchanged_reimport(
     session_factory: sessionmaker[Session],
 ) -> None:
@@ -270,13 +311,10 @@ def test_course_add_change_partial_drop_restore_and_unchanged_reimport(
     assert "<t:" in projected["embed"]["fields"][1]["value"]
     assert "<t:" in projected["embed"]["fields"][3]["value"]
     assert not any(
-        field["name"] in {"Changes", "Review complete"}
-        for field in projected["embed"]["fields"]
+        field["name"] in {"Changes", "Review complete"} for field in projected["embed"]["fields"]
     )
     proposal_fields = [
-        field
-        for field in projected["embed"]["fields"]
-        if field["name"].startswith(("1.", "2."))
+        field for field in projected["embed"]["fields"] if field["name"].startswith(("1.", "2."))
     ]
     assert len(proposal_fields) == 2
     assert all("through" in field["value"] for field in proposal_fields)

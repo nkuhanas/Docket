@@ -15,12 +15,25 @@ source:
 
 1. Claim a batch. Stop when the batch is empty or either run limit is reached.
 2. Read each source only through `docket_read_claimed_source`.
-3. Decide whether it contains an actionable semantic event.
-4. Produce a concise derived title and one- or two-sentence summary.
-5. Search related Docket records only when needed.
-6. Submit only typed `gmail_archive_message` or `gmail_mark_read` proposals when
-   their exact effect is clearly useful. A proposal is not approval.
-7. Ignore newsletters and noise unless materially relevant.
+3. Extract one or more typed semantic candidates: `event`, `deadline`,
+   `response`, `task`, `information`, or `noise`.
+4. For each candidate, state whether the evidence describes `create`, `update`,
+   `cancel`, or no mutation; produce a concise derived title and one- or
+   two-sentence summary.
+5. Include complete structured event details when the source supplies them.
+   Otherwise enumerate the required `missing_fields`; never invent timing,
+   location, participants, or identity.
+6. Add typed entity mentions for institutions, organizations, courses, people,
+   locations, projects, and services. Search related Docket records only when it
+   helps disambiguate an actual mention; never create seed entities.
+7. Supply correlation hints for every event update or cancellation, confidence,
+   and bounded context labels. Never include quoted source text or links.
+8. Submit through `docket_submit_semantic_candidates`. Never propose archive,
+   mark-read, or any other Gmail housekeeping action. Docket—not this session—
+   resolves entities, correlates evidence, checks Calendar state, chooses the
+   correct card class, and compiles provider operations.
+9. Represent newsletters and irrelevant content as `noise`; do not turn a
+   receipt or generic status confirmation into an acknowledgement decision.
 
 The triage session must not have record mutation, approval, operation, Discord,
 Gmail mutation, or Calendar mutation tools.

@@ -26,9 +26,11 @@ from docket.models import (
     CalendarLink,
     CalendarReminderPlan,
     CalendarSyncState,
+    CanonicalEvent,
     DiscordDailyThread,
     DiscordProjection,
     Operation,
+    OperationBundle,
     OperationItem,
     OutboxEvent,
     QueueItem,
@@ -36,7 +38,11 @@ from docket.models import (
     SourceItem,
 )
 from docket.models.base import utc_now
-from docket.policy import BATCH_CALENDAR_ACTION_TYPES, GMAIL_MUTATION_ACTION_TYPES
+from docket.policy import (
+    BATCH_CALENDAR_ACTION_TYPES,
+    GMAIL_MUTATION_ACTION_TYPES,
+    get_action_definition,
+)
 from docket.security import (
     short_code_sha256,
     verify_projection_approval_token,
@@ -46,6 +52,7 @@ from docket.services.course_reconciliation import (
     CourseReconciliationService,
     course_reconciliation_dependency_sha256,
 )
+from docket.services.operation_materialization import operation_idempotency_key
 from docket.services.operational_logs import enqueue_action_system_log
 from docket.services.operations import OperationRunner
 
@@ -57,6 +64,192 @@ def _as_utc(value: datetime) -> datetime:
 class ApprovalService:
     def __init__(self, session: Session) -> None:
         self.session = session
+
+    @staticmethod
+    def _conflict_resolution(revision: ActionRevision) -> str | None:
+        conflicts = revision.preview.get("conflicts")
+        if not isinstance(conflicts, list) or not conflicts:
+            return None
+        resolution = revision.parameters.get("conflict_resolution")
+        if resolution not in {"keep_both", "new_wins", "keep_existing"}:
+            raise DocketError(
+                code="conflict_resolution_required",
+                message="Choose how the conflicting events should coexist before approving.",
+            )
+        if resolution == "new_wins" and any(
+            not isinstance(conflict, dict) or conflict.get("can_cancel") is not True
+            for conflict in conflicts
+        ):
+            raise DocketError(
+                code="unsafe_conflict_resolution",
+                message=(
+                    "The proposed event cannot automatically replace an attendee-bearing "
+                    "or externally organized event."
+                ),
+            )
+        return str(resolution)
+
+    def _retire_unadopted_canonical_event(
+        self,
+        revision: ActionRevision,
+        *,
+        reason: str,
+    ) -> None:
+        raw_id = revision.parameters.get("canonical_event_id")
+        if raw_id is None:
+            return
+        try:
+            event_id = uuid.UUID(str(raw_id))
+        except ValueError:
+            return
+        event = self.session.get(CanonicalEvent, event_id)
+        if event is not None and event.status == "proposed":
+            event.status = "archived"
+            event.version += 1
+            self.session.add(
+                AuditEvent(
+                    event_type="canonical_event.formulation_retired",
+                    entity_type="canonical_event",
+                    entity_id=event.id,
+                    actor_type="docket",
+                    actor_id=None,
+                    request_id=None,
+                    data={"reason": reason, "action_revision_id": str(revision.id)},
+                )
+            )
+
+    def _add_conflict_cancellation(
+        self,
+        *,
+        bundle: OperationBundle,
+        parent_revision: ActionRevision,
+        conflict: dict[str, Any],
+        actor_id: str,
+        now: datetime,
+        predecessor_operation_id: uuid.UUID,
+    ) -> Operation:
+        provider_event_id = str(conflict["provider_event_id"])
+        provider_before = conflict.get("provider_before")
+        if not isinstance(provider_before, dict):
+            raise DocketError(
+                code="approval_binding_mismatch",
+                message="A conflict lost its immutable provider snapshot.",
+            )
+        link = self.session.scalar(
+            select(CalendarLink).where(
+                CalendarLink.account_id == parent_revision.account_id,
+                CalendarLink.calendar_id == parent_revision.parameters["calendar_id"],
+                CalendarLink.external_event_id == provider_event_id,
+            )
+        )
+        queue_item = QueueItem(
+            deduplication_key=f"conflict_bundle:{bundle.id}:{provider_event_id}",
+            material_fingerprint=sha256_json(
+                {
+                    "bundle_id": str(bundle.id),
+                    "provider_event_id": provider_event_id,
+                    "provider_etag": conflict.get("provider_etag"),
+                }
+            ),
+            category="calendar_change",
+            title=f"Cancel conflicting event · {conflict.get('summary') or 'Calendar event'}",
+            summary="Apply the selected proposed-event-wins resolution.",
+            status=QueueItemStatus.EXECUTING.value,
+            priority="normal",
+            presentation="suppressed",
+            received_at=now,
+        )
+        self.session.add(queue_item)
+        self.session.flush()
+        action = Action(
+            queue_item_id=queue_item.id,
+            record_id=link.record_id if link is not None else None,
+            action_type="calendar_cancel_event",
+            status=ActionStatus.READY.value,
+            current_revision=1,
+        )
+        self.session.add(action)
+        self.session.flush()
+        parameters: dict[str, Any] = {
+            "calendar_id": parent_revision.parameters["calendar_id"],
+            "logical_key": (
+                link.logical_key if link is not None else f"provider:{provider_event_id}"
+            ),
+            "event": None,
+            "reminder_plan": None,
+            "reminder_plan_sha256": None,
+            "priority": str(provider_before.get("priority") or "normal"),
+            "priority_basis": str(provider_before.get("priority_basis") or "default"),
+            "target_scope": "event",
+            "external_event_id": provider_event_id,
+            "provider_etag": conflict.get("provider_etag"),
+            "provider_before": dict(provider_before),
+            "reason": "Conflict resolution: proposed event wins",
+            "conflict_resolution": "new_wins",
+        }
+        preview = {
+            "action_type": "calendar_cancel_event",
+            "target": {
+                "account_id": str(parent_revision.account_id),
+                "calendar_id": parent_revision.parameters["calendar_id"],
+                "logical_key": parameters["logical_key"],
+                "scope": "event",
+            },
+            "event": None,
+            "before": dict(provider_before),
+            "reminder_plan": None,
+            "classification": {
+                "recurrence_kind": str(provider_before.get("recurrence_kind") or "one_time"),
+                "system_tags": list(provider_before.get("system_tags") or []),
+                "operator_tags": list(provider_before.get("operator_tags") or []),
+                "priority": parameters["priority"],
+                "priority_basis": parameters["priority_basis"],
+            },
+            "conflicts": [],
+            "reason": parameters["reason"],
+            "conflict_resolution": "new_wins",
+        }
+        definition = get_action_definition("calendar_cancel_event")
+        revision = ActionRevision(
+            action_id=action.id,
+            revision=1,
+            action_type="calendar_cancel_event",
+            account_id=parent_revision.account_id,
+            parameters=parameters,
+            parameters_sha256=sha256_json(parameters),
+            preview=preview,
+            preview_sha256=sha256_json(preview),
+            risk_class=definition.risk_class.value,
+            authority="explicit_user",
+            target_versions={
+                "queue_item": {"id": str(queue_item.id), "version": queue_item.version},
+                "calendar_snapshot": {
+                    "provider_event_id": provider_event_id,
+                    "provider_etag": conflict.get("provider_etag"),
+                    "target_scope": "event",
+                },
+            },
+            created_by_actor_type="plugin",
+            created_by_actor_id=actor_id,
+        )
+        self.session.add(revision)
+        self.session.flush()
+        operation_id = uuid.uuid4()
+        operation = Operation(
+            id=operation_id,
+            action_revision_id=revision.id,
+            bundle_id=bundle.id,
+            predecessor_operation_id=predecessor_operation_id,
+            approval_id=bundle.approval_id,
+            idempotency_key=f"calendar:conflict-bundle:{bundle.id}:cancel:{provider_event_id}",
+            operation_type="calendar_cancel_event",
+            account_id=parent_revision.account_id,
+            status=OperationStatus.PENDING.value,
+            provider_correlation=str(operation_id),
+            next_attempt_at=now,
+        )
+        self.session.add(operation)
+        return operation
 
     @staticmethod
     def _validate_context(request: ApprovalResponse) -> None:
@@ -331,21 +524,10 @@ class ApprovalService:
                 "calendar_reconcile_course",
                 "calendar_drop_course",
             }
-            binds_complete_snapshot = revision.action_type not in {
-                "calendar_cancel_event",
-                "calendar_update_reminders",
-                "calendar_reconcile_course",
-                "calendar_drop_course",
-            }
             if (
                 sync_state is None
                 or sync_state.status != "current"
                 or sync_state.last_success_at is None
-                or (
-                    binds_complete_snapshot
-                    and _as_utc(sync_state.last_success_at).isoformat()
-                    != calendar_target.get("last_success_at")
-                )
                 or (utc_now() - _as_utc(sync_state.last_success_at)).total_seconds()
                 > get_settings().calendar_stale_seconds
             ):
@@ -356,16 +538,43 @@ class ApprovalService:
                         "after the approval preview was created."
                     ),
                 )
+            if revision.action_type in {
+                "calendar_create_event",
+                "calendar_update_event",
+            }:
+                from docket.schemas.calendar import StandaloneCalendarEventInput
+                from docket.services.calendar_actions import CalendarActionService
+
+                if revision.account_id is None:
+                    raise DocketError(
+                        code="approval_binding_mismatch",
+                        message="The Calendar formulation has no account binding.",
+                    )
+                event_data = revision.parameters.get("event")
+                if not isinstance(event_data, dict):
+                    raise DocketError(
+                        code="approval_binding_mismatch",
+                        message="The Calendar formulation has no complete event binding.",
+                    )
+                event = StandaloneCalendarEventInput.model_validate(event_data)
+                current_conflicts = CalendarActionService(self.session)._conflicts(
+                    account_id=revision.account_id,
+                    calendar_id=str(revision.parameters["calendar_id"]),
+                    event=event,
+                    exclude_provider_event_id=revision.parameters.get("external_event_id"),
+                )
+                if sha256_json(current_conflicts) != calendar_target.get("conflict_fingerprint"):
+                    raise DocketError(
+                        code="target_version_changed",
+                        message=(
+                            "Relevant Calendar conflicts changed after the proposal was created."
+                        ),
+                    )
             if course_scoped:
                 assert account is not None and record is not None
-                expected_dependency = course_reconciliation_dependency_sha256(
-                    revision.parameters
-                )
+                expected_dependency = course_reconciliation_dependency_sha256(revision.parameters)
                 stored_dependency = calendar_target.get("course_dependency_sha256")
-                if (
-                    stored_dependency is not None
-                    and stored_dependency != expected_dependency
-                ):
+                if stored_dependency is not None and stored_dependency != expected_dependency:
                     raise DocketError(
                         code="approval_binding_mismatch",
                         message="The immutable course dependency hash no longer matches.",
@@ -505,9 +714,7 @@ class ApprovalService:
         ):
             raise DocketError(
                 code="target_version_changed",
-                message=(
-                    "The Gmail source changed after the approval preview was created."
-                ),
+                message=("The Gmail source changed after the approval preview was created."),
             )
         newer = self.session.scalar(
             select(SourceItem.id)
@@ -523,59 +730,8 @@ class ApprovalService:
         if newer is not None:
             raise DocketError(
                 code="target_version_changed",
-                message=(
-                    "A newer Gmail message version was staged after this preview."
-                ),
+                message=("A newer Gmail message version was staged after this preview."),
             )
-
-    @staticmethod
-    def _idempotency_key(revision: ActionRevision) -> str:
-        parameters = revision.parameters
-        if revision.action_type == "calendar_create_event":
-            return (
-                f"calendar:create-event:{revision.account_id}:"
-                f"{parameters['logical_key']}:{revision.parameters_sha256}"
-            )
-        if revision.action_type == "calendar_update_event":
-            return (
-                f"calendar:update-event:{revision.account_id}:"
-                f"{parameters['external_event_id']}:{parameters.get('provider_etag')}:"
-                f"{revision.preview_sha256}"
-            )
-        if revision.action_type == "calendar_update_reminders":
-            return (
-                f"calendar:update-reminders:{revision.account_id}:"
-                f"{parameters['external_event_id']}:{parameters.get('provider_etag')}:"
-                f"{parameters['reminder_plan_sha256']}"
-            )
-        if revision.action_type == "calendar_cancel_event":
-            return (
-                f"calendar:cancel-event:{revision.account_id}:"
-                f"{parameters['external_event_id']}:{parameters.get('provider_etag')}"
-            )
-        if revision.action_type in {
-            "calendar_reconcile_course",
-            "calendar_drop_course",
-        }:
-            return (
-                f"calendar:{parameters['mode']}-course:{revision.account_id}:"
-                f"{parameters['record_id']}:{parameters['record_version']}:"
-                f"{revision.parameters_sha256}"
-            )
-        if revision.action_type == "gmail_archive_message":
-            return (
-                f"gmail:archive:{revision.account_id}:"
-                f"{parameters['message_id']}:{parameters['source_version']}"
-            )
-        if revision.action_type == "gmail_mark_read":
-            return (
-                f"gmail:mark_read:{revision.account_id}:"
-                f"{parameters['message_id']}:{parameters['source_version']}"
-            )
-        raise DocketError(
-            code="invalid_approval_state",
-            message="The approved action has no external operation handler.",
-        )
 
     def respond(self, request: ApprovalResponse) -> dict[str, Any]:
         self._validate_context(request)
@@ -590,15 +746,12 @@ class ApprovalService:
                 code="unauthorized_approval_actor",
                 message="The Discord actor is not authorized for this approval.",
             )
-        if (
-            response_projection is not None
-            and approval.status
-            in {ApprovalStatus.CONSUMED.value, ApprovalStatus.REJECTED.value}
-        ):
+        if response_projection is not None and approval.status in {
+            ApprovalStatus.CONSUMED.value,
+            ApprovalStatus.REJECTED.value,
+        }:
             recorded_decision = (
-                "approve"
-                if approval.status == ApprovalStatus.CONSUMED.value
-                else "reject"
+                "approve" if approval.status == ApprovalStatus.CONSUMED.value else "reject"
             )
             self.session.add(
                 OutboxEvent(
@@ -758,7 +911,11 @@ class ApprovalService:
         approval.response_message_id = request.message_id
         approval.discord_interaction_id = request.discord_interaction_id
 
+        conflict_resolution = (
+            self._conflict_resolution(revision) if request.decision == "approve" else None
+        )
         operation: Operation | None = None
+        bundle: OperationBundle | None = None
         batch_all_no_op = False
         if request.decision == "reject":
             approval.status = ApprovalStatus.REJECTED.value
@@ -770,10 +927,7 @@ class ApprovalService:
                     Action.status == ActionStatus.APPROVAL_PENDING.value,
                 )
             )
-            if (
-                revision.action_type in GMAIL_MUTATION_ACTION_TYPES
-                and pending_sibling is not None
-            ):
+            if revision.action_type in GMAIL_MUTATION_ACTION_TYPES and pending_sibling is not None:
                 queue_item.status = QueueItemStatus.AWAITING_APPROVAL.value
                 queue_item.resolved_at = None
                 queue_item.resolution_code = None
@@ -789,81 +943,161 @@ class ApprovalService:
                 )
             ):
                 plan.status = "cancelled"
+            self._retire_unadopted_canonical_event(
+                revision,
+                reason="formulation_rejected",
+            )
             event_type = "approval.rejected"
         else:
-            idempotency_key = self._idempotency_key(revision)
-            operation = self.session.scalar(
-                select(Operation).where(Operation.idempotency_key == idempotency_key)
-            )
-            if operation is None:
-                operation_id = uuid.uuid4()
-                operation = Operation(
-                    id=operation_id,
+            if conflict_resolution == "keep_existing":
+                bundle = OperationBundle(
                     action_revision_id=revision.id,
                     approval_id=approval.id,
-                    idempotency_key=idempotency_key,
-                    operation_type=revision.action_type,
-                    account_id=revision.account_id,
-                    status=OperationStatus.PENDING.value,
-                    provider_correlation=str(operation_id),
-                    next_attempt_at=now,
+                    resolution=conflict_resolution,
+                    status="succeeded",
+                    result={
+                        "operation_count": 0,
+                        "counts": {
+                            "pending": 0,
+                            "running": 0,
+                            "succeeded": 0,
+                            "failed": 0,
+                            "reconciliation_required": 0,
+                        },
+                        "disposition": "kept_existing",
+                    },
                 )
-                self.session.add(operation)
-                self.session.flush()
-                if revision.action_type in BATCH_CALENDAR_ACTION_TYPES:
-                    batch_items = list(revision.parameters["items"])
-                    for manifest_item in revision.parameters["items"]:
-                        item_key = str(manifest_item["item_key"])
-                        parameters = dict(manifest_item["parameters"])
-                        parameters["operation_type"] = manifest_item["operation_type"]
-                        parameters_sha256 = sha256_json(parameters)
-                        no_op = manifest_item["operation_type"] == "calendar_no_op"
-                        self.session.add(
-                            OperationItem(
-                                operation_id=operation.id,
-                                item_key=item_key,
-                                item_type=str(manifest_item["operation_type"]),
-                                idempotency_key=(
-                                    f"calendar:batch-item:{operation.id}:"
-                                    f"{item_key}:{parameters_sha256}"
-                                ),
-                                parameters=parameters,
-                                parameters_sha256=parameters_sha256,
-                                status="succeeded" if no_op else "pending",
-                                next_attempt_at=None if no_op else now,
-                                result={"disposition": "no_op"} if no_op else None,
-                            )
-                        )
-                    batch_all_no_op = all(
-                        item["operation_type"] == "calendar_no_op" for item in batch_items
+                self.session.add(bundle)
+                self._retire_unadopted_canonical_event(
+                    revision,
+                    reason="conflict_resolution_kept_existing",
+                )
+                batch_all_no_op = True
+            else:
+                if conflict_resolution is not None:
+                    bundle = OperationBundle(
+                        action_revision_id=revision.id,
+                        approval_id=approval.id,
+                        resolution=conflict_resolution,
+                        status="pending",
                     )
-                    if batch_all_no_op:
-                        operation.status = OperationStatus.SUCCEEDED.value
-                        operation.next_attempt_at = None
-                        operation.result = {
-                            "item_count": len(batch_items),
+                    self.session.add(bundle)
+                    self.session.flush()
+                idempotency_key = operation_idempotency_key(revision)
+                operation = self.session.scalar(
+                    select(Operation).where(Operation.idempotency_key == idempotency_key)
+                )
+                if operation is None:
+                    operation_id = uuid.uuid4()
+                    operation = Operation(
+                        id=operation_id,
+                        action_revision_id=revision.id,
+                        bundle_id=bundle.id if bundle is not None else None,
+                        approval_id=approval.id,
+                        idempotency_key=idempotency_key,
+                        operation_type=revision.action_type,
+                        account_id=revision.account_id,
+                        status=OperationStatus.PENDING.value,
+                        provider_correlation=str(operation_id),
+                        next_attempt_at=now,
+                    )
+                    self.session.add(operation)
+                    self.session.flush()
+                    cancelled_provider_ids: set[str] = set()
+                    if conflict_resolution == "new_wins":
+                        assert bundle is not None
+                        conflicts = revision.preview.get("conflicts")
+                        assert isinstance(conflicts, list)
+                        for conflict in conflicts:
+                            assert isinstance(conflict, dict)
+                            provider_event_id = str(conflict["provider_event_id"])
+                            if provider_event_id in cancelled_provider_ids:
+                                continue
+                            cancelled_provider_ids.add(provider_event_id)
+                            self._add_conflict_cancellation(
+                                bundle=bundle,
+                                parent_revision=revision,
+                                conflict=conflict,
+                                actor_id=request.discord_user_id,
+                                now=now,
+                                predecessor_operation_id=operation.id,
+                            )
+                    if bundle is not None:
+                        bundle.status = "running"
+                        bundle.result = {
+                            "operation_count": 1
+                            + (
+                                len(cancelled_provider_ids)
+                                if conflict_resolution == "new_wins"
+                                else 0
+                            ),
                             "counts": {
-                                "pending": 0,
+                                "pending": 1
+                                + (
+                                    len(cancelled_provider_ids)
+                                    if conflict_resolution == "new_wins"
+                                    else 0
+                                ),
                                 "running": 0,
-                                "succeeded": len(batch_items),
+                                "succeeded": 0,
                                 "failed": 0,
                                 "reconciliation_required": 0,
                             },
-                            "failures": [],
                         }
-                        if not OperationRunner._apply_course_transition(
-                            self.session,
-                            operation,
-                            revision,
-                            action,
-                            queue_item,
-                        ):
-                            raise DocketError(
-                                code="course_archive_transition_conflict",
-                                message="The course changed before its archive transition.",
+                    if revision.action_type in BATCH_CALENDAR_ACTION_TYPES:
+                        batch_items = list(revision.parameters["items"])
+                        for manifest_item in revision.parameters["items"]:
+                            item_key = str(manifest_item["item_key"])
+                            parameters = dict(manifest_item["parameters"])
+                            parameters["operation_type"] = manifest_item["operation_type"]
+                            parameters_sha256 = sha256_json(parameters)
+                            no_op = manifest_item["operation_type"] == "calendar_no_op"
+                            self.session.add(
+                                OperationItem(
+                                    operation_id=operation.id,
+                                    item_key=item_key,
+                                    item_type=str(manifest_item["operation_type"]),
+                                    idempotency_key=(
+                                        f"calendar:batch-item:{operation.id}:"
+                                        f"{item_key}:{parameters_sha256}"
+                                    ),
+                                    parameters=parameters,
+                                    parameters_sha256=parameters_sha256,
+                                    status="succeeded" if no_op else "pending",
+                                    next_attempt_at=None if no_op else now,
+                                    result={"disposition": "no_op"} if no_op else None,
+                                )
                             )
+                        batch_all_no_op = all(
+                            item["operation_type"] == "calendar_no_op" for item in batch_items
+                        )
+                        if batch_all_no_op:
+                            operation.status = OperationStatus.SUCCEEDED.value
+                            operation.next_attempt_at = None
+                            operation.result = {
+                                "item_count": len(batch_items),
+                                "counts": {
+                                    "pending": 0,
+                                    "running": 0,
+                                    "succeeded": len(batch_items),
+                                    "failed": 0,
+                                    "reconciliation_required": 0,
+                                },
+                                "failures": [],
+                            }
+                            if not OperationRunner._apply_course_transition(
+                                self.session,
+                                operation,
+                                revision,
+                                action,
+                                queue_item,
+                            ):
+                                raise DocketError(
+                                    code="course_archive_transition_conflict",
+                                    message=("The course changed before its archive transition."),
+                                )
             approval.status = ApprovalStatus.CONSUMED.value
-            approval.consumed_operation_id = operation.id
+            approval.consumed_operation_id = operation.id if operation is not None else None
             action.status = (
                 ActionStatus.SUCCEEDED.value if batch_all_no_op else ActionStatus.READY.value
             )
@@ -875,7 +1109,9 @@ class ApprovalService:
             if batch_all_no_op:
                 queue_item.resolved_at = now
                 queue_item.resolution_code = (
-                    "calendar_course_dropped"
+                    "calendar_conflict_kept_existing"
+                    if conflict_resolution == "keep_existing"
+                    else "calendar_course_dropped"
                     if revision.action_type == "calendar_drop_course"
                     else "calendar_course_synchronized"
                     if revision.action_type == "calendar_reconcile_course"
@@ -897,6 +1133,8 @@ class ApprovalService:
                     "decision": request.decision,
                     "discord_interaction_id": request.discord_interaction_id,
                     "operation_id": str(operation.id) if operation else None,
+                    "operation_bundle_id": str(bundle.id) if bundle else None,
+                    "conflict_resolution": conflict_resolution,
                     "parameters_sha256": revision.parameters_sha256,
                     "preview_sha256": revision.preview_sha256,
                 },
@@ -916,6 +1154,7 @@ class ApprovalService:
                     "approval_id": str(approval.id),
                     "decision": request.decision,
                     "operation_id": str(operation.id) if operation else None,
+                    "operation_bundle_id": str(bundle.id) if bundle else None,
                     **projection_target,
                 },
                 status=OutboxStatus.PENDING.value,
@@ -933,7 +1172,13 @@ class ApprovalService:
                 else "queued"
             ),
             occurred_at=now,
-            result=operation.result if operation is not None else None,
+            result=(
+                bundle.result
+                if bundle is not None and operation is None
+                else operation.result
+                if operation is not None
+                else None
+            ),
         )
         return {
             "ok": True,
@@ -944,4 +1189,7 @@ class ApprovalService:
             "action_status": action.status,
             "operation_id": str(operation.id) if operation else None,
             "operation_status": operation.status if operation else None,
+            "operation_bundle_id": str(bundle.id) if bundle else None,
+            "operation_bundle_status": bundle.status if bundle else None,
+            "conflict_resolution": conflict_resolution,
         }

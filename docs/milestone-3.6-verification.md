@@ -168,7 +168,7 @@ live MCP discovery: connected, 20 tools
 
 `hermes mcp test docket` discovered exactly the managed 20-tool surface,
 including `docket_store_term_schedule`, `docket_propose_term_schedule`,
-`docket_get_calendar_profile`, and `docket_propose_calendar_event`. The
+`docket_get_calendar_profile`, and `docket_apply_calendar_intent`. The
 repository-managed Hermes configuration and skill were synchronized before
 recreation. No provider mutation occurred during deployment.
 

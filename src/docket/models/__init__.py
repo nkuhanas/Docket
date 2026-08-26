@@ -1,4 +1,10 @@
 from docket.models.base import Base
+from docket.models.briefs import (
+    DailyBrief,
+    DailyBriefItem,
+    TriageWindow,
+    TriageWindowMembership,
+)
 from docket.models.calendar import (
     Action,
     ActionRevision,
@@ -10,6 +16,7 @@ from docket.models.calendar import (
     CalendarSyncState,
     ExecutionAttempt,
     Operation,
+    OperationBundle,
     OperationItem,
     QueueItem,
     ReminderRule,
@@ -25,7 +32,14 @@ from docket.models.core import (
     RecordSource,
 )
 from docket.models.discord import DiscordDailyThread, DiscordMcpTrace, DiscordProjection
-from docket.models.gmail import ConnectorCheckpoint, QueueItemSource, SourceItem
+from docket.models.entities import Entity, EntityAlias, EntityRelation, EntityResolution
+from docket.models.events import CanonicalEvent, EventObservation, ProviderEventBinding
+from docket.models.gmail import (
+    ConnectorCheckpoint,
+    QueueItemSource,
+    SemanticCandidate,
+    SourceItem,
+)
 
 __all__ = [
     "Account",
@@ -40,20 +54,33 @@ __all__ = [
     "CalendarProfile",
     "CalendarReminderPlan",
     "CalendarSyncState",
+    "CanonicalEvent",
     "CommandRequest",
     "ConnectorCheckpoint",
+    "DailyBrief",
+    "DailyBriefItem",
     "DiscordDailyThread",
     "DiscordMcpTrace",
     "DiscordProjection",
+    "Entity",
+    "EntityAlias",
+    "EntityRelation",
+    "EntityResolution",
+    "EventObservation",
     "ExecutionAttempt",
     "Operation",
+    "OperationBundle",
     "OperationItem",
     "OutboxEvent",
+    "ProviderEventBinding",
     "QueueItem",
     "QueueItemSource",
     "Record",
     "RecordSource",
     "ReminderRule",
     "ScheduledNotification",
+    "SemanticCandidate",
     "SourceItem",
+    "TriageWindow",
+    "TriageWindowMembership",
 ]

@@ -188,6 +188,20 @@ class LocalActionService:
             queue_item.resolution_code = "operator_ignored"
             queue_item.resolution_note = str(revision.parameters["reason"])
             event_type = "queue_item.ignored"
+        elif revision.action_type == "acknowledge_queue_item":
+            if queue_item.presentation != "action_required" or queue_item.status not in {
+                QueueItemStatus.PENDING.value,
+                QueueItemStatus.FAILED.value,
+            }:
+                raise DocketError(
+                    code="invalid_queue_transition",
+                    message="Only an open action-required item can be acknowledged.",
+                )
+            queue_item.status = QueueItemStatus.COMPLETED.value
+            queue_item.resolved_at = now
+            queue_item.resolution_code = "operator_acknowledged"
+            queue_item.resolution_note = str(revision.parameters["reason"])
+            event_type = "queue_item.acknowledged"
         else:
             raise DocketError(
                 code="invalid_local_action_state",
@@ -199,7 +213,13 @@ class LocalActionService:
             select(Action).where(
                 Action.queue_item_id == queue_item.id,
                 Action.id != action.id,
-                Action.action_type.in_(("snooze_queue_item", "ignore_queue_item")),
+                Action.action_type.in_(
+                    (
+                        "snooze_queue_item",
+                        "ignore_queue_item",
+                        "acknowledge_queue_item",
+                    )
+                ),
                 Action.status == ActionStatus.AVAILABLE.value,
             )
         ).all()

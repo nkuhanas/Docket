@@ -30,7 +30,11 @@ from docket.schemas.queue import (
 )
 from docket.services.source_context import validate_configured_discord_source
 
-_ACTION_ORDER = {"snooze_queue_item": 100, "ignore_queue_item": 101}
+_ACTION_ORDER = {
+    "snooze_queue_item": 100,
+    "acknowledge_queue_item": 101,
+    "ignore_queue_item": 102,
+}
 
 
 def local_date_at_rollover(local_date: date, settings: Settings) -> datetime:
@@ -109,11 +113,21 @@ def ensure_local_actions(
             stale_action.status = ActionStatus.SUPERSEDED.value
         session.flush()
         return []
-    action_types = (
-        ("snooze_queue_item", "ignore_queue_item")
-        if queue_item.status == QueueItemStatus.PENDING.value
-        else ("ignore_queue_item",)
-    )
+    action_types: tuple[str, ...]
+    if queue_item.presentation == "action_required":
+        action_types = (
+            ("snooze_queue_item", "acknowledge_queue_item")
+            if queue_item.status == QueueItemStatus.PENDING.value
+            else ("acknowledge_queue_item",)
+        )
+    elif queue_item.presentation in {"clarification", "proposal"}:
+        action_types = (
+            ("snooze_queue_item", "ignore_queue_item")
+            if queue_item.status == QueueItemStatus.PENDING.value
+            else ("ignore_queue_item",)
+        )
+    else:
+        action_types = ()
     unavailable = session.scalars(
         select(Action).where(
             Action.queue_item_id == queue_item.id,
@@ -180,9 +194,15 @@ def ensure_local_actions(
                 "wake_local_time": f"{get_settings().daily_rollover_hour:02d}:00:00",
                 "timezone": get_settings().timezone,
             }
-        else:
+        elif action_type == "ignore_queue_item":
             parameters["reason"] = "Ignored from the Docket queue card"
             preview = {"action_type": action_type, "effect": "Hide this queue item"}
+        else:
+            parameters["reason"] = "Acknowledged from the Docket queue card"
+            preview = {
+                "action_type": action_type,
+                "effect": "Mark this obligation acknowledged",
+            }
         revision = ActionRevision(
             action_id=action.id,
             revision=revision_number,
@@ -193,6 +213,7 @@ def ensure_local_actions(
             preview=preview,
             preview_sha256=sha256_json(preview),
             risk_class="local_write",
+            authority="canonical",
             target_versions={
                 "queue_item": {"id": str(queue_item.id), "version": queue_item.version}
             },

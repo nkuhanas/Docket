@@ -38,6 +38,6 @@ mcp_servers:
         - docket_claim_triage_batch
         - docket_read_claimed_source
         - docket_search_related_records
-        - docket_submit_triage_decision
+        - docket_submit_semantic_candidates
       prompts: false
       resources: false

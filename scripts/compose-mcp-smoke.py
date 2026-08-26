@@ -11,6 +11,8 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 EXPECTED_TOOLS = {
+    "docket_add_entity_alias",
+    "docket_create_entity",
     "docket_store_record",
     "docket_get_record",
     "docket_search_records",
@@ -23,19 +25,24 @@ EXPECTED_TOOLS = {
     "docket_get_calendar_profile",
     "docket_set_calendar_profile",
     "docket_list_reminder_rules",
-    "docket_propose_calendar_event",
-    "docket_propose_course_reconciliation",
+    "docket_merge_entities",
+    "docket_apply_calendar_intent",
+    "docket_apply_course_intent",
+    "docket_rebind_entity_resolution",
+    "docket_relate_entities",
+    "docket_resolve_entity",
     "docket_list_queue_items",
     "docket_get_queue_item",
     "docket_snooze_queue_item",
     "docket_ignore_queue_item",
     "docket_get_action",
+    "docket_update_entity",
 }
 EXPECTED_TRIAGE_TOOLS = {
     "docket_claim_triage_batch",
     "docket_read_claimed_source",
     "docket_search_related_records",
-    "docket_submit_triage_decision",
+    "docket_submit_semantic_candidates",
 }
 
 

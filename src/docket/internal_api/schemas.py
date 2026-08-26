@@ -59,7 +59,7 @@ class LocalActionResponse(DiscordContext):
         "proposal_snooze",
         "proposal_review_navigate",
     ] = "local_action"
-    field: Literal["priority", "reminder_preset"] | None = None
+    field: Literal["priority", "reminder_preset", "conflict_resolution"] | None = None
     value: str | None = Field(default=None, min_length=1, max_length=64)
     modal_values: dict[str, str] | None = None
     source_view: Literal["summary", "schedule_review", "decision", "schedule_failures"] | None = (
@@ -91,7 +91,7 @@ class LocalActionResponse(DiscordContext):
                 raise ValueError("ordinary local actions omit proposal-control values")
         elif self.transition == "proposal_field_change":
             if (
-                self.field not in {"priority", "reminder_preset"}
+                self.field not in {"priority", "reminder_preset", "conflict_resolution"}
                 or self.value is None
                 or self.modal_values is not None
                 or any(value is not None for value in navigation_values)

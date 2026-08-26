@@ -380,7 +380,7 @@ The active and template allowlists are synchronized by
 `/reload-mcp` after deployment. The MCP server registry and Hermes allowlist
 must contain the same 19 tools.
 
-`docket_propose_course_reconciliation` accepts one active course UUID/version,
+`docket_apply_course_intent` accepts one active course UUID/version,
 `sync|drop`, configured account/calendar, optional unified reminder plan, and
 trusted request context. `drop` additionally requires a reason. The generated
 schema must keep these fields explicit. A fully synchronized course returns a

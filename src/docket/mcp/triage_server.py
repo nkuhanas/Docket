@@ -9,14 +9,10 @@ from mcp.server.transport_security import TransportSecuritySettings
 from docket.database import get_session_factory, session_scope
 from docket.domain.errors import DocketError
 from docket.providers.google.gmail_runtime import get_gmail_read_provider
-from docket.schemas.queue import QueuePriority
 from docket.schemas.records import RecordType
 from docket.schemas.triage import (
-    GmailActionType,
-    SubmitTriageDecisionInput,
-    TriageActionProposal,
-    TriageCategory,
-    TriageDecision,
+    SemanticCandidateInput,
+    SubmitSemanticCandidatesInput,
 )
 from docket.services.records import RecordService, serialize_record
 from docket.services.triage import TriageService
@@ -114,38 +110,24 @@ def docket_search_related_records(
 
 
 @triage_mcp.tool()
-def docket_submit_triage_decision(
+def docket_submit_semantic_candidates(
     source_id: str,
     claim_token: str,
-    decision: TriageDecision,
-    category: TriageCategory | None = None,
-    title: str | None = None,
-    summary: str | None = None,
-    priority: QueuePriority | None = None,
-    semantic_event_type: str | None = None,
-    action_types: list[GmailActionType] | None = None,
+    candidates: list[SemanticCandidateInput],
 ) -> dict[str, Any]:
-    """Classify a claimed source and transactionally deduplicate its queue event.
+    """Persist typed semantic candidates extracted from one claimed Gmail source.
 
-    Gmail action types become immutable pending proposals. A disabled Gmail
-    write gate prevents their approval from creating operations. Source content
-    cannot change risk, account binding, approval policy, or provider authority.
+    Candidates describe events, deadlines, responses, tasks, information, or
+    noise. They can never authorize Gmail housekeeping or a provider mutation.
+    Docket owns entity resolution, correlation, deduplication, Calendar checks,
+    proposal policy, and execution after this untrusted extraction boundary.
     """
     try:
-        request = SubmitTriageDecisionInput(
+        request = SubmitSemanticCandidatesInput(
             source_id=source_id,
             claim_token=claim_token,
-            decision=decision,
-            category=category,
-            title=title,
-            summary=summary,
-            priority=priority,
-            semantic_event_type=semantic_event_type,
-            action_proposals=[
-                TriageActionProposal(action_type=action_type)
-                for action_type in (action_types or [])
-            ],
+            candidates=candidates,
         )
-        return {"ok": True, **_service().submit_decision(request)}
+        return {"ok": True, **_service().submit_candidates(request)}
     except Exception as exc:
         return _error(exc)
