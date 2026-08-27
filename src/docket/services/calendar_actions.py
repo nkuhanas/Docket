@@ -1084,32 +1084,28 @@ class CalendarActionService:
             expires_at=expires_at,
         )
         self.session.add(approval)
-        defer_projection = (
-            isinstance(request, InferredCalendarEventInput) and request.defer_projection
-        )
-        if not defer_projection:
-            self.session.add(
-                OutboxEvent(
-                    event_type="discord.projection.requested",
-                    aggregate_type="queue_item",
-                    aggregate_id=queue_item.id,
-                    deduplication_key=f"discord_projection:{queue_item.id}:1",
-                    payload={
-                        "queue_item_id": str(queue_item.id),
-                        "action_id": str(action.id),
-                        "action_revision_id": str(revision.id),
-                        "approval_id": str(approval.id),
-                        "approval_token": approval_token,
-                        "short_code": short_code,
-                        "expires_at": expires_at.isoformat(),
-                        "preview": preview,
-                        "target_local_date": queue_projection_date(
-                            queue_item, get_settings()
-                        ).isoformat(),
-                    },
-                    status=OutboxStatus.PENDING.value,
-                )
+        self.session.add(
+            OutboxEvent(
+                event_type="discord.projection.requested",
+                aggregate_type="queue_item",
+                aggregate_id=queue_item.id,
+                deduplication_key=f"discord_projection:{queue_item.id}:1",
+                payload={
+                    "queue_item_id": str(queue_item.id),
+                    "action_id": str(action.id),
+                    "action_revision_id": str(revision.id),
+                    "approval_id": str(approval.id),
+                    "approval_token": approval_token,
+                    "short_code": short_code,
+                    "expires_at": expires_at.isoformat(),
+                    "preview": preview,
+                    "target_local_date": queue_projection_date(
+                        queue_item, get_settings()
+                    ).isoformat(),
+                },
+                status=OutboxStatus.PENDING.value,
             )
+        )
         self.session.add(
             AuditEvent(
                 event_type="action.proposed",
@@ -1139,7 +1135,7 @@ class CalendarActionService:
             short_code=short_code,
             expires_at=expires_at,
             preview=preview,
-            projection_status="deferred" if defer_projection else "pending",
+            projection_status="pending",
         )
         self._finish_command(command, result)
         return result

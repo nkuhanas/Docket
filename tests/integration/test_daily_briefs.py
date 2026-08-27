@@ -65,6 +65,94 @@ def test_wrapping_waking_window_has_bounded_evening_and_overnight_intervals(
     )
 
 
+def test_projection_repair_enqueues_a_missing_attention_card(session_factory) -> None:
+    settings = _settings()
+    with session_factory.begin() as session:
+        queue_item = QueueItem(
+            deduplication_key="missing-attention-projection",
+            material_fingerprint="9" * 64,
+            category="clarification",
+            title="Clarification needed",
+            summary="One material fact still needs the operator.",
+            status="pending",
+            priority="normal",
+            presentation="clarification",
+            received_at=datetime(2026, 8, 26, 9, 0, tzinfo=UTC),
+        )
+        session.add(queue_item)
+        session.flush()
+        queue_item_id = queue_item.id
+
+    runner = DiscordProjectionRunner(
+        session_factory,
+        FakeDiscordProjectionAdapter(FakeDiscordBackend()),
+        settings,
+    )
+    assert runner.enqueue_stale_projection_repairs() == 1
+    assert runner.enqueue_stale_projection_repairs() == 0
+    with session_factory() as session:
+        repair = session.scalar(
+            select(OutboxEvent).where(OutboxEvent.aggregate_id == queue_item_id)
+        )
+        assert repair is not None
+        assert repair.event_type == "discord.projection.requested"
+        assert repair.payload["reason"] == "missing_attention_projection"
+
+
+def test_open_window_reconciles_and_late_evening_does_not_close_it(
+    session_factory,
+) -> None:
+    previous = _settings()
+    current = previous.model_copy(
+        update={
+            "waking_window_start_hour": 8,
+            "waking_window_end_hour": 1,
+        }
+    )
+    with session_factory.begin() as session:
+        old_window = DailyBriefService(session_factory, previous)._window(
+            session,
+            kind="waking",
+            local_date=date(2026, 8, 24),
+        )
+        old_version = old_window.version
+
+    briefs = DailyBriefService(session_factory, current)
+    briefs.run_due_once(datetime(2026, 8, 25, 5, 0, tzinfo=UTC))  # 22:00 PDT
+    with session_factory() as session:
+        window = session.scalar(
+            select(TriageWindow).where(
+                TriageWindow.window_kind == "waking",
+                TriageWindow.local_date == date(2026, 8, 24),
+            )
+        )
+        night = session.scalar(
+            select(DailyBrief).where(
+                DailyBrief.brief_kind == "night",
+                DailyBrief.local_date == date(2026, 8, 24),
+            )
+        )
+        assert window is not None
+        assert window.starts_at.replace(tzinfo=UTC) == datetime(
+            2026, 8, 24, 15, 0, tzinfo=UTC
+        )
+        assert window.ends_at.replace(tzinfo=UTC) == datetime(
+            2026, 8, 25, 8, 0, tzinfo=UTC
+        )
+        assert window.version == old_version + 1
+        assert night is None
+
+    assert briefs.run_due_once(datetime(2026, 8, 25, 8, 0, tzinfo=UTC))
+    with session_factory() as session:
+        night = session.scalar(
+            select(DailyBrief).where(
+                DailyBrief.brief_kind == "night",
+                DailyBrief.local_date == date(2026, 8, 24),
+            )
+        )
+        assert night is not None and night.status == "published"
+
+
 @pytest.mark.integration
 def test_delayed_candidate_advances_past_every_published_window(
     session_factory,
@@ -129,7 +217,7 @@ def test_delayed_candidate_advances_past_every_published_window(
 
 
 @pytest.mark.integration
-def test_overnight_event_is_silent_until_idempotent_morning_brief(
+def test_overnight_attention_projects_immediately_and_brief_remains_idempotent(
     session_factory,
 ) -> None:
     settings = _settings()
@@ -242,7 +330,27 @@ def test_overnight_event_is_silent_until_idempotent_morning_brief(
         assert candidates["morning-review"].status == "proposed"
         assert candidates["morning-clarification"].status == "needs_clarification"
         assert candidates["application-received"].status == "resolved"
-        assert session.scalar(select(OutboxEvent)) is None
+        outbox = list(session.scalars(select(OutboxEvent).order_by(OutboxEvent.created_at)))
+        assert len(outbox) == 2
+        assert {event.aggregate_id for event in outbox} == {
+            candidates["morning-review"].queue_item_id,
+            candidates["morning-clarification"].queue_item_id,
+        }
+
+    backend = FakeDiscordBackend()
+    projection_runner = DiscordProjectionRunner(
+        session_factory,
+        FakeDiscordProjectionAdapter(backend),
+        settings,
+    )
+    while projection_runner.run_due_once():
+        pass
+    assert len(backend.messages) == 2
+    immediate_titles = {
+        message["embed"]["title"] for message in backend.messages.values()
+    }
+    assert "Review new event" in immediate_titles
+    assert any(title.startswith("Clarification needed") for title in immediate_titles)
 
     assert briefs.run_due_once(morning)
     assert not briefs.run_due_once(morning)
@@ -256,25 +364,32 @@ def test_overnight_event_is_silent_until_idempotent_morning_brief(
         assert "Calendar (2)" in queue_items[2].summary
         assert "Awareness (1)" in queue_items[2].summary
         assert "Application received" in queue_items[2].summary
-        assert len(outbox) == 1
-        assert outbox[0].aggregate_id == brief.queue_item_id
+        assert len(outbox) == 3
+        assert outbox[-1].aggregate_id == brief.queue_item_id
+        brief_queue_item_id = brief.queue_item_id
 
-    backend = FakeDiscordBackend()
-    projection_runner = DiscordProjectionRunner(
-        session_factory,
-        FakeDiscordProjectionAdapter(backend),
-        settings,
-    )
     assert projection_runner.run_due_once()
-    brief_card = next(iter(backend.messages.values()))
+    brief_card = next(
+        message
+        for message in backend.messages.values()
+        if message["embed"]["title"] == "Morning brief"
+    )
     assert brief_card["embed"]["title"] == "Morning brief"
     assert brief_card["embed"]["fields"] == []
     assert [control["label"] for control in brief_card["controls"]] == ["Review decisions"]
-    assert len(backend.messages) == 1
+    assert len(backend.messages) == 3
 
     with session_factory() as session:
-        projection = session.scalar(select(DiscordProjection))
-        thread = session.scalar(select(DiscordDailyThread))
+        projection = session.scalar(
+            select(DiscordProjection).where(
+                DiscordProjection.queue_item_id == brief_queue_item_id
+            )
+        )
+        thread = (
+            session.get(DiscordDailyThread, projection.daily_thread_id)
+            if projection is not None
+            else None
+        )
         assert projection is not None and projection.message_id is not None
         assert thread is not None and thread.thread_id is not None
         projection_id = projection.id
@@ -446,7 +561,7 @@ def test_overnight_event_is_silent_until_idempotent_morning_brief(
         "Back to brief",
         "Previous",
     }
-    assert len(backend.messages) == 1
+    assert len(backend.messages) == 3
 
 
 @pytest.mark.integration

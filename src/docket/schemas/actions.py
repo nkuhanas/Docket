@@ -115,7 +115,6 @@ class InferredCalendarEventInput(StrictModel):
     )
     actor_type: Literal["hermes"] = "hermes"
     actor_id: Literal["hermes-triage"] = "hermes-triage"
-    defer_projection: bool = True
 
 
 class ProposeCourseReconciliationInput(StrictModel):
@@ -151,7 +150,7 @@ class ProposalResult(StrictModel):
     short_code: str
     expires_at: datetime
     preview: dict[str, Any]
-    projection_status: Literal["pending", "deferred"] = "pending"
+    projection_status: Literal["pending"] = "pending"
 
 
 class DirectExecutionResult(StrictModel):

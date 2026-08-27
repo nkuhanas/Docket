@@ -282,7 +282,6 @@ def _formulate_inferred(
             semantic_candidate_id=candidate.id,
             source_item_id=source.id,
             request_key=f"gmail:test:{request_fingerprint}",
-            defer_projection=False,
         )
     )
 

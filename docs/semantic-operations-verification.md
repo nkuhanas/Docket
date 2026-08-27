@@ -22,11 +22,11 @@ outside version control.
 * Conflict decisions are advisory choices which compile into durable provider
   operations. Partial execution remains visible as failed or reconciliation
   work rather than being reported as atomic success.
-* Normal overnight Gmail presentation is silent. Durable, timezone-bound
-  morning and night windows publish at most one brief per kind and local date.
-  Morning decisions remain separate canonical actions, but are reviewed and
-  decided through one navigable Discord message rather than a per-email card
-  stream.
+* Actionable Gmail cards project immediately at every hour. Durable,
+  timezone-bound morning and night windows buffer summaries and publish at
+  most one brief per kind and local date; they do not gate cards. Decisions
+  remain separate canonical actions, while the cohesive brief references
+  their current state and may provide aggregate review navigation.
 * Candidate window ownership is durable even when classification is delayed
   across more than one already-published boundary. Docket advances the
   candidate through each closed morning/night window until it reaches the next
@@ -86,7 +86,7 @@ The repository gate exercises:
 * durable conflict bundles and partial provider failure;
 * clicked-card convergence, one durable convergence-latency sample,
   duplicate-click repair, edit failure recovery, and restart reconciliation;
-* silent multi-source overnight triage, one idempotent morning brief, one night
+* always-on actionable projection, one idempotent morning brief, one night
   closeout, delayed classification blocking, missed-boundary catch-up, and
   multi-boundary delayed-source carry-forward without loss;
 * one-message morning review navigation, authenticated field edits, approval,
@@ -150,11 +150,11 @@ accepted:
    event wins. Confirm the provider result and terminal card in each case.
 6. Click an already-consumed card. The response should report the existing
    decision and the exact visible card should converge to terminal state.
-7. Observe one overnight and one waking-day boundary. Ordinary overnight
-   messages must not stream individually. In the morning brief, traverse at
-   least two distinct decisions, complete one proposal and one awareness or
-   clarification action, and confirm every interaction updates the same single
-   Discord message. Each window must emit no more than its cohesive brief.
+7. Observe one overnight and one waking-day boundary. Proposals, conflicts,
+   clarifications, and action-required cards must project immediately in both
+   windows. Routine awareness/noise must not stream individually. The morning
+   brief should summarize the overnight window without duplicating decision
+   objects, and each window must emit no more than its cohesive brief.
 
 Use the symptom table in [operations-runbook.md](operations-runbook.md) for the
 first diagnostic checks when any live behavior diverges.

@@ -26,8 +26,6 @@ from docket.models import (
     QueueItemSource,
     SemanticCandidate,
     SourceItem,
-    TriageWindow,
-    TriageWindowMembership,
 )
 from docket.models.base import utc_now
 from docket.schemas.actions import (
@@ -374,14 +372,6 @@ class SemanticCandidateCompiler:
         details: dict[str, Any],
         settings: Settings,
     ) -> None:
-        window = session.scalar(
-            select(TriageWindow)
-            .join(
-                TriageWindowMembership,
-                TriageWindowMembership.window_id == TriageWindow.id,
-            )
-            .where(TriageWindowMembership.semantic_candidate_id == candidate.id)
-        )
         entity_gaps = details.get("entity_gaps")
         summary = candidate.summary
         if reason == "entity_resolution_required" and isinstance(entity_gaps, list):
@@ -419,22 +409,19 @@ class SemanticCandidateCompiler:
                 relationship="primary",
             )
         )
-        if window is None or window.window_kind == "waking" or window.status == "published":
-            session.add(
-                OutboxEvent(
-                    event_type="discord.projection.requested",
-                    aggregate_type="queue_item",
-                    aggregate_id=queue_item.id,
-                    deduplication_key=f"discord_projection:{queue_item.id}:1",
-                    payload={
-                        "queue_item_id": str(queue_item.id),
-                        "target_local_date": queue_projection_date(
-                            queue_item, settings
-                        ).isoformat(),
-                    },
-                    status="pending",
-                )
+        session.add(
+            OutboxEvent(
+                event_type="discord.projection.requested",
+                aggregate_type="queue_item",
+                aggregate_id=queue_item.id,
+                deduplication_key=f"discord_projection:{queue_item.id}:1",
+                payload={
+                    "queue_item_id": str(queue_item.id),
+                    "target_local_date": queue_projection_date(queue_item, settings).isoformat(),
+                },
+                status="pending",
             )
+        )
         candidate.status = "needs_clarification"
         candidate.queue_item_id = queue_item.id
         candidate.resolution = {"reason": reason, **details}
@@ -446,14 +433,6 @@ class SemanticCandidateCompiler:
         *,
         settings: Settings,
     ) -> None:
-        window = session.scalar(
-            select(TriageWindow)
-            .join(
-                TriageWindowMembership,
-                TriageWindowMembership.window_id == TriageWindow.id,
-            )
-            .where(TriageWindowMembership.semantic_candidate_id == candidate.id)
-        )
         queue_item = QueueItem(
             primary_source_item_id=candidate.source_item_id,
             deduplication_key=f"semantic_attention:{candidate.id}",
@@ -481,22 +460,19 @@ class SemanticCandidateCompiler:
                 relationship="primary",
             )
         )
-        if window is None or window.window_kind == "waking" or window.status == "published":
-            session.add(
-                OutboxEvent(
-                    event_type="discord.projection.requested",
-                    aggregate_type="queue_item",
-                    aggregate_id=queue_item.id,
-                    deduplication_key=f"discord_projection:{queue_item.id}:1",
-                    payload={
-                        "queue_item_id": str(queue_item.id),
-                        "target_local_date": queue_projection_date(
-                            queue_item, settings
-                        ).isoformat(),
-                    },
-                    status="pending",
-                )
+        session.add(
+            OutboxEvent(
+                event_type="discord.projection.requested",
+                aggregate_type="queue_item",
+                aggregate_id=queue_item.id,
+                deduplication_key=f"discord_projection:{queue_item.id}:1",
+                payload={
+                    "queue_item_id": str(queue_item.id),
+                    "target_local_date": queue_projection_date(queue_item, settings).isoformat(),
+                },
+                status="pending",
             )
+        )
         candidate.status = "resolved"
         candidate.queue_item_id = queue_item.id
         candidate.resolution = {"disposition": "action_required"}
@@ -960,14 +936,6 @@ class SemanticCandidateCompiler:
             assert event is not None
             proposal = CreateCalendarEventProposal(kind="create", event=event)
 
-        window = session.scalar(
-            select(TriageWindow)
-            .join(
-                TriageWindowMembership,
-                TriageWindowMembership.window_id == TriageWindow.id,
-            )
-            .where(TriageWindowMembership.semantic_candidate_id == candidate.id)
-        )
         result = CalendarActionService(session).formulate_inferred(
             InferredCalendarEventInput(
                 account_id=account.id,
@@ -977,11 +945,6 @@ class SemanticCandidateCompiler:
                 semantic_candidate_id=candidate.id,
                 source_item_id=source.id,
                 request_key=f"gmail:{source.id}:{candidate.id}",
-                defer_projection=(
-                    window is not None
-                    and window.window_kind == "overnight"
-                    and window.status != "published"
-                ),
             )
         )
         candidate.status = "proposed"

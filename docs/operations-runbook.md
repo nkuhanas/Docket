@@ -94,7 +94,7 @@ has Acknowledge and Snooze. An inferred calendar formulation has proposal or
 conflict-resolution controls. Routine receipts, newsletters, duplicate
 observations, and noise remain suppressed.
 
-Normal email presentation is bounded by the timezone-aware waking window:
+Email brief membership is bounded by the timezone-aware waking window:
 
 ```text
 DOCKET_WAKING_WINDOW_START_HOUR=8
@@ -104,11 +104,12 @@ DOCKET_DAILY_BRIEF_POLL_SECONDS=30
 ```
 
 The wrapping interval is awake from 08:00 through midnight until 01:00; the
-overnight window is 01:00 through 08:00. During that overnight window, Docket
-ingests and compiles silently. It publishes one idempotent overnight brief at
-the morning boundary. During the waking window,
-actionable candidates may surface immediately; material awareness accumulates
-for one idempotent night closeout brief. All boundaries use `DOCKET_TIMEZONE`.
+overnight window is 01:00 through 08:00. These windows buffer content for one
+idempotent morning brief and one idempotent night closeout brief; they never
+gate a proposal, conflict, clarification, or action-required card. Those cards
+project immediately at every hour and the later brief references their current
+state. Routine awareness and noise may remain brief-only or suppressed. All
+boundaries use `DOCKET_TIMEZONE`.
 
 The normal triage session is not the interactive Discord Hermes session. Its
 profile has no messaging credentials, plugins, CLI/cron toolsets, internal
@@ -257,7 +258,7 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Gmail source remains `claimed` | Compare `claimed_until` with the current time and run the next bounded triage pass | Agent interruption; the lease must expire and become reclaimable without moving the checkpoint backward |
 | Awareness Gmail card has controls or an application receipt asks for approval | Inspect `presentation`, semantic candidate kind/mutation, and migration `0023` | An alpha housekeeping card survived migration, or extraction incorrectly formulated an obligation/event |
 | Two unrelated events with the same generic title converge into one proposal | Inspect the event observation's strong provider/sender identifiers and material event fingerprint; title equality alone is invalid correlation evidence | A create candidate fell through to the update/cancel title-hint fallback |
-| Ordinary individual Gmail cards appear outside the waking window | Inspect the candidate's durable triage-window membership and brief state | Incorrect configured timezone/window, missing membership, or a projection was emitted without honoring overnight deferral |
+| An actionable Gmail proposal, conflict, clarification, or action-required card does not appear promptly | Inspect its queue item, projection outbox, and Discord projection independently of its durable brief-window membership | Pre-always-on projection code deferred the card by cadence, missing projection repair has not run, or Discord delivery is retrying |
 | Morning/night brief duplicates after restart | Inspect `triage_windows`, `daily_briefs`, and their unique local-date keys before retrying | A deployment bypassed migrations or created projections outside the durable brief transaction |
 | Delayed Gmail source is absent after one or more brief boundaries | Inspect its candidate in `triage_window_memberships`; it must belong to the first still-open window after every published window it crossed, with a `delayed_after_*` reason | Pre-fix assignment advanced at most twice and could strand very late classification in an already-published window |
 | Inferred event card reports a newer semantic version | Reject the stale card and allow correlation to formulate the current observation | New evidence materially changed the pending formulation; the old approval must not adopt it |

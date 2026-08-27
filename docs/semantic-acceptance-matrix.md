@@ -68,12 +68,12 @@ listed operator-present Discord/Gmail observations.
 
 | Requirement | Automated evidence | Current evidence |
 | --- | --- | --- |
-| Overnight sources emit no normal per-email stream | `test_overnight_event_is_silent_until_idempotent_morning_brief` | Passed and deployed |
+| Overnight actionable cards project immediately while routine awareness stays consolidated | `test_overnight_attention_projects_immediately_and_brief_remains_idempotent` | Passed |
 | Several overnight sources yield exactly one morning message | Same test | Passed and deployed |
 | Morning message navigates separate canonical decisions in place | Same test | Passed and deployed |
 | Overnight noise stays suppressed | Typed-candidate and brief filtering tests | Passed and deployed |
 | One morning/night brief per local date across retries/restarts | Morning/night brief tests and unique database constraints | Passed and deployed |
-| Waking actionable work may surface immediately | Night brief integration test creates daytime action cards | Passed and deployed |
+| Actionable work projects immediately at every hour | Overnight and night-brief integration tests | Passed |
 | Routine daytime awareness stays quiet until closeout | Same test | Passed and deployed |
 | Night brief reports outcomes, unresolved work, and awareness without replay | `test_night_brief_consolidates_daytime_action_and_awareness` | Passed and deployed |
 | Delayed classification crosses every published boundary without loss | `test_delayed_candidate_advances_past_every_published_window` | Passed and deployed |
@@ -114,9 +114,8 @@ acceptance evidence:
   without a decision, while the actual time change superseded the original
   queue item, action, and approval. The surviving proposal retained the same
   canonical event identity at version 2 with the corrected timing, and exactly
-  one pending approval remained. Because the sources arrived after the waking
-  window, their sole interactive projection is correctly deferred to the next
-  morning brief.
+  one pending approval remained. This observation exposed and closed the final
+  cadence gap: brief-window membership no longer defers its interactive card.
 
 The semantic handoff's operator-present gates are complete. The deferred
 invitation decision remains an ordinary operational item to approve or reject

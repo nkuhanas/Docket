@@ -75,7 +75,35 @@ class DailyBriefService:
             )
             session.add(window)
             session.flush()
+        elif window.status == "open":
+            starts_at, ends_at = self._window_bounds(kind, local_date)
+            if (
+                window.timezone != self.settings.timezone
+                or _aware(window.starts_at) != starts_at
+                or _aware(window.ends_at) != ends_at
+            ):
+                window.timezone = self.settings.timezone
+                window.starts_at = starts_at
+                window.ends_at = ends_at
+                window.version += 1
         return window
+
+    def _reconcile_open_window_bounds(self, session: Session) -> None:
+        windows = session.scalars(
+            select(TriageWindow).where(TriageWindow.status == "open")
+        ).all()
+        for window in windows:
+            starts_at, ends_at = self._window_bounds(window.window_kind, window.local_date)
+            if (
+                window.timezone == self.settings.timezone
+                and _aware(window.starts_at) == starts_at
+                and _aware(window.ends_at) == ends_at
+            ):
+                continue
+            window.timezone = self.settings.timezone
+            window.starts_at = starts_at
+            window.ends_at = ends_at
+            window.version += 1
 
     def assign_candidate(
         self,
@@ -335,7 +363,8 @@ class DailyBriefService:
         published = False
         start = self.settings.waking_window_start_hour
         end = self.settings.waking_window_end_hour
-        with self.session_factory() as session:
+        with self.session_factory.begin() as session:
+            self._reconcile_open_window_bounds(session)
             due_windows = list(
                 session.execute(
                     select(TriageWindow.window_kind, TriageWindow.local_date)
@@ -351,6 +380,11 @@ class DailyBriefService:
             published = self._publish(kind=kind, local_date=local_date) or published
         if instant.hour >= start:
             published = self._publish(kind="morning", local_date=instant.date()) or published
-        if instant.hour >= end:
+        if start < end and instant.hour >= end:
             published = self._publish(kind="night", local_date=instant.date()) or published
+        elif start > end and end <= instant.hour < start:
+            published = (
+                self._publish(kind="night", local_date=instant.date() - timedelta(days=1))
+                or published
+            )
         return published

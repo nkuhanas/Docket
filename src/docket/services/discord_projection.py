@@ -41,7 +41,7 @@ from docket.security import (
     issue_projection_proposal_control_token,
     issue_projection_review_navigation_token,
 )
-from docket.services.queue import ensure_local_actions
+from docket.services.queue import ensure_local_actions, queue_projection_date
 
 _SUPPORTED_EVENTS = {
     "discord.projection.requested",
@@ -3227,7 +3227,7 @@ class DiscordProjectionRunner:
             return len(events)
 
     def enqueue_stale_projection_repairs(self, *, limit: int = 100) -> int:
-        """Repair newest cards that lag a durable non-pending queue transition."""
+        """Repair missing attention cards and stale terminal projections."""
         repairable_statuses = {
             QueueItemStatus.EXECUTING.value,
             QueueItemStatus.COMPLETED.value,
@@ -3237,6 +3237,82 @@ class DiscordProjectionRunner:
             QueueItemStatus.IGNORED.value,
         }
         with self.session_factory.begin() as session:
+            repair_count = 0
+            attention_items = session.scalars(
+                select(QueueItem)
+                .where(
+                    QueueItem.presentation.in_(
+                        {
+                            "proposal",
+                            "conflict_resolution",
+                            "clarification",
+                            "action_required",
+                        }
+                    ),
+                    QueueItem.status.in_(
+                        {
+                            QueueItemStatus.PENDING.value,
+                            QueueItemStatus.AWAITING_APPROVAL.value,
+                            QueueItemStatus.EXECUTING.value,
+                            QueueItemStatus.RECONCILIATION_REQUIRED.value,
+                        }
+                    ),
+                )
+                .order_by(QueueItem.updated_at.desc())
+            ).yield_per(100)
+            for queue_item in attention_items:
+                if repair_count >= limit:
+                    break
+                projection_id = session.scalar(
+                    select(DiscordProjection.id)
+                    .where(DiscordProjection.queue_item_id == queue_item.id)
+                    .limit(1)
+                )
+                if projection_id is not None:
+                    continue
+                pending_projection = session.scalar(
+                    select(OutboxEvent.id)
+                    .where(
+                        OutboxEvent.aggregate_type == "queue_item",
+                        OutboxEvent.aggregate_id == queue_item.id,
+                        OutboxEvent.event_type.in_(_PROJECTION_EVENTS),
+                        OutboxEvent.status.in_(
+                            {OutboxStatus.PENDING.value, OutboxStatus.DELIVERING.value}
+                        ),
+                    )
+                    .limit(1)
+                )
+                if pending_projection is not None:
+                    continue
+                deduplication_key = (
+                    f"discord_projection:{queue_item.id}:missing:queue-v{queue_item.version}"
+                )
+                if (
+                    session.scalar(
+                        select(OutboxEvent.id).where(
+                            OutboxEvent.deduplication_key == deduplication_key
+                        )
+                    )
+                    is not None
+                ):
+                    continue
+                session.add(
+                    OutboxEvent(
+                        event_type="discord.projection.requested",
+                        aggregate_type="queue_item",
+                        aggregate_id=queue_item.id,
+                        deduplication_key=deduplication_key,
+                        payload={
+                            "queue_item_id": str(queue_item.id),
+                            "target_local_date": queue_projection_date(
+                                queue_item, self.settings
+                            ).isoformat(),
+                            "reason": "missing_attention_projection",
+                        },
+                        status=OutboxStatus.PENDING.value,
+                    )
+                )
+                repair_count += 1
             terminal_approval_bindings = session.scalars(
                 select(Approval).where(
                     Approval.status != ApprovalStatus.PENDING.value,
@@ -3255,7 +3331,6 @@ class DiscordProjectionRunner:
                 .where(QueueItem.status.in_(repairable_statuses))
                 .order_by(QueueItem.updated_at.desc())
             ).yield_per(100)
-            repair_count = 0
             for queue_item in queue_items:
                 if repair_count >= limit:
                     break
