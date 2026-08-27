@@ -841,7 +841,7 @@ def docket_snooze_queue_item(
 ) -> dict[str, Any]:
     """Snooze one pending item using optimistic locking and an explicit wake time.
 
-    A local-date wake occurs at the configured 07:00 Los Angeles rollover. The
+    A local-date wake occurs at the configured local daily rollover hour. The
     operation is local and idempotent; it never mutates Gmail or Calendar.
     """
     try:

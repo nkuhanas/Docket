@@ -67,7 +67,7 @@ def test_rollover_carries_once_refreshes_history_and_archives_without_duplicates
     assert _drain(runner) == 1
 
     rollover = RolloverService(session_factory, settings)
-    rollover_time = datetime(2026, 7, 23, 14, 5, tzinfo=UTC)  # 07:05 Los Angeles
+    rollover_time = datetime(2026, 7, 23, 15, 5, tzinfo=UTC)  # 08:05 Los Angeles
     assert rollover.run_due_once(rollover_time) is True
     assert rollover.run_due_once(rollover_time) is False
     assert _drain(runner) >= 3
@@ -184,9 +184,9 @@ def test_rollover_carries_once_refreshes_history_and_archives_without_duplicates
 
 
 @pytest.mark.integration
-def test_rollover_resumes_due_snooze_once_at_local_seven(session_factory) -> None:
+def test_rollover_resumes_due_snooze_once_at_local_eight(session_factory) -> None:
     settings = get_settings()
-    wake_at = datetime(2026, 11, 1, 15, tzinfo=UTC)  # 07:00 after DST fallback
+    wake_at = datetime(2026, 11, 1, 16, tzinfo=UTC)  # 08:00 after DST fallback
     with session_factory.begin() as session:
         item = QueueItem(
             deduplication_key="synthetic:snooze-rollover",

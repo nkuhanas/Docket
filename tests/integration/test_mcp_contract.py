@@ -96,7 +96,7 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
     assert "Docket-owned daily thread" in source_metadata["parent_channel_id"]["description"]
     snooze = tools["docket_snooze_queue_item"]
     snooze_description = " ".join((snooze.description or "").split())
-    assert "07:00 Los Angeles rollover" in snooze_description
+    assert "configured local daily rollover hour" in snooze_description
     assert "never mutates Gmail or Calendar" in snooze_description
     snooze_properties = snooze.inputSchema["properties"]
     assert snooze_properties["request_key"]["pattern"].startswith("^discord:")

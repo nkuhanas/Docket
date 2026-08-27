@@ -46,10 +46,8 @@ class DailyBriefService:
                 end_local += timedelta(days=1)
         else:
             end_local = datetime.combine(local_date, time(start_hour), tzinfo=self.zone)
-            previous_date = local_date - timedelta(days=1)
-            start_local = datetime.combine(previous_date, time(end_hour), tzinfo=self.zone)
-            if start_local >= end_local:
-                start_local -= timedelta(days=1)
+            start_date = local_date if start_hour > end_hour else local_date - timedelta(days=1)
+            start_local = datetime.combine(start_date, time(end_hour), tzinfo=self.zone)
         return start_local.astimezone(UTC), end_local.astimezone(UTC)
 
     def _window(

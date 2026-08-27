@@ -44,6 +44,27 @@ def _settings():
     )
 
 
+def test_wrapping_waking_window_has_bounded_evening_and_overnight_intervals(
+    session_factory,
+) -> None:
+    settings = _settings().model_copy(
+        update={
+            "waking_window_start_hour": 8,
+            "waking_window_end_hour": 1,
+        }
+    )
+    briefs = DailyBriefService(session_factory, settings)
+
+    assert briefs._window_bounds("waking", date(2026, 8, 24)) == (
+        datetime(2026, 8, 24, 15, 0, tzinfo=UTC),
+        datetime(2026, 8, 25, 8, 0, tzinfo=UTC),
+    )
+    assert briefs._window_bounds("overnight", date(2026, 8, 24)) == (
+        datetime(2026, 8, 24, 8, 0, tzinfo=UTC),
+        datetime(2026, 8, 24, 15, 0, tzinfo=UTC),
+    )
+
+
 @pytest.mark.integration
 def test_delayed_candidate_advances_past_every_published_window(
     session_factory,

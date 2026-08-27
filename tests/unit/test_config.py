@@ -76,16 +76,16 @@ def test_isolated_triage_defaults_fit_one_live_runner_pass() -> None:
     assert settings.gmail_triage_lease_seconds == 300
 
 
-def test_waking_window_is_one_ordered_local_day_interval() -> None:
-    with pytest.raises(ValidationError, match="must start before it ends"):
+def test_waking_window_may_wrap_midnight_but_cannot_fill_the_day() -> None:
+    with pytest.raises(ValidationError, match="must both be non-empty"):
         Settings(
-            DOCKET_WAKING_WINDOW_START_HOUR=22,
-            DOCKET_WAKING_WINDOW_END_HOUR=7,
+            DOCKET_WAKING_WINDOW_START_HOUR=8,
+            DOCKET_WAKING_WINDOW_END_HOUR=8,
         )
 
     settings = Settings(
-        DOCKET_WAKING_WINDOW_START_HOUR=6,
-        DOCKET_WAKING_WINDOW_END_HOUR=23,
+        DOCKET_WAKING_WINDOW_START_HOUR=8,
+        DOCKET_WAKING_WINDOW_END_HOUR=1,
     )
-    assert settings.waking_window_start_hour == 6
-    assert settings.waking_window_end_hour == 23
+    assert settings.waking_window_start_hour == 8
+    assert settings.waking_window_end_hour == 1

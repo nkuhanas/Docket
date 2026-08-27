@@ -97,14 +97,16 @@ observations, and noise remain suppressed.
 Normal email presentation is bounded by the timezone-aware waking window:
 
 ```text
-DOCKET_WAKING_WINDOW_START_HOUR=7
-DOCKET_WAKING_WINDOW_END_HOUR=22
+DOCKET_WAKING_WINDOW_START_HOUR=8
+DOCKET_WAKING_WINDOW_END_HOUR=1
 DOCKET_SEMANTIC_CANDIDATE_POLL_SECONDS=2
 DOCKET_DAILY_BRIEF_POLL_SECONDS=30
 ```
 
-Outside that window, Docket ingests and compiles silently. It publishes one
-idempotent overnight brief at the morning boundary. During the waking window,
+The wrapping interval is awake from 08:00 through midnight until 01:00; the
+overnight window is 01:00 through 08:00. During that overnight window, Docket
+ingests and compiles silently. It publishes one idempotent overnight brief at
+the morning boundary. During the waking window,
 actionable candidates may surface immediately; material awareness accumulates
 for one idempotent night closeout brief. All boundaries use `DOCKET_TIMEZONE`.
 
@@ -150,7 +152,7 @@ an explicit update decision instead.
 ## Queue operational invariant
 
 Discord threads and cards are projections; `queue_items`, typed actions,
-approvals, commands, and outbox rows are canonical. At or after 07:00 in
+approvals, commands, and outbox rows are canonical. At or after 08:00 in
 `DOCKET_TIMEZONE`, Docket runs one durable rollover command per local ISO date:
 
 1. Create or recover exactly one `YYYY-MM-DD — Weekday` public thread under the
@@ -269,7 +271,7 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | No daily thread/card appears | Inspect projection outbox status, then the private plugin listener and Hermes logs | Hermes not recreated after plugin/env change, private listener unavailable, Discord permission/API failure, or retry backoff |
 | Daily thread exists but is hidden until **Join Thread** is used | Inspect the latest thread-ensure acknowledgement for the exact configured `operator_user_id` and `operator_joined=true`, then check Hermes for `daily_thread_member_add_failed` | Pre-`0.10.0` plugin, Hermes was not restarted, operator ID mismatch, missing `SEND_MESSAGES_IN_THREADS`, parent-channel access failure, archived-thread race, or Discord member limit |
 | Hermes ignores the configured operator inside a Docket daily thread | Confirm the event exposes the queue as `parent_chat_id`, the thread exists in `discord_daily_threads`, plugin `0.15.8` is active, and the operator is still the sole allowed user | Old control-only plugin, foreign thread, parent-ID event-shape drift, or Hermes/plugin authorization mismatch |
-| No rollover occurs after 07:00 local | Inspect `system:daily_rollover:ISO-DATE`, worker heartbeat, timezone, and rollover hour | Worker unavailable, wrong timezone/hour, or a prior command already owns the date |
+| No rollover occurs after 08:00 local | Inspect `system:daily_rollover:ISO-DATE`, worker heartbeat, timezone, and rollover hour | Worker unavailable, wrong timezone/hour, or a prior command already owns the date |
 | Duplicate daily thread or card | Stop retries and inspect exact name/owner or footer-marker collisions | Archived lookup drift, manually copied marker, lost binding, or plugin concurrency regression |
 | Button says the control is unauthorized/stale | Compare stored control projection with actual parent/thread/message and actor | Copied/old card, wrong operator, changed thread parent, projection refresh, or callback drift |
 | Snoozed item does not return | Compare `snoozed_until`, `snooze_local_date`, local timezone, and the day's rollover audit | Wake time has not arrived, rollover did not run, or the item was resolved separately |

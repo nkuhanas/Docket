@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     daily_rollover_poll_seconds: float = Field(
         default=60.0, gt=0, alias="DOCKET_DAILY_ROLLOVER_POLL_SECONDS"
     )
-    daily_rollover_hour: int = Field(default=7, ge=0, le=23, alias="DOCKET_DAILY_ROLLOVER_HOUR")
+    daily_rollover_hour: int = Field(default=8, ge=0, le=23, alias="DOCKET_DAILY_ROLLOVER_HOUR")
     local_action_ttl_seconds: int = Field(
         default=86400, ge=60, alias="DOCKET_LOCAL_ACTION_TTL_SECONDS"
     )
@@ -112,13 +112,13 @@ class Settings(BaseSettings):
         alias="DOCKET_SEMANTIC_CANDIDATE_POLL_SECONDS",
     )
     waking_window_start_hour: int = Field(
-        default=7,
+        default=8,
         ge=0,
         le=23,
         alias="DOCKET_WAKING_WINDOW_START_HOUR",
     )
     waking_window_end_hour: int = Field(
-        default=22,
+        default=1,
         ge=0,
         le=23,
         alias="DOCKET_WAKING_WINDOW_END_HOUR",
@@ -268,10 +268,8 @@ class Settings(BaseSettings):
         }
         if len(channel_ids) != 3:
             raise ValueError("Docket chat, queue, and system channel IDs must be distinct")
-        if self.waking_window_start_hour >= self.waking_window_end_hour:
-            raise ValueError(
-                "Docket's waking window must start before it ends on the same local day"
-            )
+        if self.waking_window_start_hour == self.waking_window_end_hour:
+            raise ValueError("Docket's waking and overnight windows must both be non-empty")
         if self.environment is Environment.PRODUCTION:
             if self.auto_create_schema:
                 raise ValueError("DOCKET_AUTO_CREATE_SCHEMA must be false in production")

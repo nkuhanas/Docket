@@ -73,7 +73,7 @@ def test_manual_snooze_is_idempotent_and_uses_local_rollover(session) -> None:
 
     assert first.status == "snoozed"
     assert first.version == 2
-    assert first.snoozed_until == datetime(2026, 11, 1, 15, tzinfo=UTC)
+    assert first.snoozed_until == datetime(2026, 11, 1, 16, tzinfo=UTC)
     assert replay.disposition == "replayed_request"
     assert replay.queue_item_id == item.id
     assert (
