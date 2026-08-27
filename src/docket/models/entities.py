@@ -59,6 +59,7 @@ class EntityAlias(TimestampMixin, Base):
     __tablename__ = "entity_aliases"
     __table_args__ = (
         UniqueConstraint("entity_id", "normalized_alias", name="uq_entity_aliases_identity"),
+        Index("ix_entity_aliases_normalized_alias", "normalized_alias"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -78,12 +79,20 @@ class EntityRelation(TimestampMixin, Base):
             "status IN ('active', 'retracted')",
             name="ck_entity_relations_status",
         ),
+        CheckConstraint(
+            "predicate IN ('works_for', 'member_of', 'affiliated_with', 'advises', "
+            "'instructs', 'reports_to', 'collaborates_with', 'knows', 'friend_of', "
+            "'classmate_of', 'leads', 'participates_in', 'located_at', 'uses', 'supports')",
+            name="ck_entity_relations_predicate",
+        ),
         UniqueConstraint(
             "subject_entity_id",
             "predicate",
             "object_entity_id",
             name="uq_entity_relations_triple",
         ),
+        Index("ix_entity_relations_subject_predicate", "subject_entity_id", "predicate"),
+        Index("ix_entity_relations_object_predicate", "object_entity_id", "predicate"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)

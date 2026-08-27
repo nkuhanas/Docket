@@ -1,15 +1,20 @@
 import uuid
+from collections.abc import Callable
 from datetime import date, datetime
 from typing import Annotated, Any
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field
+from sqlalchemy import select
 
 from docket.config import get_settings
 from docket.database import get_session_factory, session_scope
-from docket.domain.enums import IntentAuthority, RecordStatus
-from docket.domain.errors import DocketError
+from docket.domain.canonical import sha256_json
+from docket.domain.enums import CommandStatus, IntentAuthority, RecordStatus
+from docket.domain.errors import DocketError, IdempotencyConflict
+from docket.models import CommandRequest
+from docket.models.base import utc_now
 from docket.providers.google.runtime import get_calendar_read_provider
 from docket.schemas.actions import (
     CalendarEventProposal,
@@ -27,6 +32,15 @@ from docket.schemas.calendar import (
     CalendarRelativeDay,
     CalendarReminderPlanInput,
     SetCalendarProfileInput,
+)
+from docket.schemas.entities import (
+    EntityAttributeKey,
+    EntityAttributes,
+    EntityName,
+    EntityPredicate,
+    EntityRelationAttributes,
+    EntityRelationDirection,
+    EntitySearchStatus,
 )
 from docket.schemas.queue import (
     IgnoreQueueItemInput,
@@ -83,6 +97,9 @@ mcp = FastMCP(
 CalendarId = Annotated[str, Field(min_length=1, max_length=1024)]
 CalendarLimit = Annotated[int, Field(ge=1, le=100)]
 CalendarTextFilter = Annotated[str, Field(max_length=200)]
+EntitySearchQuery = Annotated[str, Field(min_length=1, max_length=256)]
+EntitySearchLimit = Annotated[int, Field(ge=1, le=50)]
+EntityRetractionReason = Annotated[str, Field(min_length=1, max_length=1000)]
 
 
 def _error(exc: Exception) -> dict[str, Any]:
@@ -157,10 +174,62 @@ def _validate_entity_write(
     validate_configured_discord_source(session, source, actor_id)
 
 
+def _execute_entity_write(
+    session: Any,
+    *,
+    request_key: DiscordRequestKey,
+    source: RecordSourceInput,
+    actor_id: DiscordId,
+    operation_name: str,
+    payload: dict[str, Any],
+    execute: Callable[[], dict[str, Any]],
+) -> dict[str, Any]:
+    """Consume one trusted entity command idempotently in the caller transaction."""
+    _validate_entity_write(session, request_key=request_key, source=source, actor_id=actor_id)
+    command_payload = {
+        **payload,
+        "source": source.model_dump(mode="json"),
+        "actor_id": actor_id,
+    }
+    input_sha256 = sha256_json(command_payload)
+    existing = session.scalar(
+        select(CommandRequest).where(CommandRequest.request_key == request_key)
+    )
+    if existing is not None:
+        if existing.operation_name != operation_name or existing.input_sha256 != input_sha256:
+            raise IdempotencyConflict(
+                request_key,
+                existing_operation=existing.operation_name,
+                attempted_operation=operation_name,
+            )
+        if existing.status == CommandStatus.SUCCEEDED.value and existing.result is not None:
+            return {**existing.result, "disposition": "replayed_request"}
+        raise DocketError(
+            code="request_in_progress",
+            message="The entity request exists but has not completed successfully.",
+            details={"request_key": request_key, "status": existing.status},
+        )
+    command = CommandRequest(
+        request_key=request_key,
+        operation_name=operation_name,
+        input_sha256=input_sha256,
+        actor_type="hermes",
+        actor_id=actor_id,
+        status=CommandStatus.IN_PROGRESS.value,
+    )
+    session.add(command)
+    session.flush()
+    result = execute()
+    command.status = CommandStatus.SUCCEEDED.value
+    command.result = result
+    command.completed_at = utc_now()
+    return result
+
+
 @mcp.tool()
 def docket_resolve_entity(
     entity_class: EntityClass,
-    mention: str,
+    mention: EntityName,
 ) -> dict[str, Any]:
     """Resolve an entity mention against Docket's emergent canonical registry.
 
@@ -182,6 +251,13 @@ def docket_resolve_entity(
             return {
                 "ok": True,
                 "resolution": result.model_dump(mode="json"),
+                "aliases": (
+                    service.snapshot(result.resolved_entity.entity_id).model_dump(
+                        mode="json"
+                    )["aliases"]
+                    if result.resolved_entity is not None
+                    else []
+                ),
                 "relationships": relationships,
             }
     except Exception as exc:
@@ -191,8 +267,8 @@ def docket_resolve_entity(
 @mcp.tool()
 def docket_create_entity(
     entity_class: EntityClass,
-    canonical_name: str,
-    attributes: dict[str, Any],
+    canonical_name: EntityName,
+    attributes: EntityAttributes,
     request_key: DiscordRequestKey,
     source: RecordSourceInput,
     actor_id: DiscordId,
@@ -200,18 +276,30 @@ def docket_create_entity(
     """Create or confirm one genuinely new canonical entity from current user intent."""
     try:
         with session_scope() as session:
-            _validate_entity_write(
-                session, request_key=request_key, source=source, actor_id=actor_id
-            )
-            result = EntityService(session).create(
-                entity_class=entity_class,
-                canonical_name=canonical_name,
-                attributes=attributes,
-                authority=IntentAuthority.EXPLICIT_USER,
-                actor_type="hermes",
+            service = EntityService(session)
+            return _execute_entity_write(
+                session,
+                request_key=request_key,
+                source=source,
                 actor_id=actor_id,
+                operation_name="docket_create_entity",
+                payload={
+                    "entity_class": entity_class,
+                    "canonical_name": canonical_name,
+                    "attributes": attributes.model_dump(mode="json", exclude_none=True),
+                },
+                execute=lambda: {
+                    "ok": True,
+                    "entity": service.create(
+                        entity_class=entity_class,
+                        canonical_name=canonical_name,
+                        attributes=attributes,
+                        authority=IntentAuthority.EXPLICIT_USER,
+                        actor_type="hermes",
+                        actor_id=actor_id,
+                    ).model_dump(mode="json"),
+                },
             )
-            return {"ok": True, "entity": result.model_dump(mode="json")}
     except Exception as exc:
         return _error(exc)
 
@@ -223,24 +311,49 @@ def docket_update_entity(
     request_key: DiscordRequestKey,
     source: RecordSourceInput,
     actor_id: DiscordId,
-    canonical_name: str | None = None,
-    attributes: dict[str, Any] | None = None,
+    canonical_name: EntityName | None = None,
+    attribute_updates: EntityAttributes | None = None,
+    remove_attribute_keys: list[EntityAttributeKey] | None = None,
 ) -> dict[str, Any]:
-    """Correct the name or attributes of one exact entity with optimistic versioning."""
+    """Patch one exact entity with optimistic versioning.
+
+    ``attribute_updates`` changes only the supplied keys and preserves all other
+    metadata. Use ``remove_attribute_keys`` for deliberate deletion; never send a
+    reconstructed whole profile merely to change one fact.
+    """
     try:
         with session_scope() as session:
-            _validate_entity_write(
-                session, request_key=request_key, source=source, actor_id=actor_id
-            )
-            result = EntityService(session).update(
-                entity_id=entity_id,
-                expected_version=expected_version,
-                canonical_name=canonical_name,
-                attributes=attributes,
-                authority=IntentAuthority.EXPLICIT_USER,
+            service = EntityService(session)
+            return _execute_entity_write(
+                session,
+                request_key=request_key,
+                source=source,
                 actor_id=actor_id,
+                operation_name="docket_update_entity",
+                payload={
+                    "entity_id": str(entity_id),
+                    "expected_version": expected_version,
+                    "canonical_name": canonical_name,
+                    "attribute_updates": (
+                        attribute_updates.model_dump(mode="json", exclude_none=True)
+                        if attribute_updates is not None
+                        else None
+                    ),
+                    "remove_attribute_keys": remove_attribute_keys,
+                },
+                execute=lambda: {
+                    "ok": True,
+                    "entity": service.update(
+                        entity_id=entity_id,
+                        expected_version=expected_version,
+                        canonical_name=canonical_name,
+                        attribute_updates=attribute_updates,
+                        remove_attribute_keys=remove_attribute_keys,
+                        authority=IntentAuthority.EXPLICIT_USER,
+                        actor_id=actor_id,
+                    ).model_dump(mode="json"),
+                },
             )
-            return {"ok": True, "entity": result.model_dump(mode="json")}
     except Exception as exc:
         return _error(exc)
 
@@ -248,7 +361,7 @@ def docket_update_entity(
 @mcp.tool()
 def docket_add_entity_alias(
     entity_id: uuid.UUID,
-    alias: str,
+    alias: EntityName,
     request_key: DiscordRequestKey,
     source: RecordSourceInput,
     actor_id: DiscordId,
@@ -256,15 +369,23 @@ def docket_add_entity_alias(
     """Teach Docket an explicit alias for one exact canonical entity."""
     try:
         with session_scope() as session:
-            _validate_entity_write(
-                session, request_key=request_key, source=source, actor_id=actor_id
+            service = EntityService(session)
+            return _execute_entity_write(
+                session,
+                request_key=request_key,
+                source=source,
+                actor_id=actor_id,
+                operation_name="docket_add_entity_alias",
+                payload={"entity_id": str(entity_id), "alias": alias},
+                execute=lambda: {
+                    "ok": True,
+                    "entity": service.add_alias(
+                        entity_id=entity_id,
+                        alias=alias,
+                        authority=IntentAuthority.EXPLICIT_USER,
+                    ).model_dump(mode="json"),
+                },
             )
-            result = EntityService(session).add_alias(
-                entity_id=entity_id,
-                alias=alias,
-                authority=IntentAuthority.EXPLICIT_USER,
-            )
-            return {"ok": True, "entity": result.model_dump(mode="json")}
     except Exception as exc:
         return _error(exc)
 
@@ -272,27 +393,185 @@ def docket_add_entity_alias(
 @mcp.tool()
 def docket_relate_entities(
     subject_entity_id: uuid.UUID,
-    predicate: str,
+    predicate: EntityPredicate,
     object_entity_id: uuid.UUID,
     request_key: DiscordRequestKey,
     source: RecordSourceInput,
     actor_id: DiscordId,
-    attributes: dict[str, Any] | None = None,
+    attributes: EntityRelationAttributes | None = None,
 ) -> dict[str, Any]:
-    """Persist one typed relationship between two exact canonical entities."""
+    """Persist one directional relationship between two exact canonical entities.
+
+    Read the predicate as ``subject predicate object``: for example, the operator
+    person ``works_for`` an organization, while another person ``advises`` the
+    operator. Existing metadata is never silently overwritten.
+    """
     try:
         with session_scope() as session:
-            _validate_entity_write(
-                session, request_key=request_key, source=source, actor_id=actor_id
+            service = EntityService(session)
+            return _execute_entity_write(
+                session,
+                request_key=request_key,
+                source=source,
+                actor_id=actor_id,
+                operation_name="docket_relate_entities",
+                payload={
+                    "subject_entity_id": str(subject_entity_id),
+                    "predicate": predicate,
+                    "object_entity_id": str(object_entity_id),
+                    "attributes": (
+                        attributes.model_dump(mode="json", exclude_none=True)
+                        if attributes is not None
+                        else None
+                    ),
+                },
+                execute=lambda: {
+                    "ok": True,
+                    "relation_id": str(
+                        service.relate(
+                            subject_entity_id=subject_entity_id,
+                            predicate=predicate,
+                            object_entity_id=object_entity_id,
+                            authority=IntentAuthority.EXPLICIT_USER,
+                            attributes=attributes,
+                            actor_id=actor_id,
+                        )
+                    ),
+                },
             )
-            relation_id = EntityService(session).relate(
-                subject_entity_id=subject_entity_id,
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_get_entity(entity_id: uuid.UUID) -> dict[str, Any]:
+    """Read one exact entity with its aliases and active directional relationships.
+
+    Use this immediately before relying on stored metadata or changing an entity or
+    relationship. It is the authoritative entity snapshot, not conversational memory.
+    """
+    try:
+        with session_scope() as session:
+            snapshot = EntityService(session).snapshot(entity_id)
+            return {"ok": True, **snapshot.model_dump(mode="json")}
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_search_entities(
+    query: EntitySearchQuery | None = None,
+    entity_class: EntityClass | None = None,
+    status: EntitySearchStatus = "active_or_provisional",
+    predicate: EntityPredicate | None = None,
+    related_entity_id: uuid.UUID | None = None,
+    direction: EntityRelationDirection = "any",
+    is_operator: bool | None = None,
+    limit: EntitySearchLimit = 20,
+) -> dict[str, Any]:
+    """Search Docket's canonical registry before asking the operator for known facts.
+
+    Search covers canonical names, aliases, and validated metadata. Relationship filters
+    let Hermes infer bounded facts already present in Docket: for example, find people
+    who ``advise`` the operator or organizations the operator ``member_of``. Direction
+    describes the returned entity's side of ``subject predicate object``. Results are
+    bounded and include aliases plus active relationships. Do not treat no result as
+    permission to invent a fact.
+    """
+    try:
+        with session_scope() as session:
+            results = EntityService(session).search(
+                query=query,
+                entity_class=entity_class,
+                status=status,
                 predicate=predicate,
-                object_entity_id=object_entity_id,
-                authority=IntentAuthority.EXPLICIT_USER,
-                attributes=attributes,
+                related_entity_id=related_entity_id,
+                direction=direction,
+                is_operator=is_operator,
+                limit=limit,
             )
-            return {"ok": True, "relation_id": str(relation_id)}
+            return {
+                "ok": True,
+                "count": len(results),
+                "entities": [result.model_dump(mode="json") for result in results],
+            }
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_update_entity_relation(
+    relation_id: uuid.UUID,
+    expected_version: int,
+    attributes: EntityRelationAttributes,
+    request_key: DiscordRequestKey,
+    source: RecordSourceInput,
+    actor_id: DiscordId,
+) -> dict[str, Any]:
+    """Replace the metadata of one exact active relationship with version checking."""
+    try:
+        with session_scope() as session:
+            service = EntityService(session)
+            return _execute_entity_write(
+                session,
+                request_key=request_key,
+                source=source,
+                actor_id=actor_id,
+                operation_name="docket_update_entity_relation",
+                payload={
+                    "relation_id": str(relation_id),
+                    "expected_version": expected_version,
+                    "attributes": attributes.model_dump(mode="json", exclude_none=True),
+                },
+                execute=lambda: {
+                    "ok": True,
+                    "relationship": service.update_relation(
+                        relation_id=relation_id,
+                        expected_version=expected_version,
+                        attributes=attributes,
+                        authority=IntentAuthority.EXPLICIT_USER,
+                        actor_id=actor_id,
+                    ),
+                },
+            )
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_retract_entity_relation(
+    relation_id: uuid.UUID,
+    expected_version: int,
+    reason: EntityRetractionReason,
+    request_key: DiscordRequestKey,
+    source: RecordSourceInput,
+    actor_id: DiscordId,
+) -> dict[str, Any]:
+    """Retract one wrong or ended relationship without erasing its history."""
+    try:
+        with session_scope() as session:
+            service = EntityService(session)
+            return _execute_entity_write(
+                session,
+                request_key=request_key,
+                source=source,
+                actor_id=actor_id,
+                operation_name="docket_retract_entity_relation",
+                payload={
+                    "relation_id": str(relation_id),
+                    "expected_version": expected_version,
+                    "reason": reason,
+                },
+                execute=lambda: {
+                    "ok": True,
+                    **service.retract_relation(
+                        relation_id=relation_id,
+                        expected_version=expected_version,
+                        reason=reason,
+                        actor_id=actor_id,
+                    ),
+                },
+            )
     except Exception as exc:
         return _error(exc)
 
@@ -308,16 +587,27 @@ def docket_merge_entities(
     """Merge one duplicate identity into a selected survivor while preserving history."""
     try:
         with session_scope() as session:
-            _validate_entity_write(
-                session, request_key=request_key, source=source, actor_id=actor_id
-            )
-            result = EntityService(session).merge(
-                survivor_id=survivor_entity_id,
-                absorbed_id=absorbed_entity_id,
-                authority=IntentAuthority.EXPLICIT_USER,
+            service = EntityService(session)
+            return _execute_entity_write(
+                session,
+                request_key=request_key,
+                source=source,
                 actor_id=actor_id,
+                operation_name="docket_merge_entities",
+                payload={
+                    "survivor_entity_id": str(survivor_entity_id),
+                    "absorbed_entity_id": str(absorbed_entity_id),
+                },
+                execute=lambda: {
+                    "ok": True,
+                    "entity": service.merge(
+                        survivor_id=survivor_entity_id,
+                        absorbed_id=absorbed_entity_id,
+                        authority=IntentAuthority.EXPLICIT_USER,
+                        actor_id=actor_id,
+                    ).model_dump(mode="json"),
+                },
             )
-            return {"ok": True, "entity": result.model_dump(mode="json")}
     except Exception as exc:
         return _error(exc)
 
@@ -333,15 +623,23 @@ def docket_rebind_entity_resolution(
     """Correct a prior mention resolution and preserve both the old and new bindings."""
     try:
         with session_scope() as session:
-            _validate_entity_write(
-                session, request_key=request_key, source=source, actor_id=actor_id
-            )
-            result = EntityService(session).rebind_resolution(
-                resolution_id=resolution_id,
-                entity_id=entity_id,
+            service = EntityService(session)
+            return _execute_entity_write(
+                session,
+                request_key=request_key,
+                source=source,
                 actor_id=actor_id,
+                operation_name="docket_rebind_entity_resolution",
+                payload={"resolution_id": str(resolution_id), "entity_id": str(entity_id)},
+                execute=lambda: {
+                    "ok": True,
+                    "resolution": service.rebind_resolution(
+                        resolution_id=resolution_id,
+                        entity_id=entity_id,
+                        actor_id=actor_id,
+                    ).model_dump(mode="json"),
+                },
             )
-            return {"ok": True, "resolution": result.model_dump(mode="json")}
     except Exception as exc:
         return _error(exc)
 

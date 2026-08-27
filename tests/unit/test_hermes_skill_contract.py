@@ -74,6 +74,21 @@ def test_manual_intent_skill_uses_independent_course_lifecycles() -> None:
     assert "queue root and `#docket-system` remain non-conversational" in skill
 
 
+def test_manual_intent_skill_uses_entity_registry_before_guessing() -> None:
+    skill = " ".join(SKILL_PATH.read_text(encoding="utf-8").split())
+
+    assert "use `docket_search_entities`" in skill
+    assert "use `is_operator: true`" in skill
+    assert "subject predicate object" in skill
+    assert "Use `docket_get_entity` immediately before relying" in skill
+    assert "No search result is not permission to invent a fact" in skill
+    assert "never populate a seed list or create inferred social relationships" in skill
+    assert "there may be only one active operator identity" in skill
+    assert "never reconstruct the whole profile" in skill
+    assert "`docket_update_entity_relation`" in skill
+    assert "`docket_retract_entity_relation`" in skill
+
+
 def test_triage_skill_does_not_invent_acknowledgement_work() -> None:
     skill = " ".join(TRIAGE_SKILL_PATH.read_text(encoding="utf-8").split())
 

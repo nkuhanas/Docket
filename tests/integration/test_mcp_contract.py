@@ -24,6 +24,7 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
         "docket_list_calendar_events",
         "docket_get_calendar_sync_status",
         "docket_get_calendar_profile",
+        "docket_get_entity",
         "docket_set_calendar_profile",
         "docket_list_reminder_rules",
         "docket_merge_entities",
@@ -31,13 +32,16 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
         "docket_apply_course_intent",
         "docket_rebind_entity_resolution",
         "docket_relate_entities",
+        "docket_retract_entity_relation",
         "docket_resolve_entity",
+        "docket_search_entities",
         "docket_list_queue_items",
         "docket_get_queue_item",
         "docket_snooze_queue_item",
         "docket_ignore_queue_item",
         "docket_get_action",
         "docket_update_entity",
+        "docket_update_entity_relation",
     }
     assert not names.intersection(
         {"record_approval", "consume_approval", "execute_action", "raw_gmail_modify"}
@@ -61,6 +65,46 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
     assert "record_conflict" in store_description
     assert "Never copy the existing record" in store_description
     assert "docket_update_record" in store_description
+
+    entity_search = tools["docket_search_entities"]
+    entity_search_description = " ".join((entity_search.description or "").split())
+    assert "before asking the operator for known facts" in entity_search_description
+    assert "subject predicate object" in entity_search_description
+    entity_search_properties = entity_search.inputSchema["properties"]
+    assert entity_search_properties["limit"]["maximum"] == 50
+    assert entity_search_properties["predicate"]["anyOf"][0]["enum"] == [
+        "works_for",
+        "member_of",
+        "affiliated_with",
+        "advises",
+        "instructs",
+        "reports_to",
+        "collaborates_with",
+        "knows",
+        "friend_of",
+        "classmate_of",
+        "leads",
+        "participates_in",
+        "located_at",
+        "uses",
+        "supports",
+    ]
+    assert entity_search_properties["direction"]["enum"] == ["any", "subject", "object"]
+
+    create_entity = tools["docket_create_entity"]
+    entity_attributes = create_entity.inputSchema["$defs"]["EntityAttributes"]
+    assert entity_attributes["additionalProperties"] is False
+    assert "is_operator" in entity_attributes["properties"]
+    assert "email_addresses" in entity_attributes["properties"]
+    update_entity = tools["docket_update_entity"]
+    update_entity_description = " ".join((update_entity.description or "").split())
+    assert "preserves all other metadata" in update_entity_description
+    assert "attributes" not in update_entity.inputSchema["properties"]
+    assert "attribute_updates" in update_entity.inputSchema["properties"]
+    relation_schema = tools["docket_relate_entities"].inputSchema
+    assert relation_schema["properties"]["predicate"]["enum"] == (
+        entity_search_properties["predicate"]["anyOf"][0]["enum"]
+    )
     search_description = " ".join((tools["docket_search_records"].description or "").split())
     assert "before answering operational facts" in search_description
     assert "Never claim a store/save/remember request succeeded" in search_description

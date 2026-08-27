@@ -31,6 +31,50 @@ successful store result includes the authoritative canonical record snapshot.
 claim such as “stored” or “confirmed” after only search/get calls is a failure,
 even if the returned fact is correct.
 
+## Entity-registry operational invariant
+
+Docket's entity registry is the durable source for known people,
+organizations, institutions, courses, locations, projects, and services.
+Hermes memory and past-session search are not substitutes.
+
+Before asking for a fact that may already be registered, use:
+
+1. `docket_search_entities` to enumerate a bounded candidate set by canonical
+   name, alias, metadata, class, operator identity, or relationship;
+2. `docket_resolve_entity` when one natural-language mention must bind to one
+   canonical identity; and
+3. `docket_get_entity` immediately before relying on or changing one exact
+   identity. The snapshot includes validated metadata, aliases, relationship
+   direction, relation metadata, and versions.
+
+Relationships always read as `subject predicate object`. For example, an
+advisor person `advises` the operator person, while the operator person
+`member_of` an organization. Do not reverse those IDs to make a query happen to
+work. `is_operator: true` is allowed only on one active person, giving Hermes a
+stable anchor for phrases such as “my advisor” without making the user's name
+or Discord identity a global assumption.
+
+Entity profile keys and relationship predicates are a closed MCP schema. Put
+job titles, roles, context, effective dates, and notes in their defined
+metadata fields; do not encode them into invented predicates. Entity updates
+patch supplied attributes and preserve omitted keys. Removal requires an
+explicit `remove_attribute_keys` entry. Existing relation metadata cannot be
+silently overwritten: update it with `docket_update_entity_relation`, or end a
+wrong/expired relation with `docket_retract_entity_relation`. Retraction keeps
+history.
+
+Every entity write consumes the trusted Discord request key through the same
+operation-name and input-hash contract as other Docket commands. An exact retry
+returns `replayed_request`; reuse for another operation or payload returns
+`idempotency_conflict`. If an entity call appears to repeat or mutate twice,
+inspect `command_requests`, then `audit_events`, before changing registry data.
+
+After a deploy that changes this surface, restart Docket and Hermes and run
+`/reload-mcp` in the active Discord session. If Hermes still asks for a fact
+that is present, first inspect the `docket_search_entities` trace in
+`#docket-system`; distinguish a missing call, an overly restrictive filter,
+ambiguous results, and a stale MCP schema before adding duplicate data.
+
 ## Calendar operational invariant
 
 A Calendar write succeeds only through this durable sequence:
@@ -1373,3 +1417,14 @@ session before any live schedule smoke.
 For changes to manual Discord persistence, additionally require one real
 Discord remember request, durable source/audit/command evidence, an exact
 replay, an unauthenticated 401, and forged-source rejection.
+
+For entity-registry or inference changes, also run:
+
+```bash
+uv run pytest \
+  tests/unit/test_entities.py \
+  tests/unit/test_entity_mcp_idempotency.py \
+  tests/unit/test_hermes_skill_contract.py \
+  tests/integration/test_mcp_contract.py \
+  tests/integration/test_migrations.py
+```

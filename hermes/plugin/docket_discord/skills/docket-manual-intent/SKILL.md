@@ -155,12 +155,30 @@ MCP calls to `docket-system`. Do not reproduce arguments, results, source
 context, identifiers, or a second call-by-call transcript in the chat response.
 
 Treat institutions, organizations, courses, people, locations, projects, and
-services as distinct canonical entity classes. Use `docket_resolve_entity`
-before relying on an ambiguous name. Create an entity only when the current
-operator genuinely introduces a new identity; never populate a seed list.
+services as distinct canonical entity classes. Before asking the operator for
+a person, organization, alias, relationship, or contact fact that Docket may
+already know, use `docket_search_entities`; use `is_operator: true` to find the
+operator identity and relationship filters to answer bounded questions such as
+"my advisor" or "organizations I belong to." Read every predicate in the
+direction `subject predicate object`: another person `advises` the operator,
+while the operator `member_of` an organization. Use `docket_get_entity`
+immediately before relying on an exact entity snapshot or changing its metadata
+or relationships. Use `docket_resolve_entity` for a mention that must bind to
+one canonical identity. No search result is not permission to invent a fact.
+Create an entity only when the current operator genuinely introduces a new
+identity; never populate a seed list or create inferred social relationships.
+Only a person may carry `is_operator: true`, and there may be only one active
+operator identity. Entity metadata is validated. Patch supplied keys with
+`docket_update_entity`; remove a key only through `remove_attribute_keys`, and
+never reconstruct the whole profile to change one fact.
 Persist an explicit synonym with `docket_add_entity_alias`, a relationship with
 `docket_relate_entities`, a duplicate correction with `docket_merge_entities`,
-and a wrong mention binding with `docket_rebind_entity_resolution`. A
+and a wrong mention binding with `docket_rebind_entity_resolution`. Correct
+relationship metadata with `docket_update_entity_relation`; end or disavow a
+relationship with `docket_retract_entity_relation` rather than erasing history.
+The controlled predicates are the complete supported vocabulary; put titles,
+roles, time bounds, context, and notes in relationship attributes rather than
+inventing a new predicate. A
 provisional or ambiguous result is not a permanent fact. An identity the user
 explicitly establishes as the organizer, institution, course, participant,
 location, project, or service of an event is material to that event and must be

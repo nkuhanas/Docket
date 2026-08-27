@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 import uuid
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -22,7 +23,17 @@ from docket.models import (
     SemanticCandidate,
 )
 from docket.models.base import utc_now
-from docket.schemas.entities import EntityResolutionResult, EntityResult
+from docket.schemas.entities import (
+    EntityAttributeKey,
+    EntityAttributes,
+    EntityPredicate,
+    EntityRelationAttributes,
+    EntityRelationDirection,
+    EntityResolutionResult,
+    EntityResult,
+    EntitySearchStatus,
+    EntitySnapshotResult,
+)
 from docket.schemas.triage import EntityClass
 
 _SPACE = re.compile(r"\s+")
@@ -46,9 +57,68 @@ def serialize_entity(entity: Entity) -> EntityResult:
     )
 
 
+def _attribute_dict(attributes: EntityAttributes | dict[str, Any] | None) -> dict[str, Any]:
+    if attributes is None:
+        return {}
+    model = (
+        attributes
+        if isinstance(attributes, EntityAttributes)
+        else EntityAttributes.model_validate(attributes)
+    )
+    return model.model_dump(mode="json", exclude_none=True)
+
+
+def _relation_attribute_dict(
+    attributes: EntityRelationAttributes | dict[str, Any] | None,
+) -> dict[str, Any]:
+    if attributes is None:
+        return {}
+    model = (
+        attributes
+        if isinstance(attributes, EntityRelationAttributes)
+        else EntityRelationAttributes.model_validate(attributes)
+    )
+    return model.model_dump(mode="json", exclude_none=True)
+
+
 class EntityService:
     def __init__(self, session: Session) -> None:
         self.session = session
+
+    def _validate_operator_identity(
+        self,
+        *,
+        entity_class: EntityClass,
+        attributes: dict[str, Any],
+        entity_id: uuid.UUID | None = None,
+    ) -> None:
+        if not attributes.get("is_operator"):
+            return
+        if entity_class != "person":
+            raise DocketError(
+                code="invalid_operator_entity",
+                message="Only a person entity can represent the Docket operator.",
+            )
+        existing = self.session.scalars(
+            select(Entity).where(
+                Entity.entity_class == "person",
+                Entity.status.in_(("active", "provisional")),
+            )
+        ).all()
+        duplicate = next(
+            (
+                candidate
+                for candidate in existing
+                if candidate.id != entity_id and candidate.attributes.get("is_operator") is True
+            ),
+            None,
+        )
+        if duplicate is not None:
+            raise DocketError(
+                code="operator_entity_exists",
+                message="Docket already has an active operator person identity.",
+                details={"entity_id": str(duplicate.id)},
+            )
 
     def _matches(self, entity_class: EntityClass, normalized: str) -> list[Entity]:
         corrected_ids = select(EntityResolution.corrected_resolution_id).where(
@@ -258,7 +328,7 @@ class EntityService:
             candidates=[serialize_entity(entity) for entity in matches],
         )
 
-    def relationships(self, entity_id: uuid.UUID) -> list[dict[str, Any]]:
+    def relationships(self, entity_id: uuid.UUID, *, limit: int = 100) -> list[dict[str, Any]]:
         entity = self.session.get(Entity, entity_id)
         if entity is None or entity.status not in {"active", "provisional"}:
             raise DocketError(code="entity_not_found", message="Active entity was not found.")
@@ -272,6 +342,7 @@ class EntityService:
                 ),
             )
             .order_by(EntityRelation.predicate, EntityRelation.id)
+            .limit(limit)
         ).all()
         results: list[dict[str, Any]] = []
         for relation in relations:
@@ -292,18 +363,125 @@ class EntityService:
             )
         return results
 
+    def snapshot(self, entity_id: uuid.UUID) -> EntitySnapshotResult:
+        entity = self.session.get(Entity, entity_id)
+        if entity is None:
+            raise DocketError(code="entity_not_found", message="Entity was not found.")
+        aliases = self.session.scalars(
+            select(EntityAlias)
+            .where(EntityAlias.entity_id == entity_id)
+            .order_by(EntityAlias.alias, EntityAlias.id)
+            .limit(100)
+        ).all()
+        return EntitySnapshotResult.model_validate(
+            {
+                "entity": serialize_entity(entity).model_dump(mode="json"),
+                "aliases": [
+                    {
+                        "alias_id": alias.id,
+                        "alias": alias.alias,
+                        "authority": alias.authority,
+                        "confidence": alias.confidence,
+                    }
+                    for alias in aliases
+                ],
+                "relationships": self.relationships(entity_id, limit=100)
+                if entity.status in {"active", "provisional"}
+                else [],
+            }
+        )
+
+    def search(
+        self,
+        *,
+        query: str | None = None,
+        entity_class: EntityClass | None = None,
+        status: EntitySearchStatus = "active_or_provisional",
+        predicate: EntityPredicate | None = None,
+        related_entity_id: uuid.UUID | None = None,
+        direction: EntityRelationDirection = "any",
+        is_operator: bool | None = None,
+        limit: int = 20,
+    ) -> list[EntitySnapshotResult]:
+        statement = select(Entity)
+        if entity_class is not None:
+            statement = statement.where(Entity.entity_class == entity_class)
+        if status == "active_or_provisional":
+            statement = statement.where(Entity.status.in_(("active", "provisional")))
+        elif status != "all":
+            statement = statement.where(Entity.status == status)
+
+        relations = self.session.scalars(
+            select(EntityRelation).where(EntityRelation.status == "active")
+        ).all()
+        if predicate is not None:
+            relations = [relation for relation in relations if relation.predicate == predicate]
+        if related_entity_id is not None:
+            relations = [
+                relation
+                for relation in relations
+                if related_entity_id
+                in (relation.subject_entity_id, relation.object_entity_id)
+            ]
+        if predicate is not None or related_entity_id is not None:
+            if direction == "subject":
+                related_ids = {relation.subject_entity_id for relation in relations}
+            elif direction == "object":
+                related_ids = {relation.object_entity_id for relation in relations}
+            else:
+                related_ids = {
+                    entity_id
+                    for relation in relations
+                    for entity_id in (relation.subject_entity_id, relation.object_entity_id)
+                }
+            statement = statement.where(Entity.id.in_(related_ids))
+
+        entities = list(self.session.scalars(statement.order_by(Entity.canonical_name, Entity.id)))
+        alias_rows = self.session.scalars(select(EntityAlias)).all()
+        aliases: dict[uuid.UUID, list[EntityAlias]] = {}
+        for alias in alias_rows:
+            aliases.setdefault(alias.entity_id, []).append(alias)
+        normalized_query = normalize_entity_name(query) if query else None
+        matched: list[tuple[int, Entity]] = []
+        for entity in entities:
+            if (
+                is_operator is not None
+                and entity.attributes.get("is_operator") is not is_operator
+            ):
+                continue
+            rank = 2
+            if normalized_query:
+                alias_names = [alias.normalized_alias for alias in aliases.get(entity.id, [])]
+                metadata = normalize_entity_name(
+                    json.dumps(entity.attributes, ensure_ascii=False, sort_keys=True)
+                )
+                if entity.normalized_name == normalized_query or normalized_query in alias_names:
+                    rank = 0
+                elif normalized_query in entity.normalized_name or any(
+                    normalized_query in alias for alias in alias_names
+                ):
+                    rank = 1
+                elif normalized_query not in metadata:
+                    continue
+            matched.append((rank, entity))
+        matched.sort(key=lambda item: (item[0], item[1].canonical_name.casefold(), str(item[1].id)))
+        return [self.snapshot(entity.id) for _, entity in matched[:limit]]
+
     def create(
         self,
         *,
         entity_class: EntityClass,
         canonical_name: str,
-        attributes: dict[str, Any],
+        attributes: EntityAttributes | dict[str, Any],
         authority: IntentAuthority,
         provisional: bool = False,
         actor_type: str = "docket",
         actor_id: str | None = None,
     ) -> EntityResult:
+        attribute_values = _attribute_dict(attributes)
         normalized = normalize_entity_name(canonical_name)
+        if not normalized:
+            raise DocketError(code="invalid_entity_name", message="Entity name cannot be empty.")
         existing = self.session.scalar(
             select(Entity).where(
                 Entity.entity_class == entity_class,
@@ -312,6 +490,11 @@ class EntityService:
             )
         )
         if existing is not None:
+            self._validate_operator_identity(
+                entity_class=entity_class,
+                attributes={**existing.attributes, **attribute_values},
+                entity_id=existing.id,
+            )
             if (
                 existing.status == "provisional"
                 and not provisional
@@ -319,16 +502,41 @@ class EntityService:
             ):
                 existing.status = "active"
                 existing.authority = authority.value
-                existing.attributes = {**existing.attributes, **attributes}
+                merged_attributes = {**existing.attributes, **attribute_values}
+                self._validate_operator_identity(
+                    entity_class=entity_class,
+                    attributes=merged_attributes,
+                    entity_id=existing.id,
+                )
+                existing.attributes = merged_attributes
                 existing.version += 1
+            elif attribute_values and any(
+                existing.attributes.get(key) != value
+                for key, value in attribute_values.items()
+            ):
+                raise DocketError(
+                    code="entity_exists",
+                    message=(
+                        "The canonical entity already exists with different metadata; "
+                        "read and update it explicitly."
+                    ),
+                    details={
+                        "entity_id": str(existing.id),
+                        "current_version": existing.version,
+                    },
+                )
             self._resolve_waiting_mentions(existing, normalized_mentions={normalized})
             return serialize_entity(existing)
+        self._validate_operator_identity(
+            entity_class=entity_class,
+            attributes=attribute_values,
+        )
         entity = Entity(
             entity_class=entity_class,
             canonical_name=canonical_name.strip(),
             normalized_name=normalized,
             status="provisional" if provisional else "active",
-            attributes=attributes,
+            attributes=attribute_values,
             authority=authority.value,
         )
         self.session.add(entity)
@@ -356,7 +564,8 @@ class EntityService:
         entity_id: uuid.UUID,
         expected_version: int,
         canonical_name: str | None,
-        attributes: dict[str, Any] | None,
+        attribute_updates: EntityAttributes | dict[str, Any] | None,
+        remove_attribute_keys: list[EntityAttributeKey] | None,
         authority: IntentAuthority,
         actor_id: str | None = None,
     ) -> EntityResult:
@@ -369,11 +578,54 @@ class EntityService:
                 message="The entity changed after it was read.",
                 details={"current_version": entity.version},
             )
+        if canonical_name is None and attribute_updates is None and not remove_attribute_keys:
+            raise DocketError(
+                code="empty_entity_update",
+                message="Entity update must change a name or at least one attribute.",
+            )
         if canonical_name is not None:
+            normalized_name = normalize_entity_name(canonical_name)
+            if not normalized_name:
+                raise DocketError(
+                    code="invalid_entity_name", message="Entity name cannot be empty."
+                )
+            duplicate = self.session.scalar(
+                select(Entity).where(
+                    Entity.id != entity.id,
+                    Entity.entity_class == entity.entity_class,
+                    Entity.normalized_name == normalized_name,
+                    Entity.status.in_(("active", "provisional")),
+                )
+            )
+            if duplicate is not None:
+                raise DocketError(
+                    code="entity_identity_conflict",
+                    message="Another active entity already has that canonical identity.",
+                    details={"entity_id": str(duplicate.id)},
+                )
             entity.canonical_name = canonical_name.strip()
-            entity.normalized_name = normalize_entity_name(canonical_name)
-        if attributes is not None:
-            entity.attributes = dict(attributes)
+            entity.normalized_name = normalized_name
+        updates = _attribute_dict(attribute_updates)
+        removals = set(remove_attribute_keys or [])
+        overlap = removals.intersection(updates)
+        if overlap:
+            raise DocketError(
+                code="invalid_entity_attribute_patch",
+                message="An attribute cannot be both updated and removed.",
+                details={"keys": sorted(overlap)},
+            )
+        patched_attributes = {
+            key: value for key, value in entity.attributes.items() if key not in removals
+        }
+        patched_attributes.update(updates)
+        EntityAttributes.model_validate(patched_attributes)
+        self._validate_operator_identity(
+            entity_class=cast(EntityClass, entity.entity_class),
+            attributes=patched_attributes,
+            entity_id=entity.id,
+        )
+        if attribute_updates is not None or removals:
+            entity.attributes = patched_attributes
         entity.authority = authority.value
         if authority != IntentAuthority.INFERRED:
             entity.status = "active"
@@ -402,6 +654,13 @@ class EntityService:
         if entity is None or entity.status not in {"active", "provisional"}:
             raise DocketError(code="entity_not_found", message="Active entity was not found.")
         normalized = normalize_entity_name(alias)
+        if not normalized:
+            raise DocketError(code="invalid_entity_alias", message="Entity alias cannot be empty.")
+        if not 0.0 <= confidence <= 1.0:
+            raise DocketError(
+                code="invalid_entity_alias_confidence",
+                message="Entity alias confidence must be between 0 and 1.",
+            )
         existing = self.session.scalar(
             select(EntityAlias).where(
                 EntityAlias.entity_id == entity.id,
@@ -426,10 +685,11 @@ class EntityService:
         self,
         *,
         subject_entity_id: uuid.UUID,
-        predicate: str,
+        predicate: EntityPredicate,
         object_entity_id: uuid.UUID,
         authority: IntentAuthority,
-        attributes: dict[str, Any] | None = None,
+        attributes: EntityRelationAttributes | dict[str, Any] | None = None,
+        actor_id: str | None = None,
     ) -> uuid.UUID:
         if subject_entity_id == object_entity_id:
             raise DocketError(
@@ -441,6 +701,7 @@ class EntityService:
                 raise DocketError(
                     code="entity_not_found", message="A related entity was not found."
                 )
+        attribute_values = _relation_attribute_dict(attributes)
         relation = self.session.scalar(
             select(EntityRelation).where(
                 EntityRelation.subject_entity_id == subject_entity_id,
@@ -454,16 +715,117 @@ class EntityService:
                 predicate=predicate,
                 object_entity_id=object_entity_id,
                 authority=authority.value,
-                attributes=attributes or {},
+                attributes=attribute_values,
             )
             self.session.add(relation)
             self.session.flush()
         elif relation.status == "retracted":
             relation.status = "active"
             relation.authority = authority.value
-            relation.attributes = attributes or {}
+            relation.attributes = attribute_values
             relation.version += 1
+        elif relation.attributes != attribute_values:
+            raise DocketError(
+                code="entity_relation_exists",
+                message=(
+                    "The relationship already exists with different metadata; "
+                    "update it explicitly."
+                ),
+                details={"relation_id": str(relation.id), "current_version": relation.version},
+            )
+        self.session.add(
+            AuditEvent(
+                event_type="entity_relation.created",
+                entity_type="entity_relation",
+                entity_id=relation.id,
+                actor_type="hermes" if actor_id else "docket",
+                actor_id=actor_id,
+                data={"predicate": predicate, "version": relation.version},
+            )
+        )
         return relation.id
+
+    def update_relation(
+        self,
+        *,
+        relation_id: uuid.UUID,
+        expected_version: int,
+        attributes: EntityRelationAttributes | dict[str, Any],
+        authority: IntentAuthority,
+        actor_id: str | None = None,
+    ) -> dict[str, Any]:
+        relation = self.session.scalar(
+            select(EntityRelation).where(EntityRelation.id == relation_id).with_for_update()
+        )
+        if relation is None or relation.status != "active":
+            raise DocketError(
+                code="entity_relation_not_found",
+                message="Active entity relationship was not found.",
+            )
+        if relation.version != expected_version:
+            raise DocketError(
+                code="entity_relation_version_changed",
+                message="The relationship changed after it was read.",
+                details={"current_version": relation.version},
+            )
+        relation.attributes = _relation_attribute_dict(attributes)
+        relation.authority = authority.value
+        relation.version += 1
+        self.session.add(
+            AuditEvent(
+                event_type="entity_relation.updated",
+                entity_type="entity_relation",
+                entity_id=relation.id,
+                actor_type="hermes" if actor_id else "docket",
+                actor_id=actor_id,
+                data={"version": relation.version},
+            )
+        )
+        return next(
+            item
+            for item in self.relationships(relation.subject_entity_id)
+            if item["relation_id"] == str(relation.id)
+        )
+
+    def retract_relation(
+        self,
+        *,
+        relation_id: uuid.UUID,
+        expected_version: int,
+        reason: str,
+        actor_id: str | None = None,
+    ) -> dict[str, Any]:
+        relation = self.session.scalar(
+            select(EntityRelation).where(EntityRelation.id == relation_id).with_for_update()
+        )
+        if relation is None:
+            raise DocketError(
+                code="entity_relation_not_found", message="Entity relationship was not found."
+            )
+        if relation.version != expected_version:
+            raise DocketError(
+                code="entity_relation_version_changed",
+                message="The relationship changed after it was read.",
+                details={"current_version": relation.version},
+            )
+        if relation.status != "retracted":
+            relation.status = "retracted"
+            relation.version += 1
+            self.session.add(
+                AuditEvent(
+                    event_type="entity_relation.retracted",
+                    entity_type="entity_relation",
+                    entity_id=relation.id,
+                    actor_type="hermes" if actor_id else "docket",
+                    actor_id=actor_id,
+                    data={"reason": reason, "version": relation.version},
+                )
+            )
+        return {
+            "relation_id": str(relation.id),
+            "status": relation.status,
+            "version": relation.version,
+        }
 
     def merge(
         self,
@@ -530,7 +892,7 @@ class EntityService:
                 continue
             self.relate(
                 subject_entity_id=subject_id,
-                predicate=relation.predicate,
+                predicate=cast(EntityPredicate, relation.predicate),
                 object_entity_id=object_id,
                 authority=authority,
                 attributes=dict(relation.attributes),

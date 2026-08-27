@@ -78,6 +78,7 @@ mcp_servers:
         - docket_list_calendar_events
         - docket_get_calendar_sync_status
         - docket_get_calendar_profile
+        - docket_get_entity
         - docket_set_calendar_profile
         - docket_list_reminder_rules
         - docket_merge_entities
@@ -85,12 +86,15 @@ mcp_servers:
         - docket_apply_course_intent
         - docket_rebind_entity_resolution
         - docket_relate_entities
+        - docket_retract_entity_relation
         - docket_resolve_entity
+        - docket_search_entities
         - docket_list_queue_items
         - docket_get_queue_item
         - docket_snooze_queue_item
         - docket_ignore_queue_item
         - docket_get_action
         - docket_update_entity
+        - docket_update_entity_relation
       prompts: false
       resources: false
