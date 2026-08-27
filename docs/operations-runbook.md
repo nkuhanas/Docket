@@ -384,8 +384,9 @@ Do not rewrite or delete it to make the history look cleaner.
 An exact replay through `docket_store_record` with the same arguments must
 return the original record and request ID with disposition `replayed_request`.
 It must not insert a second command, source, or audit event. Historical commands
-whose stored operation name is `docket_remember_record` remain replay-compatible
-through the renamed tool; do not rewrite those evidence rows.
+whose stored operation name is `docket_remember_record` remain immutable
+evidence, but the renamed tool rejects their request keys with
+`idempotency_conflict`; do not rewrite those rows.
 
 The safest replay input is the captured tool call from a redacted Hermes session,
 not a hand-reconstructed payload. Reconstructing it risks changing the title,

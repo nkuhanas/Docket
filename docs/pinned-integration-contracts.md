@@ -545,9 +545,9 @@ sensitive even though secrets should not be present.
 
 A new request with the same canonical identity but different normalized data
 returns `record_conflict` and attaches no provenance. Historical command rows
-retain the operation name `docket_remember_record`; the store service accepts
-that name only as a replay-compatible predecessor and writes
-`docket_store_record` for new commands.
+with the retired `docket_remember_record` operation remain immutable evidence,
+but they are not replay-compatible with `docket_store_record`. Reusing one of
+their request keys through the current tool returns `idempotency_conflict`.
 
 After `record_conflict`, fetching the canonical data and resubmitting it under a
 new request key is forbidden. It would make a current source appear to support

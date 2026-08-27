@@ -93,16 +93,14 @@ class RecordService:
         payload: dict[str, Any],
         actor_type: str,
         actor_id: str | None,
-        compatible_operation_names: frozenset[str] | None = None,
     ) -> tuple[CommandRequest, RecordResult | None]:
         input_sha256 = sha256_json(payload)
         existing = self.session.scalar(
             select(CommandRequest).where(CommandRequest.request_key == request_key)
         )
         if existing is not None:
-            accepted_operation_names = compatible_operation_names or frozenset({operation_name})
             if (
-                existing.operation_name not in accepted_operation_names
+                existing.operation_name != operation_name
                 or existing.input_sha256 != input_sha256
             ):
                 raise IdempotencyConflict(
@@ -200,7 +198,6 @@ class RecordService:
         command, replay = self._start_command(
             request_key=request.request_key,
             operation_name="docket_store_record",
-            compatible_operation_names=frozenset({"docket_remember_record", "docket_store_record"}),
             payload=payload,
             actor_type=request.actor_type,
             actor_id=request.actor_id,

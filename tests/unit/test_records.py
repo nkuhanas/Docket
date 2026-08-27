@@ -126,9 +126,9 @@ def test_store_and_replay_are_idempotent(session: Session) -> None:
     assert len(list(session.scalars(select(Record)))) == 1
 
 
-def test_store_replays_historical_remember_operation_name(session: Session) -> None:
+def test_store_rejects_historical_remember_operation_name(session: Session) -> None:
     service = RecordService(session)
-    first = service.store(store_term_request())
+    service.store(store_term_request())
     session.flush()
     command = session.scalar(
         select(CommandRequest).where(CommandRequest.request_key == store_term_request().request_key)
@@ -137,10 +137,14 @@ def test_store_replays_historical_remember_operation_name(session: Session) -> N
     command.operation_name = "docket_remember_record"
     session.commit()
 
-    replay = service.store(store_term_request())
+    with pytest.raises(IdempotencyConflict) as raised:
+        service.store(store_term_request())
 
-    assert replay.record_id == first.record_id
-    assert replay.disposition == "replayed_request"
+    assert raised.value.details == {
+        "request_key": store_term_request().request_key,
+        "existing_operation": "docket_remember_record",
+        "attempted_operation": "docket_store_record",
+    }
 
 
 def test_new_request_matches_canonical_record(session: Session) -> None:
@@ -409,7 +413,7 @@ def test_discord_request_key_must_match_source_metadata() -> None:
         StoreRecordInput.model_validate(payload)
 
 
-def test_chat_source_serialization_preserves_legacy_idempotency_payload() -> None:
+def test_chat_source_serialization_omits_unbound_parent_channel() -> None:
     serialized = store_term_request().model_dump(mode="json")
 
     assert "parent_channel_id" not in serialized["source"]["metadata"]
