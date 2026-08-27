@@ -91,13 +91,20 @@ evidence for two acceptance items:
   card.
 * The published `morning` brief for 2026-08-26 and `night` brief for 2026-08-25
   each have exactly one Discord projection and one external Discord message.
+* On 2026-08-26, a complete natural-language Discord create command with an
+  available time slot executed under `explicit_user` authority without an
+  approval. Its queue presentation was suppressed, the provider link was
+  confirmed, and its ten-minute Google popup and Docket reminder plan were
+  activated. The action and provider operation succeeded, both system-log
+  projections were delivered, and every associated MCP trace reached the
+  system channel without an error. A preceding command for an occupied slot
+  correctly produced conflict-resolution context instead of executing.
 
 The remaining operator-present evidence is intentionally narrow:
 
 1. A real invitation produces one inferred proposal; a changed follow-up
    replaces it rather than creating a second active decision.
-2. A complete natural-language Discord event command executes directly.
-3. An unknown organization triggers one concise registration question and the
+2. An unknown organization triggers one concise registration question and the
    original command resumes after the answer.
 
 Do not mark the semantic handoff complete until those observations are recorded
