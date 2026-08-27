@@ -99,13 +99,18 @@ evidence for two acceptance items:
   projections were delivered, and every associated MCP trace reached the
   system channel without an error. A preceding command for an occupied slot
   correctly produced conflict-resolution context instead of executing.
+* On 2026-08-26, an event naming an unregistered organization paused for one
+  ascertainment choice. Selecting registration created an active organization
+  under `explicit_user` authority and resumed the original Discord intent with
+  its next request index. The resumed event preserved that organization as its
+  organizer, executed without a second approval, and reached active canonical
+  state with one provider link. Both system-log projections and every related
+  MCP trace were delivered without an error.
 
 The remaining operator-present evidence is intentionally narrow:
 
 1. A real invitation produces one inferred proposal; a changed follow-up
    replaces it rather than creating a second active decision.
-2. An unknown organization triggers one concise registration question and the
-   original command resumes after the answer.
 
 Do not mark the semantic handoff complete until those observations are recorded
 or equivalent authoritative live evidence exists.
