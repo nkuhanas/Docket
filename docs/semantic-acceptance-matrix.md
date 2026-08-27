@@ -18,7 +18,7 @@ listed operator-present Discord/Gmail observations.
 | Ambiguous mention requires selection | `test_entity_registry_resolves_aliases_and_preserves_ambiguity` | Passed and deployed |
 | Registration and aliases improve later matching | `test_explicit_registration_resolves_an_existing_unknown_mention` and entity registry test | Passed and deployed |
 | Correction/merge preserves relationships and future resolution | Entity registry test | Passed and deployed |
-| No seed list is required | Entity service has no seed path; manual-intent contract forbids seeding | Passed static audit; conversational observation pending |
+| No seed list is required | Entity service has no seed path; manual-intent contract forbids seeding | Passed static audit and live organic registration |
 
 ## Inferred Gmail semantics and correlation
 
@@ -29,6 +29,7 @@ listed operator-present Discord/Gmail observations.
 | Empty extraction and duplicate thread are idempotent | `test_empty_extraction_and_duplicate_thread_candidate_are_idempotent` | Passed and deployed |
 | Application receipt is awareness/suppressed with no individual card | Morning/night brief integration tests and `test_passive_gmail_notification_renders_without_local_controls` | Passed and deployed |
 | Complete invitation creates one inferred, version-bound proposal | `test_complete_inferred_event_becomes_one_version_bound_proposal` | Passed and deployed |
+| Optional provisional sender/location classification does not block a complete formulation | `test_complete_inferred_event_becomes_one_version_bound_proposal` | Passed and deployed in `ebedb1a` |
 | Exact Calendar match is a no-op | `test_existing_provider_event_is_noop_then_cancellation_needs_no_replacement` | Passed and deployed |
 | Update/cancellation converge with a pending create | `test_update_and_cancellation_reconcile_one_pending_create_formulation` | Passed and deployed |
 | New evidence supersedes the current edited proposal, not a historical revision | `test_new_evidence_supersedes_current_edited_revision_and_aggregate_card` | Passed and deployed |
@@ -82,8 +83,8 @@ listed operator-present Discord/Gmail observations.
 The isolated live triage profile is deployment-validated against exactly four
 tools. A stale legacy submission allowlist was repaired on 2026-08-26, and a
 controlled pass proved semantic candidates can again be persisted. The
-following content-free production queries provide equivalent authoritative
-evidence for two acceptance items:
+following content-free production queries provide authoritative live
+acceptance evidence:
 
 * Between `2026-08-26T23:23:45Z` and `2026-08-26T23:24:32Z`, four candidates
   matching receipt/application-confirmation terminology were durably resolved
@@ -106,11 +107,17 @@ evidence for two acceptance items:
   organizer, executed without a second approval, and reached active canonical
   state with one provider link. Both system-log projections and every related
   MCP trace were delivered without an error.
+* On 2026-08-26, a fresh Gmail invitation processed after `ebedb1a` retained a
+  first-time sender as an optional provisional person and produced exactly one
+  inferred action with one pending approval and no clarification. Two rapid
+  same-thread follow-ups then arrived: the accidental material repeat resolved
+  without a decision, while the actual time change superseded the original
+  queue item, action, and approval. The surviving proposal retained the same
+  canonical event identity at version 2 with the corrected timing, and exactly
+  one pending approval remained. Because the sources arrived after the waking
+  window, their sole interactive projection is correctly deferred to the next
+  morning brief.
 
-The remaining operator-present evidence is intentionally narrow:
-
-1. A real invitation produces one inferred proposal; a changed follow-up
-   replaces it rather than creating a second active decision.
-
-Do not mark the semantic handoff complete until those observations are recorded
-or equivalent authoritative live evidence exists.
+The semantic handoff's operator-present gates are complete. The deferred
+invitation decision remains an ordinary operational item to approve or reject
+from its carried-forward morning card, not an additional implementation gate.
