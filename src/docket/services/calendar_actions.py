@@ -619,16 +619,6 @@ class CalendarActionService:
             return proposal.reminder_plan
         return CalendarReminderPlanInput(lead_seconds=[])
 
-    def propose(self, request: ProposeCalendarEventInput) -> ProposalResult:
-        result = self._formulate(
-            request,
-            authority=IntentAuthority.INFERRED,
-            operation_name="docket_propose_calendar_event",
-        )
-        if not isinstance(result, ProposalResult):
-            raise AssertionError("inferred Calendar intent bypassed its decision boundary")
-        return result
-
     def apply_explicit(
         self, request: ProposeCalendarEventInput
     ) -> ProposalResult | DirectExecutionResult:

@@ -157,7 +157,7 @@ def test_standalone_create_proposal_uses_profile_reminder_and_conflict_scan(
     cached_event(session, account)
     request = create_request(account)
 
-    result = CalendarActionService(session).propose(request)
+    result = CalendarActionService(session).apply_explicit(request)
     session.flush()
 
     revision = session.get(ActionRevision, result.action_revision_id)
@@ -185,7 +185,7 @@ def test_standalone_create_proposal_uses_profile_reminder_and_conflict_scan(
     assert len(plans) == 1 and plans[0].lead_seconds == 600
 
     session.commit()
-    replay = CalendarActionService(session).propose(request)
+    replay = CalendarActionService(session).apply_explicit(request)
     assert replay.disposition == "replayed_request"
     assert replay.action_id == result.action_id
 
@@ -200,7 +200,7 @@ def test_profile_block_policy_cannot_turn_overlap_into_validation_failure(
     assert stored is not None and profile.version == 1
     stored.conflict_policy = "block"
 
-    result = CalendarActionService(session).propose(create_request(account))
+    result = CalendarActionService(session).apply_explicit(create_request(account))
     revision = session.get(ActionRevision, result.action_revision_id)
 
     assert revision is not None
@@ -244,7 +244,9 @@ def test_attendee_event_cannot_be_targeted(session: Session) -> None:
     }
 
     with pytest.raises(DocketError) as raised:
-        CalendarActionService(session).propose(ProposeCalendarEventInput.model_validate(request))
+        CalendarActionService(session).apply_explicit(
+            ProposeCalendarEventInput.model_validate(request)
+        )
 
     assert raised.value.code == "calendar_event_not_private"
 

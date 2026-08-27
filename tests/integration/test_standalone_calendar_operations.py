@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from docket.config import get_settings
+from docket.domain.canonical import sha256_json
 from docket.domain.enums import IntentAuthority
 from docket.domain.errors import DocketError
 from docket.internal_api.schemas import ApprovalResponse, LocalActionResponse
@@ -27,9 +28,12 @@ from docket.models import (
     Operation,
     OperationBundle,
     OutboxEvent,
+    ProviderEventBinding,
     QueueItem,
     ReminderRule,
     ScheduledNotification,
+    SemanticCandidate,
+    SourceItem,
 )
 from docket.providers.discord import FakeDiscordBackend, FakeDiscordProjectionAdapter
 from docket.providers.google.calendar import (
@@ -38,7 +42,7 @@ from docket.providers.google.calendar import (
     CalendarSnapshotEvent,
 )
 from docket.providers.google.fake_calendar import FakeCalendarProvider
-from docket.schemas.actions import ProposeCalendarEventInput
+from docket.schemas.actions import InferredCalendarEventInput, ProposeCalendarEventInput
 from docket.services.approvals import ApprovalService
 from docket.services.calendar_actions import CalendarActionService
 from docket.services.calendar_sync import CalendarSyncService
@@ -179,6 +183,110 @@ def _event_request(
     )
 
 
+def _formulate_inferred(
+    session: Session,
+    request: ProposeCalendarEventInput,
+):
+    """Exercise the same provenance-bound formulation entry point as Gmail."""
+
+    request_fingerprint = sha256_json({"request_key": request.request_key})
+    source = session.scalar(
+        select(SourceItem).where(
+            SourceItem.account_id == request.account_id,
+            SourceItem.external_object_id == f"test-inferred-{request_fingerprint}",
+        )
+    )
+    if source is None:
+        source = SourceItem(
+            account_id=request.account_id,
+            provider="gmail",
+            external_object_id=f"test-inferred-{request_fingerprint}",
+            source_version="1",
+            source_fingerprint=request_fingerprint,
+            minimal_headers={
+                "sender": "Calendar Source <calendar@example.com>",
+                "subject": "Calendar change",
+            },
+            status="classified",
+        )
+        session.add(source)
+        session.flush()
+
+    proposal_payload = request.proposal.model_dump(mode="json")
+    event_payload = proposal_payload.get("event") or proposal_payload.get("replacement")
+    provider_event_id = proposal_payload.get("provider_event_id")
+    canonical_event = None
+    if isinstance(provider_event_id, str):
+        binding = session.scalar(
+            select(ProviderEventBinding).where(
+                ProviderEventBinding.account_id == request.account_id,
+                ProviderEventBinding.calendar_id == request.calendar_id,
+                ProviderEventBinding.provider_event_id == provider_event_id,
+            )
+        )
+        if binding is not None:
+            canonical_event = session.get(CanonicalEvent, binding.canonical_event_id)
+    canonical_key = f"test-inferred:{sha256_json({'proposal': proposal_payload})}"
+    if canonical_event is None:
+        canonical_event = session.scalar(
+            select(CanonicalEvent).where(CanonicalEvent.canonical_key == canonical_key)
+        )
+    if canonical_event is None:
+        title = (
+            str(event_payload.get("title"))
+            if isinstance(event_payload, dict) and event_payload.get("title")
+            else "Inferred Calendar event"
+        )
+        canonical_event = CanonicalEvent(
+            canonical_key=canonical_key,
+            title=title,
+            status="proposed",
+            event_spec=event_payload if isinstance(event_payload, dict) else {},
+            entity_refs=[],
+            context_labels=[],
+            authority="inferred",
+        )
+        session.add(canonical_event)
+        session.flush()
+
+    candidate = session.scalar(
+        select(SemanticCandidate).where(
+            SemanticCandidate.source_item_id == source.id,
+            SemanticCandidate.candidate_index == 0,
+        )
+    )
+    if candidate is None:
+        mutation = str(proposal_payload["kind"])
+        candidate = SemanticCandidate(
+            source_item_id=source.id,
+            candidate_index=0,
+            candidate_key=f"calendar-{request_fingerprint[:24]}",
+            semantic_key=sha256_json({"semantic_request": request.request_key}),
+            kind="event",
+            mutation="update" if mutation == "reminders" else mutation,
+            title=canonical_event.title,
+            summary="Inferred Calendar test formulation.",
+            fields={"proposal": proposal_payload},
+            confidence=0.95,
+            status="pending",
+        )
+        session.add(candidate)
+        session.flush()
+
+    return CalendarActionService(session).formulate_inferred(
+        InferredCalendarEventInput(
+            account_id=request.account_id,
+            calendar_id=request.calendar_id,
+            proposal=request.proposal,
+            canonical_event_id=canonical_event.id,
+            semantic_candidate_id=candidate.id,
+            source_item_id=source.id,
+            request_key=f"gmail:test:{request_fingerprint}",
+            defer_projection=False,
+        )
+    )
+
+
 def test_all_day_projection_preserves_calendar_date_semantics() -> None:
     rendered = DiscordProjectionRunner._standalone_timing(
         {
@@ -204,10 +312,12 @@ def test_materially_identical_pending_standalone_proposal_is_suppressed(
 ) -> None:
     with session_factory.begin() as session:
         account = _seed_target(session)
-        first = CalendarActionService(session).propose(
+        first = _formulate_inferred(
+            session,
             _create_request(account, "322222222222222222")
         )
-        second = CalendarActionService(session).propose(
+        second = _formulate_inferred(
+            session,
             _create_request(account, "323333333333333333")
         )
 
@@ -345,7 +455,7 @@ def test_standalone_create_executes_with_unified_reminder_plan(
     with session_factory.begin() as session:
         account = _seed_target(session)
         account_id = account.id
-        proposal = CalendarActionService(session).propose(_create_request(account, message_id))
+        proposal = _formulate_inferred(session, _create_request(account, message_id))
         operation_id = _approve(
             session,
             short_code=proposal.short_code,
@@ -403,7 +513,8 @@ def test_update_card_prioritizes_operator_changes_and_terminal_state(
     with session_factory.begin() as session:
         account = _seed_target(session)
         account_id = account.id
-        created = CalendarActionService(session).propose(
+        created = _formulate_inferred(
+            session,
             _create_request(account, "343333333333333333")
         )
     while projection_runner.run_due_once():
@@ -422,7 +533,8 @@ def test_update_card_prioritizes_operator_changes_and_terminal_state(
         account = session.get(Account, account_id)
         event = session.scalar(select(CalendarEventCache))
         assert account is not None and event is not None
-        updated = CalendarActionService(session).propose(
+        updated = _formulate_inferred(
+            session,
             _event_request(
                 account,
                 "353333333333333333",
@@ -521,7 +633,8 @@ def test_reminder_disable_and_cancellation_converge_both_projections(
     with session_factory.begin() as session:
         account = _seed_target(session)
         account_id = account.id
-        created = CalendarActionService(session).propose(
+        created = _formulate_inferred(
+            session,
             _create_request(
                 account,
                 "444444444444444444",
@@ -541,7 +654,8 @@ def test_reminder_disable_and_cancellation_converge_both_projections(
         event = session.scalar(select(CalendarEventCache))
         assert account is not None and event is not None
         provider_event_id = event.provider_event_id
-        disabled = CalendarActionService(session).propose(
+        disabled = _formulate_inferred(
+            session,
             _event_request(
                 account,
                 "555555555555555555",
@@ -579,7 +693,8 @@ def test_reminder_disable_and_cancellation_converge_both_projections(
     with session_factory.begin() as session:
         account = session.get(Account, account_id)
         assert account is not None
-        cancelled = CalendarActionService(session).propose(
+        cancelled = _formulate_inferred(
+            session,
             _event_request(
                 account,
                 "666666666666666666",
@@ -725,7 +840,8 @@ def test_recurring_series_cancellation_binds_master_and_cleans_every_instance(
         account = session.get(Account, account_id)
         assert account is not None
         with pytest.raises(DocketError) as wrong_master_scope:
-            CalendarActionService(session).propose(
+            _formulate_inferred(
+                session,
                 _event_request(
                     account,
                     "676666666666666665",
@@ -739,7 +855,8 @@ def test_recurring_series_cancellation_binds_master_and_cleans_every_instance(
             )
         assert wrong_master_scope.value.code == "calendar_event_not_found"
         with pytest.raises(DocketError) as wrong_occurrence_scope:
-            CalendarActionService(session).propose(
+            _formulate_inferred(
+                session,
                 _event_request(
                     account,
                     "676666666666666664",
@@ -770,7 +887,8 @@ def test_recurring_series_cancellation_binds_master_and_cleans_every_instance(
         assert materialize_reminders(session, now=now, settings=settings) == 2
         account = session.get(Account, account_id)
         assert account is not None
-        proposal = CalendarActionService(session).propose(
+        proposal = _formulate_inferred(
+            session,
             _event_request(
                 account,
                 "676666666666666666",
@@ -869,7 +987,8 @@ def test_proposal_selects_and_custom_modal_replace_the_revision_in_place(
     settings = get_settings()
     with session_factory.begin() as session:
         account = _seed_target(session)
-        proposed = CalendarActionService(session).propose(
+        proposed = _formulate_inferred(
+            session,
             _create_request(account, "777777777777777777")
         )
 
@@ -1382,7 +1501,8 @@ def test_refresh_rebinds_conflicts_and_edit_modal_replaces_typed_fields(
     with session_factory.begin() as session:
         account = _seed_target(session)
         account_id = account.id
-        proposed = CalendarActionService(session).propose(
+        proposed = _formulate_inferred(
+            session,
             _create_request(account, "888888888888888888")
         )
     backend = FakeDiscordBackend()
@@ -1553,7 +1673,8 @@ def test_proposal_snooze_defers_the_fresh_approval_without_provider_work(
     settings = get_settings()
     with session_factory.begin() as session:
         account = _seed_target(session)
-        proposed = CalendarActionService(session).propose(
+        proposed = _formulate_inferred(
+            session,
             _create_request(account, "999999999999999999")
         )
     backend = FakeDiscordBackend()
@@ -1652,7 +1773,8 @@ def test_carried_forward_approval_refreshes_the_clicked_card_and_repairs_duplica
     settings = get_settings()
     with session_factory.begin() as session:
         account = _seed_target(session)
-        proposed = CalendarActionService(session).propose(
+        proposed = _formulate_inferred(
+            session,
             _create_request(account, "989898989898989898")
         )
 
