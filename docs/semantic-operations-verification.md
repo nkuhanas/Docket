@@ -42,6 +42,8 @@ outside version control.
   Duplicate interactions repair the exact clicked projection. The first
   acknowledged render after a decision records one content-free
   `approval.projection_converged` audit event with `decision_to_card_ms`.
+  Periodic reconciliation also clears stale terminal approval-control pointers
+  even when the external message already rendered its noninteractive state.
 * A generic title is not event identity. Independent inferred creates with the
   same title but different material event fingerprints remain distinct unless
   a provider event ID, sender event ID, or exact event fingerprint correlates

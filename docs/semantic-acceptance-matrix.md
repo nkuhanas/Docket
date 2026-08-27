@@ -58,6 +58,7 @@ listed operator-present Discord/Gmail observations.
 | Accepted/duplicate decisions remove controls and execute once | Same test | Passed and deployed |
 | Lost Discord edit acknowledgement retries idempotently | Same test with `discard_next_projection_ack` | Passed and deployed |
 | Restart reconciliation repairs stale interactive projections | Same test's `enqueue_stale_projection_repairs` assertions | Passed and deployed |
+| Reconciliation clears terminal approval-control bindings even when the external card is already current | Same carried-forward projection test | Passed locally; deployment pending |
 | Material semantic change invalidates the old approval and aggregate view | Semantic supersession tests | Passed and deployed |
 | Exhausted projection failure preserves canonical state and alerts system channel | `test_exhausted_projection_reports_one_durable_system_alert` | Passed and deployed |
 | Decision-to-card convergence latency is recorded once at the clicked projection acknowledgement | Carried-forward projection test asserts one `approval.projection_converged` audit event | Passed locally; deployment pending |

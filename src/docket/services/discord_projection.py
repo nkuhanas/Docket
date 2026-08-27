@@ -3237,6 +3237,19 @@ class DiscordProjectionRunner:
             QueueItemStatus.IGNORED.value,
         }
         with self.session_factory.begin() as session:
+            terminal_approval_bindings = session.scalars(
+                select(Approval).where(
+                    Approval.status != ApprovalStatus.PENDING.value,
+                    Approval.control_projection_id.is_not(None),
+                )
+            ).yield_per(100)
+            for approval in terminal_approval_bindings:
+                # This pointer grants no authority by itself, but retaining it
+                # after a terminal decision makes duplicate-click recovery and
+                # operator diagnostics disagree with the rendered card. Clear
+                # legacy or interrupted bindings independently of whether the
+                # external projection already converged.
+                approval.control_projection_id = None
             queue_items = session.scalars(
                 select(QueueItem)
                 .where(QueueItem.status.in_(repairable_statuses))

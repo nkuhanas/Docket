@@ -1812,6 +1812,19 @@ def test_carried_forward_approval_refreshes_the_clicked_card_and_repairs_duplica
     with session_factory.begin() as session:
         queue_item = session.get(QueueItem, proposed.queue_item_id)
         current_projection = session.get(DiscordProjection, current_id)
+        approval = session.get(Approval, proposed.approval_id)
+        assert approval is not None
+        assert queue_item is not None and current_projection is not None
+        approval.control_projection_id = current_id
+        current_projection.updated_at = queue_item.updated_at + timedelta(seconds=1)
+    assert projection_runner.enqueue_stale_projection_repairs() == 0
+    with session_factory() as session:
+        approval = session.get(Approval, proposed.approval_id)
+        assert approval is not None and approval.control_projection_id is None
+
+    with session_factory.begin() as session:
+        queue_item = session.get(QueueItem, proposed.queue_item_id)
+        current_projection = session.get(DiscordProjection, current_id)
         assert queue_item is not None and current_projection is not None
         current_projection.updated_at = queue_item.updated_at - timedelta(seconds=1)
         queue_version = queue_item.version
