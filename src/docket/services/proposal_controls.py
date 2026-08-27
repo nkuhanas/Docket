@@ -585,7 +585,15 @@ class ProposalControlService:
         replacement_preview: dict[str, object] | None = None,
         replacement_target_versions: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        if replacement_parameters is None and revision.action_type not in _EDITABLE_ACTIONS:
+        course_conflict_selection = (
+            request.field == "conflict_resolution"
+            and revision.action_type in COURSE_CALENDAR_ACTION_TYPES
+        )
+        if (
+            replacement_parameters is None
+            and revision.action_type not in _EDITABLE_ACTIONS
+            and not course_conflict_selection
+        ):
             raise DocketError(
                 code="proposal_field_not_editable",
                 message="This proposal does not expose editable Calendar fields.",

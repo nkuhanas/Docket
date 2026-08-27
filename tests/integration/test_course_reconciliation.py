@@ -8,13 +8,15 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from docket.config import get_settings
 from docket.domain.errors import DocketError
-from docket.internal_api.schemas import ApprovalResponse
+from docket.internal_api.schemas import ApprovalResponse, LocalActionResponse
 from docket.models import (
     Account,
+    ActionRevision,
     Approval,
     CalendarEventCache,
     CalendarLink,
     CalendarSyncState,
+    DiscordDailyThread,
     DiscordProjection,
     Operation,
     OperationItem,
@@ -35,6 +37,7 @@ from docket.services.approvals import ApprovalService
 from docket.services.course_reconciliation import CourseReconciliationService
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.operations import OperationRunner
+from docket.services.proposal_controls import ProposalControlService
 from docket.services.records import RecordService
 
 
@@ -172,7 +175,7 @@ def _seed_course(session: Session) -> tuple[uuid.UUID, uuid.UUID]:
     return course.record_id, account.id
 
 
-def _propose(
+def _apply_explicit(
     session: Session,
     *,
     record_id: uuid.UUID,
@@ -183,7 +186,7 @@ def _propose(
     reason: str | None = None,
 ) -> dict:
     settings = get_settings()
-    return CourseReconciliationService(session).propose(
+    return CourseReconciliationService(session).apply_explicit(
         ProposeCourseReconciliationInput(
             record_id=record_id,
             expected_record_version=version,
@@ -194,6 +197,45 @@ def _propose(
             request_key=_request_key(message_id),
             source=_source(message_id),
             actor_id=settings.operator_discord_user_id,
+        )
+    )
+
+
+def _seed_course_conflict(
+    session: Session,
+    *,
+    account_id: uuid.UUID,
+    provider_event_id: str = "existing-course-conflict",
+) -> None:
+    settings = get_settings()
+    state = session.scalar(
+        select(CalendarSyncState).where(
+            CalendarSyncState.account_id == account_id,
+            CalendarSyncState.calendar_id == settings.google_calendar_id,
+        )
+    )
+    assert state is not None and state.snapshot_generation is not None
+    session.add(
+        CalendarEventCache(
+            account_id=account_id,
+            calendar_id=settings.google_calendar_id,
+            provider_event_id=provider_event_id,
+            snapshot_generation=state.snapshot_generation,
+            status="confirmed",
+            summary="Existing course conflict",
+            location="Elsewhere",
+            is_all_day=False,
+            start_at=datetime(2026, 8, 24, 16, 10, tzinfo=UTC),
+            end_at=datetime(2026, 8, 24, 16, 20, tzinfo=UTC),
+            timezone="America/Los_Angeles",
+            recurrence_kind="one_time",
+            system_tags=["one_time", "timed", "external"],
+            operator_tags=[],
+            priority="normal",
+            priority_basis="default",
+            provider_reminders={},
+            provider_etag=f'"{provider_event_id}"',
+            synced_at=state.last_success_at or datetime.now(UTC),
         )
     )
 
@@ -216,6 +258,72 @@ def _approve(session: Session, proposal: dict, interaction_id: str) -> uuid.UUID
         )
     )
     return uuid.UUID(str(result["operation_id"]))
+
+
+def _select_keep_both_and_prepare_approval(
+    session_factory: sessionmaker[Session],
+    projection_runner: DiscordProjectionRunner,
+    backend: FakeDiscordBackend,
+    proposal: dict,
+    interaction_prefix: str,
+) -> ApprovalResponse:
+    settings = get_settings()
+    with session_factory() as session:
+        projection = session.scalar(select(DiscordProjection))
+        assert projection is not None and projection.message_id is not None
+        thread = session.get(DiscordDailyThread, projection.daily_thread_id)
+        assert thread is not None and thread.thread_id is not None
+        conflict_control = next(
+            control
+            for control in backend.messages[str(projection.id)]["controls"]
+            if control.get("field") == "conflict_resolution"
+        )
+        selection = LocalActionResponse(
+            request_id=uuid.uuid4(),
+            discord_interaction_id=f"{interaction_prefix}-keep-both",
+            discord_user_id=settings.operator_discord_user_id,
+            guild_id=settings.discord_guild_id,
+            channel_id=thread.thread_id,
+            parent_channel_id=settings.queue_channel_id,
+            projection_id=projection.id,
+            message_id=projection.message_id,
+            responded_at=datetime.now(UTC),
+            action_revision_id=uuid.UUID(str(proposal["action_revision_id"])),
+            action_token=str(conflict_control["token"]),
+            transition="proposal_field_change",
+            field="conflict_resolution",
+            value="keep_both",
+        )
+    with session_factory.begin() as session:
+        selected = ProposalControlService(session).respond(selection)
+        assert selected["revision"] == 2
+    while projection_runner.run_due_once():
+        pass
+    with session_factory() as session:
+        projection = session.scalar(select(DiscordProjection))
+        assert projection is not None and projection.message_id is not None
+        thread = session.get(DiscordDailyThread, projection.daily_thread_id)
+        assert thread is not None and thread.thread_id is not None
+        approval_control = next(
+            control
+            for control in backend.messages[str(projection.id)]["controls"]
+            if control.get("decision") == "approve"
+        )
+        return ApprovalResponse(
+            request_id=uuid.uuid4(),
+            discord_interaction_id=f"{interaction_prefix}-approve",
+            approval_id=uuid.UUID(str(approval_control["approval_id"])),
+            approval_token=str(approval_control["token"]),
+            short_code=None,
+            decision="approve",
+            discord_user_id=settings.operator_discord_user_id,
+            guild_id=settings.discord_guild_id,
+            channel_id=thread.thread_id,
+            parent_channel_id=settings.queue_channel_id,
+            projection_id=projection.id,
+            message_id=projection.message_id,
+            responded_at=datetime.now(UTC),
+        )
 
 
 def _run_all(runner: OperationRunner) -> int:
@@ -269,20 +377,22 @@ def test_course_add_change_partial_drop_restore_and_unchanged_reimport(
 ) -> None:
     with session_factory.begin() as session:
         course_id, account_id = _seed_course(session)
-        first = _propose(
+        first = _apply_explicit(
             session,
             record_id=course_id,
             version=1,
             account_id=account_id,
             message_id="544444444444444444",
         )
-        assert first["preview"]["counts"] == {
+        assert first["counts"] == {
             "create": 2,
             "update": 0,
             "cancel": 0,
             "no_op": 0,
         }
-        assert first["preview"]["course_date_ranges"] == [
+        revision = session.get(ActionRevision, uuid.UUID(first["action_revision_id"]))
+        assert revision is not None
+        assert revision.preview["course_date_ranges"] == [
             {
                 "start_date": "2026-08-24",
                 "end_date": "2026-12-18",
@@ -291,57 +401,21 @@ def test_course_add_change_partial_drop_restore_and_unchanged_reimport(
                 "end_source": "meeting",
             }
         ]
-
-    backend = FakeDiscordBackend()
-    projection_runner = DiscordProjectionRunner(
-        session_factory,
-        FakeDiscordProjectionAdapter(backend),
-        get_settings(),
-    )
-    assert projection_runner.run_due_once()
-    projected = next(iter(backend.messages.values()))
-    assert projected["embed"]["title"] == "Review course changes"
-    assert [field["name"] for field in projected["embed"]["fields"][:4]] == [
-        "Course",
-        "Course dates",
-        "Notifications",
-        "Term",
-    ]
-    assert projected["embed"]["fields"][2]["value"] == "10 minutes beforehand"
-    assert "<t:" in projected["embed"]["fields"][1]["value"]
-    assert "<t:" in projected["embed"]["fields"][3]["value"]
-    assert not any(
-        field["name"] in {"Changes", "Review complete"} for field in projected["embed"]["fields"]
-    )
-    proposal_fields = [
-        field for field in projected["embed"]["fields"] if field["name"].startswith(("1.", "2."))
-    ]
-    assert len(proposal_fields) == 2
-    assert all("through" in field["value"] for field in proposal_fields)
-    assert [control["label"] for control in projected["controls"]] == [
-        "Approve",
-        "Reject",
-        "Snooze until tomorrow",
-    ]
-    assert projected["controls"][2]["row"] == 0
-    with session_factory() as session:
-        projection = session.scalar(select(DiscordProjection))
-        assert projection is not None
-        assert projection.view_mode == "decision"
-        assert projection.reviewed_through_page == 1
+        first_operation = uuid.UUID(first["operation_id"])
 
     with session_factory.begin() as session:
-        duplicate = _propose(
+        replay = _apply_explicit(
             session,
             record_id=course_id,
             version=1,
             account_id=account_id,
-            message_id="545555555555555555",
+            message_id="544444444444444444",
         )
-        assert duplicate["disposition"] == "matched_existing"
+        assert replay["disposition"] == "replayed_request"
+        assert uuid.UUID(replay["operation_id"]) == first_operation
 
     with pytest.raises(DocketError) as busy, session_factory.begin() as session:
-        _propose(
+        _apply_explicit(
             session,
             record_id=course_id,
             version=1,
@@ -351,9 +425,6 @@ def test_course_add_change_partial_drop_restore_and_unchanged_reimport(
             reason="Conflicting lifecycle request.",
         )
     assert busy.value.code == "course_lifecycle_busy"
-
-    with session_factory.begin() as session:
-        first_operation = _approve(session, first, "course-add")
 
     provider = FakeCalendarProvider()
     runner = OperationRunner(session_factory, provider)
@@ -394,20 +465,20 @@ def test_course_add_change_partial_drop_restore_and_unchanged_reimport(
                 reason="Change one meeting, remove one, and add one.",
             )
         )
-        changed = _propose(
+        changed = _apply_explicit(
             session,
             record_id=course_id,
             version=2,
             account_id=account_id,
             message_id="555555555555555555",
         )
-        assert changed["preview"]["counts"] == {
+        assert changed["counts"] == {
             "create": 1,
             "update": 1,
             "cancel": 1,
             "no_op": 0,
         }
-        changed_operation = _approve(session, changed, "course-change")
+        changed_operation = uuid.UUID(changed["operation_id"])
 
     assert _run_all(runner) == 3
     with session_factory() as session:
@@ -466,7 +537,7 @@ def test_course_add_change_partial_drop_restore_and_unchanged_reimport(
         )
         assert repeated.disposition == "matched_existing"
         assert repeated.version == 2
-        unchanged = _propose(
+        unchanged = _apply_explicit(
             session,
             record_id=course_id,
             version=2,
@@ -482,7 +553,7 @@ def test_course_add_change_partial_drop_restore_and_unchanged_reimport(
         }
 
     with session_factory.begin() as session:
-        drop = _propose(
+        drop = _apply_explicit(
             session,
             record_id=course_id,
             version=2,
@@ -491,8 +562,8 @@ def test_course_add_change_partial_drop_restore_and_unchanged_reimport(
             mode="drop",
             reason="Operator dropped the course.",
         )
-        assert drop["preview"]["counts"]["cancel"] == 2
-        drop_operation = _approve(session, drop, "course-drop-partial")
+        assert drop["counts"]["cancel"] == 2
+        drop_operation = uuid.UUID(drop["operation_id"])
 
     assert runner.run_due_once()
     provider.next_cancel_outcome = "permanent"
@@ -507,7 +578,7 @@ def test_course_add_change_partial_drop_restore_and_unchanged_reimport(
         assert operation.result["counts"]["failed"] == 1
 
     with session_factory.begin() as session:
-        retry = _propose(
+        retry = _apply_explicit(
             session,
             record_id=course_id,
             version=2,
@@ -516,8 +587,8 @@ def test_course_add_change_partial_drop_restore_and_unchanged_reimport(
             mode="drop",
             reason="Retry the incomplete course drop.",
         )
-        assert retry["preview"]["counts"]["cancel"] == 1
-        retry_operation = _approve(session, retry, "course-drop-retry")
+        assert retry["counts"]["cancel"] == 1
+        retry_operation = uuid.UUID(retry["operation_id"])
     assert _run_all(runner) == 1
     with session_factory() as session:
         record = session.get(Record, course_id)
@@ -541,20 +612,20 @@ def test_course_add_change_partial_drop_restore_and_unchanged_reimport(
             )
         )
         assert restored.version == 4
-        restore_sync = _propose(
+        restore_sync = _apply_explicit(
             session,
             record_id=course_id,
             version=4,
             account_id=account_id,
             message_id="599999999999999999",
         )
-        assert restore_sync["preview"]["counts"] == {
+        assert restore_sync["counts"] == {
             "create": 2,
             "update": 0,
             "cancel": 0,
             "no_op": 0,
         }
-        restore_operation = _approve(session, restore_sync, "course-restore-sync")
+        restore_operation = uuid.UUID(restore_sync["operation_id"])
     assert _run_all(runner) == 2
     with session_factory() as session:
         record = session.get(Record, course_id)
@@ -594,7 +665,7 @@ def test_course_add_change_partial_drop_restore_and_unchanged_reimport(
             )
         )
         assert reimport.disposition == "matched_existing"
-        final_sync = _propose(
+        final_sync = _apply_explicit(
             session,
             record_id=course_id,
             version=4,
@@ -610,14 +681,14 @@ def test_empty_course_reconciliation_cancels_links_without_archiving(
 ) -> None:
     with session_factory.begin() as session:
         course_id, account_id = _seed_course(session)
-        proposal = _propose(
+        applied = _apply_explicit(
             session,
             record_id=course_id,
             version=1,
             account_id=account_id,
             message_id="633333333333333333",
         )
-        _approve(session, proposal, "empty-course-seed")
+        assert applied["disposition"] == "execution_queued"
     provider = FakeCalendarProvider()
     runner = OperationRunner(session_factory, provider)
     assert _run_all(runner) == 2
@@ -636,15 +707,14 @@ def test_empty_course_reconciliation_cancels_links_without_archiving(
                 reason="Remove every meeting without dropping the course.",
             )
         )
-        proposal = _propose(
+        applied = _apply_explicit(
             session,
             record_id=course_id,
             version=2,
             account_id=account_id,
             message_id="644444444444444444",
         )
-        assert proposal["preview"]["counts"]["cancel"] == 2
-        _approve(session, proposal, "empty-course-sync")
+        assert applied["counts"]["cancel"] == 2
     assert _run_all(runner) == 2
     with session_factory() as session:
         record = session.get(Record, course_id)
@@ -658,13 +728,51 @@ def test_course_approval_tolerates_unrelated_snapshot_refresh(
     settings = get_settings()
     with session_factory.begin() as session:
         course_id, account_id = _seed_course(session)
-        proposal = _propose(
+        _seed_course_conflict(session, account_id=account_id)
+        proposal = _apply_explicit(
             session,
             record_id=course_id,
             version=1,
             account_id=account_id,
             message_id="655555555555555555",
         )
+        assert proposal["disposition"] == "proposed"
+        assert proposal["preview"]["conflicts"]
+
+    backend = FakeDiscordBackend()
+    projection_runner = DiscordProjectionRunner(
+        session_factory,
+        FakeDiscordProjectionAdapter(backend),
+        settings,
+    )
+    assert projection_runner.run_due_once()
+    projected = next(iter(backend.messages.values()))
+    assert projected["embed"]["title"] == "Review course changes"
+    assert [field["name"] for field in projected["embed"]["fields"][:4]] == [
+        "Course",
+        "Course dates",
+        "Notifications",
+        "Term",
+    ]
+    assert projected["embed"]["fields"][2]["value"] == "10 minutes beforehand"
+    assert "<t:" in projected["embed"]["fields"][1]["value"]
+    assert "<t:" in projected["embed"]["fields"][3]["value"]
+    assert [control["label"] for control in projected["controls"]] == [
+        "Reject",
+        "Snooze until tomorrow",
+        "Conflict outcome",
+    ]
+    with session_factory() as session:
+        projection = session.scalar(select(DiscordProjection))
+        assert projection is not None
+        assert projection.view_mode == "decision"
+    approval_response = _select_keep_both_and_prepare_approval(
+        session_factory,
+        projection_runner,
+        backend,
+        proposal,
+        "course-refresh-unrelated",
+    )
 
     with session_factory.begin() as session:
         state = session.scalar(
@@ -704,7 +812,8 @@ def test_course_approval_tolerates_unrelated_snapshot_refresh(
         )
 
     with session_factory.begin() as session:
-        operation_id = _approve(session, proposal, "course-refresh-unrelated")
+        accepted = ApprovalService(session).respond(approval_response)
+        operation_id = uuid.UUID(str(accepted["operation_id"]))
 
     with session_factory() as session:
         operation = session.get(Operation, operation_id)
@@ -718,13 +827,30 @@ def test_course_approval_rejects_changed_conflict_dependency(
     settings = get_settings()
     with session_factory.begin() as session:
         course_id, account_id = _seed_course(session)
-        proposal = _propose(
+        _seed_course_conflict(session, account_id=account_id)
+        proposal = _apply_explicit(
             session,
             record_id=course_id,
             version=1,
             account_id=account_id,
             message_id="666666666666666666",
         )
+        assert proposal["disposition"] == "proposed"
+
+    backend = FakeDiscordBackend()
+    projection_runner = DiscordProjectionRunner(
+        session_factory,
+        FakeDiscordProjectionAdapter(backend),
+        settings,
+    )
+    assert projection_runner.run_due_once()
+    approval_response = _select_keep_both_and_prepare_approval(
+        session_factory,
+        projection_runner,
+        backend,
+        proposal,
+        "course-refresh-conflict",
+    )
 
     with session_factory.begin() as session:
         state = session.scalar(
@@ -764,6 +890,6 @@ def test_course_approval_rejects_changed_conflict_dependency(
         )
 
     with pytest.raises(DocketError) as stale, session_factory.begin() as session:
-        _approve(session, proposal, "course-refresh-conflict")
+        ApprovalService(session).respond(approval_response)
     assert stale.value.code == "target_version_changed"
     assert "targets or conflicts changed" in stale.value.message

@@ -44,7 +44,7 @@ listed operator-present Discord/Gmail observations.
 | --- | --- | --- |
 | One inferred approval adopts canonical state and executes once | `test_complete_inferred_event_becomes_one_version_bound_proposal` | Passed and deployed |
 | Explicit no-conflict create executes directly | Explicit standalone lifecycle test | Passed and deployed |
-| Explicit/inferred conflicts remain advisory decision context | Standalone conflict tests and `test_inferred_event_integrates_calendar_conflicts_into_one_proposal` | Automated path passed and deployed in `6811106`; inferred live observation pending |
+| Explicit/inferred conflicts remain advisory decision context | Standalone conflict tests, `test_course_approval_tolerates_unrelated_snapshot_refresh`, and `test_inferred_event_integrates_calendar_conflicts_into_one_proposal` | Automated standalone and course paths passed; inferred live observation pending |
 | Keep both preserves both events | `test_non_destructive_conflict_choices_preserve_the_selected_events[keep_both]` | Passed and deployed |
 | Existing event wins performs no proposed-event write | Same parametrized test for `keep_existing` | Passed and deployed |
 | Proposed event wins compiles explicit cancel/create operations | `test_explicit_conflict_resolution_new_wins_runs_a_durable_bundle` | Passed and deployed |

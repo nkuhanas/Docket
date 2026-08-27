@@ -709,34 +709,22 @@ class CourseReconciliationService:
         )
         return course_reconciliation_dependency_sha256(current_parameters)
 
-    def propose(self, request: ProposeCourseReconciliationInput) -> dict[str, Any]:
-        """Internal compatibility surface for deterministic approval-path tests."""
-        return self._apply(
-            request,
-            force_decision=True,
-            operation_name="docket_propose_course_reconciliation",
-        )
-
     def apply_explicit(self, request: ProposeCourseReconciliationInput) -> dict[str, Any]:
-        return self._apply(
-            request,
-            force_decision=False,
-            operation_name="docket_apply_course_intent",
-        )
+        return self._apply(request)
 
     def _apply(
         self,
         request: ProposeCourseReconciliationInput,
-        *,
-        force_decision: bool,
-        operation_name: str,
     ) -> dict[str, Any]:
         validate_configured_discord_source(self.session, request.source, request.actor_id)
-        command, replay = self._start_command(request, operation_name=operation_name)
+        command, replay = self._start_command(
+            request,
+            operation_name="docket_apply_course_intent",
+        )
         if replay is not None:
             return replay
         account, state = self._validate_target(request)
-        if not force_decision and self.settings.calendar_write_mode() == "disabled":
+        if self.settings.calendar_write_mode() == "disabled":
             raise DocketError(
                 code="external_writes_disabled",
                 message="External Calendar writes are disabled.",
@@ -763,7 +751,7 @@ class CourseReconciliationService:
         assert isinstance(counts, dict) and isinstance(items, list)
         conflicts = preview["conflicts"]
         assert isinstance(conflicts, list)
-        needs_decision = force_decision or bool(conflicts)
+        needs_decision = bool(conflicts)
         parameters["conflict_resolution"] = None if conflicts else "not_applicable"
         preview["conflict_resolution"] = None if conflicts else "not_applicable"
         if request.mode == "sync" and counts == {
