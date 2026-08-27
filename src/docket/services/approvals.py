@@ -29,6 +29,7 @@ from docket.models import (
     CanonicalEvent,
     DiscordDailyThread,
     DiscordProjection,
+    Entity,
     Operation,
     OperationBundle,
     OperationItem,
@@ -523,6 +524,29 @@ class ApprovalService:
                     code="target_version_changed",
                     message="The target record changed after the approval preview was created.",
                 )
+        entity_targets = revision.target_versions.get("entity_registrations", [])
+        if isinstance(entity_targets, list):
+            for target in entity_targets:
+                try:
+                    entity_id = uuid.UUID(str(target.get("id")))
+                except (AttributeError, ValueError) as exc:
+                    raise DocketError(
+                        code="approval_binding_mismatch",
+                        message="The action contains an invalid entity registration binding.",
+                    ) from exc
+                entity = self.session.get(Entity, entity_id)
+                if (
+                    entity is None
+                    or entity.version != target.get("version")
+                    or entity.status != target.get("status")
+                ):
+                    raise DocketError(
+                        code="target_version_changed",
+                        message=(
+                            "A bundled entity registration changed after the proposal "
+                            "was created."
+                        ),
+                    )
         calendar_target = revision.target_versions.get("calendar_snapshot")
         if isinstance(calendar_target, dict):
             sync_state = self.session.scalar(

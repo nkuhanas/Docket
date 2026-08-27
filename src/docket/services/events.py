@@ -80,6 +80,43 @@ def _cache_snapshot(event: CalendarEventCache) -> dict[str, Any]:
     }
 
 
+def _candidate_entity_refs(candidate: SemanticCandidate) -> list[dict[str, Any]]:
+    """Return only identities that belong in the eventual event decision.
+
+    Known entities may be retained as context. A required unknown entity is a
+    provisional registration bundled with the event and is activated only
+    after the provider operation succeeds. Optional unresolved mentions remain
+    source provenance and never become registry objects or proposal gates.
+    """
+
+    raw_resolutions = candidate.fields.get("entity_resolutions")
+    if not isinstance(raw_resolutions, list):
+        return []
+    refs: list[dict[str, Any]] = []
+    for raw in raw_resolutions:
+        if not isinstance(raw, dict) or raw.get("entity_id") is None:
+            continue
+        state = raw.get("state")
+        required = bool(raw.get("required", False))
+        if state == "resolved":
+            registration = "existing"
+        elif state == "provisional" and required:
+            registration = "register_with_event"
+        else:
+            continue
+        refs.append(
+            {
+                "entity_id": str(raw["entity_id"]),
+                "entity_class": str(raw.get("entity_class") or "organization"),
+                "canonical_name": str(raw.get("canonical_name") or raw.get("mention") or ""),
+                "role": raw.get("role"),
+                "resolution_id": raw.get("resolution_id"),
+                "registration_disposition": registration,
+            }
+        )
+    return refs
+
+
 class CanonicalEventService:
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -178,18 +215,7 @@ class CanonicalEventService:
         *,
         event: StandaloneCalendarEventInput,
     ) -> CanonicalEvent:
-        entity_resolutions = candidate.fields.get("entity_resolutions")
-        entity_refs = (
-            [
-                dict(value)
-                for value in entity_resolutions
-                if isinstance(value, dict)
-                and value.get("state") == "resolved"
-                and value.get("entity_id") is not None
-            ]
-            if isinstance(entity_resolutions, list)
-            else []
-        )
+        entity_refs = _candidate_entity_refs(candidate)
         context_labels = candidate.fields.get("context_labels")
         canonical = CanonicalEvent(
             canonical_key=f"semantic_candidate:{candidate.id}",
@@ -235,18 +261,7 @@ class CanonicalEventService:
                     message="The provider binding lost its canonical event.",
                 )
             return canonical, existing_binding
-        entity_resolutions = candidate.fields.get("entity_resolutions")
-        entity_refs = (
-            [
-                dict(value)
-                for value in entity_resolutions
-                if isinstance(value, dict)
-                and value.get("state") == "resolved"
-                and value.get("entity_id") is not None
-            ]
-            if isinstance(entity_resolutions, list)
-            else []
-        )
+        entity_refs = _candidate_entity_refs(candidate)
         snapshot = _cache_snapshot(provider_event)
         canonical = CanonicalEvent(
             canonical_key=(
@@ -944,6 +959,7 @@ class SemanticCandidateCompiler:
                 canonical_event_id=canonical_event.id,
                 semantic_candidate_id=candidate.id,
                 source_item_id=source.id,
+                entity_refs=_candidate_entity_refs(candidate),
                 request_key=f"gmail:{source.id}:{candidate.id}",
             )
         )
@@ -976,6 +992,22 @@ class SemanticCandidateCompiler:
                 candidate.status = "resolved"
                 candidate.resolution = {"disposition": "brief_eligible"}
                 return
+            if candidate.kind == "event":
+                relevance = candidate.fields.get("calendar_relevance")
+                if relevance == "excluded":
+                    candidate.status = "suppressed"
+                    candidate.resolution = {
+                        "disposition": "preference_excluded",
+                        "relevance_basis": candidate.fields.get("relevance_basis"),
+                    }
+                    return
+                if relevance == "informational":
+                    candidate.status = "resolved"
+                    candidate.resolution = {
+                        "disposition": "brief_eligible_event",
+                        "relevance_basis": candidate.fields.get("relevance_basis"),
+                    }
+                    return
             raw_resolutions = candidate.fields.get("entity_resolutions")
             resolutions = raw_resolutions if isinstance(raw_resolutions, list) else []
             entity_gaps = [
@@ -990,7 +1022,7 @@ class SemanticCandidateCompiler:
                 for resolution in resolutions
                 if isinstance(resolution, dict)
                 and resolution.get("required", True)
-                and resolution.get("state") != "resolved"
+                and resolution.get("state") in {"unresolved", "ambiguous"}
             ]
             if entity_gaps:
                 self._clarification(

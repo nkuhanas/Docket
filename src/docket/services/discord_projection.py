@@ -1240,12 +1240,32 @@ class DiscordProjectionRunner:
             entity_refs = preview.get("entity_refs")
             context_labels = preview.get("context_labels")
             context_lines: list[str] = []
+            registration_lines: list[str] = []
             if isinstance(entity_refs, list):
-                context_lines.extend(
-                    f"{str(value.get('role') or value.get('entity_class') or 'Related').title()}: "
-                    f"{value.get('canonical_name')}"
-                    for value in entity_refs
-                    if isinstance(value, dict) and value.get("canonical_name")
+                for value in entity_refs:
+                    if not isinstance(value, dict) or not value.get("canonical_name"):
+                        continue
+                    label = str(
+                        value.get("role") or value.get("entity_class") or "Related"
+                    ).title()
+                    line = f"{label}: {value.get('canonical_name')}"
+                    if value.get("registration_disposition") == "register_with_event":
+                        registration_lines.append(line)
+                    else:
+                        context_lines.append(line)
+            if registration_lines:
+                if queue_item.resolution_code == "approval_rejected":
+                    registration_note = "Not registered."
+                elif queue_item.status == QueueItemStatus.COMPLETED.value:
+                    registration_note = "Registered with the event."
+                else:
+                    registration_note = "Registered only if this event succeeds."
+                fields.append(
+                    {
+                        "name": "Also registers",
+                        "value": "\n".join([*registration_lines, registration_note]),
+                        "inline": False,
+                    }
                 )
             if isinstance(context_labels, list) and context_labels:
                 context_lines.append(

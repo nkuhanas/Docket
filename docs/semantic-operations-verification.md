@@ -48,6 +48,11 @@ outside version control.
   same title but different material event fingerprints remain distinct unless
   a provider event ID, sender event ID, or exact event fingerprint correlates
   them.
+* Operator-authored Markdown preferences are loaded before Gmail event
+  relevance is ranked. Excluded/informational events stop before entity
+  registration. A genuinely new required identity on a worthwhile inferred
+  event remains provisional in the one event proposal and activates in the
+  same local transaction as provider success.
 * Even the retired classifier-facing service boundary rejects autonomous Gmail
   archive/mark-read formulations. Those actions remain isolated to the
   explicit operator path.
@@ -64,7 +69,7 @@ range without changing the canonical identity of any contained decision.
 
 The waking interval is configured once with
 `DOCKET_WAKING_WINDOW_START_HOUR`, `DOCKET_WAKING_WINDOW_END_HOUR`, and
-`DOCKET_TIMEZONE`. Start must precede end on the same local day.
+`DOCKET_TIMEZONE`. Distinct start/end values may wrap midnight.
 
 ## Automated evidence
 
@@ -72,7 +77,9 @@ The repository gate exercises:
 
 * direct create/update/cancel and canonical reconciliation;
 * entity creation, aliasing, correction, relationship preservation, merge, and
-  clarification resumption;
+  bundled inferred-event registration;
+* preference-ranked event suppression before entity registration and bounded
+  preference injection into interactive and isolated Hermes profiles;
 * zero-candidate extraction and duplicate-thread idempotency;
 * inferred proposal adoption through one approval and one provider operation;
 * inferred proposal versioning, cross-source exact-match no-op, unchanged-update
@@ -138,12 +145,13 @@ accepted:
 
 1. Describe a complete event using an existing entity. Docket should execute
    it directly and produce no approval card.
-2. Mention an unknown required organization. Hermes should offer registration;
-   after confirmation, the original operation should resume without restating
-   the event.
-3. Feed one inferred invitation. Exactly one proposal should identify its
-   concise email relationship, and approval should execute without a second
-   decision.
+2. In an explicit event command, mention an unknown required organization.
+   Hermes should offer registration; after confirmation, the original
+   operation should resume without restating the event.
+3. Feed one inferred invitation with a genuinely new required organization.
+   Exactly one event proposal should show that registration alongside its
+   concise email relationship. Approval should create the provider event and
+   activate the organization without a second decision.
 4. Feed a confirmation matching an event already on Calendar. It should produce
    no proposal.
 5. Exercise a real conflict through Keep both, Proposed event wins, and Existing
@@ -155,6 +163,10 @@ accepted:
    windows. Routine awareness/noise must not stream individually. The morning
    brief should summarize the overnight window without duplicating decision
    objects, and each window must emit no more than its cohesive brief.
+8. Reply naturally to a disposable event card with a durable exclusion such as
+   “I don't want football games this semester.” Hermes should update
+   `TRIAGE.md`, ignore that exact formulation, and future matching sources must
+   stop before entity registration or clarification.
 
 Use the symptom table in [operations-runbook.md](operations-runbook.md) for the
 first diagnostic checks when any live behavior diverges.

@@ -4,6 +4,7 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 ROOT_ENV_FILE=${DOCKET_ENV_FILE:-"$ROOT/.env"}
 HERMES_HOME_DIR=${DOCKET_HERMES_HOME:-"$ROOT/.runtime/hermes"}
+PREFERENCES_DIR="$HERMES_HOME_DIR/preferences"
 
 if [ ! -f "$ROOT_ENV_FILE" ]; then
     echo "Missing environment file: $ROOT_ENV_FILE" >&2
@@ -58,8 +59,15 @@ case "$(head -n 1 "$CREDENTIALS_DIR/discord_bot_token")" in
         ;;
 esac
 
-mkdir -p "$HERMES_HOME_DIR"
+mkdir -p "$HERMES_HOME_DIR" "$PREFERENCES_DIR"
 chmod 700 "$HERMES_HOME_DIR"
+
+for preference in AGENT TRIAGE; do
+    destination="$PREFERENCES_DIR/$preference.md"
+    if [ ! -e "$destination" ]; then
+        cp "$ROOT/hermes/preferences/$preference.example.md" "$destination"
+    fi
+done
 
 umask 077
 if [ ! -e "$HERMES_HOME_DIR/config.yaml" ]; then
@@ -82,5 +90,10 @@ python3 "$ROOT/scripts/sync_hermes_docket_config.py" \
     echo "DOCKET_INTERNAL_URL=http://docket:8000"
 } > "$HERMES_HOME_DIR/.env"
 
-chmod 600 "$HERMES_HOME_DIR/config.yaml" "$HERMES_HOME_DIR/.env"
+chmod 700 "$PREFERENCES_DIR"
+chmod 600 \
+    "$HERMES_HOME_DIR/config.yaml" \
+    "$HERMES_HOME_DIR/.env" \
+    "$PREFERENCES_DIR/AGENT.md" \
+    "$PREFERENCES_DIR/TRIAGE.md"
 echo "Prepared $HERMES_HOME_DIR with configured Discord channels. Run Hermes setup next."

@@ -114,6 +114,8 @@ _TRACE_CONTEXT_LOCK = threading.Lock()
 _TRACE_DELIVERY_QUEUE: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1000)
 _TRACE_DELIVERY_STARTED = False
 _TRACE_DELIVERY_START_LOCK = threading.Lock()
+_PREFERENCE_NAMES = ("AGENT.md", "TRIAGE.md")
+_MAX_PREFERENCE_BYTES = 16384
 
 
 class PluginAPIError(RuntimeError):
@@ -543,6 +545,21 @@ def _trusted_ingress_context(
     return None
 
 
+def _operator_preferences() -> str:
+    directory = Path(os.environ.get("DOCKET_PREFERENCES_DIR", "/opt/data/preferences"))
+    sections: list[str] = []
+    for name in _PREFERENCE_NAMES:
+        path = directory / name
+        try:
+            with path.open(encoding="utf-8") as handle:
+                content = handle.read(_MAX_PREFERENCE_BYTES).strip()
+        except (OSError, UnicodeError):
+            continue
+        if content:
+            sections.append(f"## {name}\n{content}")
+    return "\n\n".join(sections)
+
+
 def _rewrite_with_source_context(event: object) -> dict[str, str] | None:
     source = getattr(event, "source", None)
     ingress = _trusted_ingress_context(source)
@@ -575,8 +592,24 @@ def _rewrite_with_source_context(event: object) -> dict[str, str] | None:
         "actor_id": actor,
         "request_key": f"discord:{guild}:{channel}:{message_id}:0",
     }
+    preferences = _operator_preferences()
+    preference_context = (
+        "\n\n<docket_operator_preferences trusted=\"true\">\n"
+        f"{preferences}\n"
+        "</docket_operator_preferences>\n"
+        "These Markdown files are the durable operator preference databases. "
+        "Apply them to this turn. When the current operator clearly states a new "
+        "durable interaction preference, update /opt/data/preferences/AGENT.md; "
+        "when it governs email importance, calendar interest, or notification "
+        "triage, update /opt/data/preferences/TRIAGE.md. Use the file tool, preserve "
+        "unrelated entries, and report success only after the write succeeds. Exact "
+        "events and mutable operational facts still belong in Docket."
+        if preferences
+        else ""
+    )
     rewritten = (
         f"{original_text}\n\n"
+        f"{preference_context}"
         '<docket_gateway_context trusted="true">\n'
         f"{json.dumps(context, sort_keys=True)}\n"
         "</docket_gateway_context>\n"

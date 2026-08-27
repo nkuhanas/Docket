@@ -21,12 +21,15 @@ from docket.domain.errors import DocketError
 from docket.models import (
     Action,
     ActionRevision,
+    Approval,
     AuditEvent,
     CalendarEventCache,
     CalendarLink,
     CalendarReminderPlan,
     CalendarSyncState,
     CanonicalEvent,
+    Entity,
+    EntityResolution,
     ExecutionAttempt,
     Operation,
     OperationBundle,
@@ -577,6 +580,70 @@ class OperationRunner:
             row.synced_at = utc_now()
 
     @staticmethod
+    def _activate_bundled_entities(
+        session: Session,
+        operation: Operation,
+        refs: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Activate provisional identities only with a successful event write."""
+
+        approval = (
+            session.get(Approval, operation.approval_id)
+            if operation.approval_id is not None
+            else None
+        )
+        activated: list[dict[str, Any]] = []
+        for raw in refs:
+            ref = dict(raw)
+            if ref.get("registration_disposition") != "register_with_event":
+                activated.append(ref)
+                continue
+            try:
+                entity_id = uuid.UUID(str(ref["entity_id"]))
+            except (KeyError, TypeError, ValueError) as exc:
+                raise DocketError(
+                    code="event_entity_registration_invalid",
+                    message="The event proposal contains an invalid entity registration.",
+                ) from exc
+            entity = session.get(Entity, entity_id)
+            if entity is None or entity.status not in {"provisional", "active"}:
+                raise DocketError(
+                    code="event_entity_registration_changed",
+                    message="A bundled event entity is no longer available for registration.",
+                )
+            if entity.status == "provisional":
+                entity.status = "active"
+                entity.authority = "explicit_user"
+                entity.version += 1
+                session.add(
+                    AuditEvent(
+                        event_type="entity.registered_with_event",
+                        entity_type="entity",
+                        entity_id=entity.id,
+                        actor_type="plugin",
+                        actor_id=(approval.response_user_id if approval is not None else None),
+                        data={
+                            "operation_id": str(operation.id),
+                            "entity_class": entity.entity_class,
+                        },
+                    )
+                )
+            resolution_id = ref.get("resolution_id")
+            try:
+                resolution = (
+                    session.get(EntityResolution, uuid.UUID(str(resolution_id)))
+                    if resolution_id is not None
+                    else None
+                )
+            except ValueError:
+                resolution = None
+            if resolution is not None and resolution.resolved_entity_id == entity.id:
+                resolution.state = "resolved"
+            ref["registration_disposition"] = "existing"
+            activated.append(ref)
+        return activated
+
+    @staticmethod
     def _apply_success(
         session: Session,
         operation: Operation,
@@ -683,9 +750,11 @@ class OperationRunner:
                 canonical_event.reminder_plan = dict(reminder_plan)
             entity_refs = parameters.get("entity_refs")
             if isinstance(entity_refs, list):
-                canonical_event.entity_refs = [
-                    dict(value) for value in entity_refs if isinstance(value, dict)
-                ]
+                canonical_event.entity_refs = OperationRunner._activate_bundled_entities(
+                    session,
+                    operation,
+                    [dict(value) for value in entity_refs if isinstance(value, dict)],
+                )
             context_labels = parameters.get("context_labels")
             if isinstance(context_labels, list):
                 canonical_event.context_labels = [str(value) for value in context_labels]

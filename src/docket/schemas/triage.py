@@ -29,6 +29,7 @@ SemanticCandidateKind = Literal[
     "noise",
 ]
 SemanticMutation = Literal["create", "update", "cancel", "none"]
+CalendarRelevance = Literal["required", "recommended", "informational", "excluded"]
 EntityClass = Literal[
     "institution",
     "organization",
@@ -96,6 +97,8 @@ class SemanticCandidateInput(BaseModel):
     )
     kind: SemanticCandidateKind
     mutation: SemanticMutation = "none"
+    calendar_relevance: CalendarRelevance | None = None
+    relevance_basis: str | None = Field(default=None, min_length=1, max_length=512)
     title: str = Field(min_length=1, max_length=512)
     summary: str = Field(min_length=1, max_length=2000)
     topic_key: str | None = Field(
@@ -113,6 +116,8 @@ class SemanticCandidateInput(BaseModel):
 
     @model_validator(mode="after")
     def validate_candidate_shape(self) -> "SemanticCandidateInput":
+        if self.kind == "event" and self.calendar_relevance is None:
+            raise ValueError("event candidates require an explicit calendar relevance rank")
         if self.kind in {"information", "noise"} and self.mutation != "none":
             raise ValueError("information and noise cannot request a mutation")
         if self.mutation in {"update", "cancel"} and self.correlation is None:

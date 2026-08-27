@@ -81,3 +81,16 @@ def test_triage_skill_does_not_invent_acknowledgement_work() -> None:
     assert "job-application receipt" in skill
     assert "never an acknowledgement obligation" in skill
     assert "corresponding typed candidate" in skill
+
+
+def test_triage_skill_ranks_relevance_before_entities_and_bundles_registration() -> None:
+    skill = " ".join(TRIAGE_SKILL_PATH.read_text(encoding="utf-8").split())
+    manual = " ".join(SKILL_PATH.read_text(encoding="utf-8").split())
+
+    assert "Rank calendar relevance **before** requesting any entity resolution" in skill
+    assert "Every `event` candidate must assign one explicit `calendar_relevance`" in skill
+    assert "bundles its registration into the event proposal" in skill
+    assert "/opt/data/preferences/AGENT.md" in manual
+    assert "/opt/data/preferences/TRIAGE.md" in manual
+    assert "I don't want to go to football games this semester" in manual
+    assert "ignore that item" in manual

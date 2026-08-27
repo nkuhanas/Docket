@@ -57,6 +57,9 @@ def test_gmail_triage_installer_pins_an_isolated_profile_and_local_delivery() ->
     assert "request_dump_*.json" in launcher
     assert "exhausted its model request retries" in launcher
     assert '"$normalized_output" = "[SILENT]"' in launcher
+    assert "preferences/TRIAGE.md" in launcher
+    assert "head -c 16384" in launcher
+    assert "operator-authored triage preferences" in launcher
     assert "returned unexpected model output" in launcher
     assert "exactly one source per run" in skill
     assert "caps this profile's claim at one source" in skill
@@ -65,6 +68,12 @@ def test_gmail_triage_installer_pins_an_isolated_profile_and_local_delivery() ->
     assert "plugins:\n  enabled: []" in config
     assert "discord:" not in config
     assert "Return only `[SILENT]` after a normal run." in skill
+
+    prepare = Path("scripts/prepare-hermes-home.sh").read_text(encoding="utf-8")
+    assert "hermes/preferences/$preference.example.md" in prepare
+    assert 'if [ ! -e "$destination" ]' in prepare
+    assert '"$PREFERENCES_DIR/AGENT.md"' in prepare
+    assert '"$PREFERENCES_DIR/TRIAGE.md"' in prepare
 
 
 def test_gmail_triage_launcher_suppresses_success_and_fails_closed(tmp_path) -> None:

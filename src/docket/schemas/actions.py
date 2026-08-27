@@ -81,6 +81,23 @@ class EventEntityBindingInput(StrictModel):
     role: str = Field(min_length=1, max_length=128)
 
 
+class InferredEventEntityRefInput(StrictModel):
+    entity_id: UUID
+    entity_class: Literal[
+        "institution",
+        "organization",
+        "course",
+        "person",
+        "location",
+        "project",
+        "service",
+    ]
+    canonical_name: str = Field(min_length=1, max_length=512)
+    role: str | None = Field(default=None, min_length=1, max_length=128)
+    resolution_id: UUID | None = None
+    registration_disposition: Literal["existing", "register_with_event"]
+
+
 class ProposeCalendarEventInput(StrictModel):
     account_id: UUID
     calendar_id: str = Field(min_length=1, max_length=1024)
@@ -108,6 +125,10 @@ class InferredCalendarEventInput(StrictModel):
     canonical_event_id: UUID
     semantic_candidate_id: UUID
     source_item_id: UUID
+    entity_refs: list[InferredEventEntityRefInput] | None = Field(
+        default=None,
+        max_length=20,
+    )
     request_key: str = Field(
         min_length=1,
         max_length=512,

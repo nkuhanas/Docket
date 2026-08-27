@@ -1,5 +1,6 @@
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import select
@@ -221,20 +222,28 @@ def test_overnight_attention_projects_immediately_and_brief_remains_idempotent(
     session_factory,
 ) -> None:
     settings = _settings()
+    zone = ZoneInfo(settings.timezone)
+    local_date = datetime.now(zone).date() + timedelta(days=1)
+    event_date = local_date + timedelta(days=1)
+    overnight_event_at = datetime.combine(local_date, time(2), tzinfo=zone).astimezone(UTC)
+    overnight_awareness_at = datetime.combine(
+        local_date, time(3), tzinfo=zone
+    ).astimezone(UTC)
+    morning = datetime.combine(local_date, time(7, 1), tzinfo=zone).astimezone(UTC)
     provider = FakeGmailProvider()
     provider.add_message(
         message_id="overnight-event",
         thread_id="overnight-thread",
         source_version="1",
         subject="Morning review",
-        received_at=datetime(2026, 8, 26, 9, 0, tzinfo=UTC),
+        received_at=overnight_event_at,
     )
     provider.add_message(
         message_id="overnight-awareness",
         thread_id="overnight-awareness-thread",
         source_version="1",
         subject="Application received",
-        received_at=datetime(2026, 8, 26, 10, 0, tzinfo=UTC),
+        received_at=overnight_awareness_at,
     )
     now = datetime.now(UTC)
     with session_factory.begin() as session:
@@ -263,7 +272,6 @@ def test_overnight_attention_projects_immediately_and_brief_remains_idempotent(
         .completed
     )
     briefs = DailyBriefService(session_factory, settings)
-    morning = datetime(2026, 8, 26, 14, 1, tzinfo=UTC)
     assert not briefs.run_due_once(morning)
     triage = TriageService(session_factory, provider, settings)
     claim = triage.claim_batch()
@@ -276,6 +284,7 @@ def test_overnight_attention_projects_immediately_and_brief_remains_idempotent(
                 SemanticCandidateInput(
                     candidate_key="morning-review",
                     kind="event",
+                    calendar_relevance="recommended",
                     mutation="create",
                     title="Morning review",
                     summary="A review is scheduled for this morning.",
@@ -283,8 +292,8 @@ def test_overnight_attention_projects_immediately_and_brief_remains_idempotent(
                         "title": "Morning review",
                         "timing": {
                             "kind": "timed",
-                            "start_local": "2026-08-27T09:00:00",
-                            "end_local": "2026-08-27T09:30:00",
+                            "start_local": f"{event_date.isoformat()}T09:00:00",
+                            "end_local": f"{event_date.isoformat()}T09:30:00",
                         },
                     },
                     confidence=0.95,
@@ -292,6 +301,7 @@ def test_overnight_attention_projects_immediately_and_brief_remains_idempotent(
                 SemanticCandidateInput(
                     candidate_key="morning-clarification",
                     kind="event",
+                    calendar_relevance="recommended",
                     mutation="create",
                     title="Incomplete overnight event",
                     summary="The source does not establish when this occurs.",

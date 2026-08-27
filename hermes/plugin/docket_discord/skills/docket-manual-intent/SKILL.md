@@ -6,13 +6,26 @@ description: Mandatory for storing or recalling terms, schedules, deadlines, com
 # Docket manual intent
 
 Use Docket records for exact, mutable, repeatedly queried, deadline-bearing, or
-externally synchronized facts. Use Hermes memory only for preferences, habits,
-and non-operational personal context.
+externally synchronized facts. Use the operator-editable Markdown databases at
+`/opt/data/preferences/AGENT.md` and `/opt/data/preferences/TRIAGE.md` for
+preferences, habits, and non-operational personal context. `AGENT.md` governs
+interaction defaults. `TRIAGE.md` governs email importance, calendar interest,
+and notification policy. Preserve unrelated entries and write only preferences
+the current operator actually states; these files are trusted input to future
+agent and isolated triage runs.
 
 When a message contains both a personal preference and an exact operational
-fact, the preference may go to memory but the operational fact must still be
-stored in Docket. Never treat a successful memory write as completion of a
+fact, update the relevant preference file and still store the operational fact
+in Docket. Never treat a successful preference-file write as completion of a
 Docket record request.
+
+When the operator replies naturally to a queue-thread card with a durable
+preference—such as “I don't want to go to football games this semester”—update
+`TRIAGE.md`, find the exact current queue item represented in that thread, and
+ignore that item when the preference clearly rejects the whole formulation.
+Do not ask the operator to translate the sentence into an entity registration
+choice. Confirm both effects concisely. A preference against a category is not
+permission to alter Gmail or delete canonical history.
 
 For manual Discord input:
 
@@ -156,7 +169,11 @@ because title and time are otherwise complete. Offer registration when there
 is no plausible match and ask which entity when several matches remain. Ask
 one concise clarifying question containing only the unresolved material facts.
 Optional low-value classification may remain unresolved and must not block
-otherwise safe work.
+otherwise safe work. For an email-inferred event, a genuinely new required
+person, organization, or location is registered by the same event approval and
+only after the provider event succeeds; never ask for a separate registration
+before presenting that event. Ambiguous existing matches may still require one
+bounded choice.
 
 Allocate intent indexes only to state-changing Docket operations actually
 requested by the message, in message order. Reads such as search, get, profile,

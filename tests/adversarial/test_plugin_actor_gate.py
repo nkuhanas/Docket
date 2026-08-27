@@ -504,6 +504,45 @@ def test_authorized_chat_receives_verified_source_context(plugin_module, monkeyp
     assert "Referencing an existing record" in result["text"]
 
 
+def test_authorized_chat_receives_bounded_operator_preferences(
+    plugin_module, monkeypatch, tmp_path
+) -> None:
+    actor = "111111111111111111"
+    guild = "222222222222222222"
+    channel = "333333333333333333"
+    message = "444444444444444444"
+    preferences = tmp_path / "preferences"
+    preferences.mkdir()
+    (preferences / "AGENT.md").write_text("# Agent\n- Be concise.\n", encoding="utf-8")
+    (preferences / "TRIAGE.md").write_text(
+        "# Triage\n- Do not propose football games.\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", channel)
+    monkeypatch.setenv("DOCKET_PREFERENCES_DIR", str(preferences))
+    event = SimpleNamespace(
+        text="I don't want football games this semester.",
+        message_id=message,
+        source=SimpleNamespace(
+            platform="discord",
+            user_id=actor,
+            guild_id=guild,
+            chat_id=channel,
+        ),
+    )
+
+    result = plugin_module._pre_gateway_dispatch(event)
+
+    assert result is not None and result["action"] == "rewrite"
+    assert '<docket_operator_preferences trusted="true">' in result["text"]
+    assert "Do not propose football games" in result["text"]
+    assert "/opt/data/preferences/TRIAGE.md" in result["text"]
+    assert result["text"].index("docket_operator_preferences") < result["text"].index(
+        "docket_gateway_context"
+    )
+
+
 def test_real_gateway_enum_and_source_message_id_are_normalized(plugin_module, monkeypatch) -> None:
     actor = "111111111111111111"
     guild = "222222222222222222"

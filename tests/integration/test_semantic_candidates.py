@@ -61,6 +61,7 @@ def test_triage_persists_typed_event_candidate_without_housekeeping_or_card(
                 SemanticCandidateInput(
                     candidate_key="design-review",
                     kind="event",
+                    calendar_relevance="recommended",
                     mutation="create",
                     title="Robotics Club design review",
                     summary="A design review was confirmed for the club project.",
@@ -107,6 +108,7 @@ def test_update_candidate_requires_correlation() -> None:
         SemanticCandidateInput(
             candidate_key="changed-meeting",
             kind="event",
+            calendar_relevance="recommended",
             mutation="update",
             title="Meeting moved",
             summary="The meeting time changed.",
@@ -168,6 +170,7 @@ def test_empty_extraction_and_duplicate_thread_candidate_are_idempotent(
     candidate = SemanticCandidateInput(
         candidate_key="interview-first-wording",
         kind="event",
+        calendar_relevance="required",
         mutation="create",
         title="Acme interview",
         summary="The interview is confirmed.",

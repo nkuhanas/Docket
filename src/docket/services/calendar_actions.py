@@ -268,7 +268,11 @@ class CalendarActionService:
     ) -> tuple[list[dict[str, Any]], list[str]]:
         if isinstance(request, InferredCalendarEventInput):
             return (
-                list(canonical_event.entity_refs) if canonical_event is not None else [],
+                [value.model_dump(mode="json") for value in request.entity_refs]
+                if request.entity_refs is not None
+                else list(canonical_event.entity_refs)
+                if canonical_event is not None
+                else [],
                 list(canonical_event.context_labels) if canonical_event is not None else [],
             )
         if request.entity_bindings is None:
@@ -989,6 +993,25 @@ class CalendarActionService:
                 "conflict_fingerprint": sha256_json(conflicts),
             },
         }
+        entity_registration_targets: list[dict[str, Any]] = []
+        for ref in entity_refs:
+            if ref.get("registration_disposition") != "register_with_event":
+                continue
+            entity = self.session.get(Entity, uuid.UUID(str(ref["entity_id"])))
+            if entity is None or entity.status != "provisional":
+                raise DocketError(
+                    code="event_entity_registration_changed",
+                    message="A bundled event entity is not provisional at formulation time.",
+                )
+            entity_registration_targets.append(
+                {
+                    "id": str(entity.id),
+                    "version": entity.version,
+                    "status": entity.status,
+                }
+            )
+        if entity_registration_targets:
+            target_versions["entity_registrations"] = entity_registration_targets
         revision = ActionRevision(
             action_id=action.id,
             revision=1,

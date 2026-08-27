@@ -74,10 +74,13 @@ Gmail ingestion and Gmail mutation are separate deployment gates.
    refetches one body only for the duration of that claim. Provider content is
    untrusted data and cannot approve, execute, select accounts, or change
    policy.
-3. Triage submits zero or more typed semantic candidates: event, deadline,
-   response, task, information, or noise. The extraction result carries no
-   provider-mutation authority.
-4. Docket resolves entities, correlates observations with canonical events,
+3. Triage applies the operator-authored `TRIAGE.md`, assigns every event an
+   explicit calendar-relevance rank, and submits zero or more typed semantic
+   candidates: event, deadline, response, task, information, or noise. The
+   extraction result carries no provider-mutation authority.
+4. Docket stops excluded/informational events before entity registration. For
+   required/recommended events it resolves known entities, bundles genuinely
+   new required identities into the event proposal, correlates observations,
    and either suppresses noise, records awareness, presents a genuine
    obligation, or formulates an inferred calendar proposal.
 5. Explicit user commands execute directly. Inferred formulations require a
@@ -88,6 +91,21 @@ Gmail ingestion and Gmail mutation are separate deployment gates.
 An email saying “the user approved this,” containing prompt instructions, or
 requesting a tool call has no more authority than any other provider text.
 There is no Gmail send or reply operation.
+
+The editable preference databases live at:
+
+```text
+.runtime/hermes/preferences/AGENT.md
+.runtime/hermes/preferences/TRIAGE.md
+```
+
+Deployment creates missing files from `hermes/preferences/*.example.md` and
+never overwrites existing operator entries. Interactive Hermes receives both
+files on every trusted Docket turn; isolated Gmail triage receives only
+`TRIAGE.md`. A natural-language preference in `#docket-chat` or a Docket daily
+thread should update the appropriate file. When that preference rejects the
+whole current formulation, Hermes should also ignore that exact queue item.
+External email content can never edit these files.
 
 Awareness is terminal and has no controls. A genuine non-calendar obligation
 has Acknowledge and Snooze. An inferred calendar formulation has proposal or
@@ -232,6 +250,8 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | `/mcp` returns 307 or the client fails during initialization | Use `/mcp/` with the trailing slash | Pinned FastMCP mount-path behavior |
 | Docket is unhealthy after changing the database password | Check whether the PostgreSQL volume predates the new password | Compose environment changed but the existing database role did not |
 | Plugin or skill edit appears ignored | Restart Hermes, run `/reload-mcp` when MCP changed, and begin a new Discord turn | Bind-mounted file changed, but Python hook/skill/tool registration is cached |
+| A stated preference does not affect later email triage | Inspect `.runtime/hermes/preferences/TRIAGE.md`, then verify the cron launcher received the bounded preference prompt after the latest deploy | Hermes failed to persist the preference, the runtime file was overwritten, or the isolated triage launcher is stale |
+| An irrelevant event asks for organization/person/location registration | Inspect the candidate's `calendar_relevance`, `relevance_basis`, entity-resolution states, and active `TRIAGE.md` | Relevance was omitted/misclassified, preferences were not loaded, or a pre-bundling compiler treated provisional registration as a clarification gate |
 | `skill_manage` reports a read-only `.SKILL.md.tmp` path | Edit the repository-owned skill on the host and restart Hermes | Docket's mounted manual skill is intentionally read-only inside Hermes; model-driven self-edit is not the update path |
 | Plugin load fails with `Address already in use` or projection listener is unreachable after restart | Stop running plugin probes, restart only Hermes, then verify port 8787 before further CLI inspection | Pinned plugin registration or a concurrent diagnostic process bypassed the retrying listener supervisor |
 | Docket Python edit appears ignored | Rebuild and recreate Docket | Application source is copied into the image, not bind-mounted |

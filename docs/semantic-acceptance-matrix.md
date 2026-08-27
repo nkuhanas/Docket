@@ -14,7 +14,7 @@ listed operator-present Discord/Gmail observations.
 | Explicit cancellation executes without approval | Same end-to-end test | Passed and deployed |
 | Explicit organization/context correction persists | Same end-to-end test plus `test_entity_registry_resolves_aliases_and_preserves_ambiguity` | Passed and deployed |
 | Unknown entity is unresolved/provisional, never a permanent `unknown` fact | `test_inferred_unknown_entity_is_explicitly_provisional` | Passed and deployed |
-| Unknown required organization pauses and resumes after registration | `test_required_inferred_entity_pauses_then_resumes_after_registration` | Passed and deployed |
+| Unknown required inferred-event identity is bundled into one event decision and activates only on success | `test_required_inferred_entity_registers_with_approved_event` | Passed; deployment pending |
 | Ambiguous mention requires selection | `test_entity_registry_resolves_aliases_and_preserves_ambiguity` | Passed and deployed |
 | Registration and aliases improve later matching | `test_explicit_registration_resolves_an_existing_unknown_mention` and entity registry test | Passed and deployed |
 | Correction/merge preserves relationships and future resolution | Entity registry test | Passed and deployed |
@@ -29,7 +29,9 @@ listed operator-present Discord/Gmail observations.
 | Empty extraction and duplicate thread are idempotent | `test_empty_extraction_and_duplicate_thread_candidate_are_idempotent` | Passed and deployed |
 | Application receipt is awareness/suppressed with no individual card | Morning/night brief integration tests and `test_passive_gmail_notification_renders_without_local_controls` | Passed and deployed |
 | Complete invitation creates one inferred, version-bound proposal | `test_complete_inferred_event_becomes_one_version_bound_proposal` | Passed and deployed |
-| Optional provisional sender/location classification does not block a complete formulation | `test_complete_inferred_event_becomes_one_version_bound_proposal` | Passed and deployed in `ebedb1a` |
+| Optional unresolved sender/location classification creates no registry clutter and does not block a complete formulation | `test_complete_inferred_event_becomes_one_version_bound_proposal` | Passed; deployment pending |
+| Preference-excluded event stops before entity registration or clarification | `test_preference_excluded_event_stops_before_entity_registration` | Passed; deployment pending |
+| Trusted Markdown preferences reach interactive Hermes and isolated triage | Plugin actor-gate, skill-contract, and release-script tests | Passed; deployment pending |
 | Exact Calendar match is a no-op | `test_existing_provider_event_is_noop_then_cancellation_needs_no_replacement` | Passed and deployed |
 | Update/cancellation converge with a pending create | `test_update_and_cancellation_reconcile_one_pending_create_formulation` | Passed and deployed |
 | New evidence supersedes the current edited proposal, not a historical revision | `test_new_evidence_supersedes_current_edited_revision_and_aggregate_card` | Passed and deployed |

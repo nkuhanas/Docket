@@ -477,13 +477,23 @@ class TriageService:
                 session.add(candidate)
                 session.flush()
                 entity_resolutions: list[dict[str, Any]] = []
+                bundled_event_registration = (
+                    candidate_input.kind == "event"
+                    and candidate_input.mutation in {"create", "update"}
+                    and candidate_input.calendar_relevance in {"required", "recommended"}
+                )
                 for mention in candidate_input.entity_mentions:
                     resolution = EntityService(session).resolve(
                         entity_class=mention.entity_class,
                         mention=mention.name,
                         source_item_id=source.id,
                         semantic_candidate_id=candidate.id,
-                        allow_provisional=True,
+                        # Optional mentions provide context and provenance, but
+                        # must not create registry objects merely because an
+                        # extractor noticed a sender or literal venue. A
+                        # required unknown identity stays provisional until the
+                        # operator accepts a bundled event formulation.
+                        allow_provisional=(mention.required and bundled_event_registration),
                     )
                     entity_resolutions.append(
                         {
