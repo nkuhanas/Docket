@@ -34,6 +34,14 @@ or provider timeout can strand at most one short-lived lease. For that source:
    locations, projects, and services. Mark a mention required only when the
    formulation cannot faithfully preserve the real-world object without that
    binding; optional low-value classification must not force clarification.
+   A provider-authenticated sender may be retained in source provenance without
+   becoming a required canonical person, and a literal event location may be
+   preserved in the event payload without becoming a required location entity.
+   Treat both as optional unless the source makes that identity itself material
+   to the proposed event. The schema defaults `required` to false: opt in only
+   for a genuinely material binding such as an explicitly named organizer,
+   institution, course, or participant whose identity the formulation depends
+   on.
    Search related Docket records only when it helps disambiguate an actual
    mention; never create seed entities.
 7. Supply correlation hints for every event update or cancellation, confidence,

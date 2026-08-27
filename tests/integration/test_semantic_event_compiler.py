@@ -129,6 +129,7 @@ def test_complete_inferred_event_becomes_one_version_bound_proposal(
         source_version="1",
         sender="Project Team <team@example.com>",
         subject="Project review confirmed",
+        received_at=datetime(2026, 9, 10, 19, 0, tzinfo=UTC),
     )
     now = datetime.now(UTC)
     with session_factory.begin() as session:
@@ -183,13 +184,24 @@ def test_complete_inferred_event_becomes_one_version_bound_proposal(
                             "start_local": "2026-09-10T14:00:00",
                             "end_local": "2026-09-10T14:30:00",
                         },
+                        "location": "Review Room",
                     },
                     entity_mentions=[
                         {
                             "entity_class": "organization",
                             "name": "Design Club",
                             "role": "organizer",
-                        }
+                        },
+                        {
+                            "entity_class": "person",
+                            "name": "Project Team",
+                            "role": "sender",
+                        },
+                        {
+                            "entity_class": "location",
+                            "name": "Review Room",
+                            "role": "venue",
+                        },
                     ],
                     context_labels=["club"],
                     confidence=0.96,
@@ -214,6 +226,22 @@ def test_complete_inferred_event_becomes_one_version_bound_proposal(
         assert source is not None
         assert queue_item is not None and queue_item.presentation == "proposal"
         assert queue_item.primary_source_item_id == source.id
+        resolutions = candidate.fields["entity_resolutions"]
+        optional = [
+            resolution
+            for resolution in resolutions
+            if resolution["entity_class"] in {"person", "location"}
+        ]
+        assert len(optional) == 2
+        assert all(resolution["required"] is False for resolution in optional)
+        assert all(resolution["state"] == "provisional" for resolution in optional)
+        assert canonical.entity_refs == [
+            next(
+                resolution
+                for resolution in resolutions
+                if resolution["entity_class"] == "organization"
+            )
+        ]
         assert revision is not None and revision.authority == "inferred"
         assert revision.parameters["canonical_event_id"] == str(canonical.id)
         assert revision.preview["source"] == {
@@ -291,6 +319,7 @@ def test_inferred_event_integrates_calendar_conflicts_into_one_proposal(
         source_version="1",
         sender="Project Team <team@example.com>",
         subject="Project review invitation",
+        received_at=datetime(2026, 9, 10, 19, 0, tzinfo=UTC),
     )
     now = datetime.now(UTC)
     with session_factory.begin() as session:

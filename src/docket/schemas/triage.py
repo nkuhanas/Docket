@@ -68,7 +68,7 @@ class EntityMentionInput(BaseModel):
     entity_class: EntityClass
     name: str = Field(min_length=1, max_length=512)
     role: str | None = Field(default=None, min_length=1, max_length=128)
-    required: bool = True
+    required: bool = False
 
 
 class CandidateCorrelationInput(BaseModel):
