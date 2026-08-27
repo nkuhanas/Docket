@@ -14,6 +14,7 @@ from docket.models import (
     ActionRevision,
     Approval,
     CalendarEventCache,
+    CalendarLane,
     CalendarLink,
     CalendarSyncState,
     DiscordDailyThread,
@@ -62,6 +63,10 @@ def _request_key(message_id: str, intent_index: int = 0) -> str:
         f"discord:{settings.discord_guild_id}:{settings.chat_channel_id}:"
         f"{message_id}:{intent_index}"
     )
+
+
+def _academic_calendar_id() -> str:
+    return f"academic:{get_settings().google_calendar_id}"
 
 
 def _meeting(
@@ -159,11 +164,21 @@ def _seed_course(session: Session) -> tuple[uuid.UUID, uuid.UUID]:
     )
     session.add(account)
     session.flush()
+    session.add(
+        CalendarLane(
+            account_id=account.id,
+            lane="academic",
+            display_name="Docket · Academic",
+            color_hex="#3F51B5",
+            calendar_id=_academic_calendar_id(),
+            status="active",
+        )
+    )
     now = datetime.now(UTC)
     session.add(
         CalendarSyncState(
             account_id=account.id,
-            calendar_id=settings.google_calendar_id,
+            calendar_id=_academic_calendar_id(),
             window_start=now - timedelta(days=30),
             window_end=now + timedelta(days=400),
             snapshot_generation=uuid.uuid4(),
@@ -192,7 +207,7 @@ def _apply_explicit(
             expected_record_version=version,
             mode=mode,
             account_id=account_id,
-            calendar_id=settings.google_calendar_id,
+            calendar_id=_academic_calendar_id(),
             reason=reason,
             request_key=_request_key(message_id),
             source=_source(message_id),
@@ -207,18 +222,17 @@ def _seed_course_conflict(
     account_id: uuid.UUID,
     provider_event_id: str = "existing-course-conflict",
 ) -> None:
-    settings = get_settings()
     state = session.scalar(
         select(CalendarSyncState).where(
             CalendarSyncState.account_id == account_id,
-            CalendarSyncState.calendar_id == settings.google_calendar_id,
+            CalendarSyncState.calendar_id == _academic_calendar_id(),
         )
     )
     assert state is not None and state.snapshot_generation is not None
     session.add(
         CalendarEventCache(
             account_id=account_id,
-            calendar_id=settings.google_calendar_id,
+            calendar_id=_academic_calendar_id(),
             provider_event_id=provider_event_id,
             snapshot_generation=state.snapshot_generation,
             status="confirmed",
@@ -346,7 +360,7 @@ def test_explicit_course_intent_executes_without_redundant_approval(
                 expected_record_version=1,
                 mode="sync",
                 account_id=account_id,
-                calendar_id=settings.google_calendar_id,
+                calendar_id=_academic_calendar_id(),
                 request_key=_request_key("543333333333333333"),
                 source=_source("543333333333333333"),
                 actor_id=settings.operator_discord_user_id,
@@ -369,6 +383,41 @@ def test_explicit_course_intent_executes_without_redundant_approval(
     with session_factory() as session:
         operation = session.get(Operation, operation_id)
         assert operation is not None and operation.status == "succeeded"
+
+
+@pytest.mark.integration
+def test_course_sync_rejects_active_pre_lane_series_instead_of_duplicating(
+    session_factory: sessionmaker[Session],
+) -> None:
+    with session_factory.begin() as session:
+        course_id, account_id = _seed_course(session)
+        session.add(
+            CalendarLink(
+                record_id=course_id,
+                meeting_id="lecture-mo",
+                origin_kind="course_meeting",
+                logical_key=f"course:{course_id}:lecture-mo",
+                account_id=account_id,
+                calendar_id=get_settings().google_calendar_id,
+                external_event_id="legacy-unsorted-course-series",
+                provider_etag='"legacy-course"',
+                provider_correlation="legacy-unsorted-course-correlation",
+                last_synced_version=1,
+                recurrence_kind="recurring",
+                synced_snapshot={"status": "confirmed"},
+            )
+        )
+
+    with pytest.raises(DocketError) as exc, session_factory.begin() as session:
+        _apply_explicit(
+            session,
+            record_id=course_id,
+            version=1,
+            account_id=account_id,
+            message_id="543333333333333334",
+        )
+
+    assert exc.value.code == "course_lane_migration_required"
 
 
 @pytest.mark.integration
@@ -750,13 +799,14 @@ def test_course_approval_tolerates_unrelated_snapshot_refresh(
     assert projected["embed"]["title"] == "Review course changes"
     assert [field["name"] for field in projected["embed"]["fields"][:4]] == [
         "Course",
+        "Calendar",
         "Course dates",
         "Notifications",
-        "Term",
     ]
-    assert projected["embed"]["fields"][2]["value"] == "10 minutes beforehand"
-    assert "<t:" in projected["embed"]["fields"][1]["value"]
-    assert "<t:" in projected["embed"]["fields"][3]["value"]
+    assert projected["embed"]["fields"][1]["value"] == "Academic"
+    assert projected["embed"]["fields"][3]["value"] == "10 minutes beforehand"
+    assert "<t:" in projected["embed"]["fields"][2]["value"]
+    assert "<t:" in projected["embed"]["fields"][4]["value"]
     assert [control["label"] for control in projected["controls"]] == [
         "Reject",
         "Snooze until tomorrow",
@@ -778,7 +828,7 @@ def test_course_approval_tolerates_unrelated_snapshot_refresh(
         state = session.scalar(
             select(CalendarSyncState).where(
                 CalendarSyncState.account_id == account_id,
-                CalendarSyncState.calendar_id == settings.google_calendar_id,
+                CalendarSyncState.calendar_id == _academic_calendar_id(),
             )
         )
         assert state is not None and state.last_success_at is not None
@@ -790,7 +840,7 @@ def test_course_approval_tolerates_unrelated_snapshot_refresh(
         session.add(
             CalendarEventCache(
                 account_id=account_id,
-                calendar_id=settings.google_calendar_id,
+                calendar_id=_academic_calendar_id(),
                 provider_event_id="unrelated-course-write",
                 snapshot_generation=generation,
                 status="confirmed",
@@ -856,7 +906,7 @@ def test_course_approval_rejects_changed_conflict_dependency(
         state = session.scalar(
             select(CalendarSyncState).where(
                 CalendarSyncState.account_id == account_id,
-                CalendarSyncState.calendar_id == settings.google_calendar_id,
+                CalendarSyncState.calendar_id == _academic_calendar_id(),
             )
         )
         assert state is not None and state.last_success_at is not None
@@ -868,7 +918,7 @@ def test_course_approval_rejects_changed_conflict_dependency(
         session.add(
             CalendarEventCache(
                 account_id=account_id,
-                calendar_id=settings.google_calendar_id,
+                calendar_id=_academic_calendar_id(),
                 provider_event_id="new-course-conflict",
                 snapshot_generation=generation,
                 status="confirmed",

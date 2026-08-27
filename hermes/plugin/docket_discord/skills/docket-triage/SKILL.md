@@ -41,7 +41,11 @@ or provider timeout can strand at most one short-lived lease. For that source:
    Docket compiles proposals only for `required` and `recommended` events.
 7. Include complete structured event details when the source supplies them.
    Otherwise enumerate the required `missing_fields`; never invent timing,
-   location, participants, or identity.
+   location, participants, or identity. Assign one `calendar_lane` when the
+   evidence or trusted preferences support it. An explicitly configured entity
+   default wins, then bounded class inference (`course`/`institution` to
+   `academic`, an organization to `organizations`); people do not choose a
+   lane. Use `unsorted` for genuinely ambiguous evidence.
 8. Add typed entity mentions for institutions, organizations, courses, people,
    locations, projects, and services. Mark a mention required only when the
    formulation cannot faithfully preserve the real-world object without that

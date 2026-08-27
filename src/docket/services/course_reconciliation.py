@@ -1,4 +1,3 @@
-import hmac
 import uuid
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
@@ -44,6 +43,7 @@ from docket.schemas.calendar import CalendarReminderPlanInput, StandaloneCalenda
 from docket.schemas.records import CourseData, TermData
 from docket.security import issue_approval_token, issue_short_code, short_code_sha256
 from docket.services.calendar_actions import CalendarActionService, _occurrence_intervals
+from docket.services.calendar_lanes import CalendarLaneService
 from docket.services.calendar_profile import CalendarProfileService
 from docket.services.course_manifest import (
     calendar_material_snapshot,
@@ -166,11 +166,11 @@ class CourseReconciliationService:
                 code="invalid_account",
                 message="Course reconciliation requires an enabled Google Calendar account.",
             )
-        if not hmac.compare_digest(request.calendar_id, self.settings.google_calendar_id):
-            raise DocketError(
-                code="calendar_not_allowed",
-                message="Course reconciliation targets only the configured Docket calendar.",
-            )
+        CalendarLaneService(self.session, self.settings).require_active(
+            account.id,
+            lane_name="academic",
+            calendar_id=request.calendar_id,
+        )
         state = self.session.scalar(
             select(CalendarSyncState).where(
                 CalendarSyncState.account_id == account.id,
@@ -298,6 +298,7 @@ class CourseReconciliationService:
         empty_plan = CalendarReminderPlanInput(lead_seconds=[]).model_dump(mode="json")
         parameters = {
             "calendar_id": calendar_id,
+            "calendar_lane": "academic",
             "logical_key": link.logical_key,
             "record_id": str(record.id),
             "record_version": record.version,
@@ -355,33 +356,40 @@ class CourseReconciliationService:
                 )
             )
         }
-        if mode == "drop":
-            other_active = list(
-                self.session.scalars(
-                    select(CalendarLink).where(
-                        CalendarLink.record_id == record.id,
-                        CalendarLink.origin_kind == "course_meeting",
-                        (
-                            (CalendarLink.account_id != account.id)
-                            | (CalendarLink.calendar_id != calendar_id)
-                        ),
-                    )
+        other_active = list(
+            self.session.scalars(
+                select(CalendarLink).where(
+                    CalendarLink.record_id == record.id,
+                    CalendarLink.origin_kind == "course_meeting",
+                    (
+                        (CalendarLink.account_id != account.id)
+                        | (CalendarLink.calendar_id != calendar_id)
+                    ),
                 )
             )
-            other_active = [link for link in other_active if self._link_active(link)]
-            if other_active:
+        )
+        other_active = [link for link in other_active if self._link_active(link)]
+        if other_active:
+            active_targets = sorted(
+                {f"{link.account_id}:{link.calendar_id}" for link in other_active}
+            )
+            if mode == "drop":
                 raise DocketError(
                     code="course_drop_multiple_calendar_targets",
                     message=(
                         "The course has active links outside the selected Calendar target; "
                         "Docket will not archive it after cancelling only a subset."
                     ),
-                    details={
-                        "active_targets": sorted(
-                            {f"{link.account_id}:{link.calendar_id}" for link in other_active}
-                        )
-                    },
+                    details={"active_targets": active_targets},
                 )
+            raise DocketError(
+                code="course_lane_migration_required",
+                message=(
+                    "The course has active meetings in another Calendar lane. "
+                    "Explicit lane migration is required before academic reconciliation."
+                ),
+                details={"active_targets": active_targets},
+            )
         desired_items = self._desired_items(record, course) if mode == "sync" else []
         desired_keys = {str(item["logical_key"]) for item in desired_items}
         compiled: list[dict[str, Any]] = []
@@ -585,6 +593,7 @@ class CourseReconciliationService:
             "target": {
                 "account_id": str(account.id),
                 "calendar_id": calendar_id,
+                "calendar_lane": "academic",
             },
             "course": {
                 "record_id": str(record.id),

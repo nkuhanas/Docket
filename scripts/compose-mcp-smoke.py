@@ -20,6 +20,8 @@ EXPECTED_TOOLS = {
     "docket_archive_record",
     "docket_restore_record",
     "docket_list_accounts",
+    "docket_list_calendar_lanes",
+    "docket_configure_calendar_lane",
     "docket_list_calendar_events",
     "docket_get_calendar_sync_status",
     "docket_get_calendar_profile",

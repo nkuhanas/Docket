@@ -1,9 +1,29 @@
+import ast
 import runpy
 from pathlib import Path
 
 import pytest
 
 from docket.mcp import mcp, triage_mcp
+from docket.services.mcp_traces import DOCKET_MCP_TOOL_NAMES
+
+
+def _plugin_trace_tools() -> set[str]:
+    tree = ast.parse(
+        Path("hermes/plugin/docket_discord/__init__.py").read_text(encoding="utf-8")
+    )
+    for node in tree.body:
+        if (
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "_DOCKET_MCP_TOOL_NAMES"
+                for target in node.targets
+            )
+            and isinstance(node.value, ast.Call)
+            and node.value.args
+        ):
+            return set(ast.literal_eval(node.value.args[0]))
+    raise AssertionError("Discord plugin MCP trace allowlist was not found")
 
 
 @pytest.mark.integration
@@ -21,6 +41,8 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
         "docket_archive_record",
         "docket_restore_record",
         "docket_list_accounts",
+        "docket_list_calendar_lanes",
+        "docket_configure_calendar_lane",
         "docket_list_calendar_events",
         "docket_get_calendar_sync_status",
         "docket_get_calendar_profile",
@@ -56,6 +78,8 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
         if line.strip()
     }
     assert configured_names == names
+    assert names == DOCKET_MCP_TOOL_NAMES
+    assert _plugin_trace_tools() == names
     smoke_contract = runpy.run_path("scripts/compose-mcp-smoke.py")
     assert smoke_contract["EXPECTED_TOOLS"] == names
     store_description = " ".join((tools["docket_store_record"].description or "").split())
@@ -96,6 +120,31 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
     assert entity_attributes["additionalProperties"] is False
     assert "is_operator" in entity_attributes["properties"]
     assert "email_addresses" in entity_attributes["properties"]
+    assert entity_attributes["properties"]["calendar_lane_default"]["anyOf"][0][
+        "enum"
+    ] == ["academic", "work", "organizations", "personal", "unsorted"]
+
+    configure_lane = tools["docket_configure_calendar_lane"]
+    assert configure_lane.inputSchema["properties"]["lane"]["enum"] == [
+        "academic",
+        "work",
+        "organizations",
+        "personal",
+        "unsorted",
+    ]
+    configure_description = " ".join((configure_lane.description or "").split())
+    assert "explicitly asks" in configure_description
+    assert "never deletes" in configure_description
+
+    calendar_intent = tools["docket_apply_calendar_intent"]
+    standalone_event = calendar_intent.inputSchema["$defs"]["StandaloneCalendarEventInput"]
+    assert standalone_event["properties"]["calendar_lane"]["enum"] == [
+        "academic",
+        "work",
+        "organizations",
+        "personal",
+        "unsorted",
+    ]
     update_entity = tools["docket_update_entity"]
     update_entity_description = " ".join((update_entity.description or "").split())
     assert "preserves all other metadata" in update_entity_description

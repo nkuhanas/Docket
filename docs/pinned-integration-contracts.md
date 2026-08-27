@@ -49,7 +49,7 @@ on every request. Docket's callback uses the independent
 
 Hermes performs overlapping plugin discovery during this pin's startup. Each
 discovery pass imports an isolated plugin module, so module globals alone cannot
-prevent a transient second bind. Plugin `0.15.8` starts the private HTTP server
+prevent a transient second bind. Plugin `0.15.9` starts the private HTTP server
 under a background supervisor: an `EADDRINUSE` defers that copy without failing
 plugin registration, and it retries if the process that temporarily owned the
 port exits. Healthy startup may contain one `startup deferred` line, followed
@@ -106,7 +106,7 @@ Pinned outbound assumptions to revalidate:
   through its durable outbox; the plugin never posts hook output directly to
   Discord.
 
-Plugin `0.15.8` renders timed reminder start/end values as Docket-supplied native
+Plugin `0.15.9` renders timed reminder start/end values as Docket-supplied native
 Discord timestamps, puts the event subject under the native `Title` field, and
 omits a redundant timezone field. All-day reminders instead render fixed
 start/end dates plus the Calendar timezone. Projection embeds may omit their
@@ -338,12 +338,23 @@ natural-language intent with the tool's persistence responsibility.
 
 Calendar proposals are also generated from strict Pydantic input. The model
 supplies an exact course record/version or standalone event specification,
-account UUID, and calendar ID; Docket derives stable logical item identities,
+account UUID, one of five stable Calendar lanes, and the opaque Calendar ID
+bound to that lane; Docket derives stable logical item identities,
 risk, executable effects, hashes, preview, target versions, approval references,
 and operation idempotency. The short code remains durable for break-glass
 operations but is removed from the model-facing MCP result, which instead
 supplies button-card guidance. No model-visible tool records approval or
 directly calls Google.
+
+The lane registry is a Docket-owned control plane, not a free-form event tag:
+`academic`, `work`, `organizations`, `personal`, and `unsorted` are the complete
+vocabulary. The preexisting configured Calendar is bound to `unsorted` without
+moving historical events. Every other lane is unavailable until explicit
+operator-authorized provisioning succeeds. Provider creation is correlated by
+a stable Docket lane marker, while rename/color changes reuse the same Calendar
+ID. No tool deletes a lane or invents a sixth calendar. Event routing precedence
+is explicit operator direction, entity default, bounded inference, then
+`unsorted`; a mismatch between the classified lane and target ID fails closed.
 
 Calendar lookups and control do not expose a provider client. Bounded cache
 lookup, redacted sync status, profile reads/writes, canonical reminder-rule
@@ -384,11 +395,13 @@ when that bounded lag is acceptable.
 The active and template allowlists are synchronized by
 `scripts/prepare-hermes-home.sh`, but an existing Hermes session still requires
 `/reload-mcp` after deployment. The MCP server registry and Hermes allowlist
-must contain the same 19 tools.
+must contain the same complete public tool registry. The Discord and server
+MCP-trace allowlists must match that registry as well, so adding a tool cannot
+silently turn its execution into a black box.
 
 `docket_apply_course_intent` accepts one active course UUID/version,
-`sync|drop`, configured account/calendar, optional unified reminder plan, and
-trusted request context. `drop` additionally requires a reason. The generated
+`sync|drop`, configured account/active academic lane, optional unified reminder
+plan, and trusted request context. `drop` additionally requires a reason. The generated
 schema must keep these fields explicit. A fully synchronized course returns a
 no-op; an approved proposal compiles one parent operation and independent
 durable items. Drop archives only after every active link is confirmed
@@ -440,6 +453,11 @@ The current adapter uses Calendar API v3 REST endpoints rather than a generated
 client. Calendar IDs and event IDs are percent-encoded as opaque path segments.
 Create uses `events.insert`; modify-in-place uses `events.patch` with the stored
 ETag when available and `sendUpdates=none`.
+
+Lane provisioning uses `calendars.insert` or `calendars.patch` plus
+`calendarList.patch` with `colorRgbFormat=true`. The token therefore needs
+`calendar.events`, `calendar.calendars`, and `calendar.calendarlist`. Only the
+bounded lane mutation tool can reach those administration methods.
 
 Every write stores `docket_correlation=<operation UUID>` in
 `extendedProperties.private`. Reconciliation calls `events.list` with the

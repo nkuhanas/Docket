@@ -19,6 +19,7 @@ from docket.models import (
     CalendarEventCache,
     CanonicalEvent,
     DiscordProjection,
+    Entity,
     EventObservation,
     OutboxEvent,
     ProviderEventBinding,
@@ -40,6 +41,7 @@ from docket.services.brief_projection import (
     projection_refresh_target,
 )
 from docket.services.calendar_actions import CalendarActionService, _occurrence_intervals
+from docket.services.calendar_lanes import CalendarLaneService
 from docket.services.queue import queue_projection_date
 
 _SPACE = re.compile(r"\s+")
@@ -175,9 +177,7 @@ class CanonicalEventService:
         title_hint = correlation.get("title_hint") or candidate.title
         candidates = list(
             self.session.scalars(
-                select(CanonicalEvent).where(
-                    CanonicalEvent.status.in_(correlatable_statuses)
-                )
+                select(CanonicalEvent).where(CanonicalEvent.status.in_(correlatable_statuses))
             )
         )
         title_matches = [
@@ -227,6 +227,7 @@ class CanonicalEventService:
                 if event.reminder_plan is not None
                 else None
             ),
+            calendar_lane=event.calendar_lane,
             entity_refs=entity_refs,
             context_labels=(
                 [str(value) for value in context_labels] if isinstance(context_labels, list) else []
@@ -263,6 +264,12 @@ class CanonicalEventService:
             return canonical, existing_binding
         entity_refs = _candidate_entity_refs(candidate)
         snapshot = _cache_snapshot(provider_event)
+        provider_lane = CalendarLaneService(self.session, get_settings()).require_active(
+            account_id,
+            calendar_id=calendar_id,
+        ).lane
+        if event is not None:
+            event = event.model_copy(update={"calendar_lane": provider_lane})
         canonical = CanonicalEvent(
             canonical_key=(
                 f"provider:{account_id}:{calendar_id}:{provider_event.provider_event_id}"
@@ -275,6 +282,7 @@ class CanonicalEventService:
                 else {"provider_snapshot": snapshot}
             ),
             reminder_plan=None,
+            calendar_lane=provider_lane,
             entity_refs=entity_refs,
             context_labels=[
                 str(value)
@@ -517,10 +525,8 @@ class SemanticCandidateCompiler:
                     ActionRevision.revision == action.current_revision,
                 )
             )
-            if (
-                revision is None
-                or revision.parameters.get("canonical_event_id")
-                != str(canonical_event.id)
+            if revision is None or revision.parameters.get("canonical_event_id") != str(
+                canonical_event.id
             ):
                 continue
             approval = session.scalar(
@@ -631,9 +637,10 @@ class SemanticCandidateCompiler:
         provider_event_id: str | None,
         identity_only: bool,
     ) -> CalendarEventCache | None:
+        calendar_ids = CalendarLaneService(session, self.settings).calendar_ids(account_id)
         statement = select(CalendarEventCache).where(
             CalendarEventCache.account_id == account_id,
-            CalendarEventCache.calendar_id == self.settings.google_calendar_id,
+            CalendarEventCache.calendar_id.in_(calendar_ids),
             CalendarEventCache.status.in_(("confirmed", "tentative")),
         )
         if provider_event_id is not None:
@@ -660,6 +667,40 @@ class SemanticCandidateCompiler:
             return None
         matches = [row for row in rows if self._cache_matches_event(row, event)]
         return matches[0] if len(matches) == 1 else None
+
+    def _inferred_lane(
+        self,
+        session: Session,
+        candidate: SemanticCandidate,
+        event_data: dict[str, Any],
+    ) -> str:
+        explicit = event_data.get("calendar_lane")
+        if explicit in {"academic", "work", "organizations", "personal", "unsorted"}:
+            return str(explicit)
+        defaults: set[str] = set()
+        class_hints: set[str] = set()
+        for ref in _candidate_entity_refs(candidate):
+            try:
+                entity = session.get(Entity, uuid.UUID(str(ref["entity_id"])))
+            except (KeyError, ValueError):
+                continue
+            if entity is None:
+                continue
+            configured = entity.attributes.get("calendar_lane_default")
+            if configured in {
+                "academic",
+                "work",
+                "organizations",
+                "personal",
+                "unsorted",
+            }:
+                defaults.add(str(configured))
+            elif entity.entity_class in {"course", "institution"}:
+                class_hints.add("academic")
+            elif entity.entity_class == "organization":
+                class_hints.add("organizations")
+        choices = defaults or class_hints
+        return next(iter(choices)) if len(choices) == 1 else "unsorted"
 
     def _compile_event(
         self,
@@ -689,6 +730,12 @@ class SemanticCandidateCompiler:
             return
         effective_mutation = candidate.mutation
         account = self._calendar_account(session, source)
+        if event is not None and isinstance(event_data, dict):
+            event = event.model_copy(
+                update={"calendar_lane": self._inferred_lane(session, candidate, event_data)}
+            )
+        lane_service = CalendarLaneService(session, self.settings)
+        active_calendar_ids = lane_service.calendar_ids(account.id)
         event_service = CanonicalEventService(session)
         matches = event_service.correlate(candidate)
         if len(matches) > 1:
@@ -708,6 +755,8 @@ class SemanticCandidateCompiler:
             return
 
         canonical_event = matches[0] if matches else None
+        if event is not None and canonical_event is not None:
+            event = event.model_copy(update={"calendar_lane": canonical_event.calendar_lane})
         binding: ProviderEventBinding | None = None
         correlation = candidate.fields.get("correlation")
         correlation = correlation if isinstance(correlation, dict) else {}
@@ -718,7 +767,7 @@ class SemanticCandidateCompiler:
                 select(ProviderEventBinding).where(
                     ProviderEventBinding.canonical_event_id == canonical_event.id,
                     ProviderEventBinding.account_id == account.id,
-                    ProviderEventBinding.calendar_id == self.settings.google_calendar_id,
+                    ProviderEventBinding.calendar_id.in_(active_calendar_ids),
                     ProviderEventBinding.status.in_(("active", "diverged")),
                 )
             )
@@ -782,7 +831,7 @@ class SemanticCandidateCompiler:
                 canonical_event, binding = event_service.adopt_provider_event(
                     candidate,
                     account_id=account.id,
-                    calendar_id=self.settings.google_calendar_id,
+                    calendar_id=provider_match.calendar_id,
                     provider_event=provider_match,
                     event=event if candidate.mutation in {"create", "none"} else None,
                 )
@@ -810,8 +859,10 @@ class SemanticCandidateCompiler:
             }
             return
 
-        if candidate.mutation == "cancel" and canonical_event is not None and (
-            canonical_event.status == "cancelled"
+        if (
+            candidate.mutation == "cancel"
+            and canonical_event is not None
+            and (canonical_event.status == "cancelled")
         ):
             event_service.observe(
                 candidate=candidate,
@@ -954,7 +1005,18 @@ class SemanticCandidateCompiler:
         result = CalendarActionService(session).formulate_inferred(
             InferredCalendarEventInput(
                 account_id=account.id,
-                calendar_id=self.settings.google_calendar_id,
+                calendar_id=(
+                    binding.calendar_id
+                    if binding is not None
+                    else lane_service.require_active(
+                        account.id,
+                        lane_name=(
+                            event.calendar_lane
+                            if event is not None
+                            else canonical_event.calendar_lane
+                        ),
+                    ).calendar_id
+                ),
                 proposal=proposal,
                 canonical_event_id=canonical_event.id,
                 semantic_candidate_id=candidate.id,

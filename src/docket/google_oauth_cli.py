@@ -13,6 +13,7 @@ from docket.providers.google.oauth import (
     GoogleOAuthSetupError,
     authorized_user_file_status,
     perform_setup,
+    resolve_scopes,
     validate_client_file,
 )
 
@@ -99,7 +100,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"client=invalid: {exc}", file=sys.stderr)
             return 1
         print("client=configured")
-        print(f"token={authorized_user_file_status(token_file)}")
+        token_status = authorized_user_file_status(
+            token_file,
+            required_scopes=resolve_scopes(DEFAULT_SCOPE_PROFILES),
+        )
+        print(f"token={token_status}")
         return 0
 
     profiles = arguments.scope_profile or DEFAULT_SCOPE_PROFILES

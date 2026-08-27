@@ -37,10 +37,12 @@ event loop, or client fails closed with `discord_runtime_unavailable`.
 
 Operator direction expands initial Google OAuth authorization beyond the
 private specification's Calendar-then-Gmail milestone sequence. The default
-setup now requests these four scopes in one consent flow:
+setup now requests these six scopes in one consent flow:
 
 ```text
 https://www.googleapis.com/auth/calendar.events
+https://www.googleapis.com/auth/calendar.calendarlist
+https://www.googleapis.com/auth/calendar.calendars
 https://www.googleapis.com/auth/documents
 https://www.googleapis.com/auth/gmail.modify
 https://www.googleapis.com/auth/spreadsheets
@@ -58,6 +60,13 @@ one consent flow and avoiding future reauthorization. Compensating controls are
 the ignored credential directory, mode-0600 atomic persistence, read-only
 container mount, external calls disabled by default, and narrow Docket-owned
 adapters when those features are implemented.
+
+The two additional Calendar scopes were added on 2026-08-27 for the five-lane
+Calendar model. `calendar.calendars` permits Docket to create and rename its
+owned secondary calendars; `calendar.calendarlist` permits Docket to apply the
+operator-facing color and selected state. The model receives only bounded
+`docket_list_calendar_lanes` and explicitly authorized
+`docket_configure_calendar_lane` tools, never raw Calendar administration.
 
 ## 2026-07-22 — Persist the last synchronized Calendar snapshot
 

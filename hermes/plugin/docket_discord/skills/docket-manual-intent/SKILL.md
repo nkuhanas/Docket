@@ -119,9 +119,11 @@ For an adopted term schedule:
    data. If an equal update is nevertheless submitted, Docket returns
    `matched_existing` with the unchanged version; use its canonical snapshot
    and never claim that the record changed.
-3. Obtain the enabled account/configured calendar with
-   `docket_list_accounts` and read `docket_get_calendar_profile`; these reads
-   may run alongside other independent reads and consume no intent index.
+3. Obtain the enabled account and its Calendar lane registry with
+   `docket_list_accounts` or `docket_list_calendar_lanes`, and read
+   `docket_get_calendar_profile`; these reads may run alongside other
+   independent reads and consume no intent index. Course meetings always use
+   the active `academic` lane and its returned opaque Calendar ID.
 4. When the current message explicitly requests Calendar application, call
    `docket_apply_course_intent` in `sync` mode for every successfully stored or
    updated course. Omit the reminder plan to use the unified profile default.
@@ -203,8 +205,9 @@ or restore consumes its own successive index. A proposal-only request uses
 
 Before a course reconciliation, use the canonical record snapshot returned by
 an immediately preceding successful store call for that course; otherwise read
-the course's current version. Call `docket_list_accounts` to select the exact
-enabled Google account and use only the returned configured calendar ID.
+the course's current version. Call `docket_list_calendar_lanes` to select the
+exact enabled Google account's active `academic` lane and use only its returned
+Calendar ID.
 Use `docket_apply_course_intent` for course lifecycle work. Explicit operator
 course synchronization and drops execute directly; direct responses mean the
 operation is durably queued, not necessarily provider-complete. A conflict may
@@ -219,6 +222,16 @@ recurring series, use `target_scope: series` with the master
 `recurring_event_id` returned by the fresh Calendar lookup. Never substitute an
 occurrence ID when the operator asked to update, change reminders on, or cancel
 the whole series, and never infer whole-series scope from conversational memory.
+Choose exactly one stable event lane: `academic`, `work`, `organizations`,
+`personal`, or `unsorted`. Explicit current operator direction wins; otherwise
+use an active bound entity's `calendar_lane_default`; otherwise use bounded
+semantic inference. Institutions and courses normally imply `academic`, and
+organizations normally imply `organizations`, unless their stored defaults say
+otherwise. People are context and do not determine a lane. Use `unsorted` only
+when the result remains genuinely ambiguous. Read `docket_list_calendar_lanes`
+and pass the exact active Calendar ID mapped to the chosen event lane. Never
+guess an ID, route to a differently named lane, or silently substitute
+`unsorted` for an unavailable lane.
 For a standalone timed or all-day event, preserve an explicitly supplied IANA
 timezone. When the operator omits timezone, omit it from the timing payload so
 Docket deterministically materializes its configured `DOCKET_TIMEZONE`; do not
@@ -252,8 +265,10 @@ intentionally absent from the model-facing proposal result.
 Do not describe the provider write as complete until `docket_get_action`
 reports a succeeded operation.
 
-For Calendar lookup questions, select the configured account and calendar with
-`docket_list_accounts`, then use `docket_list_calendar_events`. Use
+For Calendar lookup questions, select the account and requested lane with
+`docket_list_calendar_lanes`, then use `docket_list_calendar_events` with that
+lane's exact Calendar ID. Search multiple active lanes when the operator asks
+about their calendar generally. Use
 `relative_day="today"` or `relative_day="tomorrow"` for those local-day
 requests and omit `start` and `end`; Docket's returned `range_resolution` is
 the authoritative date, timezone, and clock instant. Never call the terminal,
@@ -268,6 +283,12 @@ one synchronization interval. Use `prefer_cache` only when that bounded lag is
 acceptable. Never describe stale or uncovered cache state as current.
 `require_fresh` remains a bounded Docket-owned refresh and does not grant raw
 Google access.
+
+`docket_configure_calendar_lane` is an external configuration mutation. Call it
+only when the current operator explicitly asks to provision, rename, or recolor
+one of the five lanes. Read the lane first, preserve its current version, and
+consume a fresh intent index. Never delete a lane calendar, invent a sixth lane,
+or migrate existing events as an implied consequence of changing presentation.
 
 Create, replace, or disable reminders only through the `reminders`
 discriminator of `docket_apply_calendar_intent`. Read underlying canonical

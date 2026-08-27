@@ -14,6 +14,7 @@ from docket.models import (
     Action,
     ActionRevision,
     CalendarEventCache,
+    CalendarLane,
     CalendarProfile,
     CalendarReminderPlan,
     CalendarSyncState,
@@ -205,6 +206,44 @@ def test_standalone_create_proposal_uses_profile_reminder_and_conflict_scan(
     replay = CalendarActionService(session).apply_explicit(request)
     assert replay.disposition == "replayed_request"
     assert replay.action_id == result.action_id
+
+
+def test_conflict_scan_spans_every_active_calendar_lane(session: Session) -> None:
+    account, _state = calendar_fixture(session)
+    personal_calendar_id = "personal@group.calendar.google.com"
+    session.add(
+        CalendarLane(
+            account_id=account.id,
+            lane="personal",
+            display_name="Docket · Personal",
+            color_hex="#8E24AA",
+            calendar_id=personal_calendar_id,
+            status="active",
+        )
+    )
+    event = cached_event(session, account, provider_event_id="personal-conflict")
+    event.calendar_id = personal_calendar_id
+    session.flush()
+
+    result = CalendarActionService(session).apply_explicit(create_request(account))
+    revision = session.get(ActionRevision, result.action_revision_id)
+
+    assert revision is not None
+    assert [value["provider_event_id"] for value in revision.preview["conflicts"]] == [
+        "personal-conflict"
+    ]
+
+
+def test_event_lane_must_match_destination_calendar(session: Session) -> None:
+    account, _state = calendar_fixture(session)
+    request = create_request(account).model_copy(deep=True)
+    assert request.proposal.kind == "create"
+    request.proposal.event.calendar_lane = "personal"
+
+    with pytest.raises(DocketError) as rejected:
+        CalendarActionService(session).apply_explicit(request)
+
+    assert rejected.value.code == "calendar_lane_mismatch"
 
 
 def test_profile_block_policy_cannot_turn_overlap_into_validation_failure(

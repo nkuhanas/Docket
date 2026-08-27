@@ -24,6 +24,7 @@ from docket.models import (
     Approval,
     AuditEvent,
     CalendarEventCache,
+    CalendarLane,
     CalendarLink,
     CalendarReminderPlan,
     CalendarSyncState,
@@ -46,6 +47,8 @@ from docket.policy import BATCH_CALENDAR_ACTION_TYPES, GMAIL_MUTATION_ACTION_TYP
 from docket.providers.google.calendar import (
     CalendarEventRequest,
     CalendarEventResult,
+    CalendarLaneProviderResult,
+    CalendarLaneRequest,
     CalendarProvider,
     CalendarProviderError,
     CalendarUnknownOutcome,
@@ -74,6 +77,7 @@ class ClaimedOperation:
     operation_type: str
     provider_correlation: str
     parameters: dict[str, Any]
+    attempt_number: int
     operation_item_id: uuid.UUID | None = None
 
     def calendar_request(self) -> CalendarEventRequest:
@@ -112,6 +116,16 @@ class ClaimedOperation:
             source_version=str(self.parameters["source_version"]),
             remove_label_id=str(self.parameters["remove_label_id"]),
             provider_correlation=self.provider_correlation,
+        )
+
+    def calendar_lane_request(self, *, create_if_missing: bool = True) -> CalendarLaneRequest:
+        return CalendarLaneRequest(
+            lane=str(self.parameters["lane"]),
+            display_name=str(self.parameters["display_name"]),
+            color_hex=str(self.parameters["color_hex"]),
+            timezone=str(self.parameters["timezone"]),
+            calendar_id=self.parameters.get("calendar_id"),
+            create_if_missing=create_if_missing,
         )
 
 
@@ -167,6 +181,7 @@ class OperationRunner:
                     "calendar_update_event",
                     "calendar_update_reminders",
                     "calendar_cancel_event",
+                    "calendar_configure_lane",
                 }
             )
         if self.gmail_execution_enabled and self.gmail_provider is not None:
@@ -226,6 +241,7 @@ class OperationRunner:
             operation_type=operation.operation_type,
             provider_correlation=operation.provider_correlation,
             parameters=dict(revision.parameters),
+            attempt_number=attempt.attempt_number,
         )
 
     def _claim_batch_item(self, session: Session, *, reconcile: bool) -> ClaimedOperation | None:
@@ -287,6 +303,7 @@ class OperationRunner:
             operation_type=item.item_type,
             provider_correlation=str(item.id),
             parameters=dict(item.parameters),
+            attempt_number=attempt.attempt_number,
         )
 
     def claim_due(self) -> ClaimedOperation | None:
@@ -758,6 +775,9 @@ class OperationRunner:
             if isinstance(event_spec, dict):
                 canonical_event.event_spec = dict(event_spec)
                 canonical_event.title = str(event_spec.get("title") or canonical_event.title)
+            calendar_lane = parameters.get("calendar_lane")
+            if isinstance(calendar_lane, str):
+                canonical_event.calendar_lane = calendar_lane
             reminder_plan = parameters.get("reminder_plan")
             if isinstance(reminder_plan, dict):
                 canonical_event.reminder_plan = dict(reminder_plan)
@@ -1616,6 +1636,92 @@ class OperationRunner:
                 )
             self._apply_gmail_success(session, operation, attempt, result)
 
+    def finish_calendar_lane_success(
+        self,
+        claim: ClaimedOperation,
+        result: CalendarLaneProviderResult,
+    ) -> None:
+        with self.session_factory.begin() as session:
+            operation = session.get(Operation, claim.operation_id)
+            attempt = session.get(ExecutionAttempt, claim.attempt_id)
+            if operation is None or attempt is None:
+                raise DocketError(code="operation_lease_lost", message="Operation lease was lost.")
+            if claim.operation_item_id is not None or operation.lease_token != claim.lease_token:
+                raise DocketError(code="operation_lease_lost", message="Operation lease was lost.")
+            revision, action, queue_item = self._bound_entities(session, operation)
+            parameters = revision.parameters
+            try:
+                lane_id = uuid.UUID(str(parameters["lane_id"]))
+            except (KeyError, ValueError) as exc:
+                raise DocketError(
+                    code="invalid_operation_state",
+                    message="The Calendar lane operation has an invalid lane binding.",
+                ) from exc
+            lane = session.get(CalendarLane, lane_id)
+            if (
+                lane is None
+                or lane.account_id != operation.account_id
+                or lane.lane != parameters.get("lane")
+                or lane.version != parameters.get("lane_version")
+                or lane.display_name != parameters.get("display_name")
+                or lane.color_hex != parameters.get("color_hex")
+            ):
+                raise DocketError(
+                    code="calendar_lane_binding_changed",
+                    message="The Calendar lane changed before configuration completed.",
+                )
+            lane.calendar_id = result.calendar_id
+            lane.status = "active"
+            lane.last_error_code = None
+            now = utc_now()
+            attempt.status = AttemptStatus.SUCCEEDED.value
+            attempt.provider_request_id = result.provider_request_id or attempt.provider_request_id
+            attempt.response_summary = {
+                "lane": lane.lane,
+                "calendar_id": result.calendar_id,
+            }
+            attempt.completed_at = now
+            operation.status = OperationStatus.SUCCEEDED.value
+            operation.lease_token = None
+            operation.leased_until = None
+            operation.next_attempt_at = None
+            operation.result = {
+                "lane": lane.lane,
+                "calendar_id": result.calendar_id,
+                "display_name": lane.display_name,
+                "color_hex": lane.color_hex,
+            }
+            operation.last_error_code = None
+            operation.last_error_message = None
+            action.status = ActionStatus.SUCCEEDED.value
+            queue_item.status = QueueItemStatus.COMPLETED.value
+            queue_item.resolved_at = now
+            queue_item.resolution_code = "calendar_lane_configured"
+            queue_item.version += 1
+            session.add(
+                AuditEvent(
+                    event_type="calendar_lane.configured",
+                    entity_type="calendar_lane",
+                    entity_id=lane.id,
+                    actor_type="docket",
+                    actor_id=None,
+                    request_id=None,
+                    data={
+                        "operation_id": str(operation.id),
+                        "attempt_id": str(attempt.id),
+                        "calendar_id": result.calendar_id,
+                        "provider_request_id": result.provider_request_id,
+                    },
+                )
+            )
+            enqueue_action_system_log(
+                session,
+                action=action,
+                revision=revision,
+                state="succeeded",
+                result=operation.result,
+            )
+
     def finish_error(
         self,
         claim: ClaimedOperation,
@@ -1778,6 +1884,16 @@ class OperationRunner:
                     )
                 ):
                     plan.status = plan_status
+            if revision.action_type == "calendar_configure_lane":
+                try:
+                    lane_id = uuid.UUID(str(revision.parameters["lane_id"]))
+                except (KeyError, ValueError):
+                    lane_id = None
+                lane = session.get(CalendarLane, lane_id) if lane_id is not None else None
+                if lane is not None and lane.version == revision.parameters.get("lane_version"):
+                    lane.last_error_code = error.code
+                    if operation.status == OperationStatus.FAILED.value:
+                        lane.status = "failed"
             queue_item.version += 1
             if operation.bundle_id is not None:
                 self._update_operation_bundle(session, operation)
@@ -1846,6 +1962,16 @@ class OperationRunner:
         if claim is None:
             return False
         self.mark_provider_call_started(claim)
+        if claim.operation_type == "calendar_configure_lane":
+            try:
+                lane_result = self.provider.ensure_calendar_lane(
+                    claim.calendar_lane_request()
+                )
+            except CalendarProviderError as exc:
+                self.finish_error(claim, exc)
+            else:
+                self.finish_calendar_lane_success(claim, lane_result)
+            return True
         if claim.operation_type in GMAIL_MUTATION_ACTION_TYPES:
             if self.gmail_provider is None:
                 self.finish_error(
@@ -2142,6 +2268,32 @@ class OperationRunner:
         claim = self.claim_reconciliation()
         if claim is None:
             return False
+        if claim.operation_type == "calendar_configure_lane":
+            try:
+                lane_result = self.provider.ensure_calendar_lane(
+                    claim.calendar_lane_request(create_if_missing=False)
+                )
+            except CalendarProviderError as exc:
+                if exc.code == "google_calendar_lane_not_found":
+                    if claim.attempt_number < 4:
+                        self._defer_reconciliation(
+                            claim,
+                            error_code=exc.code,
+                            delay_seconds=8,
+                        )
+                    else:
+                        self._finish_reconciliation_no_match(claim)
+                elif exc.transient:
+                    self._defer_reconciliation(
+                        claim,
+                        error_code=exc.code,
+                        delay_seconds=8,
+                    )
+                else:
+                    self.finish_error(claim, exc)
+            else:
+                self.finish_calendar_lane_success(claim, lane_result)
+            return True
         if claim.operation_type in GMAIL_MUTATION_ACTION_TYPES:
             if self.gmail_provider is None:
                 self.finish_error(

@@ -29,6 +29,10 @@ class CanonicalEvent(TimestampMixin, Base):
             "authority IN ('explicit_user', 'canonical', 'inferred')",
             name="ck_canonical_events_authority",
         ),
+        CheckConstraint(
+            "calendar_lane IN ('academic', 'work', 'organizations', 'personal', 'unsorted')",
+            name="ck_canonical_events_calendar_lane",
+        ),
         UniqueConstraint("canonical_key", name="uq_canonical_events_key"),
     )
 
@@ -38,6 +42,7 @@ class CanonicalEvent(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(16), default="proposed", nullable=False)
     event_spec: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     reminder_plan: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    calendar_lane: Mapped[str] = mapped_column(String(32), default="unsorted", nullable=False)
     entity_refs: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
     context_labels: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     authority: Mapped[str] = mapped_column(String(32), nullable=False)

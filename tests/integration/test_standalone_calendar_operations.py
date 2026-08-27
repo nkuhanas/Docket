@@ -667,6 +667,7 @@ def test_update_card_prioritizes_operator_changes_and_terminal_state(
         )
         assert fields["Delta · Reminders"] == ("Before: 5 minutes, 10 minutes\nAfter: 5 minutes")
         assert fields["Details"] == "One-time · Normal priority\nTags: email"
+        assert fields["Calendar"] == "Unsorted"
         assert fields["Notifications"] == "5 minutes beforehand"
         assert fields["Conflicts"] == "None found"
 
@@ -691,7 +692,6 @@ def test_update_card_prioritizes_operator_changes_and_terminal_state(
     assert fields["Delta · Reminders"].endswith("After: 5 minutes")
     assert {
         "Status",
-        "Calendar",
         "Execution",
         "Effect",
         "Before",
@@ -1098,12 +1098,12 @@ def test_proposal_selects_and_custom_modal_replace_the_revision_in_place(
         assert "Name" not in fields
         assert fields["When"] == ("Starts <t:1785438000:F>\nEnds <t:1785438900:F>")
         assert fields["Where"] == "Desk"
+        assert fields["Calendar"] == "Unsorted"
         assert fields["Details"] == "One-time · Normal priority\nTags: email"
         assert fields["Notifications"] == ("5 minutes beforehand\n10 minutes beforehand")
         assert fields["Conflicts"] == "None found"
         assert {
             "Status",
-            "Calendar",
             "Execution",
             "Effect",
             "Before",

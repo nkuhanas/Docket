@@ -12,6 +12,7 @@ from docket.models import (
     ActionRevision,
     Approval,
     CalendarEventCache,
+    CalendarLane,
     CalendarSyncState,
     CanonicalEvent,
     DiscordDailyThread,
@@ -149,10 +150,21 @@ def test_complete_inferred_event_becomes_one_version_bound_proposal(
             attributes={"context": "club"},
             authority=IntentAuthority.EXPLICIT_USER,
         )
+        organizations_calendar_id = "organizations@group.calendar.google.com"
+        session.add(
+            CalendarLane(
+                account_id=account.id,
+                lane="organizations",
+                display_name="Docket · Organizations",
+                color_hex="#0B8043",
+                calendar_id=organizations_calendar_id,
+                status="active",
+            )
+        )
         session.add(
             CalendarSyncState(
                 account_id=account.id,
-                calendar_id=get_settings().google_calendar_id,
+                calendar_id=organizations_calendar_id,
                 window_start=now - timedelta(days=30),
                 window_end=now + timedelta(days=400),
                 status="current",
@@ -224,6 +236,7 @@ def test_complete_inferred_event_becomes_one_version_bound_proposal(
         source = session.get(SourceItem, candidate.source_item_id) if candidate else None
         assert candidate is not None and candidate.status == "proposed"
         assert canonical is not None and canonical.status == "proposed"
+        assert canonical.calendar_lane == "organizations"
         assert observation is not None and observation.correlation_state == "new"
         assert observation.canonical_event_id == canonical.id
         assert source is not None
@@ -255,6 +268,7 @@ def test_complete_inferred_event_becomes_one_version_bound_proposal(
             }
         ]
         assert revision is not None and revision.authority == "inferred"
+        assert revision.parameters["calendar_lane"] == "organizations"
         assert revision.parameters["canonical_event_id"] == str(canonical.id)
         assert revision.preview["source"] == {
             "relationship": "Inferred from email",
@@ -455,10 +469,21 @@ def test_required_inferred_entity_registers_with_approved_event(
         )
         session.add(account)
         session.flush()
+        organizations_calendar_id = "organizations@group.calendar.google.com"
+        session.add(
+            CalendarLane(
+                account_id=account.id,
+                lane="organizations",
+                display_name="Docket · Organizations",
+                color_hex="#0B8043",
+                calendar_id=organizations_calendar_id,
+                status="active",
+            )
+        )
         session.add(
             CalendarSyncState(
                 account_id=account.id,
-                calendar_id=get_settings().google_calendar_id,
+                calendar_id=organizations_calendar_id,
                 window_start=now - timedelta(days=30),
                 window_end=now + timedelta(days=400),
                 status="current",

@@ -37,6 +37,7 @@ from docket.providers.google.calendar import (
     CalendarReadProvider,
     CalendarSnapshotEvent,
 )
+from docket.services.calendar_lanes import CalendarLaneService
 
 logger = structlog.get_logger(__name__)
 
@@ -166,12 +167,10 @@ class CalendarSyncService:
 
     def _validate_target(self, session: Session, account_id: uuid.UUID, calendar_id: str) -> None:
         self._configured_account(session, account_id)
-        if calendar_id != self.settings.google_calendar_id:
-            raise DocketError(
-                code="calendar_not_allowed",
-                message="The selected calendar is not the configured Docket calendar.",
-                details={"calendar_id": calendar_id},
-            )
+        CalendarLaneService(session, self.settings).require_active(
+            account_id,
+            calendar_id=calendar_id,
+        )
 
     def ensure_state(self, account_id: uuid.UUID, calendar_id: str) -> uuid.UUID:
         now = _aware(self.clock()).astimezone(UTC)
@@ -694,27 +693,38 @@ class CalendarSyncService:
         return True
 
     def run_due_once(self) -> bool:
-        with self.session_factory() as session:
-            account_attempts = list(
-                session.execute(
-                    select(Account.id, CalendarSyncState.last_attempt_at)
-                    .outerjoin(
-                        CalendarSyncState,
-                        (CalendarSyncState.account_id == Account.id)
-                        & (CalendarSyncState.calendar_id == self.settings.google_calendar_id),
-                    )
-                    .where(Account.provider == "google", Account.enabled.is_(True))
-                ).all()
+        with self.session_factory.begin() as session:
+            targets: list[tuple[uuid.UUID, str, datetime | None]] = []
+            accounts = session.scalars(
+                select(Account).where(Account.provider == "google", Account.enabled.is_(True))
             )
-        account_attempts.sort(
+            for account in accounts:
+                for calendar_id in CalendarLaneService(session, self.settings).calendar_ids(
+                    account.id
+                ):
+                    state = session.scalar(
+                        select(CalendarSyncState).where(
+                            CalendarSyncState.account_id == account.id,
+                            CalendarSyncState.calendar_id == calendar_id,
+                        )
+                    )
+                    targets.append(
+                        (
+                            account.id,
+                            calendar_id,
+                            state.last_attempt_at if state is not None else None,
+                        )
+                    )
+        targets.sort(
             key=lambda item: (
-                item[1] is not None,
-                _aware(item[1]) if item[1] is not None else datetime.min.replace(tzinfo=UTC),
+                item[2] is not None,
+                _aware(item[2]) if item[2] is not None else datetime.min.replace(tzinfo=UTC),
                 str(item[0]),
+                item[1],
             )
         )
-        for account_id, _last_attempt_at in account_attempts:
-            if self.sync_target(account_id, self.settings.google_calendar_id):
+        for account_id, calendar_id, _last_attempt_at in targets:
+            if self.sync_target(account_id, calendar_id):
                 return True
         return False
 

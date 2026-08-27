@@ -1,5 +1,4 @@
 import calendar as month_calendar
-import hmac
 import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
@@ -60,6 +59,7 @@ from docket.schemas.calendar import (
     TimedEventTiming,
 )
 from docket.security import issue_approval_token, issue_short_code, short_code_sha256
+from docket.services.calendar_lanes import CalendarLaneService
 from docket.services.calendar_profile import CalendarProfileService
 from docket.services.operation_materialization import operation_idempotency_key
 from docket.services.operational_logs import enqueue_action_system_log
@@ -339,10 +339,25 @@ class CalendarActionService:
                 message="The action requires an enabled Google Calendar account.",
                 details={"account_id": str(request.account_id)},
             )
-        if not hmac.compare_digest(request.calendar_id, settings.google_calendar_id):
+        lane = CalendarLaneService(self.session, settings).require_active(
+            account.id,
+            calendar_id=request.calendar_id,
+        )
+        event = (
+            request.proposal.event
+            if isinstance(request.proposal, CreateCalendarEventProposal)
+            else request.proposal.replacement
+            if isinstance(request.proposal, UpdateCalendarEventProposal)
+            else None
+        )
+        if event is not None and event.calendar_lane != lane.lane:
             raise DocketError(
-                code="calendar_not_allowed",
-                message="The requested calendar is not the configured Docket calendar.",
+                code="calendar_lane_mismatch",
+                message="The event lane and destination Calendar do not match.",
+                details={
+                    "event_lane": event.calendar_lane,
+                    "destination_lane": lane.lane,
+                },
             )
         profile = CalendarProfileService(self.session).get()
         if profile.proposal_mode == "off" and authority == IntentAuthority.INFERRED:
@@ -516,10 +531,11 @@ class CalendarActionService:
         intervals = _occurrence_intervals(event)
         if not intervals:
             return []
+        calendar_ids = CalendarLaneService(self.session, get_settings()).calendar_ids(account_id)
         rows = self.session.scalars(
             select(CalendarEventCache).where(
                 CalendarEventCache.account_id == account_id,
-                CalendarEventCache.calendar_id == calendar_id,
+                CalendarEventCache.calendar_id.in_(calendar_ids),
                 CalendarEventCache.status.in_(("confirmed", "tentative")),
             )
         ).all()
@@ -613,17 +629,13 @@ class CalendarActionService:
                 lead_seconds=profile.default_reminder_lead_seconds,
             )
             return requested.model_copy(
-                update={
-                    "delivery_channels": list(profile.default_reminder_delivery_channels)
-                }
+                update={"delivery_channels": list(profile.default_reminder_delivery_channels)}
             )
         if isinstance(proposal, UpdateCalendarEventProposal):
             if proposal.reminder_disposition == "replace":
                 assert proposal.reminder_plan is not None
                 return proposal.reminder_plan.model_copy(
-                    update={
-                        "delivery_channels": list(profile.default_reminder_delivery_channels)
-                    }
+                    update={"delivery_channels": list(profile.default_reminder_delivery_channels)}
                 )
             if proposal.reminder_disposition == "disable":
                 return CalendarReminderPlanInput(
@@ -633,9 +645,7 @@ class CalendarActionService:
             return None
         if isinstance(proposal, UpdateCalendarRemindersProposal):
             return proposal.reminder_plan.model_copy(
-                update={
-                    "delivery_channels": list(profile.default_reminder_delivery_channels)
-                }
+                update={"delivery_channels": list(profile.default_reminder_delivery_channels)}
             )
         return CalendarReminderPlanInput(
             delivery_channels=profile.default_reminder_delivery_channels,
@@ -674,6 +684,10 @@ class CalendarActionService:
         if replay is not None:
             return replay
         account, profile, state = self._validate_target(request, authority=authority)
+        destination_lane = CalendarLaneService(self.session, get_settings()).require_active(
+            account.id,
+            calendar_id=request.calendar_id,
+        )
         if (
             authority == IntentAuthority.EXPLICIT_USER
             and get_settings().calendar_write_mode() == "disabled"
@@ -784,6 +798,7 @@ class CalendarActionService:
                 reminder_plan=(
                     reminder_plan.model_dump(mode="json") if reminder_plan is not None else None
                 ),
+                calendar_lane=(event.calendar_lane if event is not None else destination_lane.lane),
                 entity_refs=entity_refs,
                 context_labels=context_labels,
                 authority=authority.value,
@@ -817,6 +832,7 @@ class CalendarActionService:
         )
         parameters: dict[str, Any] = {
             "calendar_id": request.calendar_id,
+            "calendar_lane": (event.calendar_lane if event is not None else destination_lane.lane),
             "logical_key": logical_key,
             "event": event_payload,
             "reminder_plan": plan_payload,
@@ -866,6 +882,9 @@ class CalendarActionService:
             "target": {
                 "account_id": str(account.id),
                 "calendar_id": request.calendar_id,
+                "calendar_lane": (
+                    event.calendar_lane if event is not None else destination_lane.lane
+                ),
                 "logical_key": logical_key,
                 "scope": target_scope,
             },

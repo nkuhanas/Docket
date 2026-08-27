@@ -596,6 +596,38 @@ class CalendarProfile(TimestampMixin, Base):
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
 
+class CalendarLane(TimestampMixin, Base):
+    __tablename__ = "calendar_lanes"
+    __table_args__ = (
+        CheckConstraint(
+            "lane IN ('academic', 'work', 'organizations', 'personal', 'unsorted')",
+            name="ck_calendar_lanes_lane",
+        ),
+        CheckConstraint(
+            "status IN ('unprovisioned', 'provisioning', 'active', 'failed')",
+            name="ck_calendar_lanes_status",
+        ),
+        CheckConstraint(
+            "color_hex LIKE '#______' AND length(color_hex) = 7",
+            name="ck_calendar_lanes_color_hex",
+        ),
+        UniqueConstraint("account_id", "lane", name="uq_calendar_lanes_account_lane"),
+        UniqueConstraint("account_id", "calendar_id", name="uq_calendar_lanes_account_calendar"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("accounts.id", ondelete="RESTRICT"), nullable=False
+    )
+    lane: Mapped[str] = mapped_column(String(32), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    color_hex: Mapped[str] = mapped_column(String(7), nullable=False)
+    calendar_id: Mapped[str | None] = mapped_column(String(1024))
+    status: Mapped[str] = mapped_column(String(32), default="unprovisioned", nullable=False)
+    last_error_code: Mapped[str | None] = mapped_column(String(128))
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+
 class ScheduledNotification(TimestampMixin, Base):
     __tablename__ = "scheduled_notifications"
     __table_args__ = (

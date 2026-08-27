@@ -17,6 +17,7 @@ from docket.domain.enums import (
     OutboxStatus,
     QueueItemStatus,
 )
+from docket.domain.errors import DocketError
 from docket.models import (
     Account,
     Action,
@@ -34,6 +35,7 @@ from docket.models import (
 )
 from docket.models.base import utc_now
 from docket.security import issue_short_code, short_code_sha256
+from docket.services.calendar_lanes import CalendarLaneService
 from docket.services.queue import QueueService, ensure_local_actions
 
 _UNRESOLVED = {
@@ -286,8 +288,14 @@ class RolloverService:
             or record is None
             or record.version != target.get("version")
             or set(old_revision.target_versions) != {"record", "queue_item"}
-            or old_revision.parameters.get("calendar_id") != self.settings.google_calendar_id
         ):
+            return False
+        try:
+            CalendarLaneService(session, self.settings).require_active(
+                account.id,
+                calendar_id=str(old_revision.parameters.get("calendar_id") or ""),
+            )
+        except DocketError:
             return False
         action.current_revision += 1
         action.status = ActionStatus.APPROVAL_PENDING.value

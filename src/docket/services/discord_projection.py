@@ -1184,6 +1184,16 @@ class DiscordProjectionRunner:
             )
             if course_label:
                 fields.append({"name": "Course", "value": course_label, "inline": False})
+            target = preview.get("target")
+            target_lane = target.get("calendar_lane") if isinstance(target, dict) else None
+            if course_label and isinstance(target_lane, str):
+                fields.append(
+                    {
+                        "name": "Calendar",
+                        "value": target_lane.title(),
+                        "inline": True,
+                    }
+                )
             course_date_ranges = preview.get("course_date_ranges")
             if isinstance(course_date_ranges, list) and course_date_ranges:
                 if len(course_date_ranges) == 1 and isinstance(course_date_ranges[0], dict):
@@ -1212,6 +1222,15 @@ class DiscordProjectionRunner:
                             "name": "Where",
                             "value": str(standalone["location"]),
                             "inline": False,
+                        }
+                    )
+                lane = standalone.get("calendar_lane")
+                if isinstance(lane, str):
+                    fields.append(
+                        {
+                            "name": "Calendar",
+                            "value": lane.title(),
+                            "inline": True,
                         }
                     )
             fields.extend(self._calendar_delta_fields(preview, revision.action_type))

@@ -9,19 +9,23 @@ from typing import Any, Literal, Protocol, cast
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 CALENDAR_EVENTS_SCOPE = "https://www.googleapis.com/auth/calendar.events"
+CALENDAR_LIST_SCOPE = "https://www.googleapis.com/auth/calendar.calendarlist"
+CALENDARS_SCOPE = "https://www.googleapis.com/auth/calendar.calendars"
 DOCS_SCOPE = "https://www.googleapis.com/auth/documents"
 GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
 SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
 
 SCOPE_PROFILES: dict[str, tuple[str, ...]] = {
-    "calendar": (CALENDAR_EVENTS_SCOPE,),
+    "calendar": (CALENDAR_EVENTS_SCOPE, CALENDAR_LIST_SCOPE, CALENDARS_SCOPE),
     "docs": (DOCS_SCOPE,),
     "gmail-read": (GMAIL_READONLY_SCOPE,),
     "gmail-modify": (GMAIL_MODIFY_SCOPE,),
     "sheets": (SHEETS_SCOPE,),
     "workspace": (
         CALENDAR_EVENTS_SCOPE,
+        CALENDAR_LIST_SCOPE,
+        CALENDARS_SCOPE,
         DOCS_SCOPE,
         GMAIL_MODIFY_SCOPE,
         SHEETS_SCOPE,
@@ -97,7 +101,11 @@ def validate_client_file(path: Path) -> None:
         raise GoogleOAuthSetupError("Google OAuth client has an unexpected token endpoint")
 
 
-def authorized_user_file_status(path: Path) -> GoogleOAuthStatus:
+def authorized_user_file_status(
+    path: Path,
+    *,
+    required_scopes: Sequence[str] = (),
+) -> GoogleOAuthStatus:
     if not path.exists():
         return "setup_required"
     if not path.is_file() or path.is_symlink():
@@ -117,6 +125,9 @@ def authorized_user_file_status(path: Path) -> GoogleOAuthStatus:
     if not all(document.get(name) for name in required):
         return "invalid"
     if token_uri != "https://oauth2.googleapis.com/token":
+        return "invalid"
+    scopes = document.get("scopes")
+    if not isinstance(scopes, list) or not set(required_scopes).issubset(scopes):
         return "invalid"
     return "configured"
 

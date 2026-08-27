@@ -7,7 +7,11 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from docket.domain.enums import Environment
-from docket.providers.google.oauth import GoogleOAuthStatus, authorized_user_file_status
+from docket.providers.google.oauth import (
+    GoogleOAuthStatus,
+    authorized_user_file_status,
+    resolve_scopes,
+)
 
 _DUMMY_PREFIXES = ("dummy", "smoke", "replace-me")
 
@@ -313,7 +317,15 @@ class Settings(BaseSettings):
         return "dummy" if token.casefold().startswith(_DUMMY_PREFIXES) else "configured"
 
     def google_oauth_status(self) -> GoogleOAuthStatus:
-        return authorized_user_file_status(self.google_oauth_token_file)
+        profiles: list[str] = []
+        if self.external_writes_enabled or self.calendar_reads_enabled:
+            profiles.append("calendar")
+        if self.gmail_ingestion_enabled:
+            profiles.append("gmail-modify")
+        return authorized_user_file_status(
+            self.google_oauth_token_file,
+            required_scopes=resolve_scopes(profiles) if profiles else (),
+        )
 
     def calendar_write_mode(self) -> Literal["google", "fake", "disabled"]:
         if self.external_writes_enabled:

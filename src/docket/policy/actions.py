@@ -42,6 +42,13 @@ ACTION_REGISTRY: dict[str, ActionDefinition] = {
             requires_account=True,
         ),
         ActionDefinition(
+            "calendar_configure_lane",
+            RiskClass.EXTERNAL_PRIVATE_WRITE,
+            "google_calendar",
+            ActionAvailability.ENABLED,
+            requires_account=True,
+        ),
+        ActionDefinition(
             "calendar_cancel_event",
             RiskClass.DESTRUCTIVE,
             "google_calendar",

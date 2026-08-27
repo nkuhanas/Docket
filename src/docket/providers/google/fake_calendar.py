@@ -3,6 +3,8 @@ import uuid
 from docket.providers.google.calendar import (
     CalendarEventRequest,
     CalendarEventResult,
+    CalendarLaneProviderResult,
+    CalendarLaneRequest,
     CalendarProviderError,
     CalendarSnapshotEvent,
     CalendarSnapshotPage,
@@ -22,6 +24,7 @@ class FakeCalendarProvider:
         self.snapshot_page_size = 2500
         self.fail_snapshot_page: int | None = None
         self.snapshot_calls = 0
+        self.lanes: dict[str, CalendarLaneProviderResult] = {}
 
     @staticmethod
     def _result(
@@ -134,6 +137,24 @@ class FakeCalendarProvider:
     def add_correlation_duplicate(self, request: CalendarEventRequest) -> None:
         result = self._result(request, f"fake-event-{uuid.uuid4()}")
         self.events[result.external_event_id] = result
+
+    def ensure_calendar_lane(self, request: CalendarLaneRequest) -> CalendarLaneProviderResult:
+        existing = self.lanes.get(request.lane)
+        if request.calendar_id is None and existing is None and not request.create_if_missing:
+            raise CalendarProviderError(
+                "google_calendar_lane_not_found",
+                "The fake Calendar lane is not present.",
+                transient=False,
+            )
+        result = CalendarLaneProviderResult(
+            calendar_id=(
+                request.calendar_id
+                or (existing.calendar_id if existing is not None else f"fake-{request.lane}")
+            ),
+            provider_request_id=str(uuid.uuid4()),
+        )
+        self.lanes[request.lane] = result
+        return result
 
     def put_snapshot_event(self, event: CalendarSnapshotEvent) -> None:
         self.snapshot_events[event.provider_event_id] = event

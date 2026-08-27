@@ -3,6 +3,8 @@ from typing import Never
 from docket.providers.google.calendar import (
     CalendarEventRequest,
     CalendarEventResult,
+    CalendarLaneProviderResult,
+    CalendarLaneRequest,
     CalendarProviderError,
 )
 
@@ -35,5 +37,9 @@ class DisabledCalendarProvider:
         return self._unavailable()
 
     def find_by_correlation(self, request: CalendarEventRequest) -> list[CalendarEventResult]:
+        del request
+        return self._unavailable()
+
+    def ensure_calendar_lane(self, request: CalendarLaneRequest) -> CalendarLaneProviderResult:
         del request
         return self._unavailable()

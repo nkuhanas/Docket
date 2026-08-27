@@ -119,8 +119,8 @@ scripts/setup-google-oauth.sh
 ```
 
 The setup defaults to the operator-approved Workspace bundle (Calendar events,
-Gmail modification, Sheets, and Docs), opens the Google consent page, requests
-offline access, and atomically writes
+Docket-owned Calendar/list management, Gmail modification, Sheets, and Docs),
+opens the Google consent page, requests offline access, and atomically writes
 `secrets/local/google_oauth_token.json` with mode `0600`. It never enables
 external calls. A missing token is reported as `google_oauth=setup_required` by
 `/health/ready`; startup and dummy smokes remain non-interactive.

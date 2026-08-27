@@ -434,6 +434,12 @@ class TriageService:
                         "confidence",
                     },
                 )
+                if (
+                    candidate_input.event is not None
+                    and "calendar_lane" not in candidate_input.event.model_fields_set
+                    and isinstance(fields.get("event"), dict)
+                ):
+                    fields["event"].pop("calendar_lane", None)
                 semantic_key = sha256_json(
                     {
                         "account_id": str(source.account_id),

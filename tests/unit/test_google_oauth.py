@@ -8,6 +8,8 @@ import pytest
 from docket.google_oauth_cli import DEFAULT_REMOTE_CALLBACK_PORT
 from docket.providers.google.oauth import (
     CALENDAR_EVENTS_SCOPE,
+    CALENDAR_LIST_SCOPE,
+    CALENDARS_SCOPE,
     DEFAULT_SCOPE_PROFILES,
     DOCS_SCOPE,
     GMAIL_MODIFY_SCOPE,
@@ -89,9 +91,13 @@ def test_setup_generates_refresh_token_file_atomically(tmp_path) -> None:
     )
 
     document = json.loads(token_file.read_text(encoding="utf-8"))
-    assert scopes == (CALENDAR_EVENTS_SCOPE,)
+    assert scopes == (CALENDAR_LIST_SCOPE, CALENDARS_SCOPE, CALENDAR_EVENTS_SCOPE)
     assert document["refresh_token"] == "refresh-secret"
-    assert document["scopes"] == [CALENDAR_EVENTS_SCOPE]
+    assert document["scopes"] == [
+        CALENDAR_LIST_SCOPE,
+        CALENDARS_SCOPE,
+        CALENDAR_EVENTS_SCOPE,
+    ]
     assert "token" not in document
     assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
     assert stat.S_IMODE(token_file.parent.stat().st_mode) == 0o700
@@ -267,6 +273,8 @@ def test_setup_refuses_checked_in_smoke_directory(tmp_path) -> None:
 
 def test_scope_profiles_drop_redundant_gmail_read_scope() -> None:
     assert resolve_scopes(["calendar", "gmail-read", "gmail-modify"]) == (
+        CALENDAR_LIST_SCOPE,
+        CALENDARS_SCOPE,
         CALENDAR_EVENTS_SCOPE,
         GMAIL_MODIFY_SCOPE,
     )
@@ -274,10 +282,33 @@ def test_scope_profiles_drop_redundant_gmail_read_scope() -> None:
 
 def test_default_workspace_profile_has_explicit_approved_scopes() -> None:
     assert resolve_scopes(DEFAULT_SCOPE_PROFILES) == (
+        CALENDAR_LIST_SCOPE,
+        CALENDARS_SCOPE,
         CALENDAR_EVENTS_SCOPE,
         DOCS_SCOPE,
         GMAIL_MODIFY_SCOPE,
         SHEETS_SCOPE,
+    )
+
+
+def test_token_status_fails_closed_when_required_scope_is_absent(tmp_path) -> None:
+    token_file = tmp_path / "token.json"
+    token_file.write_text(
+        json.dumps(
+            {
+                "refresh_token": "refresh-secret",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "client_id": "dummy-client.apps.googleusercontent.com",
+                "client_secret": "dummy-client-secret",
+                "scopes": [CALENDAR_EVENTS_SCOPE],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        authorized_user_file_status(token_file, required_scopes=[CALENDARS_SCOPE])
+        == "invalid"
     )
 
 

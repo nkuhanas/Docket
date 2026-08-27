@@ -28,6 +28,7 @@ from docket.schemas.calendar import (
     ReminderRuleResult,
     SetReminderRuleInput,
 )
+from docket.services.calendar_lanes import CalendarLaneService
 from docket.services.source_context import validate_configured_discord_source
 
 
@@ -211,11 +212,10 @@ class ReminderRuleService:
                 code="calendar_account_not_available",
                 message="The selected Google account is not enabled.",
             )
-        if calendar_id != self.settings.google_calendar_id:
-            raise DocketError(
-                code="calendar_not_allowed",
-                message="The selected calendar is not the configured Docket calendar.",
-            )
+        CalendarLaneService(self.session, self.settings).require_active(
+            account_id,
+            calendar_id=calendar_id,
+        )
 
     def list(
         self,
@@ -281,9 +281,7 @@ class ReminderRuleService:
 
         if (
             "docket_queue"
-            not in CalendarProfileService(
-                self.session
-            ).get().default_reminder_delivery_channels
+            not in CalendarProfileService(self.session).get().default_reminder_delivery_channels
         ):
             raise DocketError(
                 code="docket_reminders_disabled",

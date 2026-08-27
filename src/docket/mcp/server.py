@@ -27,10 +27,12 @@ from docket.schemas.actions import (
 )
 from docket.schemas.calendar import (
     CalendarFreshness,
+    CalendarLane,
     CalendarLookupInput,
     CalendarProfileInput,
     CalendarRelativeDay,
     CalendarReminderPlanInput,
+    ConfigureCalendarLaneInput,
     SetCalendarProfileInput,
 )
 from docket.schemas.entities import (
@@ -69,6 +71,7 @@ from docket.schemas.triage import EntityClass
 from docket.services.accounts import AccountService
 from docket.services.action_read import ActionReadService
 from docket.services.calendar_actions import CalendarActionService
+from docket.services.calendar_lanes import CalendarLaneService
 from docket.services.calendar_profile import CalendarProfileService
 from docket.services.calendar_sync import CalendarReadService, CalendarSyncService
 from docket.services.course_reconciliation import CourseReconciliationService
@@ -252,9 +255,9 @@ def docket_resolve_entity(
                 "ok": True,
                 "resolution": result.model_dump(mode="json"),
                 "aliases": (
-                    service.snapshot(result.resolved_entity.entity_id).model_dump(
-                        mode="json"
-                    )["aliases"]
+                    service.snapshot(result.resolved_entity.entity_id).model_dump(mode="json")[
+                        "aliases"
+                    ]
                     if result.resolved_entity is not None
                     else []
                 ),
@@ -809,11 +812,16 @@ def docket_restore_record(
 
 @mcp.tool()
 def docket_list_accounts() -> dict[str, Any]:
-    """List enabled Docket-owned Google accounts and capabilities for explicit selection."""
+    """List enabled Google accounts, active Calendar IDs, and all five lane mappings.
+
+    Use ``calendar_lanes`` rather than display-name guesses. An unprovisioned or failed
+    lane is unavailable and must not silently fall back to ``unsorted``.
+    """
     try:
         settings = get_settings()
         with session_scope() as session:
             accounts = AccountService(session).list_enabled_google()
+            lane_service = CalendarLaneService(session, settings)
             return {
                 "ok": True,
                 "accounts": [
@@ -824,7 +832,11 @@ def docket_list_accounts() -> dict[str, Any]:
                         "display_name": account.display_name,
                         "email_address": account.email_address,
                         "capabilities": account.capabilities,
-                        "calendar_ids": [settings.google_calendar_id],
+                        "calendar_ids": lane_service.calendar_ids(account.id),
+                        "calendar_lanes": [
+                            lane.model_dump(mode="json", exclude_none=True)
+                            for lane in lane_service.list_lanes(account.id)
+                        ],
                     }
                     for account in accounts
                 ],
@@ -833,10 +845,86 @@ def docket_list_accounts() -> dict[str, Any]:
         return _error(exc)
 
 
+@mcp.tool()
+def docket_list_calendar_lanes(account_id: uuid.UUID) -> dict[str, Any]:
+    """List Docket's five stable Calendar lanes and their provisioning state.
+
+    This read is the authoritative source for Calendar destination selection. The lanes
+    are ``academic``, ``work``, ``organizations``, ``personal``, and ``unsorted``.
+    Explicit operator direction wins over entity defaults and bounded inference. A lane
+    without an active ``calendar_id`` cannot receive events; do not invent an ID or fall
+    back silently to another active lane.
+    """
+    try:
+        with session_scope() as session:
+            lanes = CalendarLaneService(session, get_settings()).list_lanes(account_id)
+            return {
+                "ok": True,
+                "calendar_lanes": [
+                    lane.model_dump(mode="json", exclude_none=True) for lane in lanes
+                ],
+            }
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_configure_calendar_lane(
+    account_id: uuid.UUID,
+    lane: CalendarLane,
+    expected_version: int,
+    display_name: str,
+    color_hex: str,
+    request_key: DiscordRequestKey,
+    source: RecordSourceInput,
+    actor_id: DiscordId,
+) -> dict[str, Any]:
+    """Provision or modify one Docket-managed Google Calendar lane.
+
+    This is an external configuration mutation, not ordinary event routing. Call it only
+    when the current operator explicitly asks to provision, rename, or recolor the named
+    lane. It never deletes a calendar and never migrates existing events. Read lanes first
+    and supply the current version; Docket then idempotently ensures the secondary Google
+    calendar by its private lane marker.
+    """
+    try:
+        request = ConfigureCalendarLaneInput(
+            account_id=account_id,
+            lane=lane,
+            expected_version=expected_version,
+            display_name=display_name,
+            color_hex=color_hex,
+            request_key=request_key,
+            source=source,
+            actor_id=actor_id,
+        )
+        with session_scope() as session:
+            result = CalendarLaneService(session, get_settings()).configure(request)
+        return {"ok": True, **result.model_dump(mode="json", exclude_none=True)}
+    except Exception as exc:
+        return _error(exc)
+
+
 def _calendar_read_service() -> CalendarReadService:
     settings = get_settings()
     sync = CalendarSyncService(get_session_factory(), get_calendar_read_provider(), settings)
     return CalendarReadService(get_session_factory(), sync, settings)
+
+
+def _refresh_active_calendar_lanes(account_id: uuid.UUID) -> None:
+    with session_scope() as session:
+        calendar_ids = CalendarLaneService(session, get_settings()).calendar_ids(account_id)
+    read_service = _calendar_read_service()
+    for calendar_id in calendar_ids:
+        read_service.list_events(
+            account_id=account_id,
+            calendar_id=calendar_id,
+            start=None,
+            end=None,
+            text_filter=None,
+            limit=1,
+            freshness="require_fresh",
+        )
 
 
 @mcp.tool()
@@ -991,6 +1079,11 @@ def docket_apply_calendar_intent(
 ) -> dict[str, Any]:
     """Apply one explicit standalone Calendar create, update, reminder change, or cancellation.
 
+    For create or replacement input, select the event's stable ``calendar_lane`` first
+    and pass the exact active ``calendar_id`` mapped to that lane by
+    ``docket_list_calendar_lanes``. Explicit operator direction wins, then a stored
+    entity's ``calendar_lane_default``, then bounded inference; genuinely ambiguous
+    events use ``unsorted``. The tool rejects a mismatched lane and Calendar ID.
     Docket refreshes its complete bounded Calendar snapshot, resolves exact existing
     targets, rejects unsafe attendee-bearing events, detects overlaps, applies the
     stored Calendar profile, and derives an immutable formulation. Reminder plans
@@ -1010,15 +1103,7 @@ def docket_apply_calendar_intent(
     conflict remains.
     """
     try:
-        _calendar_read_service().list_events(
-            account_id=account_id,
-            calendar_id=calendar_id,
-            start=None,
-            end=None,
-            text_filter=None,
-            limit=1,
-            freshness="require_fresh",
-        )
+        _refresh_active_calendar_lanes(account_id)
         request = ProposeCalendarEventInput(
             account_id=account_id,
             calendar_id=calendar_id,
@@ -1051,6 +1136,8 @@ def docket_apply_course_intent(
 ) -> dict[str, Any]:
     """Reconcile one independent course record with its linked Calendar series.
 
+    Course meetings always target the active ``academic`` lane. Read the lane registry
+    and pass that lane's exact Calendar ID; Docket rejects another destination.
     ``sync`` compares stable meeting identities and derives create, update, cancel, and
     no-op effects. A fully synchronized course returns ``no_op`` without a card.
     ``drop`` requires an explicit reason and creates one destructive durable operation;
@@ -1062,15 +1149,7 @@ def docket_apply_course_intent(
     resolution card.
     """
     try:
-        _calendar_read_service().list_events(
-            account_id=account_id,
-            calendar_id=calendar_id,
-            start=None,
-            end=None,
-            text_filter=None,
-            limit=1,
-            freshness="require_fresh",
-        )
+        _refresh_active_calendar_lanes(account_id)
         request = ProposeCourseReconciliationInput(
             record_id=record_id,
             expected_record_version=expected_record_version,

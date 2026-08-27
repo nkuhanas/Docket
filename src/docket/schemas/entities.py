@@ -49,6 +49,7 @@ EntityAttributeKey = Literal[
     "building",
     "room",
     "is_operator",
+    "calendar_lane_default",
 ]
 
 ShortText = Annotated[str, Field(min_length=1, max_length=256)]
@@ -83,6 +84,9 @@ class EntityAttributes(BaseModel):
     building: ShortText | None = None
     room: ShortText | None = None
     is_operator: bool | None = None
+    calendar_lane_default: (
+        Literal["academic", "work", "organizations", "personal", "unsorted"] | None
+    ) = None
 
     @field_validator("timezone")
     @classmethod

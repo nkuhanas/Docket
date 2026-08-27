@@ -12,6 +12,7 @@ _ACTION_LABELS = {
     "calendar_create_event": "Create event",
     "calendar_update_event": "Update event",
     "calendar_update_reminders": "Update reminders",
+    "calendar_configure_lane": "Configure Calendar lane",
     "calendar_cancel_event": "Cancel event",
     "calendar_reconcile_course": "Synchronize course",
     "calendar_drop_course": "Drop course",
@@ -60,6 +61,9 @@ def _subject(revision: ActionRevision) -> str:
     term = preview.get("term")
     if isinstance(term, dict) and term.get("term_name"):
         return str(term["term_name"])
+    lane = preview.get("lane")
+    if isinstance(lane, dict) and lane.get("display_name"):
+        return str(lane["display_name"])
     return "Configured Docket calendar"
 
 

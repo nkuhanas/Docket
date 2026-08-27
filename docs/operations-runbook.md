@@ -258,13 +258,13 @@ Run the Hermes plugin-list probe only after the gateway log reports that Discord
 is connected and the gateway is running. Do not parallelize it with a Hermes
 restart: this pinned CLI imports user plugins, whose registration has the side
 effect of binding the private projection port. A startup-time probe can contend
-with the gateway on port 8787. Plugin `0.15.8` retries that bind, but avoiding the
+with the gateway on port 8787. Plugin `0.15.9` retries that bind, but avoiding the
 race keeps startup and diagnostics unambiguous.
 
 Expected results:
 
 * PostgreSQL and Docket are healthy; Hermes and SearXNG are running.
-* `docket-discord` `0.15.8` is `enabled`.
+* `docket-discord` `0.15.9` is `enabled`.
 * `hermes mcp test docket` connects to `http://docket:8000/mcp/` and discovers
   exactly 19 tools, including `docket_store_record`,
   `docket_restore_record`, `docket_apply_course_intent`,
@@ -301,9 +301,9 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Docket Python edit appears ignored | Rebuild and recreate Docket | Application source is copied into the image, not bind-mounted |
 | Correct record is returned but no new provenance exists | Inspect `record_sources` and `record.matched` audit evidence | Read path passed; store path did not |
 | Proposal returns `action_unavailable` | Inspect the named stable meeting and missing-fields detail | Incomplete dates, local times, timezone, or no selected weekday in range |
-| Proposal returns `calendar_not_allowed` | Compare the exact ID returned by `docket_list_accounts` with `GOOGLE_CALENDAR_ID` | Display name or different calendar substituted for the configured opaque ID |
+| Proposal returns `calendar_lane_unavailable` or `calendar_lane_mismatch` | Compare the event lane and exact ID returned by `docket_list_calendar_lanes` | Lane is not active, a display name was substituted, or the proposal paired one lane with another lane's opaque ID |
 | A standalone event uses the wrong timezone | Inspect the immutable timing payload for an explicit timezone, then compare `DOCKET_TIMEZONE` in the Docket container | The operator supplied another zone, Hermes sent an unintended override, or the configured default differs from the expected local zone |
-| Hermes tries a removed aggregate or single-meeting proposal tool | Confirm server discovery and the running gateway each contain exactly 19 tools, restart Hermes, run `/reload-mcp`, and begin a new turn | The conversation retained a pre-removal model registry or skill |
+| Hermes tries a removed tool or cannot see a current one | Confirm server discovery, gateway allowlist, and both MCP-trace allowlists match the public registry; restart Hermes, run `/reload-mcp`, and begin a new turn | The conversation retained a stale model registry or skill |
 | Course batch is `partial_failed` | Inspect the parent result and only its failed `operation_items`; do not replay succeeded siblings | One or more provider items failed definitively after other items succeeded |
 | Course batch is `reconciliation_required` | Inspect the uncertain item, its attempts, and provider correlation (`operation_items.id`) | A provider call may have succeeded without a durable acknowledgement |
 | Daily thread exists but a course card is absent | Inspect the newest projection outbox row and Hermes response; a repeated HTTP 422 `invalid_control` means the plugin rejected Docket's deterministic component set | Pinned plugin control-kind/token-map drift; reproduce the exact view-specific component set, restart Hermes after the fix, and let the same durable outbox row retry |
@@ -335,7 +335,7 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Approval button appears inert | Inspect the stored projection/message binding and interaction listener before using any break-glass code | Stale/copied card, wrong parent or actor, listener unavailable, token expired, or action already resolved |
 | No daily thread/card appears | Inspect projection outbox status, then the private plugin listener and Hermes logs | Hermes not recreated after plugin/env change, private listener unavailable, Discord permission/API failure, or retry backoff |
 | Daily thread exists but is hidden until **Join Thread** is used | Inspect the latest thread-ensure acknowledgement for the exact configured `operator_user_id` and `operator_joined=true`, then check Hermes for `daily_thread_member_add_failed` | Pre-`0.10.0` plugin, Hermes was not restarted, operator ID mismatch, missing `SEND_MESSAGES_IN_THREADS`, parent-channel access failure, archived-thread race, or Discord member limit |
-| Hermes ignores the configured operator inside a Docket daily thread | Confirm the event exposes the queue as `parent_chat_id`, the thread exists in `discord_daily_threads`, plugin `0.15.8` is active, and the operator is still the sole allowed user | Old control-only plugin, foreign thread, parent-ID event-shape drift, or Hermes/plugin authorization mismatch |
+| Hermes ignores the configured operator inside a Docket daily thread | Confirm the event exposes the queue as `parent_chat_id`, the thread exists in `discord_daily_threads`, plugin `0.15.9` is active, and the operator is still the sole allowed user | Old control-only plugin, foreign thread, parent-ID event-shape drift, or Hermes/plugin authorization mismatch |
 | No rollover occurs after 08:00 local | Inspect `system:daily_rollover:ISO-DATE`, worker heartbeat, timezone, and rollover hour | Worker unavailable, wrong timezone/hour, or a prior command already owns the date |
 | Duplicate daily thread or card | Stop retries and inspect exact name/owner or footer-marker collisions | Archived lookup drift, manually copied marker, lost binding, or plugin concurrency regression |
 | Button says the control is unauthorized/stale | Compare stored control projection with actual parent/thread/message and actor | Copied/old card, wrong operator, changed thread parent, projection refresh, or callback drift |
@@ -352,14 +352,14 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Calendar lookup is empty or stale | Inspect `calendar_sync_states`, its covered window, and the prior cache generation before changing credentials | Read gate disabled, sync due/leased, OAuth failure, partial page walk, or requested range outside the cache |
 | A newly created provider event is absent from a healthy current-day lookup | Compare `last_success_at` with the event creation time, then retry the same bounded lookup with `require_fresh` | `prefer_cache` returned before the next five-minute synchronization; healthy and covered do not imply read-after-provider-write consistency |
 | Hermes calls a terminal or time tool around a today/tomorrow Calendar lookup | Inspect the active lookup schema/result for `relative_day`, `start_local`, and `end_local`, then restart Hermes and run `/reload-mcp` | The active session cached the prior MCP schema or old manual-intent guidance |
-| Reminder does not arrive | Inspect rule version, event cache identity, scheduled row, bound daily thread, notification outbox, and plugin `0.15.8` logs | Rule disabled, event moved/cancelled, stale event already began, queue binding changed, thread ensure failed, or Discord retry |
+| Reminder does not arrive | Inspect rule version, event cache identity, scheduled row, bound daily thread, notification outbox, and plugin `0.15.9` logs | Rule disabled, event moved/cancelled, stale event already began, queue binding changed, thread ensure failed, or Discord retry |
 | Docket emits duplicate daily-thread reminders when Google popup is sufficient | Set the Calendar profile `default_reminder_delivery_channels` to `["google_popup"]`; verify all Docket rules are disabled and pending/delivering scheduled notifications are cancelled | The profile still includes `docket_queue`, a pre-profile operation reactivated rules, or the deployed worker predates profile-gated activation |
-| External action has no `docket-system` lifecycle entry | Inspect `discord.system_log.requested` outbox rows and the plugin `system-logs` endpoint before posting a manual summary | Plugin not recreated at `0.15.8`, system target mismatch, retry backoff, or marker ownership conflict; canonical operation/audit state remains authoritative |
-| A Docket-backed agent turn has no `docket-system` tool trace | Inspect Hermes for all four registered plugin hooks, then inspect `discord_mcp_traces` and `discord.mcp_trace.requested` outbox rows | Plugin `0.15.8` was not restarted, `/reload-mcp` still exposes a differently named server/tool, trusted chat/thread-to-session binding failed, plugin-to-Docket trace delivery failed, or projection is retrying |
+| External action has no `docket-system` lifecycle entry | Inspect `discord.system_log.requested` outbox rows and the plugin `system-logs` endpoint before posting a manual summary | Plugin not recreated at `0.15.9`, system target mismatch, retry backoff, or marker ownership conflict; canonical operation/audit state remains authoritative |
+| A Docket-backed agent turn has no `docket-system` tool trace | Inspect Hermes for all four registered plugin hooks, then inspect `discord_mcp_traces` and `discord.mcp_trace.requested` outbox rows | Plugin `0.15.9` was not restarted, `/reload-mcp` still exposes a differently named server/tool, trusted chat/thread-to-session binding failed, plugin-to-Docket trace delivery failed, or projection is retrying |
 | A Docket tool trace remains Running after the response | Compare the trace calls/status with Hermes `post_tool_call` and `post_llm_call` hook logs; start a new authorized chat turn to close an interrupted prior trace | Pinned hook drift, gateway interruption before turn finalization, plugin restart, or a trace update waiting in the bounded delivery queue |
 | Queue card exposes provider IDs, ETags, hashes, enum action names, or freshness timestamps | Stop treating the card as an operator-safe surface and inspect the deterministic renderer | Diagnostic metadata leaked into the projection; keep it in PostgreSQL/runbook queries and render only decision-relevant labels |
 | Calendar card repeats Status/Execution/Effect, uses the event subject as its long title/description, or dumps a generic Before record | Inspect the state-oriented renderer and rebuild/recreate Docket | Pre-polish image or renderer regression; standalone subjects belong under `Title`, successful terminal state needs no description, and updates use bounded `Delta · Property` fields with separate Before/After lines |
-| A timed card, reminder, or system entry displays raw `<t:...>` text or a manual IANA timezone | Confirm the value is in an embed description/field, Hermes runs plugin `0.15.8`, and the token survived escaping unchanged | Old renderer/plugin, malformed milliseconds or timestamp style, or a Discord-client rendering regression; all-day and recurrence-definition timezone text is intentionally exempt |
+| A timed card, reminder, or system entry displays raw `<t:...>` text or a manual IANA timezone | Confirm the value is in an embed description/field, Hermes runs plugin `0.15.9`, and the token survived escaping unchanged | Old renderer/plugin, malformed milliseconds or timestamp style, or a Discord-client rendering regression; all-day and recurrence-definition timezone text is intentionally exempt |
 | Duplicate reminder appears | Stop retries and compare notification ID, event-start key, outbox dedupe key, and `docket-calendar-reminder:<uuid>` footer marker | Marker collision, manual copy, lost binding, or plugin idempotency regression |
 
 ## Missing trusted Discord context
@@ -654,7 +654,7 @@ from discord_mcp_traces order by created_at desc limit 20;'
 First failure points:
 
 * `discord_transport_error` or `discord_runtime_unavailable`: verify Hermes is
-  running, plugin `0.15.8` is enabled, port 8787 is exposed only internally, and
+  running, plugin `0.15.9` is enabled, port 8787 is exposed only internally, and
   Hermes was recreated after Compose environment changes. The default ten
   attempts cover ordinary Hermes startup; do not reduce the window without
   measuring the pinned runtime's initialization time.
@@ -673,7 +673,7 @@ First failure points:
 * `invalid_discord_ack`: the plugin response did not echo request, target, or
   digest bindings. Treat this as a compatibility/security failure.
 * `invalid_mcp_trace_*`, `nonmonotonic_mcp_trace`, or
-  `mcp_trace_state_regression`: compare plugin `0.15.8` with the Docket image
+  `mcp_trace_state_regression`: compare plugin `0.15.9` with the Docket image
   and migration `0011`. Do not replay arguments/results or edit trace JSON;
   these errors mean the pinned hook/schema contract drifted or a terminal
   update arrived out of order.
@@ -697,7 +697,7 @@ print("projection listener reachable")'
 Hermes plugin edits require a gateway restart. `/reload-mcp` is still required
 for MCP tool/schema changes, but it does not reload this Python plugin.
 
-The pinned Hermes runtime performs overlapping plugin discovery. Plugin `0.15.8`
+The pinned Hermes runtime performs overlapping plugin discovery. Plugin `0.15.9`
 therefore starts port 8787 under a retrying supervisor: one discovery pass may
 log that startup is deferred because the port is in use, but plugin loading must
 still succeed and one listener must remain reachable. A warning that the plugin
@@ -1028,10 +1028,11 @@ prompt. Docket rejects a different host, port, path, state, missing code, or
 denied authorization before exchanging the one-time code. Never paste that URL
 into chat, logs, shell arguments, or shell history.
 
-The default approved bundle requests Calendar events, Gmail modify, Sheets,
-and Docs together. Possessing those scopes does not expose corresponding MCP
-tools. Provider actions remain limited by implemented Docket adapters and the
-action registry. Gmail send/reply remains prohibited.
+The default approved bundle requests Calendar events, Calendar ownership and
+Calendar-list presentation, Gmail modify, Sheets, and Docs together. Possessing
+those scopes does not expose raw provider APIs. Provider actions remain limited
+by implemented Docket adapters and the action registry. Gmail send/reply
+remains prohibited.
 
 The setup requests offline access, requires a refresh token, strips the
 short-lived access token before persistence, and writes the result with mode
@@ -1044,6 +1045,53 @@ before relying on runtime token rotation.
 `@group.calendar.google.com` is normal for a secondary/group calendar and must
 be preserved exactly. Do not strip the suffix or replace it with a display
 name.
+
+### Calendar lanes
+
+Docket maintains exactly five stable lanes per enabled Google account:
+
+| Lane | Default Google calendar | Default color | Routing purpose |
+| --- | --- | --- | --- |
+| `academic` | `Docket · Academic` | blue | courses, institutions, academic obligations |
+| `work` | `Docket · Work` | red | employment and professional obligations |
+| `organizations` | `Docket · Organizations` | green | clubs and other organizations |
+| `personal` | `Docket · Personal` | purple | personal appointments and commitments |
+| `unsorted` | existing `Docket` calendar | yellow | ambiguous events and pre-lane history |
+
+`GOOGLE_CALENDAR_ID` remains bound to `unsorted`; migration `0026` does not
+move or recolor existing events. The other lanes start `unprovisioned` and fail
+closed until explicitly configured. List authoritative state with
+`docket_list_calendar_lanes`. The model may call
+`docket_configure_calendar_lane` only from current trusted operator language;
+the mutation can provision, rename, or recolor one lane, but cannot delete a
+calendar, create a sixth lane, or migrate old events.
+
+Provisioning and presentation changes are committed as durable
+`calendar_configure_lane` operations. Pre-lane course series remain in
+`unsorted`; Docket returns `course_lane_migration_required` instead of creating
+duplicate academic series. Relocation is intentionally outside this delta and
+must later use a separately authorized lane-migration workflow.
+
+Routing precedence is: explicit operator lane, active entity
+`calendar_lane_default`, bounded semantic inference, then `unsorted`. A person
+never chooses a lane. Course reconciliation accepts only the active `academic`
+lane. Standalone formulation rejects a mismatch between its `calendar_lane`
+and the supplied opaque Calendar ID. Conflict checks span every active lane,
+and the Calendar sync worker advances each lane independently.
+
+First failure checks:
+
+1. Run `scripts/setup-google-oauth.sh --force --remote` if OAuth status is
+   invalid after this migration; the older token lacks Calendar administration
+   scopes.
+2. Inspect `calendar_lanes.status`, `calendar_id`, `last_error_code`, and
+   `version`. Never copy an ID from a display name.
+3. For `calendar_lane_unavailable`, provision the named lane or correct the
+   explicit route; do not substitute `unsorted` silently.
+4. For `calendar_lane_mismatch`, compare the proposal event lane to the lane
+   owning its target Calendar ID.
+5. For incomplete conflict results, inspect `calendar_sync_states` for every
+   active lane rather than only the yellow legacy calendar.
 
 `DOCKET_CALENDAR_READS_ENABLED` permits only bounded, paginated snapshots of the
 configured Calendar. `DOCKET_EXTERNAL_WRITES_ENABLED` independently selects the

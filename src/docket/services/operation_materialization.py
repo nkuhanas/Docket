@@ -29,6 +29,11 @@ def operation_idempotency_key(revision: ActionRevision) -> str:
             f"calendar:cancel-event:{revision.account_id}:"
             f"{parameters['external_event_id']}:{parameters.get('provider_etag')}"
         )
+    if revision.action_type == "calendar_configure_lane":
+        return (
+            f"calendar:configure-lane:{revision.account_id}:"
+            f"{parameters['lane']}:{revision.parameters_sha256}"
+        )
     if revision.action_type in {
         "calendar_reconcile_course",
         "calendar_drop_course",

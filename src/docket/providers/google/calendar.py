@@ -8,7 +8,11 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from docket.providers.google.oauth import CALENDAR_EVENTS_SCOPE
+from docket.providers.google.oauth import (
+    CALENDAR_EVENTS_SCOPE,
+    CALENDAR_LIST_SCOPE,
+    CALENDARS_SCOPE,
+)
 
 _SNAPSHOT_FIELDS = (
     "nextPageToken,timeZone,"
@@ -220,6 +224,26 @@ class CalendarEventResult:
 
 
 @dataclass(frozen=True, slots=True)
+class CalendarLaneRequest:
+    lane: str
+    display_name: str
+    color_hex: str
+    timezone: str
+    calendar_id: str | None = None
+    create_if_missing: bool = True
+
+    @property
+    def marker(self) -> str:
+        return f"Docket managed calendar lane: {self.lane}"
+
+
+@dataclass(frozen=True, slots=True)
+class CalendarLaneProviderResult:
+    calendar_id: str
+    provider_request_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class CalendarSnapshotEvent:
     provider_event_id: str
     status: str
@@ -262,7 +286,11 @@ class CalendarUnknownOutcome(CalendarProviderError):
         super().__init__("calendar_unknown_outcome", message, transient=False)
 
 
-class CalendarProvider(Protocol):
+class CalendarLaneProvider(Protocol):
+    def ensure_calendar_lane(self, request: CalendarLaneRequest) -> CalendarLaneProviderResult: ...
+
+
+class CalendarProvider(CalendarLaneProvider, Protocol):
     def create_event(self, request: CalendarEventRequest) -> CalendarEventResult: ...
 
     def update_event(self, request: CalendarEventRequest) -> CalendarEventResult: ...
@@ -335,10 +363,7 @@ def normalize_recurrence_lines(value: Any) -> list[str]:
                 parts.append((key.upper(), normalized_value))
             if valid:
                 normalized.append(
-                    "RRULE:"
-                    + ";".join(
-                        f"{key}={part_value}" for key, part_value in sorted(parts)
-                    )
+                    "RRULE:" + ";".join(f"{key}={part_value}" for key, part_value in sorted(parts))
                 )
                 continue
         normalized.append(raw_line)
@@ -413,7 +438,8 @@ class GoogleCalendarProvider:
 
         try:
             credentials = Credentials.from_authorized_user_file(  # type: ignore[no-untyped-call]
-                self.token_file, scopes=[CALENDAR_EVENTS_SCOPE]
+                self.token_file,
+                scopes=[CALENDAR_EVENTS_SCOPE, CALENDAR_LIST_SCOPE, CALENDARS_SCOPE],
             )
             if not credentials.valid:
                 credentials.refresh(Request())
@@ -596,6 +622,117 @@ class GoogleCalendarProvider:
                 )
             )
         return results
+
+    @staticmethod
+    def _calendar_url(calendar_id: str | None = None) -> str:
+        base = "https://www.googleapis.com/calendar/v3/calendars"
+        return base if calendar_id is None else f"{base}/{quote(calendar_id, safe='')}"
+
+    @staticmethod
+    def _calendar_list_url(calendar_id: str | None = None) -> str:
+        base = "https://www.googleapis.com/calendar/v3/users/me/calendarList"
+        return base if calendar_id is None else f"{base}/{quote(calendar_id, safe='')}"
+
+    @staticmethod
+    def _foreground(color_hex: str) -> str:
+        red, green, blue = (
+            int(color_hex[1:3], 16),
+            int(color_hex[3:5], 16),
+            int(color_hex[5:7], 16),
+        )
+        luminance = (299 * red + 587 * green + 114 * blue) / 1000
+        return "#000000" if luminance >= 160 else "#FFFFFF"
+
+    def _find_calendar_lane(self, request: CalendarLaneRequest) -> list[str]:
+        page_token: str | None = None
+        matches: list[str] = []
+        while True:
+            params = {"maxResults": "250", "minAccessRole": "owner"}
+            if page_token is not None:
+                params["pageToken"] = page_token
+            response = self._request("GET", self._calendar_list_url(), params=params)
+            document = response.json()
+            items = document.get("items", []) if isinstance(document, dict) else []
+            for item in items:
+                if (
+                    isinstance(item, dict)
+                    and item.get("description") == request.marker
+                    and isinstance(item.get("id"), str)
+                ):
+                    matches.append(item["id"])
+            token = document.get("nextPageToken") if isinstance(document, dict) else None
+            page_token = token if isinstance(token, str) and token else None
+            if page_token is None:
+                return matches
+
+    def ensure_calendar_lane(self, request: CalendarLaneRequest) -> CalendarLaneProviderResult:
+        calendar_id = request.calendar_id
+        provider_request_id: str | None = None
+        if calendar_id is None:
+            matches = self._find_calendar_lane(request)
+            if len(matches) > 1:
+                raise CalendarProviderError(
+                    "google_calendar_lane_ambiguous",
+                    "Google Calendar contains multiple calendars for one Docket lane.",
+                    transient=False,
+                )
+            if matches:
+                calendar_id = matches[0]
+            elif not request.create_if_missing:
+                raise CalendarProviderError(
+                    "google_calendar_lane_not_found",
+                    "The Docket Calendar lane is not yet visible in Google Calendar.",
+                    transient=False,
+                )
+            else:
+                response = self._request(
+                    "POST",
+                    self._calendar_url(),
+                    body={
+                        "summary": request.display_name,
+                        "description": request.marker,
+                        "timeZone": request.timezone,
+                    },
+                )
+                document = response.json()
+                value = document.get("id") if isinstance(document, dict) else None
+                if not isinstance(value, str) or not value:
+                    raise CalendarProviderError(
+                        "google_calendar_invalid_response",
+                        "Google Calendar created a calendar without returning its ID.",
+                        transient=False,
+                    )
+                calendar_id = value
+                provider_request_id = response.headers.get("x-request-id")
+
+        calendar_response = self._request(
+            "PATCH",
+            self._calendar_url(calendar_id),
+            body={
+                "summary": request.display_name,
+                "description": request.marker,
+                "timeZone": request.timezone,
+            },
+        )
+        list_response = self._request(
+            "PATCH",
+            self._calendar_list_url(calendar_id),
+            body={
+                "summaryOverride": request.display_name,
+                "backgroundColor": request.color_hex,
+                "foregroundColor": self._foreground(request.color_hex),
+                "selected": True,
+            },
+            params={"colorRgbFormat": "true"},
+        )
+        return CalendarLaneProviderResult(
+            calendar_id=calendar_id,
+            provider_request_id=(
+                list_response.headers.get("x-request-id")
+                or calendar_response.headers.get("x-request-id")
+                or provider_request_id
+            ),
+        )
 
     @staticmethod
     def _snapshot_event(

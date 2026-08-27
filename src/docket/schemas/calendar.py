@@ -23,6 +23,7 @@ CalendarProposalMode = Literal["explicit_only", "suggest", "off"]
 CalendarConflictPolicy = Literal["warn", "block"]
 CalendarReminderDisposition = Literal["preserve", "replace", "disable"]
 CalendarReminderChannel = Literal["google_popup", "docket_queue"]
+CalendarLane = Literal["academic", "work", "organizations", "personal", "unsorted"]
 
 
 def _normalize_operator_tag(value: object) -> object:
@@ -82,8 +83,7 @@ class TimedEventTiming(StrictModel):
         min_length=1,
         max_length=128,
         description=(
-            "Explicit IANA timezone. Omit to inherit Docket's configured "
-            "DOCKET_TIMEZONE."
+            "Explicit IANA timezone. Omit to inherit Docket's configured DOCKET_TIMEZONE."
         ),
     )
     fold: Literal[0, 1] | None = None
@@ -144,8 +144,7 @@ class AllDayEventTiming(StrictModel):
         min_length=1,
         max_length=128,
         description=(
-            "Explicit IANA timezone. Omit to inherit Docket's configured "
-            "DOCKET_TIMEZONE."
+            "Explicit IANA timezone. Omit to inherit Docket's configured DOCKET_TIMEZONE."
         ),
     )
 
@@ -218,6 +217,14 @@ class CalendarRecurrenceInput(StrictModel):
 
 class StandaloneCalendarEventInput(StrictModel):
     title: str = Field(min_length=1, max_length=512)
+    calendar_lane: CalendarLane = Field(
+        default="unsorted",
+        description=(
+            "One stable destination lane. Use explicit operator direction first, then a "
+            "stored entity default, then bounded inference; use unsorted only when genuinely "
+            "ambiguous."
+        ),
+    )
     timing: CalendarEventTiming
     location: str | None = Field(default=None, max_length=1000)
     notes: str | None = Field(default=None, max_length=4000)
@@ -310,6 +317,46 @@ class SetCalendarProfileInput(CalendarProfileInput):
 class CalendarProfileResult(CalendarProfileInput):
     operator_user_id: DiscordId
     version: int = Field(ge=1)
+
+
+class CalendarLaneResult(StrictModel):
+    lane_id: UUID
+    lane: CalendarLane
+    display_name: str
+    color_hex: str
+    status: Literal["unprovisioned", "provisioning", "active", "failed"]
+    account_id: UUID
+    calendar_id: str | None = None
+    version: int = Field(ge=1)
+
+
+class ConfigureCalendarLaneInput(StrictModel):
+    lane: CalendarLane
+    expected_version: int = Field(ge=1)
+    display_name: str = Field(min_length=1, max_length=255)
+    color_hex: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
+    account_id: UUID
+    request_key: DiscordRequestKey
+    source: RecordSourceInput
+    actor_type: Literal["hermes"] = "hermes"
+    actor_id: DiscordId
+
+    @model_validator(mode="after")
+    def request_matches_source(self) -> "ConfigureCalendarLaneInput":
+        validate_discord_request_fields(self.request_key, self.source, self.actor_id)
+        self.color_hex = self.color_hex.upper()
+        return self
+
+
+class CalendarLaneMutationResult(StrictModel):
+    request_id: UUID
+    disposition: Literal["execution_queued", "replayed_request"]
+    lane: CalendarLaneResult
+    queue_item_id: UUID
+    action_id: UUID
+    action_revision_id: UUID
+    operation_id: UUID
+    operation_status: Literal["pending", "running", "succeeded"]
 
 
 class SetReminderRuleInput(StrictModel):

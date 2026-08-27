@@ -54,6 +54,7 @@ from docket.services.brief_projection import (
     morning_brief_projection_for_queue_item,
     projection_refresh_target,
 )
+from docket.services.calendar_lanes import CalendarLaneService
 from docket.services.course_reconciliation import (
     CourseReconciliationService,
     course_reconciliation_dependency_sha256,
@@ -495,11 +496,10 @@ class ApprovalService:
                 code="target_account_changed",
                 message="The selected Google Calendar account is no longer enabled.",
             )
-        if revision.parameters.get("calendar_id") != get_settings().google_calendar_id:
-            raise DocketError(
-                code="target_calendar_changed",
-                message="The approved target is no longer the configured Docket calendar.",
-            )
+        CalendarLaneService(self.session, get_settings()).require_active(
+            account.id,
+            calendar_id=str(revision.parameters.get("calendar_id") or ""),
+        )
         queue_target = revision.target_versions.get("queue_item", {})
         record_target = revision.target_versions.get("record")
         record: Record | None = None
@@ -543,8 +543,7 @@ class ApprovalService:
                     raise DocketError(
                         code="target_version_changed",
                         message=(
-                            "A bundled entity registration changed after the proposal "
-                            "was created."
+                            "A bundled entity registration changed after the proposal was created."
                         ),
                     )
         calendar_target = revision.target_versions.get("calendar_snapshot")
