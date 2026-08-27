@@ -1100,6 +1100,7 @@ class ProposalControlService:
             "provider_event_id": target.provider_event_id if target else None,
             "provider_etag": target.provider_etag if target else None,
             "target_scope": parameters.get("target_scope", "event"),
+            "conflict_fingerprint": sha256_json(conflicts),
         }
         if (
             sha256_json(parameters) == revision.parameters_sha256

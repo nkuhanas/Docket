@@ -3,7 +3,7 @@ from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from docket.config import get_settings
@@ -493,6 +493,40 @@ def test_standalone_create_executes_with_unified_reminder_plan(
         provider_event = provider.events[link.external_event_id]
         assert provider_event.snapshot["reminders"] == event.provider_reminders
         assert "description" not in provider_event.snapshot
+
+
+@pytest.mark.integration
+def test_approval_recovers_hash_bound_conflicts_from_a_buggy_refresh_revision(
+    session_factory: sessionmaker[Session],
+) -> None:
+    with session_factory.begin() as session:
+        account = _seed_target(session)
+        proposal = _formulate_inferred(
+            session,
+            _create_request(account, "333333333333333334"),
+        )
+        revision = session.get(ActionRevision, proposal.action_revision_id)
+        assert revision is not None
+        target_versions = dict(revision.target_versions)
+        calendar_snapshot = dict(target_versions["calendar_snapshot"])
+        calendar_snapshot.pop("conflict_fingerprint")
+        target_versions["calendar_snapshot"] = calendar_snapshot
+        session.execute(
+            update(ActionRevision)
+            .where(ActionRevision.id == revision.id)
+            .values(target_versions=target_versions)
+        )
+
+    with session_factory.begin() as session:
+        operation_id = _approve(
+            session,
+            short_code=proposal.short_code,
+            interaction_id="buggy-refresh-revision-approval",
+        )
+
+    with session_factory() as session:
+        operation = session.get(Operation, operation_id)
+        assert operation is not None and operation.status == "pending"
 
 
 @pytest.mark.integration
@@ -1620,6 +1654,9 @@ def test_refresh_rebinds_conflicts_and_edit_modal_replaces_typed_fields(
         )
         assert revision is not None
         assert revision.preview["conflicts"][0]["provider_event_id"] == "fresh-conflict"
+        assert revision.target_versions["calendar_snapshot"]["conflict_fingerprint"] == (
+            sha256_json(revision.preview["conflicts"])
+        )
         controls = backend.messages[str(projection_id)]["controls"]
         edit_control = next(
             control for control in controls if control.get("transition") == "proposal_edit"

@@ -601,7 +601,16 @@ class ApprovalService:
                     event=event,
                     exclude_provider_event_id=revision.parameters.get("external_event_id"),
                 )
-                if sha256_json(current_conflicts) != calendar_target.get("conflict_fingerprint"):
+                expected_conflict_fingerprint = calendar_target.get("conflict_fingerprint")
+                if expected_conflict_fingerprint is None:
+                    preview_conflicts = revision.preview.get("conflicts")
+                    if not isinstance(preview_conflicts, list):
+                        raise DocketError(
+                            code="approval_binding_mismatch",
+                            message="The immutable Calendar preview has no conflict binding.",
+                        )
+                    expected_conflict_fingerprint = sha256_json(preview_conflicts)
+                if sha256_json(current_conflicts) != expected_conflict_fingerprint:
                     raise DocketError(
                         code="target_version_changed",
                         message=(
