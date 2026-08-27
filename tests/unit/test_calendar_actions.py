@@ -19,6 +19,7 @@ from docket.models import (
     CalendarSyncState,
     Operation,
     QueueItem,
+    ReminderRule,
 )
 from docket.schemas.actions import ProposeCalendarEventInput
 from docket.schemas.calendar import SetCalendarProfileInput
@@ -132,11 +133,25 @@ def test_calendar_profile_initializes_and_updates_with_versioning(
     initial = service.get()
     assert initial.version == 1
     assert initial.default_reminder_lead_seconds == [600]
+    account, _state = calendar_fixture(session)
+    rule = ReminderRule(
+        account_id=account.id,
+        calendar_id=get_settings().google_calendar_id,
+        scope="calendar",
+        provider_event_id=None,
+        lead_seconds=600,
+        queue_channel_id=get_settings().queue_channel_id,
+        enabled=True,
+        created_by_actor_id=OPERATOR_ID,
+    )
+    session.add(rule)
+    session.flush()
 
     request = SetCalendarProfileInput(
         expected_version=1,
         proposal_mode="explicit_only",
         default_reminder_lead_seconds=[300, 600],
+        default_reminder_delivery_channels=["google_popup"],
         conflict_policy="block",
         request_key=f"discord:{GUILD_ID}:{CHAT_CHANNEL_ID}:{MESSAGE_ID}:4",
         source=trusted_source(4),
@@ -147,6 +162,8 @@ def test_calendar_profile_initializes_and_updates_with_versioning(
     assert updated.version == 2
     assert updated.proposal_mode == "explicit_only"
     assert updated.default_reminder_lead_seconds == [300, 600]
+    assert updated.default_reminder_delivery_channels == ["google_popup"]
+    assert rule.enabled is False and rule.version == 2
     assert session.scalar(select(CalendarProfile)) is not None
 
 

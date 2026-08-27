@@ -613,8 +613,8 @@ def docket_get_calendar_profile() -> dict[str, Any]:
     """Read Docket's Calendar proposal and unified-reminder defaults.
 
     The profile is local policy only: it cannot select a provider target, approve an
-    action, or grant a provider write. Reminder delivery always includes both Google
-    popup and the Docket daily queue thread.
+    action, or grant a provider write. Google popup is always available; the profile
+    may additionally enable or disable Docket daily-thread delivery.
     """
     try:
         with session_scope() as session:
@@ -635,8 +635,9 @@ def docket_set_calendar_profile(
     """Update local Calendar proposal policy from current trusted Discord context.
 
     This audited optimistic-locking write changes only proposal mode, conflict policy,
-    and the canonical reminder defaults. It cannot split Google and Docket delivery,
-    choose a different calendar, approve a proposal, or contact Google Calendar.
+    and the canonical reminder defaults. Removing ``docket_queue`` disables existing
+    Docket reminder rules while retaining Google popup delivery. It cannot choose a
+    different calendar, approve a proposal, or contact Google Calendar.
     """
     try:
         request = SetCalendarProfileInput(
@@ -695,8 +696,9 @@ def docket_apply_calendar_intent(
     Docket refreshes its complete bounded Calendar snapshot, resolves exact existing
     targets, rejects unsafe attendee-bearing events, detects overlaps, applies the
     stored Calendar profile, and derives an immutable formulation. Reminder plans
-    always project to both Google popup and Docket's due-date ISO queue thread; an empty
-    lead list disables both. An omitted standalone timing timezone inherits Docket's
+    always project to Google popup and project to Docket's due-date ISO queue thread
+    only when ``docket_queue`` is enabled in the profile; an empty lead list disables
+    the configured delivery. An omitted standalone timing timezone inherits Docket's
     configured ``DOCKET_TIMEZONE``; an explicit IANA timezone wins. A sufficiently
     ascertained command from the current operator executes directly. Exact overlaps
     are advisory and produce a conflict-resolution card instead of failing or silently

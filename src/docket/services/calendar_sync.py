@@ -75,16 +75,29 @@ def _normalized_reminder_state(
     use_default, provider_leads = _provider_popup_leads(row.provider_reminders)
     enabled = [rule for rule in rules if rule.enabled]
     canonical_leads = sorted({rule.lead_seconds for rule in enabled})
-    expected_plan = {
-        "delivery_channels": ["google_popup", "docket_queue"],
-        "lead_seconds": canonical_leads,
-    }
+    synchronized_channels: list[str] = []
     if link is not None and link.reminder_plan_sha256 is not None:
-        synchronized = (
+        dual_plan = {
+            "delivery_channels": ["google_popup", "docket_queue"],
+            "lead_seconds": canonical_leads,
+        }
+        google_only_plan = {
+            "delivery_channels": ["google_popup"],
+            "lead_seconds": provider_leads,
+        }
+        if (
             not use_default
             and provider_leads == canonical_leads
-            and sha256_json(expected_plan) == link.reminder_plan_sha256
-        )
+            and sha256_json(dual_plan) == link.reminder_plan_sha256
+        ):
+            synchronized = True
+            synchronized_channels = ["google_popup", "docket_queue"]
+        elif not use_default and sha256_json(google_only_plan) == link.reminder_plan_sha256:
+            synchronized = True
+            synchronized_channels = ["google_popup"]
+            canonical_leads = provider_leads
+        else:
+            synchronized = False
         state = "synchronized" if synchronized else "drifted"
     elif enabled:
         state = "drifted"
@@ -97,11 +110,7 @@ def _normalized_reminder_state(
         "canonical_lead_seconds": (
             canonical_leads if link is not None and link.reminder_plan_sha256 is not None else []
         ),
-        "delivery_channels": (
-            ["google_popup", "docket_queue"]
-            if link is not None and link.reminder_plan_sha256 is not None
-            else []
-        ),
+        "delivery_channels": synchronized_channels,
         "provider_use_default": use_default,
         "provider_popup_lead_seconds": provider_leads,
     }

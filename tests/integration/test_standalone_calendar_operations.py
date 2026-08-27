@@ -19,6 +19,7 @@ from docket.models import (
     AuditEvent,
     CalendarEventCache,
     CalendarLink,
+    CalendarProfile,
     CalendarReminderPlan,
     CalendarSyncState,
     CanonicalEvent,
@@ -527,6 +528,53 @@ def test_approval_recovers_hash_bound_conflicts_from_a_buggy_refresh_revision(
     with session_factory() as session:
         operation = session.get(Operation, operation_id)
         assert operation is not None and operation.status == "pending"
+
+
+@pytest.mark.integration
+def test_google_only_profile_keeps_provider_popup_without_docket_notification(
+    session_factory: sessionmaker[Session],
+) -> None:
+    settings = get_settings()
+    with session_factory.begin() as session:
+        account = _seed_target(session)
+        session.add(
+            CalendarProfile(
+                operator_user_id=settings.operator_discord_user_id,
+                default_reminder_delivery_channels=["google_popup"],
+            )
+        )
+        proposal = _formulate_inferred(
+            session,
+            _create_request(account, "333333333333333335"),
+        )
+        revision = session.get(ActionRevision, proposal.action_revision_id)
+        assert revision is not None
+        assert revision.parameters["reminder_plan"]["delivery_channels"] == [
+            "google_popup"
+        ]
+        operation_id = _approve(
+            session,
+            short_code=proposal.short_code,
+            interaction_id="google-only-reminder-approval",
+        )
+
+    provider = FakeCalendarProvider()
+    assert OperationRunner(session_factory, provider).run_due_once()
+
+    with session_factory() as session:
+        operation = session.get(Operation, operation_id)
+        link = session.scalar(select(CalendarLink))
+        assert operation is not None and operation.status == "succeeded"
+        assert link is not None
+        assert provider.events[link.external_event_id].snapshot["reminders"] == {
+            "useDefault": False,
+            "overrides": [
+                {"method": "popup", "minutes": 5},
+                {"method": "popup", "minutes": 10},
+            ],
+        }
+        assert session.scalar(select(func.count()).select_from(ReminderRule)) == 0
+        assert session.scalar(select(func.count()).select_from(ScheduledNotification)) == 0
 
 
 @pytest.mark.integration

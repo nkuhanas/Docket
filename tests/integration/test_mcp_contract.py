@@ -142,7 +142,7 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
     calendar_proposal = tools["docket_apply_calendar_intent"]
     calendar_proposal_description = " ".join((calendar_proposal.description or "").split())
     assert "create, update, reminder change, or cancellation" in (calendar_proposal_description)
-    assert "both Google popup and Docket's due-date ISO queue thread" in (
+    assert "only when ``docket_queue`` is enabled in the profile" in (
         calendar_proposal_description
     )
     assert 'use ``target_scope="series"``' in calendar_proposal_description
@@ -185,7 +185,9 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
 
     set_profile = tools["docket_set_calendar_profile"]
     set_profile_description = " ".join((set_profile.description or "").split())
-    assert "cannot split Google and Docket delivery" in set_profile_description
+    assert "Removing ``docket_queue`` disables existing Docket reminder rules" in (
+        set_profile_description
+    )
     profile_definition = set_profile.inputSchema["$defs"]["CalendarProfileInput"]
     assert profile_definition["properties"]["proposal_mode"]["enum"] == [
         "explicit_only",

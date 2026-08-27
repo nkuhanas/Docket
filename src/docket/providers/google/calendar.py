@@ -96,7 +96,12 @@ def _course_meeting_body(summary: str, schedule: dict[str, Any]) -> dict[str, An
 def _google_reminders(plan: dict[str, Any] | None) -> dict[str, Any] | None:
     if plan is None:
         return None
-    leads = [int(value) for value in plan.get("lead_seconds", [])]
+    channels = plan.get("delivery_channels", [])
+    leads = (
+        [int(value) for value in plan.get("lead_seconds", [])]
+        if isinstance(channels, list) and "google_popup" in channels
+        else []
+    )
     return {
         "useDefault": False,
         "overrides": [{"method": "popup", "minutes": lead // 60} for lead in leads],

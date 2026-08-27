@@ -52,6 +52,7 @@ listed operator-present Discord/Gmail observations.
 | Existing event wins performs no proposed-event write | Same parametrized test for `keep_existing` | Passed and deployed |
 | Proposed event wins compiles explicit cancel/create operations | `test_explicit_conflict_resolution_new_wins_runs_a_durable_bundle` | Passed and deployed |
 | Partial provider execution remains durable and honest | Same test's permanent-failure case | Passed and deployed |
+| Google-only reminder policy retains provider popups while disabling Docket rules and notifications | `test_google_only_profile_keeps_provider_popup_without_docket_notification` and Calendar-profile rule cleanup test | Passed; deployment pending |
 
 ## Projection convergence
 

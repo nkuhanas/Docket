@@ -277,6 +277,21 @@ class ReminderRuleService:
 
     def set(self, request: SetReminderRuleInput) -> ReminderRuleResult:
         validate_configured_discord_source(self.session, request.source, request.actor_id)
+        from docket.services.calendar_profile import CalendarProfileService
+
+        if (
+            "docket_queue"
+            not in CalendarProfileService(
+                self.session
+            ).get().default_reminder_delivery_channels
+        ):
+            raise DocketError(
+                code="docket_reminders_disabled",
+                message=(
+                    "Docket daily-thread reminders are disabled in the Calendar profile; "
+                    "use Google Calendar popup reminders instead."
+                ),
+            )
         payload = {
             **request.model_dump(mode="json"),
             # Preserve hashes for pre-0007 requests whose optional model-visible

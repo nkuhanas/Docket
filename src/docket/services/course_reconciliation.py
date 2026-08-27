@@ -732,8 +732,10 @@ class CourseReconciliationService:
         record, course = self._course(request)
         profile = CalendarProfileService(self.session).get()
         plan_model = request.reminder_plan or CalendarReminderPlanInput(
-            delivery_channels=profile.default_reminder_delivery_channels,
             lead_seconds=profile.default_reminder_lead_seconds,
+        )
+        plan_model = plan_model.model_copy(
+            update={"delivery_channels": list(profile.default_reminder_delivery_channels)}
         )
         reminder_plan = plan_model.model_dump(mode="json")
         parameters, preview, material_fingerprint = self._compile_material(

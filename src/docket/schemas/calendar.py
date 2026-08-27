@@ -47,21 +47,21 @@ def _configured_timezone() -> str:
 class CalendarReminderPlanInput(StrictModel):
     delivery_channels: list[CalendarReminderChannel] = Field(
         default_factory=_default_reminder_channels,
-        min_length=2,
+        min_length=1,
         max_length=2,
     )
     lead_seconds: list[int] = Field(default_factory=lambda: [600], max_length=5)
 
     @field_validator("delivery_channels")
     @classmethod
-    def channels_are_fixed(
+    def channels_are_canonical(
         cls, value: list[CalendarReminderChannel]
     ) -> list[CalendarReminderChannel]:
-        if set(value) != {"google_popup", "docket_queue"} or len(set(value)) != 2:
+        if "google_popup" not in value or len(value) != len(set(value)):
             raise ValueError(
-                "reminder delivery must include google_popup and docket_queue exactly once"
+                "reminder delivery must include google_popup; docket_queue is optional"
             )
-        return ["google_popup", "docket_queue"]
+        return [channel for channel in ("google_popup", "docket_queue") if channel in value]
 
     @field_validator("lead_seconds")
     @classmethod
@@ -278,7 +278,7 @@ class CalendarProfileInput(StrictModel):
     default_reminder_lead_seconds: list[int] = Field(default_factory=lambda: [600], max_length=5)
     default_reminder_delivery_channels: list[CalendarReminderChannel] = Field(
         default_factory=_default_reminder_channels,
-        min_length=2,
+        min_length=1,
         max_length=2,
     )
     conflict_policy: CalendarConflictPolicy = "warn"

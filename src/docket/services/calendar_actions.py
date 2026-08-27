@@ -609,19 +609,38 @@ class CalendarActionService:
         profile: CalendarProfileResult,
     ) -> CalendarReminderPlanInput | None:
         if isinstance(proposal, CreateCalendarEventProposal):
-            return proposal.event.reminder_plan or CalendarReminderPlanInput(
-                delivery_channels=profile.default_reminder_delivery_channels,
+            requested = proposal.event.reminder_plan or CalendarReminderPlanInput(
                 lead_seconds=profile.default_reminder_lead_seconds,
+            )
+            return requested.model_copy(
+                update={
+                    "delivery_channels": list(profile.default_reminder_delivery_channels)
+                }
             )
         if isinstance(proposal, UpdateCalendarEventProposal):
             if proposal.reminder_disposition == "replace":
-                return proposal.reminder_plan
+                assert proposal.reminder_plan is not None
+                return proposal.reminder_plan.model_copy(
+                    update={
+                        "delivery_channels": list(profile.default_reminder_delivery_channels)
+                    }
+                )
             if proposal.reminder_disposition == "disable":
-                return CalendarReminderPlanInput(lead_seconds=[])
+                return CalendarReminderPlanInput(
+                    delivery_channels=profile.default_reminder_delivery_channels,
+                    lead_seconds=[],
+                )
             return None
         if isinstance(proposal, UpdateCalendarRemindersProposal):
-            return proposal.reminder_plan
-        return CalendarReminderPlanInput(lead_seconds=[])
+            return proposal.reminder_plan.model_copy(
+                update={
+                    "delivery_channels": list(profile.default_reminder_delivery_channels)
+                }
+            )
+        return CalendarReminderPlanInput(
+            delivery_channels=profile.default_reminder_delivery_channels,
+            lead_seconds=[],
+        )
 
     def apply_explicit(
         self, request: ProposeCalendarEventInput

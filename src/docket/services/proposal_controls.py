@@ -52,6 +52,7 @@ from docket.services.brief_projection import (
     morning_brief_contains_queue_item,
     projection_refresh_target,
 )
+from docket.services.calendar_profile import CalendarProfileService
 
 _PRIORITIES = {"low", "normal", "high", "urgent"}
 _REMINDER_PRESETS: dict[str, list[int]] = {
@@ -649,7 +650,9 @@ class ProposalControlService:
                     message="Reminder preset is not recognized.",
                 )
             plan: dict[str, object] = {
-                "delivery_channels": ["google_popup", "docket_queue"],
+                "delivery_channels": list(
+                    CalendarProfileService(self.session).get().default_reminder_delivery_channels
+                ),
                 "lead_seconds": reminder_leads,
             }
             parameters["reminder_plan"] = plan
@@ -943,7 +946,9 @@ class ProposalControlService:
                 request.modal_values[_CUSTOM_REMINDER_FIELD]
             )
             plan: dict[str, object] = {
-                "delivery_channels": ["google_popup", "docket_queue"],
+                "delivery_channels": list(
+                    CalendarProfileService(self.session).get().default_reminder_delivery_channels
+                ),
                 "lead_seconds": reminder_leads,
             }
             parameters["reminder_plan"] = plan

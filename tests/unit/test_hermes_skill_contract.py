@@ -27,7 +27,7 @@ def test_manual_intent_skill_preserves_calendar_freshness_and_explicit_reminders
     assert "only through the `reminders` discriminator" in skill
     assert "not model-authored text" in skill
     assert "no model-visible direct rule write or disable tool" in skill
-    assert "both Google popup and the ISO thread" in skill
+    assert "only when `docket_queue` is enabled" in skill
     assert "ISO thread" in skill
     assert "never search past sessions for a rule UUID or version" in skill
     assert "`target_scope: event`" in skill

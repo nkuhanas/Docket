@@ -214,8 +214,9 @@ Docket durably queues the operation without asking the operator to approve the
 same command again. If an exact overlap remains, Docket returns a conflict
 resolution card instead; briefly direct the operator to that card without
 choosing a winner. Omitted create reminders use the profile default; explicit
-reminder leads replace the entire plan, and an empty
-lead list disables both Google popup and Docket daily-thread delivery. Never infer priority:
+reminder leads replace the entire plan, and an empty lead list disables the
+configured reminder delivery. Respect the Calendar profile: Google popup remains
+available while Docket daily-thread reminders may be disabled. Never infer priority:
 initial proposals use normal priority unless Docket can verify an explicit
 operator value, and non-default changes belong on the authenticated card
 control.
@@ -254,9 +255,10 @@ Create, replace, or disable reminders only through the `reminders`
 discriminator of `docket_apply_calendar_intent`. Read underlying canonical
 projection rules with `docket_list_reminder_rules` for diagnosis; never search
 past sessions for a rule UUID or version. There is no model-visible direct rule
-write or disable tool. Docket owns one approved reminder plan and projects it to
-both Google popup and the ISO thread for the reminder's Los Angeles due date.
-Reminder delivery is a deterministic Docket worker consequence, not
+write or disable tool. Docket owns one approved reminder plan, projects it to
+Google popup, and adds the ISO thread for the reminder's Los Angeles due date only
+when `docket_queue` is enabled in the Calendar profile. Reminder delivery is a
+deterministic Docket worker consequence, not
 model-authored text, an immediate send tool, or an independent local-only rule.
 
 Never represent conversational assent as a Docket card decision and never call

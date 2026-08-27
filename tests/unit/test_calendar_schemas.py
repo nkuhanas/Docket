@@ -31,9 +31,12 @@ def test_reminder_plan_rejects_non_provider_leads(lead_seconds: list[int]) -> No
         CalendarReminderPlanInput(lead_seconds=lead_seconds)
 
 
-def test_reminder_plan_requires_both_delivery_projections() -> None:
-    with pytest.raises(ValidationError, match="at least 2 items"):
-        CalendarReminderPlanInput(delivery_channels=["google_popup"])
+def test_reminder_plan_allows_google_only_and_rejects_docket_only() -> None:
+    assert CalendarReminderPlanInput(
+        delivery_channels=["google_popup"]
+    ).delivery_channels == ["google_popup"]
+    with pytest.raises(ValidationError, match="must include google_popup"):
+        CalendarReminderPlanInput(delivery_channels=["docket_queue"])
 
 
 def test_timed_event_rejects_dst_gap() -> None:
@@ -166,3 +169,6 @@ def test_calendar_profile_normalizes_reminder_defaults() -> None:
         "google_popup",
         "docket_queue",
     ]
+    assert CalendarProfileInput(
+        default_reminder_delivery_channels=["google_popup"]
+    ).default_reminder_delivery_channels == ["google_popup"]

@@ -486,7 +486,20 @@ class OperationRunner:
         plan = parameters.get("reminder_plan")
         if not isinstance(plan, dict):
             return
-        desired_leads = {int(value) for value in plan.get("lead_seconds", [])}
+        from docket.services.calendar_profile import CalendarProfileService
+
+        configured_channels = set(
+            CalendarProfileService(session).get().default_reminder_delivery_channels
+        )
+        requested_channels = set(plan.get("delivery_channels", []))
+        docket_delivery_enabled = (
+            "docket_queue" in configured_channels and "docket_queue" in requested_channels
+        )
+        desired_leads = (
+            {int(value) for value in plan.get("lead_seconds", [])}
+            if docket_delivery_enabled
+            else set()
+        )
         rules = list(
             session.scalars(
                 select(ReminderRule).where(

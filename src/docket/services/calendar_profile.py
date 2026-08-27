@@ -7,7 +7,7 @@ from docket.config import get_settings
 from docket.domain.canonical import sha256_json
 from docket.domain.enums import CommandStatus
 from docket.domain.errors import DocketError, IdempotencyConflict, VersionConflict
-from docket.models import AuditEvent, CalendarProfile, CommandRequest
+from docket.models import AuditEvent, CalendarProfile, CommandRequest, ReminderRule
 from docket.models.base import utc_now
 from docket.schemas.calendar import CalendarProfileResult, SetCalendarProfileInput
 from docket.services.source_context import validate_configured_discord_source
@@ -107,6 +107,18 @@ class CalendarProfileService:
         )
         profile.conflict_policy = request.conflict_policy
         profile.version += 1
+        disabled_rule_ids = set()
+        if "docket_queue" not in profile.default_reminder_delivery_channels:
+            for rule in self.session.scalars(
+                select(ReminderRule).where(ReminderRule.enabled.is_(True))
+            ):
+                rule.enabled = False
+                rule.version += 1
+                disabled_rule_ids.add(rule.id)
+            if disabled_rule_ids:
+                from docket.services.reminders import materialize_reminders
+
+                materialize_reminders(self.session, rule_ids=disabled_rule_ids)
         result = _profile_result(profile)
         command.status = CommandStatus.SUCCEEDED.value
         command.result = result.model_dump(mode="json")
@@ -122,6 +134,7 @@ class CalendarProfileService:
                 data={
                     "before": before,
                     "after": result.model_dump(mode="json"),
+                    "disabled_docket_reminder_rules": len(disabled_rule_ids),
                 },
             )
         )
