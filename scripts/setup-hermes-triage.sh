@@ -92,14 +92,14 @@ if [ "$job_count" -eq 0 ]; then
         "$JOB_SCHEDULE" \
         --script "docket-gmail-triage.sh" \
         --no-agent \
-        --deliver log \
+        --deliver local \
         --name "$JOB_NAME"
 elif [ "$job_count" -eq 1 ]; then
     compose exec -T hermes hermes cron edit "$job_ids" \
         --schedule "$JOB_SCHEDULE" \
         --script "docket-gmail-triage.sh" \
         --no-agent \
-        --deliver log \
+        --deliver local \
         --name "$JOB_NAME"
 else
     echo "Expected at most one '$JOB_NAME' cron job; found $job_count." >&2

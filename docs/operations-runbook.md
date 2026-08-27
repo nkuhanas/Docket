@@ -137,7 +137,9 @@ Install or repair the profile with `scripts/docket setup-triage`. The installer
 creates or reconciles one root-owned 5-minute no-agent cron whose only script is the
 repository-owned launcher for a `docket-triage` one-shot. The root scheduler
 does not run the interactive model for this job; the child model sees only the
-isolated profile. Delivery is local-log only. Do not add the triage MCP to the
+isolated profile. Normal `[SILENT]` success emits no delivery; unexpected output
+or request failures become redacted failed runs. Cron delivery is local only.
+Do not add the triage MCP to the
 interactive Hermes configuration.
 
 A `record_conflict` is not permission to fetch the canonical record, copy its

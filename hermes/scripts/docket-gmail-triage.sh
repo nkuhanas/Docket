@@ -32,4 +32,10 @@ if [ "$after_dumps" -gt "$before_dumps" ]; then
     exit 1
 fi
 
-cat "$output_file"
+normalized_output=$(tr -d '\r' <"$output_file" | awk 'NF { print }')
+if [ -z "$normalized_output" ] || [ "$normalized_output" = "[SILENT]" ]; then
+    exit 0
+fi
+
+echo "Docket Gmail triage returned unexpected model output." >&2
+exit 1

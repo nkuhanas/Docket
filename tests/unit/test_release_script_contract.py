@@ -1,3 +1,5 @@
+import os
+import subprocess
 from pathlib import Path
 
 
@@ -29,7 +31,8 @@ def test_gmail_triage_installer_pins_an_isolated_profile_and_local_delivery() ->
     assert "--clone --no-alias" in script
     assert '--script "docket-gmail-triage.sh"' in script
     assert "--no-agent" in script
-    assert "--deliver log" in script
+    assert "--deliver local" in script
+    assert "--deliver log" not in script
     assert "--deliver discord" not in script
     assert 'JOB_SCHEDULE="every 5m"' in script
     assert "hermes cron edit" in script
@@ -53,6 +56,8 @@ def test_gmail_triage_installer_pins_an_isolated_profile_and_local_delivery() ->
     assert "--oneshot" in launcher
     assert "request_dump_*.json" in launcher
     assert "exhausted its model request retries" in launcher
+    assert '"$normalized_output" = "[SILENT]"' in launcher
+    assert "returned unexpected model output" in launcher
     assert "exactly one source per run" in skill
     assert "caps this profile's claim at one source" in skill
     assert "cli: []" in config
@@ -60,6 +65,67 @@ def test_gmail_triage_installer_pins_an_isolated_profile_and_local_delivery() ->
     assert "plugins:\n  enabled: []" in config
     assert "discord:" not in config
     assert "Return only `[SILENT]` after a normal run." in skill
+
+
+def test_gmail_triage_launcher_suppresses_success_and_fails_closed(tmp_path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_hermes = bin_dir / "hermes"
+    fake_hermes.write_text(
+        """#!/bin/sh
+set -eu
+case ${HERMES_FAKE_MODE:-silent} in
+  silent) printf '[SILENT]\\n' ;;
+  unexpected) printf 'source-derived output must not escape\\n' ;;
+  dump)
+    mkdir -p "$HERMES_HOME/profiles/docket-triage/sessions"
+    : > "$HERMES_HOME/profiles/docket-triage/sessions/request_dump_test.json"
+    printf '[SILENT]\\n'
+    ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_hermes.chmod(0o700)
+    launcher = Path("hermes/scripts/docket-gmail-triage.sh").resolve()
+    base_env = {
+        **os.environ,
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "HERMES_HOME": str(tmp_path / "home"),
+    }
+
+    silent = subprocess.run(
+        ["sh", str(launcher)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=base_env,
+    )
+    assert silent.returncode == 0
+    assert silent.stdout == ""
+    assert silent.stderr == ""
+
+    unexpected = subprocess.run(
+        ["sh", str(launcher)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**base_env, "HERMES_FAKE_MODE": "unexpected"},
+    )
+    assert unexpected.returncode == 1
+    assert unexpected.stdout == ""
+    assert unexpected.stderr == "Docket Gmail triage returned unexpected model output.\n"
+
+    dumped = subprocess.run(
+        ["sh", str(launcher)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**base_env, "HERMES_FAKE_MODE": "dump"},
+    )
+    assert dumped.returncode == 1
+    assert dumped.stdout == ""
+    assert dumped.stderr == "Docket Gmail triage exhausted its model request retries.\n"
 
 
 def test_operator_script_separates_gmail_scan_from_semantic_triage() -> None:
