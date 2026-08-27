@@ -103,6 +103,33 @@ UV_CACHE_DIR=/tmp/docket-uv-cache scripts/docket check
 scripts/docket compose-smoke
 ```
 
+## 2026-08-26 authority-path closure
+
+Revision `f8acdef` is deployed on the local stack. Its ancestry includes three
+alpha-contract corrections that keep the implementation and its tests on the
+same authority model:
+
+* `d5f2bcc` rejects request keys owned by retired `docket_remember_record`
+  commands instead of replaying them through `docket_store_record`. The four
+  historical rows remain unchanged as evidence.
+* `c20ccc5` removes the forced course-proposal service path. Explicit,
+  conflict-free course reconciliation now executes directly in lifecycle
+  coverage; only a real Calendar conflict creates a decision. The signed
+  course conflict selector now produces a fresh, approvable revision.
+* `48cb4af` removes the forced standalone Calendar proposal path. Tests use
+  `apply_explicit` for trusted Discord intent and provenance-bound
+  `formulate_inferred` for Gmail-derived formulations.
+
+The release gate passed 279 tests plus Ruff and strict mypy, and GitHub CI run
+`33028476609` passed both project checks and the isolated Compose smoke. The
+deployed stack reported all services healthy with zero active operations and
+zero pending outbox rows. The image contains `cryptography` 50.0.0; GitHub
+marked CVE-2026-69247 fixed after commit `f8acdef`.
+
+These checks prove the service boundary and deterministic behavior. They do
+not replace the remaining operator-present observations in
+[semantic-acceptance-matrix.md](semantic-acceptance-matrix.md).
+
 ## Operator-present verification
 
 After a deploy or Hermes plugin change, run `/reload-mcp` and begin a fresh
