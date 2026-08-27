@@ -1,6 +1,7 @@
 from pathlib import Path
 
 SKILL_PATH = Path("hermes/plugin/docket_discord/skills/docket-manual-intent/SKILL.md")
+TRIAGE_SKILL_PATH = Path("hermes/plugin/docket_discord/skills/docket-triage/SKILL.md")
 
 
 def test_manual_intent_skill_requires_authority_aware_execution_guidance() -> None:
@@ -71,3 +72,12 @@ def test_manual_intent_skill_uses_independent_course_lifecycles() -> None:
     assert "Never replace a shorter supplied course range" in skill
     assert "Docket-owned daily threads under `#docket-queue`" in skill
     assert "queue root and `#docket-system` remain non-conversational" in skill
+
+
+def test_triage_skill_does_not_invent_acknowledgement_work() -> None:
+    skill = " ".join(TRIAGE_SKILL_PATH.read_text(encoding="utf-8").split())
+
+    assert "actually asks the operator to reply, submit, pay, acknowledge" in skill
+    assert "job-application receipt" in skill
+    assert "never an acknowledgement obligation" in skill
+    assert "corresponding typed candidate" in skill

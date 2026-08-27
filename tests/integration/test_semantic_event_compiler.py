@@ -30,7 +30,7 @@ from docket.schemas.triage import SemanticCandidateInput, SubmitSemanticCandidat
 from docket.services.approvals import ApprovalService
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.entities import EntityService
-from docket.services.events import SemanticCandidateCompiler
+from docket.services.events import CanonicalEventService, SemanticCandidateCompiler
 from docket.services.gmail_ingestion import GmailIngestionService
 from docket.services.operations import OperationRunner
 from docket.services.triage import TriageService
@@ -44,6 +44,78 @@ def _settings():
             "gmail_triage_lease_seconds": 900,
         }
     )
+
+
+@pytest.mark.integration
+def test_same_title_different_time_create_does_not_rebind_existing_event(
+    session_factory,
+) -> None:
+    with session_factory.begin() as session:
+        account = Account(
+            provider="google",
+            external_account_id="same-title-correlation-test",
+            capabilities=["gmail", "google_calendar"],
+            enabled=True,
+        )
+        session.add(account)
+        session.flush()
+        source = SourceItem(
+            account_id=account.id,
+            provider="gmail",
+            external_object_id="general-meeting-new",
+            source_version="1",
+            source_fingerprint="a" * 64,
+            status="classified",
+        )
+        existing = CanonicalEvent(
+            canonical_key="existing-general-meeting",
+            title="General meeting",
+            status="active",
+            event_spec={
+                "title": "General meeting",
+                "timing": {
+                    "kind": "timed",
+                    "start_local": "2026-09-10T10:00:00",
+                    "end_local": "2026-09-10T11:00:00",
+                },
+                "recurrence_kind": "one_time",
+                "system_tags": [],
+                "operator_tags": [],
+                "priority": "normal",
+                "priority_basis": "default",
+            },
+            entity_refs=[],
+            context_labels=[],
+            authority="canonical",
+        )
+        session.add_all((source, existing))
+        session.flush()
+        candidate = SemanticCandidate(
+            source_item_id=source.id,
+            candidate_index=0,
+            candidate_key="different-general-meeting",
+            semantic_key="b" * 64,
+            kind="event",
+            mutation="create",
+            title="General meeting",
+            summary="A separate general meeting was scheduled.",
+            fields={
+                "event": {
+                    "title": "General meeting",
+                    "timing": {
+                        "kind": "timed",
+                        "start_local": "2026-09-10T15:00:00",
+                        "end_local": "2026-09-10T16:00:00",
+                    },
+                }
+            },
+            confidence=0.95,
+            status="pending",
+        )
+        session.add(candidate)
+        session.flush()
+
+        assert CanonicalEventService(session).correlate(candidate) == []
 
 
 @pytest.mark.integration
@@ -164,6 +236,14 @@ def test_complete_inferred_event_becomes_one_version_bound_proposal(
         thread = session.scalar(select(DiscordDailyThread))
         assert projection is not None and projection.message_id is not None
         assert thread is not None and thread.thread_id is not None
+        rendered = repr(backend.messages[str(projection.id)]["embed"]).lower()
+        assert "project review" in rendered
+        assert "inferred from email" in rendered
+        assert "confidence" not in rendered
+        assert "candidate_type" not in rendered
+        assert "correlation" not in rendered
+        assert "gmail_message_id" not in rendered
+        assert source_id not in rendered
         approval_control = next(
             control
             for control in backend.messages[str(projection.id)]["controls"]
@@ -198,6 +278,118 @@ def test_complete_inferred_event_becomes_one_version_bound_proposal(
         assert binding is not None and binding.canonical_event_id == canonical.id
         assert operation is not None and operation.status == "succeeded"
         assert len(approvals) == 1 and approvals[0].status == "consumed"
+
+
+@pytest.mark.integration
+def test_inferred_event_integrates_calendar_conflicts_into_one_proposal(
+    session_factory,
+) -> None:
+    provider = FakeGmailProvider()
+    provider.add_message(
+        message_id="conflicting-invitation",
+        thread_id="conflicting-invitation-thread",
+        source_version="1",
+        sender="Project Team <team@example.com>",
+        subject="Project review invitation",
+    )
+    now = datetime.now(UTC)
+    with session_factory.begin() as session:
+        account = Account(
+            provider="google",
+            external_account_id="semantic-conflict-test",
+            capabilities=["gmail", "google_calendar"],
+            enabled=True,
+        )
+        session.add(account)
+        session.flush()
+        snapshot_generation = uuid.uuid4()
+        sync = CalendarSyncState(
+            account_id=account.id,
+            calendar_id=get_settings().google_calendar_id,
+            window_start=now - timedelta(days=30),
+            window_end=now + timedelta(days=400),
+            snapshot_generation=snapshot_generation,
+            status="current",
+            last_attempt_at=now,
+            last_success_at=now,
+        )
+        session.add(sync)
+        session.flush()
+        session.add(
+            CalendarEventCache(
+                account_id=account.id,
+                calendar_id=get_settings().google_calendar_id,
+                provider_event_id="existing-workshop",
+                snapshot_generation=snapshot_generation,
+                status="confirmed",
+                summary="Existing workshop",
+                is_all_day=False,
+                start_at=datetime(2026, 9, 10, 21, 15, tzinfo=UTC),
+                end_at=datetime(2026, 9, 10, 21, 45, tzinfo=UTC),
+                timezone="America/Los_Angeles",
+                recurrence_kind="one_time",
+                system_tags=["one_time", "timed", "external"],
+                operator_tags=[],
+                priority="normal",
+                priority_basis="default",
+                provider_reminders={},
+                provider_etag='"workshop-v1"',
+                synced_at=now,
+            )
+        )
+    assert (
+        GmailIngestionService(session_factory, provider, _settings())
+        .run_due_once(force=True)
+        .completed
+    )
+    triage = TriageService(session_factory, provider, _settings())
+    claim = triage.claim_batch()
+    triage.submit_candidates(
+        SubmitSemanticCandidatesInput(
+            source_id=str(claim["sources"][0]["source_id"]),
+            claim_token=str(claim["claim_token"]),
+            candidates=[
+                SemanticCandidateInput(
+                    candidate_key="project-review-conflict",
+                    kind="event",
+                    mutation="create",
+                    title="Project review",
+                    summary="A project review was scheduled.",
+                    event={
+                        "title": "Project review",
+                        "timing": {
+                            "kind": "timed",
+                            "start_local": "2026-09-10T14:00:00",
+                            "end_local": "2026-09-10T14:30:00",
+                        },
+                    },
+                    confidence=0.96,
+                )
+            ],
+        )
+    )
+
+    assert SemanticCandidateCompiler(session_factory, _settings()).run_due_once()
+    with session_factory() as session:
+        queue_item = session.scalar(select(QueueItem))
+        revision = session.scalar(select(ActionRevision))
+        assert queue_item is not None and queue_item.presentation == "proposal"
+        assert revision is not None and revision.authority == "inferred"
+        assert [item["provider_event_id"] for item in revision.preview["conflicts"]] == [
+            "existing-workshop"
+        ]
+
+    backend = FakeDiscordBackend()
+    projection_runner = DiscordProjectionRunner(
+        session_factory,
+        FakeDiscordProjectionAdapter(backend),
+        _settings(),
+    )
+    assert projection_runner.run_due_once()
+    projected = next(iter(backend.messages.values()))
+    fields = {field["name"]: field["value"] for field in projected["embed"]["fields"]}
+    assert "Existing workshop" in fields["Conflicts"]
+    assert any(control.get("field") == "conflict_resolution" for control in projected["controls"])
 
 
 @pytest.mark.integration

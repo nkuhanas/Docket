@@ -39,7 +39,16 @@ outside version control.
   never title equality alone. Related follow-ups can collapse to one outcome,
   while unrelated obligations with the same generic title remain distinct.
 * A terminal canonical decision cannot retain a live actionable Discord card.
-  Duplicate interactions repair the exact clicked projection.
+  Duplicate interactions repair the exact clicked projection. The first
+  acknowledged render after a decision records one content-free
+  `approval.projection_converged` audit event with `decision_to_card_ms`.
+* A generic title is not event identity. Independent inferred creates with the
+  same title but different material event fingerprints remain distinct unless
+  a provider event ID, sender event ID, or exact event fingerprint correlates
+  them.
+* Even the retired classifier-facing service boundary rejects autonomous Gmail
+  archive/mark-read formulations. Those actions remain isolated to the
+  explicit operator path.
 
 ## Schema and migration boundary
 
@@ -70,9 +79,11 @@ The repository gate exercises:
 * independent Google Calendar edits recorded as provider divergence without
   rewriting canonical event state;
 * source-safe Discord proposal rendering;
+* adversarial same-title/different-time event independence and inferred
+  conflict presentation;
 * durable conflict bundles and partial provider failure;
-* clicked-card convergence, duplicate-click repair, edit failure recovery, and
-  restart reconciliation;
+* clicked-card convergence, one durable convergence-latency sample,
+  duplicate-click repair, edit failure recovery, and restart reconciliation;
 * silent multi-source overnight triage, one idempotent morning brief, one night
   closeout, delayed classification blocking, missed-boundary catch-up, and
   multi-boundary delayed-source carry-forward without loss;

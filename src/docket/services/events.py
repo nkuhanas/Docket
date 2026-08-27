@@ -159,6 +159,12 @@ class CanonicalEventService:
             ]
             if exact:
                 return exact
+            if candidate.mutation == "create":
+                # A generic title is not event identity. Two independent creates
+                # named "General meeting" must remain distinct unless their full
+                # material event fingerprint or a stronger provider/sender key
+                # correlates them.
+                return []
         date_hint = correlation.get("date_hint")
         if isinstance(date_hint, str):
             return [

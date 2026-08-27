@@ -42,8 +42,15 @@ or provider timeout can strand at most one short-lived lease. For that source:
    mark-read, or any other Gmail housekeeping action. Docket—not this session—
    resolves entities, correlates evidence, checks Calendar state, chooses the
    correct card class, and compiles provider operations.
-9. Represent newsletters and irrelevant content as `noise`; do not turn a
-   receipt or generic status confirmation into an acknowledgement decision.
+9. Use `response` or `task` only when the sender's real-world message actually
+   asks the operator to reply, submit, pay, acknowledge, choose, or complete
+   something. A job-application receipt, submission confirmation, delivery
+   confirmation, generic status update, or "we received your application"
+   message is `information` or `noise`, never an acknowledgement obligation.
+   A notice that supplies a concrete meeting, appointment, interview, deadline,
+   reschedule, or cancellation is the corresponding typed candidate—not a
+   request to acknowledge the email. Represent newsletters and irrelevant
+   content as `noise`.
 
 The triage session must not have record mutation, approval, operation, Discord,
 Gmail mutation, or Calendar mutation tools.

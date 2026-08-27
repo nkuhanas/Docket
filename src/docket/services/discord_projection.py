@@ -2551,6 +2551,51 @@ class DiscordProjectionRunner:
                         )
             elif approval is not None and approval.status != ApprovalStatus.PENDING.value:
                 approval.control_projection_id = None
+            if (
+                approval is not None
+                and approval.status != ApprovalStatus.PENDING.value
+                and approval.responded_at is not None
+                and approval.response_projection_id == projection.id
+                and session.scalar(
+                    select(AuditEvent.id)
+                    .where(
+                        AuditEvent.event_type == "approval.projection_converged",
+                        AuditEvent.entity_type == "approval",
+                        AuditEvent.entity_id == approval.id,
+                    )
+                    .limit(1)
+                )
+                is None
+            ):
+                rendered_at = utc_now()
+                latency_ms = max(
+                    0,
+                    round(
+                        (
+                            _aware(rendered_at)
+                            - _aware(approval.responded_at)
+                        ).total_seconds()
+                        * 1000
+                    ),
+                )
+                session.add(
+                    AuditEvent(
+                        event_type="approval.projection_converged",
+                        entity_type="approval",
+                        entity_id=approval.id,
+                        actor_type="docket",
+                        actor_id=None,
+                        request_id=event.id,
+                        data={
+                            "projection_id": str(projection.id),
+                            "queue_item_id": str(projection.queue_item_id),
+                            "approval_status": approval.status,
+                            "projection_version": projection.projection_version,
+                            "decision_to_card_ms": latency_ms,
+                        },
+                        created_at=rendered_at,
+                    )
+                )
             event.status = OutboxStatus.DELIVERED.value
             event.lease_token = None
             event.leased_until = None

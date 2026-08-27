@@ -1065,8 +1065,14 @@ class TriageService:
         self,
         request: SubmitTriageDecisionInput,
     ) -> dict[str, Any]:
-        for proposal in request.action_proposals:
-            get_action_definition(proposal.action_type, require_enabled=False)
+        if request.action_proposals:
+            raise DocketError(
+                code="autonomous_gmail_housekeeping_forbidden",
+                message=(
+                    "Untrusted triage cannot formulate Gmail archive or mark-read actions. "
+                    "Use the explicit operator command for exact-version housekeeping."
+                ),
+            )
         try:
             source_id = uuid.UUID(request.source_id)
             claim_token = uuid.UUID(request.claim_token)
@@ -1113,7 +1119,7 @@ class TriageService:
             assert request.summary is not None
             assert request.priority is not None
             assert request.semantic_event_type is not None
-            action_types = [proposal.action_type for proposal in request.action_proposals]
+            action_types: list[str] = []
             now = utc_now()
             anchor = source.external_parent_id or source.external_object_id
             deduplication_key = f"gmail:{source.account_id}:{anchor}:{request.semantic_event_type}"

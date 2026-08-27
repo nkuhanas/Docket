@@ -1785,6 +1785,19 @@ def test_carried_forward_approval_refreshes_the_clicked_card_and_repairs_duplica
         pass
     assert backend.messages[str(current_id)]["controls"] == []
     assert backend.messages[str(original_id)]["controls"] == []
+    with session_factory() as session:
+        convergence_events = list(
+            session.scalars(
+                select(AuditEvent).where(
+                    AuditEvent.event_type == "approval.projection_converged",
+                    AuditEvent.entity_id == proposed.approval_id,
+                )
+            )
+        )
+        assert len(convergence_events) == 1
+        assert convergence_events[0].data["projection_id"] == str(current_id)
+        assert convergence_events[0].data["approval_status"] == "consumed"
+        assert convergence_events[0].data["decision_to_card_ms"] >= 0
 
     operation_runner = OperationRunner(session_factory, FakeCalendarProvider())
     assert operation_runner.run_due_once()

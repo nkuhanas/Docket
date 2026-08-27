@@ -282,7 +282,7 @@ def test_read_transfers_claim_to_already_staged_current_version(
 
 
 @pytest.mark.integration
-def test_untrusted_content_can_only_propose_a_pending_gmail_action(
+def test_untrusted_content_cannot_propose_a_gmail_action(
     session_factory,
     monkeypatch,
 ) -> None:
@@ -303,22 +303,19 @@ def test_untrusted_content_can_only_propose_a_pending_gmail_action(
     request = _actionable(source_id, str(claim["claim_token"]))
     request.action_proposals = [TriageActionProposal(action_type="gmail_archive_message")]
 
-    result = service.submit_decision(request)
+    with pytest.raises(DocketError) as raised:
+        service.submit_decision(request)
+    assert raised.value.code == "autonomous_gmail_housekeeping_forbidden"
 
     with session_factory() as session:
         source = session.scalar(select(SourceItem))
         assert source is not None
-        assert source.status == "classified"
-        queue_item = session.scalar(select(QueueItem))
-        action = session.scalar(select(Action))
-        approval = session.scalar(select(Approval))
-        assert queue_item is not None
-        assert queue_item.status == "awaiting_approval"
-        assert action is not None and action.status == "approval_pending"
-        assert approval is not None and approval.status == "pending"
+        assert source.status == "claimed"
+        assert session.scalar(select(QueueItem)) is None
+        assert session.scalar(select(Action)) is None
+        assert session.scalar(select(Approval)) is None
         assert session.scalar(select(Operation)) is None
         assert provider.mutation_calls == 0
-        assert result["action_proposals"][0]["action_type"] == "gmail_archive_message"
 
 
 @pytest.mark.integration
@@ -348,8 +345,16 @@ def test_later_passive_classification_supersedes_pending_gmail_acknowledgement(
     claim = service.claim_batch()
     sources = list(claim["sources"])
     first = _actionable(str(sources[0]["source_id"]), str(claim["claim_token"]))
-    first.action_proposals = [TriageActionProposal(action_type="gmail_archive_message")]
     service.submit_decision(first)
+    service.propose_classified_gmail_action(
+        ProposeClassifiedGmailActionInput(
+            request_key="operator:gmail-transition:archive:1",
+            source_id=str(sources[0]["source_id"]),
+            expected_source_version="1",
+            action_type="gmail_archive_message",
+            actor_id=_settings().operator_discord_user_id,
+        )
+    )
     second = _actionable(str(sources[1]["source_id"]), str(claim["claim_token"]))
     second.title = "Resolved update"
 
@@ -580,11 +585,19 @@ def _propose_gmail_action(
     service = TriageService(session_factory, provider, settings)
     claim = service.claim_batch()
     source_id = str(claim["sources"][0]["source_id"])
-    request = _actionable(source_id, str(claim["claim_token"]))
-    request.action_proposals = [
-        TriageActionProposal(action_type=action_type)  # type: ignore[arg-type]
-    ]
-    result = service.submit_decision(request)
+    classified = service.submit_decision(
+        _actionable(source_id, str(claim["claim_token"]))
+    )
+    result = service.propose_classified_gmail_action(
+        ProposeClassifiedGmailActionInput(
+            request_key=f"operator:gmail-test:{source_id}:{action_type}",
+            source_id=source_id,
+            expected_source_version=str(claim["sources"][0]["source_version"]),
+            action_type=action_type,  # type: ignore[arg-type]
+            actor_id=settings.operator_discord_user_id,
+        )
+    )
+    assert result["queue_item_id"] == classified["queue_item_id"]
     return settings, str(result["queue_item_id"])
 
 

@@ -25,6 +25,7 @@ listed operator-present Discord/Gmail observations.
 | Requirement | Automated evidence | Current evidence |
 | --- | --- | --- |
 | Gmail extraction persists typed candidates, not housekeeping | `test_triage_persists_typed_event_candidate_without_housekeeping_or_card` | Passed and deployed |
+| Untrusted legacy classification cannot formulate Gmail housekeeping | `test_untrusted_content_cannot_propose_a_gmail_action` | Passed locally; deployment pending |
 | Empty extraction and duplicate thread are idempotent | `test_empty_extraction_and_duplicate_thread_candidate_are_idempotent` | Passed and deployed |
 | Application receipt is awareness/suppressed with no individual card | Morning/night brief integration tests and `test_passive_gmail_notification_renders_without_local_controls` | Passed and deployed |
 | Complete invitation creates one inferred, version-bound proposal | `test_complete_inferred_event_becomes_one_version_bound_proposal` | Passed and deployed |
@@ -34,6 +35,8 @@ listed operator-present Discord/Gmail observations.
 | Repeat cancellation and materially unchanged update are no-ops | Semantic supersession integration tests | Passed and deployed |
 | Independent Google edit is recorded as divergence, not overwritten | `test_independent_provider_edit_is_recorded_as_divergence_not_canonical_drift` | Passed and deployed |
 | Related non-event follow-ups consolidate without collapsing unrelated same-title items | Night brief test with explicit `topic_key` correlation | Passed and deployed |
+| Independent same-title event creates do not rebind by title alone | `test_same_title_different_time_create_does_not_rebind_existing_event` | Passed locally; deployment pending |
+| Classifier internals and source identifiers stay out of user cards | `test_complete_inferred_event_becomes_one_version_bound_proposal` renderer assertions | Passed locally; deployment pending |
 
 ## Decisions, conflicts, and execution
 
@@ -41,7 +44,7 @@ listed operator-present Discord/Gmail observations.
 | --- | --- | --- |
 | One inferred approval adopts canonical state and executes once | `test_complete_inferred_event_becomes_one_version_bound_proposal` | Passed and deployed |
 | Explicit no-conflict create executes directly | Explicit standalone lifecycle test | Passed and deployed |
-| Explicit/inferred conflicts remain advisory decision context | Standalone conflict tests and inferred formulation service path | Passed and deployed; inferred live observation pending |
+| Explicit/inferred conflicts remain advisory decision context | Standalone conflict tests and `test_inferred_event_integrates_calendar_conflicts_into_one_proposal` | Passed locally; inferred live observation pending |
 | Keep both preserves both events | `test_non_destructive_conflict_choices_preserve_the_selected_events[keep_both]` | Passed and deployed |
 | Existing event wins performs no proposed-event write | Same parametrized test for `keep_existing` | Passed and deployed |
 | Proposed event wins compiles explicit cancel/create operations | `test_explicit_conflict_resolution_new_wins_runs_a_durable_bundle` | Passed and deployed |
@@ -57,6 +60,7 @@ listed operator-present Discord/Gmail observations.
 | Restart reconciliation repairs stale interactive projections | Same test's `enqueue_stale_projection_repairs` assertions | Passed and deployed |
 | Material semantic change invalidates the old approval and aggregate view | Semantic supersession tests | Passed and deployed |
 | Exhausted projection failure preserves canonical state and alerts system channel | `test_exhausted_projection_reports_one_durable_system_alert` | Passed and deployed |
+| Decision-to-card convergence latency is recorded once at the clicked projection acknowledgement | Carried-forward projection test asserts one `approval.projection_converged` audit event | Passed locally; deployment pending |
 
 ## Daily cadence
 
