@@ -1116,8 +1116,12 @@ def test_reminder_rule_is_idempotent_versioned_disabled_and_audited(session_fact
 
 
 @pytest.mark.integration
-def test_late_calendar_refresh_produces_visibly_late_reminder(session_factory) -> None:
+def test_late_calendar_refresh_produces_visibly_late_reminder(
+    session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     base = datetime.now(UTC).replace(microsecond=0)
+    monkeypatch.setattr("docket.services.reminders.utc_now", lambda: base)
     settings = get_settings().model_copy(update={"calendar_reads_enabled": True})
     account_id = _account(session_factory)
     provider = FakeCalendarProvider()
