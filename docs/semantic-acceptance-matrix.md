@@ -77,21 +77,28 @@ listed operator-present Discord/Gmail observations.
 | Night brief reports outcomes, unresolved work, and awareness without replay | `test_night_brief_consolidates_daytime_action_and_awareness` | Passed and deployed |
 | Delayed classification crosses every published boundary without loss | `test_delayed_candidate_advances_past_every_published_window` | Passed and deployed |
 
-## Live/runtime evidence still required
+## Live/runtime evidence
 
 The isolated live triage profile is deployment-validated against exactly four
 tools. A stale legacy submission allowlist was repaired on 2026-08-26, and a
 controlled pass proved semantic candidates can again be persisted. The
-remaining operator-present evidence is intentionally narrow:
+following content-free production queries provide equivalent authoritative
+evidence for two acceptance items:
 
-1. A routine real receipt produces no actionable card.
-2. A real invitation produces one inferred proposal; a changed follow-up
+* Between `2026-08-26T23:23:45Z` and `2026-08-26T23:24:32Z`, four candidates
+  matching receipt/application-confirmation terminology were durably resolved
+  as `information`; all four have no queue item and therefore no actionable
+  card.
+* The published `morning` brief for 2026-08-26 and `night` brief for 2026-08-25
+  each have exactly one Discord projection and one external Discord message.
+
+The remaining operator-present evidence is intentionally narrow:
+
+1. A real invitation produces one inferred proposal; a changed follow-up
    replaces it rather than creating a second active decision.
-3. A complete natural-language Discord event command executes directly.
-4. An unknown organization triggers one concise registration question and the
+2. A complete natural-language Discord event command executes directly.
+3. An unknown organization triggers one concise registration question and the
    original command resumes after the answer.
-5. One real morning and night boundary each produces no more than its single
-   cohesive brief message.
 
 Do not mark the semantic handoff complete until those observations are recorded
 or equivalent authoritative live evidence exists.
