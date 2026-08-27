@@ -68,12 +68,12 @@ listed operator-present Discord/Gmail observations.
 
 | Requirement | Automated evidence | Current evidence |
 | --- | --- | --- |
-| Overnight actionable cards project immediately while routine awareness stays consolidated | `test_overnight_attention_projects_immediately_and_brief_remains_idempotent` | Passed |
+| Overnight actionable cards project immediately while routine awareness stays consolidated | `test_overnight_attention_projects_immediately_and_brief_remains_idempotent` | Passed and deployed in `2bb2ddc` |
 | Several overnight sources yield exactly one morning message | Same test | Passed and deployed |
 | Morning message navigates separate canonical decisions in place | Same test | Passed and deployed |
 | Overnight noise stays suppressed | Typed-candidate and brief filtering tests | Passed and deployed |
 | One morning/night brief per local date across retries/restarts | Morning/night brief tests and unique database constraints | Passed and deployed |
-| Actionable work projects immediately at every hour | Overnight and night-brief integration tests | Passed |
+| Actionable work projects immediately at every hour | Overnight and night-brief integration tests | Passed and deployed in `2bb2ddc` |
 | Routine daytime awareness stays quiet until closeout | Same test | Passed and deployed |
 | Night brief reports outcomes, unresolved work, and awareness without replay | `test_night_brief_consolidates_daytime_action_and_awareness` | Passed and deployed |
 | Delayed classification crosses every published boundary without loss | `test_delayed_candidate_advances_past_every_published_window` | Passed and deployed |
@@ -116,7 +116,13 @@ acceptance evidence:
   canonical event identity at version 2 with the corrected timing, and exactly
   one pending approval remained. This observation exposed and closed the final
   cadence gap: brief-window membership no longer defers its interactive card.
+* Deployment `2bb2ddc` repaired all three actionable queue items stranded by
+  the former overnight deferral path. Their projection outbox events and
+  Discord cards were delivered, including the surviving invitation proposal.
+  The live cadence is 08:00 through 01:00 waking and 01:00 through 08:00
+  overnight in `America/Los_Angeles`; those intervals now affect brief
+  membership only.
 
-The semantic handoff's operator-present gates are complete. The deferred
-invitation decision remains an ordinary operational item to approve or reject
-from its carried-forward morning card, not an additional implementation gate.
+The semantic handoff's operator-present gates are complete. The surviving
+invitation decision remains an ordinary operational item to approve or reject,
+not an additional implementation gate.
