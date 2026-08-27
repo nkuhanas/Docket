@@ -25,6 +25,9 @@ Start here when operating or changing the deployed stack:
 * [Semantic operations verification](semantic-operations-verification.md) —
   current authority, entity, event-correlation, brief, projection, and alpha
   retirement evidence.
+* [Entity-registry hardening verification](entity-registry-verification.md) —
+  validated profiles, bounded inference, relationship lifecycle, idempotent
+  writes, and deployed MCP evidence.
 * [Production Calendar write-gate verification](calendar-write-gate-verification.md)
   — fail-closed production writes, paused execution, stale rejection, and the
   deployed pending-card state.

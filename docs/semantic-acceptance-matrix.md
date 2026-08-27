@@ -19,11 +19,11 @@ listed operator-present Discord/Gmail observations.
 | Registration and aliases improve later matching | `test_explicit_registration_resolves_an_existing_unknown_mention` and entity registry test | Passed and deployed |
 | Correction/merge preserves relationships and future resolution | Entity registry test | Passed and deployed |
 | No seed list is required | Entity service has no seed path; manual-intent contract forbids seeding | Passed static audit and live organic registration |
-| Known entities are discoverable by name, alias, metadata, operator identity, and directed relationship | `test_entity_profiles_are_patchable_and_searchable_through_relationships` plus MCP contract | Passed locally; deployment pending |
-| Profile edits preserve omitted metadata and require explicit key removal | Same entity profile test | Passed locally; deployment pending |
-| Relationship metadata is versioned, correctable, and retractable without erasing history | `test_entity_relationship_corrections_are_explicit_and_reversible` | Passed locally; deployment pending |
-| Entity writes consume one request key and reject payload reuse | `test_entity_write_consumes_request_key_once` | Passed locally; deployment pending |
-| One typed operator person anchors relational phrases such as “my advisor” | `test_only_one_person_can_be_the_operator` plus manual-intent contract | Passed locally; deployment pending |
+| Known entities are discoverable by name, alias, metadata, operator identity, and directed relationship | `test_entity_profiles_are_patchable_and_searchable_through_relationships` plus MCP contract | Passed and deployed in `02d72e8` |
+| Profile edits preserve omitted metadata and require explicit key removal | Same entity profile test | Passed and deployed in `02d72e8` |
+| Relationship metadata is versioned, correctable, and retractable without erasing history | `test_entity_relationship_corrections_are_explicit_and_reversible` | Passed and deployed in `02d72e8` |
+| Entity writes consume one request key and reject payload reuse | `test_entity_write_consumes_request_key_once` | Passed and deployed in `02d72e8` |
+| One typed operator person anchors relational phrases such as “my advisor” | `test_only_one_person_can_be_the_operator` plus manual-intent contract | Passed and deployed in `02d72e8` |
 
 ## Inferred Gmail semantics and correlation
 
