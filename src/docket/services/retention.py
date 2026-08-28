@@ -152,9 +152,9 @@ class RetentionService:
                     ScheduledNotification.updated_at < diagnostic_cutoff,
                 )
             ))
-            audits = _affected(session.execute(
-                delete(AuditEvent).where(AuditEvent.created_at < ordinary_cutoff)
-            ))
+            # Semantic audit provenance is append-only. Diagnostic retention no longer
+            # deletes AuditEvents after the provenance bootstrap.
+            audits = 0
             counts = {
                 "ignored_sources": ignored_sources,
                 "ordinary_sources": ordinary_sources,

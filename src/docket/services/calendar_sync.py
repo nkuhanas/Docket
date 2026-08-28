@@ -24,6 +24,7 @@ from docket.models import (
     CalendarEventCache,
     CalendarLink,
     CalendarSyncState,
+    CanonicalEvent,
     OutboxEvent,
     ProviderEventBinding,
     ReminderRule,
@@ -823,16 +824,21 @@ class CalendarReadService:
     def get_sync_status(self, account_id: uuid.UUID, calendar_id: str) -> dict[str, Any]:
         self.sync_service.ensure_state(account_id, calendar_id)
         with self.session_factory() as session:
+            account = session.get(Account, account_id)
+            if account is None or account.provider != "google" or not account.enabled:
+                raise DocketError(
+                    code="calendar_account_not_available",
+                    message="The selected Google account is not enabled.",
+                )
             state = session.scalar(
                 select(CalendarSyncState).where(
                     CalendarSyncState.account_id == account_id,
                     CalendarSyncState.calendar_id == calendar_id,
                 )
             )
-            account = session.get(Account, account_id)
-            assert account is not None
             return {
                 "account_id": str(account_id),
+                "account_ref": account.ref_id,
                 "account_label": account.display_name
                 or account.email_address
                 or account.external_account_id,
@@ -852,6 +858,7 @@ class CalendarReadService:
         limit: int,
         freshness: str,
         result_view: str = "occurrences",
+        offset: int = 0,
     ) -> dict[str, Any]:
         as_of = _aware(self.clock()).astimezone(UTC)
         zone = ZoneInfo(self.settings.timezone)
@@ -926,6 +933,12 @@ class CalendarReadService:
         if any((end_local.hour, end_local.minute, end_local.second, end_local.microsecond)):
             end_date += timedelta(days=1)
         with self.session_factory() as session:
+            account = session.get(Account, account_id)
+            if account is None or account.provider != "google" or not account.enabled:
+                raise DocketError(
+                    code="calendar_account_not_available",
+                    message="The selected Google account is not enabled.",
+                )
             state = session.scalar(
                 select(CalendarSyncState).where(
                     CalendarSyncState.account_id == account_id,
@@ -980,9 +993,11 @@ class CalendarReadService:
                     occurrence_counts[identity] = occurrence_counts.get(identity, 0) + 1
                     if occurrence_counts[identity] == 1:
                         collapsed_rows.append(row)
-                selected_rows = collapsed_rows[:limit]
+                total_rows = len(collapsed_rows)
+                selected_rows = collapsed_rows[offset : offset + limit]
             else:
-                selected_rows = rows[:limit]
+                total_rows = len(rows)
+                selected_rows = rows[offset : offset + limit]
             event_ids = {
                 value
                 for row in selected_rows
@@ -999,6 +1014,58 @@ class CalendarReadService:
                 )
             )
             links_by_event = {link.external_event_id: link for link in links}
+            bindings = list(
+                session.scalars(
+                    select(ProviderEventBinding).where(
+                        ProviderEventBinding.account_id == account_id,
+                        ProviderEventBinding.calendar_id == calendar_id,
+                        ProviderEventBinding.provider_event_id.in_(event_ids),
+                    )
+                )
+            )
+            bindings_by_event = {binding.provider_event_id: binding for binding in bindings}
+            canonical_ids = {
+                candidate_id
+                for candidate_id in [
+                    *(link.canonical_event_id for link in links),
+                    *(binding.canonical_event_id for binding in bindings),
+                ]
+                if candidate_id is not None
+            }
+            canonical_by_id = {
+                event.id: event
+                for event in session.scalars(
+                    select(CanonicalEvent).where(CanonicalEvent.id.in_(canonical_ids))
+                )
+            }
+
+            def canonical_projection(row: CalendarEventCache) -> dict[str, Any]:
+                identities = (row.provider_event_id, row.recurring_event_id)
+                canonical_id = next(
+                    (
+                        link.canonical_event_id
+                        for identity in identities
+                        if identity is not None
+                        and (link := links_by_event.get(identity)) is not None
+                        and link.canonical_event_id is not None
+                    ),
+                    None,
+                )
+                if canonical_id is None:
+                    canonical_id = next(
+                        (
+                            binding.canonical_event_id
+                            for identity in identities
+                            if identity is not None
+                            and (binding := bindings_by_event.get(identity)) is not None
+                        ),
+                        None,
+                    )
+                canonical = canonical_by_id.get(canonical_id) if canonical_id is not None else None
+                if canonical is None:
+                    return {}
+                return {"ref": canonical.ref_id, "lane_ref": canonical.lane_ref}
+
             rules = list(
                 session.scalars(
                     select(ReminderRule).where(
@@ -1015,6 +1082,7 @@ class CalendarReadService:
             occurrence_results = [
                 {
                     "provider_event_id": row.provider_event_id,
+                    **canonical_projection(row),
                     "recurring_event_id": row.recurring_event_id,
                     "status": row.status,
                     "summary": row.summary,
@@ -1066,6 +1134,7 @@ class CalendarReadService:
                 result = [
                     {
                         "provider_event_id": row.recurring_event_id or row.provider_event_id,
+                        **canonical_projection(row),
                         "scope": "series" if row.recurring_event_id else "event",
                         "summary": row.summary,
                         "location": row.location,
@@ -1107,6 +1176,7 @@ class CalendarReadService:
             )
             return {
                 "account_id": str(account_id),
+                "account_ref": account.ref_id,
                 "calendar_id": calendar_id,
                 "range_start": start_utc.isoformat(),
                 "range_end": end_utc.isoformat(),
@@ -1119,6 +1189,12 @@ class CalendarReadService:
                 },
                 "result_view": result_view,
                 "events": result,
+                "count": len(result),
+                "total_if_known": total_rows,
+                "truncated": offset + len(result) < total_rows,
+                "cursor": (
+                    str(offset + len(result)) if offset + len(result) < total_rows else None
+                ),
                 "freshness": {**status, "covered": covered},
                 "refresh_pending": bool(
                     freshness == "require_fresh"

@@ -99,10 +99,7 @@ class RecordService:
             select(CommandRequest).where(CommandRequest.request_key == request_key)
         )
         if existing is not None:
-            if (
-                existing.operation_name != operation_name
-                or existing.input_sha256 != input_sha256
-            ):
+            if existing.operation_name != operation_name or existing.input_sha256 != input_sha256:
                 raise IdempotencyConflict(
                     request_key,
                     existing_operation=existing.operation_name,
@@ -300,6 +297,17 @@ class RecordService:
             raise RecordNotFound(str(record_id))
         return record
 
+    def get_by_lookup(self, lookup: str) -> Record:
+        """Resolve a legacy Record without requiring its internal UUID in tool output."""
+        try:
+            record_id = uuid.UUID(lookup)
+        except ValueError:
+            record = self.session.scalar(select(Record).where(Record.canonical_key == lookup))
+            if record is None:
+                raise RecordNotFound(lookup) from None
+            return record
+        return self.get(record_id)
+
     def search(
         self,
         *,
@@ -307,6 +315,7 @@ class RecordService:
         query: str | None = None,
         status: RecordStatus | None = RecordStatus.ACTIVE,
         limit: int = 20,
+        offset: int = 0,
     ) -> list[Record]:
         statement: Select[tuple[Record]] = select(Record)
         if record_type:
@@ -322,7 +331,11 @@ class RecordService:
                 statement = statement.where(
                     or_(Record.title.ilike(pattern), Record.canonical_key.ilike(pattern))
                 )
-        statement = statement.order_by(Record.updated_at.desc()).limit(min(max(limit, 1), 100))
+        statement = (
+            statement.order_by(Record.updated_at.desc())
+            .offset(max(offset, 0))
+            .limit(min(max(limit, 1), 101))
+        )
         return list(self.session.scalars(statement))
 
     def update(self, request: UpdateRecordInput) -> RecordResult:

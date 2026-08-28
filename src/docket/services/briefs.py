@@ -4,18 +4,22 @@ import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from docket.config import Settings, get_settings
 from docket.domain.canonical import sha256_json
 from docket.models import (
+    AttentionCase,
+    AttentionCaseRevision,
     DailyBrief,
+    DailyBriefCaseItem,
     DailyBriefItem,
     OutboxEvent,
     QueueItem,
     SemanticCandidate,
     SourceItem,
+    TriageBriefEntry,
     TriageWindow,
     TriageWindowMembership,
 )
@@ -255,6 +259,59 @@ class DailyBriefService:
                 lines.append(f"• {len(items) - 8} more")
         return "\n".join(lines)
 
+    @staticmethod
+    def _intelligence_section(kind: str, case: AttentionCase) -> str:
+        if kind == "morning":
+            return "Action required" if case.status == "open" else "Resolved"
+        if case.status == "open":
+            return "Still needs you"
+        if case.status == "suppressed":
+            return "Suppressed"
+        return "Completed / resolved"
+
+    @classmethod
+    def _intelligence_summary(
+        cls,
+        *,
+        kind: str,
+        cases: list[AttentionCase],
+        entries: list[TriageBriefEntry],
+        legacy_summary: str,
+    ) -> str:
+        grouped: dict[str, list[str]] = {}
+        for case in cases:
+            grouped.setdefault(cls._intelligence_section(kind, case), []).append(
+                f"{case.title} · {case.ref_id}"
+            )
+        for entry in entries:
+            section = "Suppressed" if entry.disposition == "suppress" else "Awareness"
+            grouped.setdefault(section, []).append(entry.title)
+        if not grouped:
+            return legacy_summary
+        order = (
+            ("Action required", "Awareness", "Resolved", "Suppressed")
+            if kind == "morning"
+            else (
+                "Completed / resolved",
+                "Still needs you",
+                "Awareness",
+                "Suppressed",
+            )
+        )
+        lines = ["Overnight" if kind == "morning" else "Today"]
+        for section in order:
+            labels = grouped.get(section, [])
+            if not labels:
+                continue
+            lines.append(f"{section} ({len(labels)})")
+            lines.extend(f"• {label}" for label in labels[:8])
+            if len(labels) > 8:
+                lines.append(f"• {len(labels) - 8} more")
+        if legacy_summary and "no material changes or open items" not in legacy_summary:
+            lines.extend(("Legacy workflow", legacy_summary))
+        summary = "\n".join(lines)
+        return summary[:2000]
+
     def _publish(self, *, kind: str, local_date: date) -> bool:
         window_kind = "overnight" if kind == "morning" else "waking"
         with self.session_factory.begin() as session:
@@ -296,17 +353,81 @@ class DailyBriefService:
             candidates = [candidate for _membership, candidate in memberships]
             if any(candidate.status in {"pending", "resolving"} for candidate in candidates):
                 return False
-            summary = self._summary(session, kind, candidates)
+            cases = list(
+                session.scalars(
+                    select(AttentionCase)
+                    .where(
+                        or_(
+                            (
+                                (AttentionCase.first_observed_at >= window.starts_at)
+                                & (AttentionCase.first_observed_at < window.ends_at)
+                            ),
+                            (
+                                (AttentionCase.last_observed_at >= window.starts_at)
+                                & (AttentionCase.last_observed_at < window.ends_at)
+                            ),
+                            (
+                                (AttentionCase.resolved_at >= window.starts_at)
+                                & (AttentionCase.resolved_at < window.ends_at)
+                            ),
+                        )
+                    )
+                    .order_by(AttentionCase.first_observed_at, AttentionCase.ref_id)
+                )
+            )
+            entries = list(
+                session.scalars(
+                    select(TriageBriefEntry)
+                    .where(
+                        TriageBriefEntry.created_at >= window.starts_at,
+                        TriageBriefEntry.created_at < window.ends_at,
+                    )
+                    .order_by(TriageBriefEntry.created_at, TriageBriefEntry.ref_id)
+                )
+            )
+            case_revisions: list[tuple[AttentionCase, AttentionCaseRevision]] = []
+            for case in cases:
+                revision = session.scalar(
+                    select(AttentionCaseRevision).where(
+                        AttentionCaseRevision.attention_case_id == case.id,
+                        AttentionCaseRevision.revision == case.latest_revision,
+                    )
+                )
+                if revision is not None:
+                    case_revisions.append((case, revision))
+            summary = self._intelligence_summary(
+                kind=kind,
+                cases=cases,
+                entries=entries,
+                legacy_summary=self._summary(session, kind, candidates),
+            )
+            case_refs = [case.ref_id for case, _revision in case_revisions]
+            basis_refs = list(
+                dict.fromkeys(
+                    [
+                        *(revision.ref_id for _case, revision in case_revisions),
+                        *(entry.ref_id for entry in entries),
+                    ]
+                )
+            )
             brief = DailyBrief(
                 brief_kind=kind,
                 local_date=local_date,
                 window_id=window.id,
                 status="pending",
+                interval_start=window.starts_at,
+                interval_end=window.ends_at,
+                case_refs=case_refs,
+                basis_refs=basis_refs,
                 content_sha256=sha256_json(
                     {
                         "kind": kind,
                         "local_date": local_date.isoformat(),
                         "candidates": [str(candidate.id) for candidate in candidates],
+                        "case_revisions": [
+                            revision.ref_id for _case, revision in case_revisions
+                        ],
+                        "brief_entries": [entry.ref_id for entry in entries],
                         "summary": summary,
                     }
                 ),
@@ -323,6 +444,18 @@ class DailyBriefService:
                         display_order=index,
                     )
                 )
+            for index, (case, revision) in enumerate(case_revisions):
+                session.add(
+                    DailyBriefCaseItem(
+                        brief_id=brief.id,
+                        attention_case_id=case.id,
+                        case_revision_ref=revision.ref_id,
+                        section=self._intelligence_section(kind, case),
+                        display_order=index,
+                    )
+                )
+            for entry in entries:
+                entry.included_brief_ref = brief.ref_id
             queue_item = QueueItem(
                 deduplication_key=f"daily_brief:{kind}:{local_date.isoformat()}",
                 material_fingerprint=brief.content_sha256,
@@ -335,6 +468,7 @@ class DailyBriefService:
                 received_at=utc_now(),
                 resolved_at=utc_now(),
                 resolution_code=f"{kind}_brief_published",
+                daily_brief_ref=brief.ref_id,
             )
             session.add(queue_item)
             session.flush()

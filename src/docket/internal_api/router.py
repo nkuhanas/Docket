@@ -8,7 +8,16 @@ from docket.config import get_settings
 from docket.database import get_session_factory, session_scope
 from docket.domain.errors import DocketError
 from docket.internal_api.auth import require_hermes_service
-from docket.internal_api.schemas import ApprovalResponse, LocalActionResponse, McpTraceUpdate
+from docket.internal_api.schemas import (
+    AgentResponseCapture,
+    AgentResponseDeliveryUpdate,
+    AgentTurnNoResponse,
+    ApprovalResponse,
+    LocalActionResponse,
+    McpTraceUpdate,
+    OperatorUtteranceCapture,
+    SpecificationSignoffCapture,
+)
 from docket.models.base import utc_now
 from docket.providers.google.runtime import get_calendar_read_provider
 from docket.services.approvals import ApprovalService
@@ -16,6 +25,7 @@ from docket.services.calendar_sync import CalendarSyncService
 from docket.services.local_actions import LocalActionService
 from docket.services.mcp_traces import McpTraceService
 from docket.services.proposal_controls import ProposalControlService
+from docket.services.provenance import ProvenanceService
 
 logger = structlog.get_logger(__name__)
 
@@ -132,3 +142,84 @@ def mcp_trace_update(
     assert result is not None
     _wake_projection_worker(request)
     return result
+
+
+@router.post("/operator-utterances")
+def operator_utterance_capture(payload: OperatorUtteranceCapture) -> dict[str, object]:
+    try:
+        with session_scope() as session:
+            return ProvenanceService(session).capture_operator_utterance(payload)
+    except DocketError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.as_dict()["error"],
+        ) from exc
+
+
+@router.post("/specification-signoffs")
+def specification_signoff_capture(payload: SpecificationSignoffCapture) -> dict[str, object]:
+    try:
+        with session_scope() as session:
+            return ProvenanceService(session).record_final_architecture_signoff(payload)
+    except DocketError as exc:
+        error_status = (
+            status.HTTP_404_NOT_FOUND
+            if exc.code == "operator_utterance_not_found"
+            else status.HTTP_409_CONFLICT
+        )
+        raise HTTPException(
+            status_code=error_status,
+            detail=exc.as_dict()["error"],
+        ) from exc
+
+
+@router.post("/agent-responses")
+def agent_response_capture(payload: AgentResponseCapture) -> dict[str, object]:
+    try:
+        with session_scope() as session:
+            return ProvenanceService(session).capture_agent_response(payload)
+    except DocketError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.as_dict()["error"],
+        ) from exc
+
+
+@router.post("/agent-turns/no-response")
+def agent_turn_no_response(payload: AgentTurnNoResponse) -> dict[str, object]:
+    try:
+        with session_scope() as session:
+            return ProvenanceService(session).finalize_agent_turn_without_response(payload)
+    except DocketError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.as_dict()["error"],
+        ) from exc
+
+
+@router.put("/agent-responses/{response_ref}/delivery")
+def agent_response_delivery_update(
+    response_ref: str,
+    payload: AgentResponseDeliveryUpdate,
+) -> dict[str, object]:
+    if response_ref != payload.response_ref:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "agent_response_ref_mismatch",
+                "message": "Path and body response references differ.",
+            },
+        )
+    try:
+        with session_scope() as session:
+            return ProvenanceService(session).update_agent_response_delivery(payload)
+    except DocketError as exc:
+        error_status = (
+            status.HTTP_404_NOT_FOUND
+            if exc.code == "agent_response_not_found"
+            else status.HTTP_409_CONFLICT
+        )
+        raise HTTPException(
+            status_code=error_status,
+            detail=exc.as_dict()["error"],
+        ) from exc

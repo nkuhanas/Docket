@@ -62,6 +62,7 @@ LANE_DEFINITIONS: Final[dict[str, LaneDefinition]] = {
 
 def lane_result(lane: CalendarLane) -> CalendarLaneResult:
     return CalendarLaneResult(
+        ref=lane.ref_id,
         lane_id=lane.id,
         lane=lane.lane,
         display_name=lane.display_name,
@@ -69,6 +70,15 @@ def lane_result(lane: CalendarLane) -> CalendarLaneResult:
         status=lane.status,
         account_id=lane.account_id,
         calendar_id=lane.calendar_id,
+        operator_policy_text=lane.operator_policy_text,
+        metadata_json=lane.metadata_json,
+        enabled=lane.enabled,
+        priority=lane.priority,
+        basis_refs=lane.basis_refs,
+        decision_refs=lane.decision_refs,
+        source_refs=lane.source_refs,
+        created_by_changeset_ref=lane.created_by_changeset_ref,
+        provenance_status=lane.provenance_status,
         version=lane.version,
     )
 
@@ -500,7 +510,9 @@ class CalendarLaneService:
             snapshot = (
                 self._cache_preview(cache)
                 if cache is not None
-                else dict(link.synced_snapshot) if link is not None else {}
+                else dict(link.synced_snapshot)
+                if link is not None
+                else {}
             )
             title = str(snapshot.get("summary") or "Untitled event")
             item_parameters = {
@@ -542,7 +554,9 @@ class CalendarLaneService:
                         "recurrence_kind": (
                             link.recurrence_kind
                             if link is not None
-                            else cache.recurrence_kind if cache is not None else "one_time"
+                            else cache.recurrence_kind
+                            if cache is not None
+                            else "one_time"
                         )
                     },
                 }
@@ -878,11 +892,7 @@ class CalendarLaneService:
 
     def _account(self, account_id: uuid.UUID) -> Account:
         account = self.session.get(Account, account_id)
-        if (
-            account is None
-            or account.provider != "google"
-            or not account.enabled
-        ):
+        if account is None or account.provider != "google" or not account.enabled:
             raise DocketError(
                 code="invalid_account",
                 message="Calendar lanes require an enabled Google Calendar account.",

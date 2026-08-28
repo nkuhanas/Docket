@@ -2,6 +2,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from docket.config import Settings
+from docket.domain.errors import DocketError
 from docket.models import Account
 
 _GOOGLE_CAPABILITIES = ["gmail", "google_calendar"]
@@ -42,3 +43,19 @@ class AccountService:
                 .order_by(Account.created_at)
             )
         )
+
+    def require_google_ref(self, account_ref: str) -> Account:
+        account = self.session.scalar(
+            select(Account).where(
+                Account.ref_id == account_ref,
+                Account.provider == "google",
+                Account.enabled.is_(True),
+            )
+        )
+        if account is None:
+            raise DocketError(
+                code="calendar_account_not_available",
+                message="The selected Google provider-account reference is not enabled.",
+                details={"account_ref": account_ref},
+            )
+        return account

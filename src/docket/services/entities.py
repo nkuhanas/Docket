@@ -502,6 +502,7 @@ class EntityService:
             ):
                 existing.status = "active"
                 existing.authority = authority.value
+                existing.registration_state = "registered"
                 merged_attributes = {**existing.attributes, **attribute_values}
                 self._validate_operator_identity(
                     entity_class=entity_class,
@@ -538,6 +539,12 @@ class EntityService:
             status="provisional" if provisional else "active",
             attributes=attribute_values,
             authority=authority.value,
+            registration_state=(
+                "legacy_candidate"
+                if provisional or authority == IntentAuthority.INFERRED
+                else "registered"
+            ),
+            provenance_status="legacy_preledger",
         )
         self.session.add(entity)
         self.session.flush()

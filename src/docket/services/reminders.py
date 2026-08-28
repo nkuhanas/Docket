@@ -224,11 +224,12 @@ class ReminderRuleService:
         calendar_id: str,
         enabled: bool | None,
         limit: int,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         self._target(account_id, calendar_id)
-        if not 1 <= limit <= 100:
+        if not 1 <= limit <= 101:
             raise DocketError(
-                code="invalid_limit", message="Reminder rule limit must be from 1 to 100."
+                code="invalid_limit", message="Reminder rule limit must be from 1 to 101."
             )
         statement = select(ReminderRule).where(
             ReminderRule.account_id == account_id,
@@ -237,7 +238,9 @@ class ReminderRuleService:
         if enabled is not None:
             statement = statement.where(ReminderRule.enabled.is_(enabled))
         rules = self.session.scalars(
-            statement.order_by(ReminderRule.updated_at.desc(), ReminderRule.id).limit(limit)
+            statement.order_by(ReminderRule.updated_at.desc(), ReminderRule.id)
+            .offset(max(offset, 0))
+            .limit(limit)
         ).all()
         return [serialize_rule(rule) for rule in rules]
 

@@ -19,6 +19,7 @@ from docket.database import (
     get_session_factory,
     session_scope,
 )
+from docket.internal_api.provenance_router import router as provenance_router
 from docket.internal_api.router import router as internal_router
 from docket.mcp import mcp, triage_mcp
 from docket.models import BackupRun, CalendarSyncState, ConnectorCheckpoint
@@ -40,9 +41,11 @@ from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.events import SemanticCandidateCompiler
 from docket.services.gmail_ingestion import GmailIngestionService
 from docket.services.operations import OperationRunner
+from docket.services.provenance import ProvenanceService
 from docket.services.reminders import ReminderDispatcher
 from docket.services.retention import RetentionService
 from docket.services.rollover import RolloverService
+from docket.services.runtime_logs import RuntimeLogService
 from docket.worker import WorkerRuntime
 
 
@@ -140,6 +143,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         create_schema_for_smoke()
     with session_scope() as session:
         AccountService(session).ensure_configured_google(settings)
+        bootstrap_refs = ProvenanceService(session).backfill_bootstrap_authorization()
+        _app.state.provenance_bootstrap_refs = bootstrap_refs
     await worker.start()
     async with mcp.session_manager.run(), triage_mcp.session_manager.run():
         yield
@@ -155,6 +160,7 @@ app = FastAPI(
 )
 app.state.wake_discord_projection = worker.wake_discord_projection
 app.include_router(internal_router)
+app.include_router(provenance_router)
 app.mount("/mcp", mcp.streamable_http_app())
 app.mount("/triage-mcp", triage_mcp.streamable_http_app())
 
@@ -167,6 +173,24 @@ async def protect_mcp(request: Request, call_next: Any) -> Any:
         if not authorization.startswith("Bearer ") or not hmac.compare_digest(
             supplied, settings.docket_to_hermes_token()
         ):
+            try:
+                with session_scope() as session:
+                    RuntimeLogService(session).append(
+                        severity="warning",
+                        component="mcp_auth",
+                        event_code="mcp.authentication_rejected",
+                        message="Rejected an MCP request before caller/profile authentication.",
+                        metadata_json={
+                            "method": request.method,
+                            "profile": (
+                                "triage"
+                                if request.url.path.startswith("/triage-mcp")
+                                else "interactive"
+                            ),
+                        },
+                    )
+            except Exception:
+                structlog.get_logger(__name__).exception("mcp_auth_runtime_log_failed")
             return JSONResponse(
                 status_code=401,
                 content={"error": {"code": "unauthorized", "message": "Invalid MCP token"}},

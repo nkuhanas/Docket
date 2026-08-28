@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
@@ -38,6 +39,10 @@ _ACTION_ORDER = {
 }
 
 
+def _legacy_queue_ref(queue_item_id: uuid.UUID) -> str:
+    return "legacy_queue_" + hashlib.sha256(queue_item_id.bytes).hexdigest()[:26]
+
+
 def local_date_at_rollover(local_date: date, settings: Settings) -> datetime:
     return datetime.combine(
         local_date, time(hour=settings.daily_rollover_hour), tzinfo=ZoneInfo(settings.timezone)
@@ -62,6 +67,7 @@ def serialize_queue_item(session: Session, queue_item: QueueItem) -> dict[str, A
         .order_by(DiscordDailyThread.local_date)
     ).all()
     return {
+        "legacy_queue_ref": _legacy_queue_ref(queue_item.id),
         "queue_item_id": str(queue_item.id),
         "primary_source_item_id": (
             str(queue_item.primary_source_item_id)
@@ -241,6 +247,29 @@ class QueueService:
             )
         return serialize_queue_item(self.session, item)
 
+    def get_by_legacy_ref(self, item_ref: str) -> dict[str, Any]:
+        if not item_ref.startswith("legacy_queue_"):
+            raise DocketError(
+                code="queue_item_not_found",
+                message="The requested legacy queue reference does not exist.",
+                details={"item_ref": item_ref},
+            )
+        item = next(
+            (
+                candidate
+                for candidate in self.session.scalars(select(QueueItem))
+                if _legacy_queue_ref(candidate.id) == item_ref
+            ),
+            None,
+        )
+        if item is None:
+            raise DocketError(
+                code="queue_item_not_found",
+                message="The requested legacy queue reference does not exist.",
+                details={"item_ref": item_ref},
+            )
+        return serialize_queue_item(self.session, item)
+
     def list(
         self,
         *,
@@ -250,9 +279,10 @@ class QueueService:
         priority: str | None = None,
         source_item_id: uuid.UUID | None = None,
         limit: int = 20,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
-        if limit < 1 or limit > 100:
-            raise DocketError(code="invalid_limit", message="Queue limit must be from 1 to 100.")
+        if limit < 1 or limit > 101:
+            raise DocketError(code="invalid_limit", message="Queue limit must be from 1 to 101.")
         statement = select(QueueItem)
         if local_date is not None:
             statement = (
@@ -276,7 +306,9 @@ class QueueService:
             statement = statement.where(QueueItem.primary_source_item_id == source_item_id)
         items = (
             self.session.scalars(
-                statement.order_by(QueueItem.created_at.desc(), QueueItem.id).limit(limit)
+                statement.order_by(QueueItem.created_at.desc(), QueueItem.id)
+                .offset(max(offset, 0))
+                .limit(limit)
             )
             .unique()
             .all()

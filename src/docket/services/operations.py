@@ -170,6 +170,38 @@ class OperationRunner:
             raise DocketError(code="invalid_operation_state", message="Queue item is missing.")
         return revision, action, queue_item
 
+    @staticmethod
+    def _resolved_parameters(
+        session: Session,
+        operation: Operation,
+        revision: ActionRevision,
+    ) -> dict[str, Any]:
+        parameters = dict(revision.parameters)
+        lane_ref = parameters.get("lane_ref")
+        if (
+            operation.originating_changeset_ref is not None
+            and isinstance(lane_ref, str)
+            and not parameters.get("calendar_id")
+            and operation.operation_type
+            in {
+                "calendar_create_event",
+                "calendar_update_event",
+                "calendar_update_reminders",
+                "calendar_cancel_event",
+            }
+        ):
+            lane = session.scalar(
+                select(CalendarLane).where(CalendarLane.ref_id == lane_ref)
+            )
+            if lane is None or lane.status != "active" or lane.calendar_id is None:
+                raise DocketError(
+                    code="calendar_lane_provider_binding_unresolved",
+                    message="Provider event operation is waiting for its lane binding.",
+                    details={"lane_ref": lane_ref},
+                )
+            parameters["calendar_id"] = lane.calendar_id
+        return parameters
+
     def _claim(self, session: Session, *, reconcile: bool) -> ClaimedOperation | None:
         now = utc_now()
         desired_status = (
@@ -217,6 +249,7 @@ class OperationRunner:
         if operation is None:
             return None
         revision, action, queue_item = self._bound_entities(session, operation)
+        parameters = self._resolved_parameters(session, operation, revision)
         lease_token = uuid.uuid4()
         operation.lease_token = lease_token
         operation.leased_until = now + timedelta(seconds=self.lease_seconds)
@@ -245,7 +278,7 @@ class OperationRunner:
             lease_token=lease_token,
             operation_type=operation.operation_type,
             provider_correlation=operation.provider_correlation,
-            parameters=dict(revision.parameters),
+            parameters=parameters,
             attempt_number=attempt.attempt_number,
         )
 
@@ -685,9 +718,11 @@ class OperationRunner:
         operation: Operation,
         attempt: ExecutionAttempt,
         result: CalendarEventResult,
+        *,
+        parameters_override: dict[str, Any] | None = None,
     ) -> None:
         revision, action, queue_item = OperationRunner._bound_entities(session, operation)
-        parameters = revision.parameters
+        parameters = parameters_override or revision.parameters
         link = session.scalar(
             select(CalendarLink).where(
                 CalendarLink.account_id == operation.account_id,
@@ -706,7 +741,12 @@ class OperationRunner:
                     "status": "cancelled",
                 }
             OperationRunner._apply_cancelled_cache(session, operation, result)
-            OperationRunner._activate_reminder_plan(session, operation, result)
+            OperationRunner._activate_reminder_plan(
+                session,
+                operation,
+                result,
+                parameters_override=parameters,
+            )
         else:
             if link is None:
                 classification = revision.preview.get("classification", {})
@@ -767,8 +807,18 @@ class OperationRunner:
                     and parameters.get("canonical_event_id") is not None
                 ):
                     link.canonical_event_id = uuid.UUID(str(parameters["canonical_event_id"]))
-            OperationRunner._upsert_calendar_cache(session, operation, result)
-            OperationRunner._activate_reminder_plan(session, operation, result)
+            OperationRunner._upsert_calendar_cache(
+                session,
+                operation,
+                result,
+                parameters_override=parameters,
+            )
+            OperationRunner._activate_reminder_plan(
+                session,
+                operation,
+                result,
+                parameters_override=parameters,
+            )
         canonical_event_id = parameters.get("canonical_event_id")
         if canonical_event_id is not None:
             canonical_event = session.get(CanonicalEvent, uuid.UUID(str(canonical_event_id)))
@@ -1778,7 +1828,13 @@ class OperationRunner:
                     code="operation_lease_lost",
                     message="Operation lease was lost.",
                 )
-            self._apply_success(session, operation, attempt, result)
+            self._apply_success(
+                session,
+                operation,
+                attempt,
+                result,
+                parameters_override=claim.parameters,
+            )
 
     def finish_gmail_success(
         self,

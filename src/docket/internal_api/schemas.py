@@ -150,6 +150,12 @@ class McpTraceCallUpdate(InternalModel):
     elapsed_ms: int = Field(default=0, ge=0, le=600_000)
     disposition: str | None = Field(default=None, min_length=1, max_length=64)
     error_code: str | None = Field(default=None, min_length=1, max_length=64)
+    received_argument_hash: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
 
     @model_validator(mode="after")
     def validate_terminal_details(self) -> "McpTraceCallUpdate":
@@ -170,6 +176,9 @@ class McpTraceUpdate(InternalModel):
     source_channel_id: str = Field(min_length=1, max_length=64)
     source_message_id: str = Field(min_length=1, max_length=64)
     actor_id: str = Field(min_length=1, max_length=64)
+    tool_contract_version: str = Field(min_length=1, max_length=128)
+    tool_contract_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    caller_profile: Literal["interactive"]
     updated_at: datetime
     turn_status: Literal["running", "completed", "failed", "interrupted"] = "running"
     call: McpTraceCallUpdate | None = None
@@ -179,3 +188,99 @@ class McpTraceUpdate(InternalModel):
         if self.call is None and self.turn_status == "running":
             raise ValueError("a running trace update requires a call")
         return self
+
+
+DiscordSnowflake = str
+
+
+class OperatorUtteranceCapture(InternalModel):
+    request_id: UUID
+    guild_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
+    channel_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
+    parent_channel_id: DiscordSnowflake | None = Field(
+        default=None, pattern=r"^[0-9]{17,20}$"
+    )
+    message_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
+    actor_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
+    reply_to_message_id: DiscordSnowflake | None = Field(
+        default=None, pattern=r"^[0-9]{17,20}$"
+    )
+    verbatim_text: str = Field(max_length=100_000)
+    request_key: str = Field(min_length=8, max_length=512)
+
+    @model_validator(mode="after")
+    def request_key_matches_source(self) -> "OperatorUtteranceCapture":
+        expected = (
+            f"discord:{self.guild_id}:{self.channel_id}:"
+            f"{self.message_id}:0"
+        )
+        if self.request_key != expected:
+            raise ValueError("request_key must match the Discord message binding")
+        return self
+
+
+class AgentResponseCapture(InternalModel):
+    request_id: UUID
+    guild_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
+    channel_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
+    parent_channel_id: DiscordSnowflake | None = Field(
+        default=None, pattern=r"^[0-9]{17,20}$"
+    )
+    source_message_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
+    actor_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
+    utterance_ref: str = Field(pattern=r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")
+    turn_id: str = Field(min_length=1, max_length=255)
+    session_id: str = Field(min_length=1, max_length=255)
+    model_identifier: str = Field(min_length=1, max_length=255)
+    verbatim_text: str = Field(min_length=1, max_length=100_000)
+    generated_at: datetime
+    trace_id: UUID
+
+
+class AgentTurnNoResponse(InternalModel):
+    request_id: UUID
+    guild_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
+    channel_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
+    parent_channel_id: DiscordSnowflake | None = Field(
+        default=None, pattern=r"^[0-9]{17,20}$"
+    )
+    source_message_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
+    actor_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
+    utterance_ref: str = Field(pattern=r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")
+    turn_id: str = Field(min_length=1, max_length=255)
+    session_id: str = Field(min_length=1, max_length=255)
+    trace_id: UUID
+
+
+class AgentResponseDeliveryUpdate(InternalModel):
+    request_id: UUID
+    response_ref: str = Field(pattern=r"^rsp_[0-9A-HJKMNP-TV-Z]{26}$")
+    guild_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
+    channel_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
+    parent_channel_id: DiscordSnowflake | None = Field(
+        default=None, pattern=r"^[0-9]{17,20}$"
+    )
+    source_message_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
+    actor_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
+    outcome: Literal["delivered", "failed"]
+    completed_at: datetime
+    error_code: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def delivery_error_matches_outcome(self) -> "AgentResponseDeliveryUpdate":
+        if self.outcome == "delivered" and self.error_code is not None:
+            raise ValueError("delivered responses omit error_code")
+        if self.outcome == "failed" and self.error_code is None:
+            raise ValueError("failed responses require error_code")
+        return self
+
+
+class SpecificationSignoffCapture(InternalModel):
+    request_id: UUID
+    utterance_ref: str = Field(pattern=r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")
+    document_ref: Literal["ONT-DELTA-2026-08-27"]
+    frozen_artifact_hash: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )

@@ -240,12 +240,21 @@ class DiscordProjectionRunner:
                 projection = DiscordProjection(
                     queue_item_id=queue_item.id,
                     daily_thread_id=daily_thread.id,
+                    primary_public_ref=(
+                        queue_item.attention_case_ref or queue_item.daily_brief_ref
+                    ),
+                    primary_revision_ref=queue_item.attention_case_revision_ref,
                     render_sha256="0" * 64,
                     component_sha256="0" * 64,
                     status="pending",
                 )
                 session.add(projection)
                 session.flush()
+            else:
+                projection.primary_public_ref = (
+                    queue_item.attention_case_ref or queue_item.daily_brief_ref
+                )
+                projection.primary_revision_ref = queue_item.attention_case_revision_ref
             event.payload = {
                 **event.payload,
                 "projection_id": str(projection.id),
@@ -2249,12 +2258,21 @@ class DiscordProjectionRunner:
                 else _aware(queue_item.created_at).astimezone(UTC).isoformat()
             ),
             "footer": self._bounded(
-                (
-                    f"Docket · Revision {revision.revision}"
-                    if revision is not None
-                    and approval is not None
-                    and approval.status == ApprovalStatus.PENDING.value
-                    else "Docket"
+                " · ".join(
+                    part
+                    for part in (
+                        "Docket",
+                        projection.primary_public_ref,
+                        projection.primary_revision_ref,
+                        (
+                            f"Revision {revision.revision}"
+                            if revision is not None
+                            and approval is not None
+                            and approval.status == ApprovalStatus.PENDING.value
+                            else None
+                        ),
+                    )
+                    if part is not None
                 ),
                 512,
             ),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -10,51 +11,21 @@ from docket.config import get_settings
 from docket.domain.enums import OutboxStatus
 from docket.domain.errors import DocketError
 from docket.internal_api.schemas import McpTraceCallUpdate, McpTraceUpdate
-from docket.models import DiscordDailyThread, DiscordMcpTrace, OutboxEvent
+from docket.models import (
+    DiscordDailyThread,
+    DiscordMcpTrace,
+    OperatorUtterance,
+    OutboxEvent,
+    ToolInvocation,
+)
 from docket.models.base import utc_now
+from docket.tool_contracts import CONTRACT_VERSION, contract_hash, contract_tool_names
 
 MCP_TRACE_NAMESPACE = uuid.UUID("326f8ee5-f0d5-4d08-b777-31dbac1f8265")
 MAX_TRACE_CALLS = 100
 VISIBLE_TRACE_CALLS = 20
 
-DOCKET_MCP_TOOL_NAMES = frozenset(
-    {
-        "docket_add_entity_alias",
-        "docket_apply_calendar_intent",
-        "docket_archive_record",
-        "docket_create_entity",
-        "docket_configure_calendar_lane",
-        "docket_delete_calendar_lane",
-        "docket_get_action",
-        "docket_get_calendar_profile",
-        "docket_get_calendar_sync_status",
-        "docket_get_entity",
-        "docket_get_queue_item",
-        "docket_get_record",
-        "docket_ignore_queue_item",
-        "docket_list_accounts",
-        "docket_list_calendar_lanes",
-        "docket_list_calendar_events",
-        "docket_list_queue_items",
-        "docket_list_reminder_rules",
-        "docket_merge_entities",
-        "docket_migrate_calendar_events",
-        "docket_apply_course_intent",
-        "docket_rebind_entity_resolution",
-        "docket_relate_entities",
-        "docket_retract_entity_relation",
-        "docket_resolve_entity",
-        "docket_restore_record",
-        "docket_search_records",
-        "docket_search_entities",
-        "docket_set_calendar_profile",
-        "docket_snooze_queue_item",
-        "docket_store_record",
-        "docket_update_record",
-        "docket_update_entity",
-        "docket_update_entity_relation",
-    }
-)
+DOCKET_MCP_TOOL_NAMES = contract_tool_names("interactive")
 TRACE_DISPOSITIONS = frozenset(
     {
         "archived",
@@ -134,6 +105,15 @@ class McpTraceService:
             raise DocketError(
                 code="invalid_mcp_trace_context",
                 message="The MCP trace source message identifier is malformed.",
+            )
+        if (
+            request.caller_profile != "interactive"
+            or request.tool_contract_version != CONTRACT_VERSION
+            or request.tool_contract_hash != contract_hash("interactive")
+        ):
+            raise DocketError(
+                code="invalid_tool_contract",
+                message="The MCP trace is not bound to the repository interactive contract.",
             )
 
     @staticmethod
@@ -230,6 +210,53 @@ class McpTraceService:
         trace.calls = calls
         return True
 
+    def _link_tool_invocation(
+        self,
+        trace: DiscordMcpTrace,
+        call: McpTraceCallUpdate,
+        now: datetime,
+    ) -> str | None:
+        existing = self.session.scalar(
+            select(ToolInvocation).where(
+                ToolInvocation.trace_id == trace.id,
+                ToolInvocation.trace_call_id == call.call_id,
+            )
+        )
+        if existing is not None:
+            return existing.ref_id
+        if call.received_argument_hash is None:
+            return None
+        invocation = self.session.scalar(
+            select(ToolInvocation)
+            .where(
+                ToolInvocation.caller_profile == "interactive",
+                ToolInvocation.tool_name == call.tool_name,
+                ToolInvocation.received_argument_hash == call.received_argument_hash,
+                ToolInvocation.trace_id.is_(None),
+                ToolInvocation.started_at >= now - timedelta(minutes=10),
+            )
+            .order_by(ToolInvocation.started_at.desc())
+            .limit(1)
+            .with_for_update()
+        )
+        if invocation is None:
+            return None
+        source_message_ref = (
+            f"discord_message:{trace.guild_id}:{trace.source_channel_id}:"
+            f"{trace.source_message_id}"
+        )
+        utterance = self.session.scalar(
+            select(OperatorUtterance).where(
+                OperatorUtterance.source_message_ref == source_message_ref
+            )
+        )
+        invocation.trace_id = trace.id
+        invocation.trace_call_id = call.call_id
+        invocation.trace_ordinal = call.ordinal
+        invocation.actor_ref = f"discord_user:{trace.actor_id}"
+        invocation.utterance_refs = [utterance.ref_id] if utterance is not None else []
+        return invocation.ref_id
+
     @staticmethod
     def _finish_running_calls(trace: DiscordMcpTrace) -> bool:
         changed = False
@@ -262,6 +289,9 @@ class McpTraceService:
                 source_channel_id=request.source_channel_id,
                 source_message_id=request.source_message_id,
                 actor_id=request.actor_id,
+                tool_contract_version=request.tool_contract_version,
+                tool_contract_hash=request.tool_contract_hash,
+                caller_profile=request.caller_profile,
                 status="running",
                 calls=[],
                 last_ordinal=0,
@@ -275,6 +305,9 @@ class McpTraceService:
             or trace.source_channel_id != request.source_channel_id
             or trace.source_message_id != request.source_message_id
             or trace.actor_id != request.actor_id
+            or trace.tool_contract_version != request.tool_contract_version
+            or trace.tool_contract_hash != request.tool_contract_hash
+            or trace.caller_profile != request.caller_profile
         ):
             raise DocketError(
                 code="mcp_trace_binding_mismatch",
@@ -282,8 +315,10 @@ class McpTraceService:
             )
 
         changed = False
+        tool_call_ref: str | None = None
         if request.call is not None:
             changed = self._apply_call(trace, request.call)
+            tool_call_ref = self._link_tool_invocation(trace, request.call, now)
         if request.turn_status != "running":
             target_status = request.turn_status
             if trace.status == "running":
@@ -325,4 +360,5 @@ class McpTraceService:
             "trace_status": trace.status,
             "trace_version": trace.version,
             "disposition": "updated",
+            "tool_call_ref": tool_call_ref,
         }
