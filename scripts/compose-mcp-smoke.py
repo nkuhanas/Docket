@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import uuid
 from pathlib import Path
 
 import httpx
@@ -11,52 +12,45 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 EXPECTED_TOOLS = {
-    "docket_add_entity_alias",
-    "docket_create_entity",
-    "docket_store_record",
     "docket_get_record",
     "docket_search_records",
-    "docket_update_record",
-    "docket_archive_record",
-    "docket_restore_record",
     "docket_list_accounts",
     "docket_list_calendar_lanes",
-    "docket_configure_calendar_lane",
-    "docket_delete_calendar_lane",
     "docket_list_calendar_events",
     "docket_get_calendar_sync_status",
     "docket_get_calendar_profile",
-    "docket_get_entity",
-    "docket_set_calendar_profile",
     "docket_list_reminder_rules",
-    "docket_migrate_calendar_events",
-    "docket_merge_entities",
-    "docket_apply_calendar_intent",
-    "docket_apply_course_intent",
-    "docket_rebind_entity_resolution",
-    "docket_relate_entities",
-    "docket_retract_entity_relation",
-    "docket_resolve_entity",
-    "docket_search_entities",
     "docket_list_queue_items",
     "docket_get_queue_item",
-    "docket_snooze_queue_item",
-    "docket_ignore_queue_item",
-    "docket_get_action",
-    "docket_update_entity",
-    "docket_update_entity_relation",
+    "docket_get_triage_case",
+    "docket_search_history",
+    "docket_get_history_entry",
+    "docket_get_conflict",
+    "docket_get_intent_session",
+    "docket_get_network_neighborhood",
+    "docket_get_organization_context",
+    "docket_get_person_context",
+    "docket_network_search",
+    "docket_query_people",
+    "docket_commit_changeset",
+    "docket_resolve_conflict",
 }
 EXPECTED_TRIAGE_TOOLS = {
-    "docket_claim_triage_batch",
-    "docket_read_claimed_source",
-    "docket_search_related_records",
-    "docket_submit_semantic_candidates",
+    "docket_get_triage_context",
+    "docket_submit_triage_analysis",
+    "docket_get_triage_case",
+    "docket_apply_existing_suppression",
 }
 
 
 def _token() -> str:
     credentials_dir = Path(os.environ.get("DOCKET_CREDENTIALS_DIR", "secrets/smoke"))
     return (credentials_dir / "docket_to_hermes_token").read_text(encoding="utf-8").strip()
+
+
+def _service_token() -> str:
+    credentials_dir = Path(os.environ.get("DOCKET_CREDENTIALS_DIR", "secrets/smoke"))
+    return (credentials_dir / "hermes_to_docket_token").read_text(encoding="utf-8").strip()
 
 
 async def smoke() -> None:
@@ -82,6 +76,28 @@ async def smoke() -> None:
         provider.raise_for_status()
         assert provider.json()["status"] == "ok"
 
+        async with httpx.AsyncClient(
+            headers={"Authorization": f"Bearer {_service_token()}"},
+            timeout=15,
+        ) as service_client:
+            utterance = await service_client.post(
+                f"{base_url}/internal/v1/discord/operator-utterances",
+                json={
+                    "request_id": str(uuid.uuid4()),
+                    "guild_id": "000000000000000002",
+                    "channel_id": "000000000000000003",
+                    "message_id": "999999999999999999",
+                    "actor_id": "000000000000000001",
+                    "verbatim_text": "Store the dummy Compose smoke term.",
+                    "request_key": (
+                        "discord:000000000000000002:000000000000000003:"
+                        "999999999999999999:0"
+                    ),
+                },
+            )
+            utterance.raise_for_status()
+            assert utterance.json()["ref"].startswith("utt_")
+
         async with streamable_http_client(f"{base_url}/mcp/", http_client=client) as streams:
             read_stream, write_stream, _ = streams
             async with ClientSession(read_stream, write_stream) as session:
@@ -90,45 +106,9 @@ async def smoke() -> None:
                 names = {tool.name for tool in tools.tools}
                 assert names == EXPECTED_TOOLS, names
 
-                stored = await session.call_tool(
-                    "docket_store_record",
-                    {
-                        "record_type": "term",
-                        "canonical_identity": {
-                            "institution": "Docket Smoke University",
-                            "term_name": "Fall 2099",
-                        },
-                        "title": "Fall 2099",
-                        "data": {
-                            "institution": "Docket Smoke University",
-                            "term_name": "Fall 2099",
-                            "start_date": "2099-08-24",
-                            "end_date": "2099-12-18",
-                            "timezone": "America/Los_Angeles",
-                            "notes": "Dummy Compose smoke record",
-                        },
-                        "request_key": (
-                            "discord:000000000000000002:000000000000000003:999999999999999999:0"
-                        ),
-                        "source": {
-                            "source_type": "discord_message",
-                            "source_object_id": "999999999999999999",
-                            "metadata": {
-                                "guild_id": "000000000000000002",
-                                "channel_id": "000000000000000003",
-                                "message_id": "999999999999999999",
-                                "user_id": "000000000000000001",
-                                "intent_index": 0,
-                            },
-                        },
-                        "actor_id": "000000000000000001",
-                    },
-                )
-                assert not stored.isError, stored
-
                 searched = await session.call_tool(
-                    "docket_search_records",
-                    {"record_type": "term", "query": "Fall 2099", "limit": 5},
+                    "docket_search_history",
+                    {"object_type": "operator_utterance", "limit": 5},
                 )
                 assert not searched.isError, searched
 
@@ -145,7 +125,7 @@ async def smoke() -> None:
 
     print(
         "Compose MCP smoke passed: dummy provider, auth, isolated allowlists, "
-        "create, and search"
+        "provenance capture, and bounded history search"
     )
 
 

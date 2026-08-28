@@ -4,7 +4,6 @@ from collections.abc import Callable
 from datetime import date, datetime
 from typing import Annotated, Any, Literal
 
-from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field
 from sqlalchemy import select
@@ -14,8 +13,10 @@ from docket.database import get_session_factory, session_scope
 from docket.domain.canonical import sha256_json
 from docket.domain.enums import CommandStatus, IntentAuthority, RecordStatus
 from docket.domain.errors import DocketError, IdempotencyConflict
-from docket.models import CommandRequest
+from docket.mcp.instrumented import ProvenanceFastMCP
+from docket.models import CommandRequest, SourceItem
 from docket.models.base import utc_now
+from docket.providers.google.gmail_runtime import get_gmail_read_provider
 from docket.providers.google.runtime import get_calendar_read_provider
 from docket.schemas.actions import (
     CalendarEventProposal,
@@ -25,6 +26,15 @@ from docket.schemas.actions import (
     ProposalResult,
     ProposeCalendarEventInput,
     ProposeCourseReconciliationInput,
+)
+from docket.schemas.authority import (
+    ChangeSetContent,
+    ConflictRef,
+    SessionRef,
+    StatementInput,
+    StatementRef,
+    StatementRelationInput,
+    UtteranceRef,
 )
 from docket.schemas.calendar import (
     CalendarEventResultView,
@@ -49,6 +59,7 @@ from docket.schemas.entities import (
     EntityRelationDirection,
     EntitySearchStatus,
 )
+from docket.schemas.intelligence import SourceRef
 from docket.schemas.queue import (
     IgnoreQueueItemInput,
     QueuePriority,
@@ -72,6 +83,7 @@ from docket.schemas.records import (
     UpdateRecordInput,
     validate_discord_request_fields,
 )
+from docket.schemas.registry import EntityRef
 from docket.schemas.triage import EntityClass
 from docket.services.accounts import AccountService
 from docket.services.action_read import ActionReadService
@@ -79,15 +91,22 @@ from docket.services.calendar_actions import CalendarActionService
 from docket.services.calendar_lanes import CalendarLaneService
 from docket.services.calendar_profile import CalendarProfileService
 from docket.services.calendar_sync import CalendarReadService, CalendarSyncService
+from docket.services.conflicts import ConflictService
 from docket.services.course_reconciliation import CourseReconciliationService
 from docket.services.entities import EntityService
+from docket.services.history import HistoryService
+from docket.services.intelligence import IntelligenceService
+from docket.services.intent_sessions import IntentSessionService
+from docket.services.interactive_authority import InteractiveAuthorityService
+from docket.services.network import NetworkQueryService
 from docket.services.queue import QueueService
 from docket.services.records import RecordService, serialize_record
 from docket.services.reminders import ReminderRuleService
 from docket.services.source_context import validate_configured_discord_source
 
-mcp = FastMCP(
+mcp = ProvenanceFastMCP(
     "docket",
+    caller_profile="interactive",
     stateless_http=True,
     json_response=True,
     streamable_http_path="/",
@@ -109,6 +128,24 @@ ActionWaitSeconds = Annotated[float, Field(ge=0, le=30)]
 EntitySearchQuery = Annotated[str, Field(min_length=1, max_length=256)]
 EntitySearchLimit = Annotated[int, Field(ge=1, le=50)]
 EntityRetractionReason = Annotated[str, Field(min_length=1, max_length=1000)]
+HistoryView = Literal["summary", "audit"]
+
+
+def _offset_cursor(cursor: str | None) -> int:
+    try:
+        offset = int(cursor or "0")
+    except ValueError as exc:
+        raise DocketError(
+            code="invalid_cursor", message="Cursor must be a non-negative offset."
+        ) from exc
+    if offset < 0:
+        raise DocketError(code="invalid_cursor", message="Cursor must be a non-negative offset.")
+    return offset
+
+
+NetworkLimit = Annotated[int, Field(ge=1, le=100)]
+NetworkDepth = Annotated[int, Field(ge=1, le=3)]
+NetworkNodeLimit = Annotated[int, Field(ge=1, le=100)]
 
 
 def _error(exc: Exception) -> dict[str, Any]:
@@ -235,7 +272,6 @@ def _execute_entity_write(
     return result
 
 
-@mcp.tool()
 def docket_resolve_entity(
     entity_class: EntityClass,
     mention: EntityName,
@@ -452,7 +488,6 @@ def docket_relate_entities(
         return _error(exc)
 
 
-@mcp.tool()
 def docket_get_entity(entity_id: uuid.UUID) -> dict[str, Any]:
     """Read one exact entity with its aliases and active directional relationships.
 
@@ -467,7 +502,6 @@ def docket_get_entity(entity_id: uuid.UUID) -> dict[str, Any]:
         return _error(exc)
 
 
-@mcp.tool()
 def docket_search_entities(
     query: EntitySearchQuery | None = None,
     entity_class: EntityClass | None = None,
@@ -690,11 +724,11 @@ def docket_store_record(
 
 
 @mcp.tool()
-def docket_get_record(record_id: str) -> dict[str, Any]:
-    """Read exact canonical Docket state by UUID; this read-only tool persists no source."""
+def docket_get_record(record_key: str) -> dict[str, Any]:
+    """Read one exact legacy Record by its canonical key or compatibility UUID."""
     try:
         with session_scope() as session:
-            record = RecordService(session).get(uuid.UUID(record_id))
+            record = RecordService(session).get_by_lookup(record_key)
             return {"ok": True, "record": serialize_record(record)}
     except Exception as exc:
         return _error(exc)
@@ -705,7 +739,8 @@ def docket_search_records(
     record_type: RecordType | None = None,
     query: str | None = None,
     status: str = "active",
-    limit: int = 20,
+    cursor: str | None = None,
+    limit: int = 25,
 ) -> dict[str, Any]:
     """Search exact canonical Docket records before answering operational facts.
 
@@ -714,14 +749,25 @@ def docket_search_records(
     """
     try:
         record_status = RecordStatus(status)
+        offset = _offset_cursor(cursor)
         with session_scope() as session:
             records = RecordService(session).search(
                 record_type=record_type,
                 query=query,
                 status=record_status,
-                limit=limit,
+                limit=limit + 1,
+                offset=offset,
             )
-            return {"ok": True, "records": [serialize_record(record) for record in records]}
+            truncated = len(records) > limit
+            page = records[:limit]
+            return {
+                "ok": True,
+                "records": [serialize_record(record) for record in page],
+                "count": len(page),
+                "total_if_known": offset + len(page) if not truncated else None,
+                "truncated": truncated,
+                "cursor": str(offset + len(page)) if truncated else None,
+            }
     except Exception as exc:
         return _error(exc)
 
@@ -832,7 +878,7 @@ def docket_list_accounts() -> dict[str, Any]:
                 "ok": True,
                 "accounts": [
                     {
-                        "account_id": str(account.id),
+                        "ref": account.ref_id,
                         "provider": account.provider,
                         "external_account_id": account.external_account_id,
                         "display_name": account.display_name,
@@ -852,7 +898,7 @@ def docket_list_accounts() -> dict[str, Any]:
 
 
 @mcp.tool()
-def docket_list_calendar_lanes(account_id: uuid.UUID) -> dict[str, Any]:
+def docket_list_calendar_lanes(account_ref: SourceRef) -> dict[str, Any]:
     """List every configured Calendar lane and its provisioning state.
 
     This read is the authoritative source for Calendar destination selection. Academic,
@@ -864,7 +910,8 @@ def docket_list_calendar_lanes(account_id: uuid.UUID) -> dict[str, Any]:
     """
     try:
         with session_scope() as session:
-            lanes = CalendarLaneService(session, get_settings()).list_lanes(account_id)
+            account = AccountService(session).require_google_ref(account_ref)
+            lanes = CalendarLaneService(session, get_settings()).list_lanes(account.id)
             return {
                 "ok": True,
                 "calendar_lanes": [
@@ -1018,13 +1065,14 @@ def _refresh_active_calendar_lanes(account_id: uuid.UUID) -> None:
 
 @mcp.tool()
 def docket_list_calendar_events(
-    account_id: uuid.UUID,
+    account_ref: SourceRef,
     calendar_id: CalendarId,
     start: datetime | None = None,
     end: datetime | None = None,
     relative_day: CalendarRelativeDay | None = None,
     text_filter: CalendarTextFilter | None = None,
-    limit: CalendarLimit = 100,
+    cursor: str | None = None,
+    limit: CalendarLimit = 25,
     freshness: CalendarFreshness = "prefer_cache",
     result_view: CalendarEventResultView = "occurrences",
 ) -> dict[str, Any]:
@@ -1048,6 +1096,9 @@ def docket_list_calendar_events(
     and scope per recurring series or one-time event instead of every occurrence.
     """
     try:
+        offset = _offset_cursor(cursor)
+        with session_scope() as session:
+            account_id = AccountService(session).require_google_ref(account_ref).id
         request = CalendarLookupInput(
             account_id=account_id,
             calendar_id=calendar_id,
@@ -1068,6 +1119,7 @@ def docket_list_calendar_events(
             text_filter=request.text_filter,
             limit=request.limit,
             freshness=request.freshness,
+            offset=offset,
         )
         return {"ok": True, **result}
     except Exception as exc:
@@ -1076,13 +1128,15 @@ def docket_list_calendar_events(
 
 @mcp.tool()
 def docket_get_calendar_sync_status(
-    account_id: uuid.UUID, calendar_id: CalendarId
+    account_ref: SourceRef, calendar_id: CalendarId
 ) -> dict[str, Any]:
     """Return bounded Calendar-cache coverage, freshness, and a stable sync error code.
 
     This read never exposes credentials, provider cursors, or snapshot-generation IDs.
     """
     try:
+        with session_scope() as session:
+            account_id = AccountService(session).require_google_ref(account_ref).id
         result = _calendar_read_service().get_sync_status(account_id, calendar_id)
         return {"ok": True, "calendar_sync": result}
     except Exception as exc:
@@ -1137,10 +1191,11 @@ def docket_set_calendar_profile(
 
 @mcp.tool()
 def docket_list_reminder_rules(
-    account_id: uuid.UUID,
+    account_ref: SourceRef,
     calendar_id: CalendarId,
     enabled: bool | None = None,
-    limit: CalendarLimit = 100,
+    cursor: str | None = None,
+    limit: CalendarLimit = 25,
 ) -> dict[str, Any]:
     """List bounded canonical reminder rules for the configured Calendar target.
 
@@ -1149,14 +1204,30 @@ def docket_list_reminder_rules(
     never schedules, changes, disables, or sends a notification.
     """
     try:
+        offset = _offset_cursor(cursor)
         with session_scope() as session:
+            account_id = AccountService(session).require_google_ref(account_ref).id
             rules = ReminderRuleService(session).list(
                 account_id=account_id,
                 calendar_id=calendar_id,
                 enabled=enabled,
-                limit=limit,
+                limit=limit + 1,
+                offset=offset,
             )
-            return {"ok": True, "reminder_rules": rules}
+            lane = CalendarLaneService(session, get_settings()).require_active(
+                account_id, calendar_id=calendar_id
+            )
+            rules = [{**rule, "lane_ref": lane.ref_id, "legacy": True} for rule in rules]
+            truncated = len(rules) > limit
+            page = rules[:limit]
+            return {
+                "ok": True,
+                "reminder_rules": page,
+                "count": len(page),
+                "total_if_known": offset + len(page) if not truncated else None,
+                "truncated": truncated,
+                "cursor": str(offset + len(page)) if truncated else None,
+            }
     except Exception as exc:
         return _error(exc)
 
@@ -1270,33 +1341,60 @@ def docket_list_queue_items(
     category: str | None = None,
     local_date: date | None = None,
     priority: QueuePriority | None = None,
-    source_item_id: uuid.UUID | None = None,
-    limit: int = 20,
+    source_ref: SourceRef | None = None,
+    cursor: str | None = None,
+    limit: int = 25,
 ) -> dict[str, Any]:
     """List bounded canonical queue state; Discord cards are only projections of it."""
     try:
+        offset = _offset_cursor(cursor)
         with session_scope() as session:
+            source_item_id = None
+            if source_ref is not None:
+                source_item_id = session.scalar(
+                    select(SourceItem.id).where(SourceItem.ref_id == source_ref)
+                )
+                if source_item_id is None:
+                    raise DocketError(
+                        code="source_not_found",
+                        message="The requested source reference does not exist.",
+                        details={"source_ref": source_ref},
+                    )
             items = QueueService(session).list(
                 status=status,
                 category=category,
                 local_date=local_date,
                 priority=priority,
                 source_item_id=source_item_id,
-                limit=limit,
+                limit=limit + 1,
+                offset=offset,
             )
-            return {"ok": True, "queue_items": items}
+            truncated = len(items) > limit
+            page = items[:limit]
+            return {
+                "ok": True,
+                "queue_items": page,
+                "count": len(page),
+                "total_if_known": offset + len(page) if not truncated else None,
+                "truncated": truncated,
+                "cursor": str(offset + len(page)) if truncated else None,
+            }
     except Exception as exc:
         return _error(exc)
 
 
 @mcp.tool()
-def docket_get_queue_item(queue_item_id: str) -> dict[str, Any]:
-    """Get canonical queue state, lifecycle fields, and dated projection identities."""
+def docket_get_queue_item(item_ref: str) -> dict[str, Any]:
+    """Read an exact legacy queue item, or route a case_ ref to AttentionCase context."""
     try:
         with session_scope() as session:
+            if item_ref.startswith("case_"):
+                return IntelligenceService(
+                    get_session_factory(), get_gmail_read_provider()
+                ).get_case(item_ref)
             return {
                 "ok": True,
-                "queue_item": QueueService(session).get(uuid.UUID(queue_item_id)),
+                "queue_item": QueueService(session).get_by_legacy_ref(item_ref),
             }
     except Exception as exc:
         return _error(exc)
@@ -1402,3 +1500,344 @@ def docket_get_action(
             time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
     except Exception as exc:
         return _error(exc)
+
+
+@mcp.tool()
+def docket_network_search(
+    query: EntitySearchQuery,
+    entity_kinds: list[
+        Literal[
+            "person",
+            "organization",
+            "institution",
+            "place",
+            "course",
+            "course_section",
+            "project",
+        ]
+    ]
+    | None = None,
+    cursor: str | None = None,
+    limit: NetworkLimit = 25,
+) -> dict[str, Any]:
+    """Search registered context-graph entities and aliases with compact summaries."""
+    try:
+        with session_scope() as session:
+            return NetworkQueryService(session).network_search(
+                query=query,
+                entity_kinds=list(entity_kinds) if entity_kinds is not None else None,
+                cursor=cursor,
+                limit=limit,
+            )
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_get_person_context(person_ref: EntityRef) -> dict[str, Any]:
+    """Read bounded identity, graph context, history, and provenance for one Person."""
+    try:
+        with session_scope() as session:
+            return NetworkQueryService(session).person_context(person_ref)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_get_organization_context(organization_ref: EntityRef) -> dict[str, Any]:
+    """Read bounded hierarchy, people, interactions, and routing context for one org."""
+    try:
+        with session_scope() as session:
+            return NetworkQueryService(session).organization_context(organization_ref)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_query_people(
+    affiliated_with: EntityRef | None = None,
+    shares_course_with_operator: bool = False,
+    known_through: str | None = None,
+    relationship_type: str | None = None,
+    current_role: str | None = None,
+    interaction_recency_days: Annotated[int, Field(ge=0, le=36500)] | None = None,
+    fact_constraints: dict[str, Any] | None = None,
+    cursor: str | None = None,
+    limit: NetworkLimit = 25,
+) -> dict[str, Any]:
+    """Run bounded structured queries over registered People and their graph context."""
+    try:
+        with session_scope() as session:
+            return NetworkQueryService(session).query_people(
+                affiliated_with=affiliated_with,
+                shares_course_with_operator=shares_course_with_operator,
+                known_through=known_through,
+                relationship_type=relationship_type,
+                current_role=current_role,
+                interaction_recency_days=interaction_recency_days,
+                fact_constraints=fact_constraints or {},
+                cursor=cursor,
+                limit=limit,
+            )
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_get_network_neighborhood(
+    root_ref: EntityRef,
+    depth: NetworkDepth = 2,
+    max_nodes: NetworkNodeLimit = 100,
+) -> dict[str, Any]:
+    """Traverse a bounded registered graph neighborhood to a hard maximum depth of 3."""
+    try:
+        with session_scope() as session:
+            return NetworkQueryService(session).neighborhood(
+                root_ref=root_ref,
+                depth=depth,
+                max_nodes=max_nodes,
+            )
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_search_history(
+    object_type: str | None = None,
+    ref: str | None = None,
+    conversation_ref: str | None = None,
+    related_ref: str | None = None,
+    tool_name: str | None = None,
+    occurred_from: datetime | None = None,
+    occurred_to: datetime | None = None,
+    cursor: str | None = None,
+    limit: int = 25,
+) -> dict[str, Any]:
+    """Search bounded semantic provenance and tool/audit history by public reference."""
+    try:
+        with session_scope() as session:
+            return HistoryService(session).search(
+                object_type=object_type,
+                ref_id=ref,
+                conversation_ref=conversation_ref,
+                related_ref=related_ref,
+                tool_name=tool_name,
+                occurred_from=occurred_from,
+                occurred_to=occurred_to,
+                cursor=cursor,
+                limit=limit,
+            )
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_get_history_entry(
+    ref: str,
+    view: HistoryView = "summary",
+    text_offset: int = 0,
+    text_limit: int = 32768,
+) -> dict[str, Any]:
+    """Fetch one exact provenance object; verbatim text requires explicit audit view."""
+    try:
+        with session_scope() as session:
+            return HistoryService(session).get_entry(
+                ref,
+                view=view,
+                text_offset=text_offset,
+                text_limit=text_limit,
+            )
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_get_conflict(conflict_ref: ConflictRef) -> dict[str, Any]:
+    """Read one Conflict with statement values, intervals, and allowed resolutions."""
+    try:
+        with session_scope() as session:
+            service = ConflictService(session)
+            return {"ok": True, **service.projection(service.get(conflict_ref))}
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_get_intent_session(intent_session_ref: SessionRef) -> dict[str, Any]:
+    """Read durable resolved and unresolved state for one multi-turn intent session."""
+    try:
+        with session_scope() as session:
+            service = IntentSessionService(session)
+            return {
+                "ok": True,
+                **service.projection(service.get(intent_session_ref)),
+            }
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_get_triage_case(case_ref: str) -> dict[str, Any]:
+    """Read one bounded AttentionCase and its typed unresolved/resolved items."""
+    try:
+        return IntelligenceService(get_session_factory(), get_gmail_read_provider()).get_case(
+            case_ref
+        )
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_commit_changeset(
+    utterance_ref: UtteranceRef,
+    statements: list[StatementInput],
+    relations: list[StatementRelationInput],
+    resolved_intent: dict[str, Any],
+    blocking_clarifications: list[dict[str, Any]],
+    content: ChangeSetContent | None,
+    request_key: DiscordRequestKey,
+    source: RecordSourceInput,
+    actor_id: DiscordId,
+    intent_session_ref: SessionRef | None = None,
+    expected_session_version: int | None = None,
+    changeset_ref: str | None = None,
+    expected_changeset_version: int | None = None,
+) -> dict[str, Any]:
+    """Commit exact resolved Operator intent atomically or preserve one clarification."""
+    try:
+        with session_scope() as session:
+            _validate_entity_write(
+                session,
+                request_key=request_key,
+                source=source,
+                actor_id=actor_id,
+            )
+            return InteractiveAuthorityService(session).process_turn(
+                utterance_ref=utterance_ref,
+                request_key=request_key,
+                actor_id=actor_id,
+                intent_session_ref=intent_session_ref,
+                expected_session_version=expected_session_version,
+                statements=statements,
+                relations=relations,
+                resolved_intent_json=resolved_intent,
+                blocking_clarifications=blocking_clarifications,
+                content=content,
+                changeset_ref=changeset_ref,
+                expected_changeset_version=expected_changeset_version,
+            )
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_resolve_conflict(
+    utterance_ref: UtteranceRef,
+    conflict_ref: ConflictRef,
+    expected_conflict_version: int,
+    resolution: Literal[
+        "resolved_supersession",
+        "resolved_scoped_coexistence",
+        "resolved_retraction",
+    ],
+    chosen_interpretation: dict[str, Any],
+    statements_superseded: list[StatementRef],
+    statements_retained: list[StatementRef],
+    effective_scope: dict[str, Any],
+    canonical_effects: list[dict[str, Any]],
+    request_key: DiscordRequestKey,
+    source: RecordSourceInput,
+    actor_id: DiscordId,
+    intent_session_ref: SessionRef | None = None,
+    expected_session_version: int | None = None,
+) -> dict[str, Any]:
+    """Resolve one Conflict from the current utterance through an atomic ChangeSet."""
+    try:
+        with session_scope() as session:
+            _validate_entity_write(
+                session,
+                request_key=request_key,
+                source=source,
+                actor_id=actor_id,
+            )
+            conflict = ConflictService(session).get(conflict_ref)
+            statement = StatementInput(
+                statement_kind="conflict_resolution",
+                subject_refs=conflict.subject_refs,
+                predicate="conflict_resolution",
+                value_json=chosen_interpretation,
+                affected_fields=conflict.affected_fields,
+                interpretation_json={"conflict_ref": conflict.ref_id},
+                interpreter_version="docket-conflict-tool-v1",
+            )
+            content = ChangeSetContent.model_validate(
+                {
+                    "basis_refs": [utterance_ref],
+                    "expected_versions": {conflict.ref_id: expected_conflict_version},
+                    "resolution_changes": [
+                        {
+                            "change_id": f"resolve-{conflict.ref_id}",
+                            "action": "update",
+                            "object_type": "conflict_resolution",
+                            "object_ref": conflict.ref_id,
+                            "affected_fields": conflict.affected_fields,
+                            "basis_refs": [utterance_ref],
+                            "payload": {
+                                "expected_version": expected_conflict_version,
+                                "authority_utterance_ref": utterance_ref,
+                                "resolution": resolution,
+                                "chosen_interpretation": chosen_interpretation,
+                                "statements_superseded": statements_superseded,
+                                "statements_retained": statements_retained,
+                                "effective_scope": effective_scope,
+                                "canonical_effects": canonical_effects,
+                            },
+                        }
+                    ],
+                }
+            )
+            return InteractiveAuthorityService(session).process_turn(
+                utterance_ref=utterance_ref,
+                request_key=request_key,
+                actor_id=actor_id,
+                intent_session_ref=intent_session_ref,
+                expected_session_version=expected_session_version,
+                statements=[statement],
+                relations=[],
+                resolved_intent_json={"conflict_ref": conflict.ref_id},
+                blocking_clarifications=[],
+                content=content,
+                changeset_ref=None,
+                expected_changeset_version=None,
+            )
+    except Exception as exc:
+        return _error(exc)
+
+
+# Frozen ontology cutover: legacy reads remain available during their documented
+# compatibility window, but all new interactive mutations compile through one
+# authenticated ChangeSet (or the specialized Conflict resolver above).
+for _legacy_mutation_tool in (
+    "docket_add_entity_alias",
+    "docket_apply_calendar_intent",
+    "docket_apply_course_intent",
+    "docket_archive_record",
+    "docket_configure_calendar_lane",
+    "docket_create_entity",
+    "docket_delete_calendar_lane",
+    "docket_get_action",
+    "docket_ignore_queue_item",
+    "docket_merge_entities",
+    "docket_migrate_calendar_events",
+    "docket_rebind_entity_resolution",
+    "docket_relate_entities",
+    "docket_restore_record",
+    "docket_retract_entity_relation",
+    "docket_set_calendar_profile",
+    "docket_snooze_queue_item",
+    "docket_store_record",
+    "docket_update_entity",
+    "docket_update_entity_relation",
+    "docket_update_record",
+):
+    mcp.remove_tool(_legacy_mutation_tool)
