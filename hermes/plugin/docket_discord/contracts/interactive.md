@@ -1,13 +1,14 @@
 # Docket Interactive Tool Contract
 
-contract_version: docket-tools-2026-08-28-v6
-contract_hash: 3a679a446dadac3a4197f0d355ae1b8cf522949a84eba849209d34dfbaadc10c
+contract_version: docket-tools-2026-08-28-v7
+contract_hash: 32f696b6cd52d18c46572b48c05ae80ebd3a55ddfe9be04e756ec6a666f0b2ea
 profile: interactive
 
 Rules: Pydantic/MCP schemas define exact arguments. This contract defines selection, authority, side effects, and result handling.
 Results: default JSON must be compact; never infer omitted data; external/provider queued is not provider-complete.
 Codes: P-READ=authorized profile+bounded args; P-MUT=persisted current utt_+trusted Discord actor/source+exact refs/versions; S-READ=succeeded; S-MUT=created|updated|archived|restored|execution_queued|no_op|replayed_request; S-CHANGESET=committed|needs_clarification|replayed_request.
 Handling: O-STD=trust ok/state/ref, omissions are not absence, follow next; N-READ=use public refs, audit only when needed; N-MUT=report durable disposition, queued is not provider-complete; N-CHANGESET=ask one consolidated next clarification or report commit; E-READ=not_found|validation_error|authorization_failed; E-MUT=operator_utterance_authority_required|version_conflict|conflict_open|validation_error.
+ChangeSet references: use *_ref for an existing public object; use *_change_id for an object created earlier in the same atomic ChangeSet.
 Entries:
 - tool_ref=ONT-TOOL-0011 | tool_name=docket_commit_changeset | purpose=Compile and atomically commit resolved authenticated Operator intent. | use_when=Current authenticated Operator explicitly requests this effect. | do_not_use_when=Intent is inferred, unresolved, conflicted, or external. | authority=interactive_operator_utterance | preconditions=P-MUT | side_effects=Effect named by purpose. | success_dispositions=S-CHANGESET | output_interpretation=O-STD | required_next_action=N-CHANGESET | important_errors=E-MUT
 - tool_ref=LEGACY-TOOL-0002 | tool_name=docket_get_calendar_profile | purpose=Read current Operator Calendar policy. | use_when=Answer requires this exact bounded Docket state. | do_not_use_when=Unneeded or a more specific Docket read exists. | authority=interactive_read_only | preconditions=P-READ | side_effects=None. | success_dispositions=S-READ | output_interpretation=O-STD | required_next_action=N-READ | important_errors=E-READ

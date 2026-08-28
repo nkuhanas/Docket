@@ -107,6 +107,35 @@ required expected version. Never use the label text itself as a correlation key.
 The Preference must specify `policy_json.disposition="suppress"`; do not register a
 Person merely to suppress a sender.
 
+When the exact email must be created and associated atomically, use this shape;
+do not preallocate an `idn_` or substitute bind/update guesses:
+
+```yaml
+expected_versions:
+  idn_EXISTING_SENDER: 1
+  pref_EXISTING_POLICY: 1
+registry_changes:
+  - change_id: create-exact-email
+    action: create
+    object_type: identity_binding
+    create_spec: {handle_type: email, value: sender@example.com}
+  - change_id: associate-exact-email
+    action: update
+    object_type: identity_binding
+    object_ref: idn_EXISTING_SENDER
+    payload: {add_associated_email_change_id: create-exact-email}
+preference_changes:
+  - change_id: activate-suppression
+    action: update
+    object_type: preference
+    object_ref: pref_EXISTING_POLICY
+    payload: {policy_json: {disposition: suppress}}
+```
+
+Each change still includes the MCP-required `affected_fields` and `basis_refs`.
+If the email handle already exists, replace `add_associated_email_change_id` with
+`add_associated_email_ref` and its exact `idn_`.
+
 After a Preference commit, inspect/report the stored target, associated email
 table, and executable policy fields. Never describe an unassociated display label
 or missing disposition as active sender suppression. Historical behavior is

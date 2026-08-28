@@ -104,6 +104,12 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
         "resolution_changes",
         "provider_intents",
     }.issubset(content["properties"])
+    change = commit_schema["$defs"]["CanonicalChangeInput"]
+    assert "*_change_id" in change["properties"]["create_spec"]["description"]
+    payload_schema = change["properties"]["payload"]
+    assert "add_associated_email_change_id" in payload_schema["description"]
+    assert {"add_associated_email_change_id": "create-exact-email"} in payload_schema["examples"]
+    assert "*_change_id" in (tools["docket_commit_changeset"].description or "")
     for name in {
         "docket_list_calendar_lanes",
         "docket_list_calendar_events",

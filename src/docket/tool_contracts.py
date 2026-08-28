@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-08-28-v6"
+CONTRACT_VERSION = "docket-tools-2026-08-28-v7"
 
 
 class ToolContractEntry(TypedDict):
@@ -237,6 +237,17 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
             "validation_error|authorization_failed; E-MUT="
             "operator_utterance_authority_required|version_conflict|conflict_open|"
             "validation_error."
+        ),
+        *(
+            [
+                (
+                    "ChangeSet references: use *_ref for an existing public object; use "
+                    "*_change_id for an object created earlier in the same atomic "
+                    "ChangeSet."
+                )
+            ]
+            if profile == "interactive"
+            else []
         ),
         "Entries:",
     ]

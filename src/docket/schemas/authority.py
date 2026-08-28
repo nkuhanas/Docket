@@ -183,10 +183,38 @@ class CanonicalChangeInput(StrictModel):
         "attention_case_resolution",
     ]
     object_ref: PublicRef | None = None
-    create_spec: dict[str, Any] | None = None
+    create_spec: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Object-specific create body. identity_binding creates use handle_type and "
+            "value, with optional entity_ref, binding_rule, source_refs, and "
+            "associated_email_refs. A downstream same-ChangeSet dependency uses the "
+            "corresponding *_change_id field rather than a guessed public ref."
+        ),
+        json_schema_extra={
+            "examples": [
+                {"handle_type": "email", "value": "sender@example.com"},
+            ]
+        },
+    )
     affected_fields: list[str] = Field(min_length=1, max_length=50)
     basis_refs: list[PublicRef] = Field(min_length=1, max_length=100)
-    payload: dict[str, Any] = Field(default_factory=dict)
+    payload: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Object-specific non-create patch. A sender_label identity_binding update "
+            "uses exactly one add_associated_email_ref or remove_associated_email_ref "
+            "for an existing email idn_. When the email is created earlier in this "
+            "ChangeSet, use add_associated_email_change_id with that create change_id."
+        ),
+        json_schema_extra={
+            "examples": [
+                {"add_associated_email_ref": "idn_01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+                {"add_associated_email_change_id": "create-exact-email"},
+                {"policy_json": {"disposition": "suppress"}},
+            ]
+        },
+    )
 
     @field_validator("basis_refs")
     @classmethod

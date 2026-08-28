@@ -40,6 +40,9 @@ def test_manual_skill_defines_exact_resolved_intent_and_changeset_groups() -> No
     ):
         assert group in skill
     assert "`*_change_id` references" in skill
+    assert "`add_associated_email_change_id`" in skill
+    assert "`add_associated_email_ref`" in skill
+    assert "do not preallocate an `idn_`" in skill
 
 
 def test_manual_skill_keeps_triage_non_authoritative_and_outputs_compact() -> None:

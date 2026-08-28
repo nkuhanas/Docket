@@ -1703,7 +1703,7 @@ def docket_commit_changeset(
     changeset_ref: str | None = None,
     expected_changeset_version: int | None = None,
 ) -> dict[str, Any]:
-    """Commit exact resolved Operator intent atomically or preserve one clarification."""
+    """Commit resolved intent atomically; same-ChangeSet dependencies use *_change_id."""
     try:
         with session_scope() as session:
             _validate_entity_write(
