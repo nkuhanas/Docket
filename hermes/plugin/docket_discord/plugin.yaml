@@ -1,6 +1,6 @@
 name: docket-discord
-version: 0.16.2
-description: Trusted Discord chat/thread provenance, operator membership, projection, and approval bridge for Docket
+version: 0.20.0
+description: Trusted Discord utterance, response, tool-call, projection, ChangeSet, and legacy-approval-drain bridge for Docket
 provides_hooks:
   - pre_gateway_dispatch
   - pre_tool_call

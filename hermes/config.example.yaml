@@ -66,39 +66,27 @@ mcp_servers:
       enabled: false
     tools:
       include:
-        - docket_add_entity_alias
-        - docket_create_entity
-        - docket_store_record
         - docket_get_record
         - docket_search_records
-        - docket_update_record
-        - docket_archive_record
-        - docket_restore_record
         - docket_list_accounts
         - docket_list_calendar_lanes
-        - docket_configure_calendar_lane
-        - docket_delete_calendar_lane
         - docket_list_calendar_events
         - docket_get_calendar_sync_status
         - docket_get_calendar_profile
-        - docket_get_entity
-        - docket_set_calendar_profile
         - docket_list_reminder_rules
-        - docket_merge_entities
-        - docket_migrate_calendar_events
-        - docket_apply_calendar_intent
-        - docket_apply_course_intent
-        - docket_rebind_entity_resolution
-        - docket_relate_entities
-        - docket_retract_entity_relation
-        - docket_resolve_entity
-        - docket_search_entities
         - docket_list_queue_items
         - docket_get_queue_item
-        - docket_snooze_queue_item
-        - docket_ignore_queue_item
-        - docket_get_action
-        - docket_update_entity
-        - docket_update_entity_relation
+        - docket_get_triage_case
+        - docket_search_history
+        - docket_get_history_entry
+        - docket_get_conflict
+        - docket_get_intent_session
+        - docket_get_network_neighborhood
+        - docket_get_organization_context
+        - docket_get_person_context
+        - docket_network_search
+        - docket_query_people
+        - docket_commit_changeset
+        - docket_resolve_conflict
       prompts: false
       resources: false

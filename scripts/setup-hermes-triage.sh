@@ -8,6 +8,7 @@ PROFILE_DIR="$HERMES_HOME_DIR/profiles/$PROFILE_NAME"
 PROFILE_CONFIG="$PROFILE_DIR/config.yaml"
 PROFILE_ENV="$PROFILE_DIR/.env"
 PROFILE_SKILL_DIR="$PROFILE_DIR/skills/docket-triage"
+PROFILE_CONTRACT="$PROFILE_DIR/tool-contract.md"
 LAUNCHER_DIR="$HERMES_HOME_DIR/scripts"
 LAUNCHER="$LAUNCHER_DIR/docket-gmail-triage.sh"
 JOB_NAME="Docket Gmail triage"
@@ -62,6 +63,7 @@ mkdir -p "$PROFILE_SKILL_DIR" "$LAUNCHER_DIR"
 cp \
     "$ROOT/hermes/plugin/docket_discord/skills/docket-triage/SKILL.md" \
     "$PROFILE_SKILL_DIR/SKILL.md"
+cp "$ROOT/hermes/plugin/docket_discord/contracts/triage.md" "$PROFILE_CONTRACT"
 cp "$ROOT/hermes/scripts/docket-gmail-triage.sh" "$LAUNCHER"
 rm -f "$PROFILE_DIR/SOUL.md"
 touch "$PROFILE_DIR/.no-skills"
@@ -70,7 +72,11 @@ chmod 700 \
     "$PROFILE_DIR/skills" \
     "$PROFILE_SKILL_DIR" \
     "$LAUNCHER_DIR"
-chmod 600 "$PROFILE_CONFIG" "$PROFILE_ENV" "$PROFILE_SKILL_DIR/SKILL.md"
+chmod 600 \
+    "$PROFILE_CONFIG" \
+    "$PROFILE_ENV" \
+    "$PROFILE_SKILL_DIR/SKILL.md" \
+    "$PROFILE_CONTRACT"
 chmod 700 "$LAUNCHER"
 
 job_listing=$(compose exec -T hermes env NO_COLOR=1 hermes cron list --all)
@@ -109,10 +115,10 @@ fi
 mcp_test_output=$(compose exec -T hermes hermes -p "$PROFILE_NAME" mcp test docket-triage)
 printf '%s\n' "$mcp_test_output"
 for expected_tool in \
-    docket_claim_triage_batch \
-    docket_read_claimed_source \
-    docket_search_related_records \
-    docket_submit_semantic_candidates
+    docket_get_triage_context \
+    docket_submit_triage_analysis \
+    docket_get_triage_case \
+    docket_apply_existing_suppression
 do
     printf '%s\n' "$mcp_test_output" | grep -F "$expected_tool" >/dev/null || {
         echo "The isolated profile did not discover $expected_tool." >&2

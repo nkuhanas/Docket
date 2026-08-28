@@ -35,9 +35,9 @@ mcp_servers:
       enabled: false
     tools:
       include:
-        - docket_claim_triage_batch
-        - docket_read_claimed_source
-        - docket_search_related_records
-        - docket_submit_semantic_candidates
+        - docket_get_triage_context
+        - docket_submit_triage_analysis
+        - docket_get_triage_case
+        - docket_apply_existing_suppression
       prompts: false
       resources: false
