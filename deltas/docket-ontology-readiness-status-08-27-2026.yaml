@@ -134,7 +134,7 @@ signed_amendments:
     frozen_artifact_hash: 058788ec6728565b51bbce3e80d51146c52fec0c0364f7599e3877f97d964a05
     amends: ONT-DELTA-2026-08-27
     implementation_authority: amendment_scope
-    status: implementation_source_verified_deployment_pending
+    status: deployed_and_operationally_verified
     bootstrap_evidence:
       operator_utterance_ref: utt_01M157G81T7FV6A4V8RQD54Z6G
       repository_commit: a6f4646
@@ -147,6 +147,28 @@ signed_amendments:
       interactive_contract_version: docket-tools-2026-08-28-v8
       interactive_tools: 22
       triage_tools: 4
+    deployment_evidence:
+      deployed_at: 2026-08-28T23:21:49Z
+      verified_at: 2026-08-28T23:23:38Z
+      substantive_revision: 12c36baed96327e3ace2e50b8bad66d276a7cf7f
+      github_actions_run: 33220038019
+      migration_head: "0041"
+      runtime_image: sha256:147328e26c6814d63c7cd6bdb9dfd7f59527e01c2ef04f98e57d0ec251965cd6
+      plugin_version: 0.20.6
+      interactive_contract_hash: d68e23466fea764b51f42ba37b595ff3174f50cff90a8786f09900d956e5c7cc
+      triage_contract_hash: ad37a66dd61a97e7ab4080cc1d971e6fd2522edc83a03700f6733c00ca73a4e5
+      pre_migration_backup: backups/docket-20260828T232121Z-12c36baed963.dump
+      rollback_image: docket-docket:rollback-20260828T232121Z
+      attention_case_revisions: 4
+      invalid_caserev_refs: 0
+      preserved_legacy_revision_aliases: 4
+      legacy_revision_bindings_remaining: 0
+      case_items_migrated_legacy_unspecified: 13
+      invalid_case_item_roles_or_states: 0
+      legacy_trace_state_keys_remaining: 0
+      amendment_signoff_decisions: 1
+      active_operations: 0
+      pending_outbox: 0
 
 historical_record:
   document_ref: ONT-DELTA-2026-08-26

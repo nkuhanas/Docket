@@ -160,6 +160,30 @@ git diff --check: clean
 isolated Compose smoke: passed
 ```
 
+### Case-resolution amendment deployment
+
+The substantive amendment deployed from revision
+`12c36baed96327e3ace2e50b8bad66d276a7cf7f` after GitHub Actions run
+`33220038019` passed both required jobs. The supported deployment created
+`backups/docket-20260828T232121Z-12c36baed963.dump`, retained
+`docket-docket:rollback-20260828T232121Z`, and installed image
+`sha256:147328e26c6814d63c7cd6bdb9dfd7f59527e01c2ef04f98e57d0ec251965cd6`.
+
+Post-deploy inspection verified Alembic `0041`, Hermes plugin `0.20.6`, 22
+interactive tools, four restricted triage tools, interactive contract hash
+`d68e23466fea764b51f42ba37b595ff3174f50cff90a8786f09900d956e5c7cc`,
+and triage contract hash
+`ad37a66dd61a97e7ab4080cc1d971e6fd2522edc83a03700f6733c00ca73a4e5`.
+
+All four pre-amendment AttentionCaseRevision rows now use valid `caserev_`
+identity and preserve four unique legacy aliases. Eight scalar bindings and the
+existing IntentSession/AgentResponse revision lists use typed refs; no legacy
+`case_` revision binding remains. All 13 pre-amendment CaseItems are honestly
+`legacy_unspecified`; no role or status is invalid. No stored MCP trace retains
+the legacy conflated `state` key. The signed amendment Decision remains present,
+and active operations and pending outbox rows are both zero. No Docket or Hermes
+error/traceback appeared in the bounded post-deploy log inspection.
+
 ## Named operational procedures
 
 These procedures are explicit evidence targets for traceability rows. A run is
