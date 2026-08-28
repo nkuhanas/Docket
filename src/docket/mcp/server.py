@@ -1,7 +1,8 @@
+import time
 import uuid
 from collections.abc import Callable
 from datetime import date, datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -26,6 +27,7 @@ from docket.schemas.actions import (
     ProposeCourseReconciliationInput,
 )
 from docket.schemas.calendar import (
+    CalendarEventResultView,
     CalendarFreshness,
     CalendarLane,
     CalendarLaneEventSelection,
@@ -103,6 +105,7 @@ mcp = FastMCP(
 CalendarId = Annotated[str, Field(min_length=1, max_length=1024)]
 CalendarLimit = Annotated[int, Field(ge=1, le=100)]
 CalendarTextFilter = Annotated[str, Field(max_length=200)]
+ActionWaitSeconds = Annotated[float, Field(ge=0, le=30)]
 EntitySearchQuery = Annotated[str, Field(min_length=1, max_length=256)]
 EntitySearchLimit = Annotated[int, Field(ge=1, le=50)]
 EntityRetractionReason = Annotated[str, Field(min_length=1, max_length=1000)]
@@ -945,7 +948,13 @@ def docket_migrate_calendar_events(
         )
         with session_scope() as session:
             result = CalendarLaneService(session, get_settings()).migrate_events(request)
-        return {"ok": True, **result}
+        preview = result.get("preview")
+        item_count = preview.get("item_count") if isinstance(preview, dict) else None
+        return {
+            "ok": True,
+            **{key: value for key, value in result.items() if key != "preview"},
+            "item_count": item_count,
+        }
     except Exception as exc:
         return _error(exc)
 
@@ -1017,6 +1026,7 @@ def docket_list_calendar_events(
     text_filter: CalendarTextFilter | None = None,
     limit: CalendarLimit = 100,
     freshness: CalendarFreshness = "prefer_cache",
+    result_view: CalendarEventResultView = "occurrences",
 ) -> dict[str, Any]:
     """Read a bounded, redacted time range from Docket's Calendar cache.
 
@@ -1033,7 +1043,9 @@ def docket_list_calendar_events(
     lane migration; leave other event types in place. Results never expose descriptions,
     attendees, conference data, credentials, or a raw Google client. ``require_fresh``
     may wait up to ten seconds for Docket's full bounded snapshot; it never promotes a
-    partial requested subrange.
+    partial requested subrange. Set ``result_view=series`` when selecting events
+    for a lane migration: it returns one compact, directly reusable provider identity
+    and scope per recurring series or one-time event instead of every occurrence.
     """
     try:
         request = CalendarLookupInput(
@@ -1045,6 +1057,7 @@ def docket_list_calendar_events(
             text_filter=text_filter,
             limit=limit,
             freshness=freshness,
+            result_view=result_view,
         )
         result = _calendar_read_service().list_events(
             account_id=request.account_id,
@@ -1350,10 +1363,42 @@ def docket_ignore_queue_item(
 
 
 @mcp.tool()
-def docket_get_action(action_id: str) -> dict[str, Any]:
-    """Read a redacted action, immutable preview, approval, and operation status."""
+def docket_get_action(
+    action_id: str,
+    detail: Literal["status", "full"] = "status",
+    wait_seconds: ActionWaitSeconds = 0,
+) -> dict[str, Any]:
+    """Read an action's compact status, optionally waiting for terminal execution.
+
+    The default ``status`` detail omits the immutable preview and target bindings so
+    routine execution polling stays small. Use ``full`` only when those details are
+    specifically needed for diagnosis. Set ``wait_seconds`` after a queued direct
+    command to replace repeated model-mediated polling; Docket returns early when the
+    operation becomes terminal, or returns its latest state after at most 30 seconds.
+    """
     try:
-        with session_scope() as session:
-            return {"ok": True, "action": ActionReadService(session).get(uuid.UUID(action_id))}
+        action_uuid = uuid.UUID(action_id)
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            with session_scope() as session:
+                action = ActionReadService(session).get(
+                    action_uuid,
+                    include_revision=detail == "full",
+                )
+            operation = action.get("operation")
+            terminal = not isinstance(operation, dict) or operation.get("status") not in {
+                "pending",
+                "running",
+            }
+            if terminal or time.monotonic() >= deadline:
+                return {
+                    "ok": True,
+                    "action": action,
+                    "wait": {
+                        "terminal": terminal,
+                        "timed_out": bool(wait_seconds and not terminal),
+                    },
+                }
+            time.sleep(min(0.25, max(0.0, deadline - time.monotonic())))
     except Exception as exc:
         return _error(exc)

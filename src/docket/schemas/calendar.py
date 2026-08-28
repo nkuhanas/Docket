@@ -22,6 +22,7 @@ from docket.schemas.records import (
 )
 
 CalendarFreshness = Literal["prefer_cache", "require_fresh"]
+CalendarEventResultView = Literal["occurrences", "series"]
 CalendarRelativeDay = Literal["today", "tomorrow"]
 ReminderScope = Literal["calendar", "event"]
 CalendarPriority = Literal["low", "normal", "high", "urgent"]
@@ -486,6 +487,7 @@ class CalendarLookupInput(StrictModel):
     text_filter: str | None = Field(default=None, max_length=200)
     limit: int = Field(default=100, ge=1, le=100)
     freshness: CalendarFreshness = "prefer_cache"
+    result_view: CalendarEventResultView = "occurrences"
 
     @model_validator(mode="after")
     def validate_bounds(self) -> "CalendarLookupInput":

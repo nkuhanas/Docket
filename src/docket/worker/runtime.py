@@ -25,6 +25,7 @@ class WorkerRuntime:
         operation_runner: OperationRunner,
         *,
         operation_poll_seconds: float,
+        operation_drain_limit: int = 10,
         reconciliation_poll_seconds: float,
         stale_lease_poll_seconds: float,
         discord_projection_runner: DiscordProjectionRunner | None = None,
@@ -49,6 +50,7 @@ class WorkerRuntime:
         self.heartbeat_seconds = heartbeat_seconds
         self.operation_runner = operation_runner
         self.operation_poll_seconds = operation_poll_seconds
+        self.operation_drain_limit = operation_drain_limit
         self.reconciliation_poll_seconds = reconciliation_poll_seconds
         self.stale_lease_poll_seconds = stale_lease_poll_seconds
         self.discord_projection_runner = discord_projection_runner
@@ -170,7 +172,7 @@ class WorkerRuntime:
             now = time.monotonic()
             try:
                 if now >= next_operation:
-                    await asyncio.to_thread(self.operation_runner.run_due_once)
+                    await self._drain_due_operations()
                     next_operation = now + self.operation_poll_seconds
                 if now >= next_reconciliation:
                     await asyncio.to_thread(self.operation_runner.reconcile_once)
@@ -226,6 +228,15 @@ class WorkerRuntime:
             except TimeoutError:
                 continue
         logger.info("worker_stopped")
+
+    async def _drain_due_operations(self) -> int:
+        processed = 0
+        while processed < self.operation_drain_limit:
+            if not await asyncio.to_thread(self.operation_runner.run_due_once):
+                break
+            processed += 1
+            self.last_heartbeat = datetime.now(UTC)
+        return processed
 
     def is_healthy(self) -> bool:
         if (

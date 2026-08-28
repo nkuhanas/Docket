@@ -851,6 +851,7 @@ class CalendarReadService:
         text_filter: str | None,
         limit: int,
         freshness: str,
+        result_view: str = "occurrences",
     ) -> dict[str, Any]:
         as_of = _aware(self.clock()).astimezone(UTC)
         zone = ZoneInfo(self.settings.timezone)
@@ -901,6 +902,11 @@ class CalendarReadService:
             raise DocketError(
                 code="calendar_filter_too_large",
                 message="Calendar text filters are limited to 200 characters.",
+            )
+        if result_view not in {"occurrences", "series"}:
+            raise DocketError(
+                code="invalid_calendar_result_view",
+                message="Calendar result view must be occurrences or series.",
             )
         self.sync_service.ensure_state(account_id, calendar_id)
         if freshness == "require_fresh":
@@ -965,9 +971,21 @@ class CalendarReadService:
                     row.provider_event_id,
                 )
             )
+            occurrence_counts: dict[str, int] = {}
+            result: list[dict[str, Any]]
+            if result_view == "series":
+                collapsed_rows: list[CalendarEventCache] = []
+                for row in rows:
+                    identity = row.recurring_event_id or row.provider_event_id
+                    occurrence_counts[identity] = occurrence_counts.get(identity, 0) + 1
+                    if occurrence_counts[identity] == 1:
+                        collapsed_rows.append(row)
+                selected_rows = collapsed_rows[:limit]
+            else:
+                selected_rows = rows[:limit]
             event_ids = {
                 value
-                for row in rows[:limit]
+                for row in selected_rows
                 for value in (row.provider_event_id, row.recurring_event_id)
                 if value is not None
             }
@@ -994,7 +1012,7 @@ class CalendarReadService:
             for rule in rules:
                 if rule.provider_event_id is not None:
                     rules_by_event.setdefault(rule.provider_event_id, []).append(rule)
-            result = [
+            occurrence_results = [
                 {
                     "provider_event_id": row.provider_event_id,
                     "recurring_event_id": row.recurring_event_id,
@@ -1042,8 +1060,43 @@ class CalendarReadService:
                         ],
                     ),
                 }
-                for row in rows[:limit]
+                for row in selected_rows
             ]
+            if result_view == "series":
+                result = [
+                    {
+                        "provider_event_id": row.recurring_event_id or row.provider_event_id,
+                        "scope": "series" if row.recurring_event_id else "event",
+                        "summary": row.summary,
+                        "location": row.location,
+                        "first_start_local": (
+                            _aware(row.start_at).astimezone(zone).isoformat()
+                            if row.start_at is not None
+                            else None
+                        ),
+                        "first_end_local": (
+                            _aware(row.end_at).astimezone(zone).isoformat()
+                            if row.end_at is not None
+                            else None
+                        ),
+                        "first_start_date": (
+                            row.start_date.isoformat() if row.start_date else None
+                        ),
+                        "first_end_date": row.end_date.isoformat() if row.end_date else None,
+                        "local_timezone": self.settings.timezone,
+                        "event_type": row.event_type,
+                        "recurrence_kind": row.recurrence_kind,
+                        "system_tags": list(row.system_tags),
+                        "operator_tags": list(row.operator_tags),
+                        "priority": row.priority,
+                        "occurrences_in_range": occurrence_counts[
+                            row.recurring_event_id or row.provider_event_id
+                        ],
+                    }
+                    for row in selected_rows
+                ]
+            else:
+                result = occurrence_results
             status = self._status_at(state, as_of)
             covered = bool(
                 state is not None
@@ -1064,6 +1117,7 @@ class CalendarReadService:
                     "timezone": self.settings.timezone,
                     "as_of": as_of.isoformat(),
                 },
+                "result_view": result_view,
                 "events": result,
                 "freshness": {**status, "covered": covered},
                 "refresh_pending": bool(

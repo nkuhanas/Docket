@@ -14,7 +14,7 @@ class ActionReadService:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def get(self, action_id: uuid.UUID) -> dict[str, Any]:
+    def get(self, action_id: uuid.UUID, *, include_revision: bool = False) -> dict[str, Any]:
         action = self.session.get(Action, action_id)
         if action is None:
             raise DocketError(
@@ -36,21 +36,13 @@ class ActionReadService:
         operation = self.session.scalar(
             select(Operation).where(Operation.action_revision_id == revision.id)
         )
-        return {
+        result: dict[str, Any] = {
             "action_id": str(action.id),
             "action_type": action.action_type,
             "status": action.status,
             "queue_item_id": str(action.queue_item_id) if action.queue_item_id else None,
             "record_id": str(action.record_id) if action.record_id else None,
             "current_revision": action.current_revision,
-            "revision": {
-                "action_revision_id": str(revision.id),
-                "parameters_sha256": revision.parameters_sha256,
-                "preview": revision.preview,
-                "preview_sha256": revision.preview_sha256,
-                "risk_class": revision.risk_class,
-                "target_versions": revision.target_versions,
-            },
             "approval": (
                 {
                     "approval_id": str(approval.id),
@@ -71,3 +63,13 @@ class ActionReadService:
                 else None
             ),
         }
+        if include_revision:
+            result["revision"] = {
+                "action_revision_id": str(revision.id),
+                "parameters_sha256": revision.parameters_sha256,
+                "preview": revision.preview,
+                "preview_sha256": revision.preview_sha256,
+                "risk_class": revision.risk_class,
+                "target_versions": revision.target_versions,
+            }
+        return result

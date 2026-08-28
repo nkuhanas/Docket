@@ -19,7 +19,7 @@ from docket.database import (
     get_session_factory,
     session_scope,
 )
-from docket.internal_api import router as internal_router
+from docket.internal_api.router import router as internal_router
 from docket.mcp import mcp, triage_mcp
 from docket.models import BackupRun, CalendarSyncState, ConnectorCheckpoint
 from docket.providers.discord import HttpDiscordProjectionAdapter
@@ -90,6 +90,7 @@ worker = WorkerRuntime(
         gmail_execution_enabled=settings.gmail_writes_enabled,
     ),
     operation_poll_seconds=settings.operation_poll_seconds,
+    operation_drain_limit=settings.operation_drain_limit,
     reconciliation_poll_seconds=settings.reconciliation_poll_seconds,
     stale_lease_poll_seconds=settings.stale_lease_poll_seconds,
     discord_projection_runner=discord_projection_runner,

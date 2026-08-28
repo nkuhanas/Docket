@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", alias="DOCKET_LOG_LEVEL")
     worker_heartbeat_seconds: float = Field(default=1.0, alias="DOCKET_WORKER_HEARTBEAT_SECONDS")
     operation_poll_seconds: float = Field(default=5.0, alias="DOCKET_OPERATION_POLL_SECONDS")
+    operation_drain_limit: int = Field(
+        default=10, ge=1, le=100, alias="DOCKET_OPERATION_DRAIN_LIMIT"
+    )
     reconciliation_poll_seconds: float = Field(
         default=300.0, alias="DOCKET_RECONCILIATION_POLL_SECONDS"
     )

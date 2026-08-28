@@ -24,6 +24,7 @@ from docket.models import (
 )
 from docket.schemas.actions import ProposeCalendarEventInput
 from docket.schemas.calendar import SetCalendarProfileInput
+from docket.services.action_read import ActionReadService
 from docket.services.calendar_actions import CalendarActionService
 from docket.services.calendar_profile import CalendarProfileService
 
@@ -287,6 +288,13 @@ def test_explicit_calendar_intent_queues_direct_operation_without_card(
     assert revision is not None and revision.authority == "explicit_user"
     assert operation is not None and operation.approval_id is None
     assert operation.status == "pending"
+
+    compact = ActionReadService(session).get(result.action_id)
+    assert "revision" not in compact
+    assert compact["operation"]["status"] == "pending"
+
+    full = ActionReadService(session).get(result.action_id, include_revision=True)
+    assert full["revision"]["preview"] == revision.preview
 
 
 def test_attendee_event_cannot_be_targeted(session: Session) -> None:

@@ -207,6 +207,15 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
     assert lookup_properties["freshness"]["enum"] == ["prefer_cache", "require_fresh"]
     assert lookup_properties["relative_day"]["anyOf"][0]["enum"] == ["today", "tomorrow"]
     assert lookup_properties["limit"]["maximum"] == 100
+    assert lookup_properties["result_view"]["enum"] == ["occurrences", "series"]
+    assert "one compact, directly reusable provider identity" in lookup_description
+
+    get_action = tools["docket_get_action"]
+    get_action_description = " ".join((get_action.description or "").split())
+    get_action_properties = get_action.inputSchema["properties"]
+    assert get_action_properties["detail"]["enum"] == ["status", "full"]
+    assert get_action_properties["wait_seconds"]["maximum"] == 30
+    assert "replace repeated model-mediated polling" in get_action_description
 
     lane_move_description = " ".join(
         (tools["docket_migrate_calendar_events"].description or "").split()

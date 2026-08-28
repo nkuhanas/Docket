@@ -8,8 +8,16 @@ from docket.worker import WorkerRuntime
 
 
 class FakeOperationRunner:
+    def __init__(self, pending: int = 0) -> None:
+        self.pending = pending
+        self.calls = 0
+
     def run_due_once(self) -> bool:
-        return False
+        self.calls += 1
+        if not self.pending:
+            return False
+        self.pending -= 1
+        return True
 
     def reconcile_once(self) -> bool:
         return False
@@ -147,3 +155,35 @@ def test_projection_poll_remains_a_lost_wake_fallback(
         monkeypatch,
         _projection_poll_remains_a_lost_wake_fallback,
     )
+
+
+def test_operation_drain_processes_ready_items_without_poll_gaps() -> None:
+    runner = FakeOperationRunner(pending=7)
+    runtime = WorkerRuntime(
+        60,
+        runner,  # type: ignore[arg-type]
+        operation_poll_seconds=60,
+        operation_drain_limit=10,
+        reconciliation_poll_seconds=60,
+        stale_lease_poll_seconds=60,
+    )
+
+    assert asyncio.run(runtime._drain_due_operations()) == 7
+    assert runner.calls == 8
+    assert runner.pending == 0
+
+
+def test_operation_drain_honors_bound() -> None:
+    runner = FakeOperationRunner(pending=12)
+    runtime = WorkerRuntime(
+        60,
+        runner,  # type: ignore[arg-type]
+        operation_poll_seconds=60,
+        operation_drain_limit=5,
+        reconciliation_poll_seconds=60,
+        stale_lease_poll_seconds=60,
+    )
+
+    assert asyncio.run(runtime._drain_due_operations()) == 5
+    assert runner.calls == 5
+    assert runner.pending == 7

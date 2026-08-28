@@ -612,6 +612,82 @@ def test_indexed_lookup_is_bounded_redacted_and_reports_staleness(session_factor
 
 
 @pytest.mark.integration
+def test_series_view_collapses_occurrences_into_migration_selections(session_factory) -> None:
+    base = datetime(2026, 7, 22, 14, tzinfo=UTC)
+    settings = get_settings().model_copy(update={"calendar_reads_enabled": True})
+    account_id = _account(session_factory)
+    provider = FakeCalendarProvider()
+    for ordinal, days in enumerate((1, 3, 5), start=1):
+        provider.put_snapshot_event(
+            replace(
+                _timed(
+                    f"class-series_{ordinal}",
+                    base + timedelta(days=days),
+                    summary="Recurring class",
+                ),
+                recurring_event_id="class-series",
+                recurrence_kind="recurring",
+                system_tags=("recurring", "timed", "course_meeting"),
+            )
+        )
+    provider.put_snapshot_event(
+        _timed("one-time", base + timedelta(days=2), summary="One-time meeting")
+    )
+    sync = CalendarSyncService(session_factory, provider, settings, clock=lambda: base)
+    read = CalendarReadService(session_factory, sync, settings, clock=lambda: base)
+    assert sync.sync_target(account_id, settings.google_calendar_id, force=True)
+
+    result = read.list_events(
+        account_id=account_id,
+        calendar_id=settings.google_calendar_id,
+        start=base,
+        end=base + timedelta(days=7),
+        text_filter=None,
+        limit=100,
+        freshness="prefer_cache",
+        result_view="series",
+    )
+
+    assert result["result_view"] == "series"
+    assert result["events"] == [
+        {
+            "provider_event_id": "class-series",
+            "scope": "series",
+            "summary": "Recurring class",
+            "location": "Building 14",
+            "first_start_local": "2026-07-23T07:00:00-07:00",
+            "first_end_local": "2026-07-23T08:00:00-07:00",
+            "first_start_date": None,
+            "first_end_date": None,
+            "local_timezone": "America/Los_Angeles",
+            "event_type": "default",
+            "recurrence_kind": "recurring",
+            "system_tags": ["recurring", "timed", "course_meeting"],
+            "operator_tags": [],
+            "priority": "normal",
+            "occurrences_in_range": 3,
+        },
+        {
+            "provider_event_id": "one-time",
+            "scope": "event",
+            "summary": "One-time meeting",
+            "location": "Building 14",
+            "first_start_local": "2026-07-24T07:00:00-07:00",
+            "first_end_local": "2026-07-24T08:00:00-07:00",
+            "first_start_date": None,
+            "first_end_date": None,
+            "local_timezone": "America/Los_Angeles",
+            "event_type": "default",
+            "recurrence_kind": "one_time",
+            "system_tags": ["one_time", "timed", "external"],
+            "operator_tags": [],
+            "priority": "normal",
+            "occurrences_in_range": 1,
+        },
+    ]
+
+
+@pytest.mark.integration
 def test_local_event_timestamps_use_the_correct_dst_fold(session_factory) -> None:
     base = datetime(2026, 11, 1, 7, tzinfo=UTC)
     settings = get_settings().model_copy(update={"calendar_reads_enabled": True})

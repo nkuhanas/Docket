@@ -253,9 +253,13 @@ operator value, and non-default changes belong on the authenticated card
 control.
 
 Docket derives risk, authority, freshness, exact target state, conflicts,
-formulation hashes, and any decision expiry. For `execution_queued`, say the
-explicit command is queued; do not ask for approval and do not claim provider
-completion until `docket_get_action` reports success. For `proposed` or
+formulation hashes, and any decision expiry. For `execution_queued`, call
+`docket_get_action` once with `detail="status"` and `wait_seconds=30`. If it
+returns terminal success, report completion. If the bounded wait expires, say
+the command remains queued and rely on Docket's system-channel lifecycle entry;
+do not repeatedly poll in the same turn. Do not ask for approval and do not
+claim provider completion before terminal success. Never request
+`detail="full"` merely to monitor execution. For `proposed` or
 `matched_existing`, explain that Docket is publishing the conflict decision to
 today's ISO-dated queue thread and tell the operator to use its controls. Do not
 duplicate the card in chat. Do not instruct or suggest that the
@@ -294,14 +298,15 @@ version. A rename changes presentation, never the stable slug or event routing.
 
 When the operator asks to move events between lanes, do not ask them for
 provider IDs. Read the source lane and its current events, resolve the requested
-events yourself with `freshness="require_fresh"`, then call
+events yourself with `freshness="require_fresh"` and `result_view="series"`, then call
 `docket_migrate_calendar_events` with the immutable provider identities and
-event types returned by Docket. Use `scope="series"` for recurring events. Group
+scopes returned by Docket. Group
 up to 50 unambiguous events with the same source and destination inside one
 direct operation; leave ambiguous matches in place and ask one concise
 clarification question. The tool queues execution without an approval card. Do
-not claim that Google or Docket bindings changed until `docket_get_action`
-reports success.
+not claim that Google or Docket bindings changed until the one bounded
+`docket_get_action` wait reports success. Once it does, do not perform a second
+fresh Calendar read solely to reconfirm the durable successful operation.
 
 Use `docket_delete_calendar_lane` only for the current operator's explicit
 deletion request. `unsorted` is permanent. A lane must be empty first: move or
