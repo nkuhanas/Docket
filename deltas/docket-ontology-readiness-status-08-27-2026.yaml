@@ -69,7 +69,7 @@ implementation_start_blockers:
         artifact_ref: ONT-ACCEPTANCE-2026-08-27
       traceability:
         path: deltas/docket-ontology-traceability-08-27-2026.csv
-        sha256: 6746cb5cee2086d8d19f1ce0ac7132c55c95522fa3bd087157734ad179b4c1fc
+        sha256: 978909985c4edd91777373225229c64b9e377f7005feee5a57f7f126b559eddb
     summary:
       normative_requirements: 112
       traceability_rows: 112
