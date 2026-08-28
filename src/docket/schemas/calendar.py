@@ -1,5 +1,5 @@
 from datetime import UTC, date, datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -343,6 +343,7 @@ class CalendarProfileResult(CalendarProfileInput):
 
 
 class CalendarLaneResult(StrictModel):
+    ref: str
     lane_id: UUID
     lane: CalendarLane
     display_name: str
@@ -350,6 +351,15 @@ class CalendarLaneResult(StrictModel):
     status: Literal["unprovisioned", "provisioning", "active", "failed", "deleting", "deleted"]
     account_id: UUID
     calendar_id: str | None = None
+    operator_policy_text: str | None = None
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = True
+    priority: int = 100
+    basis_refs: list[str] = Field(default_factory=list)
+    decision_refs: list[str] = Field(default_factory=list)
+    source_refs: list[str] = Field(default_factory=list)
+    created_by_changeset_ref: str | None = None
+    provenance_status: Literal["complete", "legacy_preledger"]
     version: int = Field(ge=1)
 
 

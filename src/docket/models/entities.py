@@ -17,6 +17,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from docket.domain.public_refs import new_public_ref
 from docket.models.base import Base, TimestampMixin, utc_now
 
 
@@ -25,12 +26,20 @@ class Entity(TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint(
             "entity_class IN ('institution', 'organization', 'course', 'person', "
-            "'location', 'project', 'service')",
+            "'course_section', 'place', 'location', 'project', 'service')",
             name="ck_entities_class",
         ),
         CheckConstraint(
             "status IN ('active', 'provisional', 'merged', 'archived')",
             name="ck_entities_status",
+        ),
+        CheckConstraint(
+            "registration_state IN ('registered', 'legacy_candidate', 'historical')",
+            name="ck_entities_registration_state",
+        ),
+        CheckConstraint(
+            "provenance_status IN ('complete', 'legacy_preledger')",
+            name="ck_entities_provenance_status",
         ),
         Index(
             "uq_entities_active_identity",
@@ -43,12 +52,25 @@ class Entity(TimestampMixin, Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    ref_id: Mapped[str] = mapped_column(
+        String(40), unique=True, nullable=False, default=lambda: new_public_ref("ent")
+    )
     entity_class: Mapped[str] = mapped_column(String(32), nullable=False)
     canonical_name: Mapped[str] = mapped_column(String(512), nullable=False)
     normalized_name: Mapped[str] = mapped_column(String(512), nullable=False)
     status: Mapped[str] = mapped_column(String(16), default="active", nullable=False)
     attributes: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     authority: Mapped[str] = mapped_column(String(32), nullable=False)
+    registration_state: Mapped[str] = mapped_column(
+        String(32), default="legacy_candidate", nullable=False
+    )
+    basis_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    decision_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    source_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    created_by_changeset_ref: Mapped[str | None] = mapped_column(String(40))
+    provenance_status: Mapped[str] = mapped_column(
+        String(32), default="legacy_preledger", nullable=False
+    )
     merged_into_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("entities.id", ondelete="RESTRICT")
     )

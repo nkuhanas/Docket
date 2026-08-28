@@ -13,10 +13,12 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     Uuid,
+    event,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from docket.domain.enums import CommandStatus, OutboxStatus, RecordStatus
+from docket.domain.public_refs import new_public_ref
 from docket.models.base import Base, TimestampMixin, utc_now
 
 
@@ -28,6 +30,11 @@ class Account(TimestampMixin, Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    # A provider identity is external evidence and therefore uses the frozen
+    # ``src_`` provenance-reference type rather than exposing its database UUID.
+    ref_id: Mapped[str] = mapped_column(
+        String(40), unique=True, nullable=False, default=lambda: new_public_ref("src")
+    )
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     external_account_id: Mapped[str] = mapped_column(String(255), nullable=False)
     display_name: Mapped[str | None] = mapped_column(String(255))
@@ -151,16 +158,30 @@ class AuditEvent(Base):
     __tablename__ = "audit_events"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    ref_id: Mapped[str] = mapped_column(
+        String(40), unique=True, nullable=False, default=lambda: new_public_ref("aud")
+    )
     event_type: Mapped[str] = mapped_column(String(128), nullable=False)
     entity_type: Mapped[str | None] = mapped_column(String(64))
     entity_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     actor_type: Mapped[str] = mapped_column(String(32), nullable=False)
     actor_id: Mapped[str | None] = mapped_column(String(255))
     request_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    primary_ref: Mapped[str | None] = mapped_column(String(40))
+    affected_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    basis_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
+
+
+def _reject_audit_mutation(_mapper: object, _connection: object, _target: object) -> None:
+    raise ValueError("AuditEvent is append-only")
+
+
+event.listen(AuditEvent, "before_update", _reject_audit_mutation)
+event.listen(AuditEvent, "before_delete", _reject_audit_mutation)
 
 
 class BackupRun(TimestampMixin, Base):

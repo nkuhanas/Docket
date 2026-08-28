@@ -2,6 +2,7 @@ import uuid
 from datetime import date, datetime
 
 from sqlalchemy import (
+    JSON,
     CheckConstraint,
     Date,
     DateTime,
@@ -13,6 +14,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from docket.domain.public_refs import new_public_ref
 from docket.models.base import Base, TimestampMixin
 
 
@@ -74,6 +76,9 @@ class DailyBrief(TimestampMixin, Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    ref_id: Mapped[str] = mapped_column(
+        String(40), unique=True, nullable=False, default=lambda: new_public_ref("brief")
+    )
     brief_kind: Mapped[str] = mapped_column(String(16), nullable=False)
     local_date: Mapped[date] = mapped_column(Date, nullable=False)
     window_id: Mapped[uuid.UUID] = mapped_column(
@@ -85,6 +90,11 @@ class DailyBrief(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    interval_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    interval_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    case_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    basis_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    projection_revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
 

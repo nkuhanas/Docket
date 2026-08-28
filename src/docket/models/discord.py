@@ -82,6 +82,8 @@ class DiscordProjection(TimestampMixin, Base):
         ForeignKey("discord_daily_threads.id", ondelete="RESTRICT"), nullable=False
     )
     projection_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    primary_public_ref: Mapped[str | None] = mapped_column(String(40))
+    primary_revision_ref: Mapped[str | None] = mapped_column(String(40))
     message_id: Mapped[str | None] = mapped_column(String(64))
     render_schema_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     render_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -120,6 +122,15 @@ class DiscordMcpTrace(TimestampMixin, Base):
     source_channel_id: Mapped[str] = mapped_column(String(64), nullable=False)
     source_message_id: Mapped[str] = mapped_column(String(64), nullable=False)
     actor_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    tool_contract_version: Mapped[str] = mapped_column(
+        String(128), default="pre-contract-bootstrap-2026-08-27", nullable=False
+    )
+    tool_contract_hash: Mapped[str] = mapped_column(
+        String(64), default="0" * 64, nullable=False
+    )
+    caller_profile: Mapped[str] = mapped_column(
+        String(32), default="interactive", nullable=False
+    )
     status: Mapped[str] = mapped_column(String(16), default="running", nullable=False)
     calls: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
     last_ordinal: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

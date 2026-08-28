@@ -12,6 +12,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     Uuid,
     event,
@@ -29,6 +30,7 @@ from docket.domain.enums import (
     QueueItemStatus,
     QueuePresentation,
 )
+from docket.domain.public_refs import new_public_ref
 from docket.models.base import Base, TimestampMixin, utc_now
 
 
@@ -74,6 +76,9 @@ class QueueItem(TimestampMixin, Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     resolution_code: Mapped[str | None] = mapped_column(String(128))
     resolution_note: Mapped[str | None] = mapped_column(String(1000))
+    attention_case_ref: Mapped[str | None] = mapped_column(String(40))
+    attention_case_revision_ref: Mapped[str | None] = mapped_column(String(40))
+    daily_brief_ref: Mapped[str | None] = mapped_column(String(40))
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
 
@@ -240,9 +245,29 @@ class Operation(TimestampMixin, Base):
             "'failed', 'reconciliation_required')",
             name="ck_operations_status",
         ),
+        CheckConstraint(
+            "provenance_status IN ('complete', 'legacy_preledger')",
+            name="ck_operations_provenance_status",
+        ),
+        CheckConstraint(
+            "provenance_status = 'legacy_preledger' OR "
+            "originating_changeset_ref IS NOT NULL",
+            name="ck_operations_complete_changeset",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    ref_id: Mapped[str] = mapped_column(
+        String(40), unique=True, nullable=False, default=lambda: new_public_ref("op")
+    )
+    originating_changeset_ref: Mapped[str | None] = mapped_column(String(40))
+    basis_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    canonical_target_refs: Mapped[list[str]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    provenance_status: Mapped[str] = mapped_column(
+        String(32), default="legacy_preledger", nullable=False
+    )
     action_revision_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("action_revisions.id", ondelete="RESTRICT"), nullable=False
     )
@@ -609,11 +634,18 @@ class CalendarLane(TimestampMixin, Base):
             "color_hex LIKE '#______' AND length(color_hex) = 7",
             name="ck_calendar_lanes_color_hex",
         ),
+        CheckConstraint(
+            "provenance_status IN ('complete', 'legacy_preledger')",
+            name="ck_calendar_lanes_provenance_status",
+        ),
         UniqueConstraint("account_id", "lane", name="uq_calendar_lanes_account_lane"),
         UniqueConstraint("account_id", "calendar_id", name="uq_calendar_lanes_account_calendar"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    ref_id: Mapped[str] = mapped_column(
+        String(40), unique=True, nullable=False, default=lambda: new_public_ref("lane")
+    )
     account_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("accounts.id", ondelete="RESTRICT"), nullable=False
     )
@@ -621,6 +653,17 @@ class CalendarLane(TimestampMixin, Base):
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
     color_hex: Mapped[str] = mapped_column(String(7), nullable=False)
     calendar_id: Mapped[str | None] = mapped_column(String(1024))
+    operator_policy_text: Mapped[str | None] = mapped_column(Text)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
+    basis_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    decision_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    source_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    created_by_changeset_ref: Mapped[str | None] = mapped_column(String(40))
+    provenance_status: Mapped[str] = mapped_column(
+        String(32), default="legacy_preledger", nullable=False
+    )
     status: Mapped[str] = mapped_column(String(32), default="unprovisioned", nullable=False)
     last_error_code: Mapped[str | None] = mapped_column(String(128))
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
