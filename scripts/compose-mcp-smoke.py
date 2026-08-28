@@ -172,9 +172,9 @@ async def smoke() -> None:
             "call_id": "compose-smoke-call",
             "ordinal": 1,
             "tool_name": "docket_commit_changeset",
-            "state": "running",
+            "transport_state": "running",
             "received_argument_hash": argument_hash,
-            "argument_preview": '{"kind":"compose_smoke"}',
+            "argument_preview": '{"fields":["content"]}',
         }
         async with httpx.AsyncClient(
             headers={"Authorization": f"Bearer {_service_token()}"},
@@ -185,7 +185,7 @@ async def smoke() -> None:
                 (
                     {
                         **running_call,
-                        "state": "succeeded",
+                        "transport_state": "completed",
                         "elapsed_ms": 1,
                         "disposition": "succeeded",
                     },
