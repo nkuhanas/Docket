@@ -212,21 +212,19 @@ def test_docket_mcp_hooks_emit_only_bounded_trace_metadata(plugin_module, monkey
         "call_id": "call-1",
         "ordinal": 1,
         "tool_name": "docket_search_records",
-        "state": "running",
+        "transport_state": "running",
         "elapsed_ms": 0,
         "disposition": None,
-        "error_code": None,
-        "argument_preview": (
-            '{"authorization":"[redacted]","query":"Cal Poly Mustang Shop"}'
-        ),
+        "transport_error_code": None,
+        "argument_preview": '{"fields":["authorization","query"]}',
         "received_argument_hash": (
             "8c35d71f49d364f15cbf026ee0a05ed5011e35fc2b0d0897fd48b801a47f13da"
         ),
     }
-    assert terminal["state"] == "succeeded"
+    assert terminal["transport_state"] == "completed"
     assert terminal["elapsed_ms"] == 42
     assert emitted[2][1] == {"turn_status": "completed"}
-    assert "Cal Poly Mustang Shop" in str(emitted)
+    assert "Cal Poly Mustang Shop" not in str(emitted)
     assert "secret bearer value" not in str(emitted)
     assert "secret result body" not in str(emitted)
     assert "secret model response" not in str(emitted)
@@ -238,6 +236,39 @@ def test_docket_mcp_hooks_emit_only_bounded_trace_metadata(plugin_module, monkey
         turn_id="turn-1",
     )
     assert len(emitted) == 3
+
+
+@pytest.mark.adversarial
+def test_changeset_argument_preview_is_semantic_and_never_raw(plugin_module) -> None:
+    preview = plugin_module._argument_preview(
+        "docket_commit_changeset",
+        {
+            "utterance_ref": "utt_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "resolved_intent": {"secret": "I already applied for this one"},
+            "content": {
+                "resolution_changes": [
+                    {
+                        "object_type": "attention_case_resolution",
+                        "object_ref": "case_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                        "case_revision_ref": "caserev_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                        "case_outcome": "resolved",
+                        "item_dispositions": [
+                            {
+                                "item_ref": "item_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                                "disposition": "resolved",
+                            }
+                        ],
+                    }
+                ]
+            },
+        },
+    )
+    assert "case_01ARZ3NDEKTSV4RRFFQ69G5FAV" in preview
+    assert "caserev_01ARZ3NDEKTSV4RRFFQ69G5FAV" in preview
+    assert '"case_outcome":"resolved"' in preview
+    assert '"explicit_item_dispositions":1' in preview
+    assert "I already applied" not in preview
+    assert "item_01ARZ3NDEKTSV4RRFFQ69G5FAV" not in preview
 
 
 @pytest.mark.adversarial
@@ -367,10 +398,13 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
             {
                 "ordinal": 1,
                 "tool_name": "docket_search_records",
-                "state": "succeeded",
+                "transport_state": "completed",
+                "domain_state": "succeeded",
                 "elapsed_ms": 42,
                 "outcome": "succeeded",
-                "argument_preview": '{"query":"Cal Poly Mustang Shop"}',
+                "tool_call_ref": "call_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                "transport_error_code": "none",
+                "argument_preview": '{"fields":["query"]}',
             }
         ],
         "overflow_count": 0,
@@ -404,7 +438,8 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
     assert len(channel.messages) == 1
     assert channel.messages[0].edit_count == 1
     assert channel.messages[0].embeds[0].fields[1]["name"] == ("1. docket_search_records")
-    assert "Cal Poly Mustang Shop" in channel.messages[0].embeds[0].fields[1]["value"]
+    assert "Transport: Completed" in channel.messages[0].embeds[0].fields[1]["value"]
+    assert "Domain: Succeeded" in channel.messages[0].embeds[0].fields[1]["value"]
 
 
 @pytest.mark.adversarial

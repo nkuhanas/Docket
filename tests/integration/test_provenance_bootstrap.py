@@ -455,7 +455,7 @@ def test_failed_tool_invocation_omits_non_durable_result_refs(session_factory) -
     def failed_read() -> dict[str, object]:
         return {
             "ok": False,
-            "error": {"code": "planned_lookup_failed", "message": "Lookup failed."},
+            "error": {"code": "internal_error", "message": "Lookup failed."},
             "affected_refs": [utterance_ref, phantom_ref],
         }
 
@@ -537,7 +537,7 @@ def test_read_only_tool_does_not_require_operator_utterance(session_factory) -> 
 
     @server.tool(name="docket_search_records")
     def search_records(query: str) -> dict[str, object]:
-        return {"ok": True, "query": query}
+        return {"ok": True, "query": query, "disposition": "matched_existing"}
 
     result = asyncio.run(server.call_tool("docket_search_records", {"query": "term"}))
     assert result
@@ -545,6 +545,7 @@ def test_read_only_tool_does_not_require_operator_utterance(session_factory) -> 
         invocation = session.scalar(select(ToolInvocation))
         assert invocation is not None
         assert invocation.status == "succeeded"
+        assert invocation.result_disposition == "matched_existing"
         assert invocation.utterance_refs == []
 
 
@@ -590,7 +591,7 @@ def test_trace_enriches_boundary_invocation_with_operator_utterance(session_fact
                 "call_id": "call-1",
                 "ordinal": 1,
                 "tool_name": "docket_search_records",
-                "state": "running",
+                "transport_state": "running",
                 "received_argument_hash": argument_hash,
             },
         }

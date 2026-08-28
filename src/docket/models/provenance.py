@@ -246,6 +246,7 @@ class ToolInvocation(Base):
     received_argument_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     normalized_argument_hash: Mapped[str | None] = mapped_column(String(64))
     result_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    result_disposition: Mapped[str | None] = mapped_column(String(64))
     error_code: Mapped[str | None] = mapped_column(String(128))
     mcp_request_id: Mapped[str | None] = mapped_column(String(255))
     trace_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)

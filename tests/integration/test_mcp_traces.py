@@ -8,7 +8,12 @@ from sqlalchemy.orm import Session, sessionmaker
 from docket.config import get_settings
 from docket.domain.errors import DocketError
 from docket.internal_api.schemas import McpTraceUpdate
-from docket.models import DiscordDailyThread, DiscordMcpTrace, OutboxEvent
+from docket.models import (
+    DiscordDailyThread,
+    DiscordMcpTrace,
+    OutboxEvent,
+    ToolInvocation,
+)
 from docket.providers.discord import FakeDiscordBackend, FakeDiscordProjectionAdapter
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.mcp_traces import McpTraceService, trace_id_for_source
@@ -19,22 +24,24 @@ def _update(
     *,
     trace_id: uuid.UUID,
     ordinal: int | None = None,
-    state: str | None = None,
+    transport_state: str | None = None,
     turn_status: str = "running",
     source_channel_id: str | None = None,
+    received_argument_hash: str | None = None,
 ) -> McpTraceUpdate:
     settings = get_settings()
     call = None
-    if ordinal is not None and state is not None:
+    if ordinal is not None and transport_state is not None:
         call = {
             "call_id": f"call-{ordinal}",
             "ordinal": ordinal,
             "tool_name": "docket_search_records",
-            "state": state,
-            "elapsed_ms": 0 if state == "running" else 125,
-            "disposition": "succeeded" if state == "succeeded" else None,
-            "error_code": None,
-            "argument_preview": '{"query":"mustang shop"}',
+            "transport_state": transport_state,
+            "elapsed_ms": 0 if transport_state == "running" else 125,
+            "disposition": "succeeded" if transport_state == "completed" else None,
+            "transport_error_code": None,
+            "argument_preview": '{"fields":["query"]}',
+            "received_argument_hash": received_argument_hash,
         }
     return McpTraceUpdate.model_validate(
         {
@@ -80,7 +87,7 @@ def test_mcp_trace_accepts_a_bound_docket_daily_thread(
             _update(
                 trace_id=trace_id,
                 ordinal=1,
-                state="running",
+                transport_state="running",
                 source_channel_id=thread_id,
             ),
         )
@@ -98,7 +105,7 @@ def test_mcp_trace_accepts_a_bound_docket_daily_thread(
             _update(
                 trace_id=unknown_trace,
                 ordinal=1,
-                state="running",
+                transport_state="running",
                 source_channel_id=unknown_channel,
             ),
         )
@@ -118,13 +125,13 @@ def test_mcp_trace_is_monotonic_redacted_and_projected(
     with session_factory.begin() as session:
         first = McpTraceService(session).update(
             trace_id,
-            _update(trace_id=trace_id, ordinal=1, state="running"),
+            _update(trace_id=trace_id, ordinal=1, transport_state="running"),
         )
         assert first["trace_version"] == 1
     with session_factory.begin() as session:
         terminal = McpTraceService(session).update(
             trace_id,
-            _update(trace_id=trace_id, ordinal=1, state="succeeded"),
+            _update(trace_id=trace_id, ordinal=1, transport_state="completed"),
         )
         assert terminal["trace_version"] == 2
     with session_factory.begin() as session:
@@ -153,11 +160,15 @@ def test_mcp_trace_is_monotonic_redacted_and_projected(
                 "call_id": "call-1",
                 "ordinal": 1,
                 "tool_name": "docket_search_records",
-                "state": "succeeded",
+                "transport_state": "completed",
+                "domain_state": "unknown",
                 "elapsed_ms": 125,
-                "disposition": "succeeded",
-                "error_code": None,
-                "argument_preview": '{"query":"mustang shop"}',
+                "disposition": None,
+                "transport_error_code": None,
+                "domain_error_code": None,
+                "argument_preview": '{"fields":["query"]}',
+                "received_argument_hash": None,
+                "tool_call_ref": None,
             }
         ]
         assert session.scalar(select(func.count()).select_from(OutboxEvent)) == 3
@@ -176,10 +187,13 @@ def test_mcp_trace_is_monotonic_redacted_and_projected(
         {
             "ordinal": 1,
             "tool_name": "docket_search_records",
-            "state": "succeeded",
+            "transport_state": "completed",
+            "domain_state": "unknown",
             "elapsed_ms": 125,
-            "outcome": "succeeded",
-            "argument_preview": '{"query":"mustang shop"}',
+            "outcome": "unknown",
+            "tool_call_ref": "unreconciled",
+            "transport_error_code": "none",
+            "argument_preview": '{"fields":["query"]}',
         }
     ]
     serialized = str(projected)
@@ -190,7 +204,7 @@ def test_mcp_trace_is_monotonic_redacted_and_projected(
     with pytest.raises(DocketError) as regression, session_factory.begin() as session:
         McpTraceService(session).update(
             trace_id,
-            _update(trace_id=trace_id, ordinal=1, state="failed"),
+            _update(trace_id=trace_id, ordinal=1, transport_state="failed"),
         )
     assert regression.value.code == "mcp_trace_state_regression"
 
@@ -209,7 +223,11 @@ def test_mcp_trace_projection_caps_rows_and_reports_overflow(
         with session_factory.begin() as session:
             McpTraceService(session).update(
                 trace_id,
-                _update(trace_id=trace_id, ordinal=ordinal, state="running"),
+                _update(
+                    trace_id=trace_id,
+                    ordinal=ordinal,
+                    transport_state="running",
+                ),
             )
     with session_factory.begin() as session:
         McpTraceService(session).update(
@@ -229,4 +247,92 @@ def test_mcp_trace_projection_caps_rows_and_reports_overflow(
     assert len(projected["calls"]) == 20
     assert projected["overflow_count"] == 1
     assert projected["status"] == "Interrupted"
-    assert all(call["state"] == "timed_out" for call in projected["calls"])
+    assert all(
+        call["transport_state"] == "timed_out" for call in projected["calls"]
+    )
+    assert all(call["domain_state"] == "unknown" for call in projected["calls"])
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("invocation_status", "error_code", "expected_domain_state"),
+    [
+        ("rejected_validation", "attention_case_items_unresolved", "rejected"),
+        ("failed", "internal_error", "failed"),
+    ],
+)
+def test_mcp_trace_reconciles_authoritative_rejection_and_runtime_failure(
+    session_factory: sessionmaker[Session],
+    invocation_status: str,
+    error_code: str,
+    expected_domain_state: str,
+) -> None:
+    settings = get_settings()
+    trace_id = trace_id_for_source(
+        settings.discord_guild_id,
+        settings.chat_channel_id,
+        "777777777777777777",
+    )
+    argument_hash = "a" * 64
+    with session_factory.begin() as session:
+        McpTraceService(session).update(
+            trace_id,
+            _update(
+                trace_id=trace_id,
+                ordinal=1,
+                transport_state="running",
+                received_argument_hash=argument_hash,
+            ),
+        )
+    with session_factory.begin() as session:
+        invocation = ToolInvocation(
+            tool_name="docket_search_records",
+            tool_contract_version=CONTRACT_VERSION,
+            tool_contract_hash=contract_hash("interactive"),
+            caller_profile="interactive",
+            status=invocation_status,
+            received_argument_hash=argument_hash,
+            result_refs=[],
+            error_code=error_code,
+        )
+        session.add(invocation)
+        session.flush()
+        invocation_ref = invocation.ref_id
+    with session_factory.begin() as session:
+        result = McpTraceService(session).update(
+            trace_id,
+            _update(
+                trace_id=trace_id,
+                ordinal=1,
+                transport_state="completed",
+                received_argument_hash=argument_hash,
+            ),
+        )
+        assert result["tool_call_ref"] == invocation_ref
+    with session_factory() as session:
+        trace = session.get(DiscordMcpTrace, trace_id)
+        assert trace is not None
+        assert trace.calls[0]["transport_state"] == "completed"
+        assert trace.calls[0]["domain_state"] == expected_domain_state
+        assert trace.calls[0]["tool_call_ref"] == invocation_ref
+        assert trace.calls[0]["domain_error_code"] == error_code
+        invocation = session.scalar(
+            select(ToolInvocation).where(ToolInvocation.ref_id == invocation_ref)
+        )
+        assert invocation is not None
+        assert invocation.trace_id == trace_id
+        assert invocation.trace_call_id == "call-1"
+
+    backend = FakeDiscordBackend()
+    runner = DiscordProjectionRunner(
+        session_factory,
+        FakeDiscordProjectionAdapter(backend),
+        settings,
+    )
+    while runner.run_due_once():
+        pass
+    projected_call = backend.mcp_traces[str(trace_id)]["render"]["calls"][0]
+    assert projected_call["transport_state"] == "completed"
+    assert projected_call["domain_state"] == expected_domain_state
+    assert projected_call["outcome"] == error_code
+    assert projected_call["tool_call_ref"] == invocation_ref

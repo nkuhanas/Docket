@@ -37,12 +37,6 @@ logger = logging.getLogger(__name__)
 _COMMAND = re.compile(r"^/?docket\s+(approve|reject)\s+([A-Za-z0-9-]{8,32})\s*$", re.I)
 _GENERIC_DELIVERY_COMMAND = re.compile(r"^/(?:hermes\s+)?(?:sethome|cron)\b", re.I)
 _HOME_CHANNEL_PROMPT = "📬 No home channel is set for Discord."
-_SENSITIVE_ARGUMENT_KEY = re.compile(
-    r"(?:authorization(?:[_-]?header)?|bearer|credential|password|secret|"
-    r"(?:^|[_-])token|verbatim(?:[_-]?text)?|raw[_-]?(?:body|payload)|"
-    r"message[_-]?body)$",
-    re.I,
-)
 _DISCORD_ID = re.compile(r"^[0-9]{17,20}$")
 _PROJECTION_PATH = re.compile(r"^/internal/docket/discord/projections/([0-9a-fA-F-]{36})$")
 _THREAD_LIFECYCLE_PATH = re.compile(
@@ -51,6 +45,8 @@ _THREAD_LIFECYCLE_PATH = re.compile(
 _MCP_TRACE_PATH = re.compile(r"^/internal/docket/discord/mcp-traces/([0-9a-fA-F-]{36})$")
 _UTTERANCE_REF = re.compile(r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")
 _RESPONSE_REF = re.compile(r"^rsp_[0-9A-HJKMNP-TV-Z]{26}$")
+_PUBLIC_REF = re.compile(r"^[a-z][a-z0-9]{1,7}_[0-9A-HJKMNP-TV-Z]{26}$")
+_SAFE_ERROR_CODE = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
 _CONTROL_ID = re.compile(r"^dkt:([arlnp]):([A-Za-z0-9_-]{70,90})$")
 _MAX_REQUEST_BYTES = 65536
 _SERVER: ThreadingHTTPServer | None = None
@@ -468,41 +464,60 @@ def _docket_public_tool_name(tool_name: str) -> str | None:
     return public_name if public_name in _DOCKET_MCP_TOOL_NAMES else None
 
 
-def _argument_preview(arguments: dict[str, Any]) -> str:
-    """Return bounded diagnostic arguments without retaining raw request payloads."""
+def _argument_preview(tool_name: str, arguments: dict[str, Any]) -> str:
+    """Return a bounded semantic summary, never the raw argument object."""
 
-    def sanitize(value: Any, *, key: str = "", depth: int = 0) -> Any:
-        if _SENSITIVE_ARGUMENT_KEY.search(key):
-            return "[redacted]"
-        if depth >= 4:
-            return "[nested]"
-        if isinstance(value, dict):
-            items = list(value.items())
-            projected = {
-                str(item_key)[:64]: sanitize(
-                    item_value,
-                    key=str(item_key),
-                    depth=depth + 1,
+    preview_data: dict[str, Any] = {
+        "fields": sorted(str(key)[:64] for key in arguments)[:24]
+    }
+    public_refs = sorted(
+        {
+            value
+            for value in arguments.values()
+            if isinstance(value, str) and _PUBLIC_REF.fullmatch(value)
+        }
+    )[:10]
+    if public_refs:
+        preview_data["refs"] = public_refs
+    if tool_name == "docket_commit_changeset":
+        content = arguments.get("content")
+        if isinstance(content, dict):
+            preview_data["change_counts"] = {
+                key: len(value)
+                for key in (
+                    "registry_changes",
+                    "preference_changes",
+                    "lane_changes",
+                    "event_changes",
+                    "resolution_changes",
+                    "provider_intents",
                 )
-                for item_key, item_value in items[:12]
+                if isinstance((value := content.get(key)), list) and value
             }
-            if len(items) > 12:
-                projected["..."] = f"{len(items) - 12} more fields"
-            return projected
-        if isinstance(value, list | tuple):
-            projected = [sanitize(item, key=key, depth=depth + 1) for item in value[:6]]
-            if len(value) > 6:
-                projected.append(f"[{len(value) - 6} more items]")
-            return projected
-        if isinstance(value, str):
-            compact = " ".join(value.split())
-            return compact if len(compact) <= 160 else compact[:157] + "..."
-        if isinstance(value, bool | int | float) or value is None:
-            return value
-        return f"[{type(value).__name__}]"
-
+            resolution_summaries = []
+            for change in content.get("resolution_changes", [])[:10]:
+                if not isinstance(change, dict):
+                    continue
+                if change.get("object_type") != "attention_case_resolution":
+                    continue
+                resolution_summaries.append(
+                    {
+                        "case_ref": change.get("object_ref"),
+                        "case_revision_ref": change.get("case_revision_ref"),
+                        "case_outcome": change.get("case_outcome"),
+                        "explicit_item_dispositions": len(
+                            change.get("item_dispositions", [])
+                            if isinstance(change.get("item_dispositions"), list)
+                            else []
+                        ),
+                    }
+                )
+            if resolution_summaries:
+                preview_data["case_resolutions"] = resolution_summaries
+    elif "limit" in arguments and isinstance(arguments.get("limit"), int):
+        preview_data["limit"] = arguments["limit"]
     preview = json.dumps(
-        sanitize(arguments),
+        preview_data,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
@@ -564,11 +579,12 @@ def _on_pre_tool_call(
             "call_id": stable_call_id,
             "ordinal": ordinal,
             "tool_name": public_name,
-            "state": "running",
+            "transport_state": "running",
             "elapsed_ms": 0,
             "disposition": None,
-            "error_code": None,
+            "transport_error_code": None,
             "argument_preview": _argument_preview(
+                public_name,
                 args if isinstance(args, dict) else {}
             ),
             "received_argument_hash": hashlib.sha256(
@@ -608,23 +624,21 @@ def _terminal_trace_call(
     decoded = _decoded_tool_result(result)
     status_text = str(status or "").casefold()
     error_text = str(error_type or "").casefold()
-    state = "succeeded"
+    transport_state = "completed"
     disposition = "succeeded"
     error_code = None
     if "timeout" in status_text or "timeout" in error_text:
-        state = "timed_out"
+        transport_state = "timed_out"
         disposition = None
         error_code = "timeout"
     elif "cancel" in status_text or "cancel" in error_text:
-        state = "failed"
+        transport_state = "failed"
         disposition = None
         error_code = "cancelled"
     elif decoded is not None and decoded.get("ok") is False:
-        state = "failed"
         disposition = None
-        error_code = "docket_error"
     elif status_text in {"error", "failed", "blocked"} or error_type:
-        state = "failed"
+        transport_state = "failed"
         disposition = None
         error_code = "blocked" if status_text == "blocked" else "transport_error"
     elif decoded is None:
@@ -634,10 +648,10 @@ def _terminal_trace_call(
         disposition = candidate if candidate in _TRACE_DISPOSITIONS else "succeeded"
     return {
         **call,
-        "state": state,
+        "transport_state": transport_state,
         "elapsed_ms": min(max(int(duration_ms or 0), 0), 600_000),
         "disposition": disposition,
-        "error_code": error_code,
+        "transport_error_code": error_code,
     }
 
 
@@ -664,7 +678,7 @@ def _on_post_tool_call(
         ):
             return
         call = context["calls"].get(str(tool_call_id)[:255])
-        if call is None or call.get("state") != "running":
+        if call is None or call.get("transport_state") != "running":
             return
         terminal_call = _terminal_trace_call(
             call,
@@ -1165,6 +1179,11 @@ def _rewrite_with_source_context(
         "exact email idn_ or an email-associated sender_label idn_, and must include "
         "an executable suppress disposition. Verify the stored target, associated "
         "emails, and policy after commit.\n"
+        "For an AttentionCase reply, read the case once and submit one typed "
+        "resolution bound to the exact case_ and caserev_. Only explicitly resolved "
+        "or rejected items belong in item_dispositions; omitted supporting items are "
+        "not_pursued on terminal closure. Preserve reusable case state through a "
+        "case-scoped statement without inventing unrelated canonical objects.\n"
         "</docket_authority_policy>"
     )
     contract_context = (
@@ -2491,17 +2510,36 @@ async def _put_mcp_trace(trace_id: uuid.UUID, payload: dict[str, Any]) -> dict[s
                 "invalid_mcp_trace", "Trace call numeric fields are invalid", 422
             ) from exc
         tool_name = _safe_text(raw_call.get("tool_name"), 128, "tool_name")
-        state = _safe_text(raw_call.get("state"), 16, "state")
-        outcome = _safe_text(raw_call.get("outcome"), 64, "outcome")
+        transport_state = _safe_text(
+            raw_call.get("transport_state"), 16, "transport_state"
+        )
+        domain_state = _safe_text(raw_call.get("domain_state"), 16, "domain_state")
+        outcome = _safe_text(raw_call.get("outcome"), 128, "outcome")
+        tool_call_ref = _safe_text(
+            raw_call.get("tool_call_ref", "unreconciled"), 40, "tool_call_ref"
+        )
+        transport_error_code = _safe_text(
+            raw_call.get("transport_error_code", "none"),
+            64,
+            "transport_error_code",
+        )
         argument_preview = _safe_text(
             raw_call.get("argument_preview", "{}"), 768, "argument_preview"
         )
         if (
             ordinal != expected_ordinal
             or tool_name not in _DOCKET_MCP_TOOL_NAMES
-            or state not in {"running", "succeeded", "failed", "timed_out"}
-            or outcome
-            not in (_TRACE_DISPOSITIONS | _TRACE_ERROR_CODES | {"running", "failed", "timed_out"})
+            or transport_state not in {"running", "completed", "failed", "timed_out"}
+            or domain_state not in {"succeeded", "rejected", "failed", "unknown"}
+            or not _SAFE_ERROR_CODE.fullmatch(outcome)
+            or (
+                tool_call_ref != "unreconciled"
+                and not re.fullmatch(r"call_[0-9A-HJKMNP-TV-Z]{26}", tool_call_ref)
+            )
+            or (
+                transport_error_code != "none"
+                and transport_error_code not in _TRACE_ERROR_CODES
+            )
             or elapsed_ms < 0
             or elapsed_ms > 600_000
         ):
@@ -2510,9 +2548,12 @@ async def _put_mcp_trace(trace_id: uuid.UUID, payload: dict[str, Any]) -> dict[s
             {
                 "ordinal": ordinal,
                 "tool_name": tool_name,
-                "state": state,
+                "transport_state": transport_state,
+                "domain_state": domain_state,
                 "elapsed_ms": elapsed_ms,
                 "outcome": outcome,
+                "tool_call_ref": tool_call_ref,
+                "transport_error_code": transport_error_code,
                 "argument_preview": argument_preview,
             }
         )
@@ -2560,17 +2601,27 @@ async def _put_mcp_trace(trace_id: uuid.UUID, payload: dict[str, Any]) -> dict[s
         color=colors[status],
     )
     embed.add_field(name="Status", value=status, inline=False)
-    state_labels = {
+    transport_labels = {
         "running": "Running",
-        "succeeded": "Succeeded",
+        "completed": "Completed",
         "failed": "Failed",
         "timed_out": "Timed out",
     }
+    domain_labels = {
+        "succeeded": "Succeeded",
+        "rejected": "Rejected",
+        "failed": "Failed",
+        "unknown": "Unknown",
+    }
     for call in calls:
-        terminal = call["state"] != "running"
-        details = state_labels[call["state"]]
+        terminal = call["transport_state"] != "running"
+        details = f"Transport: {transport_labels[call['transport_state']]}"
+        details += f" · Domain: {domain_labels[call['domain_state']]}"
         if terminal:
             details += f" · {call['elapsed_ms']} ms · {call['outcome'].replace('_', ' ')}"
+        details += f" · {call['tool_call_ref']}"
+        if call["transport_error_code"] != "none":
+            details += f" · transport {call['transport_error_code'].replace('_', ' ')}"
         details += f"\n`{call['argument_preview']}`"
         embed.add_field(
             name=f"{call['ordinal']}. {call['tool_name']}",

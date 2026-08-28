@@ -45,8 +45,8 @@ def _error(exc: Exception) -> dict[str, Any]:
     return {
         "ok": False,
         "error": {
-            "code": "validation_error",
-            "message": str(exc),
+            "code": "internal_error",
+            "message": "Docket encountered an internal processing failure.",
             "details": {},
         },
     }
@@ -79,7 +79,7 @@ def docket_submit_triage_analysis(
     entity_candidate_refs: list[PublicRef] | None = None,
     case_items: list[CaseItemInput] | None = None,
 ) -> dict[str, Any]:
-    """Compile typed analysis into case or brief intelligence, never mutation."""
+    """Compile non-authoritative intelligence; every new case item declares its role."""
     try:
         request = TriageAnalysisInput.model_validate(
             {

@@ -128,7 +128,10 @@ class McpTraceService:
                 code="invalid_mcp_trace_disposition",
                 message="The MCP trace disposition is not allowlisted.",
             )
-        if call.error_code is not None and call.error_code not in TRACE_ERROR_CODES:
+        if (
+            call.transport_error_code is not None
+            and call.transport_error_code not in TRACE_ERROR_CODES
+        ):
             raise DocketError(
                 code="invalid_mcp_trace_error",
                 message="The MCP trace error code is not allowlisted.",
@@ -140,11 +143,28 @@ class McpTraceService:
             "call_id": call.call_id,
             "ordinal": call.ordinal,
             "tool_name": call.tool_name,
-            "state": call.state,
+            "transport_state": call.transport_state,
+            "domain_state": "unknown",
             "elapsed_ms": call.elapsed_ms,
-            "disposition": call.disposition,
-            "error_code": call.error_code,
+            "disposition": None,
+            "transport_error_code": call.transport_error_code,
+            "domain_error_code": None,
             "argument_preview": call.argument_preview,
+            "received_argument_hash": call.received_argument_hash,
+            "tool_call_ref": None,
+        }
+
+    @staticmethod
+    def _incoming_call(call: McpTraceCallUpdate) -> dict[str, Any]:
+        return {
+            "call_id": call.call_id,
+            "ordinal": call.ordinal,
+            "tool_name": call.tool_name,
+            "transport_state": call.transport_state,
+            "elapsed_ms": call.elapsed_ms,
+            "transport_error_code": call.transport_error_code,
+            "argument_preview": call.argument_preview,
+            "received_argument_hash": call.received_argument_hash,
         }
 
     def _apply_call(
@@ -169,7 +189,10 @@ class McpTraceService:
                     code="mcp_trace_terminal",
                     message="A terminal MCP trace cannot accept another call.",
                 )
-            if call.ordinal != trace.last_ordinal + 1 or call.state != "running":
+            if (
+                call.ordinal != trace.last_ordinal + 1
+                or call.transport_state != "running"
+            ):
                 raise DocketError(
                     code="nonmonotonic_mcp_trace",
                     message="MCP trace calls must begin in monotonic ordinal order.",
@@ -194,20 +217,23 @@ class McpTraceService:
                 code="mcp_trace_call_conflict",
                 message="The MCP trace call tool binding changed.",
             )
-        current_state = str(match.get("state"))
-        if current_state == call.state:
-            if self._stored_call(call) != match:
+        current_state = str(match.get("transport_state", match.get("state")))
+        if current_state == call.transport_state:
+            if any(
+                match.get(key) != value
+                for key, value in self._incoming_call(call).items()
+            ):
                 raise DocketError(
                     code="mcp_trace_call_conflict",
                     message="A replayed MCP trace call changed terminal details.",
                 )
             return False
-        if current_state != "running" or call.state == "running":
+        if current_state != "running" or call.transport_state == "running":
             raise DocketError(
                 code="mcp_trace_state_regression",
                 message="An MCP trace call cannot regress or change terminal state.",
             )
-        match.update(self._stored_call(call))
+        match.update(self._incoming_call(call))
         trace.calls = calls
         return True
 
@@ -216,7 +242,7 @@ class McpTraceService:
         trace: DiscordMcpTrace,
         call: McpTraceCallUpdate,
         now: datetime,
-    ) -> str | None:
+    ) -> ToolInvocation | None:
         existing = self.session.scalar(
             select(ToolInvocation).where(
                 ToolInvocation.trace_id == trace.id,
@@ -224,7 +250,7 @@ class McpTraceService:
             )
         )
         if existing is not None:
-            return existing.ref_id
+            return existing
         if call.received_argument_hash is None:
             return None
         invocation = self.session.scalar(
@@ -256,22 +282,103 @@ class McpTraceService:
         invocation.trace_ordinal = call.ordinal
         invocation.actor_ref = f"discord_user:{trace.actor_id}"
         invocation.utterance_refs = [utterance.ref_id] if utterance is not None else []
-        return invocation.ref_id
+        return invocation
+
+    @staticmethod
+    def _domain_state(invocation: ToolInvocation | None) -> str:
+        if invocation is None or invocation.status == "received":
+            return "unknown"
+        if invocation.status in {
+            "rejected_validation",
+            "rejected_authority",
+            "rejected_conflict",
+        }:
+            return "rejected"
+        if invocation.status == "succeeded":
+            return "succeeded"
+        return "failed"
+
+    def _reconcile_calls(self, trace: DiscordMcpTrace, now: datetime) -> bool:
+        changed = False
+        calls = [dict(item) for item in trace.calls]
+        for call in calls:
+            call_id = str(call.get("call_id", ""))
+            invocation = self.session.scalar(
+                select(ToolInvocation).where(
+                    ToolInvocation.trace_id == trace.id,
+                    ToolInvocation.trace_call_id == call_id,
+                )
+            )
+            received_hash = call.get("received_argument_hash")
+            if invocation is None and isinstance(received_hash, str):
+                invocation = self.session.scalar(
+                    select(ToolInvocation)
+                    .where(
+                        ToolInvocation.caller_profile == "interactive",
+                        ToolInvocation.tool_name == call.get("tool_name"),
+                        ToolInvocation.received_argument_hash == received_hash,
+                        ToolInvocation.trace_id.is_(None),
+                        ToolInvocation.started_at >= now - timedelta(minutes=10),
+                    )
+                    .order_by(ToolInvocation.started_at.desc())
+                    .limit(1)
+                    .with_for_update()
+                )
+                if invocation is not None:
+                    invocation.trace_id = trace.id
+                    invocation.trace_call_id = call_id
+                    invocation.trace_ordinal = int(call.get("ordinal", 0))
+                    invocation.actor_ref = f"discord_user:{trace.actor_id}"
+                    source_message_ref = (
+                        f"discord_message:{trace.guild_id}:{trace.source_channel_id}:"
+                        f"{trace.source_message_id}"
+                    )
+                    utterance = self.session.scalar(
+                        select(OperatorUtterance).where(
+                            OperatorUtterance.source_message_ref == source_message_ref
+                        )
+                    )
+                    invocation.utterance_refs = (
+                        [utterance.ref_id] if utterance is not None else []
+                    )
+            domain_state = self._domain_state(invocation)
+            authoritative = {
+                "domain_state": domain_state,
+                "tool_call_ref": invocation.ref_id if invocation is not None else None,
+                "disposition": (
+                    invocation.result_disposition
+                    if invocation is not None and domain_state == "succeeded"
+                    else None
+                ),
+                "domain_error_code": (
+                    invocation.error_code
+                    if invocation is not None
+                    and domain_state in {"rejected", "failed"}
+                    else None
+                ),
+            }
+            if any(call.get(key) != value for key, value in authoritative.items()):
+                call.update(authoritative)
+                changed = True
+        if changed:
+            trace.calls = calls
+        return changed
 
     @staticmethod
     def _finish_running_calls(trace: DiscordMcpTrace) -> bool:
         changed = False
         calls = [dict(item) for item in trace.calls]
         for call in calls:
-            if call.get("state") == "running":
+            if call.get("transport_state", call.get("state")) == "running":
                 call.update(
                     {
-                        "state": "timed_out",
+                        "transport_state": "timed_out",
                         "elapsed_ms": min(int(call.get("elapsed_ms", 0)), 600_000),
                         "disposition": None,
-                        "error_code": "timeout",
+                        "transport_error_code": "timeout",
                     }
                 )
+                call.pop("state", None)
                 changed = True
         if changed:
             trace.calls = calls
@@ -319,7 +426,9 @@ class McpTraceService:
         tool_call_ref: str | None = None
         if request.call is not None:
             changed = self._apply_call(trace, request.call)
-            tool_call_ref = self._link_tool_invocation(trace, request.call, now)
+            invocation = self._link_tool_invocation(trace, request.call, now)
+            tool_call_ref = invocation.ref_id if invocation is not None else None
+            changed = self._reconcile_calls(trace, now) or changed
         if request.turn_status != "running":
             target_status = request.turn_status
             if trace.status == "running":
@@ -332,6 +441,7 @@ class McpTraceService:
                     code="mcp_trace_state_regression",
                     message="A terminal MCP trace cannot change terminal state.",
                 )
+        changed = self._reconcile_calls(trace, now) or changed
         if not changed:
             return {
                 "ok": True,

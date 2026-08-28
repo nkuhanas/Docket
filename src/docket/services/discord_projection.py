@@ -2944,15 +2944,29 @@ class DiscordProjectionRunner:
                 raise DiscordProjectionError("mcp_trace_missing", "MCP trace is missing")
             visible_calls = []
             for raw_call in trace.calls[:20]:
-                state = str(raw_call.get("state", "failed"))
-                outcome = raw_call.get("disposition") or raw_call.get("error_code")
+                transport_state = str(
+                    raw_call.get("transport_state", raw_call.get("state", "failed"))
+                )
+                domain_state = str(raw_call.get("domain_state", "unknown"))
+                outcome = (
+                    raw_call.get("disposition")
+                    or raw_call.get("domain_error_code")
+                    or domain_state
+                )
                 visible_calls.append(
                     {
                         "ordinal": int(raw_call["ordinal"]),
                         "tool_name": self._bounded(str(raw_call["tool_name"]), 128),
-                        "state": state,
+                        "transport_state": transport_state,
+                        "domain_state": domain_state,
                         "elapsed_ms": min(max(int(raw_call.get("elapsed_ms", 0)), 0), 600_000),
-                        "outcome": self._bounded(str(outcome or state), 64),
+                        "outcome": self._bounded(str(outcome or domain_state), 128),
+                        "tool_call_ref": self._bounded(
+                            str(raw_call.get("tool_call_ref") or "unreconciled"), 40
+                        ),
+                        "transport_error_code": self._bounded(
+                            str(raw_call.get("transport_error_code") or "none"), 64
+                        ),
                         "argument_preview": self._bounded(
                             str(raw_call.get("argument_preview", "{}")), 768
                         ),

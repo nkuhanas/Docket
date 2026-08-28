@@ -153,7 +153,11 @@ def _error(exc: Exception) -> dict[str, Any]:
         return exc.as_dict()
     return {
         "ok": False,
-        "error": {"code": "validation_error", "message": str(exc), "details": {}},
+        "error": {
+            "code": "internal_error",
+            "message": "Docket encountered an internal processing failure.",
+            "details": {},
+        },
     }
 
 
@@ -1703,7 +1707,7 @@ def docket_commit_changeset(
     changeset_ref: str | None = None,
     expected_changeset_version: int | None = None,
 ) -> dict[str, Any]:
-    """Commit resolved intent atomically; same-ChangeSet dependencies use *_change_id."""
+    """Commit resolved intent atomically; use *_change_id and exact case_/caserev_."""
     try:
         with session_scope() as session:
             _validate_entity_write(

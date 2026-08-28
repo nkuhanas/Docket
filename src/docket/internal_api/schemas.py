@@ -146,10 +146,10 @@ class McpTraceCallUpdate(InternalModel):
     call_id: str = Field(min_length=1, max_length=255)
     ordinal: int = Field(ge=1, le=100)
     tool_name: str = Field(min_length=1, max_length=128)
-    state: Literal["running", "succeeded", "failed", "timed_out"]
+    transport_state: Literal["running", "completed", "failed", "timed_out"]
     elapsed_ms: int = Field(default=0, ge=0, le=600_000)
     disposition: str | None = Field(default=None, min_length=1, max_length=64)
-    error_code: str | None = Field(default=None, min_length=1, max_length=64)
+    transport_error_code: str | None = Field(default=None, min_length=1, max_length=64)
     received_argument_hash: str | None = Field(
         default=None,
         min_length=64,
@@ -160,13 +160,15 @@ class McpTraceCallUpdate(InternalModel):
 
     @model_validator(mode="after")
     def validate_terminal_details(self) -> "McpTraceCallUpdate":
-        if self.state == "running" and (
-            self.elapsed_ms != 0 or self.disposition is not None or self.error_code is not None
+        if self.transport_state == "running" and (
+            self.elapsed_ms != 0
+            or self.disposition is not None
+            or self.transport_error_code is not None
         ):
             raise ValueError("running trace calls omit terminal details")
-        if self.state == "succeeded" and self.error_code is not None:
-            raise ValueError("successful trace calls omit error_code")
-        if self.state in {"failed", "timed_out"} and self.disposition is not None:
+        if self.transport_state == "completed" and self.transport_error_code is not None:
+            raise ValueError("completed transport omits transport_error_code")
+        if self.transport_state in {"failed", "timed_out"} and self.disposition is not None:
             raise ValueError("failed trace calls omit disposition")
         return self
 

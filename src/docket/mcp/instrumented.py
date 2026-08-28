@@ -82,13 +82,15 @@ def _collect_result_refs(value: Any, *, limit: int = 100) -> list[str]:
 
 def _terminal_status(error_code: str | None) -> str:
     code = (error_code or "").casefold()
+    if any(token in code for token in ("internal", "runtime", "service_exception")):
+        return "failed"
     if any(token in code for token in ("authoriz", "invalid_source", "invalid_actor")):
         return "rejected_authority"
-    if any(token in code for token in ("conflict", "stale", "version_changed")):
+    if any(token in code for token in ("conflict", "stale", "version")):
         return "rejected_conflict"
     if any(token in code for token in ("validation", "invalid_argument", "unknown_tool")):
         return "rejected_validation"
-    return "failed"
+    return "rejected_validation"
 
 
 def _omit_nulls(value: Any) -> Any:
@@ -264,6 +266,7 @@ class ProvenanceFastMCP(FastMCP[Any]):
         status: str,
         normalized_argument_hash: str | None,
         result_refs: list[str],
+        result_disposition: str | None,
         error_code: str | None,
     ) -> None:
         invocation = session.get(ToolInvocation, invocation_id)
@@ -274,6 +277,7 @@ class ProvenanceFastMCP(FastMCP[Any]):
         invocation.status = status
         invocation.normalized_argument_hash = normalized_argument_hash
         invocation.result_refs = result_refs
+        invocation.result_disposition = result_disposition
         invocation.error_code = error_code
         invocation.completed_at = utc_now()
 
@@ -329,6 +333,7 @@ class ProvenanceFastMCP(FastMCP[Any]):
                         status="rejected_authority",
                         normalized_argument_hash=normalized_hash,
                         result_refs=[],
+                        result_disposition=None,
                         error_code="operator_utterance_authority_required",
                     )
                 else:
@@ -354,6 +359,7 @@ class ProvenanceFastMCP(FastMCP[Any]):
                     status=_terminal_status(error_code),
                     normalized_argument_hash=normalized_hash,
                     result_refs=[],
+                    result_disposition=None,
                     error_code=error_code[:128],
                 )
             raise
@@ -390,6 +396,10 @@ class ProvenanceFastMCP(FastMCP[Any]):
             if response_error_code is not None
             else "succeeded"
         )
+        raw_disposition = envelope.get("disposition") if envelope is not None else None
+        result_disposition = (
+            str(raw_disposition)[:64] if isinstance(raw_disposition, str) else None
+        )
         with session_scope() as session:
             self._finish_invocation(
                 session,
@@ -404,6 +414,7 @@ class ProvenanceFastMCP(FastMCP[Any]):
                     if status == "succeeded"
                     else []
                 ),
+                result_disposition=result_disposition,
                 error_code=response_error_code,
             )
         return result

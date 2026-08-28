@@ -7,6 +7,7 @@ from alembic.config import Config
 from sqlalchemy import MetaData, Table, create_engine, inspect, select
 
 from docket.config import clear_settings_cache
+from docket.domain.public_refs import new_public_ref
 
 
 @pytest.mark.integration
@@ -134,6 +135,16 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
         "lane_routing_decisions",
     ):
         assert "ref_id" in {column["name"] for column in inspect(engine).get_columns(public_table)}
+    assert "legacy_ref_id" in {
+        column["name"]
+        for column in inspect(engine).get_columns("attention_case_revisions")
+    }
+    assert "resolution_role" in {
+        column["name"] for column in inspect(engine).get_columns("case_items")
+    }
+    assert "result_disposition" in {
+        column["name"] for column in inspect(engine).get_columns("tool_invocations")
+    }
     assert {
         tuple(constraint["column_names"])
         for constraint in inspect(engine).get_unique_constraints("record_sources")
@@ -150,6 +161,14 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
     }
     assert "brief_review" in projection_constraints["ck_discord_projections_view_mode"]
     assert "65535" in projection_constraints["ck_discord_projections_view_page"]
+    case_item_constraints = {
+        str(constraint["name"]): str(constraint["sqltext"])
+        for constraint in inspect(engine).get_check_constraints("case_items")
+    }
+    assert "not_pursued" in case_item_constraints["ck_case_items_status"]
+    assert "legacy_unspecified" in case_item_constraints[
+        "ck_case_items_resolution_role"
+    ]
 
     command.downgrade(config, "base")
     assert "records" not in inspect(engine).get_table_names()
@@ -215,6 +234,237 @@ def test_typed_registry_migration_preserves_legacy_entity_provenance(
     assert "registration_state" not in {
         column["name"] for column in inspect(engine).get_columns("entities")
     }
+    engine.dispose()
+    clear_settings_cache()
+
+
+@pytest.mark.integration
+def test_case_resolution_migration_types_revision_aliases_and_preserves_bindings(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    database_path = tmp_path / "attention-case-resolution.db"
+    database_url = f"sqlite+pysqlite:///{database_path}"
+    monkeypatch.setenv("DOCKET_DATABASE_URL", database_url)
+    clear_settings_cache()
+    config = Config("alembic.ini")
+    command.upgrade(config, "0039")
+    engine = create_engine(database_url)
+    metadata = MetaData()
+    cases = Table("attention_cases", metadata, autoload_with=engine)
+    revisions = Table("attention_case_revisions", metadata, autoload_with=engine)
+    case_items = Table("case_items", metadata, autoload_with=engine)
+    sessions = Table("intent_sessions", metadata, autoload_with=engine)
+    queues = Table("queue_items", metadata, autoload_with=engine)
+    case_id = uuid.uuid4().hex
+    revision_id = uuid.uuid4().hex
+    item_id = uuid.uuid4().hex
+    session_id = uuid.uuid4().hex
+    queue_id = uuid.uuid4().hex
+    case_ref = new_public_ref("case")
+    legacy_revision_ref = new_public_ref("case")
+    item_ref = new_public_ref("item")
+    now = datetime.now(UTC)
+    with engine.begin() as connection:
+        connection.execute(
+            cases.insert().values(
+                id=case_id,
+                ref_id=case_ref,
+                situation_key="a" * 64,
+                title="Legacy projected case",
+                summary="Legacy case summary",
+                status="open",
+                priority="normal",
+                semantic_classes=["action_request"],
+                entity_refs=[],
+                source_refs=[],
+                latest_revision=1,
+                queue_item_id=None,
+                resolution_decision_ref=None,
+                resolved_at=None,
+                first_observed_at=now,
+                last_observed_at=now,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        connection.execute(
+            revisions.insert().values(
+                id=revision_id,
+                ref_id=legacy_revision_ref,
+                attention_case_id=case_id,
+                case_ref=case_ref,
+                revision=1,
+                title="Legacy projected case",
+                summary="Legacy case summary",
+                semantic_classes=["action_request"],
+                item_refs=[item_ref],
+                source_refs=[],
+                content_hash="b" * 64,
+                created_at=now,
+            )
+        )
+        connection.execute(
+            case_items.insert().values(
+                id=item_id,
+                ref_id=item_ref,
+                attention_case_id=case_id,
+                item_key="legacy-item",
+                item_type="decision_required",
+                status="open",
+                payload_json={},
+                candidate_refs=[],
+                basis_refs=[],
+                source_refs=[],
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        connection.execute(
+            sessions.insert().values(
+                id=session_id,
+                ref_id=new_public_ref("ses"),
+                conversation_ref="discord:guild:channel",
+                source_utterance_ref=new_public_ref("utt"),
+                case_refs=[case_ref],
+                case_revision_refs=[legacy_revision_ref],
+                brief_ref=None,
+                trusted_context_refs=[],
+                resolved_intent_json={},
+                blocking_clarifications=[],
+                state="open",
+                version=1,
+                committed_changeset_ref=None,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        connection.execute(
+            queues.insert().values(
+                id=queue_id,
+                primary_source_item_id=None,
+                deduplication_key="legacy-case-queue",
+                material_fingerprint="c" * 64,
+                category="attention_case",
+                title="Legacy projected case",
+                summary="Legacy case summary",
+                status="pending",
+                priority="normal",
+                presentation="action_required",
+                attention_case_ref=case_ref,
+                attention_case_revision_ref=legacy_revision_ref,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+    command.upgrade(config, "0040")
+    migrated = MetaData()
+    migrated_revisions = Table(
+        "attention_case_revisions", migrated, autoload_with=engine
+    )
+    migrated_items = Table("case_items", migrated, autoload_with=engine)
+    migrated_sessions = Table("intent_sessions", migrated, autoload_with=engine)
+    migrated_queues = Table("queue_items", migrated, autoload_with=engine)
+    with engine.connect() as connection:
+        revision = connection.execute(select(migrated_revisions)).mappings().one()
+        item = connection.execute(select(migrated_items)).mappings().one()
+        intent = connection.execute(select(migrated_sessions)).mappings().one()
+        queue = connection.execute(select(migrated_queues)).mappings().one()
+        assert revision["ref_id"].startswith("caserev_")
+        assert revision["legacy_ref_id"] == legacy_revision_ref
+        assert revision["content_hash"] == "b" * 64
+        assert item["resolution_role"] == "legacy_unspecified"
+        assert intent["case_revision_refs"] == [revision["ref_id"]]
+        assert queue["attention_case_revision_ref"] == revision["ref_id"]
+
+    command.downgrade(config, "0039")
+    restored = MetaData()
+    restored_revisions = Table(
+        "attention_case_revisions", restored, autoload_with=engine
+    )
+    restored_items = Table("case_items", restored, autoload_with=engine)
+    restored_sessions = Table("intent_sessions", restored, autoload_with=engine)
+    with engine.connect() as connection:
+        revision = connection.execute(select(restored_revisions)).mappings().one()
+        intent = connection.execute(select(restored_sessions)).mappings().one()
+        assert revision["ref_id"] == legacy_revision_ref
+        assert intent["case_revision_refs"] == [legacy_revision_ref]
+    assert "resolution_role" not in {
+        column["name"] for column in inspect(engine).get_columns(restored_items.name)
+    }
+    engine.dispose()
+    clear_settings_cache()
+
+
+@pytest.mark.integration
+def test_tool_outcome_migration_separates_legacy_transport_from_domain_state(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    database_path = tmp_path / "tool-outcome-reconciliation.db"
+    database_url = f"sqlite+pysqlite:///{database_path}"
+    monkeypatch.setenv("DOCKET_DATABASE_URL", database_url)
+    clear_settings_cache()
+    config = Config("alembic.ini")
+    command.upgrade(config, "0040")
+    engine = create_engine(database_url)
+    metadata = MetaData()
+    traces = Table("discord_mcp_traces", metadata, autoload_with=engine)
+    now = datetime.now(UTC)
+    trace_id = uuid.uuid4().hex
+    with engine.begin() as connection:
+        connection.execute(
+            traces.insert().values(
+                id=trace_id,
+                guild_id="1",
+                source_channel_id="2",
+                source_message_id="3",
+                actor_id="4",
+                status="completed",
+                calls=[
+                    {
+                        "call_id": "legacy-call",
+                        "ordinal": 1,
+                        "tool_name": "docket_search_records",
+                        "state": "succeeded",
+                        "elapsed_ms": 12,
+                        "disposition": "succeeded",
+                        "error_code": None,
+                        "argument_preview": '{"fields":["query"]}',
+                    }
+                ],
+                last_ordinal=1,
+                version=1,
+                started_at=now,
+                completed_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+    command.upgrade(config, "0041")
+    migrated = Table(
+        "discord_mcp_traces", MetaData(), autoload_with=engine
+    )
+    with engine.connect() as connection:
+        call = connection.execute(select(migrated.c.calls)).scalar_one()[0]
+        assert call["transport_state"] == "completed"
+        assert call["domain_state"] == "unknown"
+        assert call["tool_call_ref"] is None
+        assert "state" not in call
+
+    command.downgrade(config, "0040")
+    restored = Table(
+        "discord_mcp_traces", MetaData(), autoload_with=engine
+    )
+    with engine.connect() as connection:
+        call = connection.execute(select(restored.c.calls)).scalar_one()[0]
+        assert call["state"] == "failed"
+        assert "domain_state" not in call
     engine.dispose()
     clear_settings_cache()
 
