@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-08-28-v7"
+CONTRACT_VERSION = "docket-tools-2026-08-28-v8"
 
 
 class ToolContractEntry(TypedDict):
@@ -125,12 +125,22 @@ def _interactive_entries() -> tuple[ToolContractEntry, ...]:
                 "tool_name": name,
                 "purpose": purpose,
                 "use_when": (
-                    "Current authenticated Operator explicitly requests this effect."
+                    (
+                        "Commit one resolved request; for AttentionCase replies read the "
+                        "case once, use its exact caserev_, and send one typed resolution."
+                    )
+                    if name == "docket_commit_changeset"
+                    else "Current authenticated Operator explicitly requests this effect."
                     if mutation
                     else "Answer requires this exact bounded Docket state."
                 ),
                 "do_not_use_when": (
-                    "Intent is inferred, unresolved, conflicted, or external."
+                    (
+                        "Never trial schemas or mark omitted supporting CaseItems rejected; "
+                        "use keep_open when required items remain unresolved."
+                    )
+                    if name == "docket_commit_changeset"
+                    else "Intent is inferred, unresolved, conflicted, or external."
                     if mutation
                     else "Unneeded or a more specific Docket read exists."
                 ),
@@ -244,6 +254,18 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
                     "ChangeSet references: use *_ref for an existing public object; use "
                     "*_change_id for an object created earlier in the same atomic "
                     "ChangeSet."
+                )
+            ]
+            if profile == "interactive"
+            else []
+        ),
+        *(
+            [
+                (
+                    "AttentionCase resolution: resolution_changes uses object_ref=case_, "
+                    "case_revision_ref=caserev_, case_outcome, item_dispositions of only "
+                    "explicit Operator resolved/rejected choices, and basis_refs. Omitted "
+                    "supporting items become not_pursued only on terminal closure."
                 )
             ]
             if profile == "interactive"

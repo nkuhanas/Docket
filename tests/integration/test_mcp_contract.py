@@ -110,6 +110,19 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
     assert "add_associated_email_change_id" in payload_schema["description"]
     assert {"add_associated_email_change_id": "create-exact-email"} in payload_schema["examples"]
     assert "*_change_id" in (tools["docket_commit_changeset"].description or "")
+    resolution_union = commit_schema["$defs"]["ResolutionChangeInput"]
+    assert resolution_union["discriminator"]["propertyName"] == "object_type"
+    assert resolution_union["discriminator"]["mapping"][
+        "attention_case_resolution"
+    ] == "#/$defs/AttentionCaseResolutionInput"
+    case_resolution = commit_schema["$defs"]["AttentionCaseResolutionInput"]
+    assert case_resolution["additionalProperties"] is False
+    assert case_resolution["properties"]["object_ref"]["pattern"].startswith("^case_")
+    assert case_resolution["properties"]["case_revision_ref"]["pattern"].startswith(
+        "^caserev_"
+    )
+    assert "payload" not in case_resolution["properties"]
+    assert "affected_fields" not in case_resolution["properties"]
     for name in {
         "docket_list_calendar_lanes",
         "docket_list_calendar_events",
@@ -132,6 +145,12 @@ async def test_triage_profile_is_exact_and_non_authoritative() -> None:
     assert "registry_changes" not in serialized
     assert "provider_intents" not in serialized
     assert "semantic_classes" in submit["properties"]
+    case_item = submit["$defs"]["CaseItemInput"]
+    assert "resolution_role" in case_item["required"]
+    assert case_item["properties"]["resolution_role"]["enum"] == [
+        "required",
+        "supporting",
+    ]
 
 
 def test_generated_tool_contracts_have_exact_profile_parity_and_hashes() -> None:

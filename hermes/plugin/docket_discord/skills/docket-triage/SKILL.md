@@ -43,14 +43,20 @@ timeout can strand at most one short-lived lease:
    `relationship_candidate`, `fact_candidate`, `event_candidate`,
    `lane_resolution`, `preference_match`, and `decision_required`. Consolidate
    related unknowns in that one case; do not create one user-facing blob per
-   missing field.
+   missing field. Every CaseItem must declare `resolution_role`: `required` only
+   when the case cannot resolve without an explicit Operator disposition;
+   otherwise `supporting`. Every new case needs at least one required item.
 7. Candidate entity refs are suggestions only. Use only exact public refs from
    the trusted ContextPacket. Name similarity, model confidence, organization
    proximity, and source claims cannot create or bind canonical identities.
 8. Calendar lane inference is advisory unless the trusted context contains an
    explicit active rule or deterministic precedent. Never create a lane,
    routing rule, event, Person, Organization, Affiliation, Relationship, Fact,
-   Preference, or provider write from this profile.
+   Preference, or provider write from this profile. Apply exact
+   `case_semantic_resolutions` from trusted context when present. A same-scope
+   `application_status=submitted` Decision makes a later application reminder
+   informational rather than a new action-required case. Never extend that
+   Decision by title, name, or semantic similarity.
 9. Submit once through `docket_submit_triage_analysis`, using the exact `tri_`,
    `ctx_`, `src_`, and claim token returned by the context call. Provide a
    concise derived title, summary, and explanation without quoted body text,

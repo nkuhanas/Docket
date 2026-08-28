@@ -43,6 +43,10 @@ def test_manual_skill_defines_exact_resolved_intent_and_changeset_groups() -> No
     assert "`add_associated_email_change_id`" in skill
     assert "`add_associated_email_ref`" in skill
     assert "do not preallocate an `idn_`" in skill
+    assert "returned current `caserev_`" in skill
+    assert "first structurally valid ChangeSet" in skill
+    assert "omitted supporting items deterministically become `not_pursued`" in skill
+    assert "`predicate=application_status`" in skill
 
 
 def test_manual_skill_keeps_triage_non_authoritative_and_outputs_compact() -> None:
@@ -71,3 +75,6 @@ def test_triage_skill_applies_policy_before_resolution_and_forbids_registration(
     assert "Candidate entity refs are suggestions only" in skill
     assert "Never create a lane" in skill
     assert "Organization, Affiliation, Relationship, Fact" in skill
+    assert "Every CaseItem must declare `resolution_role`" in skill
+    assert "`application_status=submitted`" in skill
+    assert "Never extend that Decision by title, name, or semantic similarity" in skill

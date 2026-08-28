@@ -82,13 +82,32 @@ one `docket_commit_changeset` call:
 - `preference_changes`: explicit Operator behavioral/routing policy;
 - `lane_changes`: CalendarLanes and LaneRoutingDecisions;
 - `event_changes`: CanonicalEvents;
-- `resolution_changes`: exact Conflict resolutions; and
+- `resolution_changes`: exact Conflict and AttentionCase resolutions; and
 - `provider_intents`: external effects that follow canonical commit.
 
 Every change and provider intent carries `basis_refs`. Use stable `change_id`
 values and `*_change_id` references when one create depends on another in the same
 ChangeSet. Use exact expected versions for existing objects. Never expose internal
 UUIDs when a public ref exists.
+
+For an AttentionCase or DailyBrief reply, read each addressed `case_` once and use
+the returned current `caserev_`, version, item refs, roles, and statuses. Submit the
+first structurally valid ChangeSet; do not probe the mutation tool with guessed
+payloads. The typed resolution change uses `object_ref`, `case_revision_ref`,
+`case_outcome`, `item_dispositions`, and `basis_refs` directly—never generic
+`payload` or agent-supplied `affected_fields`.
+
+Only list `resolved` or `rejected` item dispositions the Operator actually stated.
+For terminal `resolved`, omitted supporting items deterministically become
+`not_pursued`, which is not rejection. Omitted required items block terminal closure;
+use `keep_open` for the addressed subset and ask the one consolidated clarification
+returned by Docket. Never reuse a stale visible revision.
+
+When the reply asserts reusable real-world state, emit a typed statement scoped to
+the exact case or required item. For “I already applied,” use
+`predicate=application_status`, `value=submitted`, and
+`interpretation.durable_case_resolution=true`; resolve the application item and do
+not fabricate an Entity, Event, Fact, IdentityHandle, Preference, or provider effect.
 
 For an explicit email-sender suppression, begin with an exact `email`
 IdentityHandle obtained from the current Operator utterance or trusted Docket
@@ -158,6 +177,10 @@ mean the provider call has completed. `needs_clarification` means the session an
 evidence are preserved. `replayed_request` is the same idempotent result. Follow
 the compact `next` field and public refs. Do not reproduce raw provenance chains,
 tool transcripts, or provider payloads in chat.
+
+Tool transport completion and Docket domain success are different. Treat a durable
+`call_` with rejected or failed domain state as unsuccessful even when MCP transport
+completed; an unreconciled call is unknown, never assumed successful.
 
 Final responses are concise and distinguish canonical commit, queued provider
 projection, provider completion, and reconciliation-required states. Do not tell
