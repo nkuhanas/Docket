@@ -176,7 +176,10 @@ def test_docket_mcp_hooks_emit_only_bounded_trace_metadata(plugin_module, monkey
     assert "without a redundant approval phase" in rewritten["text"]
     plugin_module._on_pre_tool_call(
         tool_name="mcp__docket__docket_search_records",
-        args={"query": "secret query body"},
+        args={
+            "query": "Cal Poly Mustang Shop",
+            "authorization": "secret bearer value",
+        },
         task_id="session-1",
         session_id="session-1",
         tool_call_id="call-1",
@@ -213,14 +216,18 @@ def test_docket_mcp_hooks_emit_only_bounded_trace_metadata(plugin_module, monkey
         "elapsed_ms": 0,
         "disposition": None,
         "error_code": None,
+        "argument_preview": (
+            '{"authorization":"[redacted]","query":"Cal Poly Mustang Shop"}'
+        ),
         "received_argument_hash": (
-            "f7a5f41a1e803eb0930a42026dd49c10550b16fbf98fcad1cabaffc2ec72f803"
+            "8c35d71f49d364f15cbf026ee0a05ed5011e35fc2b0d0897fd48b801a47f13da"
         ),
     }
     assert terminal["state"] == "succeeded"
     assert terminal["elapsed_ms"] == 42
     assert emitted[2][1] == {"turn_status": "completed"}
-    assert "secret query body" not in str(emitted)
+    assert "Cal Poly Mustang Shop" in str(emitted)
+    assert "secret bearer value" not in str(emitted)
     assert "secret result body" not in str(emitted)
     assert "secret model response" not in str(emitted)
 
@@ -363,6 +370,7 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
                 "state": "succeeded",
                 "elapsed_ms": 42,
                 "outcome": "succeeded",
+                "argument_preview": '{"query":"Cal Poly Mustang Shop"}',
             }
         ],
         "overflow_count": 0,
@@ -396,6 +404,7 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
     assert len(channel.messages) == 1
     assert channel.messages[0].edit_count == 1
     assert channel.messages[0].embeds[0].fields[1]["name"] == ("1. docket_search_records")
+    assert "Cal Poly Mustang Shop" in channel.messages[0].embeds[0].fields[1]["value"]
 
 
 @pytest.mark.adversarial
@@ -755,6 +764,63 @@ async def test_agent_response_persistence_failure_blocks_discord_delivery(
             None,
         )
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.adversarial
+async def test_generic_home_channel_prompt_is_suppressed_only_during_docket_turn(
+    plugin_module, monkeypatch
+) -> None:
+    class FakeSendResult:
+        def __init__(self, success, **kwargs) -> None:
+            self.success = success
+            self.error = kwargs.get("error")
+
+    gateway_module = ModuleType("gateway")
+    platforms_module = ModuleType("gateway.platforms")
+    base_module = ModuleType("gateway.platforms.base")
+    base_module.SendResult = FakeSendResult
+    monkeypatch.setitem(sys.modules, "gateway", gateway_module)
+    monkeypatch.setitem(sys.modules, "gateway.platforms", platforms_module)
+    monkeypatch.setitem(sys.modules, "gateway.platforms.base", base_module)
+
+    delivered = []
+
+    class FakeAdapter:
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            delivered.append((chat_id, content, reply_to, metadata))
+            return FakeSendResult(True)
+
+    adapter = FakeAdapter()
+    adapter._docket_provenance_contexts = {
+        ("222222222222222222", "333333333333333333", "444444444444444444"): {
+            "terminal": False,
+        }
+    }
+    plugin_module._install_provenance_delivery_guard(adapter)
+    prompt = (
+        "📬 No home channel is set for Discord. A home channel is where Hermes "
+        "delivers cron job results and cross-platform messages."
+    )
+
+    suppressed = await adapter.send("333333333333333333", prompt)
+    assert suppressed.success is True
+    assert delivered == []
+
+    ordinary = await adapter.send("333333333333333333", "ordinary response")
+    assert ordinary.success is True
+    assert delivered == [("333333333333333333", "ordinary response", None, None)]
+
+    outside = await adapter.send("555555555555555555", prompt)
+    assert outside.success is True
+    assert delivered[-1] == ("555555555555555555", prompt, None, None)
+
+    adapter._docket_provenance_contexts[
+        ("222222222222222222", "333333333333333333", "444444444444444444")
+    ]["terminal"] = True
+    after_turn = await adapter.send("333333333333333333", prompt)
+    assert after_turn.success is True
+    assert delivered[-1] == ("333333333333333333", prompt, None, None)
 
 
 def test_authorized_chat_receives_bounded_operator_preferences(

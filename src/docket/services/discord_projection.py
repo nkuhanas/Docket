@@ -2947,6 +2947,9 @@ class DiscordProjectionRunner:
                         "state": state,
                         "elapsed_ms": min(max(int(raw_call.get("elapsed_ms", 0)), 0), 600_000),
                         "outcome": self._bounded(str(outcome or state), 64),
+                        "argument_preview": self._bounded(
+                            str(raw_call.get("argument_preview", "{}")), 768
+                        ),
                     }
                 )
             call_count = trace.last_ordinal

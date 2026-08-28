@@ -34,6 +34,7 @@ def _update(
             "elapsed_ms": 0 if state == "running" else 125,
             "disposition": "succeeded" if state == "succeeded" else None,
             "error_code": None,
+            "argument_preview": '{"query":"mustang shop"}',
         }
     return McpTraceUpdate.model_validate(
         {
@@ -156,6 +157,7 @@ def test_mcp_trace_is_monotonic_redacted_and_projected(
                 "elapsed_ms": 125,
                 "disposition": "succeeded",
                 "error_code": None,
+                "argument_preview": '{"query":"mustang shop"}',
             }
         ]
         assert session.scalar(select(func.count()).select_from(OutboxEvent)) == 3
@@ -177,6 +179,7 @@ def test_mcp_trace_is_monotonic_redacted_and_projected(
             "state": "succeeded",
             "elapsed_ms": 125,
             "outcome": "succeeded",
+            "argument_preview": '{"query":"mustang shop"}',
         }
     ]
     serialized = str(projected)

@@ -36,6 +36,13 @@ from typing import Any
 logger = logging.getLogger(__name__)
 _COMMAND = re.compile(r"^/?docket\s+(approve|reject)\s+([A-Za-z0-9-]{8,32})\s*$", re.I)
 _GENERIC_DELIVERY_COMMAND = re.compile(r"^/(?:hermes\s+)?(?:sethome|cron)\b", re.I)
+_HOME_CHANNEL_PROMPT = "📬 No home channel is set for Discord."
+_SENSITIVE_ARGUMENT_KEY = re.compile(
+    r"(?:authorization(?:[_-]?header)?|bearer|credential|password|secret|"
+    r"(?:^|[_-])token|verbatim(?:[_-]?text)?|raw[_-]?(?:body|payload)|"
+    r"message[_-]?body)$",
+    re.I,
+)
 _DISCORD_ID = re.compile(r"^[0-9]{17,20}$")
 _PROJECTION_PATH = re.compile(r"^/internal/docket/discord/projections/([0-9a-fA-F-]{36})$")
 _THREAD_LIFECYCLE_PATH = re.compile(
@@ -448,6 +455,57 @@ def _docket_public_tool_name(tool_name: str) -> str | None:
     return public_name if public_name in _DOCKET_MCP_TOOL_NAMES else None
 
 
+def _argument_preview(arguments: dict[str, Any]) -> str:
+    """Return bounded diagnostic arguments without retaining raw request payloads."""
+
+    def sanitize(value: Any, *, key: str = "", depth: int = 0) -> Any:
+        if _SENSITIVE_ARGUMENT_KEY.search(key):
+            return "[redacted]"
+        if depth >= 4:
+            return "[nested]"
+        if isinstance(value, dict):
+            items = list(value.items())
+            projected = {
+                str(item_key)[:64]: sanitize(
+                    item_value,
+                    key=str(item_key),
+                    depth=depth + 1,
+                )
+                for item_key, item_value in items[:12]
+            }
+            if len(items) > 12:
+                projected["..."] = f"{len(items) - 12} more fields"
+            return projected
+        if isinstance(value, list | tuple):
+            projected = [sanitize(item, key=key, depth=depth + 1) for item in value[:6]]
+            if len(value) > 6:
+                projected.append(f"[{len(value) - 6} more items]")
+            return projected
+        if isinstance(value, str):
+            compact = " ".join(value.split())
+            return compact if len(compact) <= 160 else compact[:157] + "..."
+        if isinstance(value, bool | int | float) or value is None:
+            return value
+        return f"[{type(value).__name__}]"
+
+    preview = json.dumps(
+        sanitize(arguments),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    if len(preview.encode("utf-8")) <= 768:
+        return preview
+    return json.dumps(
+        {
+            "fields": sorted(str(key)[:64] for key in arguments)[:24],
+            "preview": "truncated",
+        },
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+
+
 def _trace_context(task_id: str, session_id: str) -> dict[str, Any] | None:
     key = task_id or session_id
     return _TRACE_CONTEXTS.get(key)
@@ -497,6 +555,9 @@ def _on_pre_tool_call(
             "elapsed_ms": 0,
             "disposition": None,
             "error_code": None,
+            "argument_preview": _argument_preview(
+                args if isinstance(args, dict) else {}
+            ),
             "received_argument_hash": hashlib.sha256(
                 json.dumps(
                     args if isinstance(args, dict) else {},
@@ -735,6 +796,22 @@ def _provenance_delivery_blocked(
     return False
 
 
+def _is_docket_home_prompt(adapter: object, *, chat_id: str, content: object) -> bool:
+    if not str(content).startswith(_HOME_CHANNEL_PROMPT):
+        return False
+    shared_contexts = getattr(adapter, "_docket_provenance_contexts", None)
+    if not isinstance(shared_contexts, dict):
+        return False
+    return any(
+        isinstance(key, tuple)
+        and len(key) == 3
+        and str(key[1]) == chat_id
+        and isinstance(context, dict)
+        and not context.get("terminal")
+        for key, context in shared_contexts.items()
+    )
+
+
 def _install_provenance_delivery_guard(adapter: object) -> None:
     if getattr(adapter, "_docket_provenance_delivery_guard_installed", False):
         return
@@ -769,6 +846,16 @@ def _install_provenance_delivery_guard(adapter: object) -> None:
             **kwargs: Any,
         ) -> Any:
             chat_id = str(kwargs.get("chat_id") or (args[0] if args else ""))
+            content = kwargs.get("content")
+            if content is None and len(args) > 1:
+                content = args[1]
+            if __method_name == "send" and _is_docket_home_prompt(
+                adapter,
+                chat_id=chat_id,
+                content=content,
+            ):
+                logger.info("Suppressed generic Hermes home-channel prompt on Docket surface")
+                return SendResult(success=True)
             reply_to_value = kwargs.get("reply_to")
             reply_to = str(reply_to_value) if reply_to_value is not None else None
             if _provenance_delivery_blocked(
@@ -2384,6 +2471,9 @@ async def _put_mcp_trace(trace_id: uuid.UUID, payload: dict[str, Any]) -> dict[s
         tool_name = _safe_text(raw_call.get("tool_name"), 128, "tool_name")
         state = _safe_text(raw_call.get("state"), 16, "state")
         outcome = _safe_text(raw_call.get("outcome"), 64, "outcome")
+        argument_preview = _safe_text(
+            raw_call.get("argument_preview", "{}"), 768, "argument_preview"
+        )
         if (
             ordinal != expected_ordinal
             or tool_name not in _DOCKET_MCP_TOOL_NAMES
@@ -2401,6 +2491,7 @@ async def _put_mcp_trace(trace_id: uuid.UUID, payload: dict[str, Any]) -> dict[s
                 "state": state,
                 "elapsed_ms": elapsed_ms,
                 "outcome": outcome,
+                "argument_preview": argument_preview,
             }
         )
         expected_ordinal += 1
@@ -2458,9 +2549,10 @@ async def _put_mcp_trace(trace_id: uuid.UUID, payload: dict[str, Any]) -> dict[s
         details = state_labels[call["state"]]
         if terminal:
             details += f" · {call['elapsed_ms']} ms · {call['outcome'].replace('_', ' ')}"
+        details += f"\n`{call['argument_preview']}`"
         embed.add_field(
             name=f"{call['ordinal']}. {call['tool_name']}",
-            value=_escaped(details, 256),
+            value=_escaped(details, 1024),
             inline=False,
         )
     if overflow_count:

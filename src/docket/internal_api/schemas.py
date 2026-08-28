@@ -156,6 +156,7 @@ class McpTraceCallUpdate(InternalModel):
         max_length=64,
         pattern=r"^[0-9a-f]{64}$",
     )
+    argument_preview: str = Field(default="{}", min_length=2, max_length=768)
 
     @model_validator(mode="after")
     def validate_terminal_details(self) -> "McpTraceCallUpdate":

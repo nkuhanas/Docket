@@ -49,7 +49,7 @@ on every request. Docket's callback uses the independent
 
 Hermes performs overlapping plugin discovery during this pin's startup. Each
 discovery pass imports an isolated plugin module, so module globals alone cannot
-prevent a transient second bind. Plugin `0.20.0` starts the private HTTP server
+prevent a transient second bind. Plugin `0.20.1` starts the private HTTP server
 under a background supervisor: an `EADDRINUSE` defers that copy without failing
 plugin registration, and it retries if the process that temporarily owned the
 port exits. Healthy startup may contain one `startup deferred` line, followed
@@ -98,17 +98,21 @@ Pinned outbound assumptions to revalidate:
   `post_llm_call` fires once after the tool loop for the completed turn.
 * `pre_gateway_dispatch` receives the synchronous session store. The plugin
   resolves the authorized chat message to the same session ID Hermes later
-  supplies as the tool hook task ID. This is the trusted source-to-trace join;
-  raw tool arguments and results are never retained or forwarded. A canonical
-  SHA-256 of received arguments is forwarded so the authenticated trace can
-  bind to the `call_` created at Docket's MCP boundary.
+  supplies as the tool hook task ID. This is the trusted source-to-trace join.
+  Raw tool arguments and results are never retained or forwarded. A compact,
+  redacted argument preview of at most 768 UTF-8 bytes is forwarded into the
+  operational Discord trace for operator diagnostics; secrets, verbatim text,
+  raw bodies, deep nesting, and excess fields/items are replaced or omitted.
+  A canonical SHA-256 of the complete received arguments is forwarded
+  separately so the authenticated trace can bind to the `call_` created at
+  Docket's MCP boundary.
 * the plugin sends hook observations to Docket through a bounded background
   queue so trace telemetry does not add one network round trip to each tool's
   critical path. Docket validates monotonicity and projects the one trace
   through its durable outbox; the plugin never posts hook output directly to
   Discord.
 
-Plugin `0.20.0` retains the phase-one provenance boundary. For every
+Plugin `0.20.1` retains the phase-one provenance boundary. For every
 authenticated operator message on the Docket chat root, Docket queue root, or
 a Docket-owned daily thread, `pre_gateway_dispatch` synchronously persists one
 verbatim `OperatorUtterance` before rewrite, control handling, model dispatch,
@@ -125,8 +129,9 @@ the pinned Hermes gateway lifecycle changes.
 Each interactive and triage MCP request creates `call_` after service bearer
 authentication but before FastMCP argument validation. Received and normalized
 argument hashes, status, timing, bounded result references, and later trusted
-Discord trace bindings are retained. Raw arguments and raw results are not
-stored in `tool_invocations`.
+Discord trace bindings are retained. Raw arguments, raw results, and the
+diagnostic argument preview are not stored in `tool_invocations`; the preview
+belongs only to the bounded operational `DiscordMcpTrace` projection.
 
 Before an existing interactive mutation tool executes, the shared MCP
 dispatcher resolves its normalized
@@ -151,7 +156,7 @@ architecture authority only; its implementation authority remains
 registry, Calendar-lane, AttentionCase, triage-authority, or provider-operation
 semantics.
 
-Plugin `0.20.0` renders timed reminder start/end values as Docket-supplied native
+Plugin `0.20.1` renders timed reminder start/end values as Docket-supplied native
 Discord timestamps, puts the event subject under the native `Title` field, and
 omits a redundant timezone field. All-day reminders instead render fixed
 start/end dates plus the Calendar timezone. Projection embeds may omit their
@@ -201,6 +206,13 @@ environment has no Discord home-channel binding. The configured Docket operator
 is also the sole generated `DISCORD_ALLOWED_USERS` entry; Compose repeats that
 mapping so Hermes' gateway authorization and the plugin's exact actor gate
 cannot drift after recreation.
+
+Because each daily thread begins without Hermes conversation history, the
+pinned gateway otherwise attempts to send its generic `/sethome` reminder on
+the first Docket turn. Plugin `0.20.1` suppresses only that exact reminder while
+an authenticated Docket provenance turn is active in the same channel. It does
+not create a home-channel binding, enable generic cron delivery, or suppress
+the reminder on ordinary non-Docket Discord surfaces.
 
 The current deployment does not register a native Docket Discord application
 command. Persistent Approve/Reject components on the projected card are the

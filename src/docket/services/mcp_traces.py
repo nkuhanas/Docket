@@ -144,6 +144,7 @@ class McpTraceService:
             "elapsed_ms": call.elapsed_ms,
             "disposition": call.disposition,
             "error_code": call.error_code,
+            "argument_preview": call.argument_preview,
         }
 
     def _apply_call(
