@@ -464,7 +464,7 @@ class ProvenanceService:
         for invocation in invocations:
             if invocation.intent_session_ref is None:
                 invocation.intent_session_ref = intent_session.ref_id
-            if invocation.tool_name not in {
+            if invocation.status != "succeeded" or invocation.tool_name not in {
                 "docket_commit_changeset",
                 "docket_resolve_conflict",
             }:

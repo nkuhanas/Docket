@@ -324,6 +324,98 @@ def test_agent_turn_is_finalized_by_response_or_explicit_no_response(session_fac
 
 
 @pytest.mark.integration
+def test_failed_mutation_refs_do_not_block_final_response(session_factory) -> None:
+    settings = get_settings()
+    request = _utterance_request(text="apply this exact correction")
+    trace_id = trace_id_for_source(
+        settings.discord_guild_id,
+        settings.chat_channel_id,
+        MESSAGE_ID,
+    )
+    phantom_ref = new_public_ref("idn")
+    with session_factory.begin() as session:
+        utterance_ref = ProvenanceService(session).capture_operator_utterance(request)["ref"]
+        intent_service = IntentSessionService(session)
+        intent_session, _ = intent_service.open(
+            IntentSessionOpen(source_utterance_ref=utterance_ref)
+        )
+        _, turn = intent_service.append_turn(
+            IntentTurnAppend(
+                intent_session_ref=intent_session.ref_id,
+                utterance_ref=utterance_ref,
+                blocking_clarifications=[],
+                response_disposition="pending",
+            )
+        )
+        failed = ToolInvocation(
+            tool_name="docket_commit_changeset",
+            tool_contract_version="test",
+            caller_profile="interactive",
+            status="failed",
+            received_argument_hash="c" * 64,
+            normalized_argument_hash="c" * 64,
+            result_refs=[phantom_ref],
+            error_code="active_email_identity_required",
+            completed_at=datetime.now(UTC),
+            trace_id=trace_id,
+            trace_call_id="call-failed",
+            trace_ordinal=1,
+            utterance_refs=[utterance_ref],
+        )
+        succeeded = ToolInvocation(
+            tool_name="docket_commit_changeset",
+            tool_contract_version="test",
+            caller_profile="interactive",
+            status="succeeded",
+            received_argument_hash="d" * 64,
+            normalized_argument_hash="d" * 64,
+            result_refs=[intent_session.ref_id],
+            completed_at=datetime.now(UTC),
+            trace_id=trace_id,
+            trace_call_id="call-succeeded",
+            trace_ordinal=2,
+            utterance_refs=[utterance_ref],
+        )
+        session.add_all([failed, succeeded])
+        session.flush()
+        failed_ref = failed.ref_id
+        succeeded_ref = succeeded.ref_id
+        turn_ref = turn.ref_id
+        intent_session_ref = intent_session.ref_id
+
+    capture = AgentResponseCapture.model_validate(
+        {
+            "request_id": str(uuid.uuid4()),
+            "guild_id": settings.discord_guild_id,
+            "channel_id": settings.chat_channel_id,
+            "source_message_id": MESSAGE_ID,
+            "actor_id": settings.operator_discord_user_id,
+            "utterance_ref": utterance_ref,
+            "turn_id": "response-after-retry",
+            "session_id": "session-after-retry",
+            "model_identifier": "test-model",
+            "verbatim_text": "The correction is committed.",
+            "generated_at": datetime.now(UTC).isoformat(),
+            "trace_id": str(trace_id),
+        }
+    )
+    with session_factory.begin() as session:
+        response_result = ProvenanceService(session).capture_agent_response(capture)
+
+    with session_factory() as session:
+        response = session.scalar(
+            select(AgentResponse).where(AgentResponse.ref_id == response_result["ref"])
+        )
+        turn = session.scalar(select(IntentTurn).where(IntentTurn.ref_id == turn_ref))
+        assert response is not None and turn is not None
+        assert response.tool_call_refs == [failed_ref, succeeded_ref]
+        assert turn.tool_call_refs == [failed_ref, succeeded_ref]
+        assert turn.resulting_semantic_refs == [intent_session_ref]
+        assert phantom_ref not in turn.resulting_semantic_refs
+        assert turn.response_disposition == "final_response"
+
+
+@pytest.mark.integration
 def test_tool_invocation_is_created_before_validation(session_factory) -> None:
     server = ProvenanceFastMCP("instrumented-test", caller_profile="interactive")
 
@@ -343,6 +435,36 @@ def test_tool_invocation_is_created_before_validation(session_factory) -> None:
         assert invocation.status == "rejected_validation"
         assert invocation.normalized_argument_hash is None
         assert invocation.completed_at is not None
+
+
+@pytest.mark.integration
+def test_failed_tool_invocation_omits_non_durable_result_refs(session_factory) -> None:
+    import asyncio
+
+    phantom_ref = new_public_ref("idn")
+    with session_factory.begin() as session:
+        utterance_ref = ProvenanceService(session).capture_operator_utterance(
+            _utterance_request(text="inspect this")
+        )["ref"]
+
+    server = ProvenanceFastMCP("durable-result-ref-test", caller_profile="interactive")
+
+    @server.tool()
+    def failed_read() -> dict[str, object]:
+        return {
+            "ok": False,
+            "error": {"code": "planned_lookup_failed", "message": "Lookup failed."},
+            "affected_refs": [utterance_ref, phantom_ref],
+        }
+
+    result = asyncio.run(server.call_tool("failed_read", {}))
+    assert result
+    with session_factory() as session:
+        invocation = session.scalar(select(ToolInvocation))
+        assert invocation is not None
+        assert invocation.status == "failed"
+        assert invocation.result_refs == []
+        assert phantom_ref not in invocation.result_refs
 
 
 @pytest.mark.integration

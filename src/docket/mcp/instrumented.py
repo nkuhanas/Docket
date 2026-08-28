@@ -396,7 +396,14 @@ class ProvenanceFastMCP(FastMCP[Any]):
                 invocation_id,
                 status=status,
                 normalized_argument_hash=normalized_hash,
-                result_refs=_collect_result_refs(envelope or {}),
+                # Rejected/failed envelopes may mention preallocated refs from a
+                # transaction that rolled back. They are diagnostic details, not
+                # durable results. The call and its error code remain auditable.
+                result_refs=(
+                    _collect_result_refs(envelope or {})
+                    if status == "succeeded"
+                    else []
+                ),
                 error_code=response_error_code,
             )
         return result
