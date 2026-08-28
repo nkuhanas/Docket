@@ -45,6 +45,11 @@ from docket.models import (
     TriageBriefEntry,
     TriageRun,
 )
+from docket.services.source_identities import (
+    associated_sender_emails,
+    gmail_sender_identity,
+    sender_handles_for_email,
+)
 
 DEFAULT_PAGE_SIZE = 25
 HARD_PAGE_SIZE = 100
@@ -392,7 +397,7 @@ class HistoryService:
                 if item.entity_id is not None
                 else None
             )
-            return {
+            identity_summary = {
                 **base,
                 "handle_type": item.handle_type,
                 "value": item.value,
@@ -405,6 +410,11 @@ class HistoryService:
                 "version": item.version,
                 "created_at": _iso(item.created_at),
             }
+            if item.handle_type == "sender_label":
+                identity_summary["associated_emails"] = associated_sender_emails(self.session, item)
+            elif item.handle_type == "email":
+                identity_summary["sender_handles"] = sender_handles_for_email(self.session, item)
+            return identity_summary
         if isinstance(item, Affiliation):
             subject_ref = self.session.scalar(
                 select(Entity.ref_id).where(Entity.id == item.subject_entity_id)
@@ -515,6 +525,7 @@ class HistoryService:
                 "provider": item.provider,
                 "source_version": item.source_version,
                 "source_fingerprint": item.source_fingerprint,
+                "sender_identity": gmail_sender_identity(self.session, item, materialize=False),
                 "status": item.status,
                 "received_at": _iso(item.received_at),
                 "created_at": _iso(item.created_at),
@@ -580,6 +591,8 @@ class HistoryService:
                 "target_ref": item.target_ref,
                 "semantic_class": item.semantic_class,
                 "policy_text": item.policy_text,
+                "policy_json": item.policy_json,
+                "scope_json": item.scope_json,
                 "priority": item.priority,
                 "status": item.status,
                 "basis_refs": item.basis_refs,
@@ -740,6 +753,12 @@ class HistoryService:
                     }
                     for binding in bindings
                 ]
+                if item.handle_type == "sender_label":
+                    entry["associated_email_history"] = associated_sender_emails(
+                        self.session,
+                        item,
+                        include_inactive=True,
+                    )
         envelope = {"ok": True, "ref": ref_id, "object_type": object_type, "entry": entry}
         budget = AUDIT_OUTPUT_BYTES if view == "audit" else DEFAULT_OUTPUT_BYTES
         if len(json.dumps(envelope, separators=(",", ":")).encode()) > budget:

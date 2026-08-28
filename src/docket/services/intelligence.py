@@ -4,7 +4,6 @@ import json
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from email.utils import parseaddr
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -37,17 +36,25 @@ from docket.schemas.intelligence import TriageAnalysisInput
 from docket.services.network import NetworkQueryService
 from docket.services.policies import PreferenceMatcher
 from docket.services.provenance_refs import ProvenanceRefService
-from docket.services.registry import normalize_identity_value
+from docket.services.source_identities import gmail_sender_identity
 from docket.services.triage import TriageService
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash
 
-_CASE_CLASSES = frozenset(
-    {"action_request", "event_invitation", "deadline_or_required_response"}
-)
+_CASE_CLASSES = frozenset({"action_request", "event_invitation", "deadline_or_required_response"})
 
 
 def _aware(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _sender_identity_refs(sender_resolution: object) -> set[str]:
+    if not isinstance(sender_resolution, dict):
+        return set()
+    refs = sender_resolution.get("identity_refs")
+    if isinstance(refs, list):
+        return {item for item in refs if isinstance(item, str)}
+    exact_ref = sender_resolution.get("identity_ref")
+    return {exact_ref} if isinstance(exact_ref, str) else set()
 
 
 def _truncate_utf8(value: str, limit: int) -> tuple[str, bool]:
@@ -102,9 +109,7 @@ class IntelligenceService:
             "subject": str(source.get("subject", ""))[:1024],
             "body_text": body,
             "body_truncated": truncated,
-            "label_ids": [str(value)[:128] for value in source.get("label_ids", [])][
-                :25
-            ],
+            "label_ids": [str(value)[:128] for value in source.get("label_ids", [])][:25],
             "attachments": attachments,
             "message_id": source.get("message_id"),
             "thread_id": source.get("thread_id"),
@@ -126,9 +131,7 @@ class IntelligenceService:
         encoded = json.dumps(compact, separators=(",", ":"), default=str).encode("utf-8")
         while len(encoded) > 8 * 1024:
             list_values = [
-                (key, value)
-                for key, value in compact.items()
-                if isinstance(value, list) and value
+                (key, value) for key, value in compact.items() if isinstance(value, list) and value
             ]
             if not list_values:
                 raise DocketError(
@@ -137,25 +140,17 @@ class IntelligenceService:
                 )
             _key, longest = max(list_values, key=lambda item: len(item[1]))
             longest.pop()
-            encoded = json.dumps(compact, separators=(",", ":"), default=str).encode(
-                "utf-8"
-            )
+            encoded = json.dumps(compact, separators=(",", ":"), default=str).encode("utf-8")
         return compact, len(encoded)
 
     def _trusted_context(self, session: Session, source: SourceItem) -> dict[str, Any]:
-        sender = str(source.minimal_headers.get("sender", ""))
-        _display, address = parseaddr(sender)
-        normalized_address = (
-            normalize_identity_value("email", address) if address else None
+        sender_identity = gmail_sender_identity(session, source, materialize=True)
+        identity_ref = (
+            sender_identity.get("identity_ref") if isinstance(sender_identity, dict) else None
         )
         handle = (
-            session.scalar(
-                select(IdentityHandle).where(
-                    IdentityHandle.handle_type == "email",
-                    IdentityHandle.normalized_value == normalized_address,
-                )
-            )
-            if normalized_address is not None
+            session.scalar(select(IdentityHandle).where(IdentityHandle.ref_id == identity_ref))
+            if isinstance(identity_ref, str)
             else None
         )
         sender_entity = (
@@ -163,15 +158,24 @@ class IntelligenceService:
             if handle is not None and handle.entity_id is not None and handle.status == "bound"
             else None
         )
+        sender_handles = (
+            sender_identity.get("sender_handles", []) if isinstance(sender_identity, dict) else []
+        )
+        identity_refs = {
+            *([handle.ref_id] if handle is not None else []),
+            *[
+                item["identity_ref"]
+                for item in sender_handles
+                if isinstance(item, dict) and isinstance(item.get("identity_ref"), str)
+            ],
+        }
         sender_context: list[dict[str, Any]] = []
         if (
             sender_entity is not None
             and sender_entity.registration_state == "registered"
             and sender_entity.entity_class == "person"
         ):
-            sender_context.append(
-                NetworkQueryService(session).person_context(sender_entity.ref_id)
-            )
+            sender_context.append(NetworkQueryService(session).person_context(sender_entity.ref_id))
         cases = [
             {
                 "ref": item.ref_id,
@@ -205,7 +209,7 @@ class IntelligenceService:
         ]
         preferences = PreferenceMatcher(session).applicable(
             entity_refs={sender_entity.ref_id} if sender_entity is not None else set(),
-            identity_refs={handle.ref_id} if handle is not None else set(),
+            identity_refs=identity_refs,
             source_refs={source.ref_id},
         )
         return {
@@ -213,9 +217,20 @@ class IntelligenceService:
             "source_ref": source.ref_id,
             "sender_resolution": {
                 "identity_ref": handle.ref_id if handle is not None else None,
+                "identity_refs": sorted(identity_refs),
+                "handle_type": (
+                    sender_identity.get("handle_type")
+                    if isinstance(sender_identity, dict)
+                    else None
+                ),
+                "value": (
+                    sender_identity.get("value") if isinstance(sender_identity, dict) else None
+                ),
                 "state": handle.status if handle is not None else "unknown",
                 "entity_ref": sender_entity.ref_id if sender_entity is not None else None,
+                "sender_handles": sender_handles,
                 "resolution_rule": handle.binding_rule if handle is not None else None,
+                "basis_refs": [source.ref_id],
             },
             "sender_context": sender_context,
             "explicit_preferences": [
@@ -223,8 +238,10 @@ class IntelligenceService:
                     "ref": item.ref_id,
                     "policy_kind": item.policy_kind,
                     "target_type": item.target_type,
+                    "target_ref": item.target_ref,
                     "policy_text": item.policy_text,
                     "policy_json": item.policy_json,
+                    "scope_json": item.scope_json,
                     "priority": item.priority,
                 }
                 for item in preferences[:10]
@@ -296,9 +313,7 @@ class IntelligenceService:
             )
         except Exception as exc:
             with self.session_factory.begin() as session:
-                failed_run = session.scalar(
-                    select(TriageRun).where(TriageRun.ref_id == run_ref)
-                )
+                failed_run = session.scalar(select(TriageRun).where(TriageRun.ref_id == run_ref))
                 if failed_run is not None:
                     failed_run.status = "failed"
                     failed_run.completed_at = utc_now()
@@ -306,9 +321,7 @@ class IntelligenceService:
             raise
         if raw.get("triage_required") is False:
             with self.session_factory.begin() as session:
-                completed_run = session.scalar(
-                    select(TriageRun).where(TriageRun.ref_id == run_ref)
-                )
+                completed_run = session.scalar(select(TriageRun).where(TriageRun.ref_id == run_ref))
                 if completed_run is not None:
                     completed_run.status = "completed"
                     completed_run.completed_at = utc_now()
@@ -323,9 +336,7 @@ class IntelligenceService:
             }
         source_id = uuid.UUID(str(raw["source_id"]))
         with self.session_factory.begin() as session:
-            persisted_run = session.scalar(
-                select(TriageRun).where(TriageRun.ref_id == run_ref)
-            )
+            persisted_run = session.scalar(select(TriageRun).where(TriageRun.ref_id == run_ref))
             source = session.get(SourceItem, source_id)
             if persisted_run is None or source is None:
                 raise DocketError(
@@ -433,9 +444,7 @@ class IntelligenceService:
         source: SourceItem,
     ) -> None:
         queue_item = (
-            session.get(QueueItem, case.queue_item_id)
-            if case.queue_item_id is not None
-            else None
+            session.get(QueueItem, case.queue_item_id) if case.queue_item_id is not None else None
         )
         if queue_item is None:
             queue_item = QueueItem(
@@ -444,9 +453,7 @@ class IntelligenceService:
                 material_fingerprint=revision.content_hash,
                 category="attention_case",
                 title=case.title,
-                summary=(
-                    f"{case.summary}\n\nReply with context and a decision.\n\n{case.ref_id}"
-                ),
+                summary=(f"{case.summary}\n\nReply with context and a decision.\n\n{case.ref_id}"),
                 status="pending",
                 priority=case.priority,
                 presentation="action_required",
@@ -476,9 +483,7 @@ class IntelligenceService:
                 event_type="discord.projection.requested",
                 aggregate_type="queue_item",
                 aggregate_id=queue_item.id,
-                deduplication_key=(
-                    f"discord_projection:{queue_item.id}:case-{revision.ref_id}"
-                ),
+                deduplication_key=(f"discord_projection:{queue_item.id}:case-{revision.ref_id}"),
                 payload={"queue_item_id": str(queue_item.id)},
                 status="pending",
             )
@@ -530,22 +535,16 @@ class IntelligenceService:
                 ProvenanceRefService(session).require_all(item.candidate_refs)
 
             sender_resolution = packet.trusted_context_json.get("sender_resolution", {})
-            identity_ref = (
-                sender_resolution.get("identity_ref")
-                if isinstance(sender_resolution, dict)
-                else None
-            )
+            identity_refs = _sender_identity_refs(sender_resolution)
             sender_entity_ref = (
-                sender_resolution.get("entity_ref")
-                if isinstance(sender_resolution, dict)
-                else None
+                sender_resolution.get("entity_ref") if isinstance(sender_resolution, dict) else None
             )
             suppressions = PreferenceMatcher(session).applicable(
                 entity_refs={
                     *request.entity_candidate_refs,
                     *([sender_entity_ref] if isinstance(sender_entity_ref, str) else []),
                 },
-                identity_refs={identity_ref} if isinstance(identity_ref, str) else set(),
+                identity_refs=identity_refs,
                 source_refs={source.ref_id},
                 semantic_classes=set(request.semantic_classes),
                 policy_kind="suppression",
@@ -572,9 +571,7 @@ class IntelligenceService:
             if disposition == "case":
                 situation_key = self._situation_key(source)
                 case = session.scalar(
-                    select(AttentionCase).where(
-                        AttentionCase.situation_key == situation_key
-                    )
+                    select(AttentionCase).where(AttentionCase.situation_key == situation_key)
                 )
                 observed_at = source.received_at or source.created_at
                 if case is None:
@@ -602,9 +599,7 @@ class IntelligenceService:
                     case.entity_refs = list(
                         dict.fromkeys([*case.entity_refs, *request.entity_candidate_refs])
                     )
-                    case.source_refs = list(
-                        dict.fromkeys([*case.source_refs, source.ref_id])
-                    )
+                    case.source_refs = list(dict.fromkeys([*case.source_refs, source.ref_id]))
                     case.last_observed_at = max(_aware(case.last_observed_at), _aware(observed_at))
                     case.latest_revision += 1
                     case.version += 1
@@ -635,9 +630,7 @@ class IntelligenceService:
                         case_item.payload_json = item_input.payload
                         case_item.candidate_refs = list(item_input.candidate_refs)
                         case_item.basis_refs = list(
-                            dict.fromkeys(
-                                [*case_item.basis_refs, source.ref_id, packet.ref_id]
-                            )
+                            dict.fromkeys([*case_item.basis_refs, source.ref_id, packet.ref_id])
                         )
                         case_item.source_refs = list(
                             dict.fromkeys([*case_item.source_refs, source.ref_id])
@@ -747,15 +740,11 @@ class IntelligenceService:
     ) -> dict[str, Any]:
         now = utc_now()
         with self.session_factory.begin() as session:
-            run = session.scalar(
-                select(TriageRun).where(TriageRun.ref_id == triage_run_ref)
-            )
+            run = session.scalar(select(TriageRun).where(TriageRun.ref_id == triage_run_ref))
             packet = session.scalar(
                 select(ContextPacket).where(ContextPacket.ref_id == context_ref)
             )
-            source = session.scalar(
-                select(SourceItem).where(SourceItem.ref_id == source_ref)
-            )
+            source = session.scalar(select(SourceItem).where(SourceItem.ref_id == source_ref))
             preference = session.scalar(
                 select(Preference).where(Preference.ref_id == preference_ref)
             )
@@ -783,15 +772,9 @@ class IntelligenceService:
                     message="Suppression does not match an active bounded triage context.",
                 )
             sender_resolution = packet.trusted_context_json.get("sender_resolution", {})
-            identity_ref = (
-                sender_resolution.get("identity_ref")
-                if isinstance(sender_resolution, dict)
-                else None
-            )
+            identity_refs = _sender_identity_refs(sender_resolution)
             entity_ref = (
-                sender_resolution.get("entity_ref")
-                if isinstance(sender_resolution, dict)
-                else None
+                sender_resolution.get("entity_ref") if isinstance(sender_resolution, dict) else None
             )
             applicable = (
                 preference in PreferenceMatcher(session).active(at=now)
@@ -800,7 +783,7 @@ class IntelligenceService:
                 and PreferenceMatcher.matches(
                     preference,
                     entity_refs={entity_ref} if isinstance(entity_ref, str) else set(),
-                    identity_refs={identity_ref} if isinstance(identity_ref, str) else set(),
+                    identity_refs=identity_refs,
                     source_refs={source.ref_id},
                     semantic_classes=set(semantic_classes),
                 )
@@ -860,9 +843,7 @@ class IntelligenceService:
 
     def get_case(self, case_ref: str) -> dict[str, Any]:
         with self.session_factory() as session:
-            case = session.scalar(
-                select(AttentionCase).where(AttentionCase.ref_id == case_ref)
-            )
+            case = session.scalar(select(AttentionCase).where(AttentionCase.ref_id == case_ref))
             if case is None:
                 raise DocketError(
                     code="attention_case_not_found",
@@ -881,6 +862,22 @@ class IntelligenceService:
                     .order_by(CaseItem.created_at, CaseItem.ref_id)
                 )
             )
+            source_identities: dict[tuple[str, str], dict[str, Any]] = {}
+            for source_ref in case.source_refs[:25]:
+                source = session.scalar(select(SourceItem).where(SourceItem.ref_id == source_ref))
+                if source is None:
+                    continue
+                identity = gmail_sender_identity(session, source, materialize=False)
+                if identity is None:
+                    continue
+                key = (str(identity["handle_type"]), str(identity["value"]))
+                existing = source_identities.get(key)
+                if existing is None:
+                    identity["source_refs"] = [source.ref_id]
+                    identity.pop("source_ref", None)
+                    source_identities[key] = identity
+                else:
+                    existing["source_refs"].append(source.ref_id)
             result: dict[str, Any] = {
                 "ok": True,
                 "ref": case.ref_id,
@@ -894,6 +891,7 @@ class IntelligenceService:
                 "semantic_classes": case.semantic_classes,
                 "entity_refs": case.entity_refs,
                 "source_refs": case.source_refs,
+                "source_identities": list(source_identities.values()),
                 "items": [
                     {
                         "ref": item.ref_id,

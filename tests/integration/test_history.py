@@ -13,6 +13,7 @@ from docket.models import (
     InterpretedStatement,
     OperatorUtterance,
     RuntimeLogEntry,
+    SourceItem,
     ToolInvocation,
 )
 from docket.services.history import DEFAULT_OUTPUT_BYTES, HistoryService
@@ -38,6 +39,52 @@ def _utterance_request(text: str) -> OperatorUtteranceCapture:
             ),
         }
     )
+
+
+@pytest.mark.integration
+def test_source_history_exposes_exact_sender_identity_without_body(
+    session_factory,
+) -> None:
+    with session_factory.begin() as session:
+        account = Account(
+            provider="google",
+            external_account_id="history-gmail",
+            capabilities=["gmail"],
+            enabled=True,
+        )
+        session.add(account)
+        session.flush()
+        source = SourceItem(
+            account_id=account.id,
+            provider="gmail",
+            external_object_id="history-sender-message",
+            source_version="1",
+            source_fingerprint="f" * 64,
+            minimal_headers={
+                "sender": "Cal Poly Mustang Shop <shop@em.efollett.com>",
+                "subject": "This is not projected as identity",
+            },
+            status="classified",
+        )
+        session.add(source)
+        session.flush()
+
+        entry = HistoryService(session).get_entry(source.ref_id)["entry"]
+
+    assert entry["sender_identity"] == {
+        "trust": "untrusted_provider_metadata",
+        "source_ref": source.ref_id,
+        "identity_ref": None,
+        "handle_type": "email",
+        "value": "shop@em.efollett.com",
+        "display_label": "Cal Poly Mustang Shop",
+        "binding_state": "unmaterialized",
+        "entity_ref": None,
+        "sender_handles": [],
+        "basis_refs": [source.ref_id],
+    }
+    assert "minimal_headers" not in entry
+    assert "subject" not in entry
 
 
 @pytest.mark.integration

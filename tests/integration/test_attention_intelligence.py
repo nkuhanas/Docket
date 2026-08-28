@@ -28,6 +28,7 @@ from docket.models import (
     OutboxEvent,
     Preference,
     QueueItem,
+    SenderIdentityEmail,
     SourceItem,
     TriageBriefEntry,
     TriageRun,
@@ -176,6 +177,14 @@ def test_unknown_sender_creates_one_bounded_case_without_canonical_mutation(
     context = service.get_triage_context()
     assert context["source_ref"] == source_ref
     assert context["trusted_context"]["trust"] == "trusted_docket_context"
+    sender_resolution = context["trusted_context"]["sender_resolution"]
+    assert sender_resolution["identity_ref"].startswith("idn_")
+    assert sender_resolution["identity_refs"] == [sender_resolution["identity_ref"]]
+    assert sender_resolution["handle_type"] == "email"
+    assert sender_resolution["value"] == "isaac@example.com"
+    assert sender_resolution["state"] == "unbound"
+    assert sender_resolution["sender_handles"] == []
+    assert sender_resolution["basis_refs"] == [source_ref]
     assert context["untrusted_source"]["trust"] == "untrusted_provider_content"
     assert len(json.dumps(context, separators=(",", ":")).encode("utf-8")) <= 16384
     result = service.submit_analysis(_analysis(context))
@@ -188,7 +197,14 @@ def test_unknown_sender_creates_one_bounded_case_without_canonical_mutation(
         assert session.scalar(select(func.count(QueueItem.id))) == 1
         assert session.scalar(select(func.count(OutboxEvent.id))) == 1
         assert session.scalar(select(func.count(Entity.id))) == 0
-        assert session.scalar(select(func.count(IdentityHandle.id))) == 0
+        handle = session.scalar(select(IdentityHandle))
+        assert handle is not None
+        assert handle.ref_id == sender_resolution["identity_ref"]
+        assert handle.handle_type == "email"
+        assert handle.normalized_value == "isaac@example.com"
+        assert handle.status == "unbound"
+        assert handle.source_refs == [source_ref]
+        assert handle.created_by_changeset_ref is None
         assert session.scalar(select(func.count(CalendarLane.id))) == 0
         assert session.scalar(select(func.count(CanonicalEvent.id))) == 0
         source = session.scalar(select(SourceItem))
@@ -199,6 +215,22 @@ def test_unknown_sender_creates_one_bounded_case_without_canonical_mutation(
             packet.trusted_context_json
         )
         assert run is not None and run.status == "completed"
+
+    case_context = service.get_case(result["ref"])
+    assert case_context["source_identities"] == [
+        {
+            "trust": "untrusted_provider_metadata",
+            "identity_ref": sender_resolution["identity_ref"],
+            "handle_type": "email",
+            "value": "isaac@example.com",
+            "display_label": "Isaac",
+            "binding_state": "unbound",
+            "entity_ref": None,
+            "sender_handles": [],
+            "basis_refs": [source_ref],
+            "source_refs": [source_ref],
+        }
+    ]
 
     backend = FakeDiscordBackend()
     projection_runner = DiscordProjectionRunner(
@@ -574,19 +606,35 @@ def test_restricted_triage_applies_only_existing_matching_suppression(
     settings = _settings(active=True)
     provider = FakeGmailProvider()
     with session_factory.begin() as session:
-        handle = IdentityHandle(
+        email_handle = IdentityHandle(
             handle_type="email",
             value="isaac@example.com",
             normalized_value="isaac@example.com",
             status="unbound",
         )
-        session.add(handle)
+        sender_handle = IdentityHandle(
+            handle_type="sender_label",
+            value="Isaac",
+            normalized_value="isaac",
+            status="unbound",
+        )
+        session.add_all([email_handle, sender_handle])
         session.flush()
+        session.add(
+            SenderIdentityEmail(
+                sender_identity_handle_id=sender_handle.id,
+                email_identity_handle_id=email_handle.id,
+                status="active",
+                basis_refs=[new_public_ref("utt")],
+                source_refs=[],
+                created_by_changeset_ref=new_public_ref("chg"),
+            )
+        )
         preference = Preference(
             preference_key="gmail.ignore.isaac",
             policy_kind="suppression",
             target_type="identity",
-            target_ref=handle.ref_id,
+            target_ref=sender_handle.ref_id,
             policy_text="Ignore this sender from now on.",
             policy_json={"disposition": "suppress"},
             created_by_changeset_ref=new_public_ref("chg"),
@@ -604,7 +652,25 @@ def test_restricted_triage_applies_only_existing_matching_suppression(
     )
     service = IntelligenceService(session_factory, provider, settings)
     context = service.get_triage_context()
+    sender_resolution = context["trusted_context"]["sender_resolution"]
+    assert sender_resolution["identity_ref"] == email_handle.ref_id
+    assert sender_resolution["identity_refs"] == sorted(
+        [email_handle.ref_id, sender_handle.ref_id]
+    )
+    assert sender_resolution["sender_handles"] == [
+        {
+            "identity_ref": sender_handle.ref_id,
+            "label": "Isaac",
+            "status": "unbound",
+        }
+    ]
     assert context["trusted_context"]["explicit_preferences"][0]["ref"] == preference_ref
+    assert context["trusted_context"]["explicit_preferences"][0]["target_ref"] == (
+        sender_handle.ref_id
+    )
+    assert context["trusted_context"]["explicit_preferences"][0]["policy_json"] == {
+        "disposition": "suppress"
+    }
     result = service.apply_existing_suppression(
         triage_run_ref=context["triage_run_ref"],
         context_ref=context["ref"],
