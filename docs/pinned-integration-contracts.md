@@ -49,7 +49,7 @@ on every request. Docket's callback uses the independent
 
 Hermes performs overlapping plugin discovery during this pin's startup. Each
 discovery pass imports an isolated plugin module, so module globals alone cannot
-prevent a transient second bind. Plugin `0.16.1` starts the private HTTP server
+prevent a transient second bind. Plugin `0.20.0` starts the private HTTP server
 under a background supervisor: an `EADDRINUSE` defers that copy without failing
 plugin registration, and it retries if the process that temporarily owned the
 port exits. Healthy startup may contain one `startup deferred` line, followed
@@ -99,14 +99,59 @@ Pinned outbound assumptions to revalidate:
 * `pre_gateway_dispatch` receives the synchronous session store. The plugin
   resolves the authorized chat message to the same session ID Hermes later
   supplies as the tool hook task ID. This is the trusted source-to-trace join;
-  tool arguments and results are never retained or forwarded.
+  raw tool arguments and results are never retained or forwarded. A canonical
+  SHA-256 of received arguments is forwarded so the authenticated trace can
+  bind to the `call_` created at Docket's MCP boundary.
 * the plugin sends hook observations to Docket through a bounded background
   queue so trace telemetry does not add one network round trip to each tool's
   critical path. Docket validates monotonicity and projects the one trace
   through its durable outbox; the plugin never posts hook output directly to
   Discord.
 
-Plugin `0.16.1` renders timed reminder start/end values as Docket-supplied native
+Plugin `0.20.0` retains the phase-one provenance boundary. For every
+authenticated operator message on the Docket chat root, Docket queue root, or
+a Docket-owned daily thread, `pre_gateway_dispatch` synchronously persists one
+verbatim `OperatorUtterance` before rewrite, control handling, model dispatch,
+or any mutation-capable tool call. Persistence failure skips the turn. Duplicate
+Discord delivery reuses the same `utt_` through the transport request key.
+
+After the tool loop, `post_llm_call` persists the one final assembled assistant
+message as `rsp_`; stream chunks are not responses. The Discord adapter's
+`on_processing_complete` callback updates delivery state separately, so a
+generated response and failed projection remain distinct facts. The plugin's
+listener is installed on the adapter instance and must be revalidated whenever
+the pinned Hermes gateway lifecycle changes.
+
+Each interactive and triage MCP request creates `call_` after service bearer
+authentication but before FastMCP argument validation. Received and normalized
+argument hashes, status, timing, bounded result references, and later trusted
+Discord trace bindings are retained. Raw arguments and raw results are not
+stored in `tool_invocations`.
+
+Before an existing interactive mutation tool executes, the shared MCP
+dispatcher resolves its normalized
+`discord:{guild}:{channel}:{message}:{intent}` request key to the committed
+`:0` `OperatorUtterance`. Actor and source metadata must match that immutable
+ledger entry. The dispatcher binds the `utt_` to `call_` before execution and
+fails closed with `rejected_authority` when the binding is absent or
+inconsistent. Read-only interactive tools and the restricted triage profile do
+not acquire mutation authority through this check.
+
+An MCP request rejected by the outer bearer boundary creates only a structured
+`log_` with profile and method, never a `call_`; the authorization header and
+request body are not read into the log. Phase-one exact-ref, bounded history,
+and ordered conversation inspection live behind the distinct trusted internal
+service bearer. They are deliberately not added to either agent MCP profile
+before the signed tool-contract migration.
+
+The exact final architecture-signoff sentence is recognized only after its
+`utt_` commit and creates a ledger-backed `dec_`. That Decision grants
+architecture authority only; its implementation authority remains
+`gated_by_ONT-INV-0011`. The phase-one runtime does not change approval,
+registry, Calendar-lane, AttentionCase, triage-authority, or provider-operation
+semantics.
+
+Plugin `0.20.0` renders timed reminder start/end values as Docket-supplied native
 Discord timestamps, puts the event subject under the native `Title` field, and
 omits a redundant timezone field. All-day reminders instead render fixed
 start/end dates plus the Calendar timezone. Projection embeds may omit their

@@ -4,6 +4,9 @@ Start here when operating or changing the deployed stack:
 
 * [Operations runbook](operations-runbook.md) — symptom-first diagnosis,
   reload/rebuild rules, safe recovery, and course/Calendar verification.
+* [Ontology rollout verification](ontology-rollout-verification.md) — signed
+  authority, migrations, profile cutover, acceptance suites, PostgreSQL clone
+  rehearsal, and production rollout evidence.
 * [Pinned integration contracts](pinned-integration-contracts.md) — fragile
   Hermes, MCP, container, and Compose assumptions that must be revalidated on
   upgrades.
@@ -36,6 +39,7 @@ Start here when operating or changing the deployed stack:
   deployed pending-card state.
 
 These notes describe the current pinned stack. They are not a substitute for
-the specification or migrations. When behavior and documentation disagree,
-capture live evidence, fail closed, and update both the implementation and
-these notes in the same change.
+the private implementation provenance under the top-level `specs/` and
+`deltas/` directories or for migrations. When behavior and documentation
+disagree, capture live evidence, fail closed, and update both the implementation
+and these notes in the same change.

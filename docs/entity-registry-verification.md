@@ -50,8 +50,9 @@ After deployment:
 * active operations and pending outbox counts were both zero;
 * the interactive Hermes MCP endpoint connected and discovered exactly 30
   allowlisted tools; and
-* discovery included `docket_get_entity`, `docket_search_entities`,
-  `docket_update_entity_relation`, and `docket_retract_entity_relation`.
+* discovery included the then-current legacy registry surface. That surface is
+  now historical; typed registry reads and ChangeSet mutation tools replaced
+  it under the August 27 ontology migration matrix.
 
 Existing Hermes conversations cache MCP discovery. Run `/reload-mcp` in the
 active Discord session before exercising the new registry calls.

@@ -3,8 +3,8 @@
 Date: 2026-07-24 (America/Los_Angeles)
 
 Milestone 3.7 replaces the normal aggregate-schedule workflow with independent
-course lifecycles. The authoritative private specification is `spec-2.3.md` and
-remains outside this repository.
+course lifecycles. The authoritative private specification is
+`specs/spec-2.3.md` and remains outside this repository.
 
 ## Delivered contract
 

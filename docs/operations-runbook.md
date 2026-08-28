@@ -9,7 +9,145 @@ Never paste service tokens, OAuth files, authorization headers, or an
 unredacted Hermes session export into tickets or chat. Discord snowflake IDs
 are identifiers rather than credentials, but still minimize their exposure.
 
-## Record operational invariant
+## Ledger-signed ontology operational invariant
+
+The architecture frozen at SHA-256
+`3d744f4d021f8a605086152eb76743a7ec5a7ed2c8754694e38c1a891a14b5e1`
+is authoritative through `utt_01M13MANKG7HJE2WHRPWRMT528` and
+`dec_01M13MANM19BX22EW8QC8AH9DT`. August 26 is a past-record-only artifact and
+is outside this authority chain.
+
+Current interactive mutation authority is deliberately narrow:
+
+```text
+authenticated Operator message
+  -> immutable utt_
+  -> statements / conflict detection / clarification
+  -> resolved IntentSession
+  -> one ChangeSet
+  -> canonical PostgreSQL commit + provider op_ intents in one transaction
+  -> asynchronous provider execution/reconciliation
+```
+
+Hermes exposes 22 interactive tools: 20 bounded compatibility/current reads and
+only two mutation tools, `docket_commit_changeset` and
+`docket_resolve_conflict`. The isolated triage profile exposes exactly four
+tools and cannot mutate canonical or provider state. Every result is compacted
+before MCP framing; default serialized JSON is at most 16 KiB and explicit
+audit view is at most 64 KiB.
+
+New direct workflows never create Approval rows. Existing Approval rows remain
+readable and the legacy internal interaction/worker paths remain available only
+to drain them. At the 2026-08-28 cutover check there were zero pending rows.
+The legacy Record/entity/Calendar sections below describe compatibility data
+and pre-cutover incident recovery; they do not authorize removed MCP mutations.
+
+AttentionCase is the durable triage term. During the active window an actionable
+case is projected on the next normal outbox cycle. Overnight cases are durable
+but not individually projected and appear in one morning brief. The night brief
+covers daytime triage. Replies bind to the exact visible case/brief revision and
+bootstrap or resume an IntentSession.
+
+Inspect current authority and operation linkage without verbatim text:
+
+```bash
+sudo docker compose exec -T postgres psql -U docket -d docket -P pager=off -c \
+  "select ref_id, decision_kind, document_ref, frozen_artifact_hash, basis_refs
+     from decisions
+    where ref_id = 'dec_01M13MANM19BX22EW8QC8AH9DT';"
+
+sudo docker compose exec -T postgres psql -U docket -d docket -P pager=off -c \
+  "select ref_id, operation_type, status, originating_changeset_ref,
+          basis_refs, canonical_target_refs
+     from operations
+    where originating_changeset_ref is not null
+    order by created_at desc limit 25;"
+```
+
+The detailed rollout and rollback evidence is in
+[Ontology rollout verification](ontology-rollout-verification.md).
+
+## Provenance-bootstrap operational invariant
+
+The phase-one provenance deployment adds evidence capture without changing the
+existing mutation authority model.
+
+1. Every authenticated operator message on a trusted Docket Discord surface is
+   committed verbatim as one `utt_` before model interpretation or a mutating
+   Docket tool can run. A persistence failure rejects the turn. The shared MCP
+   dispatcher resolves every normalized interactive mutation request key to
+   that message's committed `:0` utterance, validates actor/source consistency,
+   and binds the `utt_` to `call_` before execution; failure records
+   `rejected_authority` and performs no mutation.
+2. The final assembled assistant message is committed as one `rsp_` after its
+   tool loop. Generation and Discord delivery are separate states; retries do
+   not create a second semantic response.
+3. Every Docket MCP request creates one `call_` at the authenticated service
+   boundary, including schema, authority, conflict, and service failures. Raw
+   arguments and results are not persisted in this log.
+4. Semantic audit entries are append-only and expose `aud_`. Legacy entities,
+   events, briefs, sources, operations, and Calendar lanes receive stable typed
+   public references during migration.
+5. The verified bootstrap Discord message is deterministically backfilled to
+   one `utt_` and one `dec_` with scope `provenance_bootstrap_only` and
+   `architecture_authority = false`.
+6. An MCP request rejected before caller/profile authentication creates a
+   structured operational `log_` and no `call_`. Runtime logs are never valid
+   semantic basis references and contain no token or request body.
+
+Inspect the bootstrap without printing the retained verbatim message:
+
+```bash
+sudo docker compose exec -T postgres psql -U docket -d docket -P pager=off -c \
+  "select d.ref_id, d.decision_kind, d.document_ref,
+          d.frozen_artifact_hash, d.authorized_scope,
+          d.architecture_authority, d.basis_refs
+     from decisions d
+    where d.decision_kind = 'provenance_bootstrap_signoff';"
+```
+
+Trusted operational clients can inspect phase-one public references without
+traversing tables directly:
+
+```text
+GET /internal/v1/provenance/history/{public_ref}
+GET /internal/v1/provenance/history?object_type=...&related_ref=...&limit=25
+GET /internal/v1/provenance/conversations?conversation_ref=...
+```
+
+These routes require the Hermes-to-Docket service bearer and are not exposed as
+agent tools. Summary view omits verbatim response/utterance text and internal
+UUIDs. `view=audit` returns verbatim text in UTF-8 byte chunks of at most 32 KiB.
+Default list/entry payloads are bounded to 16 KiB serialized JSON; audit entry
+and conversation payloads are bounded to 64 KiB.
+
+Inspect one exact public reference through bounded table-specific queries. Do
+not dump all utterance or response text into a ticket:
+
+```bash
+sudo docker compose exec -T postgres psql -U docket -d docket -P pager=off -c \
+  "select ref_id, actor_ref, transport, source_message_ref,
+          conversation_ref, said_at, recorded_at, content_hash
+     from operator_utterances where ref_id = 'utt_REFERENCE';"
+
+sudo docker compose exec -T postgres psql -U docket -d docket -P pager=off -c \
+  "select ref_id, conversation_ref, generation_state, delivery_state,
+          generated_at, submitted_at, delivered_at, basis_refs, tool_call_refs
+     from agent_responses where ref_id = 'rsp_REFERENCE';"
+
+sudo docker compose exec -T postgres psql -U docket -d docket -P pager=off -c \
+  "select ref_id, tool_name, caller_profile, status, started_at, completed_at,
+          utterance_refs, result_refs, error_code
+     from tool_invocations where ref_id = 'call_REFERENCE';"
+```
+
+Database triggers reject update/delete of utterances, statements, statement
+relations, decisions, audit events, and runtime logs. They also reject changes
+to semantic AgentResponse fields while permitting delivery-state transitions.
+Treat a trigger rejection as an attempted provenance mutation, not as a reason
+to disable the trigger.
+
+## Legacy Record compatibility invariant
 
 An explicit Discord request to remember or store an operational fact succeeds
 only when all of the following are true:
@@ -31,7 +169,7 @@ successful store result includes the authoritative canonical record snapshot.
 claim such as “stored” or “confirmed” after only search/get calls is a failure,
 even if the returned fact is correct.
 
-## Entity-registry operational invariant
+## Typed entity-registry inspection invariant
 
 Docket's entity registry is the durable source for known people,
 organizations, institutions, courses, locations, projects, and services.
@@ -39,13 +177,12 @@ Hermes memory and past-session search are not substitutes.
 
 Before asking for a fact that may already be registered, use:
 
-1. `docket_search_entities` to enumerate a bounded candidate set by canonical
-   name, alias, metadata, class, operator identity, or relationship;
-2. `docket_resolve_entity` when one natural-language mention must bind to one
-   canonical identity; and
-3. `docket_get_entity` immediately before relying on or changing one exact
-   identity. The snapshot includes validated metadata, aliases, relationship
-   direction, relation metadata, and versions.
+1. `docket_network_search` to enumerate a bounded candidate set by canonical
+   name or alias;
+2. `docket_get_person_context` or `docket_get_organization_context` when the
+   candidate is a typed Person, Organization, or Institution; and
+3. `docket_get_network_neighborhood` at depth zero for another exact entity
+   kind.
 
 Relationships always read as `subject predicate object`. For example, an
 advisor person `advises` the operator person, while the operator person
@@ -54,28 +191,25 @@ work. `is_operator: true` is allowed only on one active person, giving Hermes a
 stable anchor for phrases such as “my advisor” without making the user's name
 or Discord identity a global assumption.
 
-Entity profile keys and relationship predicates are a closed MCP schema. Put
-job titles, roles, context, effective dates, and notes in their defined
-metadata fields; do not encode them into invented predicates. Entity updates
-patch supplied attributes and preserve omitted keys. Removal requires an
-explicit `remove_attribute_keys` entry. Existing relation metadata cannot be
-silently overwritten: update it with `docket_update_entity_relation`, or end a
-wrong/expired relation with `docket_retract_entity_relation`. Retraction keeps
-history.
+Canonical entity, identity, affiliation, relationship, and fact changes use
+`docket_commit_changeset`. They require an authenticated current `utt_`, exact
+public references or create specifications, conflict checks, and expected
+versions. Retraction and supersession preserve history.
 
-Every entity write consumes the trusted Discord request key through the same
-operation-name and input-hash contract as other Docket commands. An exact retry
+Every entity write consumes the trusted Discord request key through the
+ChangeSet idempotency contract. An exact retry
 returns `replayed_request`; reuse for another operation or payload returns
 `idempotency_conflict`. If an entity call appears to repeat or mutate twice,
-inspect `command_requests`, then `audit_events`, before changing registry data.
+inspect `change_sets`, `tool_invocations`, and `audit_events` before changing
+registry data.
 
 After a deploy that changes this surface, restart Docket and Hermes and run
 `/reload-mcp` in the active Discord session. If Hermes still asks for a fact
-that is present, first inspect the `docket_search_entities` trace in
+that is present, first inspect the `docket_network_search` trace in
 `#docket-system`; distinguish a missing call, an overly restrictive filter,
 ambiguous results, and a stale MCP schema before adding duplicate data.
 
-## Calendar operational invariant
+## Legacy approval/Calendar drain invariant
 
 A Calendar write succeeds only through this durable sequence:
 
@@ -107,7 +241,7 @@ past-session search, a separate immediate record read, an idempotency conflict,
 a second proposal attempt, or a runtime skill-edit attempt as orchestration
 regressions even when the final provider behavior succeeds.
 
-## Gmail operational invariant
+## Legacy Gmail workflow compatibility invariant
 
 Gmail ingestion and Gmail mutation are separate deployment gates.
 
@@ -258,19 +392,19 @@ Run the Hermes plugin-list probe only after the gateway log reports that Discord
 is connected and the gateway is running. Do not parallelize it with a Hermes
 restart: this pinned CLI imports user plugins, whose registration has the side
 effect of binding the private projection port. A startup-time probe can contend
-with the gateway on port 8787. Plugin `0.16.2` retries that bind, but avoiding the
+with the gateway on port 8787. Plugin `0.20.0` retries that bind, but avoiding the
 race keeps startup and diagnostics unambiguous.
 
 Expected results:
 
 * PostgreSQL and Docket are healthy; Hermes and SearXNG are running.
-* `docket-discord` `0.16.2` is `enabled`.
+* `docket-discord` `0.20.0` is `enabled`.
 * `hermes mcp test docket` connects to `http://docket:8000/mcp/` and discovers
-  exactly 34 tools, including `docket_store_record`,
-  `docket_restore_record`, `docket_apply_course_intent`,
-  `docket_migrate_calendar_events`, `docket_delete_calendar_lane`,
-  `docket_apply_calendar_intent`, and the Calendar/queue read tools.
-* The running Hermes gateway registers the same 19 model-visible Docket tools.
+  exactly 22 interactive tools. The only mutations are
+  `docket_commit_changeset` and `docket_resolve_conflict`; compatibility reads
+  remain bounded and contract-documented.
+* The restricted triage endpoint discovers exactly four tools, and the running
+  Hermes gateway registers the same 22 interactive tools.
 * Logs contain no startup, plugin-load, MCP-authentication, or migration error.
 
 After an MCP tool, schema, or allowlist change, send `/reload-mcp` in the active
@@ -288,15 +422,15 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Symptom | First investigation | Likely class of failure |
 | --- | --- | --- |
 | Hermes says trusted gateway context is missing | Compare the persisted Discord event identity with container environment | Wrong Discord ID, plugin not loaded, or pinned event-shape drift |
-| Hermes says a fact was stored but trace shows only search/get | Inspect command/source/audit tables | Model/tool semantics failure; no write occurred |
-| `docket_store_record` is absent | Run `hermes mcp test docket`, then inspect the active Hermes allowlist | Docket was not rebuilt, tool was renamed incompletely, or active config is stale |
+| Hermes says a fact was stored but trace shows no committed `chg_` | Inspect IntentSession, ChangeSet, statement, and audit refs | Model/tool semantics failure; no canonical write occurred |
+| `docket_commit_changeset` is absent | Run `hermes mcp test docket`, verify contract hash/profile, then inspect the active Hermes allowlist | Docket was not rebuilt, the contract was not loaded, or active config is stale |
 | MCP returns 401 | Check the mounted service-token files and active Hermes MCP header configuration without printing the token | Token-file mismatch or wrong credential directory |
 | MCP returns `invalid_source_context` | Compare operator/guild IDs and either the chat root or the queue parent plus stored daily-thread binding | Plugin context and Docket settings disagree, or the message came from a foreign/unbound queue thread |
 | `/mcp` returns 307 or the client fails during initialization | Use `/mcp/` with the trailing slash | Pinned FastMCP mount-path behavior |
 | Docket is unhealthy after changing the database password | Check whether the PostgreSQL volume predates the new password | Compose environment changed but the existing database role did not |
 | Plugin or skill edit appears ignored | Restart Hermes, run `/reload-mcp` when MCP changed, and begin a new Discord turn | Bind-mounted file changed, but Python hook/skill/tool registration is cached |
-| A lane migration succeeds but the agent turn takes minutes | Compare Hermes model/compression time with operation attempts; confirm series-view reads, compact bounded `docket_get_action`, and the configured operation drain limit | Oversized occurrence/preview payloads forced context compression, the agent repeatedly polled, or a pre-drain worker waited one poll interval per item |
-| A stated preference does not affect later email triage | Inspect `.runtime/hermes/preferences/TRIAGE.md`, then verify the cron launcher received the bounded preference prompt after the latest deploy | Hermes failed to persist the preference, the runtime file was overwritten, or the isolated triage launcher is stale |
+| A provider operation succeeds but the agent turn takes minutes | Compare Hermes model/compression time with `op_` history and confirm the 16 KiB boundary envelope | Oversized compatibility output, stale tool contract, or repeated polling forced context compression |
+| A stated preference does not affect later email triage | Inspect the active `pref_` and applicable `TRIAGE.md` rule, then inspect the ContextPacket basis refs | The Preference target/scope did not match, the freeform policy was not loaded, or the isolated triage contract is stale |
 | An irrelevant event asks for organization/person/location registration | Inspect the candidate's `calendar_relevance`, `relevance_basis`, entity-resolution states, and active `TRIAGE.md` | Relevance was omitted/misclassified, preferences were not loaded, or a pre-bundling compiler treated provisional registration as a clarification gate |
 | `skill_manage` reports a read-only `.SKILL.md.tmp` path | Edit the repository-owned skill on the host and restart Hermes | Docket's mounted manual skill is intentionally read-only inside Hermes; model-driven self-edit is not the update path |
 | Plugin load fails with `Address already in use` or projection listener is unreachable after restart | Stop running plugin probes, restart only Hermes, then verify port 8787 before further CLI inspection | Pinned plugin registration or a concurrent diagnostic process bypassed the retrying listener supervisor |
@@ -337,7 +471,7 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Approval button appears inert | Inspect the stored projection/message binding and interaction listener before using any break-glass code | Stale/copied card, wrong parent or actor, listener unavailable, token expired, or action already resolved |
 | No daily thread/card appears | Inspect projection outbox status, then the private plugin listener and Hermes logs | Hermes not recreated after plugin/env change, private listener unavailable, Discord permission/API failure, or retry backoff |
 | Daily thread exists but is hidden until **Join Thread** is used | Inspect the latest thread-ensure acknowledgement for the exact configured `operator_user_id` and `operator_joined=true`, then check Hermes for `daily_thread_member_add_failed` | Pre-`0.10.0` plugin, Hermes was not restarted, operator ID mismatch, missing `SEND_MESSAGES_IN_THREADS`, parent-channel access failure, archived-thread race, or Discord member limit |
-| Hermes ignores the configured operator inside a Docket daily thread | Confirm the event exposes the queue as `parent_chat_id`, the thread exists in `discord_daily_threads`, plugin `0.16.2` is active, and the operator is still the sole allowed user | Old control-only plugin, foreign thread, parent-ID event-shape drift, or Hermes/plugin authorization mismatch |
+| Hermes ignores the configured operator inside a Docket daily thread | Confirm the event exposes the queue as `parent_chat_id`, the thread exists in `discord_daily_threads`, plugin `0.20.0` is active, and the operator is still the sole allowed user | Old control-only plugin, foreign thread, parent-ID event-shape drift, or Hermes/plugin authorization mismatch |
 | No rollover occurs after 08:00 local | Inspect `system:daily_rollover:ISO-DATE`, worker heartbeat, timezone, and rollover hour | Worker unavailable, wrong timezone/hour, or a prior command already owns the date |
 | Duplicate daily thread or card | Stop retries and inspect exact name/owner or footer-marker collisions | Archived lookup drift, manually copied marker, lost binding, or plugin concurrency regression |
 | Button says the control is unauthorized/stale | Compare stored control projection with actual parent/thread/message and actor | Copied/old card, wrong operator, changed thread parent, projection refresh, or callback drift |
@@ -354,14 +488,14 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | Calendar lookup is empty or stale | Inspect `calendar_sync_states`, its covered window, and the prior cache generation before changing credentials | Read gate disabled, sync due/leased, OAuth failure, partial page walk, or requested range outside the cache |
 | A newly created provider event is absent from a healthy current-day lookup | Compare `last_success_at` with the event creation time, then retry the same bounded lookup with `require_fresh` | `prefer_cache` returned before the next five-minute synchronization; healthy and covered do not imply read-after-provider-write consistency |
 | Hermes calls a terminal or time tool around a today/tomorrow Calendar lookup | Inspect the active lookup schema/result for `relative_day`, `start_local`, and `end_local`, then restart Hermes and run `/reload-mcp` | The active session cached the prior MCP schema or old manual-intent guidance |
-| Reminder does not arrive | Inspect rule version, event cache identity, scheduled row, bound daily thread, notification outbox, and plugin `0.16.2` logs | Rule disabled, event moved/cancelled, stale event already began, queue binding changed, thread ensure failed, or Discord retry |
+| Reminder does not arrive | Inspect rule version, event cache identity, scheduled row, bound daily thread, notification outbox, and plugin `0.20.0` logs | Rule disabled, event moved/cancelled, stale event already began, queue binding changed, thread ensure failed, or Discord retry |
 | Docket emits duplicate daily-thread reminders when Google popup is sufficient | Set the Calendar profile `default_reminder_delivery_channels` to `["google_popup"]`; verify all Docket rules are disabled and pending/delivering scheduled notifications are cancelled | The profile still includes `docket_queue`, a pre-profile operation reactivated rules, or the deployed worker predates profile-gated activation |
-| External action has no `docket-system` lifecycle entry | Inspect `discord.system_log.requested` outbox rows and the plugin `system-logs` endpoint before posting a manual summary | Plugin not recreated at `0.16.2`, system target mismatch, retry backoff, or marker ownership conflict; canonical operation/audit state remains authoritative |
-| A Docket-backed agent turn has no `docket-system` tool trace | Inspect Hermes for all four registered plugin hooks, then inspect `discord_mcp_traces` and `discord.mcp_trace.requested` outbox rows | Plugin `0.16.2` was not restarted, `/reload-mcp` still exposes a differently named server/tool, trusted chat/thread-to-session binding failed, plugin-to-Docket trace delivery failed, or projection is retrying |
+| External action has no `docket-system` lifecycle entry | Inspect `discord.system_log.requested` outbox rows and the plugin `system-logs` endpoint before posting a manual summary | Plugin not recreated at `0.20.0`, system target mismatch, retry backoff, or marker ownership conflict; canonical operation/audit state remains authoritative |
+| A Docket-backed agent turn has no `docket-system` tool trace | Inspect Hermes for all four registered plugin hooks, then inspect `discord_mcp_traces` and `discord.mcp_trace.requested` outbox rows | Plugin `0.20.0` was not restarted, `/reload-mcp` still exposes a differently named server/tool, trusted chat/thread-to-session binding failed, plugin-to-Docket trace delivery failed, or projection is retrying |
 | A Docket tool trace remains Running after the response | Compare the trace calls/status with Hermes `post_tool_call` and `post_llm_call` hook logs; start a new authorized chat turn to close an interrupted prior trace | Pinned hook drift, gateway interruption before turn finalization, plugin restart, or a trace update waiting in the bounded delivery queue |
 | Queue card exposes provider IDs, ETags, hashes, enum action names, or freshness timestamps | Stop treating the card as an operator-safe surface and inspect the deterministic renderer | Diagnostic metadata leaked into the projection; keep it in PostgreSQL/runbook queries and render only decision-relevant labels |
 | Calendar card repeats Status/Execution/Effect, uses the event subject as its long title/description, or dumps a generic Before record | Inspect the state-oriented renderer and rebuild/recreate Docket | Pre-polish image or renderer regression; standalone subjects belong under `Title`, successful terminal state needs no description, and updates use bounded `Delta · Property` fields with separate Before/After lines |
-| A timed card, reminder, or system entry displays raw `<t:...>` text or a manual IANA timezone | Confirm the value is in an embed description/field, Hermes runs plugin `0.16.2`, and the token survived escaping unchanged | Old renderer/plugin, malformed milliseconds or timestamp style, or a Discord-client rendering regression; all-day and recurrence-definition timezone text is intentionally exempt |
+| A timed card, reminder, or system entry displays raw `<t:...>` text or a manual IANA timezone | Confirm the value is in an embed description/field, Hermes runs plugin `0.20.0`, and the token survived escaping unchanged | Old renderer/plugin, malformed milliseconds or timestamp style, or a Discord-client rendering regression; all-day and recurrence-definition timezone text is intentionally exempt |
 | Duplicate reminder appears | Stop retries and compare notification ID, event-start key, outbox dedupe key, and `docket-calendar-reminder:<uuid>` footer marker | Marker collision, manual copy, lost binding, or plugin idempotency regression |
 
 ## Missing trusted Discord context
@@ -656,7 +790,7 @@ from discord_mcp_traces order by created_at desc limit 20;'
 First failure points:
 
 * `discord_transport_error` or `discord_runtime_unavailable`: verify Hermes is
-  running, plugin `0.16.2` is enabled, port 8787 is exposed only internally, and
+  running, plugin `0.20.0` is enabled, port 8787 is exposed only internally, and
   Hermes was recreated after Compose environment changes. The default ten
   attempts cover ordinary Hermes startup; do not reduce the window without
   measuring the pinned runtime's initialization time.
@@ -675,7 +809,7 @@ First failure points:
 * `invalid_discord_ack`: the plugin response did not echo request, target, or
   digest bindings. Treat this as a compatibility/security failure.
 * `invalid_mcp_trace_*`, `nonmonotonic_mcp_trace`, or
-  `mcp_trace_state_regression`: compare plugin `0.16.2` with the Docket image
+  `mcp_trace_state_regression`: compare plugin `0.20.0` with the Docket image
   and migration `0011`. Do not replay arguments/results or edit trace JSON;
   these errors mean the pinned hook/schema contract drifted or a terminal
   update arrived out of order.
@@ -699,7 +833,7 @@ print("projection listener reachable")'
 Hermes plugin edits require a gateway restart. `/reload-mcp` is still required
 for MCP tool/schema changes, but it does not reload this Python plugin.
 
-The pinned Hermes runtime performs overlapping plugin discovery. Plugin `0.16.2`
+The pinned Hermes runtime performs overlapping plugin discovery. Plugin `0.20.0`
 therefore starts port 8787 under a retrying supervisor: one discovery pass may
 log that startup is deferred because the port is in use, but plugin loading must
 still succeed and one listener must remain reachable. A warning that the plugin
@@ -1337,7 +1471,8 @@ The retention worker runs at most once per Los Angeles local day and records
 * removes unreferenced ignored source metadata after 30 days;
 * removes other unreferenced source metadata after 365 days;
 * scrubs failed/unknown attempt diagnostics after 90 days;
-* removes execution attempts and old audit events after 365 days;
+* removes execution attempts after 365 days while retaining append-only audit
+  events;
 * removes delivered/cancelled notification rows after 90 days; and
 * removes terminal operation-item results after 365 days only when no active
   canonical record still references them.
