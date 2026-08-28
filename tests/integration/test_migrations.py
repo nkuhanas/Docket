@@ -46,6 +46,39 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
         "discord_projections",
         "queue_item_sources",
         "source_items",
+        "operator_utterances",
+        "agent_responses",
+        "agent_response_projections",
+        "interpreted_statements",
+        "statement_relations",
+        "decisions",
+        "tool_invocations",
+        "runtime_log_entries",
+        "intent_sessions",
+        "intent_turns",
+        "change_sets",
+        "change_set_revisions",
+        "conflicts",
+        "provenance_sources",
+        "person_profiles",
+        "organization_profiles",
+        "identity_handles",
+        "identity_bindings",
+        "affiliations",
+        "relationships",
+        "facts",
+        "interactions",
+        "interaction_participants",
+        "triage_runs",
+        "context_packets",
+        "attention_cases",
+        "attention_case_revisions",
+        "case_items",
+        "case_sources",
+        "triage_brief_entries",
+        "daily_brief_case_items",
+        "preferences",
+        "lane_routing_decisions",
     }.issubset(set(inspect(engine).get_table_names()))
     assert "calendar_schedule_snapshots" not in inspect(engine).get_table_names()
     assert "synced_snapshot" in {
@@ -75,6 +108,31 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
     assert "operation_item_id" in {
         column["name"] for column in inspect(engine).get_columns("execution_attempts")
     }
+    for public_table in (
+        "accounts",
+        "audit_events",
+        "entities",
+        "canonical_events",
+        "daily_briefs",
+        "source_items",
+        "operations",
+        "calendar_lanes",
+        "provenance_sources",
+        "identity_handles",
+        "affiliations",
+        "relationships",
+        "facts",
+        "interactions",
+        "triage_runs",
+        "context_packets",
+        "attention_cases",
+        "attention_case_revisions",
+        "case_items",
+        "triage_brief_entries",
+        "preferences",
+        "lane_routing_decisions",
+    ):
+        assert "ref_id" in {column["name"] for column in inspect(engine).get_columns(public_table)}
     assert {
         tuple(constraint["column_names"])
         for constraint in inspect(engine).get_unique_constraints("record_sources")
@@ -94,6 +152,68 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
 
     command.downgrade(config, "base")
     assert "records" not in inspect(engine).get_table_names()
+    engine.dispose()
+    clear_settings_cache()
+
+
+@pytest.mark.integration
+def test_typed_registry_migration_preserves_legacy_entity_provenance(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    database_path = tmp_path / "typed-registry.db"
+    database_url = f"sqlite+pysqlite:///{database_path}"
+    monkeypatch.setenv("DOCKET_DATABASE_URL", database_url)
+    clear_settings_cache()
+    config = Config("alembic.ini")
+    command.upgrade(config, "0030")
+    engine = create_engine(database_url)
+    legacy = MetaData()
+    entities = Table("entities", legacy, autoload_with=engine)
+    entity_id = uuid.uuid4()
+    entity_ref = f"ent_{entity_id.hex[:26].upper()}"
+    now = datetime.now(UTC)
+    with engine.begin() as connection:
+        connection.execute(
+            entities.insert().values(
+                id=entity_id.hex,
+                ref_id=entity_ref,
+                entity_class="person",
+                canonical_name="Migration Operator",
+                normalized_name="migration operator",
+                status="active",
+                attributes={"is_operator": True, "preferred_name": "Operator"},
+                authority="explicit_user",
+                merged_into_id=None,
+                version=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+    command.upgrade(config, "head")
+    migrated = MetaData()
+    migrated_entities = Table("entities", migrated, autoload_with=engine)
+    sources = Table("provenance_sources", migrated, autoload_with=engine)
+    profiles = Table("person_profiles", migrated, autoload_with=engine)
+    with engine.connect() as connection:
+        entity = connection.execute(select(migrated_entities)).mappings().one()
+        source = connection.execute(select(sources)).mappings().one()
+        profile = connection.execute(select(profiles)).mappings().one()
+        assert entity["registration_state"] == "registered"
+        assert entity["provenance_status"] == "legacy_preledger"
+        assert entity["basis_refs"] == [source["ref_id"]]
+        assert entity["source_refs"] == [source["ref_id"]]
+        assert source["source_kind"] == "legacy_canonical_object"
+        assert source["external_ref"] == entity_ref
+        assert profile["is_operator"] is True
+        assert profile["preferred_name"] == "Operator"
+
+    command.downgrade(config, "0030")
+    assert "provenance_sources" not in inspect(engine).get_table_names()
+    assert "registration_state" not in {
+        column["name"] for column in inspect(engine).get_columns("entities")
+    }
     engine.dispose()
     clear_settings_cache()
 

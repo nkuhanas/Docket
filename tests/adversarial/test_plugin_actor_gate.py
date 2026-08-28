@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -24,11 +24,23 @@ class Platform(Enum):
 
 
 @pytest.fixture
-def plugin_module():
+def plugin_module(monkeypatch):
     spec = importlib.util.spec_from_file_location("docket_discord_plugin", PLUGIN_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    monkeypatch.setattr(
+        module,
+        "_capture_operator_utterance",
+        lambda _event: f"utt_{'0' * 26}",
+    )
+
+    def fake_internal_request(path, _payload, **_kwargs):
+        if path == "/internal/v1/discord/agent-responses":
+            return {"ok": True, "ref": f"rsp_{'1' * 26}", "state": "pending"}
+        return {"ok": True}
+
+    monkeypatch.setattr(module, "_docket_internal_request", fake_internal_request)
     return module
 
 
@@ -157,6 +169,11 @@ def test_docket_mcp_hooks_emit_only_bounded_trace_metadata(plugin_module, monkey
 
     rewritten = plugin_module._pre_gateway_dispatch(event, session_store=store)
     assert rewritten is not None and rewritten["action"] == "rewrite"
+    assert '<docket_tool_contract trusted="true">' in rewritten["text"]
+    assert f"contract_version: {plugin_module._TOOL_CONTRACT_VERSION}" in rewritten["text"]
+    assert f"contract_hash: {plugin_module._TOOL_CONTRACT_HASH}" in rewritten["text"]
+    assert "profile: interactive" in rewritten["text"]
+    assert "without a redundant approval phase" in rewritten["text"]
     plugin_module._on_pre_tool_call(
         tool_name="mcp__docket__docket_search_records",
         args={"query": "secret query body"},
@@ -183,6 +200,9 @@ def test_docket_mcp_hooks_emit_only_bounded_trace_metadata(plugin_module, monkey
     )
 
     assert len(emitted) == 3
+    assert emitted[0][0]["tool_contract_version"] == plugin_module._TOOL_CONTRACT_VERSION
+    assert emitted[0][0]["tool_contract_hash"] == plugin_module._TOOL_CONTRACT_HASH
+    assert emitted[0][0]["caller_profile"] == "interactive"
     running = emitted[0][1]["call"]
     terminal = emitted[1][1]["call"]
     assert running == {
@@ -193,6 +213,9 @@ def test_docket_mcp_hooks_emit_only_bounded_trace_metadata(plugin_module, monkey
         "elapsed_ms": 0,
         "disposition": None,
         "error_code": None,
+        "received_argument_hash": (
+            "f7a5f41a1e803eb0930a42026dd49c10550b16fbf98fcad1cabaffc2ec72f803"
+        ),
     }
     assert terminal["state"] == "succeeded"
     assert terminal["elapsed_ms"] == 42
@@ -208,6 +231,51 @@ def test_docket_mcp_hooks_emit_only_bounded_trace_metadata(plugin_module, monkey
         turn_id="turn-1",
     )
     assert len(emitted) == 3
+
+
+@pytest.mark.adversarial
+def test_empty_model_turn_is_reported_as_no_response(plugin_module, monkeypatch) -> None:
+    actor = "111111111111111111"
+    guild = "222222222222222222"
+    chat = "333333333333333333"
+    message_id = "444444444444444444"
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", chat)
+    monkeypatch.setenv("DOCKET_QUEUE_CHANNEL_ID", "555555555555555555")
+    monkeypatch.setenv("DOCKET_SYSTEM_CHANNEL_ID", "666666666666666666")
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def fake_request(path, payload, **_kwargs):
+        requests.append((path, dict(payload)))
+        return {"ok": True}
+
+    monkeypatch.setattr(plugin_module, "_docket_internal_request", fake_request)
+    monkeypatch.setattr(plugin_module, "_enqueue_trace_update", lambda *_args, **_kwargs: None)
+    event = SimpleNamespace(
+        text="Do the bounded thing.",
+        message_id=message_id,
+        source=SimpleNamespace(
+            platform="discord",
+            user_id=actor,
+            guild_id=guild,
+            chat_id=chat,
+        ),
+    )
+    store = SimpleNamespace(
+        get_or_create_session=lambda _source: SimpleNamespace(session_id="session-empty")
+    )
+    plugin_module._pre_gateway_dispatch(event, session_store=store)
+    plugin_module._on_post_llm_call(
+        task_id="session-empty",
+        session_id="session-empty",
+        turn_id="turn-empty",
+        assistant_response="",
+    )
+
+    assert requests[-1][0] == "/internal/v1/discord/agent-turns/no-response"
+    assert requests[-1][1]["utterance_ref"].startswith("utt_")
+    assert requests[-1][1]["source_message_id"] == message_id
 
 
 @pytest.mark.asyncio
@@ -500,8 +568,193 @@ def test_authorized_chat_receives_verified_source_context(plugin_module, monkeyp
     assert f'"request_key": "discord:{guild}:{channel}:{message}:0"' in result["text"]
     assert f'"actor_id": "{actor}"' in result["text"]
     assert "Reads do not consume an intent index" in result["text"]
-    assert "state-changing Docket operation" in result["text"]
-    assert "Referencing an existing record" in result["text"]
+    assert "one ChangeSet" in result["text"]
+    assert "current authenticated OperatorUtterance supplies authority" in result["text"]
+    assert "do not split one request across legacy mutations" in result["text"]
+
+
+def test_projection_reply_binding_is_injected_as_trusted_context(
+    plugin_module, monkeypatch
+) -> None:
+    actor = "111111111111111111"
+    guild = "222222222222222222"
+    channel = "333333333333333333"
+    message = "444444444444444444"
+    case_ref = f"case_{'2' * 26}"
+    revision_ref = f"case_{'3' * 26}"
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", channel)
+    monkeypatch.setattr(
+        plugin_module,
+        "_capture_operator_utterance",
+        lambda _event: (
+            f"utt_{'0' * 26}",
+            {
+                "kind": "attention_case",
+                "primary_ref": case_ref,
+                "primary_revision_ref": revision_ref,
+                "case_refs": [case_ref],
+                "case_revision_refs": [revision_ref],
+                "brief_ref": None,
+                "trusted_context_refs": [f"ctx_{'4' * 26}"],
+            },
+        ),
+    )
+    event = SimpleNamespace(
+        text="Register the context but skip the meeting.",
+        message_id=message,
+        source=SimpleNamespace(
+            platform="discord",
+            user_id=actor,
+            guild_id=guild,
+            chat_id=channel,
+        ),
+    )
+
+    result = plugin_module._pre_gateway_dispatch(event)
+
+    assert result is not None and result["action"] == "rewrite"
+    assert '"reply_binding"' in result["text"]
+    assert case_ref in result["text"]
+    assert revision_ref in result["text"]
+
+
+@pytest.mark.adversarial
+def test_trusted_ingress_fails_closed_when_utterance_cannot_persist(
+    plugin_module, monkeypatch
+) -> None:
+    actor = "111111111111111111"
+    guild = "222222222222222222"
+    channel = "333333333333333333"
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", channel)
+
+    def fail_capture(_event):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(plugin_module, "_capture_operator_utterance", fail_capture)
+    event = SimpleNamespace(
+        text="This must not reach interpretation.",
+        message_id="444444444444444444",
+        source=SimpleNamespace(
+            platform="discord",
+            user_id=actor,
+            guild_id=guild,
+            chat_id=channel,
+        ),
+    )
+
+    assert plugin_module._pre_gateway_dispatch(event) == {
+        "action": "skip",
+        "reason": "docket-utterance-persistence-failed",
+    }
+
+
+@pytest.mark.adversarial
+def test_exact_final_signoff_is_recorded_before_model_dispatch(
+    plugin_module, monkeypatch
+) -> None:
+    actor = "111111111111111111"
+    guild = "222222222222222222"
+    channel = "333333333333333333"
+    message = "444444444444444444"
+    utterance_ref = f"utt_{'2' * 26}"
+    captured = []
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", channel)
+    monkeypatch.setattr(
+        plugin_module,
+        "_capture_operator_utterance",
+        lambda _event: utterance_ref,
+    )
+    def record_signoff(event, ref):
+        captured.append((event.text, ref))
+        return f"dec_{'3' * 26}"
+
+    monkeypatch.setattr(
+        plugin_module,
+        "_record_final_signoff_if_explicit",
+        record_signoff,
+    )
+    event = SimpleNamespace(
+        text=plugin_module._FINAL_ARCHITECTURE_SIGNOFF_TEXT,
+        message_id=message,
+        source=SimpleNamespace(
+            platform="discord",
+            user_id=actor,
+            guild_id=guild,
+            chat_id=channel,
+        ),
+    )
+
+    result = plugin_module._pre_gateway_dispatch(event)
+
+    assert result is not None and result["action"] == "rewrite"
+    assert captured == [(plugin_module._FINAL_ARCHITECTURE_SIGNOFF_TEXT, utterance_ref)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.adversarial
+async def test_agent_response_persistence_failure_blocks_discord_delivery(
+    plugin_module, monkeypatch
+) -> None:
+    class FakeSendResult:
+        def __init__(self, success, **kwargs) -> None:
+            self.success = success
+            self.error = kwargs.get("error")
+            self.retryable = kwargs.get("retryable", False)
+
+    gateway_module = ModuleType("gateway")
+    platforms_module = ModuleType("gateway.platforms")
+    base_module = ModuleType("gateway.platforms.base")
+    base_module.SendResult = FakeSendResult
+    monkeypatch.setitem(sys.modules, "gateway", gateway_module)
+    monkeypatch.setitem(sys.modules, "gateway.platforms", platforms_module)
+    monkeypatch.setitem(sys.modules, "gateway.platforms.base", base_module)
+
+    delivered = []
+
+    class FakeAdapter:
+        async def send(self, chat_id, content, reply_to=None, metadata=None):
+            delivered.append((chat_id, content, reply_to, metadata))
+            return FakeSendResult(True)
+
+    adapter = FakeAdapter()
+    adapter._docket_provenance_contexts = {
+        ("222222222222222222", "333333333333333333", "444444444444444444"): {
+            "terminal": True,
+            "response_persistence_failed": True,
+        }
+    }
+    plugin_module._install_provenance_delivery_guard(adapter)
+
+    blocked = await adapter.send(
+        chat_id="333333333333333333",
+        content="unlogged response",
+        reply_to="444444444444444444",
+    )
+    assert blocked.success is False
+    assert blocked.error == "docket_agent_response_not_persisted"
+    assert delivered == []
+
+    adapter._docket_provenance_contexts.clear()
+    allowed = await adapter.send(
+        chat_id="333333333333333333",
+        content="logged response",
+        reply_to="444444444444444444",
+    )
+    assert allowed.success is True
+    assert delivered == [
+        (
+            "333333333333333333",
+            "logged response",
+            "444444444444444444",
+            None,
+        )
+    ]
 
 
 def test_authorized_chat_receives_bounded_operator_preferences(
@@ -538,6 +791,8 @@ def test_authorized_chat_receives_bounded_operator_preferences(
     assert '<docket_operator_preferences trusted="true">' in result["text"]
     assert "Do not propose football games" in result["text"]
     assert "/opt/data/preferences/TRIAGE.md" in result["text"]
+    assert "do not rewrite" in result["text"]
+    assert "structured Docket Preference" in result["text"]
     assert result["text"].index("docket_operator_preferences") < result["text"].index(
         "docket_gateway_context"
     )

@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import select
@@ -17,6 +17,7 @@ from docket.services.soak import SoakService
 @pytest.mark.integration
 def test_soak_completion_requires_duration_and_durable_operational_gates(
     session_factory,
+    monkeypatch,
 ) -> None:
     settings = get_settings().model_copy(
         update={
@@ -33,13 +34,10 @@ def test_soak_completion_requires_duration_and_durable_operational_gates(
     assert initial.started_at is not None
     assert not initial.ready_to_complete
 
-    now = datetime.now(UTC)
+    assert initial.started_at is not None
+    now = initial.started_at + timedelta(hours=73)
+    monkeypatch.setattr("docket.services.soak.utc_now", lambda: now)
     with session_factory.begin() as session:
-        started = session.scalar(
-            select(AuditEvent).where(AuditEvent.event_type == "soak.started")
-        )
-        assert started is not None
-        started.created_at = now - timedelta(hours=73)
         account = Account(
             provider="google",
             external_account_id="soak-gmail",
@@ -76,18 +74,20 @@ def test_soak_completion_requires_duration_and_durable_operational_gates(
                     event_type="backup.restore_succeeded",
                     entity_type="backup_manifest",
                     entity_id=None,
-                    actor_type="system",
-                    actor_id=None,
-                    data={"manifest_name": "docket-soak.manifest.json"},
-                ),
+                actor_type="system",
+                actor_id=None,
+                data={"manifest_name": "docket-soak.manifest.json"},
+                created_at=now,
+            ),
                 AuditEvent(
                     event_type="retention.cleanup_completed",
                     entity_type="retention",
                     entity_id=None,
-                    actor_type="system",
-                    actor_id=None,
-                    data={"counts": {}},
-                ),
+                actor_type="system",
+                actor_id=None,
+                data={"counts": {}},
+                created_at=now,
+            ),
             ]
         )
 

@@ -42,10 +42,10 @@ def test_gmail_triage_installer_pins_an_isolated_profile_and_local_delivery() ->
     assert "discovered_tool_count" in script
     assert "must discover exactly four tools" in script
     for tool in (
-        "docket_claim_triage_batch",
-        "docket_read_claimed_source",
-        "docket_search_related_records",
-        "docket_submit_semantic_candidates",
+        "docket_get_triage_context",
+        "docket_submit_triage_analysis",
+        "docket_get_triage_case",
+        "docket_apply_existing_suppression",
     ):
         assert tool in script
         assert tool in config
@@ -60,9 +60,12 @@ def test_gmail_triage_installer_pins_an_isolated_profile_and_local_delivery() ->
     assert "preferences/TRIAGE.md" in launcher
     assert "head -c 16384" in launcher
     assert "operator-authored triage preferences" in launcher
+    assert "tool-contract.md" in launcher
+    assert "Docket triage tool contract exceeds 12 KiB" in launcher
+    assert "contracts/triage.md" in script
     assert "returned unexpected model output" in launcher
     assert "exactly one source per run" in skill
-    assert "caps this profile's claim at one source" in skill
+    assert "caps the profile at one source" in skill
     assert "cli: []" in config
     assert "cron: []" in config
     assert "plugins:\n  enabled: []" in config
@@ -102,6 +105,14 @@ esac
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "HERMES_HOME": str(tmp_path / "home"),
     }
+    contract_path = tmp_path / "home" / "profiles" / "docket-triage" / "tool-contract.md"
+    contract_path.parent.mkdir(parents=True)
+    contract_path.write_text(
+        Path("hermes/plugin/docket_discord/contracts/triage.md").read_text(
+            encoding="utf-8"
+        ),
+        encoding="utf-8",
+    )
 
     silent = subprocess.run(
         ["sh", str(launcher)],

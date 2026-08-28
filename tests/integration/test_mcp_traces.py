@@ -12,6 +12,7 @@ from docket.models import DiscordDailyThread, DiscordMcpTrace, OutboxEvent
 from docket.providers.discord import FakeDiscordBackend, FakeDiscordProjectionAdapter
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.mcp_traces import McpTraceService, trace_id_for_source
+from docket.tool_contracts import CONTRACT_VERSION, contract_hash
 
 
 def _update(
@@ -41,6 +42,9 @@ def _update(
             "source_channel_id": source_channel_id or settings.chat_channel_id,
             "source_message_id": "777777777777777777",
             "actor_id": settings.operator_discord_user_id,
+            "tool_contract_version": CONTRACT_VERSION,
+            "tool_contract_hash": contract_hash("interactive"),
+            "caller_profile": "interactive",
             "updated_at": datetime.now(UTC).isoformat(),
             "turn_status": turn_status,
             "call": call,
@@ -139,6 +143,9 @@ def test_mcp_trace_is_monotonic_redacted_and_projected(
         trace = session.get(DiscordMcpTrace, trace_id)
         assert trace is not None
         assert trace.status == "completed"
+        assert trace.tool_contract_version == CONTRACT_VERSION
+        assert trace.tool_contract_hash == contract_hash("interactive")
+        assert trace.caller_profile == "interactive"
         assert trace.last_ordinal == 1
         assert trace.calls == [
             {

@@ -2,12 +2,14 @@ import asyncio
 
 import pytest
 from fastapi import HTTPException, Response
+from sqlalchemy import func, select
 from starlette.requests import Request
 
 from docket.config import get_settings
 from docket.internal_api.auth import require_hermes_service
 from docket.main import health_ready, protect_mcp
 from docket.mcp import mcp, triage_mcp
+from docket.models import RuntimeLogEntry, ToolInvocation
 
 
 def _request(path: str, authorization: str | None = None) -> Request:
@@ -51,6 +53,17 @@ def test_internal_api_and_mcp_require_distinct_tokens(session_factory) -> None:
         )
     )
     assert wrong_mcp_service.status_code == 401
+    with session_factory() as session:
+        runtime_logs = list(
+            session.scalars(
+                select(RuntimeLogEntry).order_by(RuntimeLogEntry.occurred_at)
+            )
+        )
+        assert len(runtime_logs) == 2
+        assert all(entry.ref_id.startswith("log_") for entry in runtime_logs)
+        assert all(entry.event_code == "mcp.authentication_rejected" for entry in runtime_logs)
+        assert all(entry.related_refs == [] for entry in runtime_logs)
+        assert session.scalar(select(func.count()).select_from(ToolInvocation)) == 0
     authorized = asyncio.run(
         protect_mcp(
             _request("/mcp", f"Bearer {settings.docket_to_hermes_token()}"),

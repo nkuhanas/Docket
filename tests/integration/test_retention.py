@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy import select
 
 from docket.config import get_settings
+from docket.internal_api.schemas import OperatorUtteranceCapture
 from docket.models import (
     Account,
     Action,
@@ -12,11 +13,14 @@ from docket.models import (
     AuditEvent,
     Operation,
     OperationItem,
+    OperatorUtterance,
     QueueItem,
     QueueItemSource,
     Record,
     SourceItem,
+    ToolInvocation,
 )
+from docket.services.provenance import ProvenanceService
 from docket.services.retention import RetentionService
 
 
@@ -26,6 +30,34 @@ def test_retention_prunes_only_unreferenced_expired_source_metadata(
 ) -> None:
     now = datetime.now(UTC)
     with session_factory.begin() as session:
+        settings = get_settings()
+        message_id = "1542803000000000001"
+        utterance_ref = ProvenanceService(session).capture_operator_utterance(
+            OperatorUtteranceCapture(
+                request_id=uuid.uuid4(),
+                guild_id=settings.discord_guild_id,
+                channel_id=settings.chat_channel_id,
+                message_id=message_id,
+                actor_id=settings.operator_discord_user_id,
+                verbatim_text="Retain this exact authenticated Operator message.",
+                request_key=(
+                    f"discord:{settings.discord_guild_id}:{settings.chat_channel_id}:"
+                    f"{message_id}:0"
+                ),
+            )
+        )["ref"]
+        session.add(
+            ToolInvocation(
+                tool_name="docket_search_history",
+                tool_contract_version="retention-test",
+                caller_profile="interactive",
+                utterance_refs=[utterance_ref],
+                status="succeeded",
+                received_argument_hash="e" * 64,
+                normalized_argument_hash="e" * 64,
+                completed_at=now,
+            )
+        )
         account = Account(
             provider="google",
             external_account_id="retention-test",
@@ -173,7 +205,7 @@ def test_retention_prunes_only_unreferenced_expired_source_metadata(
     assert result.ran
     assert result.counts["ignored_sources"] == 1
     assert result.counts["ordinary_sources"] == 1
-    assert result.counts["audits"] == 1
+    assert result.counts["audits"] == 0
     assert result.counts["scrubbed_operation_item_results"] == 1
     with session_factory() as session:
         sources = session.scalars(select(SourceItem)).all()
@@ -184,11 +216,22 @@ def test_retention_prunes_only_unreferenced_expired_source_metadata(
             )
         ).all()
         assert len(cleanups) == 1
+        assert session.scalar(
+            select(AuditEvent).where(AuditEvent.event_type == "expired.audit")
+        ) is not None
         retained_results = {
             item.item_key: item.result
             for item in session.scalars(select(OperationItem)).all()
         }
         assert retained_results["retention-item-active"] is not None
         assert retained_results["retention-item-archived"] is None
+        utterance = session.scalar(
+            select(OperatorUtterance).where(OperatorUtterance.ref_id == utterance_ref)
+        )
+        invocation = session.scalar(select(ToolInvocation))
+        assert utterance is not None
+        assert utterance.verbatim_text == "Retain this exact authenticated Operator message."
+        assert invocation is not None
+        assert invocation.received_argument_hash == "e" * 64
 
     assert not service.run_due_once().ran
