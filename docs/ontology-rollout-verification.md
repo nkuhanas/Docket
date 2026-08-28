@@ -153,9 +153,9 @@ Automated acceptance is organized in these suites:
 Current source-gate result on 2026-08-28:
 
 ```text
-pytest: 360 passed
+pytest: 379 passed
 ruff: all checks passed
-mypy: no issues in 123 source files
+mypy: no issues in 124 source files
 git diff --check: clean
 isolated Compose smoke: passed
 ```
