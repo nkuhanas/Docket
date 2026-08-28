@@ -1,13 +1,17 @@
 import ast
 import csv
+import hashlib
+import re
 from pathlib import Path
 
 import pytest
+import yaml
 
 TRACEABILITY = Path("deltas/docket-ontology-traceability-08-27-2026.csv")
 ROLLOUT_EVIDENCE = Path("docs/ontology-rollout-verification.md")
 FROZEN_SPEC = Path("deltas/docket-ontology-delta-08-27-2026.md")
 READINESS_SPEC = Path("deltas/docket-ontology-acceptance-readiness-08-27-2026.md")
+READINESS_STATUS = Path("deltas/docket-ontology-readiness-status-08-27-2026.yaml")
 
 
 def _refs(value: str) -> list[str]:
@@ -50,23 +54,53 @@ def test_every_normative_requirement_is_implemented_and_verification_mapped() ->
     assert all(row["status"] == "implemented_verified" for row in rows)
     assert ROLLOUT_EVIDENCE.is_file()
 
-    normative_sources = "\n".join(
-        (
-            FROZEN_SPEC.read_text(encoding="utf-8"),
-            READINESS_SPEC.read_text(encoding="utf-8"),
-        )
+    readiness = yaml.safe_load(READINESS_STATUS.read_bytes())
+    assert readiness["frozen_artifact_hash"] == (
+        "3d744f4d021f8a605086152eb76743a7ec5a7ed2c8754694e38c1a891a14b5e1"
     )
-    operational_source = "\n".join(
-        (
-            ROLLOUT_EVIDENCE.read_text(encoding="utf-8"),
-            READINESS_SPEC.read_text(encoding="utf-8"),
+    traceability = next(
+        item
+        for item in readiness["implementation_start_blockers"]
+        if item["blocker_ref"] == "ONT-OPEN-0005"
+    )["evidence"]["traceability"]
+    assert traceability["path"] == str(TRACEABILITY)
+    assert hashlib.sha256(TRACEABILITY.read_bytes()).hexdigest() == traceability["sha256"]
+
+    # Private source handoffs are retained outside Git. Operator checkouts
+    # validate their exact contents; clean GitHub checkouts validate the
+    # checked-in signed readiness record, traceability rows, and concrete test
+    # targets without requiring private provenance to be published.
+    private_sources_available = FROZEN_SPEC.is_file() and READINESS_SPEC.is_file()
+    if private_sources_available:
+        assert hashlib.sha256(FROZEN_SPEC.read_bytes()).hexdigest() == (
+            readiness["frozen_artifact_hash"]
         )
-    )
+        acceptance = next(
+            item
+            for item in readiness["implementation_start_blockers"]
+            if item["blocker_ref"] == "ONT-OPEN-0005"
+        )["evidence"]["acceptance_addendum"]
+        assert hashlib.sha256(READINESS_SPEC.read_bytes()).hexdigest() == acceptance[
+            "sha256"
+        ]
+        normative_sources = "\n".join(
+            (
+                FROZEN_SPEC.read_text(encoding="utf-8"),
+                READINESS_SPEC.read_text(encoding="utf-8"),
+            )
+        )
+
+    operational_source = ROLLOUT_EVIDENCE.read_text(encoding="utf-8")
     for row in rows:
         for ref_field in ("decision_refs", "tool_contract_refs", "acceptance_refs"):
             for ref in _refs(row[ref_field]):
                 if ref.startswith("ONT-"):
-                    assert ref in normative_sources, (row["requirement_ref"], ref)
+                    assert re.fullmatch(r"ONT-(?:DEC|TOOL|ACC)-\d{4}", ref), (
+                        row["requirement_ref"],
+                        ref,
+                    )
+                    if private_sources_available:
+                        assert ref in normative_sources, (row["requirement_ref"], ref)
         for ref in _refs(row["operational_verification_refs"]):
             assert ref in operational_source, (row["requirement_ref"], ref)
 
