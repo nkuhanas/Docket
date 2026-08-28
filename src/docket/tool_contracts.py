@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-08-28-v5"
+CONTRACT_VERSION = "docket-tools-2026-08-28-v6"
 
 
 class ToolContractEntry(TypedDict):
@@ -42,11 +42,17 @@ _INTERACTIVE_READ_PURPOSES: dict[str, str] = {
     "docket_list_reminder_rules": "List durable Docket reminder rules.",
     "docket_list_queue_items": "List bounded legacy queue items.",
     "docket_get_queue_item": "Read one exact legacy queue item.",
-    "docket_get_triage_case": "Read one bounded AttentionCase and its typed CaseItems.",
+    "docket_get_triage_case": (
+        "Read one bounded AttentionCase, typed CaseItems, exact source emails, and "
+        "associated sender handles."
+    ),
     "docket_search_history": (
         "Search bounded provenance, conflict, decision, audit, and call history."
     ),
-    "docket_get_history_entry": "Read one exact public provenance object; audit text is opt-in.",
+    "docket_get_history_entry": (
+        "Read one exact public provenance object, including bounded sender-email "
+        "associations and Preference policy; audit text is opt-in."
+    ),
     "docket_get_conflict": "Read one Conflict and its allowed resolution actions.",
     "docket_get_intent_session": "Read durable resolved and unresolved IntentSession state.",
 }
@@ -82,7 +88,10 @@ _TRIAGE_PURPOSES: dict[str, str] = {
     "docket_submit_triage_analysis": (
         "Compile typed semantic classes into AttentionCase or DailyBrief intelligence."
     ),
-    "docket_get_triage_case": "Read one bounded AttentionCase and its typed CaseItems.",
+    "docket_get_triage_case": (
+        "Read one bounded AttentionCase, typed CaseItems, exact source emails, and "
+        "associated sender handles."
+    ),
     "docket_apply_existing_suppression": (
         "Apply one already-active matching Preference without modifying policy."
     ),

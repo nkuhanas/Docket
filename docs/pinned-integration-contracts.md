@@ -49,7 +49,7 @@ on every request. Docket's callback uses the independent
 
 Hermes performs overlapping plugin discovery during this pin's startup. Each
 discovery pass imports an isolated plugin module, so module globals alone cannot
-prevent a transient second bind. Plugin `0.20.1` starts the private HTTP server
+prevent a transient second bind. Plugin `0.20.2` starts the private HTTP server
 under a background supervisor: an `EADDRINUSE` defers that copy without failing
 plugin registration, and it retries if the process that temporarily owned the
 port exits. Healthy startup may contain one `startup deferred` line, followed
@@ -112,7 +112,7 @@ Pinned outbound assumptions to revalidate:
   through its durable outbox; the plugin never posts hook output directly to
   Discord.
 
-Plugin `0.20.1` retains the phase-one provenance boundary. For every
+Plugin `0.20.2` retains the phase-one provenance boundary. For every
 authenticated operator message on the Docket chat root, Docket queue root, or
 a Docket-owned daily thread, `pre_gateway_dispatch` synchronously persists one
 verbatim `OperatorUtterance` before rewrite, control handling, model dispatch,
@@ -142,6 +142,40 @@ fails closed with `rejected_authority` when the binding is absent or
 inconsistent. Read-only interactive tools and the restricted triage profile do
 not acquire mutation authority through this check.
 
+### Gmail sender identity and Preference matching
+
+Gmail ingestion retains the provider `From` value as bounded metadata while
+continuing to prohibit raw body persistence. When triage first claims a Gmail
+source, Docket parses and normalizes the exact address and materializes an
+unbound `email` `IdentityHandle` with the source `src_` as evidence. The display
+name remains untrusted provider metadata and never becomes a matching key.
+
+An operator-authored `sender_label` `IdentityHandle` is a compact agent-facing
+index for one sender. Its exact addresses live in `sender_identity_emails` as
+time-scoped associations to `email` handles. One sender label may have up to 25
+projected active addresses; one exact address may belong to only one active
+sender label. Historical/retracted associations remain available in audit view.
+No Person or Organization registration is implied.
+
+Triage sender matching is deterministic:
+
+```text
+observed Gmail From address
+  -> exact normalized email idn_
+  -> active sender_identity_emails association
+  -> sender_label idn_
+  -> active structured Preference policy
+```
+
+A suppression Preference may target the exact email handle or an associated
+sender-label handle. It is executable only when
+`policy_json.disposition="suppress"`; a bare label or an empty policy cannot
+authorize suppression. `docket_get_triage_case` and exact `src_` history expose
+the bounded exact source identity and associated sender handle, while exact
+`idn_` history exposes the sender's associated-email table. Exact `pref_`
+history exposes the stored policy and scope. These projections never include a
+Gmail body.
+
 An MCP request rejected by the outer bearer boundary creates only a structured
 `log_` with profile and method, never a `call_`; the authorization header and
 request body are not read into the log. Phase-one exact-ref, bounded history,
@@ -156,7 +190,7 @@ architecture authority only; its implementation authority remains
 registry, Calendar-lane, AttentionCase, triage-authority, or provider-operation
 semantics.
 
-Plugin `0.20.1` renders timed reminder start/end values as Docket-supplied native
+Plugin `0.20.2` renders timed reminder start/end values as Docket-supplied native
 Discord timestamps, puts the event subject under the native `Title` field, and
 omits a redundant timezone field. All-day reminders instead render fixed
 start/end dates plus the Calendar timezone. Projection embeds may omit their
@@ -209,7 +243,7 @@ cannot drift after recreation.
 
 Because each daily thread begins without Hermes conversation history, the
 pinned gateway otherwise attempts to send its generic `/sethome` reminder on
-the first Docket turn. Plugin `0.20.1` suppresses only that exact reminder while
+the first Docket turn. Plugin `0.20.2` suppresses only that exact reminder while
 an authenticated Docket provenance turn is active in the same channel. It does
 not create a home-channel binding, enable generic cron delivery, or suppress
 the reminder on ordinary non-Docket Discord surfaces.

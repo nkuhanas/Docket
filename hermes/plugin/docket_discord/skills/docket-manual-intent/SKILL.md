@@ -90,9 +90,27 @@ values and `*_change_id` references when one create depends on another in the sa
 ChangeSet. Use exact expected versions for existing objects. Never expose internal
 UUIDs when a public ref exists.
 
-For an explicit unknown sender suppression, create or reference an IdentityHandle
-and create a structured Preference; do not register a Person. Historical behavior
-is advisory and never silently becomes Preference policy.
+For an explicit email-sender suppression, begin with an exact `email`
+IdentityHandle obtained from the current Operator utterance or trusted Docket
+source/case evidence. A display label, name similarity, domain guess, or web result
+is not matching evidence. Follow a DailyBrief basis `item_` to its exact `src_`, or
+use `docket_get_triage_case` source identities. If no exact address is available,
+persist one blocking clarification.
+
+A `sender_label` IdentityHandle may be created as the agent-facing sender index and
+may group multiple exact email handles through `associated_email_refs`. A
+suppression Preference may target that sender handle only after at least one exact
+email is associated; triage matches the exact observed address and then follows
+the active association. To amend an existing sender handle, update its exact
+`idn_` with `add_associated_email_ref` or `remove_associated_email_ref` and the
+required expected version. Never use the label text itself as a correlation key.
+The Preference must specify `policy_json.disposition="suppress"`; do not register a
+Person merely to suppress a sender.
+
+After a Preference commit, inspect/report the stored target, associated email
+table, and executable policy fields. Never describe an unassociated display label
+or missing disposition as active sender suppression. Historical behavior is
+advisory and never silently becomes Preference policy.
 
 For Calendar work, current explicit lane direction wins, followed by exact active
 Preference/routing rules, entity rules, deterministic three-decision precedent,

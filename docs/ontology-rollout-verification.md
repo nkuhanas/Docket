@@ -20,7 +20,7 @@ No approval or implementation authority is inferred from ordinary design chat.
 
 ## Implemented persistence sequence
 
-The migration sequence is additive through `0038`:
+The migration sequence is additive through `0039`:
 
 1. `0028`–`0029`: immutable utterances, final assembled responses, Decisions,
    tool calls, runtime/audit provenance, public refs, and inspection routes.
@@ -45,6 +45,11 @@ The migration sequence is additive through `0038`:
     delivery-state update, and Conflict resolution paths without weakening the
     semantic immutability checks. The isolated Compose smoke executes the
     authenticated tool-call-to-final-response lifecycle on PostgreSQL.
+11. `0039`: `sender_identity_emails` stores time-scoped operator-authorized
+    associations from agent-facing sender-label handles to exact email handles.
+    Exact Gmail addresses remain the deterministic match key; the label groups
+    addresses and owns structured Preference policy without implying a Person
+    or Organization.
 
 Legacy event and lane backfills are labeled `legacy_preledger` and carry a
 typed external provenance source. New canonical objects are `complete` and
@@ -89,7 +94,7 @@ Automated acceptance is organized in these suites:
 | Intent, statements, conflicts, ChangeSets | `tests/integration/test_authority_model.py` |
 | Typed registry/entity resolution/graph reads | `tests/integration/test_typed_registry.py` |
 | AttentionCase, cadence, suppression, reply binding | `tests/integration/test_attention_intelligence.py` |
-| Preferences, lanes, precedence | `tests/integration/test_preferences_and_lanes.py` |
+| Preferences, sender-email associations, lanes, precedence | `tests/integration/test_preferences_and_lanes.py` |
 | Canonical event, route, provider operation, uncertain outcome | `tests/integration/test_canonical_event_changesets.py` |
 | Exact tool/profile/contract parity | `tests/integration/test_mcp_contract.py`, `tests/unit/test_release_script_contract.py` |
 | Output byte envelope | `tests/integration/test_mcp_output_envelope.py` |
