@@ -11,6 +11,7 @@ from docket.domain.public_refs import new_public_ref
 from docket.internal_api.schemas import OperatorUtteranceCapture
 from docket.models import (
     Account,
+    Action,
     AttentionCase,
     AttentionCaseRevision,
     CalendarLane,
@@ -246,9 +247,48 @@ def test_unknown_sender_creates_one_bounded_case_without_canonical_mutation(
         assert projection is not None and case is not None and revision is not None
         assert projection.primary_public_ref == case.ref_id
         assert projection.primary_revision_ref == revision.ref_id
+        assert case.queue_item_id is not None
+        queue_item_id = case.queue_item_id
+        projection_id = projection.id
     message = next(iter(backend.messages.values()))
     assert case.ref_id in message["embed"]["footer"]
     assert revision.ref_id in message["embed"]["footer"]
+    assert {control["label"] for control in message["controls"]} == {
+        "Snooze until tomorrow"
+    }
+
+    # Existing production cards may still carry the old local acknowledgement
+    # action. The periodic repair retires it and refreshes that exact projection.
+    with session_factory.begin() as session:
+        session.add(
+            Action(
+                queue_item_id=queue_item_id,
+                action_type="acknowledge_queue_item",
+                status="available",
+                current_revision=1,
+                display_order=101,
+            )
+        )
+    assert projection_runner.enqueue_stale_projection_repairs() == 1
+    assert projection_runner.enqueue_stale_projection_repairs() == 0
+    with session_factory() as session:
+        acknowledgement = session.scalar(
+            select(Action).where(Action.action_type == "acknowledge_queue_item")
+        )
+        refresh = session.scalar(
+            select(OutboxEvent).where(
+                OutboxEvent.aggregate_id == queue_item_id,
+                OutboxEvent.event_type == "discord.projection.refresh_requested",
+            )
+        )
+        assert acknowledgement is not None and acknowledgement.status == "superseded"
+        assert refresh is not None
+        assert refresh.payload["reason"] == "attention_case_reply_controls"
+    assert projection_runner.run_due_once()
+    refreshed = backend.messages[str(projection_id)]
+    assert {control["label"] for control in refreshed["controls"]} == {
+        "Snooze until tomorrow"
+    }
 
 
 @pytest.mark.integration

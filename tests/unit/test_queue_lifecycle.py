@@ -162,6 +162,33 @@ def test_failed_queue_item_only_exposes_valid_local_controls(session) -> None:
     )
 
 
+def test_attention_case_only_exposes_snooze_local_control(session) -> None:
+    case_item = _pending_item()
+    case_item.presentation = "action_required"
+    case_item.attention_case_ref = "case_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    standalone_item = _pending_item()
+    standalone_item.presentation = "action_required"
+    session.add_all([case_item, standalone_item])
+    session.flush()
+
+    case_actions = ensure_local_actions(
+        session,
+        case_item,
+        projection_date=date(2026, 8, 28),
+    )
+    standalone_actions = ensure_local_actions(
+        session,
+        standalone_item,
+        projection_date=date(2026, 8, 28),
+    )
+
+    assert [revision.action_type for revision in case_actions] == ["snooze_queue_item"]
+    assert {revision.action_type for revision in standalone_actions} == {
+        "snooze_queue_item",
+        "acknowledge_queue_item",
+    }
+
+
 def test_passive_gmail_notification_renders_without_local_controls(
     session_factory,
 ) -> None:

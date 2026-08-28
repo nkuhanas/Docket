@@ -1133,7 +1133,7 @@ def test_plugin_rejects_aliased_channel_lanes(plugin_module, monkeypatch) -> Non
         plugin_module._validate_channel_lanes()
 
 
-def test_failed_item_can_render_one_canonical_ignore_control(plugin_module, monkeypatch) -> None:
+def test_plugin_can_render_one_canonical_local_control(plugin_module, monkeypatch) -> None:
     class FakeEmbed:
         def __init__(self, **kwargs) -> None:
             self.footer = None
@@ -1206,6 +1206,33 @@ def test_failed_item_can_render_one_canonical_ignore_control(plugin_module, monk
     assert "ref " in _embed.footer
     assert "render:" not in _embed.footer
     assert "components:" not in _embed.footer
+
+    _snooze_embed, snooze_view = plugin_module._render_embed(
+        projection_id,
+        {
+            "embed": {
+                "title": "Decision required",
+                "description": "Reply with context and a decision.",
+                "fields": [],
+                "color": 1,
+            },
+            "controls": [
+                {
+                    "kind": "local_action",
+                    "action_type": "snooze_queue_item",
+                    "label": "Snooze until tomorrow",
+                    "action_id": str(action_id),
+                    "action_revision_id": str(revision_id),
+                    "token": token,
+                }
+            ],
+            "projection_version": 1,
+            "render_sha256": "e" * 64,
+            "component_sha256": "f" * 64,
+        },
+    )
+    assert len(snooze_view.items) == 1
+    assert snooze_view.items[0].custom_id == f"dkt:l:{token}"
 
     terminal_embed, terminal_view = plugin_module._render_embed(
         projection_id,

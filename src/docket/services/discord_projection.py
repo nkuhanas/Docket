@@ -11,7 +11,13 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from docket.config import Settings
 from docket.domain.canonical import sha256_json
-from docket.domain.enums import ApprovalStatus, OutboxStatus, QueueItemStatus, RiskClass
+from docket.domain.enums import (
+    ActionStatus,
+    ApprovalStatus,
+    OutboxStatus,
+    QueueItemStatus,
+    RiskClass,
+)
 from docket.models import (
     Account,
     Action,
@@ -3401,12 +3407,80 @@ class DiscordProjectionRunner:
             for queue_item in attention_items:
                 if repair_count >= limit:
                     break
-                projection_id = session.scalar(
-                    select(DiscordProjection.id)
+                projection_row = session.execute(
+                    select(DiscordProjection, DiscordDailyThread)
+                    .join(
+                        DiscordDailyThread,
+                        DiscordDailyThread.id == DiscordProjection.daily_thread_id,
+                    )
                     .where(DiscordProjection.queue_item_id == queue_item.id)
+                    .order_by(DiscordDailyThread.local_date.desc())
                     .limit(1)
-                )
-                if projection_id is not None:
+                ).one_or_none()
+                if projection_row is not None:
+                    projection, daily_thread = projection_row
+                    legacy_acknowledgement = (
+                        session.scalar(
+                            select(Action.id)
+                            .where(
+                                Action.queue_item_id == queue_item.id,
+                                Action.action_type == "acknowledge_queue_item",
+                                Action.status == ActionStatus.AVAILABLE.value,
+                            )
+                            .limit(1)
+                        )
+                        if queue_item.attention_case_ref is not None
+                        else None
+                    )
+                    if legacy_acknowledgement is not None:
+                        ensure_local_actions(
+                            session,
+                            queue_item,
+                            projection_date=daily_thread.local_date,
+                        )
+                        pending_refresh = session.scalar(
+                            select(OutboxEvent.id)
+                            .where(
+                                OutboxEvent.aggregate_type == "queue_item",
+                                OutboxEvent.aggregate_id == queue_item.id,
+                                OutboxEvent.event_type.in_(_PROJECTION_EVENTS),
+                                OutboxEvent.status.in_(
+                                    {
+                                        OutboxStatus.PENDING.value,
+                                        OutboxStatus.DELIVERING.value,
+                                    }
+                                ),
+                            )
+                            .limit(1)
+                        )
+                        deduplication_key = (
+                            f"discord_projection:{queue_item.id}:"
+                            f"attention-case-reply-controls:{projection.id}"
+                        )
+                        existing_refresh = session.scalar(
+                            select(OutboxEvent.id)
+                            .where(OutboxEvent.deduplication_key == deduplication_key)
+                            .limit(1)
+                        )
+                        if pending_refresh is None and existing_refresh is None:
+                            session.add(
+                                OutboxEvent(
+                                    event_type="discord.projection.refresh_requested",
+                                    aggregate_type="queue_item",
+                                    aggregate_id=queue_item.id,
+                                    deduplication_key=deduplication_key,
+                                    payload={
+                                        "queue_item_id": str(queue_item.id),
+                                        "projection_id": str(projection.id),
+                                        "target_local_date": (
+                                            daily_thread.local_date.isoformat()
+                                        ),
+                                        "reason": "attention_case_reply_controls",
+                                    },
+                                    status=OutboxStatus.PENDING.value,
+                                )
+                            )
+                            repair_count += 1
                     continue
                 pending_projection = session.scalar(
                     select(OutboxEvent.id)

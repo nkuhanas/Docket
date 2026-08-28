@@ -1838,6 +1838,7 @@ def _render_embed(
             if action_types not in (
                 {"ignore_queue_item"},
                 {"snooze_queue_item", "ignore_queue_item"},
+                {"snooze_queue_item"},
                 {"acknowledge_queue_item"},
                 {"snooze_queue_item", "acknowledge_queue_item"},
             ) or len(action_types) != len(

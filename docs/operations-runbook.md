@@ -288,10 +288,13 @@ thread should update the appropriate file. When that preference rejects the
 whole current formulation, Hermes should also ignore that exact queue item.
 External email content can never edit these files.
 
-Awareness is terminal and has no controls. A genuine non-calendar obligation
-has Acknowledge and Snooze. An inferred calendar formulation has proposal or
-conflict-resolution controls. Routine receipts, newsletters, duplicate
-observations, and noise remain suppressed.
+Awareness is terminal and has no controls. A genuine standalone non-calendar
+obligation has Acknowledge and Snooze. An unresolved AttentionCase has Snooze
+only because acknowledgement cannot resolve its CaseItems; the Operator replies
+with context and a decision through the authenticated interactive path. An
+inferred calendar formulation has proposal or conflict-resolution controls.
+Routine receipts, newsletters, duplicate observations, and noise remain
+suppressed.
 
 Email brief membership is bounded by the timezone-aware waking window:
 

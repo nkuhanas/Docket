@@ -121,7 +121,16 @@ def ensure_local_actions(
         session.flush()
         return []
     action_types: tuple[str, ...]
-    if queue_item.presentation == "action_required":
+    if queue_item.attention_case_ref is not None:
+        # AttentionCases require an authenticated conversational reply that can
+        # resolve every CaseItem. A local acknowledgement would only complete the
+        # projection QueueItem while leaving the canonical case open.
+        action_types = (
+            ("snooze_queue_item",)
+            if queue_item.status == QueueItemStatus.PENDING.value
+            else ()
+        )
+    elif queue_item.presentation == "action_required":
         action_types = (
             ("snooze_queue_item", "acknowledge_queue_item")
             if queue_item.status == QueueItemStatus.PENDING.value
