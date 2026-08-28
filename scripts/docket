@@ -91,7 +91,12 @@ compose_smoke() (
         compose --project-name "$project" --env-file "$ROOT/.env.example" "$@"
     }
     cleanup() {
+        local status=$?
+        if ((status != 0)); then
+            smoke_compose logs --no-color --tail 200 docket postgres >&2 || true
+        fi
         smoke_compose down --volumes --remove-orphans >/dev/null 2>&1 || true
+        return "$status"
     }
     trap cleanup EXIT INT TERM
 

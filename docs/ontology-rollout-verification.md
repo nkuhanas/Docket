@@ -20,7 +20,7 @@ No approval or implementation authority is inferred from ordinary design chat.
 
 ## Implemented persistence sequence
 
-The migration sequence is additive through `0037`:
+The migration sequence is additive through `0038`:
 
 1. `0028`–`0029`: immutable utterances, final assembled responses, Decisions,
    tool calls, runtime/audit provenance, public refs, and inspection routes.
@@ -40,6 +40,11 @@ The migration sequence is additive through `0037`:
    ChangeSet and canonical/basis references.
 9. `0037`: stable `src_` public references for provider Account identities so
    compatibility reads remain chainable without exposing internal UUIDs.
+10. `0038`: PostgreSQL provenance guards compare immutable JSON fields through
+    JSONB, allowing the permitted IntentTurn finalization, AgentResponse
+    delivery-state update, and Conflict resolution paths without weakening the
+    semantic immutability checks. The isolated Compose smoke executes the
+    authenticated tool-call-to-final-response lifecycle on PostgreSQL.
 
 Legacy event and lane backfills are labeled `legacy_preledger` and carry a
 typed external provenance source. New canonical objects are `complete` and
