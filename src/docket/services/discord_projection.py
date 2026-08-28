@@ -491,6 +491,8 @@ class DiscordProjectionRunner:
             "calendar_cancel_event": "Cancel event",
             "calendar_reconcile_course": "Synchronize course",
             "calendar_drop_course": "Drop course",
+            "calendar_move_events": "Move events",
+            "calendar_delete_lane": "Delete Calendar lane",
             "gmail_archive_message": "Archive message",
             "gmail_mark_read": "Mark message as read",
         }
@@ -722,6 +724,16 @@ class DiscordProjectionRunner:
                 "course drop",
                 "Course drop",
                 "Course dropped",
+            ),
+            "calendar_move_events": (
+                "event moves",
+                "Event migration",
+                "Events moved",
+            ),
+            "calendar_delete_lane": (
+                "Calendar lane deletion",
+                "Calendar lane deletion",
+                "Calendar lane deleted",
             ),
         }
         review_subject, outcome_subject, completed = labels.get(
@@ -955,6 +967,28 @@ class DiscordProjectionRunner:
         classification = classification if isinstance(classification, dict) else {}
         conflicts = item.get("conflicts")
         conflict_count = len(conflicts) if isinstance(conflicts, list) else 0
+        if item.get("effect") == "move":
+            before = item.get("before")
+            before = before if isinstance(before, dict) else {}
+            classification = item.get("classification")
+            classification = classification if isinstance(classification, dict) else {}
+            source_lane = str(item.get("source_lane") or "source")
+            destination_lane = str(item.get("destination_lane") or "destination")
+            title = item.get("title") or before.get("summary") or "Untitled event"
+            guest_line = (
+                "\nIncludes guests; moving changes the organizing calendar."
+                if item.get("has_attendees") is True
+                else ""
+            )
+            return {
+                "name": f"{index}. {title}",
+                "value": (
+                    f"{source_lane.title()} → {destination_lane.title()} · "
+                    f"{str(classification.get('recurrence_kind', 'one_time')).replace('_', '-')}\n"
+                    f"{self._provider_timing(before)}{guest_line}"
+                ),
+                "inline": False,
+            }
         identity = " · ".join(
             str(value)
             for value in (
@@ -1001,6 +1035,7 @@ class DiscordProjectionRunner:
         if revision.action_type not in {
             "calendar_reconcile_course",
             "calendar_drop_course",
+            "calendar_move_events",
         }:
             return False
         raw_items = revision.preview.get("items")
@@ -1168,6 +1203,38 @@ class DiscordProjectionRunner:
         base_fields = list(fields)
         if revision is not None:
             preview = revision.preview
+            source_lane = preview.get("source_lane")
+            destination_lane = preview.get("destination_lane")
+            if isinstance(source_lane, dict) and isinstance(destination_lane, dict):
+                source_label = source_lane.get(
+                    "display_name", source_lane.get("lane", "Source")
+                )
+                destination_label = destination_lane.get(
+                    "display_name", destination_lane.get("lane", "Destination")
+                )
+                fields.append(
+                    {
+                        "name": "Lane move",
+                        "value": f"{source_label} → {destination_label}",
+                        "inline": False,
+                    }
+                )
+            lane_preview = preview.get("lane")
+            if revision.action_type == "calendar_delete_lane" and isinstance(lane_preview, dict):
+                fields.append(
+                    {
+                        "name": "Lane",
+                        "value": str(lane_preview.get("display_name") or lane_preview.get("lane")),
+                        "inline": False,
+                    }
+                )
+                fields.append(
+                    {
+                        "name": "Effect",
+                        "value": str(preview.get("effect") or "Delete this Calendar lane."),
+                        "inline": False,
+                    }
+                )
             course = preview.get("course")
             course_label = (
                 " · ".join(
@@ -1331,14 +1398,21 @@ class DiscordProjectionRunner:
                                 "Changes"
                                 if revision.action_type
                                 in {"calendar_reconcile_course", "calendar_drop_course"}
+                                else "Events"
+                                if revision.action_type == "calendar_move_events"
                                 else "Batch"
                             ),
                             "value": (
-                                f"{preview.get('item_count', '?')} calendar changes · "
-                                f"{counts.get('create', 0)} create · "
-                                f"{counts.get('update', 0)} update · "
-                                f"{counts.get('cancel', 0)} cancel · "
-                                f"{counts.get('no_op', 0)} already synchronized"
+                                f"{counts.get('move', 0)} event"
+                                f"{'s' if counts.get('move', 0) != 1 else ''} to move"
+                                if revision.action_type == "calendar_move_events"
+                                else (
+                                    f"{preview.get('item_count', '?')} calendar changes · "
+                                    f"{counts.get('create', 0)} create · "
+                                    f"{counts.get('update', 0)} update · "
+                                    f"{counts.get('cancel', 0)} cancel · "
+                                    f"{counts.get('no_op', 0)} already synchronized"
+                                )
                             ),
                             "inline": False,
                         }
@@ -1460,6 +1534,8 @@ class DiscordProjectionRunner:
                                 "Course change review"
                                 if revision.action_type
                                 in {"calendar_reconcile_course", "calendar_drop_course"}
+                                else "Event move review"
+                                if revision.action_type == "calendar_move_events"
                                 else "Schedule review"
                             ),
                             "value": (
@@ -1489,6 +1565,8 @@ class DiscordProjectionRunner:
                             "course changes"
                             if revision.action_type
                             in {"calendar_reconcile_course", "calendar_drop_course"}
+                            else "event moves"
+                            if revision.action_type == "calendar_move_events"
                             else "calendar changes"
                         )
                         fields.append(

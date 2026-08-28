@@ -13,6 +13,8 @@ _ACTION_LABELS = {
     "calendar_update_event": "Update event",
     "calendar_update_reminders": "Update reminders",
     "calendar_configure_lane": "Configure Calendar lane",
+    "calendar_move_events": "Move events between Calendar lanes",
+    "calendar_delete_lane": "Delete Calendar lane",
     "calendar_cancel_event": "Cancel event",
     "calendar_reconcile_course": "Synchronize course",
     "calendar_drop_course": "Drop course",
@@ -64,6 +66,13 @@ def _subject(revision: ActionRevision) -> str:
     lane = preview.get("lane")
     if isinstance(lane, dict) and lane.get("display_name"):
         return str(lane["display_name"])
+    source_lane = preview.get("source_lane")
+    destination_lane = preview.get("destination_lane")
+    if isinstance(source_lane, dict) and isinstance(destination_lane, dict):
+        return (
+            f"{source_lane.get('display_name', source_lane.get('lane', 'Source'))} → "
+            f"{destination_lane.get('display_name', destination_lane.get('lane', 'Destination'))}"
+        )
     return "Configured Docket calendar"
 
 

@@ -71,7 +71,7 @@ def test_google_snapshot_request_is_bounded_paginated_and_redacted(monkeypatch) 
         "maxResults": "2500",
         "fields": (
             "nextPageToken,timeZone,"
-            "items(id,status,summary,location,start,end,recurringEventId,"
+            "items(id,status,eventType,summary,location,start,end,recurringEventId,"
             "originalStartTime,recurrence,attendees(self),organizer(self),reminders,"
             "extendedProperties(private),etag,updated)"
         ),

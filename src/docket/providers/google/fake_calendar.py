@@ -3,6 +3,7 @@ import uuid
 from docket.providers.google.calendar import (
     CalendarEventRequest,
     CalendarEventResult,
+    CalendarLaneDeleteResult,
     CalendarLaneProviderResult,
     CalendarLaneRequest,
     CalendarProviderError,
@@ -20,6 +21,7 @@ class FakeCalendarProvider:
         self.next_create_outcome = "success"
         self.next_update_outcome = "success"
         self.next_cancel_outcome = "success"
+        self.next_move_outcome = "success"
         self.snapshot_events: dict[str, CalendarSnapshotEvent] = {}
         self.snapshot_page_size = 2500
         self.fail_snapshot_page: int | None = None
@@ -121,6 +123,36 @@ class FakeCalendarProvider:
             raise CalendarUnknownOutcome("Injected unknown outcome after Calendar cancellation.")
         return result
 
+    def move_event(self, request: CalendarEventRequest) -> CalendarEventResult:
+        outcome, self.next_move_outcome = self.next_move_outcome, "success"
+        if outcome == "transient":
+            raise CalendarProviderError(
+                "fake_transient", "Injected transient Calendar failure.", transient=True
+            )
+        if outcome == "permanent":
+            raise CalendarProviderError(
+                "fake_permanent", "Injected permanent Calendar failure.", transient=False
+            )
+        if (
+            request.external_event_id is None
+            or request.destination_calendar_id is None
+            or request.external_event_id not in self.events
+        ):
+            raise CalendarProviderError(
+                "fake_not_found", "Fake Calendar event was not found.", transient=False
+            )
+        previous = self.events[request.external_event_id]
+        result = CalendarEventResult(
+            external_event_id=request.external_event_id,
+            provider_etag=f'"fake-{uuid.uuid4()}"',
+            provider_request_id=str(uuid.uuid4()),
+            snapshot=dict(previous.snapshot),
+        )
+        self.events[request.external_event_id] = result
+        if outcome == "unknown_after_write":
+            raise CalendarUnknownOutcome("Injected unknown outcome after Calendar move.")
+        return result
+
     def get_event(self, request: CalendarEventRequest) -> CalendarEventResult | None:
         if request.external_event_id is None:
             return None
@@ -155,6 +187,20 @@ class FakeCalendarProvider:
         )
         self.lanes[request.lane] = result
         return result
+
+    def delete_calendar_lane(self, request: CalendarLaneRequest) -> CalendarLaneDeleteResult:
+        existing = self.lanes.get(request.lane)
+        if existing is None or request.calendar_id != existing.calendar_id:
+            raise CalendarProviderError(
+                "google_calendar_lane_not_found",
+                "The fake Calendar lane is not present.",
+                transient=False,
+            )
+        del self.lanes[request.lane]
+        return CalendarLaneDeleteResult(
+            calendar_id=existing.calendar_id,
+            provider_request_id=str(uuid.uuid4()),
+        )
 
     def put_snapshot_event(self, event: CalendarSnapshotEvent) -> None:
         self.snapshot_events[event.provider_event_id] = event

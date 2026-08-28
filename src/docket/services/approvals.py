@@ -23,6 +23,7 @@ from docket.models import (
     Approval,
     AuditEvent,
     CalendarEventCache,
+    CalendarLane,
     CalendarLink,
     CalendarReminderPlan,
     CalendarSyncState,
@@ -501,6 +502,27 @@ class ApprovalService:
             calendar_id=str(revision.parameters.get("calendar_id") or ""),
         )
         queue_target = revision.target_versions.get("queue_item", {})
+        lane_targets = revision.target_versions.get("calendar_lanes", [])
+        if isinstance(lane_targets, list):
+            for target in lane_targets:
+                try:
+                    lane_id = uuid.UUID(str(target.get("id")))
+                except (AttributeError, ValueError) as exc:
+                    raise DocketError(
+                        code="approval_binding_mismatch",
+                        message="The action contains an invalid Calendar lane binding.",
+                    ) from exc
+                lane = self.session.get(CalendarLane, lane_id)
+                if (
+                    lane is None
+                    or lane.account_id != account.id
+                    or lane.version != target.get("version")
+                    or lane.status != "active"
+                ):
+                    raise DocketError(
+                        code="target_version_changed",
+                        message="A Calendar lane changed after the proposal was created.",
+                    )
         record_target = revision.target_versions.get("record")
         record: Record | None = None
         if record_target is not None:

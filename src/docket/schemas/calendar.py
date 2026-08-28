@@ -3,7 +3,14 @@ from typing import Annotated, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BeforeValidator, Field, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    BeforeValidator,
+    Field,
+    StringConstraints,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from docket.config import get_settings
 from docket.schemas.records import (
@@ -23,7 +30,22 @@ CalendarProposalMode = Literal["explicit_only", "suggest", "off"]
 CalendarConflictPolicy = Literal["warn", "block"]
 CalendarReminderDisposition = Literal["preserve", "replace", "disable"]
 CalendarReminderChannel = Literal["google_popup", "docket_queue"]
-CalendarLane = Literal["academic", "work", "organizations", "personal", "unsorted"]
+CalendarLane = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        to_lower=True,
+        min_length=1,
+        max_length=32,
+        pattern=r"^[a-z0-9][a-z0-9_-]*$",
+    ),
+    Field(
+        description=(
+            "Stable Docket Calendar lane slug. Read configured lanes before selecting one; "
+            "the five built-in slugs are defaults, not a closed set."
+        )
+    ),
+]
 
 
 def _normalize_operator_tag(value: object) -> object:
@@ -324,7 +346,7 @@ class CalendarLaneResult(StrictModel):
     lane: CalendarLane
     display_name: str
     color_hex: str
-    status: Literal["unprovisioned", "provisioning", "active", "failed"]
+    status: Literal["unprovisioned", "provisioning", "active", "failed", "deleting", "deleted"]
     account_id: UUID
     calendar_id: str | None = None
     version: int = Field(ge=1)
@@ -332,7 +354,7 @@ class CalendarLaneResult(StrictModel):
 
 class ConfigureCalendarLaneInput(StrictModel):
     lane: CalendarLane
-    expected_version: int = Field(ge=1)
+    expected_version: int | None = Field(default=None, ge=1)
     display_name: str = Field(min_length=1, max_length=255)
     color_hex: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
     account_id: UUID
@@ -345,6 +367,53 @@ class ConfigureCalendarLaneInput(StrictModel):
     def request_matches_source(self) -> "ConfigureCalendarLaneInput":
         validate_discord_request_fields(self.request_key, self.source, self.actor_id)
         self.color_hex = self.color_hex.upper()
+        return self
+
+
+class CalendarLaneEventSelection(StrictModel):
+    provider_event_id: str = Field(min_length=1, max_length=1024)
+    scope: Literal["event", "series"] = "event"
+
+
+class MigrateCalendarLaneEventsInput(StrictModel):
+    account_id: UUID
+    source_lane: CalendarLane
+    destination_lane: CalendarLane
+    expected_source_version: int = Field(ge=1)
+    expected_destination_version: int = Field(ge=1)
+    events: list[CalendarLaneEventSelection] = Field(min_length=1, max_length=50)
+    reason: str = Field(min_length=1, max_length=1000)
+    request_key: DiscordRequestKey
+    source: RecordSourceInput
+    actor_type: Literal["hermes"] = "hermes"
+    actor_id: DiscordId
+
+    @model_validator(mode="after")
+    def request_is_safe(self) -> "MigrateCalendarLaneEventsInput":
+        validate_discord_request_fields(self.request_key, self.source, self.actor_id)
+        if self.source_lane == self.destination_lane:
+            raise ValueError("source and destination lanes must differ")
+        identities = [(item.provider_event_id, item.scope) for item in self.events]
+        if len(identities) != len(set(identities)):
+            raise ValueError("event selections must be unique")
+        return self
+
+
+class DeleteCalendarLaneInput(StrictModel):
+    account_id: UUID
+    lane: CalendarLane
+    expected_version: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=1000)
+    request_key: DiscordRequestKey
+    source: RecordSourceInput
+    actor_type: Literal["hermes"] = "hermes"
+    actor_id: DiscordId
+
+    @model_validator(mode="after")
+    def request_is_safe(self) -> "DeleteCalendarLaneInput":
+        validate_discord_request_fields(self.request_key, self.source, self.actor_id)
+        if self.lane == "unsorted":
+            raise ValueError("the fallback unsorted lane cannot be deleted")
         return self
 
 

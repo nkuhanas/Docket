@@ -43,6 +43,7 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
         "docket_list_accounts",
         "docket_list_calendar_lanes",
         "docket_configure_calendar_lane",
+        "docket_delete_calendar_lane",
         "docket_list_calendar_events",
         "docket_get_calendar_sync_status",
         "docket_get_calendar_profile",
@@ -50,6 +51,7 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
         "docket_set_calendar_profile",
         "docket_list_reminder_rules",
         "docket_merge_entities",
+        "docket_migrate_calendar_events",
         "docket_apply_calendar_intent",
         "docket_apply_course_intent",
         "docket_rebind_entity_resolution",
@@ -120,31 +122,22 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
     assert entity_attributes["additionalProperties"] is False
     assert "is_operator" in entity_attributes["properties"]
     assert "email_addresses" in entity_attributes["properties"]
-    assert entity_attributes["properties"]["calendar_lane_default"]["anyOf"][0][
-        "enum"
-    ] == ["academic", "work", "organizations", "personal", "unsorted"]
+    lane_default = entity_attributes["properties"]["calendar_lane_default"]["anyOf"][0]
+    assert lane_default["pattern"] == "^[a-z0-9][a-z0-9_-]*$"
 
     configure_lane = tools["docket_configure_calendar_lane"]
-    assert configure_lane.inputSchema["properties"]["lane"]["enum"] == [
-        "academic",
-        "work",
-        "organizations",
-        "personal",
-        "unsorted",
-    ]
+    assert configure_lane.inputSchema["properties"]["lane"]["pattern"] == (
+        "^[a-z0-9][a-z0-9_-]*$"
+    )
     configure_description = " ".join((configure_lane.description or "").split())
     assert "explicitly asks" in configure_description
     assert "never deletes" in configure_description
 
     calendar_intent = tools["docket_apply_calendar_intent"]
     standalone_event = calendar_intent.inputSchema["$defs"]["StandaloneCalendarEventInput"]
-    assert standalone_event["properties"]["calendar_lane"]["enum"] == [
-        "academic",
-        "work",
-        "organizations",
-        "personal",
-        "unsorted",
-    ]
+    assert standalone_event["properties"]["calendar_lane"]["pattern"] == (
+        "^[a-z0-9][a-z0-9_-]*$"
+    )
     update_entity = tools["docket_update_entity"]
     update_entity_description = " ".join((update_entity.description or "").split())
     assert "preserves all other metadata" in update_entity_description

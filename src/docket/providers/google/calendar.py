@@ -16,7 +16,7 @@ from docket.providers.google.oauth import (
 
 _SNAPSHOT_FIELDS = (
     "nextPageToken,timeZone,"
-    "items(id,status,summary,location,start,end,recurringEventId,"
+    "items(id,status,eventType,summary,location,start,end,recurringEventId,"
     "originalStartTime,recurrence,attendees(self),organizer(self),reminders,"
     "extendedProperties(private),etag,updated)"
 )
@@ -38,6 +38,7 @@ class CalendarEventRequest:
     reminder_plan_sha256: str | None = None
     origin_kind: str | None = None
     operation_type: str = "calendar_create_event"
+    destination_calendar_id: str | None = None
 
     def event_body(self) -> dict[str, Any]:
         if self.event_spec is not None:
@@ -244,12 +245,19 @@ class CalendarLaneProviderResult:
 
 
 @dataclass(frozen=True, slots=True)
+class CalendarLaneDeleteResult:
+    calendar_id: str
+    provider_request_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class CalendarSnapshotEvent:
     provider_event_id: str
     status: str
     summary: str | None
     location: str | None
     is_all_day: bool
+    event_type: str = "default"
     start_at: datetime | None = None
     end_at: datetime | None = None
     start_date: date | None = None
@@ -289,6 +297,8 @@ class CalendarUnknownOutcome(CalendarProviderError):
 class CalendarLaneProvider(Protocol):
     def ensure_calendar_lane(self, request: CalendarLaneRequest) -> CalendarLaneProviderResult: ...
 
+    def delete_calendar_lane(self, request: CalendarLaneRequest) -> CalendarLaneDeleteResult: ...
+
 
 class CalendarProvider(CalendarLaneProvider, Protocol):
     def create_event(self, request: CalendarEventRequest) -> CalendarEventResult: ...
@@ -296,6 +306,8 @@ class CalendarProvider(CalendarLaneProvider, Protocol):
     def update_event(self, request: CalendarEventRequest) -> CalendarEventResult: ...
 
     def cancel_event(self, request: CalendarEventRequest) -> CalendarEventResult: ...
+
+    def move_event(self, request: CalendarEventRequest) -> CalendarEventResult: ...
 
     def get_event(self, request: CalendarEventRequest) -> CalendarEventResult | None: ...
 
@@ -386,6 +398,7 @@ def normalize_event_body(body: dict[str, Any]) -> dict[str, Any]:
         private = {}
     return {
         "status": body.get("status"),
+        "event_type": body.get("eventType", "default"),
         "summary": body.get("summary"),
         "location": body.get("location"),
         "start": endpoint(body.get("start")),
@@ -580,6 +593,23 @@ class GoogleCalendarProvider:
             },
         )
 
+    def move_event(self, request: CalendarEventRequest) -> CalendarEventResult:
+        if request.external_event_id is None or request.destination_calendar_id is None:
+            raise CalendarProviderError(
+                "calendar_move_target_missing",
+                "Calendar move requires an event ID and destination calendar.",
+                transient=False,
+            )
+        response = self._request(
+            "POST",
+            f"{self._event_url(request.calendar_id, request.external_event_id)}/move",
+            params={
+                "destination": request.destination_calendar_id,
+                "sendUpdates": "none",
+            },
+        )
+        return self._result(response)
+
     def get_event(self, request: CalendarEventRequest) -> CalendarEventResult | None:
         if request.external_event_id is None:
             raise CalendarProviderError(
@@ -734,12 +764,41 @@ class GoogleCalendarProvider:
             ),
         )
 
+    def delete_calendar_lane(self, request: CalendarLaneRequest) -> CalendarLaneDeleteResult:
+        if request.calendar_id is None:
+            raise CalendarProviderError(
+                "google_calendar_lane_not_found",
+                "The Calendar lane has no provider calendar to delete.",
+                transient=False,
+            )
+        # Provider deletion is deliberately restricted to an actually empty calendar.
+        # Docket must migrate or otherwise resolve every event before this call.
+        events_response = self._request(
+            "GET",
+            self._event_url(request.calendar_id),
+            params={"showDeleted": "false", "singleEvents": "false", "maxResults": "1"},
+        )
+        document = events_response.json()
+        items = document.get("items", []) if isinstance(document, dict) else []
+        if isinstance(items, list) and items:
+            raise CalendarProviderError(
+                "google_calendar_lane_not_empty",
+                "The Calendar lane still contains events and cannot be deleted.",
+                transient=False,
+            )
+        response = self._request("DELETE", self._calendar_url(request.calendar_id))
+        return CalendarLaneDeleteResult(
+            calendar_id=request.calendar_id,
+            provider_request_id=response.headers.get("x-request-id"),
+        )
+
     @staticmethod
     def _snapshot_event(
         document: dict[str, Any], default_timezone: str | None
     ) -> CalendarSnapshotEvent:
         event_id = document.get("id")
         status = document.get("status", "confirmed")
+        event_type = document.get("eventType", "default")
         if not isinstance(event_id, str) or not event_id:
             raise CalendarProviderError(
                 "google_calendar_invalid_response",
@@ -862,6 +921,7 @@ class GoogleCalendarProvider:
         return CalendarSnapshotEvent(
             provider_event_id=event_id,
             status=status,
+            event_type=(event_type if isinstance(event_type, str) else "default"),
             summary=(summary[:512] if isinstance(summary, str) and summary else None),
             location=(location[:1000] if isinstance(location, str) and location else None),
             is_all_day=is_all_day,

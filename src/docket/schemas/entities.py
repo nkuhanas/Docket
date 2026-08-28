@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from docket.schemas.calendar import CalendarLane
 from docket.schemas.triage import EntityClass
 
 EntityResolutionState = Literal["resolved", "unresolved", "ambiguous", "provisional"]
@@ -84,9 +85,7 @@ class EntityAttributes(BaseModel):
     building: ShortText | None = None
     room: ShortText | None = None
     is_operator: bool | None = None
-    calendar_lane_default: (
-        Literal["academic", "work", "organizations", "personal", "unsorted"] | None
-    ) = None
+    calendar_lane_default: CalendarLane | None = None
 
     @field_validator("timezone")
     @classmethod

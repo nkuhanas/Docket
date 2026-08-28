@@ -3,6 +3,7 @@ from typing import Never
 from docket.providers.google.calendar import (
     CalendarEventRequest,
     CalendarEventResult,
+    CalendarLaneDeleteResult,
     CalendarLaneProviderResult,
     CalendarLaneRequest,
     CalendarProviderError,
@@ -32,6 +33,10 @@ class DisabledCalendarProvider:
         del request
         return self._unavailable()
 
+    def move_event(self, request: CalendarEventRequest) -> CalendarEventResult:
+        del request
+        return self._unavailable()
+
     def get_event(self, request: CalendarEventRequest) -> CalendarEventResult | None:
         del request
         return self._unavailable()
@@ -41,5 +46,9 @@ class DisabledCalendarProvider:
         return self._unavailable()
 
     def ensure_calendar_lane(self, request: CalendarLaneRequest) -> CalendarLaneProviderResult:
+        del request
+        return self._unavailable()
+
+    def delete_calendar_lane(self, request: CalendarLaneRequest) -> CalendarLaneDeleteResult:
         del request
         return self._unavailable()

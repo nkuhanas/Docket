@@ -505,6 +505,7 @@ class CalendarSyncService:
                     session.add(row)
                 row.snapshot_generation = generation
                 row.recurring_event_id = event.recurring_event_id
+                row.event_type = event.event_type
                 row.original_start_at = event.original_start_at
                 row.status = event.status
                 row.summary = event.summary
@@ -1017,6 +1018,7 @@ class CalendarReadService:
                     "start_date": row.start_date.isoformat() if row.start_date else None,
                     "end_date": row.end_date.isoformat() if row.end_date else None,
                     "timezone": row.timezone,
+                    "event_type": row.event_type,
                     "recurrence_kind": row.recurrence_kind,
                     "system_tags": list(row.system_tags),
                     "operator_tags": list(row.operator_tags),

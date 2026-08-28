@@ -28,11 +28,14 @@ from docket.schemas.actions import (
 from docket.schemas.calendar import (
     CalendarFreshness,
     CalendarLane,
+    CalendarLaneEventSelection,
     CalendarLookupInput,
     CalendarProfileInput,
     CalendarRelativeDay,
     CalendarReminderPlanInput,
     ConfigureCalendarLaneInput,
+    DeleteCalendarLaneInput,
+    MigrateCalendarLaneEventsInput,
     SetCalendarProfileInput,
 )
 from docket.schemas.entities import (
@@ -812,7 +815,7 @@ def docket_restore_record(
 
 @mcp.tool()
 def docket_list_accounts() -> dict[str, Any]:
-    """List enabled Google accounts, active Calendar IDs, and all five lane mappings.
+    """List enabled Google accounts, active Calendar IDs, and every lane mapping.
 
     Use ``calendar_lanes`` rather than display-name guesses. An unprovisioned or failed
     lane is unavailable and must not silently fall back to ``unsorted``.
@@ -847,10 +850,11 @@ def docket_list_accounts() -> dict[str, Any]:
 
 @mcp.tool()
 def docket_list_calendar_lanes(account_id: uuid.UUID) -> dict[str, Any]:
-    """List Docket's five stable Calendar lanes and their provisioning state.
+    """List every configured Calendar lane and its provisioning state.
 
-    This read is the authoritative source for Calendar destination selection. The lanes
-    are ``academic``, ``work``, ``organizations``, ``personal``, and ``unsorted``.
+    This read is the authoritative source for Calendar destination selection. Academic,
+    work, organizations, personal, and unsorted are managed defaults; explicitly created
+    custom lanes may also be present.
     Explicit operator direction wins over entity defaults and bounded inference. A lane
     without an active ``calendar_id`` cannot receive events; do not invent an ID or fall
     back silently to another active lane.
@@ -872,20 +876,19 @@ def docket_list_calendar_lanes(account_id: uuid.UUID) -> dict[str, Any]:
 def docket_configure_calendar_lane(
     account_id: uuid.UUID,
     lane: CalendarLane,
-    expected_version: int,
     display_name: str,
     color_hex: str,
     request_key: DiscordRequestKey,
     source: RecordSourceInput,
     actor_id: DiscordId,
+    expected_version: int | None = None,
 ) -> dict[str, Any]:
     """Provision or modify one Docket-managed Google Calendar lane.
 
-    This is an external configuration mutation, not ordinary event routing. Call it only
-    when the current operator explicitly asks to provision, rename, or recolor the named
-    lane. It never deletes a calendar and never migrates existing events. Read lanes first
-    and supply the current version; Docket then idempotently ensures the secondary Google
-    calendar by its private lane marker.
+    This is an external configuration mutation. Call it only when the current operator
+    explicitly asks to create, rename, or recolor the lane. For creation, choose a stable
+    lowercase slug and omit ``expected_version``. For rename/recolor, read lanes first and
+    supply the current version. It never deletes a calendar or migrates events.
     """
     try:
         request = ConfigureCalendarLaneInput(
@@ -901,6 +904,82 @@ def docket_configure_calendar_lane(
         with session_scope() as session:
             result = CalendarLaneService(session, get_settings()).configure(request)
         return {"ok": True, **result.model_dump(mode="json", exclude_none=True)}
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_migrate_calendar_events(
+    account_id: uuid.UUID,
+    source_lane: CalendarLane,
+    destination_lane: CalendarLane,
+    expected_source_version: int,
+    expected_destination_version: int,
+    events: list[CalendarLaneEventSelection],
+    reason: str,
+    request_key: DiscordRequestKey,
+    source: RecordSourceInput,
+    actor_id: DiscordId,
+) -> dict[str, Any]:
+    """Propose moving selected Calendar events or recurring series between lanes.
+
+    Use this only for the operator's current explicit request. Resolve the event from
+    Docket Calendar reads, pass its provider ID, and use ``scope=series`` for recurring
+    events. Docket creates one approval card and executes the immutable items durably;
+    it updates its provider bindings only after Google confirms each move. Ambiguous
+    events must remain unmoved until the operator clarifies them.
+    """
+    try:
+        request = MigrateCalendarLaneEventsInput(
+            account_id=account_id,
+            source_lane=source_lane,
+            destination_lane=destination_lane,
+            expected_source_version=expected_source_version,
+            expected_destination_version=expected_destination_version,
+            events=events,
+            reason=reason,
+            request_key=request_key,
+            source=source,
+            actor_id=actor_id,
+        )
+        with session_scope() as session:
+            result = CalendarLaneService(session, get_settings()).migrate_events(request)
+        return {"ok": True, **{key: value for key, value in result.items() if key != "short_code"}}
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_delete_calendar_lane(
+    account_id: uuid.UUID,
+    lane: CalendarLane,
+    expected_version: int,
+    reason: str,
+    request_key: DiscordRequestKey,
+    source: RecordSourceInput,
+    actor_id: DiscordId,
+) -> dict[str, Any]:
+    """Propose deleting one empty custom or non-fallback Calendar lane.
+
+    This destructive action requires the operator's current explicit instruction and a
+    Discord approval card. Read lanes first and supply the current version. Docket refuses
+    to formulate deletion while it knows of active events, refuses to delete ``unsorted``,
+    and asks Google to verify the calendar is truly empty before deletion. Move or cancel
+    remaining events first.
+    """
+    try:
+        request = DeleteCalendarLaneInput(
+            account_id=account_id,
+            lane=lane,
+            expected_version=expected_version,
+            reason=reason,
+            request_key=request_key,
+            source=source,
+            actor_id=actor_id,
+        )
+        with session_scope() as session:
+            result = CalendarLaneService(session, get_settings()).delete_lane(request)
+        return {"ok": True, **{key: value for key, value in result.items() if key != "short_code"}}
     except Exception as exc:
         return _error(exc)
 
@@ -949,9 +1028,11 @@ def docket_list_calendar_events(
     through seven days. The maximum is 31 days. Use ``require_fresh`` for direct current,
     today, or tomorrow list/find requests because a healthy cache can still predate a
     newly added provider event by one synchronization interval. Results include cache
-    freshness and never expose descriptions, attendees, conference data, credentials,
-    or a raw Google client. ``require_fresh`` may wait up to ten seconds for Docket's
-    full bounded snapshot; it never promotes a partial requested subrange.
+    freshness and each provider ``event_type``. Only ``default`` events are eligible for
+    lane migration; leave other event types in place. Results never expose descriptions,
+    attendees, conference data, credentials, or a raw Google client. ``require_fresh``
+    may wait up to ten seconds for Docket's full bounded snapshot; it never promotes a
+    partial requested subrange.
     """
     try:
         request = CalendarLookupInput(

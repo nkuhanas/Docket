@@ -1,5 +1,5 @@
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -47,6 +47,7 @@ from docket.policy import BATCH_CALENDAR_ACTION_TYPES, GMAIL_MUTATION_ACTION_TYP
 from docket.providers.google.calendar import (
     CalendarEventRequest,
     CalendarEventResult,
+    CalendarLaneDeleteResult,
     CalendarLaneProviderResult,
     CalendarLaneRequest,
     CalendarProvider,
@@ -94,7 +95,9 @@ class ClaimedOperation:
         schedule = self.parameters.get("schedule")
         reminder_plan = self.parameters.get("reminder_plan")
         return CalendarEventRequest(
-            calendar_id=str(self.parameters["calendar_id"]),
+            calendar_id=str(
+                self.parameters.get("source_calendar_id") or self.parameters["calendar_id"]
+            ),
             provider_correlation=self.provider_correlation,
             summary=summary,
             schedule=dict(schedule) if isinstance(schedule, dict) else None,
@@ -108,6 +111,7 @@ class ClaimedOperation:
             reminder_plan_sha256=self.parameters.get("reminder_plan_sha256"),
             origin_kind=self.parameters.get("origin_kind"),
             operation_type=self.operation_type,
+            destination_calendar_id=self.parameters.get("destination_calendar_id"),
         )
 
     def gmail_request(self) -> GmailMutationRequest:
@@ -182,6 +186,7 @@ class OperationRunner:
                     "calendar_update_reminders",
                     "calendar_cancel_event",
                     "calendar_configure_lane",
+                    "calendar_delete_lane",
                 }
             )
         if self.gmail_execution_enabled and self.gmail_provider is not None:
@@ -457,6 +462,7 @@ class OperationRunner:
             session.add(row)
         row.snapshot_generation = generation
         row.status = "confirmed"
+        row.event_type = str(snapshot.get("event_type") or "default")
         summary = snapshot.get("summary")
         location = snapshot.get("location")
         row.summary = summary[:512] if isinstance(summary, str) and summary else None
@@ -1201,6 +1207,8 @@ class OperationRunner:
                 if revision.action_type == "calendar_drop_course"
                 else "calendar_course_synchronized"
                 if revision.action_type == "calendar_reconcile_course"
+                else "calendar_events_migrated"
+                if revision.action_type == "calendar_move_events"
                 else "calendar_schedule_synchronized"
             )
         queue_item.version += 1
@@ -1325,6 +1333,11 @@ class OperationRunner:
                 code="operation_item_binding_mismatch",
                 message="The immutable schedule item hash no longer matches.",
             )
+        if item.item_type == "calendar_move_event":
+            OperationRunner._apply_move_item_success(
+                session, operation, item, attempt, result, revision, action, queue_item
+            )
+            return
         logical_key = str(parameters["logical_key"])
         link = session.scalar(
             select(CalendarLink).where(
@@ -1445,6 +1458,157 @@ class OperationRunner:
                     "item_key": item.item_key,
                     "external_event_id": result.external_event_id,
                     "parameters_sha256": item.parameters_sha256,
+                },
+            )
+        )
+        session.add(
+            OutboxEvent(
+                event_type="discord.projection.refresh_requested",
+                aggregate_type="queue_item",
+                aggregate_id=queue_item.id,
+                deduplication_key=(
+                    f"discord_projection:{queue_item.id}:operation-item:"
+                    f"{item.id}:attempt:{item.attempt_count}:ok"
+                ),
+                payload={
+                    "queue_item_id": str(queue_item.id),
+                    "action_id": str(action.id),
+                    "operation_id": str(operation.id),
+                    "operation_item_id": str(item.id),
+                    "status": item.status,
+                    "parent_status": operation.status,
+                },
+                status=OutboxStatus.PENDING.value,
+            )
+        )
+
+    @staticmethod
+    def _apply_move_item_success(
+        session: Session,
+        operation: Operation,
+        item: OperationItem,
+        attempt: ExecutionAttempt,
+        result: CalendarEventResult,
+        revision: ActionRevision,
+        action: Action,
+        queue_item: QueueItem,
+    ) -> None:
+        parameters = dict(item.parameters)
+        source_calendar_id = str(parameters["source_calendar_id"])
+        destination_calendar_id = str(parameters["destination_calendar_id"])
+        external_event_id = str(parameters["external_event_id"])
+        destination_lane = str(parameters["destination_lane"])
+
+        links = list(
+            session.scalars(
+                select(CalendarLink).where(
+                    CalendarLink.account_id == operation.account_id,
+                    CalendarLink.calendar_id == source_calendar_id,
+                    CalendarLink.external_event_id == external_event_id,
+                )
+            )
+        )
+        for link in links:
+            link.calendar_id = destination_calendar_id
+            link.external_event_id = result.external_event_id
+            link.provider_etag = result.provider_etag
+            link.synced_snapshot = dict(result.snapshot)
+
+        bindings = list(
+            session.scalars(
+                select(ProviderEventBinding).where(
+                    ProviderEventBinding.account_id == operation.account_id,
+                    ProviderEventBinding.calendar_id == source_calendar_id,
+                    ProviderEventBinding.provider_event_id == external_event_id,
+                )
+            )
+        )
+        for binding in bindings:
+            binding.calendar_id = destination_calendar_id
+            binding.provider_event_id = result.external_event_id
+            binding.provider_etag = result.provider_etag
+            binding.provider_snapshot = dict(result.snapshot)
+            binding.independently_modified_at = None
+            binding.version += 1
+
+        cache_rows = list(
+            session.scalars(
+                select(CalendarEventCache).where(
+                    CalendarEventCache.account_id == operation.account_id,
+                    CalendarEventCache.calendar_id == source_calendar_id,
+                    or_(
+                        CalendarEventCache.provider_event_id == external_event_id,
+                        CalendarEventCache.recurring_event_id == external_event_id,
+                    ),
+                )
+            )
+        )
+        for row in cache_rows:
+            row.calendar_id = destination_calendar_id
+            if row.provider_event_id == external_event_id:
+                row.provider_etag = result.provider_etag
+            row.synced_at = utc_now()
+
+        for rule in session.scalars(
+            select(ReminderRule).where(
+                ReminderRule.account_id == operation.account_id,
+                ReminderRule.calendar_id == source_calendar_id,
+                ReminderRule.provider_event_id == external_event_id,
+            )
+        ):
+            rule.calendar_id = destination_calendar_id
+            rule.version += 1
+
+        canonical_ids = {
+            value
+            for value in [
+                *(link.canonical_event_id for link in links),
+                *(binding.canonical_event_id for binding in bindings),
+            ]
+            if value is not None
+        }
+        for canonical_id in canonical_ids:
+            canonical = session.get(CanonicalEvent, canonical_id)
+            if canonical is not None:
+                canonical.calendar_lane = destination_lane
+                canonical.version += 1
+
+        now = utc_now()
+        attempt.status = AttemptStatus.SUCCEEDED.value
+        attempt.provider_request_id = result.provider_request_id or attempt.provider_request_id
+        attempt.response_summary = {
+            "item_key": item.item_key,
+            "external_event_id": result.external_event_id,
+            "source_calendar_id": source_calendar_id,
+            "destination_calendar_id": destination_calendar_id,
+        }
+        attempt.completed_at = now
+        item.status = "succeeded"
+        item.lease_token = None
+        item.leased_until = None
+        item.next_attempt_at = None
+        item.result = {
+            "external_event_id": result.external_event_id,
+            "source_lane": parameters["source_lane"],
+            "destination_lane": destination_lane,
+            "calendar_link_ids": [str(link.id) for link in links],
+        }
+        item.last_error_code = None
+        OperationRunner._update_batch_parent(session, operation)
+        session.add(
+            AuditEvent(
+                event_type="calendar_event.lane_migrated",
+                entity_type="operation_item",
+                entity_id=item.id,
+                actor_type="docket",
+                actor_id=None,
+                request_id=None,
+                data={
+                    "operation_id": str(operation.id),
+                    "action_revision_id": str(revision.id),
+                    "external_event_id": result.external_event_id,
+                    "source_lane": parameters["source_lane"],
+                    "destination_lane": destination_lane,
                 },
             )
         )
@@ -1722,6 +1886,103 @@ class OperationRunner:
                 result=operation.result,
             )
 
+    def finish_calendar_lane_delete_success(
+        self,
+        claim: ClaimedOperation,
+        result: CalendarLaneDeleteResult,
+    ) -> None:
+        with self.session_factory.begin() as session:
+            operation = session.get(Operation, claim.operation_id)
+            attempt = session.get(ExecutionAttempt, claim.attempt_id)
+            if operation is None or attempt is None:
+                raise DocketError(code="operation_lease_lost", message="Operation lease was lost.")
+            if claim.operation_item_id is not None or operation.lease_token != claim.lease_token:
+                raise DocketError(code="operation_lease_lost", message="Operation lease was lost.")
+            revision, action, queue_item = self._bound_entities(session, operation)
+            lane = session.get(CalendarLane, uuid.UUID(str(revision.parameters["lane_id"])))
+            if (
+                lane is None
+                or lane.account_id != operation.account_id
+                or lane.version != revision.parameters.get("lane_version")
+                or lane.calendar_id != result.calendar_id
+                or lane.status != "active"
+            ):
+                raise DocketError(
+                    code="calendar_lane_binding_changed",
+                    message="The Calendar lane changed before deletion completed.",
+                )
+            for row in session.scalars(
+                select(CalendarEventCache).where(
+                    CalendarEventCache.account_id == operation.account_id,
+                    CalendarEventCache.calendar_id == result.calendar_id,
+                )
+            ):
+                session.delete(row)
+            for state in session.scalars(
+                select(CalendarSyncState).where(
+                    CalendarSyncState.account_id == operation.account_id,
+                    CalendarSyncState.calendar_id == result.calendar_id,
+                )
+            ):
+                session.delete(state)
+            lane.calendar_id = None
+            lane.status = "deleted"
+            lane.last_error_code = None
+            lane.version += 1
+            now = utc_now()
+            attempt.status = AttemptStatus.SUCCEEDED.value
+            attempt.provider_request_id = result.provider_request_id or attempt.provider_request_id
+            attempt.response_summary = {"lane": lane.lane, "calendar_id": result.calendar_id}
+            attempt.completed_at = now
+            operation.status = OperationStatus.SUCCEEDED.value
+            operation.lease_token = None
+            operation.leased_until = None
+            operation.next_attempt_at = None
+            operation.result = {"lane": lane.lane, "deleted_calendar_id": result.calendar_id}
+            operation.last_error_code = None
+            operation.last_error_message = None
+            action.status = ActionStatus.SUCCEEDED.value
+            queue_item.status = QueueItemStatus.COMPLETED.value
+            queue_item.resolved_at = now
+            queue_item.resolution_code = "calendar_lane_deleted"
+            queue_item.version += 1
+            session.add(
+                AuditEvent(
+                    event_type="calendar_lane.deleted",
+                    entity_type="calendar_lane",
+                    entity_id=lane.id,
+                    actor_type="docket",
+                    actor_id=None,
+                    request_id=None,
+                    data={
+                        "operation_id": str(operation.id),
+                        "calendar_id": result.calendar_id,
+                    },
+                )
+            )
+            session.add(
+                OutboxEvent(
+                    event_type="discord.projection.refresh_requested",
+                    aggregate_type="queue_item",
+                    aggregate_id=queue_item.id,
+                    deduplication_key=f"discord_projection:{queue_item.id}:lane-delete:ok",
+                    payload={
+                        "queue_item_id": str(queue_item.id),
+                        "action_id": str(action.id),
+                        "operation_id": str(operation.id),
+                        "status": "succeeded",
+                    },
+                    status=OutboxStatus.PENDING.value,
+                )
+            )
+            enqueue_action_system_log(
+                session,
+                action=action,
+                revision=revision,
+                state="succeeded",
+                result=operation.result,
+            )
+
     def finish_error(
         self,
         claim: ClaimedOperation,
@@ -1972,6 +2233,16 @@ class OperationRunner:
             else:
                 self.finish_calendar_lane_success(claim, lane_result)
             return True
+        if claim.operation_type == "calendar_delete_lane":
+            try:
+                lane_delete_result = self.provider.delete_calendar_lane(
+                    claim.calendar_lane_request(create_if_missing=False)
+                )
+            except CalendarProviderError as exc:
+                self.finish_error(claim, exc)
+            else:
+                self.finish_calendar_lane_delete_success(claim, lane_delete_result)
+            return True
         if claim.operation_type in GMAIL_MUTATION_ACTION_TYPES:
             if self.gmail_provider is None:
                 self.finish_error(
@@ -2001,6 +2272,8 @@ class OperationRunner:
                 calendar_result = self.provider.update_event(request)
             elif claim.operation_type == "calendar_cancel_event":
                 calendar_result = self.provider.cancel_event(request)
+            elif claim.operation_type == "calendar_move_event":
+                calendar_result = self.provider.move_event(request)
             else:
                 raise CalendarProviderError(
                     "unsupported_operation",
@@ -2294,6 +2567,27 @@ class OperationRunner:
             else:
                 self.finish_calendar_lane_success(claim, lane_result)
             return True
+        if claim.operation_type == "calendar_delete_lane":
+            try:
+                self.provider.ensure_calendar_lane(
+                    claim.calendar_lane_request(create_if_missing=False)
+                )
+            except CalendarProviderError as exc:
+                if exc.code == "google_calendar_lane_not_found":
+                    self.finish_calendar_lane_delete_success(
+                        claim,
+                        CalendarLaneDeleteResult(
+                            calendar_id=str(claim.parameters["calendar_id"]),
+                            provider_request_id=None,
+                        ),
+                    )
+                elif exc.transient:
+                    self._defer_reconciliation(claim, error_code=exc.code, delay_seconds=8)
+                else:
+                    self.finish_error(claim, exc)
+            else:
+                self._finish_reconciliation_no_match(claim)
+            return True
         if claim.operation_type in GMAIL_MUTATION_ACTION_TYPES:
             if self.gmail_provider is None:
                 self.finish_error(
@@ -2345,6 +2639,26 @@ class OperationRunner:
                 )
             return True
         calendar_request = claim.calendar_request()
+        if claim.operation_type == "calendar_move_event":
+            destination_id = calendar_request.destination_calendar_id
+            if destination_id is None:
+                self._finish_reconciliation_conflict(claim, match_count=-1)
+                return True
+            try:
+                moved = self.provider.get_event(
+                    replace(calendar_request, calendar_id=destination_id)
+                )
+            except CalendarProviderError as exc:
+                if exc.transient:
+                    self._defer_reconciliation(claim, error_code=exc.code, delay_seconds=8)
+                else:
+                    self._finish_reconciliation_conflict(claim, match_count=-1)
+                return True
+            if moved is not None:
+                self.finish_success(claim, moved)
+            else:
+                self._finish_reconciliation_no_match(claim)
+            return True
         try:
             if claim.operation_type == "calendar_create_event":
                 matches = self.provider.find_by_correlation(calendar_request)

@@ -29,10 +29,6 @@ class CanonicalEvent(TimestampMixin, Base):
             "authority IN ('explicit_user', 'canonical', 'inferred')",
             name="ck_canonical_events_authority",
         ),
-        CheckConstraint(
-            "calendar_lane IN ('academic', 'work', 'organizations', 'personal', 'unsorted')",
-            name="ck_canonical_events_calendar_lane",
-        ),
         UniqueConstraint("canonical_key", name="uq_canonical_events_key"),
     )
 

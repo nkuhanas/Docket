@@ -49,6 +49,20 @@ ACTION_REGISTRY: dict[str, ActionDefinition] = {
             requires_account=True,
         ),
         ActionDefinition(
+            "calendar_move_events",
+            RiskClass.BULK,
+            "google_calendar",
+            ActionAvailability.ENABLED,
+            requires_account=True,
+        ),
+        ActionDefinition(
+            "calendar_delete_lane",
+            RiskClass.DESTRUCTIVE,
+            "google_calendar",
+            ActionAvailability.ENABLED,
+            requires_account=True,
+        ),
+        ActionDefinition(
             "calendar_cancel_event",
             RiskClass.DESTRUCTIVE,
             "google_calendar",
@@ -126,6 +140,7 @@ BATCH_CALENDAR_ACTION_TYPES = frozenset(
     {
         "calendar_reconcile_course",
         "calendar_drop_course",
+        "calendar_move_events",
     }
 )
 COURSE_CALENDAR_ACTION_TYPES = frozenset(

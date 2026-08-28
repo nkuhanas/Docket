@@ -486,6 +486,7 @@ class CalendarEventCache(TimestampMixin, Base):
     )
     calendar_id: Mapped[str] = mapped_column(String(1024), nullable=False)
     provider_event_id: Mapped[str] = mapped_column(String(1024), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(32), default="unknown", nullable=False)
     snapshot_generation: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
     recurring_event_id: Mapped[str | None] = mapped_column(String(1024))
     original_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -600,11 +601,8 @@ class CalendarLane(TimestampMixin, Base):
     __tablename__ = "calendar_lanes"
     __table_args__ = (
         CheckConstraint(
-            "lane IN ('academic', 'work', 'organizations', 'personal', 'unsorted')",
-            name="ck_calendar_lanes_lane",
-        ),
-        CheckConstraint(
-            "status IN ('unprovisioned', 'provisioning', 'active', 'failed')",
+            "status IN ('unprovisioned', 'provisioning', 'active', 'failed', "
+            "'deleting', 'deleted')",
             name="ck_calendar_lanes_status",
         ),
         CheckConstraint(

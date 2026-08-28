@@ -77,6 +77,7 @@ mcp_servers:
         - docket_list_accounts
         - docket_list_calendar_lanes
         - docket_configure_calendar_lane
+        - docket_delete_calendar_lane
         - docket_list_calendar_events
         - docket_get_calendar_sync_status
         - docket_get_calendar_profile
@@ -84,6 +85,7 @@ mcp_servers:
         - docket_set_calendar_profile
         - docket_list_reminder_rules
         - docket_merge_entities
+        - docket_migrate_calendar_events
         - docket_apply_calendar_intent
         - docket_apply_course_intent
         - docket_rebind_entity_resolution

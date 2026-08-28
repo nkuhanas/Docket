@@ -7,7 +7,7 @@ model on 2026-08-27 (America/Los_Angeles).
 
 * Commit: `67d78ee4d229a4e4fa9c0b10e8f04095daf249b6`
 * Migration: `0026`
-* Hermes plugin: `0.15.9`
+* Hermes plugin at original rollout: `0.15.9`
 * Local gate: 299 tests, Ruff, Mypy, migration coverage, and isolated Compose
   MCP smoke passed.
 * GitHub CI: test/static-analysis and isolated container jobs passed.

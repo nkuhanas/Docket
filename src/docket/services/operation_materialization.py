@@ -34,6 +34,17 @@ def operation_idempotency_key(revision: ActionRevision) -> str:
             f"calendar:configure-lane:{revision.account_id}:"
             f"{parameters['lane']}:{revision.parameters_sha256}"
         )
+    if revision.action_type == "calendar_move_events":
+        return (
+            f"calendar:move-events:{revision.account_id}:"
+            f"{parameters['source_lane']}:{parameters['destination_lane']}:"
+            f"{revision.parameters_sha256}"
+        )
+    if revision.action_type == "calendar_delete_lane":
+        return (
+            f"calendar:delete-lane:{revision.account_id}:"
+            f"{parameters['lane']}:{parameters['lane_version']}"
+        )
     if revision.action_type in {
         "calendar_reconcile_course",
         "calendar_drop_course",

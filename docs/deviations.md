@@ -61,12 +61,13 @@ the ignored credential directory, mode-0600 atomic persistence, read-only
 container mount, external calls disabled by default, and narrow Docket-owned
 adapters when those features are implemented.
 
-The two additional Calendar scopes were added on 2026-08-27 for the five-lane
-Calendar model. `calendar.calendars` permits Docket to create and rename its
+The two additional Calendar scopes were added on 2026-08-27 for the managed-lane
+Calendar model. `calendar.calendars` permits Docket to create, rename, and delete its
 owned secondary calendars; `calendar.calendarlist` permits Docket to apply the
 operator-facing color and selected state. The model receives only bounded
 `docket_list_calendar_lanes` and explicitly authorized
-`docket_configure_calendar_lane` tools, never raw Calendar administration.
+`docket_configure_calendar_lane`, approval-bound `docket_migrate_calendar_events`,
+and empty-only `docket_delete_calendar_lane` tools, never raw Calendar administration.
 
 ## 2026-07-22 — Persist the last synchronized Calendar snapshot
 
