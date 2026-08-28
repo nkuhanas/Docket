@@ -279,7 +279,7 @@ class AgentResponseDeliveryUpdate(InternalModel):
 class SpecificationSignoffCapture(InternalModel):
     request_id: UUID
     utterance_ref: str = Field(pattern=r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")
-    document_ref: Literal["ONT-DELTA-2026-08-27"]
+    document_ref: str = Field(pattern=r"^ONT-DELTA-[A-Z0-9-]+$", max_length=255)
     frozen_artifact_hash: str = Field(
         min_length=64,
         max_length=64,

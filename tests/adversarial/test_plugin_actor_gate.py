@@ -705,6 +705,37 @@ def test_exact_final_signoff_is_recorded_before_model_dispatch(
     assert captured == [(plugin_module._FINAL_ARCHITECTURE_SIGNOFF_TEXT, utterance_ref)]
 
 
+@pytest.mark.adversarial
+def test_amendment_signoff_forwards_exact_binding_only(plugin_module, monkeypatch) -> None:
+    document_ref = "ONT-DELTA-2026-08-28-CASE-RESOLUTION"
+    frozen_hash = "058788ec6728565b51bbce3e80d51146c52fec0c0364f7599e3877f97d964a05"
+    exact_text = (
+        f"I accept {document_ref} frozen at SHA-256 {frozen_hash} and authorize "
+        "implementation of that amendment."
+    )
+    requests = []
+
+    def capture(path, payload, **_kwargs):
+        requests.append((path, payload))
+        return {"ok": True, "ref": f"dec_{'3' * 26}"}
+
+    monkeypatch.setattr(plugin_module, "_docket_internal_request", capture)
+
+    decision_ref = plugin_module._record_final_signoff_if_explicit(
+        SimpleNamespace(text=exact_text),
+        f"utt_{'2' * 26}",
+    )
+
+    assert decision_ref == f"dec_{'3' * 26}"
+    assert requests[0][0] == "/internal/v1/discord/specification-signoffs"
+    assert requests[0][1]["document_ref"] == document_ref
+    assert requests[0][1]["frozen_artifact_hash"] == frozen_hash
+    assert plugin_module._record_final_signoff_if_explicit(
+        SimpleNamespace(text=f"{exact_text} please"),
+        f"utt_{'4' * 26}",
+    ) is None
+
+
 @pytest.mark.asyncio
 @pytest.mark.adversarial
 async def test_agent_response_persistence_failure_blocks_discord_delivery(

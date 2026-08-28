@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from datetime import UTC, datetime
 
@@ -40,6 +41,7 @@ from docket.services.provenance import (
     FROZEN_DOCUMENT_REF,
     ProvenanceService,
 )
+from docket.specification_artifacts import specification_artifact
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash
 
 MESSAGE_ID = "1542778234028953620"
@@ -756,3 +758,105 @@ def test_final_architecture_signoff_requires_exact_ledger_utterance(session_fact
         with pytest.raises(DocketError) as exc_info:
             ProvenanceService(session).record_final_architecture_signoff(non_exact_request)
         assert exc_info.value.code == "specification_signoff_not_explicit"
+
+
+@pytest.mark.integration
+def test_manifest_bound_amendment_signoff_requires_bootstrap_and_base_signoff(
+    session_factory,
+) -> None:
+    settings = get_settings()
+    document_ref = "ONT-DELTA-2026-08-28-CASE-RESOLUTION"
+    frozen_hash = "058788ec6728565b51bbce3e80d51146c52fec0c0364f7599e3877f97d964a05"
+    artifact = specification_artifact(document_ref, frozen_hash)
+    assert artifact is not None and artifact.bootstrap_authority is not None
+    bootstrap_text = (
+        "I authorize only the amendment-signoff bootstrap needed to make\n"
+        "  ONT-DELTA-2026-08-28-CASE-RESOLUTION frozen at SHA-256 "
+        "058788ec6728565b51bbce3e80d51146c52fec0c0364f7599e3877f97d964a05\n"
+        "  signable through the Docket ledger. This does not authorize the amendment's\n"
+        "  case-resolution, triage, schema, migration, or tool-outcome behavior."
+    )
+    assert hashlib.sha256(bootstrap_text.encode()).hexdigest() == (
+        artifact.bootstrap_authority.content_hash
+    )
+    with session_factory.begin() as session:
+        session.add(
+            OperatorUtterance(
+                ref_id=artifact.bootstrap_authority.utterance_ref,
+                actor_ref=f"discord_user:{settings.operator_discord_user_id}",
+                transport="discord",
+                source_message_ref=(
+                    f"discord_message:{settings.discord_guild_id}:"
+                    f"{settings.chat_channel_id}:1543023122465423372"
+                ),
+                conversation_ref=(
+                    f"discord_conversation:{settings.discord_guild_id}:"
+                    f"{settings.chat_channel_id}"
+                ),
+                said_at=datetime.now(UTC),
+                verbatim_text=bootstrap_text,
+                content_hash=artifact.bootstrap_authority.content_hash,
+                request_key=(
+                    f"discord:{settings.discord_guild_id}:{settings.chat_channel_id}:"
+                    "1543023122465423372:0"
+                ),
+            )
+        )
+        session.add(
+            Decision(
+                decision_kind=artifact.prerequisite.decision_kind,
+                actor_ref=f"discord_user:{settings.operator_discord_user_id}",
+                basis_refs=[artifact.bootstrap_authority.utterance_ref],
+                document_ref=artifact.prerequisite.document_ref,
+                frozen_artifact_hash=artifact.prerequisite.frozen_artifact_hash,
+                architecture_authority=True,
+                implementation_authority="gated_by_ONT-INV-0011",
+            )
+        )
+
+    signoff_message_id = "1543024000000000000"
+    with session_factory.begin() as session:
+        signoff_ref = ProvenanceService(session).capture_operator_utterance(
+            _utterance_request(
+                text=artifact.signoff_text,
+                message_id=signoff_message_id,
+            )
+        )["ref"]
+        request = SpecificationSignoffCapture(
+            request_id=uuid.uuid4(),
+            utterance_ref=signoff_ref,
+            document_ref=document_ref,
+            frozen_artifact_hash=frozen_hash,
+        )
+        result = ProvenanceService(session).record_final_architecture_signoff(request)
+        replay = ProvenanceService(session).record_final_architecture_signoff(request)
+
+    assert result["ref"].startswith("dec_")
+    assert replay == {**result, "disposition": "replayed_request"}
+    with session_factory() as session:
+        decision = session.scalar(
+            select(Decision).where(
+                Decision.document_ref == document_ref,
+                Decision.frozen_artifact_hash == frozen_hash,
+            )
+        )
+        assert decision is not None
+        assert decision.basis_refs == [signoff_ref]
+        assert decision.authorized_scope == (
+            "attention_case_resolution_and_tool_outcome_amendment"
+        )
+        assert decision.architecture_authority is True
+        assert decision.implementation_authority == "amendment_scope"
+        assert decision.payload_json["bootstrap_utterance_ref"] == (
+            artifact.bootstrap_authority.utterance_ref
+        )
+
+    with session_factory.begin() as session:
+        wrong_hash_request = request.model_copy(
+            update={"request_id": uuid.uuid4(), "frozen_artifact_hash": "0" * 64}
+        )
+        with pytest.raises(DocketError) as exc_info:
+            ProvenanceService(session).record_final_architecture_signoff(
+                wrong_hash_request
+            )
+        assert exc_info.value.code == "specification_signoff_artifact_mismatch"

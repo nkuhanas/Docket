@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "artifacts": [
+    {
+      "document_ref": "ONT-DELTA-2026-08-27",
+      "frozen_artifact_hash": "3d744f4d021f8a605086152eb76743a7ec5a7ed2c8754694e38c1a891a14b5e1",
+      "status": "signed_architecture",
+      "signoff_text": "I explicitly sign off on Docket architecture ONT-DELTA-2026-08-27 at SHA-256 `3d744f4d021f8a605086152eb76743a7ec5a7ed2c8754694e38c1a891a14b5e1`.",
+      "architecture_authority": true,
+      "implementation_authority": "gated_by_ONT-INV-0011",
+      "authorized_scope": null,
+      "prerequisite": {
+        "decision_kind": "provenance_bootstrap_signoff",
+        "document_ref": "ONT-DELTA-2026-08-27",
+        "frozen_artifact_hash": "3d744f4d021f8a605086152eb76743a7ec5a7ed2c8754694e38c1a891a14b5e1"
+      },
+      "bootstrap_authority": null
+    },
+    {
+      "document_ref": "ONT-DELTA-2026-08-28-CASE-RESOLUTION",
+      "frozen_artifact_hash": "058788ec6728565b51bbce3e80d51146c52fec0c0364f7599e3877f97d964a05",
+      "status": "candidate_spec",
+      "signoff_text": "I accept ONT-DELTA-2026-08-28-CASE-RESOLUTION frozen at SHA-256 058788ec6728565b51bbce3e80d51146c52fec0c0364f7599e3877f97d964a05 and authorize implementation of that amendment.",
+      "architecture_authority": true,
+      "implementation_authority": "amendment_scope",
+      "authorized_scope": "attention_case_resolution_and_tool_outcome_amendment",
+      "prerequisite": {
+        "decision_kind": "specification_signoff",
+        "document_ref": "ONT-DELTA-2026-08-27",
+        "frozen_artifact_hash": "3d744f4d021f8a605086152eb76743a7ec5a7ed2c8754694e38c1a891a14b5e1"
+      },
+      "bootstrap_authority": {
+        "utterance_ref": "utt_01M157G81T7FV6A4V8RQD54Z6G",
+        "content_hash": "d11eee4a994d16f06e3efe00a9d5e10842616a1a24e0f2c6d025cf351c56b388"
+      }
+    }
+  ]
+}

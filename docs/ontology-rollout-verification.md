@@ -18,6 +18,29 @@ The readiness record is
 [`docket-ontology-readiness-status-08-27-2026.yaml`](../deltas/docket-ontology-readiness-status-08-27-2026.yaml).
 No approval or implementation authority is inferred from ordinary design chat.
 
+## Amendment sign-off bootstrap boundary
+
+`ONT-DELTA-2026-08-28-CASE-RESOLUTION` is a private candidate amendment frozen
+at SHA-256
+`058788ec6728565b51bbce3e80d51146c52fec0c0364f7599e3877f97d964a05`.
+It has no substantive implementation authority yet.
+
+The Operator authorized only the manifest-bound amendment-signoff bootstrap in
+authenticated utterance `utt_01M157G81T7FV6A4V8RQD54Z6G`. That authority is
+limited to the packaged eligible-artifact manifest, exact gateway recognition,
+the generalized internal sign-off service, and the tests/runtime wiring needed
+to create a later ledger-backed Decision. It does not authorize revision-ref,
+CaseItem, case-resolution, ContextPacket, triage, or tool-outcome behavior.
+
+The packaged manifest binds each eligible specification to one exact document
+reference, hash, sign-off text, prerequisite Decision, implementation scope,
+and—where required—bootstrap utterance evidence. Unknown or mismatched targets
+fail closed. The August 27 sign-off remains unchanged and readable.
+
+After this bootstrap is deployed and operationally verified, the amendment
+still requires a separate authenticated Operator sign-off and resulting
+`specification_signoff` Decision before substantive implementation may begin.
+
 ## Implemented persistence sequence
 
 The migration sequence is additive through `0039`:

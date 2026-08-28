@@ -36,6 +36,7 @@ from docket.schemas.authority import IntentTurnFinalize
 from docket.services.intent_sessions import IntentSessionService
 from docket.services.mcp_traces import trace_id_for_source
 from docket.services.reply_bindings import ReplyBindingService
+from docket.specification_artifacts import specification_artifact
 
 FROZEN_DOCUMENT_REF = "ONT-DELTA-2026-08-27"
 FROZEN_ARTIFACT_HASH = "3d744f4d021f8a605086152eb76743a7ec5a7ed2c8754694e38c1a891a14b5e1"
@@ -710,13 +711,14 @@ class ProvenanceService:
         self,
         request: SpecificationSignoffCapture,
     ) -> dict[str, Any]:
-        if (
-            request.document_ref != FROZEN_DOCUMENT_REF
-            or request.frozen_artifact_hash != FROZEN_ARTIFACT_HASH
-        ):
+        artifact = specification_artifact(
+            request.document_ref,
+            request.frozen_artifact_hash,
+        )
+        if artifact is None:
             raise DocketError(
                 code="specification_signoff_artifact_mismatch",
-                message="Specification sign-off does not identify the frozen architecture.",
+                message="Specification sign-off does not identify an eligible frozen artifact.",
             )
         utterance = self.session.scalar(
             select(OperatorUtterance).where(
@@ -732,31 +734,60 @@ class ProvenanceService:
         if (
             utterance.actor_ref != _actor_ref(settings.operator_discord_user_id)
             or utterance.transport != "discord"
-            or utterance.verbatim_text != FINAL_ARCHITECTURE_SIGNOFF_TEXT
+            or utterance.verbatim_text != artifact.signoff_text
         ):
             raise DocketError(
                 code="specification_signoff_not_explicit",
-                message="OperatorUtterance is not the exact final architecture sign-off command.",
+                message="OperatorUtterance is not the exact manifest-bound sign-off command.",
             )
-        bootstrap = self.session.scalar(
+
+        prerequisite = self.session.scalar(
             select(Decision).where(
-                Decision.decision_kind == "provenance_bootstrap_signoff",
-                Decision.document_ref == FROZEN_DOCUMENT_REF,
-                Decision.frozen_artifact_hash == FROZEN_ARTIFACT_HASH,
-                Decision.authorized_scope == "provenance_bootstrap_only",
-                Decision.architecture_authority.is_(False),
+                Decision.decision_kind == artifact.prerequisite.decision_kind,
+                Decision.document_ref == artifact.prerequisite.document_ref,
+                Decision.frozen_artifact_hash
+                == artifact.prerequisite.frozen_artifact_hash,
             )
         )
-        if bootstrap is None:
+        if prerequisite is None:
             raise DocketError(
-                code="provenance_bootstrap_not_verified",
-                message="Final sign-off is unavailable until bootstrap provenance exists.",
+                code=(
+                    "provenance_bootstrap_not_verified"
+                    if artifact.document_ref == FROZEN_DOCUMENT_REF
+                    else "specification_signoff_prerequisite_missing"
+                ),
+                message="Specification sign-off prerequisite provenance is unavailable.",
             )
+
+        bootstrap_utterance: OperatorUtterance | None = None
+        if artifact.bootstrap_authority is not None:
+            bootstrap_utterance = self.session.scalar(
+                select(OperatorUtterance).where(
+                    OperatorUtterance.ref_id == artifact.bootstrap_authority.utterance_ref
+                )
+            )
+            if (
+                bootstrap_utterance is None
+                or bootstrap_utterance.actor_ref
+                != _actor_ref(settings.operator_discord_user_id)
+                or bootstrap_utterance.transport != "discord"
+                or bootstrap_utterance.content_hash
+                != artifact.bootstrap_authority.content_hash
+                or bootstrap_utterance.content_hash
+                != _sha256_text(bootstrap_utterance.verbatim_text)
+            ):
+                raise DocketError(
+                    code="amendment_signoff_bootstrap_not_verified",
+                    message=(
+                        "The manifest-bound amendment bootstrap authority is unavailable."
+                    ),
+                )
+
         existing = self.session.scalar(
             select(Decision).where(
                 Decision.decision_kind == "specification_signoff",
-                Decision.document_ref == FROZEN_DOCUMENT_REF,
-                Decision.frozen_artifact_hash == FROZEN_ARTIFACT_HASH,
+                Decision.document_ref == artifact.document_ref,
+                Decision.frozen_artifact_hash == artifact.frozen_artifact_hash,
             )
         )
         if existing is not None:
@@ -775,13 +806,17 @@ class ProvenanceService:
             decision_kind="specification_signoff",
             actor_ref=utterance.actor_ref,
             basis_refs=[utterance.ref_id],
-            document_ref=FROZEN_DOCUMENT_REF,
-            frozen_artifact_hash=FROZEN_ARTIFACT_HASH,
-            architecture_authority=True,
-            implementation_authority="gated_by_ONT-INV-0011",
+            document_ref=artifact.document_ref,
+            frozen_artifact_hash=artifact.frozen_artifact_hash,
+            authorized_scope=artifact.authorized_scope,
+            architecture_authority=artifact.architecture_authority,
+            implementation_authority=artifact.implementation_authority,
             payload_json={
-                "bootstrap_decision_ref": bootstrap.ref_id,
-                "implementation_authority": "gated_by_ONT-INV-0011",
+                "prerequisite_decision_ref": prerequisite.ref_id,
+                "bootstrap_utterance_ref": (
+                    bootstrap_utterance.ref_id if bootstrap_utterance is not None else None
+                ),
+                "implementation_authority": artifact.implementation_authority,
             },
         )
         self.session.add(decision)
@@ -798,10 +833,17 @@ class ProvenanceService:
                 affected_refs=[decision.ref_id, utterance.ref_id],
                 basis_refs=[utterance.ref_id],
                 data={
-                    "document_ref": FROZEN_DOCUMENT_REF,
-                    "frozen_artifact_hash": FROZEN_ARTIFACT_HASH,
-                    "architecture_authority": True,
-                    "implementation_authority": "gated_by_ONT-INV-0011",
+                    "document_ref": artifact.document_ref,
+                    "frozen_artifact_hash": artifact.frozen_artifact_hash,
+                    "architecture_authority": artifact.architecture_authority,
+                    "implementation_authority": artifact.implementation_authority,
+                    "authorized_scope": artifact.authorized_scope,
+                    "prerequisite_decision_ref": prerequisite.ref_id,
+                    "bootstrap_utterance_ref": (
+                        bootstrap_utterance.ref_id
+                        if bootstrap_utterance is not None
+                        else None
+                    ),
                 },
             )
         )

@@ -162,6 +162,11 @@ _FINAL_ARCHITECTURE_SIGNOFF_TEXT = (
     "I explicitly sign off on Docket architecture "
     f"{_FROZEN_DOCUMENT_REF} at SHA-256 `{_FROZEN_ARTIFACT_HASH}`."
 )
+_AMENDMENT_SIGNOFF = re.compile(
+    r"^I accept (?P<document_ref>ONT-DELTA-[A-Z0-9-]+) frozen at SHA-256 "
+    r"(?P<frozen_artifact_hash>[0-9a-f]{64}) and authorize implementation "
+    r"of that amendment\.$"
+)
 
 
 class PluginAPIError(RuntimeError):
@@ -267,15 +272,23 @@ def _capture_operator_utterance(
 
 
 def _record_final_signoff_if_explicit(event: object, utterance_ref: str) -> str | None:
-    if str(getattr(event, "text", "")) != _FINAL_ARCHITECTURE_SIGNOFF_TEXT:
-        return None
+    text = str(getattr(event, "text", ""))
+    if text == _FINAL_ARCHITECTURE_SIGNOFF_TEXT:
+        document_ref = _FROZEN_DOCUMENT_REF
+        frozen_artifact_hash = _FROZEN_ARTIFACT_HASH
+    else:
+        match = _AMENDMENT_SIGNOFF.fullmatch(text)
+        if match is None:
+            return None
+        document_ref = match.group("document_ref")
+        frozen_artifact_hash = match.group("frozen_artifact_hash")
     result = _docket_internal_request(
         "/internal/v1/discord/specification-signoffs",
         {
             "request_id": str(uuid.uuid4()),
             "utterance_ref": utterance_ref,
-            "document_ref": _FROZEN_DOCUMENT_REF,
-            "frozen_artifact_hash": _FROZEN_ARTIFACT_HASH,
+            "document_ref": document_ref,
+            "frozen_artifact_hash": frozen_artifact_hash,
         },
     )
     decision_ref = str(result.get("ref") or "")
