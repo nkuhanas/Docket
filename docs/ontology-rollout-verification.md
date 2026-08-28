@@ -101,12 +101,12 @@ Automated acceptance is organized in these suites:
 | Migration upgrade/downgrade | `tests/integration/test_migrations.py` plus the PostgreSQL rehearsal below |
 | Plugin actor/source/response gates | `tests/adversarial/test_plugin_actor_gate.py` |
 
-Final source-gate result on 2026-08-28:
+Current source-gate result on 2026-08-28:
 
 ```text
-pytest: 353 passed
+pytest: 360 passed
 ruff: all checks passed
-mypy: no issues in 121 source files
+mypy: no issues in 123 source files
 git diff --check: clean
 isolated Compose smoke: passed
 ```
@@ -254,3 +254,20 @@ and the isolated triage cron remained active. Its post-deploy execution
 `2795ef6fccb746868c8ead3978e381e9` completed successfully and persisted bounded
 v5 triage call `call_01M13ZN11VX46757G7N219XED1`. Active operations, pending
 outbox rows, and pending Approvals remained zero.
+
+### Sender identity association follow-up
+
+The exact-email sender association and policy correction path deployed from
+revision `5dfc73c4b901b162c2ebc7eb50c05eafdbb53812` after GitHub Actions run
+`33197071788` passed both required jobs. The supported deployment created
+`backups/docket-20260828T175913Z-5dfc73c4b901.dump` and retained
+`docket-docket:rollback-20260828T175913Z`.
+
+Post-deploy inspection verified Alembic `0039`, the
+`sender_identity_emails` table, Hermes plugin `0.20.2`, and zero active
+operations/pending outbox rows. The preexisting Mustang Shop sender-label
+handle and Preference remained unchanged at version 1: the handle has zero
+active email associations and the Preference still has an empty `policy_json`.
+This is intentional provenance preservation. It is not effective suppression
+until a new authenticated Operator correction associates the exact email and
+sets the executable disposition through one ChangeSet.
