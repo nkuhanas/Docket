@@ -81,6 +81,7 @@ _PREFIX_MODELS: dict[str, tuple[str, type[Any], str]] = {
     "tri": ("triage_run", TriageRun, "started_at"),
     "ctx": ("context_packet", ContextPacket, "created_at"),
     "case": ("attention_case", AttentionCase, "created_at"),
+    "caserev": ("attention_case_revision", AttentionCaseRevision, "created_at"),
     "item": ("case_item", CaseItem, "created_at"),
     "op": ("operation", Operation, "created_at"),
     "call": ("tool_invocation", ToolInvocation, "started_at"),
@@ -225,6 +226,7 @@ class HistoryService:
                 "utterance_refs": item.utterance_refs,
                 "status": item.status,
                 "result_refs": item.result_refs,
+                "result_disposition": item.result_disposition,
                 "error_code": item.error_code,
                 "started_at": _iso(item.started_at),
                 "completed_at": _iso(item.completed_at),
@@ -321,6 +323,7 @@ class HistoryService:
         if isinstance(item, AttentionCaseRevision):
             return {
                 **base,
+                "legacy_ref_id": item.legacy_ref_id,
                 "case_ref": item.case_ref,
                 "revision": item.revision,
                 "semantic_classes": item.semantic_classes,
@@ -338,6 +341,7 @@ class HistoryService:
                 "case_ref": case_ref,
                 "item_key": item.item_key,
                 "item_type": item.item_type,
+                "resolution_role": item.resolution_role,
                 "status": item.status,
                 "candidate_refs": item.candidate_refs,
                 "basis_refs": item.basis_refs,
@@ -665,7 +669,9 @@ class HistoryService:
             item = self.session.scalar(select(Account).where(Account.ref_id == ref_id))
         if item is None and prefix == "case":
             item = self.session.scalar(
-                select(AttentionCaseRevision).where(AttentionCaseRevision.ref_id == ref_id)
+                select(AttentionCaseRevision).where(
+                    AttentionCaseRevision.legacy_ref_id == ref_id
+                )
             )
             if item is not None:
                 object_type = "attention_case_revision"

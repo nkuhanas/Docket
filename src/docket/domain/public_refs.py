@@ -14,6 +14,7 @@ PUBLIC_REF_PREFIXES = frozenset(
         "brief",
         "call",
         "case",
+        "caserev",
         "chg",
         "cnf",
         "ctx",

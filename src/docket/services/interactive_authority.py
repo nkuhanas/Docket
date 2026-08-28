@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from docket.config import get_settings
 from docket.domain.errors import DocketError
-from docket.models import ChangeSet, OperatorUtterance
+from docket.models import AttentionCase, CaseItem, ChangeSet, OperatorUtterance
 from docket.schemas.authority import (
     ChangeSetCommit,
     ChangeSetContent,
@@ -250,6 +250,33 @@ class InteractiveAuthorityService:
                 )
             )
         if changeset.state != "validated":
+            exact_case_error = next(
+                (
+                    error
+                    for error in changeset.validation_errors
+                    if error.get("code")
+                    in {
+                        "attention_case_revision_stale",
+                        "attention_case_reply_binding_mismatch",
+                        "attention_case_item_revision_mismatch",
+                        "attention_case_item_not_open",
+                    }
+                ),
+                None,
+            )
+            if exact_case_error is not None:
+                return {
+                    "ok": False,
+                    "error": {
+                        "code": exact_case_error["code"],
+                        "message": (
+                            "AttentionCase resolution does not match the current "
+                            "visible revision."
+                        ),
+                        "details": exact_case_error.get("details", {}),
+                    },
+                    "next": exact_case_error.get("details", {}).get("next"),
+                }
             return {
                 "ok": True,
                 "ref": changeset.ref_id,
@@ -277,6 +304,49 @@ class InteractiveAuthorityService:
                 authority_utterance_ref=utterance.ref_id,
             )
         )
+        partial_case_refs = [
+            change.object_ref
+            for change in content.resolution_changes
+            if getattr(change, "object_type", None) == "attention_case_resolution"
+            and getattr(change, "case_outcome", None) == "keep_open"
+        ]
+        remaining_required: dict[str, list[str]] = {}
+        for case_ref in partial_case_refs:
+            case = self.session.scalar(
+                select(AttentionCase).where(AttentionCase.ref_id == case_ref)
+            )
+            if case is None:
+                continue
+            refs = list(
+                self.session.scalars(
+                    select(CaseItem.ref_id).where(
+                        CaseItem.attention_case_id == case.id,
+                        CaseItem.status == "open",
+                        CaseItem.resolution_role.in_(
+                            ("required", "legacy_unspecified")
+                        ),
+                    )
+                )
+            )
+            if refs:
+                remaining_required[case.ref_id] = refs
+        next_action = (
+            {
+                "clarifications": [
+                    {
+                        "blocking": True,
+                        "code": "attention_case_required_items_remaining",
+                        "case_items_by_case": remaining_required,
+                        "question": (
+                            "What should Docket do with the remaining required "
+                            "case items?"
+                        ),
+                    }
+                ]
+            }
+            if remaining_required
+            else None
+        )
         return {
             "ok": True,
             "ref": committed.ref_id,
@@ -284,7 +354,7 @@ class InteractiveAuthorityService:
             "summary": "Resolved Operator intent committed atomically.",
             "affected_refs": affected_refs,
             "basis_refs": committed.basis_refs,
-            "next": None,
+            "next": next_action,
             "warnings": [],
             "intent_session_ref": intent_session.ref_id,
             "intent_turn_ref": turn.ref_id,

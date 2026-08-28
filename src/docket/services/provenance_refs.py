@@ -63,6 +63,7 @@ PROVENANCE_PREFIXES = frozenset(
         "rsp",
         "tri",
         "case",
+        "caserev",
         "item",
         "brief",
         "ctx",
@@ -96,6 +97,7 @@ _PHASE_TWO_MODELS: dict[str, type[Any]] = {
     "tri": TriageRun,
     "ctx": ContextPacket,
     "case": AttentionCase,
+    "caserev": AttentionCaseRevision,
     "item": CaseItem,
     "ses": IntentSession,
     "turn": IntentTurn,
@@ -156,7 +158,9 @@ class ProvenanceRefService:
         item = self.session.scalar(select(model).where(model.ref_id == ref_id))
         if item is None and prefix == "case":
             item = self.session.scalar(
-                select(AttentionCaseRevision).where(AttentionCaseRevision.ref_id == ref_id)
+                select(AttentionCaseRevision).where(
+                    AttentionCaseRevision.legacy_ref_id == ref_id
+                )
             )
         if item is None and prefix == "item":
             item = self.session.scalar(

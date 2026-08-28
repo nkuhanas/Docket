@@ -122,8 +122,9 @@ class AttentionCaseRevision(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     ref_id: Mapped[str] = mapped_column(
-        String(40), unique=True, nullable=False, default=lambda: new_public_ref("case")
+        String(40), unique=True, nullable=False, default=lambda: new_public_ref("caserev")
     )
+    legacy_ref_id: Mapped[str | None] = mapped_column(String(40), unique=True)
     attention_case_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("attention_cases.id", ondelete="RESTRICT"), nullable=False
     )
@@ -151,8 +152,12 @@ class CaseItem(TimestampMixin, Base):
             name="ck_case_items_type",
         ),
         CheckConstraint(
-            "status IN ('open', 'resolved', 'rejected')",
+            "status IN ('open', 'resolved', 'rejected', 'not_pursued')",
             name="ck_case_items_status",
+        ),
+        CheckConstraint(
+            "resolution_role IN ('required', 'supporting', 'legacy_unspecified')",
+            name="ck_case_items_resolution_role",
         ),
         UniqueConstraint(
             "attention_case_id", "item_key", name="uq_case_items_case_key"
@@ -168,6 +173,7 @@ class CaseItem(TimestampMixin, Base):
     )
     item_key: Mapped[str] = mapped_column(String(128), nullable=False)
     item_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    resolution_role: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(16), default="open", nullable=False)
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     candidate_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)

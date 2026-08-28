@@ -26,6 +26,7 @@ from docket.models import (
 )
 from docket.models.base import utc_now
 from docket.schemas.authority import (
+    AttentionCaseResolutionInput,
     CanonicalChangeInput,
     ChangeSetCommit,
     ChangeSetContent,
@@ -34,12 +35,13 @@ from docket.schemas.authority import (
     ConflictResolve,
     ProviderIntentInput,
 )
+from docket.services.case_resolutions import AttentionCaseResolutionService
 from docket.services.conflicts import ConflictService
 from docket.services.intent_sessions import IntentSessionService
 from docket.services.provenance_refs import ProvenanceRefService
 
 CanonicalChangeHandler = Callable[
-    [Session, ChangeSet, CanonicalChangeInput],
+    [Session, ChangeSet, Any],
     list[str],
 ]
 ProviderIntentHandler = Callable[
@@ -84,16 +86,39 @@ def _content_payload(content: ChangeSetContent) -> dict[str, Any]:
     return content.model_dump(mode="json")
 
 
-def _all_changes(content: ChangeSetContent) -> list[CanonicalChangeInput]:
+ChangeInput = CanonicalChangeInput | AttentionCaseResolutionInput
+
+
+def _change_payload(change: ChangeInput) -> dict[str, Any]:
+    if isinstance(change, AttentionCaseResolutionInput):
+        return {
+            "case_revision_ref": change.case_revision_ref,
+            "item_dispositions": [
+                item.model_dump(mode="json") for item in change.item_dispositions
+            ],
+        }
+    return change.create_spec or change.payload
+
+
+def _change_affected_fields(change: ChangeInput) -> list[str]:
+    if isinstance(change, AttentionCaseResolutionInput):
+        fields = ["status", "case_items"]
+        if change.case_outcome != "keep_open":
+            fields.append("resolved_at")
+        return fields
+    return list(change.affected_fields)
+
+
+def _all_changes(content: ChangeSetContent) -> list[ChangeInput]:
     pending = [change for group_name in _GROUP_TYPES for change in getattr(content, group_name)]
-    ordered: list[CanonicalChangeInput] = []
+    ordered: list[ChangeInput] = []
     resolved_ids: set[str] = set()
     while pending:
         ready = next(
             (
                 change
                 for change in pending
-                if _nested_change_refs(change.create_spec or change.payload) <= resolved_ids
+                if _nested_change_refs(_change_payload(change)) <= resolved_ids
             ),
             None,
         )
@@ -349,11 +374,16 @@ class ChangeSetService:
             )
 
         changes = _all_changes(content)
+        case_resolutions = AttentionCaseResolutionService(self.session)
         change_ids = {change.change_id for change in changes}
         seen_change_ids: set[str] = set()
         planned_refs: dict[str, str] = {}
         for change in changes:
-            create_spec = change.create_spec or {}
+            create_spec = (
+                change.create_spec or {}
+                if isinstance(change, CanonicalChangeInput)
+                else {}
+            )
             planned_ref = create_spec.get("ref_id")
             if planned_ref is None:
                 continue
@@ -477,9 +507,7 @@ class ChangeSetService:
                                     },
                                 }
                             )
-                for referenced_ref in sorted(
-                    _nested_public_refs(change.create_spec or change.payload)
-                ):
+                for referenced_ref in sorted(_nested_public_refs(_change_payload(change))):
                     planned_change_id = planned_refs.get(referenced_ref)
                     if planned_change_id is not None:
                         if planned_change_id not in seen_change_ids and (
@@ -509,7 +537,7 @@ class ChangeSetService:
                             }
                         )
                 for referenced_change_id in sorted(
-                    _nested_change_refs(change.create_spec or change.payload)
+                    _nested_change_refs(_change_payload(change))
                 ):
                     if referenced_change_id not in change_ids:
                         errors.append(
@@ -522,6 +550,7 @@ class ChangeSetService:
                             }
                         )
                 if change.object_type == "canonical_event":
+                    assert isinstance(change, CanonicalChangeInput)
                     formulation = (
                         change.create_spec if change.action == "create" else change.payload
                     )
@@ -558,6 +587,8 @@ class ChangeSetService:
                             },
                         }
                     )
+                if isinstance(change, AttentionCaseResolutionInput):
+                    errors.extend(case_resolutions.validate(intent_session, change))
                 seen_change_ids.add(change.change_id)
 
         route_changes = [
@@ -637,13 +668,17 @@ class ChangeSetService:
                         target_entity = self.session.get(Entity, entity_id)
                         if target_entity is not None:
                             target_refs.add(target_entity.ref_id)
-                create_spec = change.create_spec or {}
+                create_spec = (
+                    change.create_spec or {}
+                    if isinstance(change, CanonicalChangeInput)
+                    else {}
+                )
                 create_subjects = create_spec.get("subject_refs", [])
                 target_refs.update(str(ref_id) for ref_id in create_subjects)
                 for key in ("subject_ref", "object_ref", "entity_ref"):
                     if create_spec.get(key) is not None:
                         target_refs.add(str(create_spec[key]))
-                if target_refs & subject_refs and set(change.affected_fields) & set(
+                if target_refs & subject_refs and set(_change_affected_fields(change)) & set(
                     conflict.affected_fields
                 ):
                     errors.append(
@@ -938,16 +973,17 @@ class ChangeSetService:
         affected_refs: list[str] = []
         refs_by_change_id: dict[str, list[str]] = {}
         for change in _all_changes(content):
-            resolved_change = change
+            resolved_change: ChangeInput = change
             resolved_fields: dict[str, Any] = {}
-            if change.create_spec is not None:
-                resolved_fields["create_spec"] = _resolved_create_spec(
-                    change.create_spec, refs_by_change_id
-                )
-            if change.payload:
-                resolved_fields["payload"] = _resolved_create_spec(
-                    change.payload, refs_by_change_id
-                )
+            if isinstance(change, CanonicalChangeInput):
+                if change.create_spec is not None:
+                    resolved_fields["create_spec"] = _resolved_create_spec(
+                        change.create_spec, refs_by_change_id
+                    )
+                if change.payload:
+                    resolved_fields["payload"] = _resolved_create_spec(
+                        change.payload, refs_by_change_id
+                    )
             if resolved_fields:
                 resolved_change = change.model_copy(update=resolved_fields)
             refs = self.handlers[change.object_type](self.session, changeset, resolved_change)

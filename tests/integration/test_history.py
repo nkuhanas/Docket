@@ -7,9 +7,12 @@ from sqlalchemy import select
 
 from docket.config import get_settings
 from docket.domain.errors import DocketError
+from docket.domain.public_refs import new_public_ref
 from docket.internal_api.schemas import AgentResponseCapture, OperatorUtteranceCapture
 from docket.models import (
     Account,
+    AttentionCase,
+    AttentionCaseRevision,
     InterpretedStatement,
     OperatorUtterance,
     RuntimeLogEntry,
@@ -85,6 +88,51 @@ def test_source_history_exposes_exact_sender_identity_without_body(
     }
     assert "minimal_headers" not in entry
     assert "subject" not in entry
+
+
+@pytest.mark.integration
+def test_legacy_case_revision_alias_resolves_to_canonical_typed_ref(
+    session_factory,
+) -> None:
+    now = datetime.now(UTC)
+    legacy_ref = new_public_ref("case")
+    with session_factory.begin() as session:
+        case = AttentionCase(
+            situation_key="d" * 64,
+            title="Legacy revision",
+            summary="Preserved immutable projection",
+            status="open",
+            priority="normal",
+            semantic_classes=["action_request"],
+            entity_refs=[],
+            source_refs=[],
+            first_observed_at=now,
+            last_observed_at=now,
+        )
+        session.add(case)
+        session.flush()
+        revision = AttentionCaseRevision(
+            legacy_ref_id=legacy_ref,
+            attention_case_id=case.id,
+            case_ref=case.ref_id,
+            revision=1,
+            title=case.title,
+            summary=case.summary,
+            semantic_classes=case.semantic_classes,
+            item_refs=[],
+            source_refs=[],
+            content_hash="e" * 64,
+        )
+        session.add(revision)
+        session.flush()
+        canonical_ref = revision.ref_id
+
+        entry = HistoryService(session).get_entry(legacy_ref)["entry"]
+
+    assert canonical_ref.startswith("caserev_")
+    assert entry["type"] == "attention_case_revision"
+    assert entry["ref"] == canonical_ref
+    assert entry["legacy_ref_id"] == legacy_ref
 
 
 @pytest.mark.integration

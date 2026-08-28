@@ -21,6 +21,7 @@ from docket.models import (
     CaseItem,
     CaseSource,
     ContextPacket,
+    Decision,
     Entity,
     IdentityHandle,
     OutboxEvent,
@@ -120,6 +121,7 @@ class IntelligenceService:
     def _fit_trusted_context(context: dict[str, Any]) -> tuple[dict[str, Any], int]:
         compact = dict(context)
         for key in (
+            "case_semantic_resolutions",
             "related_open_cases",
             "calendar_lanes",
             "sender_context",
@@ -212,6 +214,21 @@ class IntelligenceService:
             identity_refs=identity_refs,
             source_refs={source.ref_id},
         )
+        situation_key = self._situation_key(source)
+        semantic_resolutions = list(
+            session.scalars(
+                select(Decision)
+                .where(
+                    Decision.decision_kind == "case_semantic_resolution",
+                    Decision.payload_json["correlation_scope_json"][
+                        "situation_key"
+                    ].as_string()
+                    == situation_key,
+                )
+                .order_by(Decision.created_at.desc(), Decision.ref_id.desc())
+                .limit(25)
+            )
+        )
         return {
             "trust": "trusted_docket_context",
             "source_ref": source.ref_id,
@@ -249,6 +266,17 @@ class IntelligenceService:
             "calendar_lanes": lanes,
             "routing_precedent": [],
             "related_open_cases": cases,
+            "case_semantic_resolutions": [
+                {
+                    "ref": item.ref_id,
+                    "case_ref": item.payload_json.get("case_ref"),
+                    "predicate": item.payload_json.get("predicate"),
+                    "value_json": item.payload_json.get("value_json"),
+                    "basis_refs": item.basis_refs,
+                    "correlation_rule": "exact_provider_account_conversation",
+                }
+                for item in semantic_resolutions
+            ],
         }
 
     @staticmethod
@@ -557,8 +585,21 @@ class IntelligenceService:
                 ),
                 None,
             )
+            semantic_resolutions = packet.trusted_context_json.get(
+                "case_semantic_resolutions", []
+            )
+            applicable_resolution_refs = [
+                str(item["ref"])
+                for item in semantic_resolutions
+                if isinstance(item, dict)
+                and isinstance(item.get("ref"), str)
+                and item.get("predicate") == "application_status"
+                and item.get("value_json") == "submitted"
+            ]
             if suppression is not None:
                 disposition = "suppress"
+            elif disposition == "case" and applicable_resolution_refs:
+                disposition = "brief"
             if disposition == "case" and not request.case_items:
                 raise DocketError(
                     code="attention_case_items_required",
@@ -575,6 +616,15 @@ class IntelligenceService:
                 )
                 observed_at = source.received_at or source.created_at
                 if case is None:
+                    if not any(
+                        item.resolution_role == "required" for item in request.case_items
+                    ):
+                        raise DocketError(
+                            code="attention_case_required_item_missing",
+                            message=(
+                                "A new AttentionCase requires at least one required CaseItem."
+                            ),
+                        )
                     case = AttentionCase(
                         situation_key=situation_key,
                         title=request.title,
@@ -618,6 +668,7 @@ class IntelligenceService:
                             attention_case_id=case.id,
                             item_key=item_input.item_key,
                             item_type=item_input.item_type,
+                            resolution_role=item_input.resolution_role,
                             payload_json=item_input.payload,
                             candidate_refs=list(item_input.candidate_refs),
                             basis_refs=[source.ref_id, packet.ref_id],
@@ -627,6 +678,8 @@ class IntelligenceService:
                         session.flush()
                     else:
                         case_item.item_type = item_input.item_type
+                        if case_item.resolution_role != "legacy_unspecified":
+                            case_item.resolution_role = item_input.resolution_role
                         case_item.payload_json = item_input.payload
                         case_item.candidate_refs = list(item_input.candidate_refs)
                         case_item.basis_refs = list(
@@ -655,6 +708,8 @@ class IntelligenceService:
                     reason=(
                         suppression.ref_id
                         if suppression is not None
+                        else applicable_resolution_refs[0]
+                        if applicable_resolution_refs
                         else "noise"
                         if disposition == "suppress"
                         else None
@@ -677,6 +732,7 @@ class IntelligenceService:
                 "summary": request.summary,
                 "explanation": request.explanation,
                 "preference_ref": suppression.ref_id if suppression is not None else None,
+                "case_semantic_resolution_refs": applicable_resolution_refs,
             }
             source.claim_token = None
             source.claimed_by = None
@@ -701,6 +757,7 @@ class IntelligenceService:
                         source.ref_id,
                         packet.ref_id,
                         *([suppression.ref_id] if suppression is not None else []),
+                        *applicable_resolution_refs,
                     ],
                     data={
                         "semantic_classes": list(request.semantic_classes),
@@ -722,6 +779,7 @@ class IntelligenceService:
                     source.ref_id,
                     packet.ref_id,
                     *([suppression.ref_id] if suppression is not None else []),
+                    *applicable_resolution_refs,
                 ],
                 "next": None,
                 "warnings": [],
@@ -896,6 +954,7 @@ class IntelligenceService:
                     {
                         "ref": item.ref_id,
                         "type": item.item_type,
+                        "resolution_role": item.resolution_role,
                         "status": item.status,
                         "payload": item.payload_json,
                         "candidate_refs": item.candidate_refs,

@@ -13,6 +13,11 @@ StatementRef = Annotated[str, Field(pattern=r"^stm_[0-9A-HJKMNP-TV-Z]{26}$")]
 SessionRef = Annotated[str, Field(pattern=r"^ses_[0-9A-HJKMNP-TV-Z]{26}$")]
 ChangeSetRef = Annotated[str, Field(pattern=r"^chg_[0-9A-HJKMNP-TV-Z]{26}$")]
 ConflictRef = Annotated[str, Field(pattern=r"^cnf_[0-9A-HJKMNP-TV-Z]{26}$")]
+AttentionCaseRef = Annotated[str, Field(pattern=r"^case_[0-9A-HJKMNP-TV-Z]{26}$")]
+AttentionCaseRevisionRef = Annotated[
+    str, Field(pattern=r"^caserev_[0-9A-HJKMNP-TV-Z]{26}$")
+]
+CaseItemRef = Annotated[str, Field(pattern=r"^item_[0-9A-HJKMNP-TV-Z]{26}$")]
 
 _PROVENANCE_PREFIXES = frozenset(
     {
@@ -35,6 +40,7 @@ _PROVENANCE_PREFIXES = frozenset(
         "rsp",
         "tri",
         "case",
+        "caserev",
         "item",
         "brief",
         "ctx",
@@ -180,7 +186,6 @@ class CanonicalChangeInput(StrictModel):
         "lane_routing_decision",
         "canonical_event",
         "conflict_resolution",
-        "attention_case_resolution",
     ]
     object_ref: PublicRef | None = None
     create_spec: dict[str, Any] | None = Field(
@@ -231,6 +236,43 @@ class CanonicalChangeInput(StrictModel):
         return self
 
 
+class AttentionCaseItemDisposition(StrictModel):
+    item_ref: CaseItemRef
+    disposition: Literal["resolved", "rejected"]
+
+
+class AttentionCaseResolutionInput(StrictModel):
+    change_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    action: Literal["update"]
+    object_type: Literal["attention_case_resolution"]
+    object_ref: AttentionCaseRef
+    case_revision_ref: AttentionCaseRevisionRef
+    case_outcome: Literal["keep_open", "resolved", "suppressed", "cancelled"]
+    item_dispositions: list[AttentionCaseItemDisposition] = Field(max_length=25)
+    basis_refs: list[PublicRef] = Field(min_length=1, max_length=100)
+
+    @field_validator("basis_refs")
+    @classmethod
+    def validate_basis_refs(cls, values: list[str]) -> list[str]:
+        return _validate_refs(values, provenance_only=True)
+
+    @field_validator("item_dispositions")
+    @classmethod
+    def unique_item_dispositions(
+        cls, values: list[AttentionCaseItemDisposition]
+    ) -> list[AttentionCaseItemDisposition]:
+        refs = [item.item_ref for item in values]
+        if len(refs) != len(set(refs)):
+            raise ValueError("item_dispositions must not contain duplicate CaseItems")
+        return values
+
+
+type ResolutionChangeInput = Annotated[
+    CanonicalChangeInput | AttentionCaseResolutionInput,
+    Field(discriminator="object_type"),
+]
+
+
 class ProviderIntentInput(StrictModel):
     intent_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     operation_type: str = Field(min_length=1, max_length=128)
@@ -272,7 +314,9 @@ class ChangeSetContent(StrictModel):
     preference_changes: list[CanonicalChangeInput] = Field(default_factory=list, max_length=100)
     lane_changes: list[CanonicalChangeInput] = Field(default_factory=list, max_length=100)
     event_changes: list[CanonicalChangeInput] = Field(default_factory=list, max_length=100)
-    resolution_changes: list[CanonicalChangeInput] = Field(default_factory=list, max_length=100)
+    resolution_changes: list[ResolutionChangeInput] = Field(
+        default_factory=list, max_length=100
+    )
     provider_intents: list[ProviderIntentInput] = Field(default_factory=list, max_length=100)
 
     @field_validator("basis_refs")
