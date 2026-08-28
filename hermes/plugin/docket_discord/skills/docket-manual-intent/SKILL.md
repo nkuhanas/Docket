@@ -294,13 +294,13 @@ version. A rename changes presentation, never the stable slug or event routing.
 
 When the operator asks to move events between lanes, do not ask them for
 provider IDs. Read the source lane and its current events, resolve the requested
-events yourself, then call `docket_migrate_calendar_events` with the immutable
-provider identities returned by Docket. Use `scope="series"` for recurring
-events. Group up to 50 unambiguous events with the same source and destination
-inside one proposal; leave ambiguous matches in place and explain what needs
-clarification. A successful tool call only publishes the approval card. Do not
-claim that Google or Docket bindings changed until `docket_get_action` reports
-success.
+events yourself with `freshness="require_fresh"`, then call
+`docket_migrate_calendar_events` with the immutable provider identities and
+event types returned by Docket. Use `scope="series"` for recurring events. Group
+up to 50 unambiguous events with the same source and destination inside one
+proposal; leave ambiguous matches in place and explain what needs clarification.
+A successful tool call only publishes the approval card. Do not claim that
+Google or Docket bindings changed until `docket_get_action` reports success.
 
 Use `docket_delete_calendar_lane` only for the current operator's explicit
 deletion request. `unsorted` is permanent. A lane must be empty first: move or

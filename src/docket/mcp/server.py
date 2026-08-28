@@ -924,10 +924,11 @@ def docket_migrate_calendar_events(
     """Propose moving selected Calendar events or recurring series between lanes.
 
     Use this only for the operator's current explicit request. Resolve the event from
-    Docket Calendar reads, pass its provider ID, and use ``scope=series`` for recurring
-    events. Docket creates one approval card and executes the immutable items durably;
-    it updates its provider bindings only after Google confirms each move. Ambiguous
-    events must remain unmoved until the operator clarifies them.
+    a ``require_fresh`` Docket Calendar read, pass its provider ID, and use
+    ``scope=series`` for recurring events. Docket creates one approval card and executes
+    the immutable items durably; it updates its provider bindings only after Google
+    confirms each move. Ambiguous events must remain unmoved until the operator clarifies
+    them.
     """
     try:
         request = MigrateCalendarLaneEventsInput(
