@@ -15,7 +15,6 @@ class PreferenceCreateSpec(StrictModel):
     policy_kind: Literal["behavior", "suppression", "calendar_route"]
     target_type: Literal["global", "entity", "identity", "source", "semantic_class"]
     target_ref: PublicRef | None = None
-    target_key: str | None = Field(default=None, min_length=1, max_length=1024)
     semantic_class: str | None = Field(default=None, min_length=1, max_length=64)
     policy_text: str = Field(min_length=1, max_length=4000)
     policy_json: dict[str, Any] = Field(default_factory=dict)
@@ -28,11 +27,9 @@ class PreferenceCreateSpec(StrictModel):
     @model_validator(mode="after")
     def target_is_explicit(self) -> "PreferenceCreateSpec":
         if self.target_type in {"entity", "identity", "source"}:
-            if (self.target_ref is None) == (self.target_key is None):
-                raise ValueError(
-                    "entity, identity, and source targets require exactly one exact target"
-                )
-        elif self.target_ref is not None or self.target_key is not None:
+            if self.target_ref is None:
+                raise ValueError("entity, identity, and source targets require a public ref")
+        elif self.target_ref is not None:
             raise ValueError("global and semantic-class targets omit exact target values")
         if self.target_type == "semantic_class" and self.semantic_class is None:
             raise ValueError("semantic_class targets require semantic_class")
@@ -43,6 +40,13 @@ class PreferenceCreateSpec(StrictModel):
             and not isinstance(self.policy_json.get("lane_ref"), str)
         ):
             raise ValueError("calendar_route policy requires policy_json.lane_ref")
+        if (
+            self.policy_kind == "suppression"
+            and self.policy_json.get("disposition") != "suppress"
+        ):
+            raise ValueError(
+                "suppression policy requires policy_json.disposition='suppress'"
+            )
         if self.valid_from and self.valid_to and self.valid_to <= self.valid_from:
             raise ValueError("valid_to must be later than valid_from")
         return self

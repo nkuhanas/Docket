@@ -108,9 +108,7 @@ class IdentityHandle(TimestampMixin, Base):
             "OR (status <> 'bound'))",
             name="ck_identity_handles_bound_target",
         ),
-        UniqueConstraint(
-            "handle_type", "normalized_value", name="uq_identity_handles_value"
-        ),
+        UniqueConstraint("handle_type", "normalized_value", name="uq_identity_handles_value"),
         Index("ix_identity_handles_entity_status", "entity_id", "status"),
     )
 
@@ -132,6 +130,51 @@ class IdentityHandle(TimestampMixin, Base):
     decision_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     source_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     created_by_changeset_ref: Mapped[str | None] = mapped_column(String(40))
+
+
+class SenderIdentityEmail(TimestampMixin, Base):
+    """Time-scoped exact email membership for one sender-label index handle."""
+
+    __tablename__ = "sender_identity_emails"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active', 'historical', 'retracted')",
+            name="ck_sender_identity_emails_status",
+        ),
+        UniqueConstraint(
+            "sender_identity_handle_id",
+            "email_identity_handle_id",
+            name="uq_sender_identity_email_pair",
+        ),
+        Index(
+            "uq_sender_identity_emails_active_email",
+            "email_identity_handle_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+            sqlite_where=text("status = 'active'"),
+        ),
+        Index(
+            "ix_sender_identity_emails_sender_status",
+            "sender_identity_handle_id",
+            "status",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    sender_identity_handle_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("identity_handles.id", ondelete="RESTRICT"), nullable=False
+    )
+    email_identity_handle_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("identity_handles.id", ondelete="RESTRICT"), nullable=False
+    )
+    status: Mapped[str] = mapped_column(String(16), default="active", nullable=False)
+    valid_from: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    basis_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    source_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    created_by_changeset_ref: Mapped[str] = mapped_column(String(40), nullable=False)
 
 
 class IdentityBinding(CanonicalProvenanceMixin, Base):
@@ -274,9 +317,7 @@ class Interaction(CanonicalProvenanceMixin, TimestampMixin, Base):
 class InteractionParticipant(Base):
     __tablename__ = "interaction_participants"
     __table_args__ = (
-        UniqueConstraint(
-            "interaction_id", "entity_id", "role", name="uq_interaction_participant"
-        ),
+        UniqueConstraint("interaction_id", "entity_id", "role", name="uq_interaction_participant"),
     )
 
     interaction_id: Mapped[uuid.UUID] = mapped_column(

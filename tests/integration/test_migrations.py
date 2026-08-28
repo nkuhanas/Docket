@@ -64,6 +64,7 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
         "organization_profiles",
         "identity_handles",
         "identity_bindings",
+        "sender_identity_emails",
         "affiliations",
         "relationships",
         "facts",

@@ -16,8 +16,13 @@ from docket.models import (
     CalendarLane,
     CanonicalEvent,
     ChangeSet,
+    Entity,
+    IdentityHandle,
     LaneRoutingDecision,
     Preference,
+    ProvenanceSource,
+    SenderIdentityEmail,
+    SourceItem,
 )
 from docket.models.base import utc_now
 from docket.schemas.authority import CanonicalChangeInput
@@ -48,17 +53,13 @@ class ContextPolicyService:
         }
 
     @staticmethod
-    def _provenance(
-        changeset: ChangeSet, change: CanonicalChangeInput
-    ) -> dict[str, Any]:
+    def _provenance(changeset: ChangeSet, change: CanonicalChangeInput) -> dict[str, Any]:
         return {
             "basis_refs": list(change.basis_refs),
             "decision_refs": [
                 ref for ref in change.basis_refs if parse_public_ref(ref)[0] == "dec"
             ],
-            "source_refs": [
-                ref for ref in change.basis_refs if parse_public_ref(ref)[0] == "src"
-            ],
+            "source_refs": [ref for ref in change.basis_refs if parse_public_ref(ref)[0] == "src"],
             "created_by_changeset_ref": changeset.ref_id,
         }
 
@@ -89,6 +90,72 @@ class ContextPolicyService:
             )
         )
 
+    def _validate_preference_target(self, spec: PreferenceCreateSpec) -> None:
+        target: object | None = None
+        if spec.target_type == "entity":
+            target = self.session.scalar(select(Entity).where(Entity.ref_id == spec.target_ref))
+        elif spec.target_type == "identity":
+            target = self.session.scalar(
+                select(IdentityHandle).where(IdentityHandle.ref_id == spec.target_ref)
+            )
+        elif spec.target_type == "source":
+            target = self.session.scalar(
+                select(SourceItem).where(SourceItem.ref_id == spec.target_ref)
+            ) or self.session.scalar(
+                select(ProvenanceSource).where(ProvenanceSource.ref_id == spec.target_ref)
+            )
+        if spec.target_type in {"entity", "identity", "source"} and target is None:
+            raise DocketError(
+                code="preference_target_not_found",
+                message="Preference target must resolve to the declared public-ref type.",
+                details={"target_type": spec.target_type, "target_ref": spec.target_ref},
+            )
+        if isinstance(target, IdentityHandle) and target.status not in {"unbound", "bound"}:
+            raise DocketError(
+                code="preference_identity_inactive",
+                message="Preference identity target is historical or retracted.",
+                details={"identity_ref": target.ref_id, "status": target.status},
+            )
+        if spec.policy_kind == "suppression" and isinstance(target, IdentityHandle):
+            if target.handle_type == "sender_label":
+                association = self.session.scalar(
+                    select(SenderIdentityEmail.id).where(
+                        SenderIdentityEmail.sender_identity_handle_id == target.id,
+                        SenderIdentityEmail.status == "active",
+                    )
+                )
+                if association is None:
+                    raise DocketError(
+                        code="sender_identity_email_required",
+                        message=(
+                            "A sender-label suppression target requires at least one "
+                            "active exact email association."
+                        ),
+                        details={"identity_ref": target.ref_id},
+                    )
+            elif target.handle_type != "email":
+                raise DocketError(
+                    code="unsupported_suppression_identity_type",
+                    message=(
+                        "Email-triage suppression requires an exact email or an "
+                        "email-associated sender-label IdentityHandle."
+                    ),
+                    details={
+                        "identity_ref": target.ref_id,
+                        "handle_type": target.handle_type,
+                    },
+                )
+        if spec.policy_kind == "calendar_route" and spec.target_type not in {
+            "global",
+            "entity",
+            "semantic_class",
+        }:
+            raise DocketError(
+                code="unsupported_calendar_route_target",
+                message="Calendar routing supports entity, semantic-class, or global targets.",
+                details={"target_type": spec.target_type},
+            )
+
     def apply_preference(
         self,
         _session: Session,
@@ -97,10 +164,9 @@ class ContextPolicyService:
     ) -> list[str]:
         if change.action == "create":
             spec = PreferenceCreateSpec.model_validate(change.create_spec)
+            self._validate_preference_target(spec)
             existing = self.session.scalar(
-                select(Preference).where(
-                    Preference.preference_key == spec.preference_key
-                )
+                select(Preference).where(Preference.preference_key == spec.preference_key)
             )
             if existing is not None:
                 raise DocketError(
@@ -113,7 +179,7 @@ class ContextPolicyService:
                 policy_kind=spec.policy_kind,
                 target_type=spec.target_type,
                 target_ref=spec.target_ref,
-                target_key=spec.target_key,
+                target_key=None,
                 semantic_class=spec.semantic_class,
                 policy_text=spec.policy_text,
                 policy_json=spec.policy_json,
@@ -136,9 +202,7 @@ class ContextPolicyService:
                 select(Preference).where(Preference.ref_id == change.object_ref)
             )
             if stored_preference is None:
-                raise DocketError(
-                    code="preference_not_found", message="Preference was not found."
-                )
+                raise DocketError(code="preference_not_found", message="Preference was not found.")
             preference = stored_preference
             if change.action == "retract":
                 preference.status = "retracted"
@@ -159,6 +223,45 @@ class ContextPolicyService:
                         message="Preference patch contains unsupported fields.",
                         details={"fields": sorted(unknown)},
                     )
+                if preference.policy_kind == "suppression":
+                    policy_json = change.payload.get("policy_json", preference.policy_json)
+                    if (
+                        not isinstance(policy_json, dict)
+                        or policy_json.get("disposition") != "suppress"
+                    ):
+                        raise DocketError(
+                            code="invalid_suppression_policy",
+                            message=(
+                                "Suppression policy updates require "
+                                "policy_json.disposition='suppress'."
+                            ),
+                        )
+                    if preference.target_type == "identity":
+                        target = self.session.scalar(
+                            select(IdentityHandle).where(
+                                IdentityHandle.ref_id == preference.target_ref
+                            )
+                        )
+                        if target is None:
+                            raise DocketError(
+                                code="preference_target_not_found",
+                                message="Preference identity target was not found.",
+                            )
+                        if target.handle_type == "sender_label":
+                            association = self.session.scalar(
+                                select(SenderIdentityEmail.id).where(
+                                    SenderIdentityEmail.sender_identity_handle_id == target.id,
+                                    SenderIdentityEmail.status == "active",
+                                )
+                            )
+                            if association is None:
+                                raise DocketError(
+                                    code="sender_identity_email_required",
+                                    message=(
+                                        "A sender-label suppression target requires an "
+                                        "active exact email association."
+                                    ),
+                                )
                 for key, value in change.payload.items():
                     setattr(preference, key, value)
             else:
@@ -215,9 +318,7 @@ class ContextPolicyService:
                     priority=spec.priority,
                     provenance_status="complete",
                     status=(
-                        "active"
-                        if spec.provider_calendar_binding is not None
-                        else "unprovisioned"
+                        "active" if spec.provider_calendar_binding is not None else "unprovisioned"
                     ),
                     **self._provenance(changeset, change),
                     **values,
@@ -307,9 +408,7 @@ class ContextPolicyService:
                 message="Routing Decisions are immutable; create a later Decision.",
             )
         spec = LaneRoutingDecisionCreateSpec.model_validate(change.create_spec)
-        lane = self.session.scalar(
-            select(CalendarLane).where(CalendarLane.ref_id == spec.lane_ref)
-        )
+        lane = self.session.scalar(select(CalendarLane).where(CalendarLane.ref_id == spec.lane_ref))
         if lane is None or not lane.enabled:
             raise DocketError(
                 code="calendar_lane_unavailable",
@@ -455,9 +554,7 @@ class LaneRoutingService:
             entity_refs={organization_ref} if organization_ref else set(),
             policy_kind="calendar_route",
         )
-        exact_preferences = [
-            item for item in exact_preferences if item.target_type == "entity"
-        ]
+        exact_preferences = [item for item in exact_preferences if item.target_type == "entity"]
         if exact_preferences:
             preference = exact_preferences[0]
             lane = self._lane(str(preference.policy_json["lane_ref"]))
@@ -475,8 +572,7 @@ class LaneRoutingService:
         broad_preferences = [
             item
             for item in PreferenceMatcher(self.session).applicable(
-                semantic_classes=semantic_classes,
-                policy_kind="calendar_route"
+                semantic_classes=semantic_classes, policy_kind="calendar_route"
             )
             if item.target_type in {"global", "semantic_class"}
         ]
@@ -499,10 +595,7 @@ class LaneRoutingService:
                     *(
                         [LaneRoutingDecision.organization_ref == organization_ref]
                         if organization_ref is not None
-                        else [
-                            LaneRoutingDecision.recurring_identity
-                            == recurring_identity
-                        ]
+                        else [LaneRoutingDecision.recurring_identity == recurring_identity]
                         if recurring_identity is not None
                         else [LaneRoutingDecision.id.is_(None)]
                     ),

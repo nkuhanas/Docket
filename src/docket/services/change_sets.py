@@ -61,9 +61,7 @@ _GROUP_TYPES: dict[str, frozenset[str]] = {
     "preference_changes": frozenset({"preference"}),
     "lane_changes": frozenset({"calendar_lane", "lane_routing_decision"}),
     "event_changes": frozenset({"canonical_event"}),
-    "resolution_changes": frozenset(
-        {"conflict_resolution", "attention_case_resolution"}
-    ),
+    "resolution_changes": frozenset({"conflict_resolution", "attention_case_resolution"}),
 }
 
 _OBJECT_PREFIXES: dict[str, str] = {
@@ -87,28 +85,26 @@ def _content_payload(content: ChangeSetContent) -> dict[str, Any]:
 
 
 def _all_changes(content: ChangeSetContent) -> list[CanonicalChangeInput]:
-    pending = [
-        change
-        for group_name in _GROUP_TYPES
-        for change in getattr(content, group_name)
-    ]
+    pending = [change for group_name in _GROUP_TYPES for change in getattr(content, group_name)]
     ordered: list[CanonicalChangeInput] = []
     resolved_ids: set[str] = set()
     while pending:
-        ready = [
-            change
-            for change in pending
-            if _nested_change_refs(change.create_spec or change.payload) <= resolved_ids
-        ]
-        if not ready:
+        ready = next(
+            (
+                change
+                for change in pending
+                if _nested_change_refs(change.create_spec or change.payload) <= resolved_ids
+            ),
+            None,
+        )
+        if ready is None:
             # Validation reports unknown/cyclic create references. Preserve stable
             # input order here so preparation can return a durable clarification.
             ordered.extend(pending)
             break
-        for change in ready:
-            pending.remove(change)
-            ordered.append(change)
-            resolved_ids.add(change.change_id)
+        pending.remove(ready)
+        ordered.append(ready)
+        resolved_ids.add(ready.change_id)
     return ordered
 
 
@@ -184,8 +180,7 @@ def _resolved_create_spec(
                     raise DocketError(
                         code="create_reference_unresolved",
                         message=(
-                            "A ChangeSet-local create reference did not resolve "
-                            "exactly once."
+                            "A ChangeSet-local create reference did not resolve exactly once."
                         ),
                         details={"change_id": change_id, "field": key},
                     )
@@ -234,9 +229,7 @@ class ChangeSetService:
         return [conflict.ref_id, decision.ref_id]
 
     def get(self, changeset_ref: str) -> ChangeSet:
-        changeset = self.session.scalar(
-            select(ChangeSet).where(ChangeSet.ref_id == changeset_ref)
-        )
+        changeset = self.session.scalar(select(ChangeSet).where(ChangeSet.ref_id == changeset_ref))
         if changeset is None:
             raise DocketError(
                 code="changeset_not_found",
@@ -411,9 +404,7 @@ class ChangeSetService:
                         }
                     )
                 try:
-                    change_authority = provenance.authority_utterance_refs(
-                        change.basis_refs
-                    )
+                    change_authority = provenance.authority_utterance_refs(change.basis_refs)
                 except DocketError as exc:
                     errors.append(
                         {
@@ -422,9 +413,7 @@ class ChangeSetService:
                         }
                     )
                     change_authority = set()
-                if not change_authority or not change_authority.issubset(
-                    session_utterance_refs
-                ):
+                if not change_authority or not change_authority.issubset(session_utterance_refs):
                     errors.append(
                         {
                             "code": "change_operator_authority_missing",
@@ -534,9 +523,7 @@ class ChangeSetService:
                         )
                 if change.object_type == "canonical_event":
                     formulation = (
-                        change.create_spec
-                        if change.action == "create"
-                        else change.payload
+                        change.create_spec if change.action == "create" else change.payload
                     )
                     formulation = formulation or {}
                     lane_ref = formulation.get("lane_ref")
@@ -576,8 +563,7 @@ class ChangeSetService:
         route_changes = [
             change
             for change in content.lane_changes
-            if change.object_type == "lane_routing_decision"
-            and change.action == "create"
+            if change.object_type == "lane_routing_decision" and change.action == "create"
         ]
         for event_change in content.event_changes:
             if event_change.object_type != "canonical_event":
@@ -593,8 +579,7 @@ class ChangeSetService:
                 (
                     route
                     for route in route_changes
-                    if (route.create_spec or {}).get("event_change_id")
-                    == event_change.change_id
+                    if (route.create_spec or {}).get("event_change_id") == event_change.change_id
                     or (
                         event_ref is not None
                         and (route.create_spec or {}).get("event_ref") == event_ref
@@ -625,10 +610,7 @@ class ChangeSetService:
                 continue
             event_lane_ref = formulation.get("lane_ref")
             event_lane_change_id = formulation.get("lane_change_id")
-            if (
-                route_lane_ref != event_lane_ref
-                or route_lane_change_id != event_lane_change_id
-            ):
+            if route_lane_ref != event_lane_ref or route_lane_change_id != event_lane_change_id:
                 errors.append(
                     {
                         "code": "lane_routing_decision_mismatch",
@@ -636,9 +618,7 @@ class ChangeSetService:
                     }
                 )
 
-        for conflict in self.session.scalars(
-            select(Conflict).where(Conflict.status == "open")
-        ):
+        for conflict in self.session.scalars(select(Conflict).where(Conflict.status == "open")):
             for change in changes:
                 subject_refs = set(conflict.subject_refs)
                 target_refs = {change.object_ref} if change.object_ref is not None else set()
@@ -683,9 +663,7 @@ class ChangeSetService:
 
         for intent in content.provider_intents:
             try:
-                intent_authority = provenance.authority_utterance_refs(
-                    intent.basis_refs
-                )
+                intent_authority = provenance.authority_utterance_refs(intent.basis_refs)
             except DocketError as exc:
                 errors.append(
                     {
@@ -694,9 +672,7 @@ class ChangeSetService:
                     }
                 )
                 intent_authority = set()
-            if not intent_authority or not intent_authority.issubset(
-                session_utterance_refs
-            ):
+            if not intent_authority or not intent_authority.issubset(session_utterance_refs):
                 errors.append(
                     {
                         "code": "provider_intent_operator_authority_missing",
@@ -786,9 +762,7 @@ class ChangeSetService:
         intent_session.version += 1
 
     def prepare(self, request: ChangeSetPrepare) -> tuple[ChangeSet, bool]:
-        intent_session = IntentSessionService(self.session).get(
-            request.intent_session_ref
-        )
+        intent_session = IntentSessionService(self.session).get(request.intent_session_ref)
         if intent_session.version != request.expected_session_version:
             raise DocketError(
                 code="version_conflict",
@@ -804,9 +778,7 @@ class ChangeSetService:
                 message="A closed IntentSession cannot compile another ChangeSet.",
             )
         existing = self.session.scalar(
-            select(ChangeSet).where(
-                ChangeSet.idempotency_key == request.idempotency_key
-            )
+            select(ChangeSet).where(ChangeSet.idempotency_key == request.idempotency_key)
         )
         payload_hash = sha256_json(_content_payload(request.content))
         if existing is not None:
@@ -835,9 +807,7 @@ class ChangeSetService:
         self.session.add(changeset)
         self.session.flush()
         self._revision(changeset, request.content, 1)
-        errors = self._validate(
-            intent_session, request.content, require_handlers=False
-        )
+        errors = self._validate(intent_session, request.content, require_handlers=False)
         self._apply_validation(intent_session, changeset, errors)
         self.session.add(
             AuditEvent(
@@ -886,9 +856,7 @@ class ChangeSetService:
         changeset.current_revision = next_revision
         changeset.version += 1
         self._revision(changeset, request.content, next_revision)
-        errors = self._validate(
-            intent_session, request.content, require_handlers=False
-        )
+        errors = self._validate(intent_session, request.content, require_handlers=False)
         self._apply_validation(intent_session, changeset, errors)
         self.session.add(
             AuditEvent(
@@ -944,8 +912,7 @@ class ChangeSetService:
         )
         if (
             utterance is None
-            or utterance.actor_ref
-            != f"discord_user:{get_settings().operator_discord_user_id}"
+            or utterance.actor_ref != f"discord_user:{get_settings().operator_discord_user_id}"
         ):
             raise DocketError(
                 code="operator_utterance_authority_required",
@@ -972,17 +939,18 @@ class ChangeSetService:
         refs_by_change_id: dict[str, list[str]] = {}
         for change in _all_changes(content):
             resolved_change = change
+            resolved_fields: dict[str, Any] = {}
             if change.create_spec is not None:
-                resolved_change = change.model_copy(
-                    update={
-                        "create_spec": _resolved_create_spec(
-                            change.create_spec, refs_by_change_id
-                        )
-                    }
+                resolved_fields["create_spec"] = _resolved_create_spec(
+                    change.create_spec, refs_by_change_id
                 )
-            refs = self.handlers[change.object_type](
-                self.session, changeset, resolved_change
-            )
+            if change.payload:
+                resolved_fields["payload"] = _resolved_create_spec(
+                    change.payload, refs_by_change_id
+                )
+            if resolved_fields:
+                resolved_change = change.model_copy(update=resolved_fields)
+            refs = self.handlers[change.object_type](self.session, changeset, resolved_change)
             refs_by_change_id[change.change_id] = refs
             affected_refs.extend(refs)
         if self.provider_handler is not None:
@@ -1035,9 +1003,7 @@ class ChangeSetService:
             "state": changeset.state,
             "version": changeset.version,
             "intent_session_ref": self.session.scalar(
-                select(IntentSession.ref_id).where(
-                    IntentSession.id == changeset.intent_session_id
-                )
+                select(IntentSession.ref_id).where(IntentSession.id == changeset.intent_session_id)
             ),
             "basis_refs": changeset.basis_refs,
             "current_revision": changeset.current_revision,
@@ -1051,8 +1017,6 @@ class ChangeSetService:
                 "provider_intents": len(changeset.provider_intents),
             },
             "committed_at": (
-                changeset.committed_at.isoformat()
-                if changeset.committed_at is not None
-                else None
+                changeset.committed_at.isoformat() if changeset.committed_at is not None else None
             ),
         }

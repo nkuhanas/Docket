@@ -24,6 +24,7 @@ from docket.models import (
     OrganizationProfile,
     PersonProfile,
     Relationship,
+    SenderIdentityEmail,
 )
 from docket.models.base import utc_now
 from docket.schemas.authority import CanonicalChangeInput
@@ -95,15 +96,131 @@ class RegistryService:
 
     def _entity(self, ref_id: str, *, registered: bool = True) -> Entity:
         entity = self.session.scalar(select(Entity).where(Entity.ref_id == ref_id))
-        if entity is None or (
-            registered and entity.registration_state != "registered"
-        ):
+        if entity is None or (registered and entity.registration_state != "registered"):
             raise DocketError(
                 code="registered_entity_not_found",
                 message="A required registered Entity public reference was not found.",
                 details={"entity_ref": ref_id},
             )
         return entity
+
+    def _identity_handle(self, ref_id: str) -> IdentityHandle:
+        handle = self.session.scalar(select(IdentityHandle).where(IdentityHandle.ref_id == ref_id))
+        if handle is None:
+            raise DocketError(
+                code="identity_handle_not_found",
+                message="IdentityHandle was not found.",
+                details={"identity_ref": ref_id},
+            )
+        return handle
+
+    def _add_sender_email(
+        self,
+        *,
+        sender: IdentityHandle,
+        email_ref: str,
+        changeset: ChangeSet,
+        change: CanonicalChangeInput,
+    ) -> str:
+        if sender.handle_type != "sender_label":
+            raise DocketError(
+                code="sender_identity_required",
+                message="Associated emails require a sender-label IdentityHandle.",
+                details={"identity_ref": sender.ref_id},
+            )
+        email = self._identity_handle(email_ref)
+        if email.handle_type != "email" or email.status not in {"unbound", "bound"}:
+            raise DocketError(
+                code="active_email_identity_required",
+                message="A sender association requires an active exact email IdentityHandle.",
+                details={
+                    "identity_ref": email.ref_id,
+                    "handle_type": email.handle_type,
+                    "status": email.status,
+                },
+            )
+        active = self.session.scalar(
+            select(SenderIdentityEmail).where(
+                SenderIdentityEmail.email_identity_handle_id == email.id,
+                SenderIdentityEmail.status == "active",
+            )
+        )
+        if active is not None:
+            if active.sender_identity_handle_id == sender.id:
+                return email.ref_id
+            conflicting_sender_ref = self.session.scalar(
+                select(IdentityHandle.ref_id).where(
+                    IdentityHandle.id == active.sender_identity_handle_id
+                )
+            )
+            raise DocketError(
+                code="sender_email_association_conflict",
+                message="The exact email is already associated with another sender handle.",
+                details={
+                    "email_identity_ref": email.ref_id,
+                    "sender_identity_ref": conflicting_sender_ref,
+                },
+            )
+        association = self.session.scalar(
+            select(SenderIdentityEmail).where(
+                SenderIdentityEmail.sender_identity_handle_id == sender.id,
+                SenderIdentityEmail.email_identity_handle_id == email.id,
+            )
+        )
+        source_refs = list(
+            dict.fromkeys(
+                [
+                    *self._provenance(changeset, change)["source_refs"],
+                    *email.source_refs,
+                ]
+            )
+        )
+        if association is None:
+            association = SenderIdentityEmail(
+                sender_identity_handle_id=sender.id,
+                email_identity_handle_id=email.id,
+                status="active",
+                basis_refs=list(change.basis_refs),
+                source_refs=source_refs,
+                created_by_changeset_ref=changeset.ref_id,
+            )
+            self.session.add(association)
+        else:
+            association.status = "active"
+            association.valid_from = utc_now()
+            association.valid_to = None
+            association.basis_refs = list(change.basis_refs)
+            association.source_refs = source_refs
+            association.created_by_changeset_ref = changeset.ref_id
+        return email.ref_id
+
+    def _remove_sender_email(
+        self,
+        *,
+        sender: IdentityHandle,
+        email_ref: str,
+        retract: bool,
+    ) -> str:
+        email = self._identity_handle(email_ref)
+        association = self.session.scalar(
+            select(SenderIdentityEmail).where(
+                SenderIdentityEmail.sender_identity_handle_id == sender.id,
+                SenderIdentityEmail.email_identity_handle_id == email.id,
+                SenderIdentityEmail.status == "active",
+            )
+        )
+        if association is None:
+            raise DocketError(
+                code="sender_email_association_not_found",
+                message="The sender handle has no active association to that email.",
+                details={
+                    "sender_identity_ref": sender.ref_id,
+                    "email_identity_ref": email.ref_id,
+                },
+            )
+        association.status = "retracted" if retract else "historical"
+        association.valid_to = utc_now()
+        return email.ref_id
 
     def _audit(
         self,
@@ -144,9 +261,7 @@ class RegistryService:
             person_profile.is_operator = spec.is_operator
         elif spec.entity_kind in {"organization", "institution"}:
             parent = (
-                self._entity(spec.parent_entity_ref)
-                if spec.parent_entity_ref is not None
-                else None
+                self._entity(spec.parent_entity_ref) if spec.parent_entity_ref is not None else None
             )
             if parent is not None and parent.entity_class not in {
                 "organization",
@@ -155,8 +270,7 @@ class RegistryService:
                 raise DocketError(
                     code="invalid_institutional_parent",
                     message=(
-                        "Institutional hierarchy parents must be Organizations "
-                        "or Institutions."
+                        "Institutional hierarchy parents must be Organizations or Institutions."
                     ),
                 )
             organization_profile = self.session.get(OrganizationProfile, entity.id)
@@ -303,6 +417,15 @@ class RegistryService:
                 )
             )
             if existing is not None:
+                if spec.ref_id is not None and spec.ref_id != existing.ref_id:
+                    raise DocketError(
+                        code="planned_ref_identity_conflict",
+                        message="The planned IdentityHandle ref conflicts with an exact handle.",
+                        details={
+                            "existing_ref": existing.ref_id,
+                            "planned_ref": spec.ref_id,
+                        },
+                    )
                 if spec.entity_ref is not None and (
                     existing.entity_id is None
                     or self._entity(spec.entity_ref).id != existing.entity_id
@@ -312,11 +435,33 @@ class RegistryService:
                         message="IdentityHandle already exists with another binding state.",
                         details={"identity_ref": existing.ref_id},
                     )
+                if spec.associated_email_refs:
+                    active_email_ids = set(
+                        self.session.scalars(
+                            select(SenderIdentityEmail.email_identity_handle_id).where(
+                                SenderIdentityEmail.sender_identity_handle_id == existing.id,
+                                SenderIdentityEmail.status == "active",
+                            )
+                        )
+                    )
+                    requested_email_ids = {
+                        self._identity_handle(ref_id).id for ref_id in spec.associated_email_refs
+                    }
+                    if not requested_email_ids.issubset(active_email_ids):
+                        raise DocketError(
+                            code="identity_handle_exists_requires_update",
+                            message=(
+                                "Add new sender email associations by updating the exact "
+                                "existing sender handle."
+                            ),
+                            details={"identity_ref": existing.ref_id},
+                        )
                 return [existing.ref_id]
             entity = self._entity(spec.entity_ref) if spec.entity_ref is not None else None
-            provenance = self._provenance(
-                changeset, change, extra_sources=list(spec.source_refs)
-            )
+            provenance = self._provenance(changeset, change, extra_sources=list(spec.source_refs))
+            handle_values: dict[str, Any] = {}
+            if spec.ref_id is not None:
+                handle_values["ref_id"] = spec.ref_id
             handle = IdentityHandle(
                 handle_type=spec.handle_type.casefold(),
                 value=spec.value,
@@ -326,6 +471,7 @@ class RegistryService:
                 binding_basis_refs=list(change.basis_refs) if entity is not None else [],
                 status="bound" if entity is not None else "unbound",
                 **provenance,
+                **handle_values,
             )
             self.session.add(handle)
             self.session.flush()
@@ -339,20 +485,69 @@ class RegistryService:
                         **self._provenance(changeset, change),
                     )
                 )
+            affected_refs = [handle.ref_id]
+            for email_ref in spec.associated_email_refs:
+                affected_refs.append(
+                    self._add_sender_email(
+                        sender=handle,
+                        email_ref=email_ref,
+                        changeset=changeset,
+                        change=change,
+                    )
+                )
         else:
             if change.object_ref is None:
                 raise DocketError(
                     code="identity_ref_required", message="Identity mutation requires a ref."
                 )
-            stored_handle = self.session.scalar(
-                select(IdentityHandle).where(IdentityHandle.ref_id == change.object_ref)
-            )
-            if stored_handle is None:
-                raise DocketError(
-                    code="identity_handle_not_found", message="IdentityHandle was not found."
-                )
-            handle = stored_handle
+            handle = self._identity_handle(change.object_ref)
+            affected_refs = [handle.ref_id]
+            if change.action in {"update", "supersede"}:
+                if handle.handle_type != "sender_label":
+                    raise DocketError(
+                        code="unsupported_identity_action",
+                        message="Only sender-label handles support association updates.",
+                    )
+                allowed = {"add_associated_email_ref", "remove_associated_email_ref"}
+                unknown = set(change.payload) - allowed
+                if unknown or len(change.payload) != 1:
+                    raise DocketError(
+                        code="invalid_sender_identity_patch",
+                        message=(
+                            "Sender identity updates add or remove exactly one email association."
+                        ),
+                        details={"fields": sorted(set(change.payload))},
+                    )
+                add_ref = change.payload.get("add_associated_email_ref")
+                remove_ref = change.payload.get("remove_associated_email_ref")
+                if isinstance(add_ref, str):
+                    affected_refs.append(
+                        self._add_sender_email(
+                            sender=handle,
+                            email_ref=add_ref,
+                            changeset=changeset,
+                            change=change,
+                        )
+                    )
+                elif isinstance(remove_ref, str):
+                    affected_refs.append(
+                        self._remove_sender_email(
+                            sender=handle,
+                            email_ref=remove_ref,
+                            retract=change.action == "supersede",
+                        )
+                    )
+                else:
+                    raise DocketError(
+                        code="invalid_sender_identity_patch",
+                        message="Sender email association requires an exact IdentityHandle ref.",
+                    )
             if change.action == "bind":
+                if handle.handle_type == "sender_label":
+                    raise DocketError(
+                        code="sender_identity_entity_binding_forbidden",
+                        message="A sender-label index cannot bind directly to an Entity.",
+                    )
                 entity_ref = str(change.payload.get("entity_ref", ""))
                 entity = self._entity(entity_ref)
                 binding_rule = str(change.payload.get("binding_rule", ""))
@@ -404,25 +599,32 @@ class RegistryService:
                         IdentityBinding.status == "active",
                     )
                 ):
-                    active.status = (
-                        "retracted" if change.action == "retract" else "historical"
-                    )
+                    active.status = "retracted" if change.action == "retract" else "historical"
                     active.valid_to = utc_now()
                 handle.status = "retracted" if change.action == "retract" else "unbound"
                 handle.entity_id = None
                 handle.binding_rule = None
                 handle.binding_basis_refs = []
-            else:
-                raise DocketError(
-                    code="unsupported_identity_action", message="Unsupported action."
-                )
+                if handle.handle_type == "sender_label":
+                    for association in self.session.scalars(
+                        select(SenderIdentityEmail).where(
+                            SenderIdentityEmail.sender_identity_handle_id == handle.id,
+                            SenderIdentityEmail.status == "active",
+                        )
+                    ):
+                        association.status = (
+                            "retracted" if change.action == "retract" else "historical"
+                        )
+                        association.valid_to = utc_now()
+            elif change.action not in {"update", "supersede"}:
+                raise DocketError(code="unsupported_identity_action", message="Unsupported action.")
             handle.version += 1
         self._audit(
             event_type="identity_handle.changed",
             item=handle,
             changeset=changeset,
             change=change,
-            affected_refs=[handle.ref_id],
+            affected_refs=affected_refs,
         )
         return [handle.ref_id]
 
@@ -598,9 +800,7 @@ class RegistryService:
             place_entity_id=place.id if place is not None else None,
             organization_refs=list(spec.organization_refs),
             status="active",
-            **self._provenance(
-                changeset, change, extra_sources=list(spec.source_refs)
-            ),
+            **self._provenance(changeset, change, extra_sources=list(spec.source_refs)),
         )
         self.session.add(interaction)
         self.session.flush()

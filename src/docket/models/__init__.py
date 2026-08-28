@@ -80,6 +80,7 @@ from docket.models.registry import (
     PersonProfile,
     ProvenanceSource,
     Relationship,
+    SenderIdentityEmail,
 )
 
 __all__ = [
@@ -151,6 +152,7 @@ __all__ = [
     "RuntimeLogEntry",
     "ScheduledNotification",
     "SemanticCandidate",
+    "SenderIdentityEmail",
     "SourceItem",
     "StatementRelation",
     "ToolInvocation",

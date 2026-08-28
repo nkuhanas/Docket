@@ -9,6 +9,7 @@ from docket.schemas.authority import PublicRef, StrictModel
 
 EntityRef = Annotated[str, Field(pattern=r"^ent_[0-9A-HJKMNP-TV-Z]{26}$")]
 EventRef = Annotated[str, Field(pattern=r"^evt_[0-9A-HJKMNP-TV-Z]{26}$")]
+IdentityRef = Annotated[str, Field(pattern=r"^idn_[0-9A-HJKMNP-TV-Z]{26}$")]
 
 
 class EntityCreateSpec(StrictModel):
@@ -47,22 +48,33 @@ class EntityCreateSpec(StrictModel):
 
 
 class IdentityHandleCreateSpec(StrictModel):
+    ref_id: IdentityRef | None = None
     handle_type: str = Field(min_length=1, max_length=64)
     value: str = Field(min_length=1, max_length=1024)
     entity_ref: EntityRef | None = None
-    binding_rule: Literal[
-        "exact_identity_handle",
-        "operator_alias",
-        "provider_authoritative",
-        "explicit_entity_ref",
-        "operator_selection",
-    ] | None = None
+    binding_rule: (
+        Literal[
+            "exact_identity_handle",
+            "operator_alias",
+            "provider_authoritative",
+            "explicit_entity_ref",
+            "operator_selection",
+        ]
+        | None
+    ) = None
     source_refs: list[PublicRef] = Field(default_factory=list, max_length=25)
+    associated_email_refs: list[IdentityRef] = Field(default_factory=list, max_length=25)
 
     @model_validator(mode="after")
     def binding_is_complete(self) -> IdentityHandleCreateSpec:
         if (self.entity_ref is None) != (self.binding_rule is None):
             raise ValueError("entity_ref and binding_rule must be supplied together")
+        if self.handle_type == "sender_label" and self.entity_ref is not None:
+            raise ValueError("sender_label is an index handle and cannot bind an Entity")
+        if self.handle_type != "sender_label" and self.associated_email_refs:
+            raise ValueError("associated_email_refs require a sender_label handle")
+        if len(self.associated_email_refs) != len(set(self.associated_email_refs)):
+            raise ValueError("associated_email_refs must not contain duplicates")
         return self
 
 
@@ -137,9 +149,7 @@ class InteractionCreateSpec(StrictModel):
     occurred_at: datetime
     ended_at: datetime | None = None
     summary: str = Field(min_length=1, max_length=4000)
-    participants: list[InteractionParticipantInput] = Field(
-        min_length=1, max_length=100
-    )
+    participants: list[InteractionParticipantInput] = Field(min_length=1, max_length=100)
     organization_refs: list[EntityRef] = Field(default_factory=list, max_length=25)
     event_ref: EventRef | None = None
     place_ref: EntityRef | None = None
@@ -155,8 +165,7 @@ class InteractionCreateSpec(StrictModel):
     @model_validator(mode="after")
     def interaction_is_valid(self) -> InteractionCreateSpec:
         participant_keys = [
-            (participant.entity_ref, participant.role)
-            for participant in self.participants
+            (participant.entity_ref, participant.role) for participant in self.participants
         ]
         if len(participant_keys) != len(set(participant_keys)):
             raise ValueError("interaction participants must be unique by entity and role")
