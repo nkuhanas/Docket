@@ -28,6 +28,9 @@ Start here when operating or changing the deployed stack:
 * [Entity-registry hardening verification](entity-registry-verification.md) —
   validated profiles, bounded inference, relationship lifecycle, idempotent
   writes, and deployed MCP evidence.
+* [Calendar lane verification](calendar-lanes-verification.md) — five-lane
+  provisioning, OAuth and provider evidence, cross-lane sync, and the explicit
+  historical-migration boundary.
 * [Production Calendar write-gate verification](calendar-write-gate-verification.md)
   — fail-closed production writes, paused execution, stale rejection, and the
   deployed pending-card state.
