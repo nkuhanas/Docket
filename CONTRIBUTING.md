@@ -7,8 +7,10 @@ it does not receive production credentials or mutate the live stack.
 ## Change workflow
 
 1. Create a short-lived branch from `main`.
-2. Keep the private implementation specifications outside Git. Files matching
-   `spec-*.md`, `.env`, `secrets/local/`, and `.runtime/` must remain untracked.
+2. Keep private implementation provenance outside Git: versioned specifications
+   belong under `specs/`, and dated change handoffs belong under `deltas/`.
+   Both directories, along with `.env`, `secrets/local/`, and `.runtime/`, must
+   remain untracked; do not place specifications or deltas under `docs/`.
 3. Run `scripts/docket check`.
 4. Run `scripts/docket compose-smoke` for changes to migrations, dependencies,
    Compose, health, MCP, authentication, or tool schemas.

@@ -9,11 +9,13 @@ deletion. The system also provides typed standalone Calendar proposals,
 immutable previews, authenticated one-time approvals, durable operations and
 attempts, a bounded Calendar read model, unified Google/Discord reminders,
 daily-thread cards, system logs, redacted MCP traces, and Hermes integration.
-Detailed implementation specifications are maintained privately and excluded
-from Git. Calendar lookups resolve `today` and `tomorrow` inside Docket's
-configured timezone, so Hermes does not need terminal access to derive
-local-day bounds. Standalone Calendar events also inherit that configured
-timezone when the operator omits one; an explicit IANA timezone always wins.
+Detailed implementation specifications and delta handoffs are maintained
+privately in the ignored top-level `specs/` and `deltas/` provenance
+directories and excluded from Git. Calendar lookups resolve `today` and
+`tomorrow` inside Docket's configured timezone, so Hermes does not need terminal
+access to derive local-day bounds. Standalone Calendar events also inherit that
+configured timezone when the operator omits one; an explicit IANA timezone
+always wins.
 
 ## Operational documentation
 

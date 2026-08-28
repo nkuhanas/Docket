@@ -17,6 +17,7 @@ secrets/local/*
 secrets/restore/*
 !secrets/restore/README.md
 *.log
-spec-*.md
 /specs/
-/docs/docket-ontology-delta-*.md
+/deltas/*
+!/deltas/docket-ontology-readiness-status-08-27-2026.yaml
+!/deltas/docket-ontology-traceability-08-27-2026.csv
