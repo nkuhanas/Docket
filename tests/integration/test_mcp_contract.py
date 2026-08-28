@@ -208,6 +208,16 @@ async def test_public_tools_and_active_template_allowlist_move_together() -> Non
     assert lookup_properties["relative_day"]["anyOf"][0]["enum"] == ["today", "tomorrow"]
     assert lookup_properties["limit"]["maximum"] == 100
 
+    lane_move_description = " ".join(
+        (tools["docket_migrate_calendar_events"].description or "").split()
+    )
+    assert "queues the immutable items directly" in lane_move_description
+    assert "no approval proposal is created" in lane_move_description
+    lane_delete_description = " ".join(
+        (tools["docket_delete_calendar_lane"].description or "").split()
+    )
+    assert "does not create an approval proposal" in lane_delete_description
+
     calendar_proposal_definitions = tools["docket_apply_calendar_intent"].inputSchema["$defs"]
     calendar_proposal_description = " ".join(
         (tools["docket_apply_calendar_intent"].description or "").split()

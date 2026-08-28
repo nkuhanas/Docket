@@ -1,12 +1,11 @@
 import uuid
-from datetime import UTC, datetime
 
 import httpx
 
 from docket.config import get_settings
-from docket.internal_api.schemas import ApprovalResponse
 from docket.models import (
     Account,
+    Approval,
     AuditEvent,
     CalendarLane,
     CalendarLink,
@@ -29,7 +28,6 @@ from docket.schemas.calendar import (
     MigrateCalendarLaneEventsInput,
 )
 from docket.schemas.records import DiscordSourceMetadata, RecordSourceInput
-from docket.services.approvals import ApprovalService
 from docket.services.calendar_lanes import CalendarLaneService
 from docket.services.operations import OperationRunner
 
@@ -55,26 +53,6 @@ def _request_key(message_id: str, intent_index: int = 0) -> str:
         f"discord:{settings.discord_guild_id}:{settings.chat_channel_id}:"
         f"{message_id}:{intent_index}"
     )
-
-
-def _approve(session, proposal: dict[str, object], interaction_id: str) -> uuid.UUID:
-    settings = get_settings()
-    result = ApprovalService(session).respond(
-        ApprovalResponse(
-            request_id=uuid.uuid4(),
-            discord_interaction_id=interaction_id,
-            approval_id=None,
-            approval_token=None,
-            short_code=str(proposal["short_code"]),
-            decision="approve",
-            discord_user_id=settings.operator_discord_user_id,
-            guild_id=settings.discord_guild_id,
-            channel_id=settings.queue_channel_id,
-            message_id="000000000000000099",
-            responded_at=datetime.now(UTC),
-        )
-    )
-    return uuid.UUID(str(result["operation_id"]))
 
 
 class _UnknownAfterLaneCreate(FakeCalendarProvider):
@@ -277,7 +255,7 @@ def test_google_event_move_and_empty_lane_delete_use_narrow_provider_calls(monke
     }
 
 
-def test_custom_lane_event_migration_and_empty_lane_deletion_are_durable(
+def test_explicit_lane_event_migration_and_empty_lane_deletion_execute_directly(
     session, session_factory
 ) -> None:
     settings = get_settings()
@@ -379,7 +357,9 @@ def test_custom_lane_event_migration_and_empty_lane_deletion_are_durable(
             actor_id=settings.operator_discord_user_id,
         )
     )
-    operation_id = _approve(session, proposal, "lane-move-approve")
+    assert proposal["disposition"] == "execution_queued"
+    operation_id = uuid.UUID(str(proposal["operation_id"]))
+    assert session.query(Approval).count() == 0
     session.commit()
     assert runner.run_due_once()
     session.expire_all()
@@ -416,7 +396,9 @@ def test_custom_lane_event_migration_and_empty_lane_deletion_are_durable(
             actor_id=settings.operator_discord_user_id,
         )
     )
-    delete_operation_id = _approve(session, deletion, "lane-delete-approve")
+    assert deletion["disposition"] == "execution_queued"
+    delete_operation_id = uuid.UUID(str(deletion["operation_id"]))
+    assert session.query(Approval).count() == 0
     session.commit()
     assert runner.run_due_once()
     session.expire_all()

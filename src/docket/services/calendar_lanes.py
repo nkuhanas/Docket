@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import timedelta
 from typing import Final
 
 from sqlalchemy import or_, select
@@ -13,10 +12,8 @@ from docket.config import Settings
 from docket.domain.canonical import sha256_json
 from docket.domain.enums import (
     ActionStatus,
-    ApprovalStatus,
     CommandStatus,
     OperationStatus,
-    OutboxStatus,
     QueueItemStatus,
 )
 from docket.domain.errors import DocketError, IdempotencyConflict, VersionConflict
@@ -24,14 +21,13 @@ from docket.models import (
     Account,
     Action,
     ActionRevision,
-    Approval,
     AuditEvent,
     CalendarEventCache,
     CalendarLane,
     CalendarLink,
     CommandRequest,
     Operation,
-    OutboxEvent,
+    OperationItem,
     ProviderEventBinding,
     QueueItem,
 )
@@ -44,14 +40,8 @@ from docket.schemas.calendar import (
     DeleteCalendarLaneInput,
     MigrateCalendarLaneEventsInput,
 )
-from docket.security import (
-    issue_approval_token,
-    issue_short_code,
-    short_code_sha256,
-)
 from docket.services.operation_materialization import operation_idempotency_key
 from docket.services.operational_logs import enqueue_action_system_log
-from docket.services.queue import queue_projection_date
 from docket.services.source_context import validate_configured_discord_source
 
 
@@ -582,7 +572,7 @@ class CalendarLaneService:
             "items": previews,
             "reason": request.reason,
         }
-        return self._create_proposal(
+        return self._queue_explicit_execution(
             command=command,
             request=request,
             account=account,
@@ -678,7 +668,7 @@ class CalendarLaneService:
             "effect": "Permanently delete this empty Google Calendar lane.",
             "reason": request.reason,
         }
-        return self._create_proposal(
+        return self._queue_explicit_execution(
             command=command,
             request=request,
             account=account,
@@ -726,7 +716,7 @@ class CalendarLaneService:
         self.session.flush()
         return command, None
 
-    def _create_proposal(
+    def _queue_explicit_execution(
         self,
         *,
         command: CommandRequest,
@@ -747,9 +737,9 @@ class CalendarLaneService:
             category=category,
             title=title[:512],
             summary=summary[:2000],
-            status=QueueItemStatus.AWAITING_APPROVAL.value,
+            status=QueueItemStatus.EXECUTING.value,
             priority="normal",
-            presentation="proposal",
+            presentation="suppressed",
             received_at=now,
         )
         self.session.add(queue_item)
@@ -757,7 +747,7 @@ class CalendarLaneService:
         action = Action(
             queue_item_id=queue_item.id,
             action_type=action_type,
-            status=ActionStatus.APPROVAL_PENDING.value,
+            status=ActionStatus.READY.value,
             current_revision=1,
         )
         self.session.add(action)
@@ -783,46 +773,51 @@ class CalendarLaneService:
         )
         self.session.add(revision)
         self.session.flush()
-        expires_at = now + timedelta(seconds=self.settings.approval_ttl_seconds)
-        approval_id = uuid.uuid4()
-        signing_key = self.settings.read_secret(self.settings.interaction_signing_key_file).encode()
-        short_code = issue_short_code(approval_id, expires_at, signing_key)
-        approval_token = issue_approval_token(approval_id, expires_at, signing_key)
-        approval = Approval(
-            id=approval_id,
+        operation_id = uuid.uuid4()
+        operation = Operation(
+            id=operation_id,
             action_revision_id=revision.id,
-            status=ApprovalStatus.PENDING.value,
-            short_code_sha256=short_code_sha256(short_code),
-            authorized_user_id=self.settings.operator_discord_user_id,
-            requested_at=now,
-            expires_at=expires_at,
+            approval_id=None,
+            idempotency_key=operation_idempotency_key(revision),
+            operation_type=revision.action_type,
+            account_id=account.id,
+            status=OperationStatus.PENDING.value,
+            provider_correlation=str(operation_id),
+            next_attempt_at=now,
         )
-        self.session.add(approval)
-        self.session.add(
-            OutboxEvent(
-                event_type="discord.projection.requested",
-                aggregate_type="queue_item",
-                aggregate_id=queue_item.id,
-                deduplication_key=f"discord_projection:{queue_item.id}:1",
-                payload={
-                    "queue_item_id": str(queue_item.id),
-                    "action_id": str(action.id),
-                    "action_revision_id": str(revision.id),
-                    "approval_id": str(approval.id),
-                    "approval_token": approval_token,
-                    "short_code": short_code,
-                    "expires_at": expires_at.isoformat(),
-                    "preview": preview,
-                    "target_local_date": queue_projection_date(
-                        queue_item, self.settings
-                    ).isoformat(),
-                },
-                status=OutboxStatus.PENDING.value,
-            )
-        )
+        self.session.add(operation)
+        self.session.flush()
+        manifest = parameters.get("items")
+        if isinstance(manifest, list):
+            for raw_item in manifest:
+                if not isinstance(raw_item, dict):
+                    raise DocketError(
+                        code="invalid_action_state",
+                        message="The Calendar lane action contains an invalid operation item.",
+                    )
+                item_key = str(raw_item["item_key"])
+                item_type = str(raw_item["operation_type"])
+                item_parameters = dict(raw_item["parameters"])
+                item_parameters["operation_type"] = item_type
+                item_parameters_sha256 = sha256_json(item_parameters)
+                self.session.add(
+                    OperationItem(
+                        operation_id=operation.id,
+                        item_key=item_key,
+                        item_type=item_type,
+                        idempotency_key=(
+                            f"calendar:batch-item:{operation.id}:"
+                            f"{item_key}:{item_parameters_sha256}"
+                        ),
+                        parameters=item_parameters,
+                        parameters_sha256=item_parameters_sha256,
+                        status="pending",
+                        next_attempt_at=now,
+                    )
+                )
         self.session.add(
             AuditEvent(
-                event_type="action.proposed",
+                event_type="action.execution_queued",
                 entity_type="action",
                 entity_id=action.id,
                 actor_type=request.actor_type,
@@ -830,7 +825,9 @@ class CalendarLaneService:
                 request_id=command.id,
                 data={
                     "action_type": action_type,
+                    "authority": "explicit_user",
                     "revision": 1,
+                    "operation_id": str(operation.id),
                     "risk_class": revision.risk_class,
                     "parameters_sha256": revision.parameters_sha256,
                     "preview_sha256": revision.preview_sha256,
@@ -838,17 +835,21 @@ class CalendarLaneService:
                 },
             )
         )
+        enqueue_action_system_log(
+            self.session,
+            action=action,
+            revision=revision,
+            state="queued",
+        )
         result: dict[str, object] = {
             "request_id": str(command.id),
-            "disposition": "proposed",
+            "disposition": "execution_queued",
             "queue_item_id": str(queue_item.id),
             "action_id": str(action.id),
             "action_revision_id": str(revision.id),
-            "approval_id": str(approval.id),
-            "short_code": short_code,
-            "expires_at": expires_at.isoformat(),
+            "operation_id": str(operation.id),
+            "operation_status": "pending",
             "preview": preview,
-            "projection_status": "pending",
         }
         command.status = CommandStatus.SUCCEEDED.value
         command.result = result

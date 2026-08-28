@@ -8,6 +8,7 @@ def test_manual_intent_skill_requires_authority_aware_execution_guidance() -> No
     skill = " ".join(SKILL_PATH.read_text(encoding="utf-8").split())
 
     assert "execute directly" in skill
+    assert "queues execution without an approval card" in skill
     assert "A conflict may instead return a resolution card" in skill
     assert "operator-runbook-only break-glass mechanism" in skill
     assert "intentionally absent from the model-facing proposal result" in skill

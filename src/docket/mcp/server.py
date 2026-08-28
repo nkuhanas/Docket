@@ -921,14 +921,14 @@ def docket_migrate_calendar_events(
     source: RecordSourceInput,
     actor_id: DiscordId,
 ) -> dict[str, Any]:
-    """Propose moving selected Calendar events or recurring series between lanes.
+    """Execute an explicit move of selected Calendar events or recurring series.
 
     Use this only for the operator's current explicit request. Resolve the event from
     a ``require_fresh`` Docket Calendar read, pass its provider ID, and use
-    ``scope=series`` for recurring events. Docket creates one approval card and executes
-    the immutable items durably; it updates its provider bindings only after Google
-    confirms each move. Ambiguous events must remain unmoved until the operator clarifies
-    them.
+    ``scope=series`` for recurring events. This trusted operator command queues the
+    immutable items directly; no approval proposal is created. Docket updates its provider
+    bindings only after Google confirms each move. Ambiguous events must remain unmoved
+    until the operator clarifies them.
     """
     try:
         request = MigrateCalendarLaneEventsInput(
@@ -945,7 +945,7 @@ def docket_migrate_calendar_events(
         )
         with session_scope() as session:
             result = CalendarLaneService(session, get_settings()).migrate_events(request)
-        return {"ok": True, **{key: value for key, value in result.items() if key != "short_code"}}
+        return {"ok": True, **result}
     except Exception as exc:
         return _error(exc)
 
@@ -960,13 +960,13 @@ def docket_delete_calendar_lane(
     source: RecordSourceInput,
     actor_id: DiscordId,
 ) -> dict[str, Any]:
-    """Propose deleting one empty custom or non-fallback Calendar lane.
+    """Execute an explicit deletion of one empty non-fallback Calendar lane.
 
-    This destructive action requires the operator's current explicit instruction and a
-    Discord approval card. Read lanes first and supply the current version. Docket refuses
-    to formulate deletion while it knows of active events, refuses to delete ``unsorted``,
-    and asks Google to verify the calendar is truly empty before deletion. Move or cancel
-    remaining events first.
+    This action requires the operator's current explicit instruction but does not create an
+    approval proposal. Read lanes first and supply the current version. Docket refuses the
+    command while it knows of active events, refuses to delete ``unsorted``, and asks Google
+    to verify the calendar is truly empty before deletion. Move or cancel remaining events
+    first.
     """
     try:
         request = DeleteCalendarLaneInput(
@@ -980,7 +980,7 @@ def docket_delete_calendar_lane(
         )
         with session_scope() as session:
             result = CalendarLaneService(session, get_settings()).delete_lane(request)
-        return {"ok": True, **{key: value for key, value in result.items() if key != "short_code"}}
+        return {"ok": True, **result}
     except Exception as exc:
         return _error(exc)
 

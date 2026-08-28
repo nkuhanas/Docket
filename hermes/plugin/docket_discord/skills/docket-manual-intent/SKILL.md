@@ -298,16 +298,18 @@ events yourself with `freshness="require_fresh"`, then call
 `docket_migrate_calendar_events` with the immutable provider identities and
 event types returned by Docket. Use `scope="series"` for recurring events. Group
 up to 50 unambiguous events with the same source and destination inside one
-proposal; leave ambiguous matches in place and explain what needs clarification.
-A successful tool call only publishes the approval card. Do not claim that
-Google or Docket bindings changed until `docket_get_action` reports success.
+direct operation; leave ambiguous matches in place and ask one concise
+clarification question. The tool queues execution without an approval card. Do
+not claim that Google or Docket bindings changed until `docket_get_action`
+reports success.
 
 Use `docket_delete_calendar_lane` only for the current operator's explicit
 deletion request. `unsorted` is permanent. A lane must be empty first: move or
-cancel its events through their normal approval flows, then propose deletion.
-Docket checks known bindings before formulation and Google verifies actual
-emptiness during execution. Never imply that rename/recolor also moves events,
-or that deleting a lane silently deletes its contents.
+cancel its events through their normal explicit-command flows, then call the
+delete tool. Docket queues the explicit deletion without an approval card,
+checks known bindings before execution, and asks Google to verify actual
+emptiness. Never imply that rename/recolor also moves events, or that deleting a
+lane silently deletes its contents.
 
 Create, replace, or disable reminders only through the `reminders`
 discriminator of `docket_apply_calendar_intent`. Read underlying canonical
