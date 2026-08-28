@@ -129,6 +129,25 @@ implementation_rollout:
     active_operations: 0
     pending_outbox: 0
 
+signed_amendments:
+  - document_ref: ONT-DELTA-2026-08-28-CASE-RESOLUTION
+    frozen_artifact_hash: 058788ec6728565b51bbce3e80d51146c52fec0c0364f7599e3877f97d964a05
+    amends: ONT-DELTA-2026-08-27
+    implementation_authority: amendment_scope
+    status: implementation_source_verified_deployment_pending
+    bootstrap_evidence:
+      operator_utterance_ref: utt_01M157G81T7FV6A4V8RQD54Z6G
+      repository_commit: a6f4646
+    signoff_evidence:
+      operator_utterance_ref: utt_01M1587SDFD32NX3VHKB19YRB7
+      decision_ref: dec_01M1587SE1JX3BVQ1QZBQKX6T7
+    implementation_target:
+      migration_head: "0041"
+      plugin_version: 0.20.6
+      interactive_contract_version: docket-tools-2026-08-28-v8
+      interactive_tools: 22
+      triage_tools: 4
+
 historical_record:
   document_ref: ONT-DELTA-2026-08-26
   path: deltas/docket-ontology-delta-08-26-2026.md

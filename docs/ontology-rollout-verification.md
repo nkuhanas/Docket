@@ -18,12 +18,11 @@ The readiness record is
 [`docket-ontology-readiness-status-08-27-2026.yaml`](../deltas/docket-ontology-readiness-status-08-27-2026.yaml).
 No approval or implementation authority is inferred from ordinary design chat.
 
-## Amendment sign-off bootstrap boundary
+## Signed case-resolution amendment
 
-`ONT-DELTA-2026-08-28-CASE-RESOLUTION` is a private candidate amendment frozen
+`ONT-DELTA-2026-08-28-CASE-RESOLUTION` is a private signed amendment frozen
 at SHA-256
 `058788ec6728565b51bbce3e80d51146c52fec0c0364f7599e3877f97d964a05`.
-It has no substantive implementation authority yet.
 
 The Operator authorized only the manifest-bound amendment-signoff bootstrap in
 authenticated utterance `utt_01M157G81T7FV6A4V8RQD54Z6G`. That authority is
@@ -37,13 +36,19 @@ reference, hash, sign-off text, prerequisite Decision, implementation scope,
 and—where required—bootstrap utterance evidence. Unknown or mismatched targets
 fail closed. The August 27 sign-off remains unchanged and readable.
 
-After this bootstrap is deployed and operationally verified, the amendment
-still requires a separate authenticated Operator sign-off and resulting
-`specification_signoff` Decision before substantive implementation may begin.
+After that bootstrap was deployed, the Operator issued final authenticated
+sign-off as `utt_01M1587SDFD32NX3VHKB19YRB7`; Docket created ledger-backed
+`specification_signoff` Decision `dec_01M1587SE1JX3BVQ1QZBQKX6T7`. That Decision
+authorizes only the amendment scope. It does not reopen or replace the August 27
+architecture.
+
+The implementation preserves the 22-tool interactive and four-tool triage
+profiles. It introduces no direct case-mutation tool and no additional triage or
+provider authority.
 
 ## Implemented persistence sequence
 
-The migration sequence is additive through `0039`:
+The migration sequence is additive through `0041`:
 
 1. `0028`–`0029`: immutable utterances, final assembled responses, Decisions,
    tool calls, runtime/audit provenance, public refs, and inspection routes.
@@ -73,6 +78,12 @@ The migration sequence is additive through `0039`:
     Exact Gmail addresses remain the deterministic match key; the label groups
     addresses and owns structured Preference policy without implying a Person
     or Organization.
+12. `0040`: AttentionCase revisions receive typed `caserev_` identities with
+    durable legacy `case_` aliases; stored reply/projection bindings migrate to
+    the typed ref. CaseItems gain explicit required/supporting roles,
+    `legacy_unspecified` migration honesty, and `not_pursued` closure state.
+13. `0041`: ToolInvocations retain bounded result disposition while Discord MCP
+    traces separately represent transport and reconciled durable domain outcome.
 
 Legacy event and lane backfills are labeled `legacy_preledger` and carry a
 typed external provenance source. New canonical objects are `complete` and
@@ -123,6 +134,21 @@ Automated acceptance is organized in these suites:
 | Output byte envelope | `tests/integration/test_mcp_output_envelope.py` |
 | Migration upgrade/downgrade | `tests/integration/test_migrations.py` plus the PostgreSQL rehearsal below |
 | Plugin actor/source/response gates | `tests/adversarial/test_plugin_actor_gate.py` |
+
+### Case-resolution amendment traceability
+
+| Requirement | Automated evidence |
+| --- | --- |
+| `ONT-CASE-REQ-0001` | `test_case_resolution_migration_types_revision_aliases_and_preserves_bindings`, `test_legacy_case_revision_alias_resolves_to_canonical_typed_ref` |
+| `ONT-CASE-REQ-0002` | `test_interactive_profile_exposes_only_reads_and_changeset_authority` |
+| `ONT-CASE-REQ-0003` | `test_stale_case_revision_returns_compact_current_binding_without_mutation`, `test_case_reply_bootstraps_exact_revision_bound_intent_after_projection` |
+| `ONT-CASE-REQ-0004` | `test_new_attention_case_requires_an_explicit_required_item`, migration checks in `test_initial_migration_upgrades_and_downgrades` |
+| `ONT-CASE-REQ-0005` | `test_partial_resolution_keeps_omitted_required_item_open_with_one_followup` |
+| `ONT-CASE-REQ-0006` | `test_already_applied_resolves_required_item_and_preserves_semantic_knowledge`, `test_explicit_event_rejection_does_not_create_event_or_operation`, `test_legacy_unspecified_item_blocks_terminal_case_closure` |
+| `ONT-CASE-REQ-0007`–`0008` | `test_already_applied_resolves_required_item_and_preserves_semantic_knowledge` |
+| `ONT-TRACE-REQ-0001`–`0002` | `test_mcp_trace_reconciles_authoritative_rejection_and_runtime_failure`, `test_mcp_trace_is_monotonic_redacted_and_projected` |
+| `ONT-TRACE-REQ-0003` | `test_docket_mcp_hooks_emit_only_bounded_trace_metadata` |
+| `ONT-GOV-REQ-0001`–`0003` | `test_manifest_bound_amendment_signoff_requires_bootstrap_and_base_signoff`, `test_amendment_signoff_forwards_exact_binding_only`, `test_exact_final_signoff_is_recorded_before_model_dispatch` |
 
 Current source-gate result on 2026-08-28:
 
