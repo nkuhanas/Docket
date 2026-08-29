@@ -213,8 +213,8 @@ evidence are preserved. `replayed_request` is only a replay of an already termin
 successful/no-op result. A duplicate failed draft remains failed: follow its
 `next.changeset_ref` and `expected_changeset_version`, revise that exact ChangeSet,
 and preserve the returned `semantic_request_ref`. Follow compact public refs; do
-not reproduce raw provenance chains, tool transcripts, or provider payloads in
-chat.
+not include unsolicited history. Do not reproduce raw provenance chains, tool
+transcripts, or provider payloads in chat.
 
 Tool transport completion and Docket domain success are different. Treat a durable
 `call_` with rejected or failed domain state as unsuccessful even when MCP transport

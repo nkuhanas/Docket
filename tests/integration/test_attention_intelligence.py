@@ -1279,7 +1279,7 @@ def test_stale_case_revision_returns_compact_current_binding_without_mutation(
             changeset_ref=None,
             expected_changeset_version=None,
         )
-        assert result == {
+        expected = {
             "ok": False,
             "disposition": "blocked_version",
             "error": {
@@ -1296,6 +1296,10 @@ def test_stale_case_revision_returns_compact_current_binding_without_mutation(
             },
             "next": "read_current_attention_case_and_restate_intent",
         }
+        assert {key: result[key] for key in expected} == expected
+        assert result["semantic_request_ref"].startswith("sreq_")
+        assert len(result["authority_scope_hash"]) == 64
+        assert len(result["precondition_hash"]) == 64
         assert case.status == "open"
         assert case.version == version_before
         assert required.status == "open"
