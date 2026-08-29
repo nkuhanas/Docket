@@ -45,6 +45,7 @@ from docket.services.mcp_traces import McpTraceService
 from docket.services.proposal_controls import ProposalControlService
 from docket.services.provenance import ProvenanceService
 from docket.services.semantic_options import SemanticOptionService
+from docket.services.tool_invocations import ToolInvocationService
 
 logger = structlog.get_logger(__name__)
 
@@ -325,6 +326,10 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
     retry_turn_id = (
         f"semantic-option:{payload.discord_interaction_id}:retry:{payload.request_id}"
     )
+    trace_id = uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"docket:semantic-option-selection:{payload.discord_interaction_id}",
+    )
     if payload.resume_authorized_execution and not selection.get("execution_ready"):
         response_key = (
             f"discord:{payload.guild_id}:{payload.channel_id}:"
@@ -359,6 +364,8 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
                 "response_delivery_state": prior_retry_response.delivery_state,
             }
     execution: dict[str, object]
+    invocation_ref: str | None = None
+    normalized_invocation_arguments: dict[str, object] | None = None
     replayed_execution: dict[str, object] | None = None
     with session_scope() as session:
         existing_request = session.scalar(
@@ -423,8 +430,37 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
                 "disposition": "execution_deferred",
             }
     else:
+        invocation_arguments: dict[str, object] = {
+            "utterance_ref": str(selection["utterance_ref"]),
+            "intent_session_ref": str(selection["intent_session_ref"]),
+            "semantic_request_ref": str(selection["semantic_request_ref"]),
+            "authority_scope_hash": str(selection["authority_scope_hash"]),
+            "precondition_hash": str(selection["precondition_hash"]),
+            "content": selection["compiled_content"],
+        }
+        with session_scope() as session:
+            invocation = ToolInvocationService(session).start_changeset_execution(
+                request_id=payload.request_id,
+                trace_id=trace_id,
+                utterance_ref=str(selection["utterance_ref"]),
+                actor_ref=f"discord_user:{payload.discord_user_id}",
+                intent_session_ref=str(selection["intent_session_ref"]),
+                semantic_request_ref=str(selection["semantic_request_ref"]),
+                case_ref=(
+                    str(selection["case_ref"])
+                    if selection.get("case_ref") is not None
+                    else None
+                ),
+                gateway_instance_ref=payload.gateway_instance_ref,
+                arguments=invocation_arguments,
+            )
+            invocation_ref = invocation.ref_id
         try:
             compiled = ChangeSetContent.model_validate(selection["compiled_content"])
+            normalized_invocation_arguments = {
+                **invocation_arguments,
+                "content": compiled.model_dump(mode="json"),
+            }
             with session_scope() as session:
                 execution = InteractiveAuthorityService(session).process_turn(
                     utterance_ref=str(selection["utterance_ref"]),
@@ -546,6 +582,7 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
                                 case_revision_ref=(
                                     semantic_request.current_case_revision_ref
                                 ),
+                                tool_call_ref=invocation_ref,
                                 gateway_instance_ref=payload.gateway_instance_ref,
                                 state="blocked_validation",
                                 error_code=str(error["code"])[:128],
@@ -557,6 +594,20 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
                         lease_ref,
                         metadata={"disposition": "rejected_validation"},
                     )
+        if invocation_ref is not None:
+            error = execution.get("error")
+            invocation_error_code = (
+                str(error.get("code"))
+                if isinstance(error, dict) and error.get("code") is not None
+                else None
+            )
+            with session_scope() as session:
+                ToolInvocationService(session).finish(
+                    invocation_ref,
+                    normalized_arguments=normalized_invocation_arguments,
+                    result=execution,
+                    error_code=invocation_error_code,
+                )
     disposition = str(execution.get("disposition", "unknown"))
     if execution.get("state") == "committed" or disposition == "replayed_request":
         response_text = f"Done — {selection['visible_choice_text']}"
@@ -573,10 +624,6 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
             f"(`{error_code}`). Your authorization remains available; you do not "
             "need to repeat it."
         )
-    trace_id = uuid.uuid5(
-        uuid.NAMESPACE_URL,
-        f"docket:semantic-option-selection:{payload.discord_interaction_id}",
-    )
     with session_scope() as session:
         response = ProvenanceService(session).capture_agent_response(
             AgentResponseCapture(
@@ -612,6 +659,7 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
                 [
                     *(selection_affected if isinstance(selection_affected, list) else []),
                     *(execution_affected if isinstance(execution_affected, list) else []),
+                    *([invocation_ref] if invocation_ref is not None else []),
                     str(response["ref"]),
                 ]
             )

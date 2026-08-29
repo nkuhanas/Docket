@@ -16,6 +16,7 @@ from docket.models import (
     SemanticRequest,
     SemanticRequestAttempt,
 )
+from docket.models.base import utc_now
 from docket.schemas.authority import (
     ChangeSetCommit,
     ChangeSetContent,
@@ -200,6 +201,7 @@ class InteractiveAuthorityService:
                 authority_scope_hash=authority_scope_hash,
                 precondition_hash=precondition_hash,
                 case_revision_ref=semantic_request.current_case_revision_ref,
+                gateway_instance_ref=gateway_instance_ref,
                 state="pending",
             )
             self.session.add(semantic_attempt)
@@ -405,6 +407,7 @@ class InteractiveAuthorityService:
                 semantic_attempt.error_details_json = {
                     "errors": changeset.validation_errors
                 }
+                semantic_attempt.completed_at = utc_now()
             exact_case_error = next(
                 (
                     error

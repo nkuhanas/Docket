@@ -296,6 +296,16 @@ def test_persisted_selection_compiles_once_and_preserves_exact_authority(
         assert response is not None
         assert response.responds_to_utterance_refs == [selected_utterance_ref]
         assert response.verbatim_text == selection["response_text"]
+        invocation = session.scalar(select(ToolInvocation))
+        attempt = session.scalar(select(SemanticRequestAttempt))
+        assert invocation is not None and attempt is not None
+        assert invocation.tool_name == "docket_commit_changeset"
+        assert invocation.status == "succeeded"
+        assert invocation.domain_state == "succeeded"
+        assert invocation.result_disposition == "committed"
+        assert invocation.semantic_request_ref == semantic_request.ref_id
+        assert attempt.tool_call_ref == invocation.ref_id
+        assert response.tool_call_refs == [invocation.ref_id]
         assert semantic_request.committed_changeset_ref == selection["execution"]["ref"]
         assert session.scalar(select(func.count(ChangeSet.id))) == 1
         assert session.scalar(select(func.count(SemanticRequestAttempt.id))) == 1
@@ -384,6 +394,25 @@ def test_selection_validation_failure_preserves_authority_without_duplicate_atte
         assert semantic_request.authority_availability == "available"
         assert semantic_request.commit_state == "blocked_validation"
         assert session.scalar(select(func.count(SemanticRequestAttempt.id))) == 2
+        invocations = list(
+            session.scalars(select(ToolInvocation).order_by(ToolInvocation.started_at))
+        )
+        attempts = list(
+            session.scalars(
+                select(SemanticRequestAttempt).order_by(
+                    SemanticRequestAttempt.attempt_number
+                )
+            )
+        )
+        assert len(invocations) == 2
+        assert all(item.status == "rejected_validation" for item in invocations)
+        assert all(item.domain_state == "rejected" for item in invocations)
+        assert all(
+            item.result_disposition == "rejected_validation" for item in invocations
+        )
+        assert [item.tool_call_ref for item in attempts] == [
+            item.ref_id for item in invocations
+        ]
         assert session.scalar(select(func.count(OperatorUtterance.id))) == 2
         assert session.scalar(select(func.count(Entity.id))) == 0
 

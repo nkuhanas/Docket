@@ -702,6 +702,8 @@ class SemanticOptionService:
             "utterance_ref": utterance.ref_id,
             "request_key": utterance.request_key,
             "intent_session_ref": option.intent_session_ref,
+            "case_ref": option.case_ref,
+            "case_revision_ref": option.case_revision_ref,
             "semantic_request_ref": semantic_request.ref_id,
             "authority_availability": semantic_request.authority_availability,
             "commit_state": semantic_request.commit_state,
