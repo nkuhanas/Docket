@@ -30,6 +30,20 @@ class OperatorUtterance(Base):
     __tablename__ = "operator_utterances"
     __table_args__ = (
         CheckConstraint("transport IN ('discord')", name="ck_operator_utterances_transport"),
+        CheckConstraint(
+            "utterance_kind IN ('typed_message', 'button_selection', "
+            "'select_selection', 'modal_submission')",
+            name="ck_operator_utterances_kind",
+        ),
+        CheckConstraint(
+            "(utterance_kind NOT IN ('button_selection', 'select_selection')) OR "
+            "(selected_option_id IS NOT NULL AND visible_choice_text IS NOT NULL AND "
+            "authority_scope_hash IS NOT NULL AND selected_precondition_hash IS NOT NULL "
+            "AND prompt_projection_ref IS NOT NULL AND "
+            "prompt_projection_version IS NOT NULL AND intent_session_ref IS NOT NULL "
+            "AND discord_interaction_ref IS NOT NULL)",
+            name="ck_operator_utterances_selection_binding",
+        ),
         UniqueConstraint(
             "transport",
             "source_message_ref",
@@ -56,6 +70,21 @@ class OperatorUtterance(Base):
     request_key: Mapped[str] = mapped_column(String(512), unique=True, nullable=False)
     source_record_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("records.id", ondelete="SET NULL")
+    )
+    utterance_kind: Mapped[str] = mapped_column(
+        String(32), default="typed_message", nullable=False
+    )
+    selected_option_id: Mapped[str | None] = mapped_column(String(128))
+    visible_choice_text: Mapped[str | None] = mapped_column(Text)
+    authority_scope_hash: Mapped[str | None] = mapped_column(String(64))
+    selected_precondition_hash: Mapped[str | None] = mapped_column(String(64))
+    prompt_projection_ref: Mapped[str | None] = mapped_column(String(40))
+    prompt_projection_version: Mapped[int | None] = mapped_column(Integer)
+    case_ref: Mapped[str | None] = mapped_column(String(40))
+    case_revision_ref: Mapped[str | None] = mapped_column(String(40))
+    intent_session_ref: Mapped[str | None] = mapped_column(String(40))
+    discord_interaction_ref: Mapped[str | None] = mapped_column(
+        String(255), unique=True
     )
 
 
@@ -94,6 +123,7 @@ class AgentResponse(Base):
     projection_ref: Mapped[str] = mapped_column(String(512), unique=True, nullable=False)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     delivery_error_code: Mapped[str | None] = mapped_column(String(128))
+    gateway_instance_ref: Mapped[str | None] = mapped_column(String(40))
 
 
 class AgentResponseProjection(Base):
@@ -219,6 +249,14 @@ class ToolInvocation(Base):
             "'rejected_conflict', 'succeeded', 'failed')",
             name="ck_tool_invocations_status",
         ),
+        CheckConstraint(
+            "transport_state IN ('running', 'completed', 'failed', 'timed_out')",
+            name="ck_tool_invocations_transport_state",
+        ),
+        CheckConstraint(
+            "domain_state IN ('succeeded', 'rejected', 'failed', 'unknown')",
+            name="ck_tool_invocations_domain_state",
+        ),
         UniqueConstraint("trace_id", "trace_call_id", name="uq_tool_invocations_trace_call"),
         Index("ix_tool_invocations_name_started", "tool_name", "started_at"),
         Index("ix_tool_invocations_trace", "trace_id", "trace_ordinal"),
@@ -247,6 +285,14 @@ class ToolInvocation(Base):
     normalized_argument_hash: Mapped[str | None] = mapped_column(String(64))
     result_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     result_disposition: Mapped[str | None] = mapped_column(String(64))
+    transport_state: Mapped[str] = mapped_column(
+        String(16), default="running", nullable=False
+    )
+    domain_state: Mapped[str] = mapped_column(
+        String(16), default="unknown", nullable=False
+    )
+    semantic_request_ref: Mapped[str | None] = mapped_column(String(40))
+    gateway_instance_ref: Mapped[str | None] = mapped_column(String(40))
     error_code: Mapped[str | None] = mapped_column(String(128))
     mcp_request_id: Mapped[str | None] = mapped_column(String(255))
     trace_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)

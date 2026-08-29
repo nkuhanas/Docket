@@ -4,6 +4,8 @@ from docket.models.authority import (
     Conflict,
     IntentSession,
     IntentTurn,
+    SemanticRequest,
+    SemanticRequestAttempt,
 )
 from docket.models.base import Base
 from docket.models.briefs import (
@@ -29,6 +31,13 @@ from docket.models.calendar import (
     QueueItem,
     ReminderRule,
     ScheduledNotification,
+)
+from docket.models.continuity import (
+    DeferredIngress,
+    DrainBarrier,
+    ExecutionLease,
+    GatewayLifetime,
+    PersistedSemanticOption,
 )
 from docket.models.core import (
     Account,
@@ -115,16 +124,20 @@ __all__ = [
     "DailyBriefCaseItem",
     "DailyBriefItem",
     "Decision",
+    "DeferredIngress",
     "DiscordDailyThread",
     "DiscordMcpTrace",
     "DiscordProjection",
+    "DrainBarrier",
     "Entity",
     "EntityAlias",
     "EntityRelation",
     "EntityResolution",
     "EventObservation",
     "ExecutionAttempt",
+    "ExecutionLease",
     "Fact",
+    "GatewayLifetime",
     "IdentityBinding",
     "IdentityHandle",
     "IntentSession",
@@ -139,6 +152,7 @@ __all__ = [
     "OperatorUtterance",
     "OrganizationProfile",
     "OutboxEvent",
+    "PersistedSemanticOption",
     "PersonProfile",
     "Preference",
     "ProvenanceSource",
@@ -152,6 +166,8 @@ __all__ = [
     "RuntimeLogEntry",
     "ScheduledNotification",
     "SemanticCandidate",
+    "SemanticRequest",
+    "SemanticRequestAttempt",
     "SenderIdentityEmail",
     "SourceItem",
     "StatementRelation",

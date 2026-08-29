@@ -53,12 +53,19 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
         "interpreted_statements",
         "statement_relations",
         "decisions",
+        "deferred_ingress",
+        "drain_barriers",
+        "execution_leases",
+        "gateway_lifetimes",
         "tool_invocations",
         "runtime_log_entries",
         "intent_sessions",
         "intent_turns",
+        "semantic_requests",
+        "semantic_request_attempts",
         "change_sets",
         "change_set_revisions",
+        "persisted_semantic_options",
         "conflicts",
         "provenance_sources",
         "person_profiles",
@@ -133,6 +140,12 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
         "triage_brief_entries",
         "preferences",
         "lane_routing_decisions",
+        "gateway_lifetimes",
+        "drain_barriers",
+        "execution_leases",
+        "deferred_ingress",
+        "semantic_requests",
+        "semantic_request_attempts",
     ):
         assert "ref_id" in {column["name"] for column in inspect(engine).get_columns(public_table)}
     assert "legacy_ref_id" in {
@@ -145,6 +158,30 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
     assert "result_disposition" in {
         column["name"] for column in inspect(engine).get_columns("tool_invocations")
     }
+    assert {
+        "utterance_kind",
+        "selected_option_id",
+        "authority_scope_hash",
+        "selected_precondition_hash",
+        "discord_interaction_ref",
+    }.issubset(
+        {
+            column["name"]
+            for column in inspect(engine).get_columns("operator_utterances")
+        }
+    )
+    assert {"semantic_state", "commit_state", "semantic_request_ref"}.issubset(
+        {
+            column["name"]
+            for column in inspect(engine).get_columns("intent_sessions")
+        }
+    )
+    assert {"transport_state", "domain_state", "gateway_instance_ref"}.issubset(
+        {
+            column["name"]
+            for column in inspect(engine).get_columns("tool_invocations")
+        }
+    )
     assert {
         tuple(constraint["column_names"])
         for constraint in inspect(engine).get_unique_constraints("record_sources")
@@ -234,6 +271,142 @@ def test_typed_registry_migration_preserves_legacy_entity_provenance(
     assert "registration_state" not in {
         column["name"] for column in inspect(engine).get_columns("entities")
     }
+    engine.dispose()
+    clear_settings_cache()
+
+
+@pytest.mark.integration
+def test_interactive_continuity_migration_preserves_honest_legacy_states(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    database_path = tmp_path / "interactive-continuity.db"
+    database_url = f"sqlite+pysqlite:///{database_path}"
+    monkeypatch.setenv("DOCKET_DATABASE_URL", database_url)
+    clear_settings_cache()
+    config = Config("alembic.ini")
+    command.upgrade(config, "0041")
+    engine = create_engine(database_url)
+    metadata = MetaData()
+    sessions = Table("intent_sessions", metadata, autoload_with=engine)
+    invocations = Table("tool_invocations", metadata, autoload_with=engine)
+    now = datetime.now(UTC)
+    session_rows: list[dict[str, object]] = []
+    for state in ("open", "needs_clarification", "ready", "committed", "cancelled"):
+        session_rows.append(
+            {
+                "id": uuid.uuid4().hex,
+                "ref_id": new_public_ref("ses"),
+                "conversation_ref": f"discord:test:{state}",
+                "source_utterance_ref": new_public_ref("utt"),
+                "case_refs": [],
+                "case_revision_refs": [],
+                "brief_ref": None,
+                "trusted_context_refs": [],
+                "resolved_intent_json": {},
+                "blocking_clarifications": [],
+                "state": state,
+                "version": 1,
+                "committed_changeset_ref": None,
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
+    with engine.begin() as connection:
+        connection.execute(sessions.insert(), session_rows)
+        connection.execute(
+            invocations.insert(),
+            [
+                {
+                    "id": uuid.uuid4().hex,
+                    "ref_id": new_public_ref("call"),
+                    "tool_name": "docket_get_record",
+                    "tool_contract_version": "test",
+                    "tool_contract_hash": "0" * 64,
+                    "caller_profile": "interactive",
+                    "actor_ref": None,
+                    "utterance_refs": [],
+                    "intent_session_ref": None,
+                    "case_ref": None,
+                    "started_at": now,
+                    "completed_at": now,
+                    "status": "succeeded",
+                    "received_argument_hash": "1" * 64,
+                    "normalized_argument_hash": "1" * 64,
+                    "result_refs": [],
+                    "result_disposition": "succeeded",
+                    "error_code": None,
+                    "mcp_request_id": None,
+                    "trace_id": None,
+                    "trace_call_id": None,
+                    "trace_ordinal": None,
+                },
+                {
+                    "id": uuid.uuid4().hex,
+                    "ref_id": new_public_ref("call"),
+                    "tool_name": "docket_commit_changeset",
+                    "tool_contract_version": "test",
+                    "tool_contract_hash": "0" * 64,
+                    "caller_profile": "interactive",
+                    "actor_ref": None,
+                    "utterance_refs": [],
+                    "intent_session_ref": None,
+                    "case_ref": None,
+                    "started_at": now,
+                    "completed_at": now,
+                    "status": "rejected_validation",
+                    "received_argument_hash": "2" * 64,
+                    "normalized_argument_hash": "2" * 64,
+                    "result_refs": [],
+                    "result_disposition": "rejected_validation",
+                    "error_code": "invalid_request",
+                    "mcp_request_id": None,
+                    "trace_id": None,
+                    "trace_call_id": None,
+                    "trace_ordinal": None,
+                },
+            ],
+        )
+
+    command.upgrade(config, "head")
+    migrated = MetaData()
+    migrated_sessions = Table("intent_sessions", migrated, autoload_with=engine)
+    migrated_invocations = Table("tool_invocations", migrated, autoload_with=engine)
+    with engine.connect() as connection:
+        states = {
+            row.state: (row.semantic_state, row.commit_state)
+            for row in connection.execute(
+                select(
+                    migrated_sessions.c.state,
+                    migrated_sessions.c.semantic_state,
+                    migrated_sessions.c.commit_state,
+                )
+            )
+        }
+        outcomes = {
+            row.status: (row.transport_state, row.domain_state)
+            for row in connection.execute(
+                select(
+                    migrated_invocations.c.status,
+                    migrated_invocations.c.transport_state,
+                    migrated_invocations.c.domain_state,
+                )
+            )
+        }
+    assert states["committed"] == ("ready", "committed")
+    assert states["needs_clarification"] == (
+        "needs_clarification",
+        "not_attempted",
+    )
+    assert states["ready"] == ("ready", "not_attempted")
+    assert outcomes["succeeded"] == ("completed", "succeeded")
+    assert outcomes["rejected_validation"] == ("completed", "rejected")
+
+    command.downgrade(config, "0041")
+    assert "semantic_state" not in {
+        column["name"] for column in inspect(engine).get_columns("intent_sessions")
+    }
+    assert "semantic_requests" not in inspect(engine).get_table_names()
     engine.dispose()
     clear_settings_cache()
 

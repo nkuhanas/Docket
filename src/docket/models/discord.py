@@ -15,6 +15,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from docket.domain.public_refs import new_public_ref
 from docket.models.base import Base, TimestampMixin
 
 
@@ -75,6 +76,9 @@ class DiscordProjection(TimestampMixin, Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    ref_id: Mapped[str] = mapped_column(
+        String(40), unique=True, nullable=False, default=lambda: new_public_ref("proj")
+    )
     queue_item_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("queue_items.id", ondelete="RESTRICT"), nullable=False
     )
@@ -131,6 +135,7 @@ class DiscordMcpTrace(TimestampMixin, Base):
     caller_profile: Mapped[str] = mapped_column(
         String(32), default="interactive", nullable=False
     )
+    gateway_instance_ref: Mapped[str | None] = mapped_column(String(40))
     status: Mapped[str] = mapped_column(String(16), default="running", nullable=False)
     calls: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
     last_ordinal: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

@@ -33,6 +33,18 @@ class IntentSession(Base):
         ),
         Index("ix_intent_sessions_conversation_state", "conversation_ref", "state"),
         Index("ix_intent_sessions_source_utterance", "source_utterance_ref"),
+        CheckConstraint(
+            "semantic_state IN ('open', 'needs_clarification', 'ready', "
+            "'cancelled', 'superseded')",
+            name="ck_intent_sessions_semantic_state",
+        ),
+        CheckConstraint(
+            "commit_state IN ('not_attempted', 'pending', 'committed', "
+            "'blocked_validation', 'blocked_conflict', 'blocked_version', "
+            "'failed', 'unknown')",
+            name="ck_intent_sessions_commit_state",
+        ),
+        Index("ix_intent_sessions_semantic_commit", "semantic_state", "commit_state"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -52,6 +64,11 @@ class IntentSession(Base):
         JSON, default=list, nullable=False
     )
     state: Mapped[str] = mapped_column(String(32), default="open", nullable=False)
+    semantic_state: Mapped[str] = mapped_column(String(32), default="open", nullable=False)
+    commit_state: Mapped[str] = mapped_column(
+        String(32), default="not_attempted", nullable=False
+    )
+    semantic_request_ref: Mapped[str | None] = mapped_column(String(40))
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     committed_changeset_ref: Mapped[str | None] = mapped_column(String(40))
     created_at: Mapped[datetime] = mapped_column(
@@ -96,6 +113,11 @@ class IntentTurn(Base):
     response_disposition: Mapped[str] = mapped_column(
         String(32), default="pending", nullable=False
     )
+    semantic_request_ref: Mapped[str | None] = mapped_column(String(40))
+    authority_substitutions_json: Mapped[dict[str, str]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    gateway_instance_ref: Mapped[str | None] = mapped_column(String(40))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
@@ -110,6 +132,10 @@ class ChangeSet(Base):
             name="ck_change_sets_state",
         ),
         Index("ix_change_sets_session_state", "intent_session_id", "state"),
+        UniqueConstraint(
+            "semantic_request_ref",
+            name="uq_change_sets_semantic_request",
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -121,6 +147,12 @@ class ChangeSet(Base):
     )
     intent_session_ref: Mapped[str] = mapped_column(
         ForeignKey("intent_sessions.ref_id", ondelete="RESTRICT"), nullable=False
+    )
+    semantic_request_ref: Mapped[str | None] = mapped_column(String(40))
+    authority_scope_hash: Mapped[str | None] = mapped_column(String(64))
+    precondition_hash: Mapped[str | None] = mapped_column(String(64))
+    execution_binding_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=dict, nullable=False
     )
     idempotency_key: Mapped[str] = mapped_column(String(512), unique=True, nullable=False)
     basis_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
@@ -172,6 +204,12 @@ class ChangeSetRevision(Base):
         ForeignKey("change_sets.id", ondelete="RESTRICT"), nullable=False
     )
     revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    semantic_request_ref: Mapped[str | None] = mapped_column(String(40))
+    authority_scope_hash: Mapped[str | None] = mapped_column(String(64))
+    precondition_hash: Mapped[str | None] = mapped_column(String(64))
+    execution_binding_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
     basis_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     expected_versions: Mapped[dict[str, int]] = mapped_column(JSON, default=dict, nullable=False)
     registry_changes: Mapped[list[dict[str, Any]]] = mapped_column(
@@ -197,6 +235,110 @@ class ChangeSetRevision(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
+
+
+class SemanticRequest(Base):
+    __tablename__ = "semantic_requests"
+    __table_args__ = (
+        CheckConstraint(
+            "authority_availability IN ('available', 'consumed_committed', "
+            "'cancelled', 'superseded', 'invalidated_by_state')",
+            name="ck_semantic_requests_authority_availability",
+        ),
+        CheckConstraint(
+            "commit_state IN ('not_attempted', 'pending', 'committed', "
+            "'blocked_validation', 'blocked_conflict', 'blocked_version', "
+            "'failed', 'unknown')",
+            name="ck_semantic_requests_commit_state",
+        ),
+        UniqueConstraint(
+            "intent_session_ref",
+            "authority_scope_hash",
+            name="uq_semantic_requests_session_scope",
+        ),
+        UniqueConstraint(
+            "committed_changeset_ref",
+            name="uq_semantic_requests_committed_changeset",
+        ),
+        Index("ix_semantic_requests_session_state", "intent_session_ref", "commit_state"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    ref_id: Mapped[str] = mapped_column(
+        String(40), unique=True, nullable=False, default=lambda: new_public_ref("sreq")
+    )
+    intent_session_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("intent_sessions.id", ondelete="RESTRICT"), nullable=False
+    )
+    intent_session_ref: Mapped[str] = mapped_column(
+        ForeignKey("intent_sessions.ref_id", ondelete="RESTRICT"), nullable=False
+    )
+    authority_scope_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    current_precondition_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    origin_utterance_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    selected_option_binding: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    authority_availability: Mapped[str] = mapped_column(
+        String(32), default="available", nullable=False
+    )
+    commit_state: Mapped[str] = mapped_column(
+        String(32), default="not_attempted", nullable=False
+    )
+    current_case_revision_ref: Mapped[str | None] = mapped_column(String(40))
+    symbolic_substitutions_json: Mapped[dict[str, str]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    committed_changeset_ref: Mapped[str | None] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
+class SemanticRequestAttempt(Base):
+    __tablename__ = "semantic_request_attempts"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('pending', 'committed', 'blocked_validation', "
+            "'blocked_conflict', 'blocked_version', 'failed', 'unknown')",
+            name="ck_semantic_request_attempts_state",
+        ),
+        UniqueConstraint(
+            "semantic_request_id",
+            "attempt_number",
+            name="uq_semantic_request_attempts_number",
+        ),
+        UniqueConstraint("tool_call_ref", name="uq_semantic_request_attempts_call"),
+        Index("ix_semantic_request_attempts_request", "semantic_request_id", "attempt_number"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    ref_id: Mapped[str] = mapped_column(
+        String(40), unique=True, nullable=False, default=lambda: new_public_ref("satt")
+    )
+    semantic_request_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("semantic_requests.id", ondelete="RESTRICT"), nullable=False
+    )
+    semantic_request_ref: Mapped[str] = mapped_column(
+        ForeignKey("semantic_requests.ref_id", ondelete="RESTRICT"), nullable=False
+    )
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    authority_scope_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    precondition_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    case_revision_ref: Mapped[str | None] = mapped_column(String(40))
+    change_set_ref: Mapped[str | None] = mapped_column(String(40))
+    tool_call_ref: Mapped[str | None] = mapped_column(String(40))
+    gateway_instance_ref: Mapped[str | None] = mapped_column(String(40))
+    state: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(128))
+    error_details_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Conflict(Base):
