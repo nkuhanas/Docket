@@ -24,6 +24,9 @@ from docket.models import (
 )
 from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.schemas.authority import ChangeSetContent, IntentSessionOpen, StatementInput
+from docket.services.calendar_projection_invariants import (
+    CalendarProjectionInvariantService,
+)
 from docket.services.intent_sessions import IntentSessionService
 from docket.services.interactive_authority import InteractiveAuthorityService
 from docket.services.operations import OperationRunner
@@ -248,6 +251,7 @@ def test_rich_event_changeset_commits_event_route_and_provider_intents_without_a
             intent["parameters"].get("compiled_from_change_id")
             for intent in changeset.provider_intents
         )
+        assert CalendarProjectionInvariantService(session).find_violations() == []
         assert session.scalar(select(func.count(Approval.id))) == 0
 
     provider = FakeCalendarProvider()
@@ -267,6 +271,113 @@ def test_rich_event_changeset_commits_event_route_and_provider_intents_without_a
         assert binding is not None and binding.canonical_event_id == event.id
         assert session.scalar(select(func.count(Interaction.id))) == 0
 
+
+@pytest.mark.integration
+def test_projection_invariant_detector_reports_precompiler_orphan(
+    session_factory,
+) -> None:
+    with session_factory.begin() as session:
+        account = Account(
+            provider="google",
+            external_account_id="projection-invariant-account",
+            capabilities=["google_calendar"],
+            enabled=True,
+        )
+        session.add(account)
+        session.flush()
+        utterance_ref, _request_key = _capture(
+            session,
+            message_id="1542802000000000150",
+            text="Create the package pickup event in Personal.",
+        )
+        intent_session, _created = IntentSessionService(session).open(
+            IntentSessionOpen(source_utterance_ref=utterance_ref)
+        )
+        lane = CalendarLane(
+            account_id=account.id,
+            lane="personal",
+            display_name="Personal",
+            color_hex="#8E24AA",
+            calendar_id="personal@example.com",
+            status="active",
+            basis_refs=[utterance_ref],
+            provenance_status="complete",
+        )
+        session.add(lane)
+        session.flush()
+        canonical_key = "projection-invariant:test-orphan"
+        origin = ChangeSet(
+            intent_session_id=intent_session.id,
+            intent_session_ref=intent_session.ref_id,
+            idempotency_key="projection-invariant-origin",
+            basis_refs=[utterance_ref],
+            expected_versions={},
+            registry_changes=[],
+            preference_changes=[],
+            lane_changes=[],
+            event_changes=[
+                {
+                    "change_id": "create-orphan",
+                    "mutation_type": "canonical_event_create",
+                    "action": "create",
+                    "object_type": "canonical_event",
+                    "create_spec": {"canonical_key": canonical_key},
+                    "affected_fields": ["event"],
+                    "basis_refs": [utterance_ref],
+                }
+            ],
+            resolution_changes=[],
+            provider_intents=[],
+            validation_errors=[],
+            state="committed",
+            version=2,
+            current_revision=1,
+            committed_at=datetime.now(UTC),
+        )
+        session.add(origin)
+        session.flush()
+        event = CanonicalEvent(
+            canonical_key=canonical_key,
+            title="Pick up package",
+            status="active",
+            event_spec={
+                "title": "Pick up package",
+                "calendar_lane": "personal",
+                "timing": {
+                    "kind": "timed",
+                    "start_local": "2026-08-29T13:00:00",
+                    "end_local": "2026-08-29T13:15:00",
+                    "timezone": "America/Los_Angeles",
+                },
+            },
+            calendar_lane="personal",
+            authority="explicit_user",
+            lane_id=lane.id,
+            lane_ref=lane.ref_id,
+            basis_refs=[utterance_ref],
+            created_by_changeset_ref=origin.ref_id,
+            provenance_status="complete",
+        )
+        session.add(event)
+        session.flush()
+
+        violations = CalendarProjectionInvariantService(session).find_violations()
+        assert [(item.event_ref, item.originating_changeset_ref) for item in violations] == [
+            (event.ref_id, origin.ref_id)
+        ]
+        assert CalendarProjectionInvariantService.projection(violations) == {
+            "ok": False,
+            "count": 1,
+            "truncated": False,
+            "items": [
+                {
+                    "event_ref": event.ref_id,
+                    "originating_changeset_ref": origin.ref_id,
+                    "lane_ref": lane.ref_id,
+                    "reason": "committed_event_missing_provider_projection",
+                }
+            ],
+        }
 
 @pytest.mark.integration
 def test_package_pickup_case_reply_commits_event_route_and_resolution_first_try(

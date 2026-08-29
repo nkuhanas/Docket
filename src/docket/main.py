@@ -36,6 +36,9 @@ from docket.providers.google.runtime import configure_calendar_read_provider
 from docket.services.accounts import AccountService
 from docket.services.backups import BackupService
 from docket.services.briefs import DailyBriefService
+from docket.services.calendar_projection_invariants import (
+    CalendarProjectionInvariantService,
+)
 from docket.services.calendar_sync import CalendarSyncService
 from docket.services.continuity import ExecutionLeaseCoordinator
 from docket.services.deferred_ingress import DeferredIngressRunner
@@ -237,6 +240,9 @@ def health_ready(response: Response) -> dict[str, Any]:
             .where(ConnectorCheckpoint.stream == "gmail:inbox")
             .order_by(ConnectorCheckpoint.account_id)
         ).all()
+        projection_invariant = CalendarProjectionInvariantService(session).projection(
+            CalendarProjectionInvariantService(session).find_violations()
+        )
     google_oauth = settings.google_oauth_status()
     if (
         settings.external_writes_enabled
@@ -324,7 +330,14 @@ def health_ready(response: Response) -> dict[str, Any]:
         )
     )
     return {
-        "status": ("degraded" if calendar_degraded or gmail_degraded or backup_degraded else "ok"),
+        "status": (
+            "degraded"
+            if calendar_degraded
+            or gmail_degraded
+            or backup_degraded
+            or not projection_invariant["ok"]
+            else "ok"
+        ),
         "database": "ready",
         "worker": "ready" if worker.is_healthy() else "starting",
         "credential_mode": settings.credential_mode(),
@@ -336,6 +349,7 @@ def health_ready(response: Response) -> dict[str, Any]:
         "gmail_triage_source_allowlist_count": len(settings.gmail_triage_source_allowlist),
         "gmail_provider_mode": settings.gmail_provider_mode(),
         "calendar_write_mode": settings.calendar_write_mode(),
+        "calendar_projection_invariant": projection_invariant,
         "encrypted_backup": {
             "enabled": settings.backup_enabled,
             "status": (
