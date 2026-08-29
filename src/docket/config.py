@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     gateway_lease_seconds: int = Field(
         default=45, ge=15, le=300, alias="DOCKET_GATEWAY_LEASE_SECONDS"
     )
+    execution_lease_seconds: int = Field(
+        default=1800, ge=60, le=7200, alias="DOCKET_EXECUTION_LEASE_SECONDS"
+    )
+    deploy_drain_timeout_seconds: int = Field(
+        default=180, ge=30, le=1800, alias="DOCKET_DEPLOY_DRAIN_TIMEOUT_SECONDS"
+    )
     operation_poll_seconds: float = Field(default=5.0, alias="DOCKET_OPERATION_POLL_SECONDS")
     operation_drain_limit: int = Field(
         default=10, ge=1, le=100, alias="DOCKET_OPERATION_DRAIN_LIMIT"

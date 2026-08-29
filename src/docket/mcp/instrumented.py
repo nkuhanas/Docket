@@ -13,9 +13,11 @@ from sqlalchemy.orm import Session
 
 from docket.database import session_scope
 from docket.domain.canonical import sha256_json
+from docket.domain.errors import DocketError
 from docket.domain.public_refs import is_public_ref
 from docket.models import OperatorUtterance, ToolInvocation
 from docket.models.base import utc_now
+from docket.services.continuity import ContinuityService
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash
 
 INTERACTIVE_MUTATION_TOOLS = frozenset(
@@ -139,9 +141,7 @@ def _internal_uuid_field(key: object, value: object) -> bool:
 
 
 def _serialized_bytes(value: dict[str, Any]) -> int:
-    return len(
-        json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    )
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
 
 
 def _compact_result(
@@ -155,9 +155,7 @@ def _compact_result(
         return result, None
     payload = _omit_nulls(envelope)
     list_keys = [
-        key
-        for key in _LIST_RESULT_KEYS
-        if key in payload and isinstance(payload[key], list)
+        key for key in _LIST_RESULT_KEYS if key in payload and isinstance(payload[key], list)
     ]
     if "items" not in payload and len(list_keys) == 1:
         source_key = list_keys[0]
@@ -224,17 +222,12 @@ def _operator_utterance_authority(
     guild_id, channel_id, message_id = components[1:4]
     authority_request_key = f"discord:{guild_id}:{channel_id}:{message_id}:0"
     utterance = session.scalar(
-        select(OperatorUtterance).where(
-            OperatorUtterance.request_key == authority_request_key
-        )
+        select(OperatorUtterance).where(OperatorUtterance.request_key == authority_request_key)
     )
     if utterance is None:
         return None
     requested_utterance_ref = normalized_arguments.get("utterance_ref")
-    if (
-        requested_utterance_ref is not None
-        and requested_utterance_ref != utterance.ref_id
-    ):
+    if requested_utterance_ref is not None and requested_utterance_ref != utterance.ref_id:
         return None
     actor_id = normalized_arguments.get("actor_id")
     if actor_id is not None and utterance.actor_ref != f"discord_user:{actor_id}":
@@ -308,6 +301,8 @@ class ProvenanceFastMCP(FastMCP[Any]):
         except ValueError:
             mcp_request_id = None
 
+        execution_lease_ref: str | None = None
+        drain_error: DocketError | None = None
         with session_scope() as session:
             invocation = ToolInvocation(
                 tool_name=name,
@@ -321,6 +316,32 @@ class ProvenanceFastMCP(FastMCP[Any]):
             session.add(invocation)
             session.flush()
             invocation_id = invocation.id
+            try:
+                execution_lease_ref = (
+                    ContinuityService(session)
+                    .acquire_execution_lease(
+                        lease_key=f"tool:{invocation.ref_id}",
+                        lease_kind="tool_invocation",
+                        subject_ref=invocation.ref_id,
+                    )
+                    .ref_id
+                )
+            except DocketError as exc:
+                if exc.code != "deployment_drain_active":
+                    raise
+                drain_error = exc
+                self._finish_invocation(
+                    session,
+                    invocation_id,
+                    status="rejected_authority",
+                    normalized_argument_hash=None,
+                    result_refs=[],
+                    result_disposition="deferred_drain",
+                    error_code=exc.code,
+                )
+
+        if drain_error is not None:
+            raise ToolError(f"{drain_error.code}: {drain_error.message}")
 
         normalized_hash: str | None = None
         normalized_arguments: dict[str, Any] | None = None
@@ -351,15 +372,18 @@ class ProvenanceFastMCP(FastMCP[Any]):
                         result_disposition="rejected_authority",
                         error_code="operator_utterance_authority_required",
                     )
+                    if execution_lease_ref is not None:
+                        ContinuityService(session).complete_execution_lease(
+                            execution_lease_ref,
+                            metadata={"disposition": "rejected_authority"},
+                        )
                 else:
                     bound_invocation = session.get(ToolInvocation, invocation_id)
                     if bound_invocation is None:
                         raise RuntimeError("ToolInvocation disappeared before authority binding")
                     bound_invocation.actor_ref = utterance.actor_ref
                     bound_invocation.utterance_refs = [utterance.ref_id]
-                    semantic_request_ref = normalized_arguments.get(
-                        "semantic_request_ref"
-                    )
+                    semantic_request_ref = normalized_arguments.get("semantic_request_ref")
                     if isinstance(semantic_request_ref, str):
                         bound_invocation.semantic_request_ref = semantic_request_ref
             if utterance is None:
@@ -382,24 +406,24 @@ class ProvenanceFastMCP(FastMCP[Any]):
                     result_disposition=_terminal_status(error_code),
                     error_code=error_code[:128],
                 )
+                if execution_lease_ref is not None:
+                    ContinuityService(session).complete_execution_lease(
+                        execution_lease_ref,
+                        metadata={"disposition": _terminal_status(error_code)},
+                    )
             raise
 
         envelope = _result_envelope(result)
         requested_page_limit = (
-            normalized_arguments.get("limit", 25)
-            if normalized_arguments is not None
-            else 25
+            normalized_arguments.get("limit", 25) if normalized_arguments is not None else 25
         )
         page_limit = (
-            min(max(requested_page_limit, 1), 100)
-            if isinstance(requested_page_limit, int)
-            else 25
+            min(max(requested_page_limit, 1), 100) if isinstance(requested_page_limit, int) else 25
         )
         result, envelope = _compact_result(
             result,
             envelope,
-            audit=normalized_arguments is not None
-            and normalized_arguments.get("view") == "audit",
+            audit=normalized_arguments is not None and normalized_arguments.get("view") == "audit",
             page_limit=page_limit,
         )
         error: dict[str, Any] = {}
@@ -408,18 +432,14 @@ class ProvenanceFastMCP(FastMCP[Any]):
             if isinstance(candidate, dict):
                 error = candidate
         error_code_value = error.get("code")
-        response_error_code = (
-            str(error_code_value)[:128] if error_code_value is not None else None
-        )
+        response_error_code = str(error_code_value)[:128] if error_code_value is not None else None
         status = (
             _terminal_status(response_error_code)
             if response_error_code is not None
             else "succeeded"
         )
         raw_disposition = envelope.get("disposition") if envelope is not None else None
-        result_disposition = (
-            str(raw_disposition)[:64] if isinstance(raw_disposition, str) else None
-        )
+        result_disposition = str(raw_disposition)[:64] if isinstance(raw_disposition, str) else None
         domain_state = _domain_state(status)
         if name in INTERACTIVE_MUTATION_TOOLS and result_disposition is None:
             # The durable result may have committed even if a faulty tool omitted
@@ -438,13 +458,14 @@ class ProvenanceFastMCP(FastMCP[Any]):
                 # Rejected/failed envelopes may mention preallocated refs from a
                 # transaction that rolled back. They are diagnostic details, not
                 # durable results. The call and its error code remain auditable.
-                result_refs=(
-                    _collect_result_refs(envelope or {})
-                    if status == "succeeded"
-                    else []
-                ),
+                result_refs=(_collect_result_refs(envelope or {}) if status == "succeeded" else []),
                 result_disposition=result_disposition,
                 error_code=response_error_code,
                 domain_state=domain_state,
             )
+            if execution_lease_ref is not None:
+                ContinuityService(session).complete_execution_lease(
+                    execution_lease_ref,
+                    metadata={"disposition": result_disposition or status},
+                )
         return result

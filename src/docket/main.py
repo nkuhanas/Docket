@@ -37,6 +37,7 @@ from docket.services.accounts import AccountService
 from docket.services.backups import BackupService
 from docket.services.briefs import DailyBriefService
 from docket.services.calendar_sync import CalendarSyncService
+from docket.services.continuity import ExecutionLeaseCoordinator
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.events import SemanticCandidateCompiler
 from docket.services.gateway_lifetimes import GatewayLifetimeReconciler
@@ -136,6 +137,7 @@ worker = WorkerRuntime(
     ),
     retention_poll_seconds=settings.retention_poll_seconds,
     gateway_lifetime_reconciler=GatewayLifetimeReconciler(get_session_factory()),
+    execution_lease_coordinator=ExecutionLeaseCoordinator(get_session_factory()),
 )
 
 

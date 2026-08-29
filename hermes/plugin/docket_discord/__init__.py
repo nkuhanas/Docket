@@ -85,8 +85,10 @@ def _load_interactive_tool_contract() -> tuple[str, str, str, str]:
     expected_hash = metadata.get("contract_hash", "")
     profile = metadata.get("profile", "")
     actual_hash = hashlib.sha256(parts[2].encode("utf-8")).hexdigest()
-    if not version or profile != "interactive" or not hmac.compare_digest(
-        actual_hash, expected_hash
+    if (
+        not version
+        or profile != "interactive"
+        or not hmac.compare_digest(actual_hash, expected_hash)
     ):
         raise RuntimeError("Docket interactive tool contract metadata/hash is invalid")
     return content, version, actual_hash, profile
@@ -307,7 +309,7 @@ def _start_gateway_lifetime() -> None:
 
 def _capture_operator_utterance(
     event: object,
-) -> tuple[str, dict[str, Any] | None]:
+) -> tuple[str, dict[str, Any] | None, dict[str, Any] | None]:
     source = getattr(event, "source", None)
     ingress = _provenance_ingress_context(source)
     if ingress is None:
@@ -338,6 +340,7 @@ def _capture_operator_utterance(
         "reply_to_message_id": reply_to_message_id or None,
         "verbatim_text": str(getattr(event, "text", "")),
         "request_key": f"discord:{guild}:{channel}:{message_id}:0",
+        "gateway_instance_ref": _GATEWAY_INSTANCE_REF,
     }
     result = _docket_internal_request(
         "/internal/v1/discord/operator-utterances",
@@ -351,7 +354,12 @@ def _capture_operator_utterance(
             502,
         )
     reply_binding = result.get("reply_binding")
-    return utterance_ref, reply_binding if isinstance(reply_binding, dict) else None
+    deferred_ingress = result.get("deferred_ingress")
+    return (
+        utterance_ref,
+        reply_binding if isinstance(reply_binding, dict) else None,
+        deferred_ingress if isinstance(deferred_ingress, dict) else None,
+    )
 
 
 def _record_final_signoff_if_explicit(event: object, utterance_ref: str) -> str | None:
@@ -487,6 +495,7 @@ def _register_trace_context(
     utterance_ref: str,
     *,
     deterministic_response_text: str | None = None,
+    ingress_binding: dict[str, Any] | None = None,
 ) -> None:
     if session_store is None:
         return
@@ -532,6 +541,12 @@ def _register_trace_context(
             "started": False,
             "terminal": False,
             "deterministic_response_text": deterministic_response_text,
+            "execution_lease_ref": (
+                ingress_binding.get("lease_ref") if ingress_binding is not None else None
+            ),
+            "deferred_ingress_ref": (
+                ingress_binding.get("ref") if ingress_binding is not None else None
+            ),
         }
         _TRACE_CONTEXTS[session_id] = context
     try:
@@ -559,9 +574,7 @@ def _docket_public_tool_name(tool_name: str) -> str | None:
 def _argument_preview(tool_name: str, arguments: dict[str, Any]) -> str:
     """Return a bounded semantic summary, never the raw argument object."""
 
-    preview_data: dict[str, Any] = {
-        "fields": sorted(str(key)[:64] for key in arguments)[:24]
-    }
+    preview_data: dict[str, Any] = {"fields": sorted(str(key)[:64] for key in arguments)[:24]}
     public_refs = sorted(
         {
             value
@@ -676,8 +689,7 @@ def _on_pre_tool_call(
             "disposition": None,
             "transport_error_code": None,
             "argument_preview": _argument_preview(
-                public_name,
-                args if isinstance(args, dict) else {}
+                public_name, args if isinstance(args, dict) else {}
             ),
             "received_argument_hash": hashlib.sha256(
                 json.dumps(
@@ -1029,9 +1041,7 @@ def _install_provenance_delivery_guard(adapter: object) -> None:
                 chat_id=chat_id,
                 reply_to=reply_to,
             ):
-                logger.error(
-                    "Blocked Discord delivery because AgentResponse persistence failed"
-                )
+                logger.error("Blocked Discord delivery because AgentResponse persistence failed")
                 if __method_name == "send_multiple_images":
                     return None
                 return SendResult(
@@ -1075,6 +1085,48 @@ def _post_agent_response_delivery(
     )
 
 
+def _complete_interactive_ingress(
+    context: dict[str, Any],
+    *,
+    outcome: str,
+    error_code: str | None = None,
+) -> None:
+    lease_ref = str(context.get("execution_lease_ref") or "")
+    if not lease_ref.startswith("lease_"):
+        return
+    _docket_internal_request(
+        f"/internal/v1/discord/execution-leases/{lease_ref}/complete",
+        {
+            "request_id": str(uuid.uuid4()),
+            "lease_ref": lease_ref,
+            "deferred_ingress_ref": context.get("deferred_ingress_ref"),
+            "gateway_instance_ref": context.get("gateway_instance_ref") or _GATEWAY_INSTANCE_REF,
+            "outcome": outcome,
+            "error_code": error_code,
+        },
+        method="PUT",
+    )
+
+
+def _complete_captured_ingress(
+    ingress_binding: dict[str, Any] | None,
+    *,
+    outcome: str,
+    error_code: str | None = None,
+) -> None:
+    if ingress_binding is None:
+        return
+    _complete_interactive_ingress(
+        {
+            "execution_lease_ref": ingress_binding.get("lease_ref"),
+            "deferred_ingress_ref": ingress_binding.get("ref"),
+            "gateway_instance_ref": _GATEWAY_INSTANCE_REF,
+        },
+        outcome=outcome,
+        error_code=error_code,
+    )
+
+
 def _install_processing_outcome_listener(adapter: object) -> None:
     if getattr(adapter, "_docket_provenance_listener_installed", False):
         return
@@ -1089,9 +1141,7 @@ def _install_processing_outcome_listener(adapter: object) -> None:
         if context is None or context.get("delivery_recorded"):
             return
         deterministic_text = str(context.get("deterministic_response_text") or "").strip()
-        if deterministic_text and _RESPONSE_REF.fullmatch(
-            str(context.get("response_ref") or "")
-        ):
+        if deterministic_text and _RESPONSE_REF.fullmatch(str(context.get("response_ref") or "")):
             try:
                 result = await adapter.send(
                     chat_id=str(context["source_channel_id"]),
@@ -1113,6 +1163,16 @@ def _install_processing_outcome_listener(adapter: object) -> None:
             )
         except (OSError, RuntimeError, urllib.error.URLError):
             logger.exception("Docket AgentResponse delivery-state update failed")
+            return
+        try:
+            await asyncio.to_thread(
+                _complete_interactive_ingress,
+                dict(context),
+                outcome="completed" if delivered else "failed",
+                error_code=None if delivered else "discord_delivery_failed",
+            )
+        except (OSError, RuntimeError, urllib.error.URLError):
+            logger.exception("Docket interactive ingress completion failed")
             return
         with _TRACE_CONTEXT_LOCK:
             context["delivery_recorded"] = True
@@ -1328,7 +1388,7 @@ def _rewrite_with_source_context(
             )
     preferences = _operator_preferences()
     preference_context = (
-        "\n\n<docket_operator_preferences trusted=\"true\">\n"
+        '\n\n<docket_operator_preferences trusted="true">\n'
         f"{preferences}\n"
         "</docket_operator_preferences>\n"
         "These Markdown files are the durable operator preference databases. "
@@ -1342,7 +1402,7 @@ def _rewrite_with_source_context(
         else ""
     )
     authority_context = (
-        "\n\n<docket_authority_policy trusted=\"true\">\n"
+        '\n\n<docket_authority_policy trusted="true">\n'
         "The current authenticated OperatorUtterance supplies authority only for "
         "mutations it explicitly requests. Once intent meets Docket's Resolved Intent "
         "rules, commit it without a redundant approval phase. Clarification resolves "
@@ -1364,7 +1424,7 @@ def _rewrite_with_source_context(
         "</docket_authority_policy>"
     )
     contract_context = (
-        "\n\n<docket_tool_contract trusted=\"true\">\n"
+        '\n\n<docket_tool_contract trusted="true">\n'
         f"{_INTERACTIVE_TOOL_CONTRACT}"
         "</docket_tool_contract>\n"
         "This exact repository contract is mandatory for this interactive session."
@@ -1404,17 +1464,27 @@ def _pre_gateway_dispatch(
         return {"action": "skip", "reason": "docket-chat-root-only"}
     utterance_ref: str | None = None
     reply_binding: dict[str, Any] | None = None
+    ingress_binding: dict[str, Any] | None = None
     signoff_result: dict[str, Any] | None = None
     if _provenance_ingress_context(source) is not None:
         try:
             captured = _capture_operator_utterance(event)
             if isinstance(captured, tuple):
-                utterance_ref, reply_binding = captured
+                if len(captured) == 3:
+                    utterance_ref, reply_binding, ingress_binding = captured
+                else:
+                    utterance_ref, reply_binding = captured
             else:
                 utterance_ref = captured
         except (OSError, RuntimeError, urllib.error.URLError):
             logger.exception("Docket OperatorUtterance persistence failed; turn rejected")
             return {"action": "skip", "reason": "docket-utterance-persistence-failed"}
+        if ingress_binding is not None and ingress_binding.get("state") == "pending":
+            logger.info(
+                "Deferred Docket turn behind deployment drain %s",
+                ingress_binding.get("drain_ref"),
+            )
+            return {"action": "skip", "reason": "docket-ingress-deferred"}
         try:
             decision_ref = _record_final_signoff_if_explicit(event, utterance_ref)
             if decision_ref is not None:
@@ -1427,6 +1497,11 @@ def _pre_gateway_dispatch(
             if exc.status >= 500:
                 logger.exception(
                     "Docket specification sign-off outcome was unavailable; turn rejected"
+                )
+                _complete_captured_ingress(
+                    ingress_binding,
+                    outcome="failed",
+                    error_code="docket_signoff_persistence_failed",
                 )
                 return {"action": "skip", "reason": "docket-signoff-persistence-failed"}
             logger.warning(
@@ -1441,12 +1516,22 @@ def _pre_gateway_dispatch(
             }
         except (OSError, RuntimeError, urllib.error.URLError):
             logger.exception("Docket specification sign-off persistence failed; turn rejected")
+            _complete_captured_ingress(
+                ingress_binding,
+                outcome="failed",
+                error_code="docket_signoff_persistence_failed",
+            )
             return {"action": "skip", "reason": "docket-signoff-persistence-failed"}
     if _GENERIC_DELIVERY_COMMAND.match(text.strip()) and (
         _is_channel_surface(source, os.environ.get("DOCKET_CHAT_CHANNEL_ID", ""))
         or _is_configured_queue(source)
     ):
         logger.warning("Dropped generic scheduled-delivery command from Docket surface")
+        _complete_captured_ingress(
+            ingress_binding,
+            outcome="rejected",
+            error_code="docket_generic_delivery_disabled",
+        )
         return {"action": "skip", "reason": "docket-generic-delivery-disabled"}
     match = _COMMAND.fullmatch(text.strip())
     if match is None:
@@ -1455,9 +1540,19 @@ def _pre_gateway_dispatch(
             source_channel = _source_value(source, "chat_id", "channel_id")
             if source_channel == queue_channel:
                 logger.warning("Dropped non-command message from Docket queue root")
+                _complete_captured_ingress(
+                    ingress_binding,
+                    outcome="rejected",
+                    error_code="invalid_docket_control",
+                )
                 return {"action": "skip", "reason": "invalid-docket-control"}
             if _trusted_ingress_context(source) is None:
                 logger.warning("Dropped unauthorized message from Docket queue thread")
+                _complete_captured_ingress(
+                    ingress_binding,
+                    outcome="rejected",
+                    error_code="unauthorized_docket_thread",
+                )
                 return {"action": "skip", "reason": "unauthorized-docket-thread"}
         if utterance_ref is None:
             return None
@@ -1479,6 +1574,7 @@ def _pre_gateway_dispatch(
             session_store,
             utterance_ref,
             deterministic_response_text=deterministic_response_text,
+            ingress_binding=ingress_binding,
         )
         return _rewrite_with_source_context(
             event,
@@ -1509,7 +1605,13 @@ def _pre_gateway_dispatch(
         )
     except (OSError, RuntimeError, urllib.error.URLError):
         logger.exception("Docket control delivery failed")
+        _complete_captured_ingress(
+            ingress_binding,
+            outcome="failed",
+            error_code="docket_control_delivery_failed",
+        )
         return {"action": "skip", "reason": "docket-control-delivery-failed"}
+    _complete_captured_ingress(ingress_binding, outcome="completed")
     return {"action": "skip", "reason": "docket-control-handled"}
 
 
@@ -2734,9 +2836,7 @@ async def _put_mcp_trace(trace_id: uuid.UUID, payload: dict[str, Any]) -> dict[s
                 "invalid_mcp_trace", "Trace call numeric fields are invalid", 422
             ) from exc
         tool_name = _safe_text(raw_call.get("tool_name"), 128, "tool_name")
-        transport_state = _safe_text(
-            raw_call.get("transport_state"), 16, "transport_state"
-        )
+        transport_state = _safe_text(raw_call.get("transport_state"), 16, "transport_state")
         domain_state = _safe_text(raw_call.get("domain_state"), 16, "domain_state")
         outcome = _safe_text(raw_call.get("outcome"), 128, "outcome")
         tool_call_ref = _safe_text(
@@ -2760,10 +2860,7 @@ async def _put_mcp_trace(trace_id: uuid.UUID, payload: dict[str, Any]) -> dict[s
                 tool_call_ref != "unreconciled"
                 and not re.fullmatch(r"call_[0-9A-HJKMNP-TV-Z]{26}", tool_call_ref)
             )
-            or (
-                transport_error_code != "none"
-                and transport_error_code not in _TRACE_ERROR_CODES
-            )
+            or (transport_error_code != "none" and transport_error_code not in _TRACE_ERROR_CODES)
             or elapsed_ms < 0
             or elapsed_ms > 600_000
         ):
@@ -3017,21 +3114,15 @@ async def _post_calendar_reminder(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def _put_semantic_prompt(
-    projection_id: uuid.UUID, payload: dict[str, Any]
-) -> dict[str, Any]:
+async def _put_semantic_prompt(projection_id: uuid.UUID, payload: dict[str, Any]) -> dict[str, Any]:
     import discord
 
     request_id = _require_request_id(payload)
     if str(payload.get("projection_id")) != str(projection_id):
-        raise PluginAPIError(
-            "invalid_semantic_prompt", "Projection path and body differ", 422
-        )
+        raise PluginAPIError("invalid_semantic_prompt", "Projection path and body differ", 422)
     projection_ref = str(payload.get("projection_ref", ""))
     if _PUBLIC_REF.fullmatch(projection_ref) is None or not projection_ref.startswith("proj_"):
-        raise PluginAPIError(
-            "invalid_semantic_prompt", "Projection reference is invalid", 422
-        )
+        raise PluginAPIError("invalid_semantic_prompt", "Projection reference is invalid", 422)
     try:
         projection_version = int(payload["projection_version"])
     except (KeyError, TypeError, ValueError) as exc:
@@ -3039,16 +3130,12 @@ async def _put_semantic_prompt(
             "invalid_semantic_prompt", "Projection version is invalid", 422
         ) from exc
     if projection_version < 1:
-        raise PluginAPIError(
-            "invalid_semantic_prompt", "Projection version is invalid", 422
-        )
+        raise PluginAPIError("invalid_semantic_prompt", "Projection version is invalid", 422)
     guild_id = _require_snowflake(payload.get("guild_id"), "guild_id")
     channel_id = _require_snowflake(payload.get("channel_id"), "channel_id")
     parent_value = payload.get("parent_channel_id")
     parent_channel_id = (
-        _require_snowflake(parent_value, "parent_channel_id")
-        if parent_value is not None
-        else None
+        _require_snowflake(parent_value, "parent_channel_id") if parent_value is not None else None
     )
     operator_user_id = _validate_operator_target(payload.get("operator_user_id"))
     expected_guild = os.environ.get("DOCKET_DISCORD_GUILD_ID", "")
@@ -3071,9 +3158,7 @@ async def _put_semantic_prompt(
         or not isinstance(controls, list)
         or not 1 <= len(controls) <= 4
     ):
-        raise PluginAPIError(
-            "invalid_semantic_prompt", "Semantic prompt render is invalid", 422
-        )
+        raise PluginAPIError("invalid_semantic_prompt", "Semantic prompt render is invalid", 422)
     render_sha256 = str(payload.get("render_sha256", ""))
     calculated_render = hashlib.sha256(
         json.dumps(
@@ -3119,9 +3204,7 @@ async def _put_semantic_prompt(
         or len(options) != len(controls)
         or any(not isinstance(value, str) or not value.strip() for value in options)
     ):
-        raise PluginAPIError(
-            "invalid_semantic_prompt", "Semantic prompt options are invalid", 422
-        )
+        raise PluginAPIError("invalid_semantic_prompt", "Semantic prompt options are invalid", 422)
     normalized_controls: list[tuple[str, str]] = []
     for index, control in enumerate(controls, start=1):
         if not isinstance(control, dict):
@@ -3173,9 +3256,9 @@ async def _put_semantic_prompt(
     created = False
     if known_message_id is not None:
         try:
-            message = await channel.fetch_message(int(_require_snowflake(
-                known_message_id, "known_message_id"
-            )))
+            message = await channel.fetch_message(
+                int(_require_snowflake(known_message_id, "known_message_id"))
+            )
         except discord.NotFound:
             message = None
     if message is None:
@@ -3462,9 +3545,7 @@ async def _on_docket_interaction(interaction: object) -> None:
             parent_id = getattr(channel, "parent_id", None)
             message = interaction.message
             channel_id = str(interaction.channel_id)
-            authorized_surface = (
-                channel_id == chat_channel_id and parent_id is None
-            ) or (
+            authorized_surface = (channel_id == chat_channel_id and parent_id is None) or (
                 str(parent_id) == queue_channel_id
                 and channel_id != queue_channel_id
                 and isinstance(channel, discord.Thread)
@@ -3532,9 +3613,7 @@ async def _on_docket_interaction(interaction: object) -> None:
                         "response_ref": response_ref,
                         "guild_id": str(interaction.guild_id),
                         "source_channel_id": channel_id,
-                        "parent_channel_id": (
-                            str(parent_id) if parent_id is not None else None
-                        ),
+                        "parent_channel_id": (str(parent_id) if parent_id is not None else None),
                         "source_message_id": str(interaction.id),
                         "actor_id": str(interaction.user.id),
                     },
@@ -3828,9 +3907,7 @@ class _PluginRequestHandler(BaseHTTPRequestHandler):
             elif method == "PUT" and (match := _SEMANTIC_PROMPT_PATH.fullmatch(self.path)):
                 projection_id = uuid.UUID(match.group(1))
                 with _operation_lock(f"semantic-prompt:{projection_id}"):
-                    result = _run_on_discord(
-                        _put_semantic_prompt(projection_id, payload)
-                    )
+                    result = _run_on_discord(_put_semantic_prompt(projection_id, payload))
             elif method == "PUT" and (match := _THREAD_LIFECYCLE_PATH.fullmatch(self.path)):
                 daily_thread_id = uuid.UUID(match.group(1))
                 result = _run_on_discord(_set_thread_lifecycle(daily_thread_id, payload))

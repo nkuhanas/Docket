@@ -317,9 +317,7 @@ def test_empty_model_turn_is_reported_as_no_response(plugin_module, monkeypatch)
 
 
 @pytest.mark.adversarial
-def test_empty_signoff_turn_persists_deterministic_response(
-    plugin_module, monkeypatch
-) -> None:
+def test_empty_signoff_turn_persists_deterministic_response(plugin_module, monkeypatch) -> None:
     actor = "111111111111111111"
     guild = "222222222222222222"
     chat = "333333333333333333"
@@ -806,9 +804,7 @@ def test_trusted_ingress_fails_closed_when_utterance_cannot_persist(
 
 
 @pytest.mark.adversarial
-def test_exact_final_signoff_is_recorded_before_model_dispatch(
-    plugin_module, monkeypatch
-) -> None:
+def test_exact_final_signoff_is_recorded_before_model_dispatch(plugin_module, monkeypatch) -> None:
     actor = "111111111111111111"
     guild = "222222222222222222"
     channel = "333333333333333333"
@@ -823,6 +819,7 @@ def test_exact_final_signoff_is_recorded_before_model_dispatch(
         "_capture_operator_utterance",
         lambda _event: utterance_ref,
     )
+
     def record_signoff(event, ref):
         captured.append((event.text, ref))
         return f"dec_{'3' * 26}"
@@ -899,10 +896,7 @@ def test_rejected_signoff_reaches_model_with_safe_failure_context(
 
     assert result is not None and result["action"] == "rewrite"
     assert '"ok": false' in result["text"]
-    assert (
-        '"error_code": "specification_signoff_artifact_mismatch"'
-        in result["text"]
-    )
+    assert '"error_code": "specification_signoff_artifact_mismatch"' in result["text"]
     assert "It did not create implementation authority" in result["text"]
 
 
@@ -974,10 +968,13 @@ def test_amendment_signoff_forwards_exact_binding_only(plugin_module, monkeypatc
     assert requests[0][0] == "/internal/v1/discord/specification-signoffs"
     assert requests[0][1]["document_ref"] == document_ref
     assert requests[0][1]["frozen_artifact_hash"] == frozen_hash
-    assert plugin_module._record_final_signoff_if_explicit(
-        SimpleNamespace(text=f"{exact_text} please"),
-        f"utt_{'4' * 26}",
-    ) is None
+    assert (
+        plugin_module._record_final_signoff_if_explicit(
+            SimpleNamespace(text=f"{exact_text} please"),
+            f"utt_{'4' * 26}",
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio
@@ -1534,9 +1531,7 @@ def test_plugin_can_render_one_canonical_local_control(plugin_module, monkeypatc
     assert terminal_view is None
 
 
-def test_proposal_snooze_joins_decisions_as_a_primary_button(
-    plugin_module, monkeypatch
-) -> None:
+def test_proposal_snooze_joins_decisions_as_a_primary_button(plugin_module, monkeypatch) -> None:
     class FakeEmbed:
         def __init__(self, **_kwargs) -> None:
             self.footer = None

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import uuid
 from collections.abc import Iterable
 from datetime import UTC
 from typing import Any
@@ -25,8 +26,10 @@ from docket.models import (
     SemanticPromptProjection,
     SemanticRequest,
 )
+from docket.models.base import utc_now
 from docket.schemas.authority import ChangeSetContent, SemanticOptionDraft
 from docket.security import decode_semantic_option_token, verify_semantic_option_token
+from docket.services.continuity import ContinuityService
 from docket.services.gateway_lifetimes import GatewayLifetimeService
 
 CURRENT_SELECTION_UTTERANCE = "$current_selection_utterance"
@@ -44,8 +47,7 @@ def _replace_authority_slot(value: Any, authority_ref: str) -> tuple[Any, int]:
         if isinstance(item, list):
             return [visit(child, path) for child in item]
         allowed = bool(path) and (
-            path[-1] == "basis_refs"
-            or path[-2:] == ("resolution_basis", "utterance_ref")
+            path[-1] == "basis_refs" or path[-2:] == ("resolution_basis", "utterance_ref")
         )
         if allowed and item == authority_ref:
             replacements += 1
@@ -328,9 +330,7 @@ class SemanticOptionService:
     def capture_selection(self, request: SemanticOptionSelection) -> dict[str, Any]:
         settings = get_settings()
         if request.gateway_instance_ref is not None:
-            GatewayLifetimeService(self.session).require_live(
-                request.gateway_instance_ref
-            )
+            GatewayLifetimeService(self.session).require_live(request.gateway_instance_ref)
         decoded = decode_semantic_option_token(request.option_token)
         if decoded is None:
             raise DocketError(
@@ -379,22 +379,21 @@ class SemanticOptionService:
                 code="invalid_semantic_option_token",
                 message="Semantic option signature is invalid.",
             )
-        if sha256_json(option.authority_scope_json) != option.authority_scope_hash or sha256_json(
-            option.execution_preconditions_json
-        ) != option.precondition_hash:
+        if (
+            sha256_json(option.authority_scope_json) != option.authority_scope_hash
+            or sha256_json(option.execution_preconditions_json) != option.precondition_hash
+        ):
             raise DocketError(
                 code="semantic_option_hash_mismatch",
                 message="Persisted semantic option no longer matches its signed scope.",
             )
 
         source_key = (
-            f"discord:{request.guild_id}:{request.channel_id}:"
-            f"{request.discord_interaction_id}:0"
+            f"discord:{request.guild_id}:{request.channel_id}:{request.discord_interaction_id}:0"
         )
         existing = self.session.scalar(
             select(OperatorUtterance).where(
-                OperatorUtterance.discord_interaction_ref
-                == request.discord_interaction_id
+                OperatorUtterance.discord_interaction_ref == request.discord_interaction_id
             )
         )
         if existing is not None:
@@ -413,12 +412,19 @@ class SemanticOptionService:
                     SemanticRequest.authority_scope_hash == option.authority_scope_hash,
                 )
             )
+            lease_ref, execution_ready = self._claim_selection_ingress(
+                ingress,
+                utterance=existing,
+                gateway_instance_ref=request.gateway_instance_ref,
+            )
             return self._selection_result(
                 existing,
                 option,
                 semantic_request,
                 ingress,
                 replay=True,
+                execution_lease_ref=lease_ref,
+                execution_ready=execution_ready,
             )
 
         utterance = OperatorUtterance(
@@ -485,9 +491,7 @@ class SemanticOptionService:
                 authority_availability="available",
                 commit_state="not_attempted",
                 current_case_revision_ref=option.case_revision_ref,
-                symbolic_substitutions_json={
-                    CURRENT_SELECTION_UTTERANCE: utterance.ref_id
-                },
+                symbolic_substitutions_json={CURRENT_SELECTION_UTTERANCE: utterance.ref_id},
             )
             self.session.add(semantic_request)
             self.session.flush()
@@ -509,9 +513,14 @@ class SemanticOptionService:
                 "compiled_content": compiled_content,
             },
             status="pending",
-            claimed_by_gateway_ref=request.gateway_instance_ref,
         )
         self.session.add(ingress)
+        self.session.flush()
+        lease_ref, execution_ready = self._claim_selection_ingress(
+            ingress,
+            utterance=utterance,
+            gateway_instance_ref=request.gateway_instance_ref,
+        )
         projection.status = "selected"
         self.session.add(
             AuditEvent(
@@ -540,7 +549,42 @@ class SemanticOptionService:
             semantic_request,
             ingress,
             replay=False,
+            execution_lease_ref=lease_ref,
+            execution_ready=execution_ready,
         )
+
+    def _claim_selection_ingress(
+        self,
+        ingress: DeferredIngress | None,
+        *,
+        utterance: OperatorUtterance,
+        gateway_instance_ref: str | None,
+    ) -> tuple[str | None, bool]:
+        if ingress is None or ingress.status in {"completed", "rejected", "claimed"}:
+            return None, False
+        claim_token = uuid.uuid4()
+        try:
+            lease = ContinuityService(self.session).acquire_execution_lease(
+                lease_key=f"interactive:{utterance.ref_id}:{claim_token}",
+                lease_kind="interactive_turn",
+                subject_ref=utterance.ref_id,
+                gateway_instance_ref=gateway_instance_ref,
+            )
+        except DocketError as exc:
+            if exc.code != "deployment_drain_active":
+                raise
+            ingress.status = "pending"
+            ingress.drain_ref = str((exc.details or {}).get("drain_ref") or "") or None
+            ingress.claimed_by_gateway_ref = None
+            ingress.claim_token = None
+            ingress.claimed_at = None
+            return None, False
+        ingress.status = "claimed"
+        ingress.drain_ref = None
+        ingress.claimed_by_gateway_ref = gateway_instance_ref
+        ingress.claim_token = claim_token
+        ingress.claimed_at = utc_now()
+        return lease.ref_id, True
 
     @staticmethod
     def _selection_result(
@@ -550,6 +594,8 @@ class SemanticOptionService:
         ingress: DeferredIngress | None,
         *,
         replay: bool,
+        execution_lease_ref: str | None,
+        execution_ready: bool,
     ) -> dict[str, Any]:
         if semantic_request is None or ingress is None:
             raise DocketError(
@@ -582,4 +628,6 @@ class SemanticOptionService:
             "visible_choice_text": option.visible_text,
             "compiled_content": binding.get("compiled_content"),
             "deferred_ingress_ref": ingress.ref_id,
+            "execution_lease_ref": execution_lease_ref,
+            "execution_ready": execution_ready,
         }

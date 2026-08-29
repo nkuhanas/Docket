@@ -182,9 +182,7 @@ class McpTraceUpdate(InternalModel):
     tool_contract_version: str = Field(min_length=1, max_length=128)
     tool_contract_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     caller_profile: Literal["interactive"]
-    gateway_instance_ref: str | None = Field(
-        default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$"
-    )
+    gateway_instance_ref: str | None = Field(default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
     updated_at: datetime
     turn_status: Literal["running", "completed", "failed", "interrupted"] = "running"
     call: McpTraceCallUpdate | None = None
@@ -203,23 +201,17 @@ class OperatorUtteranceCapture(InternalModel):
     request_id: UUID
     guild_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
     channel_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
-    parent_channel_id: DiscordSnowflake | None = Field(
-        default=None, pattern=r"^[0-9]{17,20}$"
-    )
+    parent_channel_id: DiscordSnowflake | None = Field(default=None, pattern=r"^[0-9]{17,20}$")
     message_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
     actor_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
-    reply_to_message_id: DiscordSnowflake | None = Field(
-        default=None, pattern=r"^[0-9]{17,20}$"
-    )
+    reply_to_message_id: DiscordSnowflake | None = Field(default=None, pattern=r"^[0-9]{17,20}$")
     verbatim_text: str = Field(max_length=100_000)
     request_key: str = Field(min_length=8, max_length=512)
+    gateway_instance_ref: str | None = Field(default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
 
     @model_validator(mode="after")
     def request_key_matches_source(self) -> "OperatorUtteranceCapture":
-        expected = (
-            f"discord:{self.guild_id}:{self.channel_id}:"
-            f"{self.message_id}:0"
-        )
+        expected = f"discord:{self.guild_id}:{self.channel_id}:{self.message_id}:0"
         if self.request_key != expected:
             raise ValueError("request_key must match the Discord message binding")
         return self
@@ -231,15 +223,11 @@ class SemanticOptionSelection(InternalModel):
     discord_user_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
     guild_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
     channel_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
-    parent_channel_id: DiscordSnowflake | None = Field(
-        default=None, pattern=r"^[0-9]{17,20}$"
-    )
+    parent_channel_id: DiscordSnowflake | None = Field(default=None, pattern=r"^[0-9]{17,20}$")
     message_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
     option_token: str = Field(min_length=40, max_length=100)
     responded_at: datetime
-    gateway_instance_ref: str | None = Field(
-        default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$"
-    )
+    gateway_instance_ref: str | None = Field(default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
 
 
 class GatewayLifetimeRegister(InternalModel):
@@ -259,13 +247,20 @@ class GatewayLifetimeShutdown(InternalModel):
     gateway_instance_ref: str = Field(pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
 
 
+class ExecutionLeaseComplete(InternalModel):
+    request_id: UUID
+    lease_ref: str = Field(pattern=r"^lease_[0-9A-HJKMNP-TV-Z]{26}$")
+    deferred_ingress_ref: str | None = Field(default=None, pattern=r"^ing_[0-9A-HJKMNP-TV-Z]{26}$")
+    gateway_instance_ref: str = Field(pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
+    outcome: Literal["completed", "rejected", "failed"]
+    error_code: str | None = Field(default=None, min_length=1, max_length=128)
+
+
 class AgentResponseCapture(InternalModel):
     request_id: UUID
     guild_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
     channel_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
-    parent_channel_id: DiscordSnowflake | None = Field(
-        default=None, pattern=r"^[0-9]{17,20}$"
-    )
+    parent_channel_id: DiscordSnowflake | None = Field(default=None, pattern=r"^[0-9]{17,20}$")
     source_message_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
     actor_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
     utterance_ref: str = Field(pattern=r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")
@@ -275,27 +270,21 @@ class AgentResponseCapture(InternalModel):
     verbatim_text: str = Field(min_length=1, max_length=100_000)
     generated_at: datetime
     trace_id: UUID
-    gateway_instance_ref: str | None = Field(
-        default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$"
-    )
+    gateway_instance_ref: str | None = Field(default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
 
 
 class AgentTurnNoResponse(InternalModel):
     request_id: UUID
     guild_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
     channel_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
-    parent_channel_id: DiscordSnowflake | None = Field(
-        default=None, pattern=r"^[0-9]{17,20}$"
-    )
+    parent_channel_id: DiscordSnowflake | None = Field(default=None, pattern=r"^[0-9]{17,20}$")
     source_message_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
     actor_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
     utterance_ref: str = Field(pattern=r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")
     turn_id: str = Field(min_length=1, max_length=255)
     session_id: str = Field(min_length=1, max_length=255)
     trace_id: UUID
-    gateway_instance_ref: str | None = Field(
-        default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$"
-    )
+    gateway_instance_ref: str | None = Field(default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
 
 
 class AgentResponseDeliveryUpdate(InternalModel):
@@ -303,17 +292,13 @@ class AgentResponseDeliveryUpdate(InternalModel):
     response_ref: str = Field(pattern=r"^rsp_[0-9A-HJKMNP-TV-Z]{26}$")
     guild_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
     channel_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
-    parent_channel_id: DiscordSnowflake | None = Field(
-        default=None, pattern=r"^[0-9]{17,20}$"
-    )
+    parent_channel_id: DiscordSnowflake | None = Field(default=None, pattern=r"^[0-9]{17,20}$")
     source_message_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
     actor_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
     outcome: Literal["delivered", "failed"]
     completed_at: datetime
     error_code: str | None = Field(default=None, min_length=1, max_length=128)
-    gateway_instance_ref: str | None = Field(
-        default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$"
-    )
+    gateway_instance_ref: str | None = Field(default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
 
     @model_validator(mode="after")
     def delivery_error_matches_outcome(self) -> "AgentResponseDeliveryUpdate":

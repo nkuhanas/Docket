@@ -23,6 +23,7 @@ from docket.models import (
     AgentResponseProjection,
     AuditEvent,
     Decision,
+    DeferredIngress,
     DiscordDailyThread,
     IntentSession,
     IntentTurn,
@@ -34,6 +35,7 @@ from docket.models import (
 )
 from docket.models.base import utc_now
 from docket.schemas.authority import IntentTurnFinalize
+from docket.services.continuity import ContinuityService
 from docket.services.gateway_lifetimes import GatewayLifetimeService
 from docket.services.intent_sessions import IntentSessionService
 from docket.services.mcp_traces import trace_id_for_source
@@ -115,10 +117,7 @@ class ProvenanceService:
         allow_queue_root: bool = False,
     ) -> None:
         settings = get_settings()
-        if (
-            guild_id != settings.discord_guild_id
-            or actor_id != settings.operator_discord_user_id
-        ):
+        if guild_id != settings.discord_guild_id or actor_id != settings.operator_discord_user_id:
             raise DocketError(
                 code="invalid_provenance_context",
                 message="Discord provenance does not identify the configured Operator.",
@@ -161,8 +160,7 @@ class ProvenanceService:
             existing.actor_ref == _actor_ref(request.actor_id)
             and existing.source_message_ref
             == _message_ref(request.guild_id, request.channel_id, request.message_id)
-            and existing.conversation_ref
-            == _conversation_ref(request.guild_id, request.channel_id)
+            and existing.conversation_ref == _conversation_ref(request.guild_id, request.channel_id)
             and existing.reply_to_source_ref
             == (
                 _message_ref(
@@ -188,15 +186,15 @@ class ProvenanceService:
             actor_id=request.actor_id,
             allow_queue_root=True,
         )
+        if request.gateway_instance_ref is not None:
+            GatewayLifetimeService(self.session).require_live(request.gateway_instance_ref)
         existing = self.session.scalar(
-            select(OperatorUtterance).where(
-                OperatorUtterance.request_key == request.request_key
-            )
+            select(OperatorUtterance).where(OperatorUtterance.request_key == request.request_key)
         )
         if existing is not None:
             if not self._same_utterance(existing, request):
                 raise IdempotencyConflict(request.request_key)
-            return {
+            result = {
                 "ok": True,
                 "ref": existing.ref_id,
                 "state": "recorded",
@@ -204,6 +202,10 @@ class ProvenanceService:
                 "disposition": "replayed_request",
                 "reply_binding": ReplyBindingService(self.session).resolve(existing),
             }
+            ingress = self._capture_or_claim_typed_ingress(existing, request)
+            if ingress is not None:
+                result["deferred_ingress"] = ingress
+            return result
 
         message_ref = _message_ref(request.guild_id, request.channel_id, request.message_id)
         utterance = OperatorUtterance(
@@ -245,13 +247,80 @@ class ProvenanceService:
                 },
             )
         )
-        return {
+        result = {
             "ok": True,
             "ref": utterance.ref_id,
             "state": "recorded",
             "content_hash": utterance.content_hash,
             "disposition": "created",
             "reply_binding": ReplyBindingService(self.session).resolve(utterance),
+        }
+        ingress = self._capture_or_claim_typed_ingress(utterance, request)
+        if ingress is not None:
+            result["deferred_ingress"] = ingress
+        return result
+
+    def _capture_or_claim_typed_ingress(
+        self,
+        utterance: OperatorUtterance,
+        request: OperatorUtteranceCapture,
+    ) -> dict[str, Any] | None:
+        if request.gateway_instance_ref is None:
+            return None
+        existing = self.session.scalar(
+            select(DeferredIngress).where(DeferredIngress.source_key == request.request_key)
+        )
+        if existing is not None and existing.utterance_ref != utterance.ref_id:
+            raise IdempotencyConflict(request.request_key)
+        if existing is not None and existing.status in {"completed", "rejected", "claimed"}:
+            return {
+                "ref": existing.ref_id,
+                "state": existing.status,
+                "drain_ref": existing.drain_ref,
+                "lease_ref": None,
+                "claim_token": str(existing.claim_token) if existing.claim_token else None,
+            }
+
+        continuity = ContinuityService(self.session)
+        claim_token = uuid.uuid4()
+        lease_ref: str | None = None
+        drain_ref: str | None = None
+        state = "claimed"
+        try:
+            lease = continuity.acquire_execution_lease(
+                lease_key=f"interactive:{utterance.ref_id}:{claim_token}",
+                lease_kind="interactive_turn",
+                subject_ref=utterance.ref_id,
+                gateway_instance_ref=request.gateway_instance_ref,
+            )
+            lease_ref = lease.ref_id
+        except DocketError as exc:
+            if exc.code != "deployment_drain_active":
+                raise
+            state = "pending"
+            drain_ref = str((exc.details or {}).get("drain_ref") or "") or None
+
+        ingress = existing or DeferredIngress(
+            source_key=request.request_key,
+            ingress_kind="typed_message",
+            utterance_ref=utterance.ref_id,
+        )
+        ingress.status = state
+        ingress.drain_ref = drain_ref
+        ingress.claimed_by_gateway_ref = (
+            request.gateway_instance_ref if state == "claimed" else None
+        )
+        ingress.claim_token = claim_token if state == "claimed" else None
+        ingress.claimed_at = utc_now() if state == "claimed" else None
+        if existing is None:
+            self.session.add(ingress)
+        self.session.flush()
+        return {
+            "ref": ingress.ref_id,
+            "state": ingress.status,
+            "drain_ref": ingress.drain_ref,
+            "lease_ref": lease_ref,
+            "claim_token": str(ingress.claim_token) if ingress.claim_token else None,
         }
 
     def capture_agent_response(self, request: AgentResponseCapture) -> dict[str, Any]:
@@ -262,9 +331,7 @@ class ProvenanceService:
             actor_id=request.actor_id,
         )
         if request.gateway_instance_ref is not None:
-            GatewayLifetimeService(self.session).require_live(
-                request.gateway_instance_ref
-            )
+            GatewayLifetimeService(self.session).require_live(request.gateway_instance_ref)
         utterance = self.session.scalar(
             select(OperatorUtterance).where(OperatorUtterance.ref_id == request.utterance_ref)
         )
@@ -366,9 +433,7 @@ class ProvenanceService:
                 primary_public_ref=response.ref_id,
                 projection_version=1,
                 case_revision_refs=(
-                    list(intent_session.case_revision_refs)
-                    if intent_session is not None
-                    else []
+                    list(intent_session.case_revision_refs) if intent_session is not None else []
                 ),
                 brief_ref=(intent_session.brief_ref if intent_session is not None else None),
                 transport="discord",
@@ -419,13 +484,9 @@ class ProvenanceService:
             actor_id=request.actor_id,
         )
         if request.gateway_instance_ref is not None:
-            GatewayLifetimeService(self.session).require_live(
-                request.gateway_instance_ref
-            )
+            GatewayLifetimeService(self.session).require_live(request.gateway_instance_ref)
         utterance = self.session.scalar(
-            select(OperatorUtterance).where(
-                OperatorUtterance.ref_id == request.utterance_ref
-            )
+            select(OperatorUtterance).where(OperatorUtterance.ref_id == request.utterance_ref)
         )
         if utterance is None:
             raise DocketError(
@@ -521,19 +582,14 @@ class ProvenanceService:
                     resulting_semantic_refs.append(ref)
         if turn.semantic_request_ref is not None:
             semantic_request = self.session.scalar(
-                select(SemanticRequest).where(
-                    SemanticRequest.ref_id == turn.semantic_request_ref
-                )
+                select(SemanticRequest).where(SemanticRequest.ref_id == turn.semantic_request_ref)
             )
             if semantic_request is not None:
                 for semantic_ref in (
                     semantic_request.ref_id,
                     semantic_request.committed_changeset_ref,
                 ):
-                    if (
-                        semantic_ref is not None
-                        and semantic_ref not in resulting_semantic_refs
-                    ):
+                    if semantic_ref is not None and semantic_ref not in resulting_semantic_refs:
                         resulting_semantic_refs.append(semantic_ref)
         finalized = IntentSessionService(self.session).finalize_turn(
             IntentTurnFinalize(
@@ -557,9 +613,7 @@ class ProvenanceService:
             actor_id=request.actor_id,
         )
         if request.gateway_instance_ref is not None:
-            GatewayLifetimeService(self.session).require_live(
-                request.gateway_instance_ref
-            )
+            GatewayLifetimeService(self.session).require_live(request.gateway_instance_ref)
         response = self.session.scalar(
             select(AgentResponse)
             .where(AgentResponse.ref_id == request.response_ref)
@@ -671,9 +725,7 @@ class ProvenanceService:
                 message="Stored bootstrap authorization does not match the frozen artifact.",
             )
         sources = list(
-            self.session.scalars(
-                select(RecordSource).where(RecordSource.record_id == record.id)
-            )
+            self.session.scalars(select(RecordSource).where(RecordSource.record_id == record.id))
         )
         if len(sources) != 1:
             raise DocketError(
@@ -797,9 +849,7 @@ class ProvenanceService:
                 message="Specification sign-off does not identify an eligible frozen artifact.",
             )
         utterance = self.session.scalar(
-            select(OperatorUtterance).where(
-                OperatorUtterance.ref_id == request.utterance_ref
-            )
+            select(OperatorUtterance).where(OperatorUtterance.ref_id == request.utterance_ref)
         )
         if utterance is None:
             raise DocketError(
@@ -821,8 +871,7 @@ class ProvenanceService:
             select(Decision).where(
                 Decision.decision_kind == artifact.prerequisite.decision_kind,
                 Decision.document_ref == artifact.prerequisite.document_ref,
-                Decision.frozen_artifact_hash
-                == artifact.prerequisite.frozen_artifact_hash,
+                Decision.frozen_artifact_hash == artifact.prerequisite.frozen_artifact_hash,
             )
         )
         if prerequisite is None:
@@ -844,19 +893,15 @@ class ProvenanceService:
             )
             if (
                 bootstrap_utterance is None
-                or bootstrap_utterance.actor_ref
-                != _actor_ref(settings.operator_discord_user_id)
+                or bootstrap_utterance.actor_ref != _actor_ref(settings.operator_discord_user_id)
                 or bootstrap_utterance.transport != "discord"
-                or bootstrap_utterance.content_hash
-                != artifact.bootstrap_authority.content_hash
+                or bootstrap_utterance.content_hash != artifact.bootstrap_authority.content_hash
                 or bootstrap_utterance.content_hash
                 != _sha256_text(bootstrap_utterance.verbatim_text)
             ):
                 raise DocketError(
                     code="amendment_signoff_bootstrap_not_verified",
-                    message=(
-                        "The manifest-bound amendment bootstrap authority is unavailable."
-                    ),
+                    message=("The manifest-bound amendment bootstrap authority is unavailable."),
                 )
 
         existing = self.session.scalar(
@@ -916,9 +961,7 @@ class ProvenanceService:
                     "authorized_scope": artifact.authorized_scope,
                     "prerequisite_decision_ref": prerequisite.ref_id,
                     "bootstrap_utterance_ref": (
-                        bootstrap_utterance.ref_id
-                        if bootstrap_utterance is not None
-                        else None
+                        bootstrap_utterance.ref_id if bootstrap_utterance is not None else None
                     ),
                 },
             )

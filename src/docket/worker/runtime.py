@@ -1,12 +1,16 @@
 import asyncio
 import time
+import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
 import structlog
 
 from docket.services.backups import BackupService
 from docket.services.briefs import DailyBriefService
 from docket.services.calendar_sync import CalendarSyncService
+from docket.services.continuity import ExecutionLeaseCoordinator
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.events import SemanticCandidateCompiler
 from docket.services.gateway_lifetimes import GatewayLifetimeReconciler
@@ -48,6 +52,7 @@ class WorkerRuntime:
         retention_service: RetentionService | None = None,
         retention_poll_seconds: float = 3600.0,
         gateway_lifetime_reconciler: GatewayLifetimeReconciler | None = None,
+        execution_lease_coordinator: ExecutionLeaseCoordinator | None = None,
     ) -> None:
         self.heartbeat_seconds = heartbeat_seconds
         self.operation_runner = operation_runner
@@ -74,6 +79,7 @@ class WorkerRuntime:
         self.retention_service = retention_service
         self.retention_poll_seconds = retention_poll_seconds
         self.gateway_lifetime_reconciler = gateway_lifetime_reconciler
+        self.execution_lease_coordinator = execution_lease_coordinator
         self.last_heartbeat: datetime | None = None
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -139,7 +145,11 @@ class WorkerRuntime:
             # progress sets the event again and forces another immediate drain.
             wake.clear()
             try:
-                while not self._stop.is_set() and await asyncio.to_thread(runner.run_due_once):
+                while not self._stop.is_set() and await self._run_leased(
+                    "outbox_delivery",
+                    "discord-projection",
+                    runner.run_due_once,
+                ):
                     pass
             except Exception:
                 logger.exception("discord_projection_worker_iteration_failed")
@@ -178,7 +188,11 @@ class WorkerRuntime:
                     await self._drain_due_operations()
                     next_operation = now + self.operation_poll_seconds
                 if now >= next_reconciliation:
-                    await asyncio.to_thread(self.operation_runner.reconcile_once)
+                    await self._run_leased(
+                        "provider_call",
+                        "operation-reconciliation",
+                        self.operation_runner.reconcile_once,
+                    )
                     next_reconciliation = now + self.reconciliation_poll_seconds
                 if now >= next_recovery:
                     await asyncio.to_thread(self.operation_runner.recover_expired_leases)
@@ -189,9 +203,7 @@ class WorkerRuntime:
                     if self.calendar_sync_service is not None:
                         await asyncio.to_thread(self.calendar_sync_service.recover_expired_leases)
                     if self.gateway_lifetime_reconciler is not None:
-                        await asyncio.to_thread(
-                            self.gateway_lifetime_reconciler.run_once
-                        )
+                        await asyncio.to_thread(self.gateway_lifetime_reconciler.run_once)
                     next_recovery = now + self.stale_lease_poll_seconds
                 if self.discord_projection_runner is not None and now >= next_projection_repair:
                     repairs = await asyncio.to_thread(
@@ -201,32 +213,80 @@ class WorkerRuntime:
                         self.wake_discord_projection()
                     next_projection_repair = now + 60.0
                 if self.rollover_service is not None and now >= next_rollover:
-                    await asyncio.to_thread(self.rollover_service.expire_due_approvals)
-                    await asyncio.to_thread(self.rollover_service.run_due_once)
-                    await asyncio.to_thread(self.rollover_service.maintain_archives)
+                    await self._run_leased(
+                        "cron_execution",
+                        "rollover-expire",
+                        self.rollover_service.expire_due_approvals,
+                    )
+                    await self._run_leased(
+                        "cron_execution",
+                        "rollover-due",
+                        self.rollover_service.run_due_once,
+                    )
+                    await self._run_leased(
+                        "cron_execution",
+                        "rollover-archive",
+                        self.rollover_service.maintain_archives,
+                    )
                     next_rollover = now + self.rollover_poll_seconds
                 if self.calendar_sync_service is not None and now >= next_calendar_sync:
-                    await asyncio.to_thread(self.calendar_sync_service.run_due_once)
-                    await asyncio.to_thread(self.calendar_sync_service.evaluate_staleness)
+                    await self._run_leased(
+                        "cron_execution",
+                        "calendar-sync",
+                        self.calendar_sync_service.run_due_once,
+                    )
+                    await self._run_leased(
+                        "cron_execution",
+                        "calendar-staleness",
+                        self.calendar_sync_service.evaluate_staleness,
+                    )
                     next_calendar_sync = now + self.calendar_sync_poll_seconds
                 if self.reminder_dispatcher is not None and now >= next_reminder_dispatch:
-                    await asyncio.to_thread(self.reminder_dispatcher.run_due_once)
+                    await self._run_leased(
+                        "cron_execution",
+                        "reminder-dispatch",
+                        self.reminder_dispatcher.run_due_once,
+                    )
                     next_reminder_dispatch = now + self.reminder_dispatch_poll_seconds
                 if self.backup_service is not None and now >= next_backup:
-                    await asyncio.to_thread(self.backup_service.run_due_once)
+                    await self._run_leased(
+                        "cron_execution",
+                        "backup",
+                        self.backup_service.run_due_once,
+                    )
                     next_backup = now + self.backup_poll_seconds
                 if self.gmail_ingestion_service is not None and now >= next_gmail_scan:
-                    await asyncio.to_thread(self.gmail_ingestion_service.run_due_once)
-                    await asyncio.to_thread(self.gmail_ingestion_service.evaluate_staleness)
+                    await self._run_leased(
+                        "cron_execution",
+                        "gmail-scan",
+                        self.gmail_ingestion_service.run_due_once,
+                    )
+                    await self._run_leased(
+                        "cron_execution",
+                        "gmail-staleness",
+                        self.gmail_ingestion_service.evaluate_staleness,
+                    )
                     next_gmail_scan = now + self.gmail_scan_poll_seconds
                 if self.semantic_candidate_compiler is not None and now >= next_semantic_candidate:
-                    await asyncio.to_thread(self.semantic_candidate_compiler.run_due_once)
+                    await self._run_leased(
+                        "triage_turn",
+                        "semantic-candidate",
+                        self.semantic_candidate_compiler.run_due_once,
+                    )
                     next_semantic_candidate = now + self.semantic_candidate_poll_seconds
                 if self.daily_brief_service is not None and now >= next_daily_brief:
-                    await asyncio.to_thread(self.daily_brief_service.run_due_once)
+                    await self._run_leased(
+                        "triage_turn",
+                        "daily-brief",
+                        self.daily_brief_service.run_due_once,
+                    )
                     next_daily_brief = now + self.daily_brief_poll_seconds
                 if self.retention_service is not None and now >= next_retention:
-                    await asyncio.to_thread(self.retention_service.run_due_once)
+                    await self._run_leased(
+                        "cron_execution",
+                        "retention",
+                        self.retention_service.run_due_once,
+                    )
                     next_retention = now + self.retention_poll_seconds
             except Exception:
                 logger.exception("worker_iteration_failed")
@@ -239,11 +299,48 @@ class WorkerRuntime:
     async def _drain_due_operations(self) -> int:
         processed = 0
         while processed < self.operation_drain_limit:
-            if not await asyncio.to_thread(self.operation_runner.run_due_once):
+            if not await self._run_leased(
+                "provider_call",
+                "operation-execution",
+                self.operation_runner.run_due_once,
+            ):
                 break
             processed += 1
             self.last_heartbeat = datetime.now(UTC)
         return processed
+
+    async def _run_leased(
+        self,
+        lease_kind: str,
+        label: str,
+        function: Callable[[], Any],
+    ) -> Any:
+        coordinator = self.execution_lease_coordinator
+        if coordinator is None:
+            return await asyncio.to_thread(function)
+        lease_ref = await asyncio.to_thread(
+            coordinator.acquire,
+            lease_key=f"worker:{label}:{uuid.uuid4()}",
+            lease_kind=lease_kind,
+        )
+        if lease_ref is None:
+            return None
+        try:
+            result = await asyncio.to_thread(function)
+        except Exception as exc:
+            await asyncio.to_thread(
+                coordinator.complete,
+                lease_ref,
+                retain=True,
+                metadata={"error_code": type(exc).__name__[:128]},
+            )
+            raise
+        await asyncio.to_thread(
+            coordinator.complete,
+            lease_ref,
+            retain=bool(result),
+        )
+        return result
 
     def is_healthy(self) -> bool:
         if (

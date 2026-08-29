@@ -10,7 +10,9 @@ from sqlalchemy.orm import Session, sessionmaker
 from docket.config import get_settings
 from docket.domain.errors import DocketError
 from docket.models import (
+    DeferredIngress,
     DiscordMcpTrace,
+    ExecutionLease,
     GatewayLifetime,
     SemanticRequest,
     ToolInvocation,
@@ -225,6 +227,39 @@ class GatewayLifetimeService:
         for lifetime in expired:
             lifetime.status = "expired"
             expired_refs.append(lifetime.ref_id)
+            leases = list(
+                self.session.scalars(
+                    select(ExecutionLease)
+                    .where(
+                        ExecutionLease.gateway_instance_ref == lifetime.ref_id,
+                        ExecutionLease.status == "active",
+                    )
+                    .with_for_update()
+                )
+            )
+            for lease in leases:
+                lease.status = "expired"
+                lease.completed_at = now
+                lease.metadata_json = {
+                    **lease.metadata_json,
+                    "error_code": "gateway_interrupted",
+                }
+            deferred = list(
+                self.session.scalars(
+                    select(DeferredIngress)
+                    .where(
+                        DeferredIngress.claimed_by_gateway_ref == lifetime.ref_id,
+                        DeferredIngress.status == "claimed",
+                    )
+                    .with_for_update()
+                )
+            )
+            for ingress in deferred:
+                ingress.status = "pending"
+                ingress.claimed_by_gateway_ref = None
+                ingress.claim_token = None
+                ingress.claimed_at = None
+                ingress.last_error_code = "gateway_interrupted"
             traces = list(
                 self.session.scalars(
                     select(DiscordMcpTrace)

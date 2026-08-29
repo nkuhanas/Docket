@@ -2,6 +2,7 @@ import uuid
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import ValidationError
 from sqlalchemy import select
 from starlette.requests import Request
 
@@ -14,6 +15,7 @@ from docket.internal_api.schemas import (
     AgentResponseDeliveryUpdate,
     AgentTurnNoResponse,
     ApprovalResponse,
+    ExecutionLeaseComplete,
     GatewayLifetimeHeartbeat,
     GatewayLifetimeRegister,
     GatewayLifetimeShutdown,
@@ -29,6 +31,7 @@ from docket.providers.google.runtime import get_calendar_read_provider
 from docket.schemas.authority import ChangeSetContent
 from docket.services.approvals import ApprovalService
 from docket.services.calendar_sync import CalendarSyncService
+from docket.services.continuity import ContinuityService
 from docket.services.gateway_lifetimes import GatewayLifetimeService
 from docket.services.interactive_authority import InteractiveAuthorityService
 from docket.services.local_actions import LocalActionService
@@ -230,6 +233,72 @@ def operator_utterance_capture(payload: OperatorUtteranceCapture) -> dict[str, o
         ) from exc
 
 
+@router.put("/execution-leases/{lease_ref}/complete")
+def execution_lease_complete(
+    lease_ref: str,
+    payload: ExecutionLeaseComplete,
+) -> dict[str, object]:
+    if lease_ref != payload.lease_ref:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "execution_lease_binding_mismatch",
+                "message": "Execution lease path and body differ.",
+            },
+        )
+    try:
+        with session_scope() as session:
+            GatewayLifetimeService(session).require_live(payload.gateway_instance_ref)
+            if payload.deferred_ingress_ref is not None:
+                ingress = session.scalar(
+                    select(DeferredIngress)
+                    .where(DeferredIngress.ref_id == payload.deferred_ingress_ref)
+                    .with_for_update()
+                )
+                if (
+                    ingress is None
+                    or ingress.claimed_by_gateway_ref != payload.gateway_instance_ref
+                ):
+                    raise DocketError(
+                        code="deferred_ingress_claim_mismatch",
+                        message="Deferred ingress is not owned by this gateway lifetime.",
+                    )
+                if payload.outcome == "completed":
+                    ingress.status = "completed"
+                    ingress.completed_at = utc_now()
+                    ingress.last_error_code = None
+                elif payload.outcome == "rejected":
+                    ingress.status = "rejected"
+                    ingress.completed_at = utc_now()
+                    ingress.last_error_code = payload.error_code
+                else:
+                    ingress.status = "pending"
+                    ingress.claimed_by_gateway_ref = None
+                    ingress.claim_token = None
+                    ingress.claimed_at = None
+                    ingress.last_error_code = payload.error_code or "interactive_turn_failed"
+            ContinuityService(session).complete_execution_lease(
+                payload.lease_ref,
+                metadata={
+                    "outcome": payload.outcome,
+                    **(
+                        {"error_code": payload.error_code} if payload.error_code is not None else {}
+                    ),
+                },
+            )
+            return {
+                "ok": True,
+                "ref": payload.lease_ref,
+                "state": "completed",
+                "disposition": payload.outcome,
+            }
+    except DocketError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.as_dict()["error"],
+        ) from exc
+
+
 @router.post("/semantic-option-selections")
 def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, object]:
     try:
@@ -248,34 +317,45 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
             detail=exc.as_dict()["error"],
         ) from exc
     execution: dict[str, object]
-    try:
-        compiled = ChangeSetContent.model_validate(selection["compiled_content"])
-        with session_scope() as session:
-            semantic_request = session.scalar(
-                select(SemanticRequest).where(
-                    SemanticRequest.ref_id == selection["semantic_request_ref"]
-                )
+    replayed_execution: dict[str, object] | None = None
+    with session_scope() as session:
+        existing_request = session.scalar(
+            select(SemanticRequest).where(
+                SemanticRequest.ref_id == selection["semantic_request_ref"]
             )
-            if (
-                semantic_request is not None
-                and semantic_request.authority_availability == "consumed_committed"
-                and semantic_request.committed_changeset_ref is not None
-            ):
-                execution = {
-                    "ok": True,
-                    "ref": semantic_request.committed_changeset_ref,
-                    "state": "committed",
-                    "summary": "Replayed the existing selected semantic result.",
-                    "affected_refs": [
-                        semantic_request.ref_id,
-                        semantic_request.committed_changeset_ref,
-                    ],
-                    "basis_refs": list(semantic_request.origin_utterance_refs),
-                    "next": None,
-                    "warnings": [],
-                    "disposition": "replayed_request",
-                }
-            else:
+        )
+        if (
+            existing_request is not None
+            and existing_request.authority_availability == "consumed_committed"
+            and existing_request.committed_changeset_ref is not None
+        ):
+            replayed_execution = {
+                "ok": True,
+                "ref": existing_request.committed_changeset_ref,
+                "state": "committed",
+                "summary": "Replayed the existing selected semantic result.",
+                "affected_refs": [
+                    existing_request.ref_id,
+                    existing_request.committed_changeset_ref,
+                ],
+                "basis_refs": list(existing_request.origin_utterance_refs),
+                "next": None,
+                "warnings": [],
+                "disposition": "replayed_request",
+            }
+    if replayed_execution is not None:
+        execution = replayed_execution
+    elif not selection.get("execution_ready"):
+        execution = {
+            "ok": True,
+            "state": "deferred",
+            "summary": "Decision is durably recorded and awaiting execution.",
+            "disposition": "execution_deferred",
+        }
+    else:
+        try:
+            compiled = ChangeSetContent.model_validate(selection["compiled_content"])
+            with session_scope() as session:
                 execution = InteractiveAuthorityService(session).process_turn(
                     utterance_ref=str(selection["utterance_ref"]),
                     request_key=str(selection["request_key"]),
@@ -297,32 +377,65 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
                     precondition_hash=str(selection["precondition_hash"]),
                     gateway_instance_ref=payload.gateway_instance_ref,
                 )
-            ingress = session.scalar(
-                select(DeferredIngress).where(
-                    DeferredIngress.ref_id == selection["deferred_ingress_ref"]
+                ingress = session.scalar(
+                    select(DeferredIngress).where(
+                        DeferredIngress.ref_id == selection["deferred_ingress_ref"]
+                    )
                 )
-            )
-            if ingress is not None:
-                ingress.status = "completed"
-                ingress.completed_at = utc_now()
-    except DocketError as exc:
-        execution = {
-            "ok": False,
-            "state": "blocked_validation",
-            "summary": "Decision remains authorized, but Docket could not execute it.",
-            "disposition": "rejected_validation",
-            "error": exc.as_dict()["error"],
-        }
+                if ingress is not None:
+                    ingress.status = "completed"
+                    ingress.completed_at = utc_now()
+                lease_ref = selection.get("execution_lease_ref")
+                if isinstance(lease_ref, str):
+                    ContinuityService(session).complete_execution_lease(
+                        lease_ref,
+                        metadata={"disposition": str(execution.get("disposition", "unknown"))},
+                    )
+        except (DocketError, ValidationError) as exc:
+            if isinstance(exc, DocketError):
+                error = exc.as_dict()["error"]
+            else:
+                error = {
+                    "code": "changeset_schema_validation_failed",
+                    "message": "The persisted semantic option did not compile to the tool schema.",
+                    "details": {},
+                }
+            execution = {
+                "ok": False,
+                "state": "blocked_validation",
+                "summary": "Decision remains authorized, but Docket could not execute it.",
+                "disposition": "rejected_validation",
+                "error": error,
+            }
+            lease_ref = selection.get("execution_lease_ref")
+            if isinstance(lease_ref, str):
+                with session_scope() as session:
+                    ingress = session.scalar(
+                        select(DeferredIngress)
+                        .where(DeferredIngress.ref_id == selection["deferred_ingress_ref"])
+                        .with_for_update()
+                    )
+                    if ingress is not None:
+                        ingress.status = "pending"
+                        ingress.claimed_by_gateway_ref = None
+                        ingress.claim_token = None
+                        ingress.claimed_at = None
+                        ingress.last_error_code = str(error["code"])
+                    ContinuityService(session).complete_execution_lease(
+                        lease_ref,
+                        metadata={"disposition": "rejected_validation"},
+                    )
     disposition = str(execution.get("disposition", "unknown"))
     if execution.get("state") == "committed" or disposition == "replayed_request":
         response_text = f"Done — {selection['visible_choice_text']}"
+    elif disposition == "execution_deferred":
+        response_text = (
+            "Decision recorded. Docket is draining for deployment, so execution "
+            "will resume afterward without another authorization."
+        )
     else:
         error = execution.get("error")
-        error_code = (
-            str(error.get("code", "unknown"))
-            if isinstance(error, dict)
-            else disposition
-        )
+        error_code = str(error.get("code", "unknown")) if isinstance(error, dict) else disposition
         response_text = (
             "I recorded your decision, but Docket could not apply it "
             f"(`{error_code}`). Your authorization remains available; you do not "
