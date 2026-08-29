@@ -297,6 +297,16 @@ operator_utterances`. The generated v10 interactive contract hash is
 the v10 restricted-triage hash is
 `d2669b57df80249a291796943393fa546f35462665b140566ba14961d0dca243`.
 
+GitHub Actions run `33233296737` passed both required jobs for corrective
+revision `30890dbedac6bdc25ae09dbcd5aae14cf52ac831`. The supported deployment
+used drain `drain_01M15W58GHN3ECYPT002NP2TFC`, created backup
+`backups/docket-20260829T042403Z-30890dbedac6.dump`, retained rollback image
+`docket-docket:rollback-20260829T042357Z`, and installed runtime image
+`sha256:898c5a29a7dcaeeeddba7b3121002c99e3c11da5261d90e7c47cdeb36fc23cd3`.
+Post-deploy verification found migration `0042`, one active heartbeating
+gateway lifetime, zero active execution leases, zero running ToolInvocations,
+zero in-flight outbox deliveries, and no bounded Docket/Hermes/ingress error.
+
 ### Case-resolution amendment traceability
 
 | Requirement | Automated evidence |
