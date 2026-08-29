@@ -78,6 +78,15 @@ implementation authority to
 `interactive_authority_continuity_and_deployment_drain_amendment`. A second
 service invocation returned `replayed_request`; exactly one Decision exists.
 
+The accepted sign-off initially received only the gateway acknowledgement
+reaction: the Decision committed, but no final `AgentResponse` was assembled.
+The corrective runtime now persists and projects the deterministic sign-off
+confirmation directly after the Decision result, without depending on a later
+model-turn completion callback. The same pass also added official `call_`
+tracing for deterministic semantic-option execution, exact retry continuity,
+intervening identity-binding Conflict handling, immutable safe-rebase evidence,
+and disposition-first tool activity rendering.
+
 Post-deploy verification found Docket healthy at the expected source revision,
 Hermes running plugin `0.20.7`, no active provider operations, no pending outbox
 delivery, and no bounded post-deploy Docket/Hermes error. The amendment is now
@@ -210,21 +219,70 @@ Automated acceptance is organized in these suites:
 
 | Requirement | Automated evidence |
 | --- | --- |
-| `ONT-CONT-REQ-0001`–`0006`, `0032`–`0033` | `test_persisted_selection_compiles_once_and_preserves_exact_authority`, `test_stable_ingress_selection_persists_before_worker_execution` |
-| `ONT-CONT-REQ-0007`–`0010`, `0026`–`0027` | `test_selection_validation_failure_preserves_authority_without_duplicate_attempt`, `test_dependency_cycle_blocks_before_any_handler_runs` |
-| `ONT-CONT-REQ-0011`–`0015`, `0028` | `test_model_facing_mutations_reject_loose_or_unsupported_shapes`, `test_dependency_cycle_blocks_before_any_handler_runs`, `test_interactive_profile_exposes_only_reads_and_changeset_authority` |
-| `ONT-CONT-REQ-0016`–`0018` | `test_docket_discord_profile_has_no_mutation_escape_capabilities`, ToolInvocation assertions in `test_provenance_bootstrap.py`, trace assertions in `test_mcp_traces.py` |
-| `ONT-CONT-REQ-0019`–`0020`, `0034` | `test_expired_gateway_reconciles_terminal_and_unknown_call_outcomes` |
-| `ONT-CONT-REQ-0021`–`0023` | `test_drain_waits_only_for_prebarrier_execution_leases`, `test_drain_timeout_aborts_without_cancelling_active_work`, `test_deploy_drains_execution_but_preserves_queued_durable_work` |
-| `ONT-CONT-REQ-0024`–`0025` | `test_ingress_handoff_quiesces_and_regenerates_exact_semantic_options`; the immutable original selection/precondition assertions in `test_persisted_selection_compiles_once_and_preserves_exact_authority` |
-| `ONT-CONT-REQ-0029`–`0031` | `test_authenticated_message_is_captured_and_deferred_during_drain`, `test_stable_ingress_captures_typed_message_without_domain_authority`, `test_stable_ingress_selection_persists_before_worker_execution`, `test_ingress_handoff_quiesces_and_regenerates_exact_semantic_options`, release-script contract checks |
+| `ONT-CONT-REQ-0001` | `test_persisted_selection_compiles_once_and_preserves_exact_authority` |
+| `ONT-CONT-REQ-0002` | deterministic visible-scope assertions in `test_one_click_cal_poly_resolution_commits_one_complete_changeset` |
+| `ONT-CONT-REQ-0003` | `test_model_facing_mutations_reject_loose_or_unsupported_shapes`, `test_persisted_selection_compiles_once_and_preserves_exact_authority` |
+| `ONT-CONT-REQ-0004` | immutable selection-ledger assertions in `test_persisted_selection_compiles_once_and_preserves_exact_authority` and `test_old_option_safe_rebase_preserves_immutable_selection_evidence` |
+| `ONT-CONT-REQ-0005` | `test_one_click_cal_poly_resolution_commits_one_complete_changeset` |
+| `ONT-CONT-REQ-0006` | replay assertions in `test_persisted_selection_compiles_once_and_preserves_exact_authority` |
+| `ONT-CONT-REQ-0007` | `test_selection_validation_failure_preserves_authority_without_duplicate_attempt`, `test_repaired_runtime_retries_same_semantic_request_without_new_authority` |
+| `ONT-CONT-REQ-0008` | `test_intervening_identity_binding_opens_conflict_without_partial_commit`, `test_old_option_safe_rebase_preserves_immutable_selection_evidence` |
+| `ONT-CONT-REQ-0009` | `test_one_click_cal_poly_resolution_commits_one_complete_changeset` |
+| `ONT-CONT-REQ-0010` | `test_intervening_identity_binding_opens_conflict_without_partial_commit`, `test_dependency_cycle_blocks_before_any_handler_runs` |
+| `ONT-CONT-REQ-0011` | `test_model_facing_mutations_reject_loose_or_unsupported_shapes` plus schema assertions in `test_interactive_profile_exposes_only_reads_and_changeset_authority` |
+| `ONT-CONT-REQ-0012` | typed identity-binding and `operator_selection` assertions in `test_one_click_cal_poly_resolution_commits_one_complete_changeset` |
+| `ONT-CONT-REQ-0013` | `test_dependency_cycle_blocks_before_any_handler_runs`, `test_rich_registry_graph_commits_atomically_with_create_references` |
+| `ONT-CONT-REQ-0014` | generated schema/example assertions in `test_interactive_profile_exposes_only_reads_and_changeset_authority` and `test_generated_tool_contracts_have_exact_profile_parity_and_hashes` |
+| `ONT-CONT-REQ-0015` | first-call/no-rejection assertions in `test_one_click_cal_poly_resolution_commits_one_complete_changeset` |
+| `ONT-CONT-REQ-0016` | `test_docket_discord_profile_has_no_mutation_escape_capabilities`, `test_internal_api_and_mcp_require_distinct_tokens` |
+| `ONT-CONT-REQ-0017` | blocked-response and preserved-authority assertions in `test_selection_validation_failure_preserves_authority_without_duplicate_attempt` |
+| `ONT-CONT-REQ-0018` | `test_terminal_trace_preserves_needs_clarification_disposition`, `test_mcp_trace_projects_semantic_disposition_before_transport_details`, ToolInvocation assertions in `test_provenance_bootstrap.py` |
+| `ONT-CONT-REQ-0019` | `test_expired_gateway_reconciles_terminal_and_unknown_call_outcomes` |
+| `ONT-CONT-REQ-0020` | `test_expired_gateway_reconciles_terminal_and_unknown_call_outcomes` |
+| `ONT-CONT-REQ-0021` | `test_drain_waits_only_for_prebarrier_execution_leases`, deployment-script contract checks |
+| `ONT-CONT-REQ-0022` | `test_drain_waits_only_for_prebarrier_execution_leases`, `test_deploy_drains_execution_but_preserves_queued_durable_work` |
+| `ONT-CONT-REQ-0023` | `test_drain_timeout_aborts_without_cancelling_active_work` |
+| `ONT-CONT-REQ-0024` | `test_ingress_handoff_quiesces_and_regenerates_exact_semantic_options` |
+| `ONT-CONT-REQ-0025` | `test_old_option_safe_rebase_preserves_immutable_selection_evidence` |
+| `ONT-CONT-REQ-0026` | `test_selection_validation_failure_preserves_authority_without_duplicate_attempt`, `test_repaired_runtime_retries_same_semantic_request_without_new_authority` |
+| `ONT-CONT-REQ-0027` | `test_repaired_runtime_retries_same_semantic_request_without_new_authority` |
+| `ONT-CONT-REQ-0028` | `test_conflict_resolution_commits_through_one_immutable_changeset`, generic-schema exclusion in `test_interactive_profile_exposes_only_reads_and_changeset_authority` |
+| `ONT-CONT-REQ-0029` | `test_authenticated_message_is_captured_and_deferred_during_drain`, `test_stable_ingress_selection_persists_before_worker_execution` |
+| `ONT-CONT-REQ-0030` | continuity migration assertions in `test_initial_migration_upgrades_and_downgrades` and restricted-role Compose smoke |
+| `ONT-CONT-REQ-0031` | `test_ingress_handoff_quiesces_and_regenerates_exact_semantic_options`, ingress-deploy script contract checks |
+| `ONT-CONT-REQ-0032` | exact symbolic substitution assertions in `test_persisted_selection_compiles_once_and_preserves_exact_authority` |
+| `ONT-CONT-REQ-0033` | `sreq_` and attempt-lineage assertions in `test_persisted_selection_compiles_once_and_preserves_exact_authority` and `test_repaired_runtime_retries_same_semantic_request_without_new_authority` |
+| `ONT-CONT-REQ-0034` | `test_expired_gateway_reconciles_terminal_and_unknown_call_outcomes`, gateway lease migration assertions in `test_initial_migration_upgrades_and_downgrades` |
+
+Acceptance coverage is also explicit:
+
+| Acceptance | Automated evidence |
+| --- | --- |
+| `ONT-CONT-ACC-0001` | `test_one_click_cal_poly_resolution_commits_one_complete_changeset` |
+| `ONT-CONT-ACC-0002` | replay assertions in `test_persisted_selection_compiles_once_and_preserves_exact_authority` |
+| `ONT-CONT-ACC-0003` | `test_selection_validation_failure_preserves_authority_without_duplicate_attempt` |
+| `ONT-CONT-ACC-0004` | `test_intervening_identity_binding_opens_conflict_without_partial_commit` |
+| `ONT-CONT-ACC-0005` | `test_intervening_identity_binding_opens_conflict_without_partial_commit`, `test_dependency_cycle_blocks_before_any_handler_runs` |
+| `ONT-CONT-ACC-0006` | `test_terminal_trace_preserves_needs_clarification_disposition`, `test_mcp_trace_projects_semantic_disposition_before_transport_details` |
+| `ONT-CONT-ACC-0007` | `test_docket_discord_profile_has_no_mutation_escape_capabilities`, `test_internal_api_and_mcp_require_distinct_tokens` |
+| `ONT-CONT-ACC-0008` | `test_drain_waits_only_for_prebarrier_execution_leases`, deployment-script contract checks |
+| `ONT-CONT-ACC-0009` | `test_deploy_drains_execution_but_preserves_queued_durable_work` |
+| `ONT-CONT-ACC-0010` | terminal-outcome branch in `test_expired_gateway_reconciles_terminal_and_unknown_call_outcomes` |
+| `ONT-CONT-ACC-0011` | unknown-outcome branch in `test_expired_gateway_reconciles_terminal_and_unknown_call_outcomes` |
+| `ONT-CONT-ACC-0012` | `test_ingress_handoff_quiesces_and_regenerates_exact_semantic_options`, `test_old_option_safe_rebase_preserves_immutable_selection_evidence` |
+| `ONT-CONT-ACC-0013` | `test_repaired_runtime_retries_same_semantic_request_without_new_authority` |
+| `ONT-CONT-ACC-0014` | `test_authenticated_message_is_captured_and_deferred_during_drain`, `test_stable_ingress_captures_typed_message_without_domain_authority`, `test_stable_ingress_selection_persists_before_worker_execution` |
+| `ONT-CONT-ACC-0015` | `test_conflict_resolution_commits_through_one_immutable_changeset`, generic-schema exclusion in `test_interactive_profile_exposes_only_reads_and_changeset_authority` |
+| `ONT-CONT-ACC-0016` | `test_old_option_safe_rebase_preserves_immutable_selection_evidence` |
+| `ONT-CONT-ACC-0017` | symbolic substitution assertions in `test_persisted_selection_compiles_once_and_preserves_exact_authority` |
+| `ONT-CONT-ACC-0018` | `test_expired_gateway_reconciles_terminal_and_unknown_call_outcomes` |
 
 Current source-gate result on 2026-08-28:
 
 ```text
-pytest: 403 passed
+pytest: 410 passed
 ruff: all checks passed
-mypy: no issues in 135 source files
+mypy: no issues in 136 source files
 git diff --check: clean
 isolated PostgreSQL Compose smoke: passed
 ```

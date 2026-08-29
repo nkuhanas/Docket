@@ -201,14 +201,30 @@ signed_amendments:
       - edb9513
       - 76e5f8d
       - a7a16f8
+      - 3fc8024
+      - a3b26fd
+      - 4e24ce6
+      - 85190e8
+      - 9039d6c
+      - c551567
     local_verification:
       verified_at: 2026-08-28
-      pytest_passed: 403
+      pytest_passed: 410
       ruff: passed
-      mypy_source_files: 135
+      mypy_source_files: 136
       compose_smoke: passed
       concurrent_gateway_registration: passed
       production_deployed: true
+    corrective_followup:
+      status: source_verified_pending_exact_sha_ci_and_redeployment
+      fixes:
+        - deterministic_signoff_confirmation
+        - deterministic_selection_tool_invocation
+        - one_click_composite_scope
+        - authorized_retry_continuity
+        - intervening_identity_binding_conflict
+        - immutable_safe_rebase_execution
+        - disposition_first_tool_activity
     deployment_evidence:
       deployed_at: 2026-08-29T03:30:07Z
       verified_at: 2026-08-29T03:31:26Z
