@@ -14,6 +14,7 @@ from docket.domain.public_refs import is_public_ref, parse_public_ref
 from docket.models import (
     Affiliation,
     AuditEvent,
+    CalendarLane,
     ChangeSet,
     ChangeSetRevision,
     Conflict,
@@ -438,6 +439,146 @@ class ChangeSetService:
                     if ref_id not in affected_refs:
                         affected_refs.append(ref_id)
         return affected_refs
+
+    def _compile_required_provider_intents(
+        self,
+        content: ChangeSetContent,
+        *,
+        changeset_idempotency_key: str,
+    ) -> ChangeSetContent:
+        """Compile provider projection implied by canonical Calendar event creates."""
+        provider_intents = list(content.provider_intents)
+        lane_creates = {
+            change.change_id: change
+            for change in content.lane_changes
+            if change.object_type == "calendar_lane" and change.action == "create"
+        }
+
+        def targets_change(intent: ProviderIntentInput, change_id: str) -> bool:
+            return change_id in intent.canonical_target_change_ids
+
+        def targets_ref(intent: ProviderIntentInput, ref_id: str) -> bool:
+            return ref_id in intent.canonical_target_refs
+
+        def compiled_intent(
+            *,
+            operation_type: str,
+            provider_binding: str,
+            target_change_ids: list[str],
+            target_refs: list[str],
+            basis_refs: list[str],
+            source_change_id: str,
+        ) -> ProviderIntentInput:
+            token = sha256_json(
+                {
+                    "changeset_idempotency_key": changeset_idempotency_key,
+                    "operation_type": operation_type,
+                    "source_change_id": source_change_id,
+                }
+            )[:24]
+            return ProviderIntentInput(
+                intent_id=f"auto-{operation_type.removeprefix('calendar_')}-{token}",
+                operation_type=operation_type,
+                provider_binding=provider_binding,
+                canonical_target_refs=target_refs,
+                canonical_target_change_ids=target_change_ids,
+                basis_refs=basis_refs,
+                idempotency_key=f"changeset-provider:{token}:{operation_type}",
+                parameters={"compiled_from_change_id": source_change_id},
+            )
+
+        for event_change in content.event_changes:
+            if event_change.action != "create" or event_change.create_spec is None:
+                continue
+            existing_event_intents = [
+                intent
+                for intent in provider_intents
+                if intent.operation_type == "calendar_create_event"
+                and targets_change(intent, event_change.change_id)
+            ]
+            if len(existing_event_intents) > 1:
+                raise DocketError(
+                    code="duplicate_calendar_event_projection",
+                    message="One canonical event create may have only one provider projection.",
+                    details={"change_id": event_change.change_id},
+                )
+            if existing_event_intents:
+                continue
+
+            event_spec = event_change.create_spec
+            lane_change_id = event_spec.lane_change_id
+            lane_ref = event_spec.lane_ref
+            account_id: object | None = None
+            lane_needs_configuration = False
+            lane_basis_refs = list(event_change.basis_refs)
+            if lane_change_id is not None:
+                lane_change = lane_creates.get(lane_change_id)
+                if lane_change is None or lane_change.create_spec is None:
+                    continue
+                lane_spec = lane_change.create_spec
+                account_id = lane_spec.account_id
+                lane_needs_configuration = lane_spec.provider_calendar_binding is None
+                lane_basis_refs = list(lane_change.basis_refs)
+            elif lane_ref is not None:
+                lane = self.session.scalar(
+                    select(CalendarLane).where(CalendarLane.ref_id == lane_ref)
+                )
+                if lane is None:
+                    continue
+                account_id = lane.account_id
+                lane_needs_configuration = lane.calendar_id is None
+            if account_id is None:
+                continue
+            provider_binding = f"account:{account_id}"
+
+            if lane_needs_configuration:
+                existing_lane_intent = any(
+                    intent.operation_type == "calendar_configure_lane"
+                    and (
+                        (
+                            lane_change_id is not None
+                            and targets_change(intent, lane_change_id)
+                        )
+                        or (
+                            lane_ref is not None
+                            and targets_ref(intent, lane_ref)
+                        )
+                    )
+                    for intent in provider_intents
+                )
+                if not existing_lane_intent:
+                    provider_intents.append(
+                        compiled_intent(
+                            operation_type="calendar_configure_lane",
+                            provider_binding=provider_binding,
+                            target_change_ids=(
+                                [lane_change_id] if lane_change_id is not None else []
+                            ),
+                            target_refs=[lane_ref] if lane_ref is not None else [],
+                            basis_refs=lane_basis_refs,
+                            source_change_id=lane_change_id or event_change.change_id,
+                        )
+                    )
+
+            provider_intents.append(
+                compiled_intent(
+                    operation_type="calendar_create_event",
+                    provider_binding=provider_binding,
+                    target_change_ids=[event_change.change_id],
+                    target_refs=[],
+                    basis_refs=list(event_change.basis_refs),
+                    source_change_id=event_change.change_id,
+                )
+            )
+
+        return ChangeSetContent.model_validate(
+            {
+                **content.model_dump(mode="json"),
+                "provider_intents": [
+                    intent.model_dump(mode="json") for intent in provider_intents
+                ],
+            }
+        )
 
     def resolve_conflict(
         self,
@@ -1216,6 +1357,14 @@ class ChangeSetService:
         intent_session.version += 1
 
     def prepare(self, request: ChangeSetPrepare) -> tuple[ChangeSet, bool]:
+        request = request.model_copy(
+            update={
+                "content": self._compile_required_provider_intents(
+                    request.content,
+                    changeset_idempotency_key=request.idempotency_key,
+                )
+            }
+        )
         intent_session = IntentSessionService(self.session).get(request.intent_session_ref)
         if intent_session.version != request.expected_session_version:
             raise DocketError(
@@ -1329,6 +1478,14 @@ class ChangeSetService:
                     "current_version": changeset.version,
                 },
             )
+        request = request.model_copy(
+            update={
+                "content": self._compile_required_provider_intents(
+                    request.content,
+                    changeset_idempotency_key=changeset.idempotency_key,
+                )
+            }
+        )
         intent_session = self.session.get(IntentSession, changeset.intent_session_id)
         if intent_session is None:
             raise DocketError(

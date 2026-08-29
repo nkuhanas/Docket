@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-08-29-v12"
+CONTRACT_VERSION = "docket-tools-2026-08-29-v13"
 
 
 class ToolContractEntry(TypedDict):
@@ -131,7 +131,9 @@ def _interactive_entries() -> tuple[ToolContractEntry, ...]:
                         "Commit one resolved request; for AttentionCase replies read the "
                         "case once, use its exact caserev_, and send one fully typed "
                         "atomic scope. When a bounded choice is required, send content=null "
-                        "plus typed semantic_options; Docket persists and projects them."
+                        "plus typed semantic_options; Docket persists and projects them. "
+                        "A CanonicalEvent create deterministically queues its required "
+                        "Google projection; do not request a separate provider push."
                     )
                     if name == "docket_commit_changeset"
                     else "Current authenticated Operator explicitly requests this effect."
@@ -157,7 +159,14 @@ def _interactive_entries() -> tuple[ToolContractEntry, ...]:
                     else "interactive_read_only"
                 ),
                 "preconditions": "P-MUT" if mutation else "P-READ",
-                "side_effects": "Effect named by purpose." if mutation else "None.",
+                "side_effects": (
+                    "Commits canonical state atomically; CanonicalEvent creates also "
+                    "persist required lane-configuration and Google event Operations."
+                    if name == "docket_commit_changeset"
+                    else "Effect named by purpose."
+                    if mutation
+                    else "None."
+                ),
                 "success_dispositions": (
                     "S-CHANGESET"
                     if name in {"docket_commit_changeset", "docket_resolve_conflict"}

@@ -42,6 +42,13 @@ to drain them. At the 2026-08-28 cutover check there were zero pending rows.
 The legacy Record/entity/Calendar sections below describe compatibility data
 and pre-cutover incident recovery; they do not authorize removed MCP mutations.
 
+A CanonicalEvent create is not a canonical-only operation. The ChangeSet compiler
+deterministically adds the required Google `calendar_create_event` provider intent
+and, for an unprovisioned lane, its preceding `calendar_configure_lane` intent.
+Both canonical state and the resulting `op_` rows commit together. Hermes must not
+ask for a second "push to Google" authorization; provider completion is reported
+separately after asynchronous execution or reconciliation.
+
 AttentionCase is the durable triage term. During the active window an actionable
 case is projected on the next normal outbox cycle. Overnight cases are durable
 but not individually projected and appear in one morning brief. The night brief

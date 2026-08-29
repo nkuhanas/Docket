@@ -53,6 +53,8 @@ def test_manual_skill_defines_exact_resolved_intent_and_changeset_groups() -> No
     assert "first structurally valid ChangeSet" in skill
     assert "omitted supporting items deterministically become `not_pursued`" in skill
     assert "`predicate=application_status`" in skill
+    assert "Docket deterministically compiles the required Google projection" in skill
+    assert 'Never ask the Operator to authorize a later "push to Google"' in skill
 
 
 def test_manual_skill_keeps_triage_non_authoritative_and_outputs_compact() -> None:

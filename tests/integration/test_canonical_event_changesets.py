@@ -138,26 +138,6 @@ def _commit_rich_event(session, *, message_id: str) -> tuple[str, str, str]:
                     "basis_refs": basis,
                 }
             ],
-            "provider_intents": [
-                {
-                    "intent_id": "provision-clubs",
-                    "operation_type": "calendar_configure_lane",
-                    "provider_binding": f"account:{account.id}",
-                    "canonical_target_change_ids": ["clubs-lane"],
-                    "basis_refs": basis,
-                    "idempotency_key": f"changeset:{message_id}:provision-clubs",
-                    "parameters": {},
-                },
-                {
-                    "intent_id": "project-polyuas-event",
-                    "operation_type": "calendar_create_event",
-                    "provider_binding": f"account:{account.id}",
-                    "canonical_target_change_ids": ["clubs-lane", "polyuas-event"],
-                    "basis_refs": basis,
-                    "idempotency_key": f"changeset:{message_id}:project-event",
-                    "parameters": {},
-                },
-            ],
         }
     )
     result = InteractiveAuthorityService(session).process_turn(
@@ -206,6 +186,17 @@ def test_rich_event_changeset_commits_event_route_and_provider_intents_without_a
         assert all(item.canonical_target_refs for item in operations)
         assert all(item.provenance_status == "complete" for item in operations)
         assert operations[1].predecessor_operation_id == operations[0].id
+        changeset = session.scalar(
+            select(ChangeSet).where(ChangeSet.ref_id == changeset_ref)
+        )
+        assert changeset is not None
+        assert {
+            intent["operation_type"] for intent in changeset.provider_intents
+        } == {"calendar_configure_lane", "calendar_create_event"}
+        assert all(
+            intent["parameters"].get("compiled_from_change_id")
+            for intent in changeset.provider_intents
+        )
         assert session.scalar(select(func.count(Approval.id))) == 0
 
     provider = FakeCalendarProvider()
@@ -374,19 +365,6 @@ def test_package_pickup_case_reply_commits_event_route_and_resolution_first_try(
                         "basis_refs": [utterance_ref],
                     }
                 ],
-                "provider_intents": [
-                    {
-                        "intent_id": "project-package-pickup-event",
-                        "operation_type": "calendar_create_event",
-                        "provider_binding": f"account:{account.id}",
-                        "canonical_target_change_ids": [
-                            "create-package-pickup-event"
-                        ],
-                        "basis_refs": [utterance_ref],
-                        "idempotency_key": "package-pickup-first-attempt",
-                        "parameters": {},
-                    }
-                ],
             }
         )
         result = InteractiveAuthorityService(session).process_turn(
@@ -410,12 +388,19 @@ def test_package_pickup_case_reply_commits_event_route_and_resolution_first_try(
         event = session.scalar(select(CanonicalEvent))
         route = session.scalar(select(LaneRoutingDecision))
         operation = session.scalar(select(Operation))
+        changeset = session.scalar(select(ChangeSet))
         assert event is not None and route is not None and operation is not None
+        assert changeset is not None
         assert event.routing_decision_ref == route.ref_id
         assert route.event_ref == event.ref_id
         assert case.status == "resolved"
         assert item.status == "resolved"
         assert operation.canonical_target_refs == [event.ref_id]
+        assert len(changeset.provider_intents) == 1
+        assert changeset.provider_intents[0]["operation_type"] == "calendar_create_event"
+        assert changeset.provider_intents[0]["parameters"] == {
+            "compiled_from_change_id": "create-package-pickup-event"
+        }
         assert session.scalar(select(func.count(ChangeSet.id))) == 1
         assert session.scalar(select(func.count(SemanticRequestAttempt.id))) == 1
 
