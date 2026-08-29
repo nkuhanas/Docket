@@ -28,6 +28,8 @@ def _update(
     turn_status: str = "running",
     source_channel_id: str | None = None,
     received_argument_hash: str | None = None,
+    tool_name: str = "docket_search_records",
+    source_message_id: str = "777777777777777777",
 ) -> McpTraceUpdate:
     settings = get_settings()
     call = None
@@ -35,7 +37,7 @@ def _update(
         call = {
             "call_id": f"call-{ordinal}",
             "ordinal": ordinal,
-            "tool_name": "docket_search_records",
+            "tool_name": tool_name,
             "transport_state": transport_state,
             "elapsed_ms": 0 if transport_state == "running" else 125,
             "disposition": "succeeded" if transport_state == "completed" else None,
@@ -48,7 +50,7 @@ def _update(
             "request_id": str(uuid.uuid4()),
             "guild_id": settings.discord_guild_id,
             "source_channel_id": source_channel_id or settings.chat_channel_id,
-            "source_message_id": "777777777777777777",
+            "source_message_id": source_message_id,
             "actor_id": settings.operator_discord_user_id,
             "tool_contract_version": CONTRACT_VERSION,
             "tool_contract_hash": contract_hash("interactive"),
@@ -336,3 +338,77 @@ def test_mcp_trace_reconciles_authoritative_rejection_and_runtime_failure(
     assert projected_call["domain_state"] == expected_domain_state
     assert projected_call["outcome"] == error_code
     assert projected_call["tool_call_ref"] == invocation_ref
+
+
+@pytest.mark.integration
+def test_mcp_trace_projects_semantic_disposition_before_transport_details(
+    session_factory: sessionmaker[Session],
+) -> None:
+    settings = get_settings()
+    trace_id = trace_id_for_source(
+        settings.discord_guild_id,
+        settings.chat_channel_id,
+        "777777777777777778",
+    )
+    argument_hash = "b" * 64
+    with session_factory.begin() as session:
+        McpTraceService(session).update(
+            trace_id,
+            _update(
+                trace_id=trace_id,
+                ordinal=1,
+                transport_state="running",
+                received_argument_hash=argument_hash,
+                tool_name="docket_commit_changeset",
+                source_message_id="777777777777777778",
+            ),
+        )
+        invocation = ToolInvocation(
+            tool_name="docket_commit_changeset",
+            tool_contract_version=CONTRACT_VERSION,
+            tool_contract_hash=contract_hash("interactive"),
+            caller_profile="interactive",
+            status="succeeded",
+            transport_state="completed",
+            domain_state="succeeded",
+            result_disposition="needs_clarification",
+            received_argument_hash=argument_hash,
+            result_refs=[],
+        )
+        session.add(invocation)
+        session.flush()
+        invocation_ref = invocation.ref_id
+
+    with session_factory.begin() as session:
+        McpTraceService(session).update(
+            trace_id,
+            _update(
+                trace_id=trace_id,
+                ordinal=1,
+                transport_state="completed",
+                received_argument_hash=argument_hash,
+                tool_name="docket_commit_changeset",
+                source_message_id="777777777777777778",
+            ),
+        )
+
+    backend = FakeDiscordBackend()
+    runner = DiscordProjectionRunner(
+        session_factory,
+        FakeDiscordProjectionAdapter(backend),
+        settings,
+    )
+    while runner.run_due_once():
+        pass
+    projected_call = backend.mcp_traces[str(trace_id)]["render"]["calls"][0]
+    assert projected_call == {
+        "ordinal": 1,
+        "tool_name": "docket_commit_changeset",
+        "transport_state": "completed",
+        "domain_state": "succeeded",
+        "elapsed_ms": 125,
+        "outcome": "needs_clarification",
+        "tool_call_ref": invocation_ref,
+        "transport_error_code": "none",
+        "argument_preview": '{"fields":["query"]}',
+    }

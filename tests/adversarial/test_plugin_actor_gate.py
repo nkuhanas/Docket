@@ -286,6 +286,31 @@ def test_changeset_argument_preview_is_semantic_and_never_raw(plugin_module) -> 
 
 
 @pytest.mark.adversarial
+def test_terminal_trace_preserves_needs_clarification_disposition(plugin_module) -> None:
+    call = {
+        "ordinal": 1,
+        "tool_name": "docket_commit_changeset",
+        "transport_state": "running",
+        "elapsed_ms": 0,
+        "disposition": None,
+        "transport_error_code": None,
+        "argument_preview": '{"effects":["case resolution"]}',
+    }
+
+    terminal = plugin_module._terminal_trace_call(
+        call,
+        result={"ok": True, "disposition": "needs_clarification"},
+        duration_ms=17,
+        status="completed",
+        error_type=None,
+    )
+
+    assert terminal["transport_state"] == "completed"
+    assert terminal["disposition"] == "needs_clarification"
+    assert terminal["transport_error_code"] is None
+
+
+@pytest.mark.adversarial
 def test_empty_model_turn_is_reported_as_no_response(plugin_module, monkeypatch) -> None:
     actor = "111111111111111111"
     guild = "222222222222222222"
@@ -620,8 +645,10 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
     assert len(channel.messages) == 1
     assert channel.messages[0].edit_count == 1
     assert channel.messages[0].embeds[0].fields[1]["name"] == ("1. docket_search_records")
-    assert "Transport: Completed" in channel.messages[0].embeds[0].fields[1]["value"]
-    assert "Domain: Succeeded" in channel.messages[0].embeds[0].fields[1]["value"]
+    value = channel.messages[0].embeds[0].fields[1]["value"]
+    assert value.startswith("Outcome: Succeeded")
+    assert "Transport: Completed" in value
+    assert "Domain: Succeeded" in value
 
 
 @pytest.mark.adversarial

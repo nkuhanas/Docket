@@ -160,14 +160,24 @@ _TRACE_DISPOSITIONS = frozenset(
         "configured",
         "disabled",
         "duplicate_suppressed",
+        "blocked_version",
+        "committed",
+        "deferred_drain",
+        "execution_deferred",
         "execution_queued",
+        "failed",
         "matched_existing",
+        "needs_clarification",
         "no_op",
         "proposed",
+        "rejected_authority",
+        "rejected_conflict",
+        "rejected_validation",
         "replayed_request",
         "restored",
         "stored",
         "succeeded",
+        "unknown",
         "updated",
     }
 )
@@ -3032,10 +3042,14 @@ async def _put_mcp_trace(trace_id: uuid.UUID, payload: dict[str, Any]) -> dict[s
     }
     for call in calls:
         terminal = call["transport_state"] != "running"
-        details = f"Transport: {transport_labels[call['transport_state']]}"
+        details = ""
+        if terminal:
+            outcome_label = call["outcome"].replace("_", " ").capitalize()
+            details = f"Outcome: {outcome_label} · "
+        details += f"Transport: {transport_labels[call['transport_state']]}"
         details += f" · Domain: {domain_labels[call['domain_state']]}"
         if terminal:
-            details += f" · {call['elapsed_ms']} ms · {call['outcome'].replace('_', ' ')}"
+            details += f" · {call['elapsed_ms']} ms"
         details += f" · {call['tool_call_ref']}"
         if call["transport_error_code"] != "none":
             details += f" · transport {call['transport_error_code'].replace('_', ' ')}"
