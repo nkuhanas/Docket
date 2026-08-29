@@ -259,13 +259,21 @@ wait_for_hermes_drain() {
         if [[ -f "$ROOT/.runtime/hermes/gateway_state.json" ]]; then
             state=$(uv run python -c \
                 "import json; d=json.load(open('.runtime/hermes/gateway_state.json')); print(f\"{d.get('gateway_state')} {d.get('active_agents', -1)}\")")
-            if [[ "$state" == "draining 0" ]]; then
+            # The pinned Hermes image does not consistently run its external
+            # marker watcher. The database barrier is nevertheless the
+            # authoritative execution gate: the Docket pre-dispatch hook
+            # captures ingress, receives a pending deferred-ingress binding,
+            # and skips model dispatch. Once that barrier is confirmed by the
+            # caller, a running gateway with zero active agents is quiescent.
+            # Keep requesting the upstream marker so images with a working
+            # watcher additionally refuse non-Docket work at the gateway.
+            if [[ "$state" == "draining 0" || "$state" == "running 0" ]]; then
                 return
             fi
         fi
         sleep 1
     done
-    die "Hermes did not reach draining with zero active turns within 180 seconds"
+    die "Hermes did not reach zero active turns within 180 seconds"
 }
 
 wait_for_discord_ingress() {
@@ -452,7 +460,10 @@ deploy() {
     trap deploy_failure_cleanup EXIT
     printf 'Deployment drain requested: %s\n' "$drain_ref"
     request_hermes_drain
-    if ! wait_for_hermes_drain || ! wait_for_database_drain "$drain_ref"; then
+    # Confirm the durable execution barrier before accepting the zero-active
+    # Hermes fallback. New Discord ingress is then captured and deferred by
+    # Docket even when the pinned gateway's optional marker watcher is absent.
+    if ! wait_for_database_drain "$drain_ref" || ! wait_for_hermes_drain; then
         database_continuity abort "$drain_ref" >/dev/null || true
         clear_hermes_drain
         die "deployment drain timed out; active work was not interrupted"
@@ -503,7 +514,7 @@ deploy_ingress() {
     cleanup_on_failure=1
     trap ingress_failure_cleanup EXIT
     request_hermes_drain "scripts/docket deploy-ingress"
-    if ! wait_for_hermes_drain || ! wait_for_database_drain "$drain_ref"; then
+    if ! wait_for_database_drain "$drain_ref" || ! wait_for_hermes_drain; then
         die "ingress deployment drain timed out; active work was not interrupted"
     fi
     wait_for_operational_idle

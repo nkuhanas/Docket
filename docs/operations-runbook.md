@@ -972,7 +972,14 @@ builds first, then creates a database drain barrier and asks Hermes to stop
 claiming new turns. The deployment-stable `discord-ingress` remains connected
 and appends authenticated messages and semantic selections to PostgreSQL while
 execution is deferred. The command waits for all pre-barrier execution leases
-and actual provider/outbox claims, takes the custom-format backup, applies
+and actual provider/outbox claims, then verifies that Hermes has zero active
+agents. The database barrier plus the Docket pre-dispatch hook is the
+authoritative new-turn gate: every later Docket ingress is appended and
+deferred before model dispatch. The script also requests Hermes's upstream
+external-drain marker as defense in depth. The currently pinned Hermes image
+does not consistently run that optional marker watcher, so `running` with zero
+active agents is accepted as quiescent only after the durable database barrier
+is confirmed. The command then takes the custom-format backup, applies
 migrations, recreates only Docket and Hermes, releases the drain, and verifies
 Docket health, Alembic head, both Discord gateway processes, the matching
 22-tool Docket and Hermes registries, the declared plugin version, and the

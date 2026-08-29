@@ -31,6 +31,9 @@ def test_deploy_drains_execution_but_preserves_queued_durable_work() -> None:
     )[0]
     assert "request_database_drain" in deploy
     assert "wait_for_database_drain" in deploy
+    assert deploy.index("wait_for_database_drain") < deploy.index("wait_for_hermes_drain")
+    assert '"$state" == "draining 0" || "$state" == "running 0"' in script
+    assert "captures ingress, receives a pending deferred-ingress binding" in script
     drained = deploy.index('wait_for_operational_idle')
     assert drained < deploy.index('backup=$(backup_database)', drained)
     assert deploy.index('backup=$(backup_database)', drained) < deploy.index(
