@@ -85,6 +85,34 @@ async def smoke() -> None:
             headers={"Authorization": f"Bearer {_service_token()}"},
             timeout=15,
         ) as service_client:
+            gateway_registration_key = str(uuid.uuid4())
+            gateway_responses = await asyncio.gather(
+                service_client.post(
+                    f"{base_url}/internal/v1/discord/gateway-lifetimes",
+                    json={
+                        "request_id": str(uuid.uuid4()),
+                        "registration_key": gateway_registration_key,
+                        "instance_kind": "hermes_discord_gateway",
+                    },
+                ),
+                service_client.post(
+                    f"{base_url}/internal/v1/discord/gateway-lifetimes",
+                    json={
+                        "request_id": str(uuid.uuid4()),
+                        "registration_key": gateway_registration_key,
+                        "instance_kind": "hermes_discord_gateway",
+                    },
+                ),
+            )
+            for gateway_response in gateway_responses:
+                gateway_response.raise_for_status()
+            gateway_results = [response.json() for response in gateway_responses]
+            assert gateway_results[0]["ref"] == gateway_results[1]["ref"]
+            assert {result["disposition"] for result in gateway_results} == {
+                "created",
+                "replayed_request",
+            }
+
             utterance = await service_client.post(
                 f"{base_url}/internal/v1/discord/operator-utterances",
                 json={

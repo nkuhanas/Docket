@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from docket.config import get_settings
@@ -22,6 +22,18 @@ from docket.models import (
 
 def _aware(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+_GATEWAY_REGISTRATION_LOCK_ID = 873_420_827
+
+
+def _serialize_registration(session: Session) -> None:
+    """Serialize lease replay, fencing, and generation allocation on PostgreSQL."""
+    if session.bind is not None and session.bind.dialect.name == "postgresql":
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_id)"),
+            {"lock_id": _GATEWAY_REGISTRATION_LOCK_ID},
+        )
 
 
 class GatewayLifetimeService:
@@ -58,6 +70,7 @@ class GatewayLifetimeService:
         registration_key: uuid.UUID,
         instance_kind: str,
     ) -> dict[str, Any]:
+        _serialize_registration(self.session)
         self.expire_and_reconcile()
         existing = self.session.scalar(
             select(GatewayLifetime).where(
