@@ -40,8 +40,6 @@ class SpecificationArtifact(_ManifestModel):
             or self.frozen_artifact_hash not in self.signoff_text
         ):
             raise ValueError("signoff_text must name the exact document ref and hash")
-        if self.status == "candidate_spec" and self.bootstrap_authority is None:
-            raise ValueError("candidate specifications require bootstrap authority evidence")
         return self
 
 

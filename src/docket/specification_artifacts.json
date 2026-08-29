@@ -33,6 +33,21 @@
         "utterance_ref": "utt_01M157G81T7FV6A4V8RQD54Z6G",
         "content_hash": "d11eee4a994d16f06e3efe00a9d5e10842616a1a24e0f2c6d025cf351c56b388"
       }
+    },
+    {
+      "document_ref": "ONT-DELTA-2026-08-28-INTERACTIVE-CONTINUITY",
+      "frozen_artifact_hash": "972784149dd2a219d027684a76f04fac37d8147e9656a3ff06326d883fd06579",
+      "status": "candidate_spec",
+      "signoff_text": "I accept ONT-DELTA-2026-08-28-INTERACTIVE-CONTINUITY frozen at SHA-256 972784149dd2a219d027684a76f04fac37d8147e9656a3ff06326d883fd06579 and authorize implementation of that amendment.",
+      "architecture_authority": true,
+      "implementation_authority": "amendment_scope",
+      "authorized_scope": "interactive_authority_continuity_and_deployment_drain_amendment",
+      "prerequisite": {
+        "decision_kind": "specification_signoff",
+        "document_ref": "ONT-DELTA-2026-08-27",
+        "frozen_artifact_hash": "3d744f4d021f8a605086152eb76743a7ec5a7ed2c8754694e38c1a891a14b5e1"
+      },
+      "bootstrap_authority": null
     }
   ]
 }

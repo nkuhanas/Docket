@@ -861,3 +861,65 @@ def test_manifest_bound_amendment_signoff_requires_bootstrap_and_base_signoff(
                 wrong_hash_request
             )
         assert exc_info.value.code == "specification_signoff_artifact_mismatch"
+
+
+@pytest.mark.integration
+def test_later_manifest_bound_amendment_uses_existing_base_signoff(
+    session_factory,
+) -> None:
+    settings = get_settings()
+    document_ref = "ONT-DELTA-2026-08-28-INTERACTIVE-CONTINUITY"
+    frozen_hash = "972784149dd2a219d027684a76f04fac37d8147e9656a3ff06326d883fd06579"
+    artifact = specification_artifact(document_ref, frozen_hash)
+    assert artifact is not None
+    assert artifact.bootstrap_authority is None
+
+    with session_factory.begin() as session:
+        prerequisite = Decision(
+            decision_kind=artifact.prerequisite.decision_kind,
+            actor_ref=f"discord_user:{settings.operator_discord_user_id}",
+            basis_refs=[f"utt_{'1' * 26}"],
+            document_ref=artifact.prerequisite.document_ref,
+            frozen_artifact_hash=artifact.prerequisite.frozen_artifact_hash,
+            architecture_authority=True,
+            implementation_authority="gated_by_ONT-INV-0011",
+        )
+        session.add(prerequisite)
+        session.flush()
+        prerequisite_ref = prerequisite.ref_id
+
+    signoff_message_id = "1543050207879495760"
+    with session_factory.begin() as session:
+        signoff_ref = ProvenanceService(session).capture_operator_utterance(
+            _utterance_request(
+                text=artifact.signoff_text,
+                message_id=signoff_message_id,
+            )
+        )["ref"]
+        request = SpecificationSignoffCapture(
+            request_id=uuid.uuid4(),
+            utterance_ref=signoff_ref,
+            document_ref=document_ref,
+            frozen_artifact_hash=frozen_hash,
+        )
+        result = ProvenanceService(session).record_final_architecture_signoff(request)
+        replay = ProvenanceService(session).record_final_architecture_signoff(request)
+
+    assert result["ref"].startswith("dec_")
+    assert replay == {**result, "disposition": "replayed_request"}
+    with session_factory() as session:
+        decision = session.scalar(
+            select(Decision).where(
+                Decision.document_ref == document_ref,
+                Decision.frozen_artifact_hash == frozen_hash,
+            )
+        )
+        assert decision is not None
+        assert decision.basis_refs == [signoff_ref]
+        assert decision.authorized_scope == (
+            "interactive_authority_continuity_and_deployment_drain_amendment"
+        )
+        assert decision.architecture_authority is True
+        assert decision.implementation_authority == "amendment_scope"
+        assert decision.payload_json["prerequisite_decision_ref"] == prerequisite_ref
+        assert decision.payload_json["bootstrap_utterance_ref"] is None
