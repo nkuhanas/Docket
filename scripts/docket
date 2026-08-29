@@ -241,13 +241,13 @@ ensure_ingress_credential() {
 
 request_hermes_drain() {
     local principal=${1:-scripts/docket deploy}
-    compose exec -T hermes python -c \
+    compose exec -T --user hermes hermes python -c \
         "from gateway.drain_control import write_drain_request; write_drain_request(principal='$principal', suppress_notification=True)" \
         >/dev/null
 }
 
 clear_hermes_drain() {
-    compose exec -T hermes python -c \
+    compose exec -T --user hermes hermes python -c \
         "from gateway.drain_control import clear_drain_request; clear_drain_request()" \
         >/dev/null 2>&1 || true
 }
@@ -259,21 +259,13 @@ wait_for_hermes_drain() {
         if [[ -f "$ROOT/.runtime/hermes/gateway_state.json" ]]; then
             state=$(uv run python -c \
                 "import json; d=json.load(open('.runtime/hermes/gateway_state.json')); print(f\"{d.get('gateway_state')} {d.get('active_agents', -1)}\")")
-            # The pinned Hermes image does not consistently run its external
-            # marker watcher. The database barrier is nevertheless the
-            # authoritative execution gate: the Docket pre-dispatch hook
-            # captures ingress, receives a pending deferred-ingress binding,
-            # and skips model dispatch. Once that barrier is confirmed by the
-            # caller, a running gateway with zero active agents is quiescent.
-            # Keep requesting the upstream marker so images with a working
-            # watcher additionally refuse non-Docket work at the gateway.
-            if [[ "$state" == "draining 0" || "$state" == "running 0" ]]; then
+            if [[ "$state" == "draining 0" ]]; then
                 return
             fi
         fi
         sleep 1
     done
-    die "Hermes did not reach zero active turns within 180 seconds"
+    die "Hermes did not reach draining with zero active turns within 180 seconds"
 }
 
 wait_for_discord_ingress() {
@@ -460,9 +452,8 @@ deploy() {
     trap deploy_failure_cleanup EXIT
     printf 'Deployment drain requested: %s\n' "$drain_ref"
     request_hermes_drain
-    # Confirm the durable execution barrier before accepting the zero-active
-    # Hermes fallback. New Discord ingress is then captured and deferred by
-    # Docket even when the pinned gateway's optional marker watcher is absent.
+    # Confirm the durable execution barrier before waiting for Hermes. New
+    # Discord ingress is captured and deferred while the gateway drains.
     if ! wait_for_database_drain "$drain_ref" || ! wait_for_hermes_drain; then
         database_continuity abort "$drain_ref" >/dev/null || true
         clear_hermes_drain
