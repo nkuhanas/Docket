@@ -956,6 +956,55 @@ def _persist_deterministic_response(context: dict[str, Any]) -> str:
     return response_ref
 
 
+async def _deliver_persisted_deterministic_response(context: dict[str, Any]) -> None:
+    """Project an already-persisted deterministic response without an LLM turn."""
+
+    _loop, adapter, _client = _discord_runtime()
+    response_text = str(context.get("deterministic_response_text") or "").strip()
+    response_ref = str(context.get("response_ref") or "")
+    if not response_text or _RESPONSE_REF.fullmatch(response_ref) is None:
+        raise PluginAPIError(
+            "invalid_deterministic_response",
+            "Deterministic response was not durably persisted before projection",
+            500,
+        )
+    try:
+        result = await adapter.send(
+            chat_id=str(context["source_channel_id"]),
+            content=response_text,
+            reply_to=str(context["source_message_id"]),
+            metadata={"notify": True},
+        )
+        delivered = bool(getattr(result, "success", False))
+    except Exception:
+        logger.exception("Docket deterministic response delivery failed")
+        delivered = False
+    try:
+        await asyncio.to_thread(
+            _post_agent_response_delivery,
+            dict(context),
+            delivered=delivered,
+        )
+        await asyncio.to_thread(
+            _complete_interactive_ingress,
+            dict(context),
+            outcome="completed" if delivered else "failed",
+            error_code=None if delivered else "discord_delivery_failed",
+        )
+    except (OSError, RuntimeError, urllib.error.URLError):
+        logger.exception("Docket deterministic response finalization failed")
+
+
+def _schedule_persisted_deterministic_response(context: dict[str, Any]) -> None:
+    coroutine = _deliver_persisted_deterministic_response(context)
+    try:
+        loop, _adapter, _client = _discord_runtime()
+    except Exception:
+        coroutine.close()
+        raise
+    asyncio.run_coroutine_threadsafe(coroutine, loop)
+
+
 def _trace_context_for_event(
     event: object,
     adapter: object | None = None,
@@ -1608,6 +1657,21 @@ def _pre_gateway_dispatch(
             deterministic_response_text=deterministic_response_text,
             ingress_binding=ingress_binding,
         )
+        if deterministic_response_text is not None:
+            context = _trace_context_for_event(event)
+            if context is not None:
+                try:
+                    response_ref = _persist_deterministic_response(context)
+                    context["response_ref"] = response_ref
+                    context["response_persistence_failed"] = False
+                    _schedule_persisted_deterministic_response(context)
+                except (OSError, RuntimeError, urllib.error.URLError):
+                    logger.exception(
+                        "Immediate Docket sign-off confirmation failed; using turn fallback"
+                    )
+                else:
+                    context["terminal"] = True
+                    return {"action": "skip", "reason": "docket-signoff-handled"}
         return _rewrite_with_source_context(
             event,
             utterance_ref,

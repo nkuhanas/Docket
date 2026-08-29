@@ -388,6 +388,67 @@ def test_empty_signoff_turn_persists_deterministic_response(plugin_module, monke
     assert not any(path.endswith("/no-response") for path, _payload in requests)
 
 
+@pytest.mark.adversarial
+def test_exact_signoff_persists_and_schedules_confirmation_without_model_turn(
+    plugin_module, monkeypatch
+) -> None:
+    actor = "111111111111111111"
+    guild = "222222222222222222"
+    chat = "333333333333333333"
+    message_id = "444444444444444445"
+    decision_ref = f"dec_{'5' * 26}"
+    response_ref = f"rsp_{'6' * 26}"
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", chat)
+    monkeypatch.setenv("DOCKET_QUEUE_CHANNEL_ID", "555555555555555555")
+    monkeypatch.setenv("DOCKET_SYSTEM_CHANNEL_ID", "666666666666666666")
+    requests: list[tuple[str, dict[str, object]]] = []
+    scheduled: list[dict[str, object]] = []
+
+    def fake_request(path, payload, **_kwargs):
+        requests.append((path, dict(payload)))
+        if path == "/internal/v1/discord/agent-responses":
+            return {"ok": True, "ref": response_ref, "state": "pending"}
+        return {"ok": True}
+
+    monkeypatch.setattr(plugin_module, "_docket_internal_request", fake_request)
+    monkeypatch.setattr(
+        plugin_module,
+        "_record_final_signoff_if_explicit",
+        lambda _event, _ref: decision_ref,
+    )
+    monkeypatch.setattr(
+        plugin_module,
+        "_schedule_persisted_deterministic_response",
+        lambda context: scheduled.append(dict(context)),
+    )
+    event = SimpleNamespace(
+        text=plugin_module._FINAL_ARCHITECTURE_SIGNOFF_TEXT,
+        message_id=message_id,
+        source=SimpleNamespace(
+            platform="discord",
+            user_id=actor,
+            guild_id=guild,
+            chat_id=chat,
+        ),
+    )
+    store = SimpleNamespace(
+        get_or_create_session=lambda _source: SimpleNamespace(
+            session_id="session-direct-signoff",
+            session_key="session-direct-signoff",
+        )
+    )
+
+    result = plugin_module._pre_gateway_dispatch(event, session_store=store)
+
+    assert result == {"action": "skip", "reason": "docket-signoff-handled"}
+    assert requests[-1][0] == "/internal/v1/discord/agent-responses"
+    assert requests[-1][1]["model_identifier"] == "docket-deterministic-signoff-v1"
+    assert scheduled[0]["response_ref"] == response_ref
+    assert decision_ref in str(scheduled[0]["deterministic_response_text"])
+
+
 @pytest.mark.asyncio
 @pytest.mark.adversarial
 async def test_processing_completion_delivers_persisted_signoff_fallback(
