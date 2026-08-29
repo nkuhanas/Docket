@@ -42,9 +42,9 @@ def test_manual_skill_defines_exact_resolved_intent_and_changeset_groups() -> No
         "`lane_changes`",
         "`event_changes`",
         "`resolution_changes`",
-        "`provider_intents`",
     ):
         assert group in skill
+    assert "`provider_intents` is deliberately absent" in skill
     assert "`*_change_id` references" in skill
     assert "`add_associated_email_change_id`" in skill
     assert "`add_associated_email_ref`" in skill
@@ -55,6 +55,7 @@ def test_manual_skill_defines_exact_resolved_intent_and_changeset_groups() -> No
     assert "`predicate=application_status`" in skill
     assert "Docket deterministically compiles the required Google projection" in skill
     assert 'Never ask the Operator to authorize a later "push to Google"' in skill
+    assert "Hermes never formulates, retries, or repairs provider Operations" in skill
 
 
 def test_manual_skill_keeps_triage_non_authoritative_and_outputs_compact() -> None:

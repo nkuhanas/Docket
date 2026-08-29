@@ -594,9 +594,19 @@ class AttentionCaseResolutionInput(StrictModel):
 type ResolutionChangeInput = AttentionCaseResolutionInput
 
 
+type ProviderOperationType = Literal[
+    "calendar_configure_lane",
+    "calendar_delete_lane",
+    "calendar_create_event",
+    "calendar_update_event",
+    "calendar_update_reminders",
+    "calendar_cancel_event",
+]
+
+
 class ProviderIntentInput(StrictModel):
     intent_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-    operation_type: str = Field(min_length=1, max_length=128)
+    operation_type: ProviderOperationType
     account_ref: PublicRef | None = None
     provider_binding: str | None = Field(default=None, min_length=1, max_length=512)
     canonical_target_refs: list[PublicRef] = Field(default_factory=list, max_length=100)
@@ -628,7 +638,125 @@ class ProviderIntentInput(StrictModel):
         return self
 
 
+def _infer_legacy_mutation_tags(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    result = dict(value)
+    groups = (
+        "registry_changes",
+        "preference_changes",
+        "lane_changes",
+        "event_changes",
+        "resolution_changes",
+    )
+    aliases = {
+        ("entity", "update"): "entity_modify",
+        ("entity", "supersede"): "entity_modify",
+        ("identity_binding", "create"): "identity_handle_create",
+        ("identity_binding", "update"): "identity_handle_modify",
+        ("identity_binding", "supersede"): "identity_handle_modify",
+        ("identity_binding", "bind"): "identity_binding_bind",
+        ("identity_binding", "unbind"): "identity_binding_unbind",
+        ("identity_binding", "retract"): "identity_handle_retract",
+        ("preference", "update"): "preference_modify",
+        ("preference", "supersede"): "preference_modify",
+        ("calendar_lane", "update"): "calendar_lane_modify",
+        ("calendar_lane", "supersede"): "calendar_lane_modify",
+        ("canonical_event", "update"): "canonical_event_modify",
+        ("canonical_event", "supersede"): "canonical_event_modify",
+        ("canonical_event", "retract"): "canonical_event_cancel",
+        ("attention_case_resolution", "update"): "attention_case_resolution",
+    }
+    for group in groups:
+        changes = result.get(group)
+        if not isinstance(changes, list):
+            continue
+        tagged: list[Any] = []
+        for item in changes:
+            if not isinstance(item, dict) or "mutation_type" in item:
+                tagged.append(item)
+                continue
+            updated = dict(item)
+            object_type = str(updated.get("object_type", ""))
+            action = str(updated.get("action", ""))
+            updated["mutation_type"] = aliases.get(
+                (object_type, action),
+                f"{object_type}_{action}",
+            )
+            tagged.append(updated)
+        result[group] = tagged
+    return result
+
+
+class OperatorChangeSetContent(StrictModel):
+    """Model-facing canonical effects; provider projection is compiler-owned."""
+
+    basis_refs: list[PublicRef] = Field(min_length=1, max_length=100)
+    expected_versions: dict[PublicRef, int] = Field(default_factory=dict, max_length=100)
+    registry_changes: list[RegistryChangeInput] = Field(default_factory=list, max_length=100)
+    preference_changes: list[PreferenceChangeInput] = Field(
+        default_factory=list, max_length=100
+    )
+    lane_changes: list[LaneChangeInput] = Field(default_factory=list, max_length=100)
+    event_changes: list[EventChangeInput] = Field(default_factory=list, max_length=100)
+    resolution_changes: list[ResolutionChangeInput] = Field(
+        default_factory=list, max_length=100
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def infer_legacy_mutation_tags(cls, value: Any) -> Any:
+        return _infer_legacy_mutation_tags(value)
+
+    @field_validator("basis_refs")
+    @classmethod
+    def validate_basis_refs(cls, values: list[str]) -> list[str]:
+        return _validate_refs(values, provenance_only=True)
+
+    @field_validator("expected_versions")
+    @classmethod
+    def validate_expected_versions(cls, values: dict[str, int]) -> dict[str, int]:
+        for ref_id, version in values.items():
+            if not is_public_ref(ref_id):
+                raise ValueError("expected_versions keys must be typed public references")
+            if version < 1:
+                raise ValueError("expected versions must be positive")
+        return values
+
+    @model_validator(mode="after")
+    def contains_a_change(self) -> OperatorChangeSetContent:
+        if not any(
+            (
+                self.registry_changes,
+                self.preference_changes,
+                self.lane_changes,
+                self.event_changes,
+                self.resolution_changes,
+            )
+        ):
+            raise ValueError("a ChangeSet must contain at least one canonical change")
+        change_ids = [
+            change.change_id
+            for group in (
+                self.registry_changes,
+                self.preference_changes,
+                self.lane_changes,
+                self.event_changes,
+                self.resolution_changes,
+            )
+            for change in group
+        ]
+        if len(change_ids) != len(set(change_ids)):
+            raise ValueError("change_id values must be unique in a ChangeSet")
+        return self
+
+    def to_internal(self) -> ChangeSetContent:
+        return ChangeSetContent.model_validate(self.model_dump(mode="json"))
+
+
 class ChangeSetContent(StrictModel):
+    """Internal canonical effects plus deterministic provider projection."""
+
     basis_refs: list[PublicRef] = Field(min_length=1, max_length=100)
     expected_versions: dict[PublicRef, int] = Field(default_factory=dict, max_length=100)
     registry_changes: list[RegistryChangeInput] = Field(default_factory=list, max_length=100)
@@ -645,53 +773,7 @@ class ChangeSetContent(StrictModel):
     @model_validator(mode="before")
     @classmethod
     def infer_legacy_mutation_tags(cls, value: Any) -> Any:
-        if not isinstance(value, dict):
-            return value
-        result = dict(value)
-        groups = (
-            "registry_changes",
-            "preference_changes",
-            "lane_changes",
-            "event_changes",
-            "resolution_changes",
-        )
-        aliases = {
-            ("entity", "update"): "entity_modify",
-            ("entity", "supersede"): "entity_modify",
-            ("identity_binding", "create"): "identity_handle_create",
-            ("identity_binding", "update"): "identity_handle_modify",
-            ("identity_binding", "supersede"): "identity_handle_modify",
-            ("identity_binding", "bind"): "identity_binding_bind",
-            ("identity_binding", "unbind"): "identity_binding_unbind",
-            ("identity_binding", "retract"): "identity_handle_retract",
-            ("preference", "update"): "preference_modify",
-            ("preference", "supersede"): "preference_modify",
-            ("calendar_lane", "update"): "calendar_lane_modify",
-            ("calendar_lane", "supersede"): "calendar_lane_modify",
-            ("canonical_event", "update"): "canonical_event_modify",
-            ("canonical_event", "supersede"): "canonical_event_modify",
-            ("canonical_event", "retract"): "canonical_event_cancel",
-            ("attention_case_resolution", "update"): "attention_case_resolution",
-        }
-        for group in groups:
-            changes = result.get(group)
-            if not isinstance(changes, list):
-                continue
-            tagged: list[Any] = []
-            for item in changes:
-                if not isinstance(item, dict) or "mutation_type" in item:
-                    tagged.append(item)
-                    continue
-                updated = dict(item)
-                object_type = str(updated.get("object_type", ""))
-                action = str(updated.get("action", ""))
-                updated["mutation_type"] = aliases.get(
-                    (object_type, action),
-                    f"{object_type}_{action}",
-                )
-                tagged.append(updated)
-            result[group] = tagged
-        return result
+        return _infer_legacy_mutation_tags(value)
 
     @field_validator("basis_refs")
     @classmethod
@@ -745,7 +827,7 @@ class SemanticOptionDraft(StrictModel):
     option_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,127}$")
     action_kind: Literal["commit_changeset"] = "commit_changeset"
     selection_authority_ref: UtteranceRef
-    content: ChangeSetContent
+    content: OperatorChangeSetContent
     explicit_exclusions: list[str] = Field(default_factory=list, max_length=25)
 
     @field_validator("explicit_exclusions")

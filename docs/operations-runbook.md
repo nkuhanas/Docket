@@ -42,11 +42,13 @@ to drain them. At the 2026-08-28 cutover check there were zero pending rows.
 The legacy Record/entity/Calendar sections below describe compatibility data
 and pre-cutover incident recovery; they do not authorize removed MCP mutations.
 
-A CanonicalEvent create is not a canonical-only operation. The ChangeSet compiler
-deterministically adds the required Google `calendar_create_event` provider intent
-and, for an unprovisioned lane, its preceding `calendar_configure_lane` intent.
-Both canonical state and the resulting `op_` rows commit together. Hermes must not
-ask for a second "push to Google" authorization; provider completion is reported
+A provider-affecting CanonicalEvent mutation is not canonical-only. The ChangeSet
+compiler deterministically adds the required Google create, update, reminder, or
+cancel intent and, for an unprovisioned lane, its preceding lane-configuration
+intent. Provider intents are absent from the Hermes mutation schema: both canonical
+state and the resulting `op_` rows commit together, or neither does. Hermes must not
+formulate a provider operation, ask for a second "push to Google" authorization, or
+attempt conversational projection repair; provider completion is reported
 separately after asynchronous execution or reconciliation.
 
 AttentionCase is the durable triage term. During the active window an actionable
@@ -500,6 +502,7 @@ contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
 | The first of several cancellation/reminder cards reports that the complete snapshot changed immediately after the later cards were proposed | Compare the bound/current target ETags and current cache freshness before refreshing the card | Pre-fix approval bound a non-conflict mutation to the global `last_success_at`; cancel/reminder approval should tolerate harmless complete-refresh churn while still requiring current cache and exact target identity/version |
 | Calendar lookup is empty or stale | Inspect `calendar_sync_states`, its covered window, and the prior cache generation before changing credentials | Read gate disabled, sync due/leased, OAuth failure, partial page walk, or requested range outside the cache |
 | A newly created provider event is absent from a healthy current-day lookup | Compare `last_success_at` with the event creation time, then retry the same bounded lookup with `require_fresh` | `prefer_cache` returned before the next five-minute synchronization; healthy and covered do not imply read-after-provider-write consistency |
+| A committed CanonicalEvent has no provider Operation or binding | Inspect its originating committed `chg_`, exact lane/account binding, and internal projection-invariant reconciliation audit | Compiler invariant regression or a pre-contract orphan; do not ask Hermes to invent or authorize a repair operation |
 | Hermes calls a terminal or time tool around a today/tomorrow Calendar lookup | Inspect the active lookup schema/result for `relative_day`, `start_local`, and `end_local`, then restart Hermes and run `/reload-mcp` | The active session cached the prior MCP schema or old manual-intent guidance |
 | Reminder does not arrive | Inspect rule version, event cache identity, scheduled row, bound daily thread, notification outbox, and plugin `0.20.2` logs | Rule disabled, event moved/cancelled, stale event already began, queue binding changed, thread ensure failed, or Discord retry |
 | Docket emits duplicate daily-thread reminders when Google popup is sufficient | Set the Calendar profile `default_reminder_delivery_channels` to `["google_popup"]`; verify all Docket rules are disabled and pending/delivering scheduled notifications are cancelled | The profile still includes `docket_queue`, a pre-profile operation reactivated rules, or the deployed worker predates profile-gated activation |

@@ -29,9 +29,9 @@ from docket.schemas.actions import (
 )
 from docket.schemas.authority import (
     CanonicalChangeInput,
-    ChangeSetContent,
     ConflictRef,
     ConflictResolve,
+    OperatorChangeSetContent,
     SemanticOptionDraft,
     SessionRef,
     StatementInput,
@@ -1722,7 +1722,7 @@ def docket_commit_changeset(
     relations: list[StatementRelationInput],
     resolved_intent: dict[str, Any],
     blocking_clarifications: list[dict[str, Any]],
-    content: ChangeSetContent | None,
+    content: OperatorChangeSetContent | None,
     request_key: DiscordRequestKey,
     source: RecordSourceInput,
     actor_id: DiscordId,
@@ -1755,7 +1755,7 @@ def docket_commit_changeset(
                 resolved_intent_json=resolved_intent,
                 blocking_clarifications=blocking_clarifications,
                 semantic_options=semantic_options,
-                content=content,
+                content=content.to_internal() if content is not None else None,
                 changeset_ref=changeset_ref,
                 expected_changeset_version=expected_changeset_version,
                 semantic_request_ref=semantic_request_ref,

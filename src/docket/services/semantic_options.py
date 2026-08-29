@@ -27,7 +27,7 @@ from docket.models import (
     SemanticRequest,
 )
 from docket.models.base import utc_now
-from docket.schemas.authority import ChangeSetContent, SemanticOptionDraft
+from docket.schemas.authority import OperatorChangeSetContent, SemanticOptionDraft
 from docket.security import decode_semantic_option_token, verify_semantic_option_token
 from docket.services.continuity import ContinuityService
 from docket.services.gateway_lifetimes import GatewayLifetimeService
@@ -75,7 +75,7 @@ def complete_selection_provenance(template: dict[str, Any], utterance_ref: str) 
         return item
 
     completed = visit(copy.deepcopy(template))
-    return ChangeSetContent.model_validate(completed).model_dump(mode="json")
+    return OperatorChangeSetContent.model_validate(completed).model_dump(mode="json")
 
 
 def semantic_authority_scope(

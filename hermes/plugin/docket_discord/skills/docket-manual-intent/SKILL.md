@@ -90,8 +90,11 @@ one `docket_commit_changeset` call:
 - `preference_changes`: explicit Operator behavioral/routing policy;
 - `lane_changes`: CalendarLanes and LaneRoutingDecisions;
 - `event_changes`: CanonicalEvents;
-- `resolution_changes`: exact AttentionCase resolutions; and
-- `provider_intents`: external effects that follow canonical commit.
+- `resolution_changes`: exact AttentionCase resolutions.
+
+`provider_intents` is deliberately absent from the model-facing ChangeSet. Docket
+derives provider Operations from canonical mutations after validating the complete
+scope. Hermes never formulates, retries, or repairs provider Operations.
 
 Conflict resolution is accepted only by `docket_resolve_conflict`; never encode a
 ConflictResolution inside `docket_commit_changeset`.
@@ -104,8 +107,9 @@ Visible option text is rendered by Docket from the typed effects. Do not supply 
 reparse button prose, split a selected option, narrow it after validation failure,
 or ask the Operator to authorize the same scope again.
 
-Every change and provider intent carries `basis_refs`. Every canonical change uses
-the exact discriminated `mutation_type` shown by the MCP schema. Use stable
+Every change carries `basis_refs`; compiler-derived provider intent inherits that
+provenance. Every canonical change uses the exact discriminated `mutation_type`
+shown by the MCP schema. Use stable
 `change_id` values and `*_change_id` references when one create depends on another
 in the same ChangeSet. The full dependency graph must validate before any handler
 runs. Use exact expected versions for existing objects. Never expose internal UUIDs
@@ -187,13 +191,16 @@ advisory and never silently becomes Preference policy.
 For Calendar work, current explicit lane direction wins, followed by exact active
 Preference/routing rules, entity rules, deterministic three-decision precedent,
 semantic metadata suggestion, then clarification. A new or rerouted event must
-create or reference a `route_`. For an ordinary CanonicalEvent create, omit a
-separate create-event provider intent: Docket deterministically compiles the
-required Google projection and, when needed, lane-configuration Operation into
-the same ChangeSet transaction. Never ask the Operator to authorize a later
-"push to Google" for an event they already authorized creating. An `op_` proves
-the provider projection is queued; provider completion still occurs later through
-Operation execution and reconciliation.
+create or reference a `route_`. For every provider-affecting CanonicalEvent create,
+update, reminder change, or cancellation, submit only the canonical mutation.
+Docket deterministically compiles the required Google projection and, when needed,
+lane-configuration Operation into the same ChangeSet transaction. If Docket cannot
+formulate the required provider effect, the whole ChangeSet is blocked before
+canonical mutation. Never ask the Operator to authorize a later "push to Google"
+for an event they already authorized creating or changing, and never invent a
+projection-repair operation. An `op_` proves the provider projection is queued;
+provider completion still occurs later through Operation execution and
+reconciliation.
 For a general availability lookup, call `docket_list_calendar_events` once with
 `calendar_id` omitted; Docket returns one globally ordered page across all active
 lanes. Supply `calendar_id` only when the Operator's request is lane-specific.

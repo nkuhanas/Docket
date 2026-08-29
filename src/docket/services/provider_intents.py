@@ -180,6 +180,7 @@ class ProviderIntentService:
                 message="Calendar event provider intent requires matching event and lane targets.",
             )
         event_payload = dict(event.event_spec)
+        event_payload["title"] = event.title
         reminder_plan = event.reminder_plan
         event_payload["reminder_plan"] = None
         event_parameters: dict[str, Any] = {

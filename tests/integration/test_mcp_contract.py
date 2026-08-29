@@ -95,15 +95,16 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
         "source",
         "actor_id",
     }.issubset(commit_schema["properties"])
-    content = commit_schema["$defs"]["ChangeSetContent"]
+    content = commit_schema["$defs"]["OperatorChangeSetContent"]
     assert {
         "registry_changes",
         "preference_changes",
         "lane_changes",
         "event_changes",
         "resolution_changes",
-        "provider_intents",
     }.issubset(content["properties"])
+    assert "provider_intents" not in content["properties"]
+    assert "ProviderIntentInput" not in commit_schema["$defs"]
     registry_union = commit_schema["$defs"]["RegistryChangeInput"]
     assert registry_union["discriminator"]["propertyName"] == "mutation_type"
     assert registry_union["discriminator"]["mapping"]["entity_create"] == (

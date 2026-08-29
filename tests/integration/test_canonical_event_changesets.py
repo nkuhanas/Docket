@@ -162,6 +162,57 @@ def _commit_rich_event(session, *, message_id: str) -> tuple[str, str, str]:
     return event.ref_id, lane.ref_id, changeset.ref_id
 
 
+def _commit_event_change(
+    session,
+    *,
+    event_ref: str,
+    message_id: str,
+    text: str,
+    mutation: dict[str, object],
+) -> dict[str, object]:
+    utterance_ref, request_key = _capture(session, message_id=message_id, text=text)
+    event = session.scalar(select(CanonicalEvent).where(CanonicalEvent.ref_id == event_ref))
+    assert event is not None
+    statement = StatementInput.model_validate(
+        {
+            "statement_kind": "calendar_event_change",
+            "subject_refs": [event_ref],
+            "predicate": "change_calendar_event",
+            "value_json": {"operator_text": text},
+            "affected_fields": list(mutation["affected_fields"]),
+            "interpreter_version": "event-projection-test-v1",
+        }
+    )
+    change = {
+        "change_id": "change-existing-event",
+        "object_type": "canonical_event",
+        "object_ref": event_ref,
+        "basis_refs": [utterance_ref, event_ref],
+        **mutation,
+    }
+    content = ChangeSetContent.model_validate(
+        {
+            "basis_refs": [utterance_ref, event_ref],
+            "expected_versions": {event_ref: event.version},
+            "event_changes": [change],
+        }
+    )
+    return InteractiveAuthorityService(session).process_turn(
+        utterance_ref=utterance_ref,
+        request_key=request_key,
+        actor_id=get_settings().operator_discord_user_id,
+        intent_session_ref=None,
+        expected_session_version=None,
+        statements=[statement],
+        relations=[],
+        resolved_intent_json={"kind": "calendar_event_change"},
+        blocking_clarifications=[],
+        content=content,
+        changeset_ref=None,
+        expected_changeset_version=None,
+    )
+
+
 @pytest.mark.integration
 def test_rich_event_changeset_commits_event_route_and_provider_intents_without_approval(
     session_factory,
@@ -383,7 +434,7 @@ def test_package_pickup_case_reply_commits_event_route_and_resolution_first_try(
         )
 
         assert result["ok"] is True
-        assert result["state"] == "committed"
+        assert result["state"] == "committed", result
         assert result["disposition"] == "committed"
         event = session.scalar(select(CanonicalEvent))
         route = session.scalar(select(LaneRoutingDecision))
@@ -428,3 +479,146 @@ def test_uncertain_provider_failure_does_not_roll_back_committed_event(
         assert event is not None and event.status == "active"
         assert changeset is not None and changeset.state == "committed"
         assert operation is not None and operation.status == "reconciliation_required"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("mutation", "expected_operation", "expected_title", "expected_status"),
+    [
+        (
+            {
+                "mutation_type": "canonical_event_modify",
+                "action": "update",
+                "payload": {"title": "Renamed PolyUAS meeting"},
+                "affected_fields": ["title"],
+            },
+            "calendar_update_event",
+            "Renamed PolyUAS meeting",
+            "active",
+        ),
+        (
+            {
+                "mutation_type": "canonical_event_cancel",
+                "action": "retract",
+                "payload": {},
+                "affected_fields": ["status"],
+            },
+            "calendar_cancel_event",
+            "PolyUAS general meeting",
+            "cancelled",
+        ),
+    ],
+)
+def test_existing_event_changes_compile_provider_operation_atomically(
+    session_factory,
+    mutation: dict[str, object],
+    expected_operation: str,
+    expected_title: str,
+    expected_status: str,
+) -> None:
+    with session_factory.begin() as session:
+        event_ref, _lane_ref, _changeset_ref = _commit_rich_event(
+            session, message_id=f"15428020000000001{expected_status == 'cancelled':d}"
+        )
+
+    provider = FakeCalendarProvider()
+    runner = OperationRunner(session_factory, provider)
+    assert runner.run_due_once() is True
+    assert runner.run_due_once() is True
+
+    with session_factory.begin() as session:
+        result = _commit_event_change(
+            session,
+            event_ref=event_ref,
+            message_id=f"15428020000000002{expected_status == 'cancelled':d}",
+            text="Change the existing event.",
+            mutation=mutation,
+        )
+        assert result["state"] == "committed", result
+        event = session.scalar(
+            select(CanonicalEvent).where(CanonicalEvent.ref_id == event_ref)
+        )
+        operation = session.scalar(
+            select(Operation).where(Operation.operation_type == expected_operation)
+        )
+        assert event is not None
+        assert event.title == expected_title
+        assert event.status == expected_status
+        assert operation is not None
+        assert operation.canonical_target_refs == [event_ref]
+
+
+@pytest.mark.integration
+def test_reminder_change_compiles_reminder_provider_operation(session_factory) -> None:
+    with session_factory.begin() as session:
+        event_ref, _lane_ref, _changeset_ref = _commit_rich_event(
+            session, message_id="1542802000000000130"
+        )
+
+    provider = FakeCalendarProvider()
+    runner = OperationRunner(session_factory, provider)
+    assert runner.run_due_once() is True
+    assert runner.run_due_once() is True
+
+    with session_factory.begin() as session:
+        event = session.scalar(
+            select(CanonicalEvent).where(CanonicalEvent.ref_id == event_ref)
+        )
+        assert event is not None
+        event_spec = dict(event.event_spec)
+        event_spec["reminder_plan"] = {
+            "delivery_channels": ["google_popup"],
+            "lead_seconds": [900],
+        }
+        result = _commit_event_change(
+            session,
+            event_ref=event_ref,
+            message_id="1542802000000000131",
+            text="Remind me 15 minutes before that meeting.",
+            mutation={
+                "mutation_type": "canonical_event_modify",
+                "action": "update",
+                "payload": {"event_spec": event_spec},
+                "affected_fields": ["reminder"],
+            },
+        )
+        assert result["state"] == "committed"
+        operation = session.scalar(
+            select(Operation).where(
+                Operation.operation_type == "calendar_update_reminders"
+            )
+        )
+        assert operation is not None
+        assert operation.canonical_target_refs == [event_ref]
+
+
+@pytest.mark.integration
+def test_event_update_without_provider_binding_commits_nothing(session_factory) -> None:
+    with session_factory.begin() as session:
+        event_ref, _lane_ref, _changeset_ref = _commit_rich_event(
+            session, message_id="1542802000000000140"
+        )
+
+    with session_factory.begin() as session:
+        result = _commit_event_change(
+            session,
+            event_ref=event_ref,
+            message_id="1542802000000000141",
+            text="Rename the meeting before it has projected.",
+            mutation={
+                "mutation_type": "canonical_event_modify",
+                "action": "update",
+                "payload": {"title": "Must not commit"},
+                "affected_fields": ["title"],
+            },
+        )
+        event = session.scalar(
+            select(CanonicalEvent).where(CanonicalEvent.ref_id == event_ref)
+        )
+        assert result["disposition"] == "rejected_validation"
+        assert event is not None and event.title == "PolyUAS general meeting"
+        assert session.scalar(
+            select(func.count(Operation.id)).where(
+                Operation.operation_type == "calendar_update_event"
+            )
+        ) == 0

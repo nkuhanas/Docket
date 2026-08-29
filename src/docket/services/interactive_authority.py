@@ -123,7 +123,9 @@ class InteractiveAuthorityService:
     ) -> dict[str, Any]:
         return {
             "resolved_intent": resolved_intent_json,
-            **semantic_authority_scope(content.model_dump(mode="json"), []),
+            **semantic_authority_scope(
+                content.model_dump(mode="json", exclude={"provider_intents"}), []
+            ),
         }
 
     @staticmethod
@@ -378,7 +380,9 @@ class InteractiveAuthorityService:
                 )
                 if option is None or complete_selection_provenance(
                     option.compilation_template_json, utterance.ref_id
-                ) != content.model_dump(mode="json"):
+                ) != content.model_dump(
+                    mode="json", exclude={"provider_intents"}
+                ):
                     raise DocketError(
                         code="semantic_request_scope_mismatch",
                         message=(

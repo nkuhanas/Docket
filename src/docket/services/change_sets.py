@@ -12,9 +12,11 @@ from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError, IdempotencyConflict
 from docket.domain.public_refs import is_public_ref, parse_public_ref
 from docket.models import (
+    Account,
     Affiliation,
     AuditEvent,
     CalendarLane,
+    CanonicalEvent,
     ChangeSet,
     ChangeSetRevision,
     Conflict,
@@ -24,6 +26,7 @@ from docket.models import (
     IntentTurn,
     LaneRoutingDecision,
     OperatorUtterance,
+    ProviderEventBinding,
     Relationship,
     SemanticRequest,
 )
@@ -37,7 +40,9 @@ from docket.schemas.authority import (
     ChangeSetRevise,
     ConflictResolve,
     ProviderIntentInput,
+    ProviderOperationType,
 )
+from docket.schemas.calendar import StandaloneCalendarEventInput
 from docket.services.case_resolutions import AttentionCaseResolutionService
 from docket.services.conflicts import ConflictService
 from docket.services.intent_sessions import IntentSessionService
@@ -106,6 +111,12 @@ def _as_json(value: Any) -> Any:
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
     return value
+
+
+def _normalized_event_spec(value: Any) -> dict[str, Any]:
+    return StandaloneCalendarEventInput.model_validate(value).model_dump(
+        mode="json", exclude_none=True, exclude_defaults=True
+    )
 
 
 def _change_payload(change: ChangeInput) -> dict[str, Any]:
@@ -446,23 +457,22 @@ class ChangeSetService:
         *,
         changeset_idempotency_key: str,
     ) -> ChangeSetContent:
-        """Compile provider projection implied by canonical Calendar event creates."""
-        provider_intents = list(content.provider_intents)
+        """Compile provider projection implied by canonical Calendar mutations."""
+        if content.provider_intents:
+            raise DocketError(
+                code="provider_intents_compiler_owned",
+                message="Provider intents are derived by Docket from canonical mutations.",
+            )
+        provider_intents: list[ProviderIntentInput] = []
         lane_creates = {
             change.change_id: change
             for change in content.lane_changes
             if change.object_type == "calendar_lane" and change.action == "create"
         }
 
-        def targets_change(intent: ProviderIntentInput, change_id: str) -> bool:
-            return change_id in intent.canonical_target_change_ids
-
-        def targets_ref(intent: ProviderIntentInput, ref_id: str) -> bool:
-            return ref_id in intent.canonical_target_refs
-
         def compiled_intent(
             *,
-            operation_type: str,
+            operation_type: ProviderOperationType,
             provider_binding: str,
             target_change_ids: list[str],
             target_refs: list[str],
@@ -488,26 +498,67 @@ class ChangeSetService:
             )
 
         for event_change in content.event_changes:
-            if event_change.action != "create" or event_change.create_spec is None:
-                continue
-            existing_event_intents = [
-                intent
-                for intent in provider_intents
-                if intent.operation_type == "calendar_create_event"
-                and targets_change(intent, event_change.change_id)
-            ]
-            if len(existing_event_intents) > 1:
-                raise DocketError(
-                    code="duplicate_calendar_event_projection",
-                    message="One canonical event create may have only one provider projection.",
-                    details={"change_id": event_change.change_id},
+            lane_change_id: str | None = None
+            lane_ref: str | None = None
+            operation_type: ProviderOperationType | None = None
+            target_change_ids: list[str] = []
+            target_refs: list[str] = []
+            event: CanonicalEvent | None = None
+            if event_change.action == "create" and event_change.create_spec is not None:
+                operation_type = "calendar_create_event"
+                lane_change_id = event_change.create_spec.lane_change_id
+                lane_ref = event_change.create_spec.lane_ref
+                target_change_ids = [event_change.change_id]
+            elif event_change.object_ref is not None:
+                event = self.session.scalar(
+                    select(CanonicalEvent).where(
+                        CanonicalEvent.ref_id == event_change.object_ref
+                    )
                 )
-            if existing_event_intents:
+                if event is None:
+                    continue
+                lane_ref = event.lane_ref
+                target_refs = [event.ref_id]
+                if event_change.action == "retract":
+                    operation_type = "calendar_cancel_event"
+                elif event_change.action in {"update", "supersede"}:
+                    patch = event_change.payload
+                    if patch is None:
+                        continue
+                    patch_values = patch.model_dump(
+                        mode="json", exclude_unset=True, exclude_none=True
+                    )
+                    lane_change_id = patch.lane_change_id
+                    requested_lane_ref = patch.lane_ref
+                    if lane_change_id is not None or (
+                        requested_lane_ref is not None
+                        and requested_lane_ref != event.lane_ref
+                    ):
+                        # A lane move has distinct provider semantics. Validation below
+                        # blocks it before canonical state can commit.
+                        continue
+                    lane_ref = requested_lane_ref or event.lane_ref
+                    if patch.status in {"cancelled", "archived"}:
+                        operation_type = "calendar_cancel_event"
+                    elif patch.status == "active" and event.status == "cancelled":
+                        continue
+                    elif "event_spec" in patch_values:
+                        before = _normalized_event_spec(event.event_spec)
+                        after = _normalized_event_spec(patch.event_spec)
+                        before_reminders = before.pop("reminder_plan", None)
+                        after_reminders = after.pop("reminder_plan", None)
+                        operation_type = (
+                            "calendar_update_reminders"
+                            if before == after
+                            and before_reminders != after_reminders
+                            and set(patch_values) == {"event_spec"}
+                            else "calendar_update_event"
+                        )
+                    elif set(patch_values).intersection({"title", "status"}):
+                        operation_type = "calendar_update_event"
+            if operation_type is None:
                 continue
 
-            event_spec = event_change.create_spec
-            lane_change_id = event_spec.lane_change_id
-            lane_ref = event_spec.lane_ref
             account_id: object | None = None
             lane_needs_configuration = False
             lane_basis_refs = list(event_change.basis_refs)
@@ -529,24 +580,26 @@ class ChangeSetService:
                 lane_needs_configuration = lane.calendar_id is None
             if account_id is None:
                 continue
+            account = self.session.get(Account, account_id)
+            if (
+                account is None
+                or not account.enabled
+                or "google_calendar" not in account.capabilities
+            ):
+                continue
             provider_binding = f"account:{account_id}"
 
             if lane_needs_configuration:
-                existing_lane_intent = any(
+                lane_already_compiled = any(
                     intent.operation_type == "calendar_configure_lane"
                     and (
-                        (
-                            lane_change_id is not None
-                            and targets_change(intent, lane_change_id)
-                        )
-                        or (
-                            lane_ref is not None
-                            and targets_ref(intent, lane_ref)
-                        )
+                        lane_change_id in intent.canonical_target_change_ids
+                        if lane_change_id is not None
+                        else lane_ref in intent.canonical_target_refs
                     )
                     for intent in provider_intents
                 )
-                if not existing_lane_intent:
+                if not lane_already_compiled:
                     provider_intents.append(
                         compiled_intent(
                             operation_type="calendar_configure_lane",
@@ -562,10 +615,10 @@ class ChangeSetService:
 
             provider_intents.append(
                 compiled_intent(
-                    operation_type="calendar_create_event",
+                    operation_type=operation_type,
                     provider_binding=provider_binding,
-                    target_change_ids=[event_change.change_id],
-                    target_refs=[],
+                    target_change_ids=target_change_ids,
+                    target_refs=target_refs,
                     basis_refs=list(event_change.basis_refs),
                     source_change_id=event_change.change_id,
                 )
@@ -615,6 +668,10 @@ class ChangeSetService:
         conflict_service.validate_resolution(request)
         content = _content_for_conflict_effects(request)
         if content is not None:
+            content = self._compile_required_provider_intents(
+                content,
+                changeset_idempotency_key=idempotency_key,
+            )
             errors = self._validate(
                 intent_session,
                 content,
@@ -677,7 +734,7 @@ class ChangeSetService:
                 lane_changes=list(changeset.lane_changes),
                 event_changes=list(changeset.event_changes),
                 resolution_changes=list(changeset.resolution_changes),
-                provider_intents=[],
+                provider_intents=list(changeset.provider_intents),
                 parameter_hash=parameter_hash,
                 preview_hash=sha256_json(
                     {
@@ -820,7 +877,7 @@ class ChangeSetService:
             errors.append({"code": exc.code, "details": exc.details or {}})
             authority_refs = set()
         session_utterance_refs = self._session_utterance_refs(intent_session)
-        if not authority_refs or not authority_refs.issubset(session_utterance_refs):
+        if not authority_refs.intersection(session_utterance_refs):
             errors.append(
                 {
                     "code": "changeset_operator_authority_missing",
@@ -970,7 +1027,7 @@ class ChangeSetService:
                         }
                     )
                     change_authority = set()
-                if not change_authority or not change_authority.issubset(session_utterance_refs):
+                if not change_authority.intersection(session_utterance_refs):
                     errors.append(
                         {
                             "code": "change_operator_authority_missing",
@@ -1081,6 +1138,18 @@ class ChangeSetService:
                     formulation = _change_payload(change)
                     lane_ref = formulation.get("lane_ref")
                     lane_change_id = formulation.get("lane_change_id")
+                    if (
+                        lane_ref is None
+                        and lane_change_id is None
+                        and change.object_ref is not None
+                    ):
+                        existing_event = self.session.scalar(
+                            select(CanonicalEvent).where(
+                                CanonicalEvent.ref_id == change.object_ref
+                            )
+                        )
+                        if existing_event is not None:
+                            lane_ref = existing_event.lane_ref
                     if lane_ref is None and lane_change_id not in create_lane_ids:
                         errors.append(
                             {
@@ -1152,6 +1221,23 @@ class ChangeSetService:
                     existing_route = None
                 if isinstance(existing_route, LaneRoutingDecision):
                     route_lane_ref = existing_route.lane_ref
+            elif event_ref is not None:
+                existing_event = self.session.scalar(
+                    select(CanonicalEvent).where(CanonicalEvent.ref_id == event_ref)
+                )
+                existing_route = (
+                    self.session.scalar(
+                        select(LaneRoutingDecision).where(
+                            LaneRoutingDecision.ref_id
+                            == existing_event.routing_decision_ref
+                        )
+                    )
+                    if existing_event is not None
+                    and existing_event.routing_decision_ref is not None
+                    else None
+                )
+                if existing_route is not None:
+                    route_lane_ref = existing_route.lane_ref
             else:
                 errors.append(
                     {
@@ -1162,6 +1248,12 @@ class ChangeSetService:
                 continue
             event_lane_ref = formulation.get("lane_ref")
             event_lane_change_id = formulation.get("lane_change_id")
+            if event_ref is not None and event_lane_ref is None and event_lane_change_id is None:
+                existing_event = self.session.scalar(
+                    select(CanonicalEvent).where(CanonicalEvent.ref_id == event_ref)
+                )
+                if existing_event is not None:
+                    event_lane_ref = existing_event.lane_ref
             if route_lane_ref != event_lane_ref or route_lane_change_id != event_lane_change_id:
                 errors.append(
                     {
@@ -1169,6 +1261,112 @@ class ChangeSetService:
                         "details": {"change_id": event_change.change_id},
                     }
                 )
+
+        for event_change in content.event_changes:
+            expected_operation: ProviderOperationType | None = None
+            target_ref = event_change.object_ref
+            if event_change.action == "create":
+                expected_operation = "calendar_create_event"
+            elif target_ref is not None:
+                event = self.session.scalar(
+                    select(CanonicalEvent).where(CanonicalEvent.ref_id == target_ref)
+                )
+                if event_change.action == "retract":
+                    expected_operation = "calendar_cancel_event"
+                elif event_change.action in {"update", "supersede"}:
+                    patch = event_change.payload
+                    if patch is not None:
+                        patch_values = patch.model_dump(
+                            mode="json", exclude_unset=True, exclude_none=True
+                        )
+                        if patch.lane_change_id is not None or (
+                            patch.lane_ref is not None
+                            and event is not None
+                            and patch.lane_ref != event.lane_ref
+                        ):
+                            errors.append(
+                                {
+                                    "code": "calendar_event_lane_move_not_migrated",
+                                    "details": {"change_id": event_change.change_id},
+                                }
+                            )
+                            continue
+                        if patch.status in {"cancelled", "archived"}:
+                            expected_operation = "calendar_cancel_event"
+                        elif (
+                            patch.status == "active"
+                            and event is not None
+                            and event.status == "cancelled"
+                        ):
+                            errors.append(
+                                {
+                                    "code": "calendar_event_reactivation_not_migrated",
+                                    "details": {"change_id": event_change.change_id},
+                                }
+                            )
+                            continue
+                        elif "event_spec" in patch_values:
+                            before = (
+                                _normalized_event_spec(event.event_spec)
+                                if event is not None
+                                else {}
+                            )
+                            after = _normalized_event_spec(patch.event_spec)
+                            before_reminders = before.pop("reminder_plan", None)
+                            after_reminders = after.pop("reminder_plan", None)
+                            expected_operation = (
+                                "calendar_update_reminders"
+                                if before == after
+                                and before_reminders != after_reminders
+                                and set(patch_values) == {"event_spec"}
+                                else "calendar_update_event"
+                            )
+                        elif set(patch_values).intersection({"title", "status"}):
+                            expected_operation = "calendar_update_event"
+            if expected_operation is None:
+                continue
+            matching_intents = [
+                intent
+                for intent in content.provider_intents
+                if intent.operation_type == expected_operation
+                and (
+                    event_change.change_id in intent.canonical_target_change_ids
+                    if event_change.action == "create"
+                    else target_ref in intent.canonical_target_refs
+                )
+            ]
+            if len(matching_intents) != 1:
+                errors.append(
+                    {
+                        "code": "calendar_provider_projection_required",
+                        "details": {
+                            "change_id": event_change.change_id,
+                            "operation_type": expected_operation,
+                            "matching_intents": len(matching_intents),
+                        },
+                    }
+                )
+            if event_change.action != "create" and target_ref is not None:
+                event = self.session.scalar(
+                    select(CanonicalEvent).where(CanonicalEvent.ref_id == target_ref)
+                )
+                binding = (
+                    self.session.scalar(
+                        select(ProviderEventBinding).where(
+                            ProviderEventBinding.canonical_event_id == event.id,
+                            ProviderEventBinding.status == "active",
+                        )
+                    )
+                    if event is not None
+                    else None
+                )
+                if binding is None:
+                    errors.append(
+                        {
+                            "code": "provider_event_binding_required",
+                            "details": {"change_id": event_change.change_id},
+                        }
+                    )
 
         for conflict in self.session.scalars(select(Conflict).where(Conflict.status == "open")):
             if conflict.ref_id == resolving_conflict_ref:
@@ -1230,7 +1428,7 @@ class ChangeSetService:
                     }
                 )
                 intent_authority = set()
-            if not intent_authority or not intent_authority.issubset(session_utterance_refs):
+            if not intent_authority.intersection(session_utterance_refs):
                 errors.append(
                     {
                         "code": "provider_intent_operator_authority_missing",
