@@ -552,6 +552,7 @@ def test_persisted_selection_compiles_once_and_preserves_exact_authority(
     assert replay["utterance_ref"] == selected_utterance_ref
     assert replay["semantic_request_ref"] == selection["semantic_request_ref"]
     assert replay["response_ref"] == selection["response_ref"]
+    assert replay["disposition"] == "replayed_request"
 
     with session_factory.begin() as session:
         utterance = session.scalar(
@@ -801,11 +802,8 @@ def test_intervening_identity_binding_opens_conflict_without_partial_commit(
             handle_type="email",
             value="eadvise@calpoly.edu",
             normalized_value="eadvise@calpoly.edu",
-            entity_id=prior_entity.id,
-            binding_rule="operator_selection",
-            binding_basis_refs=[prior_ref],
-            status="bound",
-            basis_refs=[prior_ref],
+            status="unbound",
+            basis_refs=[initial_ref],
         )
         case = AttentionCase(
             situation_key="cal-poly-binding-conflict",
@@ -817,18 +815,6 @@ def test_intervening_identity_binding_opens_conflict_without_partial_commit(
         )
         session.add_all([identity, case])
         session.flush()
-        session.add(
-            IdentityBinding(
-                identity_handle_id=identity.id,
-                entity_id=prior_entity.id,
-                binding_rule="operator_selection",
-                status="active",
-                basis_refs=[prior_ref],
-                decision_refs=[],
-                source_refs=[],
-                created_by_changeset_ref=f"chg_{'1' * 26}",
-            )
-        )
         item = CaseItem(
             attention_case_id=case.id,
             item_key="sender-identity",
@@ -906,6 +892,23 @@ def test_intervening_identity_binding_opens_conflict_without_partial_commit(
             signing_key=settings.read_secret(
                 settings.interaction_signing_key_file
             ).encode(),
+        )
+        identity.entity_id = prior_entity.id
+        identity.binding_rule = "operator_selection"
+        identity.binding_basis_refs = [prior_ref]
+        identity.status = "bound"
+        identity.version += 1
+        session.add(
+            IdentityBinding(
+                identity_handle_id=identity.id,
+                entity_id=prior_entity.id,
+                binding_rule="operator_selection",
+                status="active",
+                basis_refs=[prior_ref],
+                decision_refs=[],
+                source_refs=[],
+                created_by_changeset_ref=f"chg_{'1' * 26}",
+            )
         )
 
     result = semantic_option_selection(
