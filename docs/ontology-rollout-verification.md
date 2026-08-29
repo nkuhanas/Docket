@@ -83,12 +83,34 @@ Hermes running plugin `0.20.7`, no active provider operations, no pending outbox
 delivery, and no bounded post-deploy Docket/Hermes error. The amendment is now
 implementation-authoritative within its signed scope.
 
-The substantive implementation is complete in local source through
-`5367617`, split across persistence, typed mutation schemas, persisted semantic
-options, tool dispositions, gateway leases, execution drains, stable ingress,
-quiesced ingress handoff, and exact-scope retry commits. Required local checks
-pass, but this paragraph is not production evidence: push, GitHub CI, migration,
-and supported deployment remain pending.
+The substantive implementation is deployed through
+`a7a16f8b655c6d84e8df41f4875d85fa58d586cf`, split across persistence, typed
+mutation schemas, persisted semantic options, tool dispositions, gateway
+leases, execution drains, stable ingress, quiesced ingress handoff, and
+exact-scope retry commits. GitHub Actions run `33231445973` passed both required
+jobs for that exact revision.
+
+The supported deployment completed at `2026-08-29T03:30Z`, created
+`backups/docket-20260829T032958Z-a7a16f8b655c.dump`, retained
+`docket-docket:rollback-20260829T032951Z`, installed image
+`sha256:5c61af973ef6596f2c5a8ce764d6b1be3e87305445c2ee2d9eacf55219985fab`,
+and left Alembic at `0042`. The deployment-stable Discord ingress remained
+healthy while Docket and Hermes restarted.
+
+One earlier supported attempt at revision `76e5f8d` failed closed when two
+simultaneous plugin registrations raced while allocating a gateway generation.
+The deploy script released its drain barrier without killing active work. The
+server now serializes registration replay, fencing, and generation allocation
+with a PostgreSQL transaction-scoped advisory lock; the isolated Compose smoke
+issues two simultaneous registrations and requires one `created` plus one
+`replayed_request` result for the same `gwy_`.
+
+Post-deploy inspection verified plugin `0.22.2`, one active gateway lifetime,
+a reachable projection listener, six consecutive successful heartbeat updates,
+zero executing provider operations, and zero in-flight outbox deliveries. The
+latest deployment barrier is `released`; bounded Docket/Hermes logs contain no
+gateway fencing, uniqueness, traceback, or error entry after the successful
+deployment.
 
 ## Implemented persistence sequence
 
@@ -200,7 +222,7 @@ Automated acceptance is organized in these suites:
 Current source-gate result on 2026-08-28:
 
 ```text
-pytest: 400 passed
+pytest: 403 passed
 ruff: all checks passed
 mypy: no issues in 135 source files
 git diff --check: clean
@@ -208,10 +230,11 @@ isolated PostgreSQL Compose smoke: passed
 ```
 
 The Compose smoke upgraded PostgreSQL through `0042`, executed authenticated
-MCP/provenance response finalization, and connected with the restricted
-`docket_ingress` role. That role read its bounded persisted-option table and
-PostgreSQL rejected an attempted `UPDATE operator_utterances`. The generated
-v10 interactive contract hash is
+MCP/provenance response finalization, concurrently replayed one gateway
+registration without allocating a duplicate lease generation, and connected
+with the restricted `docket_ingress` role. That role read its bounded
+persisted-option table and PostgreSQL rejected an attempted `UPDATE
+operator_utterances`. The generated v10 interactive contract hash is
 `5169d64f25a55d1d382aceca0fd8f13344ab062355bedcc0ad3c03ebb480748f`;
 the v10 restricted-triage hash is
 `d2669b57df80249a291796943393fa546f35462665b140566ba14961d0dca243`.

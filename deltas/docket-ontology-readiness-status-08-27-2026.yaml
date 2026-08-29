@@ -173,13 +173,13 @@ signed_amendments:
     frozen_artifact_hash: 972784149dd2a219d027684a76f04fac37d8147e9656a3ff06326d883fd06579
     amends: ONT-DELTA-2026-08-27
     implementation_authority: amendment_scope
-    status: implemented_local_verification_pending_deployment
+    status: deployed_and_operationally_verified
     signoff_evidence:
       operator_utterance_ref: utt_01M15DNA8XAKVDANT222F26HD0
       decision_ref: dec_01M15EHKNXVKRBM7MZ3FN39X3E
     implementation_target:
       migration_head: "0042"
-      plugin_version: 0.22.1
+      plugin_version: 0.22.2
       interactive_contract_version: docket-tools-2026-08-28-v10
       interactive_contract_hash: 5169d64f25a55d1d382aceca0fd8f13344ab062355bedcc0ad3c03ebb480748f
       triage_contract_hash: d2669b57df80249a291796943393fa546f35462665b140566ba14961d0dca243
@@ -196,13 +196,39 @@ signed_amendments:
       - 6a47f13
       - 1560f4e
       - 5367617
+      - fd2babf
+      - f51c016
+      - edb9513
+      - 76e5f8d
+      - a7a16f8
     local_verification:
       verified_at: 2026-08-28
-      pytest_passed: 400
+      pytest_passed: 403
       ruff: passed
       mypy_source_files: 135
       compose_smoke: passed
-      production_deployed: false
+      concurrent_gateway_registration: passed
+      production_deployed: true
+    deployment_evidence:
+      deployed_at: 2026-08-29T03:30:07Z
+      verified_at: 2026-08-29T03:31:26Z
+      substantive_revision: a7a16f8b655c6d84e8df41f4875d85fa58d586cf
+      github_actions_run: 33231445973
+      migration_head: "0042"
+      runtime_image: sha256:5c61af973ef6596f2c5a8ce764d6b1be3e87305445c2ee2d9eacf55219985fab
+      plugin_version: 0.22.2
+      interactive_contract_hash: 5169d64f25a55d1d382aceca0fd8f13344ab062355bedcc0ad3c03ebb480748f
+      triage_contract_hash: d2669b57df80249a291796943393fa546f35462665b140566ba14961d0dca243
+      pre_migration_backup: backups/docket-20260829T032958Z-a7a16f8b655c.dump
+      rollback_image: docket-docket:rollback-20260829T032951Z
+      stable_ingress_healthy: true
+      projection_listener_reachable: true
+      active_gateway_lifetimes: 1
+      successful_heartbeat_updates_observed: 6
+      latest_drain_barrier_state: released
+      active_operations: 0
+      in_flight_outbox_deliveries: 0
+      bounded_error_log_entries: 0
 
 historical_record:
   document_ref: ONT-DELTA-2026-08-26
