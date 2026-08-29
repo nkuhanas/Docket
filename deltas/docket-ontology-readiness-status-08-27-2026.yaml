@@ -169,6 +169,40 @@ signed_amendments:
       amendment_signoff_decisions: 1
       active_operations: 0
       pending_outbox: 0
+  - document_ref: ONT-DELTA-2026-08-28-INTERACTIVE-CONTINUITY
+    frozen_artifact_hash: 972784149dd2a219d027684a76f04fac37d8147e9656a3ff06326d883fd06579
+    amends: ONT-DELTA-2026-08-27
+    implementation_authority: amendment_scope
+    status: implemented_local_verification_pending_deployment
+    signoff_evidence:
+      operator_utterance_ref: utt_01M15DNA8XAKVDANT222F26HD0
+      decision_ref: dec_01M15EHKNXVKRBM7MZ3FN39X3E
+    implementation_target:
+      migration_head: "0042"
+      plugin_version: 0.22.1
+      interactive_contract_version: docket-tools-2026-08-28-v10
+      interactive_contract_hash: 5169d64f25a55d1d382aceca0fd8f13344ab062355bedcc0ad3c03ebb480748f
+      triage_contract_hash: d2669b57df80249a291796943393fa546f35462665b140566ba14961d0dca243
+      interactive_tools: 22
+      triage_tools: 4
+    implementation_commits:
+      - 0680ac9
+      - 22b293c
+      - 640a118
+      - 3a39b63
+      - 050ab96
+      - 33abcc4
+      - ae619c2
+      - 6a47f13
+      - 1560f4e
+      - 5367617
+    local_verification:
+      verified_at: 2026-08-28
+      pytest_passed: 400
+      ruff: passed
+      mypy_source_files: 135
+      compose_smoke: passed
+      production_deployed: false
 
 historical_record:
   document_ref: ONT-DELTA-2026-08-26

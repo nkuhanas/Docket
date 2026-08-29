@@ -1281,6 +1281,7 @@ def test_stale_case_revision_returns_compact_current_binding_without_mutation(
         )
         assert result == {
             "ok": False,
+            "disposition": "blocked_version",
             "error": {
                 "code": "attention_case_revision_stale",
                 "message": (

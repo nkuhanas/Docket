@@ -81,8 +81,14 @@ service invocation returned `replayed_request`; exactly one Decision exists.
 Post-deploy verification found Docket healthy at the expected source revision,
 Hermes running plugin `0.20.7`, no active provider operations, no pending outbox
 delivery, and no bounded post-deploy Docket/Hermes error. The amendment is now
-implementation-authoritative within its signed scope; its substantive behavior
-has not yet been implemented.
+implementation-authoritative within its signed scope.
+
+The substantive implementation is complete in local source through
+`5367617`, split across persistence, typed mutation schemas, persisted semantic
+options, tool dispositions, gateway leases, execution drains, stable ingress,
+quiesced ingress handoff, and exact-scope retry commits. Required local checks
+pass, but this paragraph is not production evidence: push, GitHub CI, migration,
+and supported deployment remain pending.
 
 ## Implemented persistence sequence
 
@@ -122,6 +128,11 @@ The migration sequence is additive through `0041`:
     `legacy_unspecified` migration honesty, and `not_pursued` closure state.
 13. `0041`: ToolInvocations retain bounded result disposition while Discord MCP
     traces separately represent transport and reconciled durable domain outcome.
+14. `0042`: immutable persisted semantic options, semantic request/attempt
+    lineages, gateway leases, execution leases, drain barriers, and deferred
+    ingress provide authority continuity across validation failure, restart,
+    and deployment. The migration is additive so the prior ingress writer
+    remains schema-compatible through normal rollout.
 
 Legacy event and lane backfills are labeled `legacy_preledger` and carry a
 typed external provenance source. New canonical objects are `complete` and
@@ -172,6 +183,38 @@ Automated acceptance is organized in these suites:
 | Output byte envelope | `tests/integration/test_mcp_output_envelope.py` |
 | Migration upgrade/downgrade | `tests/integration/test_migrations.py` plus the PostgreSQL rehearsal below |
 | Plugin actor/source/response gates | `tests/adversarial/test_plugin_actor_gate.py` |
+
+### Interactive-continuity amendment traceability
+
+| Requirement | Automated evidence |
+| --- | --- |
+| `ONT-CONT-REQ-0001`–`0006`, `0032`–`0033` | `test_persisted_selection_compiles_once_and_preserves_exact_authority`, `test_stable_ingress_selection_persists_before_worker_execution` |
+| `ONT-CONT-REQ-0007`–`0010`, `0026`–`0027` | `test_selection_validation_failure_preserves_authority_without_duplicate_attempt`, `test_dependency_cycle_blocks_before_any_handler_runs` |
+| `ONT-CONT-REQ-0011`–`0015`, `0028` | `test_model_facing_mutations_reject_loose_or_unsupported_shapes`, `test_dependency_cycle_blocks_before_any_handler_runs`, `test_interactive_profile_exposes_only_reads_and_changeset_authority` |
+| `ONT-CONT-REQ-0016`–`0018` | `test_docket_discord_profile_has_no_mutation_escape_capabilities`, ToolInvocation assertions in `test_provenance_bootstrap.py`, trace assertions in `test_mcp_traces.py` |
+| `ONT-CONT-REQ-0019`–`0020`, `0034` | `test_expired_gateway_reconciles_terminal_and_unknown_call_outcomes` |
+| `ONT-CONT-REQ-0021`–`0023` | `test_drain_waits_only_for_prebarrier_execution_leases`, `test_drain_timeout_aborts_without_cancelling_active_work`, `test_deploy_drains_execution_but_preserves_queued_durable_work` |
+| `ONT-CONT-REQ-0024`–`0025` | `test_ingress_handoff_quiesces_and_regenerates_exact_semantic_options`; the immutable original selection/precondition assertions in `test_persisted_selection_compiles_once_and_preserves_exact_authority` |
+| `ONT-CONT-REQ-0029`–`0031` | `test_authenticated_message_is_captured_and_deferred_during_drain`, `test_stable_ingress_captures_typed_message_without_domain_authority`, `test_stable_ingress_selection_persists_before_worker_execution`, `test_ingress_handoff_quiesces_and_regenerates_exact_semantic_options`, release-script contract checks |
+
+Current source-gate result on 2026-08-28:
+
+```text
+pytest: 400 passed
+ruff: all checks passed
+mypy: no issues in 135 source files
+git diff --check: clean
+isolated PostgreSQL Compose smoke: passed
+```
+
+The Compose smoke upgraded PostgreSQL through `0042`, executed authenticated
+MCP/provenance response finalization, and connected with the restricted
+`docket_ingress` role. That role read its bounded persisted-option table and
+PostgreSQL rejected an attempted `UPDATE operator_utterances`. The generated
+v10 interactive contract hash is
+`5169d64f25a55d1d382aceca0fd8f13344ab062355bedcc0ad3c03ebb480748f`;
+the v10 restricted-triage hash is
+`d2669b57df80249a291796943393fa546f35462665b140566ba14961d0dca243`.
 
 ### Case-resolution amendment traceability
 
