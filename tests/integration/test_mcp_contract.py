@@ -149,6 +149,21 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
         schema = tools[name].inputSchema
         assert "account_ref" in schema["properties"]
         assert "account_id" not in schema["properties"]
+    calendar_events = tools["docket_list_calendar_events"]
+    assert "calendar_id" not in calendar_events.inputSchema.get("required", [])
+    assert "globally ordered" in (calendar_events.description or "")
+    history_type = tools["docket_search_history"].inputSchema["properties"][
+        "object_type"
+    ]
+    history_type_schema = next(
+        branch for branch in history_type["anyOf"] if "enum" in branch
+    )
+    assert set(history_type_schema["enum"]) >= {
+        "operator_utterance",
+        "attention_case",
+        "tool_invocation",
+        "runtime_log_entry",
+    }
     assert "record_key" in tools["docket_get_record"].inputSchema["properties"]
     assert "item_ref" in tools["docket_get_queue_item"].inputSchema["properties"]
 

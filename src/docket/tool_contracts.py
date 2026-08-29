@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-08-29-v11"
+CONTRACT_VERSION = "docket-tools-2026-08-29-v12"
 
 
 class ToolContractEntry(TypedDict):
@@ -36,7 +36,9 @@ _INTERACTIVE_READ_PURPOSES: dict[str, str] = {
     "docket_search_records": "Search bounded legacy Records before asserting stored facts.",
     "docket_list_accounts": "List configured provider-account bindings.",
     "docket_list_calendar_lanes": "List configured calendar destinations.",
-    "docket_list_calendar_events": "Read bounded redacted Calendar cache state.",
+    "docket_list_calendar_events": (
+        "Read one bounded redacted Calendar page across all active lanes or one lane."
+    ),
     "docket_get_calendar_sync_status": "Read Calendar cache freshness and sync health.",
     "docket_get_calendar_profile": "Read current Operator Calendar policy.",
     "docket_list_reminder_rules": "List durable Docket reminder rules.",
@@ -268,7 +270,12 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
                     "the event change. Docket backfills the event's route_ inside the "
                     "same transaction. Never point the event and route creates at each "
                     "other."
-                )
+                ),
+                (
+                    "Failed ChangeSet retries: replayed_request is terminal success/no-op "
+                    "only. A failed duplicate remains failed; revise the exact chg_ and "
+                    "version from next while preserving semantic_request_ref."
+                ),
             ]
             if profile == "interactive"
             else []

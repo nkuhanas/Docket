@@ -490,7 +490,7 @@ class ReminderRuleResult(StrictModel):
 
 class CalendarLookupInput(StrictModel):
     account_id: UUID
-    calendar_id: str = Field(min_length=1, max_length=1024)
+    calendar_id: str | None = Field(default=None, min_length=1, max_length=1024)
     start: datetime | None = None
     end: datetime | None = None
     relative_day: CalendarRelativeDay | None = None

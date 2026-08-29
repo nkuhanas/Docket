@@ -1,12 +1,46 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from docket.domain.public_refs import is_public_ref, parse_public_ref
 
 PublicRef = Annotated[str, Field(min_length=30, max_length=40)]
+
+HistoryObjectType = Literal[
+    "operator_utterance",
+    "agent_response",
+    "interpreted_statement",
+    "decision",
+    "intent_session",
+    "intent_turn",
+    "changeset",
+    "conflict",
+    "entity",
+    "identity_handle",
+    "affiliation",
+    "relationship",
+    "fact",
+    "interaction",
+    "calendar_lane",
+    "preference",
+    "lane_routing_decision",
+    "canonical_event",
+    "source",
+    "daily_brief",
+    "triage_run",
+    "context_packet",
+    "attention_case",
+    "attention_case_revision",
+    "case_item",
+    "operation",
+    "tool_invocation",
+    "audit_event",
+    "runtime_log_entry",
+    "triage_brief_entry",
+    "provider_identity",
+]
 
 _PROVENANCE_PREFIXES = frozenset(
     {

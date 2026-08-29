@@ -14,6 +14,7 @@ from docket.models import (
     Account,
     AuditEvent,
     CalendarEventCache,
+    CalendarLane,
     CalendarLink,
     CalendarSyncState,
     CanonicalEvent,
@@ -89,6 +90,114 @@ def _source(message_id: str, intent_index: int = 0) -> RecordSourceInput:
             "intent_index": intent_index,
         },
     )
+
+
+@pytest.mark.integration
+def test_calendar_lookup_aggregates_active_lane_ids_in_one_ordered_page(
+    session_factory,
+) -> None:
+    base = datetime(2026, 8, 29, 16, tzinfo=UTC)
+    settings = get_settings().model_copy(update={"calendar_reads_enabled": False})
+    account_id = _account(session_factory)
+    with session_factory.begin() as session:
+        session.add_all(
+            [
+                CalendarLane(
+                    account_id=account_id,
+                    lane="personal",
+                    display_name="Personal",
+                    color_hex="#8E24AA",
+                    calendar_id="personal@example.com",
+                    status="active",
+                ),
+                CalendarLane(
+                    account_id=account_id,
+                    lane="clubs",
+                    display_name="Clubs",
+                    color_hex="#0B8043",
+                    calendar_id="clubs@example.com",
+                    status="active",
+                ),
+                CalendarEventCache(
+                    account_id=account_id,
+                    calendar_id="personal@example.com",
+                    provider_event_id="later",
+                    snapshot_generation=uuid.uuid4(),
+                    status="confirmed",
+                    summary="Later event",
+                    is_all_day=False,
+                    start_at=base + timedelta(hours=2),
+                    end_at=base + timedelta(hours=3),
+                    timezone=settings.timezone,
+                    synced_at=base,
+                ),
+                CalendarEventCache(
+                    account_id=account_id,
+                    calendar_id="clubs@example.com",
+                    provider_event_id="earlier",
+                    snapshot_generation=uuid.uuid4(),
+                    status="confirmed",
+                    summary="Earlier event",
+                    is_all_day=False,
+                    start_at=base + timedelta(hours=1),
+                    end_at=base + timedelta(hours=2),
+                    timezone=settings.timezone,
+                    synced_at=base,
+                ),
+            ]
+        )
+
+    read = CalendarReadService(
+        session_factory,
+        CalendarSyncService(
+            session_factory,
+            FakeCalendarProvider(),
+            settings,
+            clock=lambda: base,
+        ),
+        settings,
+        clock=lambda: base,
+    )
+    first = read.list_events_across_calendars(
+        account_id=account_id,
+        calendar_ids=["personal@example.com", "clubs@example.com"],
+        start=base,
+        end=base + timedelta(days=1),
+        text_filter=None,
+        limit=1,
+        freshness="prefer_cache",
+    )
+
+    assert first["calendar_ids"] == [
+        "personal@example.com",
+        "clubs@example.com",
+    ]
+    assert first["count"] == 1
+    assert first["total_if_known"] == 2
+    assert first["truncated"] is True
+    assert first["cursor"] == "1"
+    assert first["events"][0]["calendar_id"] == "clubs@example.com"
+    assert first["events"][0]["provider_event_id"] == "earlier"
+    assert first["events"][0]["summary"] == "Earlier event"
+    assert set(first["freshness_by_calendar"]) == {
+        "personal@example.com",
+        "clubs@example.com",
+    }
+
+    second = read.list_events_across_calendars(
+        account_id=account_id,
+        calendar_ids=["personal@example.com", "clubs@example.com"],
+        start=base,
+        end=base + timedelta(days=1),
+        text_filter=None,
+        limit=1,
+        freshness="prefer_cache",
+        offset=1,
+    )
+    assert second["events"][0]["calendar_id"] == "personal@example.com"
+    assert second["events"][0]["provider_event_id"] == "later"
+    assert second["truncated"] is False
+    assert second["cursor"] is None
 
 
 def _request_key(message_id: str, intent_index: int = 0) -> str:

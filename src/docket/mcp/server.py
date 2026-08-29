@@ -53,6 +53,7 @@ from docket.schemas.calendar import (
     MigrateCalendarLaneEventsInput,
     SetCalendarProfileInput,
 )
+from docket.schemas.common import HistoryObjectType
 from docket.schemas.entities import (
     EntityAttributeKey,
     EntityAttributes,
@@ -1073,7 +1074,7 @@ def _refresh_active_calendar_lanes(account_id: uuid.UUID) -> None:
 @mcp.tool()
 def docket_list_calendar_events(
     account_ref: SourceRef,
-    calendar_id: CalendarId,
+    calendar_id: CalendarId | None = None,
     start: datetime | None = None,
     end: datetime | None = None,
     relative_day: CalendarRelativeDay | None = None,
@@ -1085,6 +1086,9 @@ def docket_list_calendar_events(
 ) -> dict[str, Any]:
     """Read a bounded, redacted time range from Docket's Calendar cache.
 
+    Omit ``calendar_id`` to read one globally ordered page across every active
+    Calendar lane for the account. Each returned aggregate event names its
+    ``calendar_id``. Supply one exact ID only when the request is lane-specific.
     Supply both timezone-aware ``start`` and ``end``, or set ``relative_day`` to
     ``today`` or ``tomorrow``. Docket resolves relative days once in its configured
     timezone and returns the authoritative local date, timezone, and ``as_of`` instant;
@@ -1106,6 +1110,7 @@ def docket_list_calendar_events(
         offset = _offset_cursor(cursor)
         with session_scope() as session:
             account_id = AccountService(session).require_google_ref(account_ref).id
+            calendar_ids = CalendarLaneService(session, get_settings()).calendar_ids(account_id)
         request = CalendarLookupInput(
             account_id=account_id,
             calendar_id=calendar_id,
@@ -1117,17 +1122,33 @@ def docket_list_calendar_events(
             freshness=freshness,
             result_view=result_view,
         )
-        result = _calendar_read_service().list_events(
-            account_id=request.account_id,
-            calendar_id=request.calendar_id,
-            start=request.start,
-            end=request.end,
-            relative_day=request.relative_day,
-            text_filter=request.text_filter,
-            limit=request.limit,
-            freshness=request.freshness,
-            offset=offset,
-        )
+        read_service = _calendar_read_service()
+        if request.calendar_id is None:
+            result = read_service.list_events_across_calendars(
+                account_id=request.account_id,
+                calendar_ids=calendar_ids,
+                start=request.start,
+                end=request.end,
+                relative_day=request.relative_day,
+                text_filter=request.text_filter,
+                limit=request.limit,
+                freshness=request.freshness,
+                result_view=request.result_view,
+                offset=offset,
+            )
+        else:
+            result = read_service.list_events(
+                account_id=request.account_id,
+                calendar_id=request.calendar_id,
+                start=request.start,
+                end=request.end,
+                relative_day=request.relative_day,
+                text_filter=request.text_filter,
+                limit=request.limit,
+                freshness=request.freshness,
+                result_view=request.result_view,
+                offset=offset,
+            )
         return {"ok": True, **result}
     except Exception as exc:
         return _error(exc)
@@ -1610,7 +1631,7 @@ def docket_get_network_neighborhood(
 
 @mcp.tool()
 def docket_search_history(
-    object_type: str | None = None,
+    object_type: HistoryObjectType | None = None,
     ref: str | None = None,
     conversation_ref: str | None = None,
     related_ref: str | None = None,

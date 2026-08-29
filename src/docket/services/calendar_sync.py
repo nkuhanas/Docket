@@ -1205,3 +1205,111 @@ class CalendarReadService:
                     freshness == "require_fresh" and not self.settings.calendar_reads_enabled
                 ),
             }
+
+    def list_events_across_calendars(
+        self,
+        *,
+        account_id: uuid.UUID,
+        calendar_ids: list[str],
+        start: datetime | None,
+        end: datetime | None,
+        relative_day: str | None = None,
+        text_filter: str | None,
+        limit: int,
+        freshness: str,
+        result_view: str = "occurrences",
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Return one globally ordered page across the account's active lanes."""
+        ordered_calendar_ids = list(dict.fromkeys(calendar_ids))
+        if not ordered_calendar_ids:
+            raise DocketError(
+                code="calendar_lanes_not_available",
+                message="The selected account has no active Calendar lanes.",
+            )
+        if len(ordered_calendar_ids) > 25:
+            raise DocketError(
+                code="calendar_lane_limit_exceeded",
+                message="Aggregate Calendar reads are limited to 25 active lanes.",
+            )
+        if offset + limit > 10_000:
+            raise DocketError(
+                code="calendar_aggregate_cursor_too_large",
+                message="Aggregate Calendar pagination is limited to 10,000 events.",
+            )
+
+        needed = offset + limit
+        all_events: list[dict[str, Any]] = []
+        totals = 0
+        freshness_by_calendar: dict[str, dict[str, Any]] = {}
+        refresh_pending = False
+        refresh_disabled = False
+        first_page: dict[str, Any] | None = None
+        account_ref: str | None = None
+
+        for calendar_id in ordered_calendar_ids:
+            calendar_events: list[dict[str, Any]] = []
+            calendar_offset = 0
+            page: dict[str, Any] | None = None
+            while len(calendar_events) < needed:
+                page = self.list_events(
+                    account_id=account_id,
+                    calendar_id=calendar_id,
+                    start=start,
+                    end=end,
+                    relative_day=relative_day,
+                    text_filter=text_filter,
+                    limit=min(100, needed - len(calendar_events)),
+                    freshness=freshness if calendar_offset == 0 else "prefer_cache",
+                    result_view=result_view,
+                    offset=calendar_offset,
+                )
+                if first_page is None:
+                    first_page = page
+                    account_ref = str(page["account_ref"])
+                if calendar_offset == 0:
+                    totals += int(page["total_if_known"])
+                    freshness_by_calendar[calendar_id] = dict(page["freshness"])
+                    refresh_pending = refresh_pending or bool(page["refresh_pending"])
+                    refresh_disabled = refresh_disabled or bool(page["refresh_disabled"])
+                page_events = [{"calendar_id": calendar_id, **event} for event in page["events"]]
+                calendar_events.extend(page_events)
+                next_cursor = page.get("cursor")
+                if next_cursor is None or not page_events:
+                    break
+                calendar_offset = int(next_cursor)
+            all_events.extend(calendar_events)
+
+        assert first_page is not None
+
+        def event_order(event: dict[str, Any]) -> tuple[str, str, str, str]:
+            local_instant = str(event.get("start_local") or event.get("first_start_local") or "")
+            local_date = str(event.get("start_date") or event.get("first_start_date") or "")
+            day = local_instant[:10] if local_instant else local_date
+            instant = local_instant or f"{local_date}T00:00:00"
+            return (
+                day,
+                instant,
+                str(event["calendar_id"]),
+                str(event.get("provider_event_id") or ""),
+            )
+
+        all_events.sort(key=event_order)
+        selected = all_events[offset : offset + limit]
+        return {
+            "account_id": str(account_id),
+            "account_ref": account_ref,
+            "calendar_ids": ordered_calendar_ids,
+            "range_start": first_page["range_start"],
+            "range_end": first_page["range_end"],
+            "range_resolution": first_page["range_resolution"],
+            "result_view": result_view,
+            "events": selected,
+            "count": len(selected),
+            "total_if_known": totals,
+            "truncated": offset + len(selected) < totals,
+            "cursor": str(offset + len(selected)) if offset + len(selected) < totals else None,
+            "freshness_by_calendar": freshness_by_calendar,
+            "refresh_pending": refresh_pending,
+            "refresh_disabled": refresh_disabled,
+        }

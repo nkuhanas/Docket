@@ -189,6 +189,9 @@ Preference/routing rules, entity rules, deterministic three-decision precedent,
 semantic metadata suggestion, then clarification. A new or rerouted event must
 create or reference a `route_`. Provider intents target the committed event/lane;
 provider completion occurs later through `op_` execution and reconciliation.
+For a general availability lookup, call `docket_list_calendar_events` once with
+`calendar_id` omitted; Docket returns one globally ordered page across all active
+lanes. Supply `calendar_id` only when the Operator's request is lane-specific.
 
 For a new event and a new event-specific route in the same ChangeSet, keep the
 dependency one-way. The CanonicalEvent `create_spec` uses `lane_ref` or
