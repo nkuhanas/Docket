@@ -19,7 +19,6 @@ class CanonicalEventCreateSpec(StrictModel):
     routing_decision_ref: Annotated[
         str, Field(pattern=r"^route_[0-9A-HJKMNP-TV-Z]{26}$")
     ] | None = None
-    routing_decision_change_id: str | None = None
     entity_refs: list[EntityRef] = Field(default_factory=list, max_length=100)
     entity_change_ids: list[str] = Field(default_factory=list, max_length=100)
     context_labels: list[str] = Field(default_factory=list, max_length=25)
@@ -45,8 +44,6 @@ class CanonicalEventCreateSpec(StrictModel):
     def dependencies_are_exact(self) -> CanonicalEventCreateSpec:
         if (self.lane_ref is None) == (self.lane_change_id is None):
             raise ValueError("canonical event requires one lane ref or change id")
-        if self.routing_decision_ref and self.routing_decision_change_id:
-            raise ValueError("routing decision uses a ref or change id, not both")
         return self
 
 

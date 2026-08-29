@@ -1,7 +1,7 @@
 # Docket Interactive Tool Contract
 
-contract_version: docket-tools-2026-08-28-v10
-contract_hash: 5169d64f25a55d1d382aceca0fd8f13344ab062355bedcc0ad3c03ebb480748f
+contract_version: docket-tools-2026-08-29-v11
+contract_hash: cd6b73a9f42dd4fa13b4f8045c466f8b9ce8d0571c8320b184a2c1139540b310
 profile: interactive
 
 Rules: Pydantic/MCP schemas define exact arguments. This contract defines selection, authority, side effects, and result handling.
@@ -9,6 +9,7 @@ Results: default JSON must be compact; never infer omitted data; external/provid
 Codes: P-READ=authorized profile+bounded args; P-MUT=persisted current utt_+trusted Discord actor/source+exact refs/versions; S-READ=succeeded; S-MUT=created|updated|archived|restored|execution_queued|no_op|replayed_request; S-CHANGESET=committed|needs_clarification|no_op|replayed_request|rejected_validation|rejected_authority|rejected_conflict|blocked_version|failed|unknown.
 Handling: O-STD=trust ok/state/ref, omissions are not absence, follow next; N-READ=use public refs, audit only when needed; N-MUT=report durable disposition, queued is not provider-complete; N-CHANGESET=ask one consolidated next clarification or report commit; E-READ=not_found|validation_error|authorization_failed; E-MUT=operator_utterance_authority_required|version_conflict|conflict_open|validation_error.
 ChangeSet references: use *_ref for an existing public object; use *_change_id for an object created in the same atomic ChangeSet. Every mutation uses the schema's exact mutation_type; the complete dependency graph must validate before any effect begins.
+New event plus new route: CanonicalEvent create_spec uses lane_ref or lane_change_id and omits routing_decision_ref; the LaneRoutingDecision create_spec uses event_change_id pointing to the event change. Docket backfills the event's route_ inside the same transaction. Never point the event and route creates at each other.
 AttentionCase resolution: resolution_changes uses object_ref=case_, case_revision_ref=caserev_, case_outcome, item_dispositions of only explicit Operator resolved/rejected choices, and basis_refs. Omitted supporting items become not_pursued only on terminal closure.
 Composite example: registry_changes=[{mutation_type:entity_create,change_id:create-org,action:create,object_type:entity,create_spec:{entity_kind:institution,display_name:Cal Poly},affected_fields:[identity],basis_refs:[utt_...]},{mutation_type:identity_binding_bind,change_id:bind-email,action:bind,object_type:identity_binding,object_ref:idn_...,payload:{entity_change_id:create-org,resolution_basis:{kind:operator_selection,utterance_ref:utt_...}},affected_fields:[identity_binding],basis_refs:[utt_...]}]; resolution_changes=[{mutation_type:attention_case_resolution,change_id:close-case,action:update,object_type:attention_case_resolution,object_ref:case_...,case_revision_ref:caserev_...,case_outcome:resolved,item_dispositions:[{item_ref:item_...,disposition:resolved}],basis_refs:[utt_...]}].
 ConflictResolution is accepted only by docket_resolve_conflict. A validation/runtime failure preserves resolved authority; report the returned disposition and never ask for equivalent authorization.

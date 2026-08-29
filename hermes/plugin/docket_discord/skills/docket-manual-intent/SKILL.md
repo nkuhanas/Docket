@@ -190,6 +190,14 @@ semantic metadata suggestion, then clarification. A new or rerouted event must
 create or reference a `route_`. Provider intents target the committed event/lane;
 provider completion occurs later through `op_` execution and reconciliation.
 
+For a new event and a new event-specific route in the same ChangeSet, keep the
+dependency one-way. The CanonicalEvent `create_spec` uses `lane_ref` or
+`lane_change_id` and omits `routing_decision_ref`. The LaneRoutingDecision
+`create_spec` uses `event_change_id` pointing to the event change. Docket creates
+the event first, creates the route second, and backfills the event's `route_`
+inside the same transaction. Never point the event and route creates at each
+other.
+
 Cron evidence and model inference never authorize registry, Preference, lane,
 event, or provider mutations. A reply to an AttentionCase or DailyBrief becomes an
 interactive IntentSession through its exact trusted revision binding.

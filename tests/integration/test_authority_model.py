@@ -101,6 +101,38 @@ def test_model_facing_mutations_reject_loose_or_unsupported_shapes() -> None:
         ChangeSetContent.model_validate(
             {
                 "basis_refs": ["utt_01M15GZZZZZZZZZZZZZZZZZZZZ"],
+                "event_changes": [
+                    {
+                        "mutation_type": "canonical_event_create",
+                        "change_id": "create-event",
+                        "action": "create",
+                        "object_type": "canonical_event",
+                        "create_spec": {
+                            "title": "Package pickup",
+                            "lane_ref": "lane_01M15GZZZZZZZZZZZZZZZZZZZZ",
+                            "routing_decision_change_id": "create-route",
+                            "event_spec": {
+                                "title": "Package pickup",
+                                "calendar_lane": "personal",
+                                "timing": {
+                                    "kind": "timed",
+                                    "start_local": "2026-08-29T13:00:00",
+                                    "end_local": "2026-08-29T13:15:00",
+                                    "timezone": "America/Los_Angeles",
+                                },
+                            },
+                        },
+                        "affected_fields": ["event", "lane", "time"],
+                        "basis_refs": ["utt_01M15GZZZZZZZZZZZZZZZZZZZZ"],
+                    }
+                ],
+            }
+        )
+
+    with pytest.raises(ValidationError):
+        ChangeSetContent.model_validate(
+            {
+                "basis_refs": ["utt_01M15GZZZZZZZZZZZZZZZZZZZZ"],
                 "resolution_changes": [
                     {
                         "mutation_type": "conflict_resolution",

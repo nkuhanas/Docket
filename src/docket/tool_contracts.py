@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-08-28-v10"
+CONTRACT_VERSION = "docket-tools-2026-08-29-v11"
 
 
 class ToolContractEntry(TypedDict):
@@ -260,6 +260,14 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
                     "*_change_id for an object created in the same atomic ChangeSet. "
                     "Every mutation uses the schema's exact mutation_type; the complete "
                     "dependency graph must validate before any effect begins."
+                ),
+                (
+                    "New event plus new route: CanonicalEvent create_spec uses lane_ref "
+                    "or lane_change_id and omits routing_decision_ref; the "
+                    "LaneRoutingDecision create_spec uses event_change_id pointing to "
+                    "the event change. Docket backfills the event's route_ inside the "
+                    "same transaction. Never point the event and route creates at each "
+                    "other."
                 )
             ]
             if profile == "interactive"
