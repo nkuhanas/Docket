@@ -18,7 +18,7 @@ from docket.models import (
     Preference,
     SenderIdentityEmail,
 )
-from docket.schemas.authority import CanonicalChangeInput, ChangeSetContent, StatementInput
+from docket.schemas.authority import ChangeSetContent, PreferenceCreate, StatementInput
 from docket.schemas.policy import PreferenceCreateSpec
 from docket.schemas.registry import IdentityHandleCreateSpec
 from docket.services.history import HistoryService
@@ -110,7 +110,7 @@ def test_email_suppression_rejects_non_email_identity_target(session_factory) ->
                 idempotency_key="invalid-label-preference-test",
                 basis_refs=[new_public_ref("utt")],
             ),
-            CanonicalChangeInput.model_validate(
+            PreferenceCreate.model_validate(
                 {
                     "change_id": "invalid-label-preference",
                     "action": "create",
@@ -161,7 +161,7 @@ def test_sender_label_suppression_requires_associated_email(session_factory) -> 
                 idempotency_key="unassociated-sender-preference-test",
                 basis_refs=[new_public_ref("utt")],
             ),
-            CanonicalChangeInput.model_validate(
+            PreferenceCreate.model_validate(
                 {
                     "change_id": "unassociated-sender-preference",
                     "action": "create",

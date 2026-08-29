@@ -8,7 +8,7 @@ from docket.database import get_session_factory
 from docket.domain.errors import DocketError
 from docket.mcp.instrumented import ProvenanceFastMCP
 from docket.providers.google.gmail_runtime import get_gmail_read_provider
-from docket.schemas.authority import PublicRef
+from docket.schemas.common import PublicRef
 from docket.schemas.intelligence import (
     CaseItemInput,
     CaseRef,

@@ -13,6 +13,7 @@ from docket.schemas.authority import (
     ChangeSetContent,
     ChangeSetPrepare,
     ChangeSetRevise,
+    ConflictResolve,
     IntentSessionOpen,
     IntentTurnAppend,
     StatementInput,
@@ -224,6 +225,7 @@ class InteractiveAuthorityService:
                 "basis_refs": [utterance.ref_id],
                 "next": {"clarifications": intent_session.blocking_clarifications},
                 "warnings": [],
+                "disposition": "needs_clarification",
                 "intent_session": intent_service.projection(intent_session),
             }
 
@@ -275,7 +277,40 @@ class InteractiveAuthorityService:
                         ),
                         "details": exact_case_error.get("details", {}),
                     },
+                    "disposition": "blocked_version",
                     "next": exact_case_error.get("details", {}).get("next"),
+                }
+            if intent_session.semantic_state == "ready":
+                disposition = (
+                    "blocked_version"
+                    if intent_session.commit_state == "blocked_version"
+                    else "rejected_conflict"
+                    if intent_session.commit_state == "blocked_conflict"
+                    else "rejected_validation"
+                )
+                return {
+                    "ok": False,
+                    "ref": changeset.ref_id,
+                    "state": intent_session.commit_state,
+                    "error": {
+                        "code": disposition,
+                        "message": (
+                            "Resolved intent could not commit because Docket's "
+                            "structural or implementation validation failed."
+                        ),
+                        "details": {"errors": changeset.validation_errors},
+                    },
+                    "affected_refs": [
+                        intent_session.ref_id,
+                        turn.ref_id,
+                        changeset.ref_id,
+                    ],
+                    "basis_refs": changeset.basis_refs,
+                    "next": None,
+                    "warnings": [],
+                    "disposition": disposition,
+                    "intent_session": intent_service.projection(intent_session),
+                    "changeset": self.changesets.projection(changeset),
                 }
             return {
                 "ok": True,
@@ -293,6 +328,7 @@ class InteractiveAuthorityService:
                     ],
                 },
                 "warnings": [],
+                "disposition": "needs_clarification",
                 "intent_session": intent_service.projection(intent_session),
                 "changeset": self.changesets.projection(changeset),
             }
@@ -356,6 +392,90 @@ class InteractiveAuthorityService:
             "basis_refs": committed.basis_refs,
             "next": next_action,
             "warnings": [],
+            "disposition": "committed",
+            "intent_session_ref": intent_session.ref_id,
+            "intent_turn_ref": turn.ref_id,
+        }
+
+    def process_conflict_resolution(
+        self,
+        *,
+        utterance_ref: str,
+        request_key: str,
+        actor_id: str,
+        intent_session_ref: str | None,
+        expected_session_version: int | None,
+        statement: StatementInput,
+        resolution: ConflictResolve,
+    ) -> dict[str, Any]:
+        utterance = self._authority_utterance(
+            utterance_ref=utterance_ref,
+            request_key=request_key,
+            actor_id=actor_id,
+        )
+        idempotency_key = f"{request_key}:conflict-resolution"
+        replay = self.session.scalar(
+            select(ChangeSet).where(ChangeSet.idempotency_key == idempotency_key)
+        )
+        if replay is not None:
+            return {
+                "ok": True,
+                "ref": replay.ref_id,
+                "state": replay.state,
+                "summary": "Replayed the existing durable Conflict resolution.",
+                "affected_refs": [],
+                "basis_refs": replay.basis_refs,
+                "next": None,
+                "warnings": [],
+                "disposition": "replayed_request",
+                "intent_session_ref": replay.intent_session_ref,
+            }
+        intent_service = IntentSessionService(self.session)
+        if intent_session_ref is None:
+            intent_session, _created = intent_service.open(
+                IntentSessionOpen(source_utterance_ref=utterance.ref_id)
+            )
+        else:
+            intent_session = intent_service.get(intent_session_ref)
+            if (
+                expected_session_version is not None
+                and intent_session.version != expected_session_version
+            ):
+                raise DocketError(
+                    code="version_conflict",
+                    message="IntentSession changed after it was read.",
+                    details={
+                        "expected_version": expected_session_version,
+                        "current_version": intent_session.version,
+                    },
+                )
+        intent_session, turn = intent_service.append_turn(
+            IntentTurnAppend(
+                intent_session_ref=intent_session.ref_id,
+                utterance_ref=utterance.ref_id,
+                statements=[statement],
+                relations=[],
+                resolved_intent_json={"conflict_ref": resolution.conflict_ref},
+                blocking_clarifications=[],
+                response_disposition="pending",
+            )
+        )
+        intent_session.semantic_state = "ready"
+        changeset, affected_refs, created = self.changesets.resolve_conflict(
+            intent_session=intent_session,
+            request=resolution,
+            idempotency_key=idempotency_key,
+        )
+        return {
+            "ok": True,
+            "ref": changeset.ref_id,
+            "state": changeset.state,
+            "summary": "Conflict resolution committed atomically.",
+            "affected_refs": affected_refs,
+            "basis_refs": changeset.basis_refs,
+            "next": None,
+            "warnings": [],
+            "disposition": "committed" if created else "replayed_request",
             "intent_session_ref": intent_session.ref_id,
             "intent_turn_ref": turn.ref_id,
         }

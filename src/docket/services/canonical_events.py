@@ -10,10 +10,9 @@ from docket.config import get_settings
 from docket.domain.errors import DocketError
 from docket.domain.public_refs import parse_public_ref
 from docket.models import AuditEvent, CalendarLane, CanonicalEvent, ChangeSet
-from docket.schemas.authority import CanonicalChangeInput
 from docket.schemas.events import CanonicalEventCreateSpec, CanonicalEventPatchSpec
 
-EventHandler = Callable[[Session, ChangeSet, CanonicalChangeInput], list[str]]
+EventHandler = Callable[[Session, ChangeSet, Any], list[str]]
 
 
 class CanonicalEventAuthorityService:
@@ -26,7 +25,7 @@ class CanonicalEventAuthorityService:
         return {"canonical_event": self.apply_event}
 
     @staticmethod
-    def _provenance(changeset: ChangeSet, change: CanonicalChangeInput) -> dict[str, Any]:
+    def _provenance(changeset: ChangeSet, change: Any) -> dict[str, Any]:
         return {
             "basis_refs": list(change.basis_refs),
             "decision_refs": [
@@ -55,11 +54,16 @@ class CanonicalEventAuthorityService:
         self,
         _session: Session,
         changeset: ChangeSet,
-        change: CanonicalChangeInput,
+        change: Any,
     ) -> list[str]:
         event: CanonicalEvent
         if change.action == "create":
             spec = CanonicalEventCreateSpec.model_validate(change.create_spec)
+            if spec.lane_ref is None:
+                raise DocketError(
+                    code="create_reference_unresolved",
+                    message="CanonicalEvent lane was not resolved before execution.",
+                )
             lane = self._lane(spec.lane_ref)
             if spec.event_spec.calendar_lane != lane.lane:
                 raise DocketError(

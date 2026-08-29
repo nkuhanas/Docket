@@ -1,21 +1,27 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
-from docket.schemas.authority import PublicRef, StrictModel, _validate_refs
 from docket.schemas.calendar import StandaloneCalendarEventInput
+from docket.schemas.common import StrictModel, validate_refs
 from docket.schemas.policy import LaneRef
+from docket.schemas.registry import EntityRef
 
 
 class CanonicalEventCreateSpec(StrictModel):
     canonical_key: str | None = Field(default=None, min_length=1, max_length=512)
     title: str = Field(min_length=1, max_length=512)
     event_spec: StandaloneCalendarEventInput
-    lane_ref: LaneRef
-    routing_decision_ref: PublicRef | None = None
-    entity_refs: list[PublicRef] = Field(default_factory=list, max_length=100)
+    lane_ref: LaneRef | None = None
+    lane_change_id: str | None = None
+    routing_decision_ref: Annotated[
+        str, Field(pattern=r"^route_[0-9A-HJKMNP-TV-Z]{26}$")
+    ] | None = None
+    routing_decision_change_id: str | None = None
+    entity_refs: list[EntityRef] = Field(default_factory=list, max_length=100)
+    entity_change_ids: list[str] = Field(default_factory=list, max_length=100)
     context_labels: list[str] = Field(default_factory=list, max_length=25)
     operator_policy_text: str | None = Field(default=None, min_length=1, max_length=4000)
     status: Literal["active"] = "active"
@@ -23,7 +29,7 @@ class CanonicalEventCreateSpec(StrictModel):
     @field_validator("entity_refs")
     @classmethod
     def validate_entity_refs(cls, values: list[str]) -> list[str]:
-        return _validate_refs(values)
+        return validate_refs(values)
 
     @field_validator("context_labels")
     @classmethod
@@ -35,13 +41,26 @@ class CanonicalEventCreateSpec(StrictModel):
             raise ValueError("context labels must not contain duplicates")
         return normalized
 
+    @model_validator(mode="after")
+    def dependencies_are_exact(self) -> CanonicalEventCreateSpec:
+        if (self.lane_ref is None) == (self.lane_change_id is None):
+            raise ValueError("canonical event requires one lane ref or change id")
+        if self.routing_decision_ref and self.routing_decision_change_id:
+            raise ValueError("routing decision uses a ref or change id, not both")
+        return self
+
 
 class CanonicalEventPatchSpec(StrictModel):
     title: str | None = Field(default=None, min_length=1, max_length=512)
     event_spec: StandaloneCalendarEventInput | None = None
     lane_ref: LaneRef | None = None
-    routing_decision_ref: PublicRef | None = None
-    entity_refs: list[PublicRef] | None = Field(default=None, max_length=100)
+    lane_change_id: str | None = None
+    routing_decision_ref: Annotated[
+        str, Field(pattern=r"^route_[0-9A-HJKMNP-TV-Z]{26}$")
+    ] | None = None
+    routing_decision_change_id: str | None = None
+    entity_refs: list[EntityRef] | None = Field(default=None, max_length=100)
+    entity_change_ids: list[str] | None = Field(default=None, max_length=100)
     context_labels: list[str] | None = Field(default=None, max_length=25)
     operator_policy_text: str | None = Field(default=None, min_length=1, max_length=4000)
     status: Literal["active", "cancelled", "archived"] | None = None
@@ -49,7 +68,7 @@ class CanonicalEventPatchSpec(StrictModel):
     @field_validator("entity_refs")
     @classmethod
     def validate_entity_refs(cls, values: list[str] | None) -> list[str] | None:
-        return _validate_refs(values) if values is not None else None
+        return validate_refs(values) if values is not None else None
 
     @field_validator("context_labels")
     @classmethod
@@ -62,6 +81,18 @@ class CanonicalEventPatchSpec(StrictModel):
         if len(normalized) != len(set(normalized)):
             raise ValueError("context labels must not contain duplicates")
         return normalized
+
+    @model_validator(mode="after")
+    def dependencies_are_exact(self) -> CanonicalEventPatchSpec:
+        if self.lane_ref and self.lane_change_id:
+            raise ValueError("lane update uses a ref or change id, not both")
+        if self.routing_decision_ref and self.routing_decision_change_id:
+            raise ValueError("routing decision uses a ref or change id, not both")
+        if self.entity_refs is not None and self.entity_change_ids is not None:
+            raise ValueError("entity targets use refs or change ids, not both")
+        if not self.model_fields_set:
+            raise ValueError("canonical event patch requires at least one field")
+        return self
 
 
 class ProviderOperationParameters(StrictModel):

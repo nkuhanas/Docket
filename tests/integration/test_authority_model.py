@@ -1,6 +1,7 @@
 import uuid
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import func, select
 
 from docket.config import get_settings
@@ -19,16 +20,14 @@ from docket.models import (
     OperatorUtterance,
 )
 from docket.schemas.authority import (
-    ChangeSetCommit,
     ChangeSetContent,
-    ChangeSetPrepare,
     ConflictOpen,
+    ConflictResolve,
     IntentSessionOpen,
     IntentTurnAppend,
     StatementInput,
     StatementRelationInput,
 )
-from docket.services.change_sets import ChangeSetService
 from docket.services.conflicts import ConflictService
 from docket.services.intent_sessions import IntentSessionService
 from docket.services.interactive_authority import InteractiveAuthorityService
@@ -74,6 +73,134 @@ def _statement(
             "interpreter_version": "test-v1",
         }
     )
+
+
+def test_model_facing_mutations_reject_loose_or_unsupported_shapes() -> None:
+    with pytest.raises(ValidationError):
+        ChangeSetContent.model_validate(
+            {
+                "basis_refs": ["utt_01M15GZZZZZZZZZZZZZZZZZZZZ"],
+                "registry_changes": [
+                    {
+                        "mutation_type": "identity_binding_bind",
+                        "change_id": "bind-email",
+                        "action": "bind",
+                        "object_type": "identity_binding",
+                        "object_ref": "idn_01M15GZZZZZZZZZZZZZZZZZZZZ",
+                        "payload": {
+                            "entity_ref": "ent_01M15GZZZZZZZZZZZZZZZZZZZZ"
+                        },
+                        "affected_fields": ["identity_binding"],
+                        "basis_refs": ["utt_01M15GZZZZZZZZZZZZZZZZZZZZ"],
+                    }
+                ],
+            }
+        )
+
+    with pytest.raises(ValidationError):
+        ChangeSetContent.model_validate(
+            {
+                "basis_refs": ["utt_01M15GZZZZZZZZZZZZZZZZZZZZ"],
+                "resolution_changes": [
+                    {
+                        "mutation_type": "conflict_resolution",
+                        "change_id": "resolve-conflict",
+                        "action": "update",
+                        "object_type": "conflict_resolution",
+                        "object_ref": "cnf_01M15GZZZZZZZZZZZZZZZZZZZZ",
+                    }
+                ],
+            }
+        )
+
+
+@pytest.mark.integration
+def test_dependency_cycle_blocks_before_any_handler_runs(session_factory) -> None:
+    applied: list[str] = []
+
+    def apply_entity(_session, _changeset, change):
+        applied.append(change.change_id)
+        return []
+
+    with session_factory.begin() as session:
+        utterance_ref = _capture_utterance(
+            session,
+            message_id="1542799000000000099",
+            text="Create these two nested organizations.",
+        )
+        statement_input = StatementInput(
+            statement_kind="registry_command",
+            subject_refs=[utterance_ref],
+            predicate="create_organizations",
+            value_json={},
+            affected_fields=["entities"],
+            interpreter_version="test-v1",
+        )
+        statement = StatementService(session).derive(
+            utterance_ref, [statement_input]
+        )[0]
+        content = ChangeSetContent.model_validate(
+            {
+                "basis_refs": [statement.ref_id],
+                "registry_changes": [
+                    {
+                        "mutation_type": "entity_create",
+                        "change_id": "first",
+                        "action": "create",
+                        "object_type": "entity",
+                        "create_spec": {
+                            "entity_kind": "organization",
+                            "display_name": "First",
+                            "parent_entity_change_id": "second",
+                        },
+                        "affected_fields": ["identity", "hierarchy"],
+                        "basis_refs": [statement.ref_id],
+                    },
+                    {
+                        "mutation_type": "entity_create",
+                        "change_id": "second",
+                        "action": "create",
+                        "object_type": "entity",
+                        "create_spec": {
+                            "entity_kind": "organization",
+                            "display_name": "Second",
+                            "parent_entity_change_id": "first",
+                        },
+                        "affected_fields": ["identity", "hierarchy"],
+                        "basis_refs": [statement.ref_id],
+                    },
+                ],
+            }
+        )
+        settings = get_settings()
+        result = InteractiveAuthorityService(
+            session, handlers={"entity": apply_entity}
+        ).process_turn(
+            utterance_ref=utterance_ref,
+            request_key=(
+                f"discord:{settings.discord_guild_id}:{settings.chat_channel_id}:"
+                "1542799000000000099:0"
+            ),
+            actor_id=settings.operator_discord_user_id,
+            intent_session_ref=None,
+            expected_session_version=None,
+            statements=[statement_input],
+            relations=[],
+            resolved_intent_json={"kind": "registry_authoring"},
+            blocking_clarifications=[],
+            content=content,
+            changeset_ref=None,
+            expected_changeset_version=None,
+        )
+        assert result["ok"] is False
+        assert result["state"] == "blocked_validation"
+        assert result["disposition"] == "rejected_validation"
+        assert result["intent_session"]["semantic_state"] == "ready"
+        assert any(
+            error["code"] == "create_reference_cycle"
+            for error in result["changeset"]["validation_errors"]
+        )
+        assert applied == []
 
 
 @pytest.mark.integration
@@ -264,58 +391,53 @@ def test_conflict_resolution_commits_through_one_immutable_changeset(
             message_id="1542799000000000006",
             text="Wednesday at 2 replaces Monday.",
         )
-        intent_session, _created = IntentSessionService(session).open(
-            IntentSessionOpen(source_utterance_ref=resolution_utterance)
+        settings = get_settings()
+        request_key = (
+            f"discord:{settings.discord_guild_id}:{settings.chat_channel_id}:"
+            "1542799000000000006:0"
         )
-        changeset, created = ChangeSetService(session).prepare(
-            ChangeSetPrepare.model_validate(
-                {
-                    "intent_session_ref": intent_session.ref_id,
-                    "expected_session_version": intent_session.version,
-                    "idempotency_key": "discord:test:conflict-resolution:1",
-                    "content": {
-                        "basis_refs": [resolution_utterance],
-                        "expected_versions": {conflict.ref_id: 1},
-                        "resolution_changes": [
-                            {
-                                "change_id": "resolve-office-hours",
-                                "action": "update",
-                                "object_type": "conflict_resolution",
-                                "object_ref": conflict.ref_id,
-                                "affected_fields": ["office_hours"],
-                                "basis_refs": [resolution_utterance],
-                                "payload": {
-                                    "expected_version": 1,
-                                    "authority_utterance_ref": resolution_utterance,
-                                    "resolution": "resolved_supersession",
-                                    "chosen_interpretation": {
-                                        "office_hours": "Wednesday 2 PM"
-                                    },
-                                    "statements_superseded": [prior.ref_id],
-                                    "statements_retained": [incoming.ref_id],
-                                    "effective_scope": {},
-                                    "canonical_effects": [],
-                                },
-                            }
-                        ],
-                    },
-                }
-            )
-        )
-        assert created is True
-        assert changeset.state == "validated"
-        assert intent_session.state == "ready"
-        committed, affected_refs = ChangeSetService(session).commit(
-            ChangeSetCommit(
-                changeset_ref=changeset.ref_id,
-                expected_version=changeset.version,
-                idempotency_key=changeset.idempotency_key,
+        result = InteractiveAuthorityService(session).process_conflict_resolution(
+            utterance_ref=resolution_utterance,
+            request_key=request_key,
+            actor_id=settings.operator_discord_user_id,
+            intent_session_ref=None,
+            expected_session_version=None,
+            statement=StatementInput(
+                statement_kind="conflict_resolution",
+                subject_refs=conflict.subject_refs,
+                predicate="conflict_resolution",
+                value_json={"office_hours": "Wednesday 2 PM"},
+                affected_fields=conflict.affected_fields,
+                interpreter_version="test-conflict-wrapper-v1",
+            ),
+            resolution=ConflictResolve(
+                conflict_ref=conflict.ref_id,
+                expected_version=1,
                 authority_utterance_ref=resolution_utterance,
-            )
+                resolution="resolved_supersession",
+                chosen_interpretation={"office_hours": "Wednesday 2 PM"},
+                statements_superseded=[prior.ref_id],
+                statements_retained=[incoming.ref_id],
+                effective_scope={},
+                canonical_effects=[
+                    {
+                        "mutation_type": "entity_create",
+                        "change_id": "create-office",
+                        "action": "create",
+                        "object_type": "entity",
+                        "create_spec": {
+                            "entity_kind": "place",
+                            "display_name": "Office 14-201",
+                        },
+                        "affected_fields": ["identity"],
+                        "basis_refs": [resolution_utterance],
+                    }
+                ],
+            ),
         )
-        changeset_ref = committed.ref_id
-        assert committed.state == "committed"
-        assert conflict.ref_id in affected_refs
+        changeset_ref = result["ref"]
+        assert result["state"] == "committed"
+        assert conflict.ref_id in result["affected_refs"]
 
     with session_factory() as session:
         conflict = session.scalar(select(Conflict))
@@ -332,6 +454,9 @@ def test_conflict_resolution_commits_through_one_immutable_changeset(
         assert conflict.resolution_decision_ref == decision.ref_id
         assert decision.basis_refs == [resolution_utterance, conflict.ref_id]
         assert changeset.state == "committed"
+        assert session.scalar(
+            select(Entity).where(Entity.canonical_name == "Office 14-201")
+        ) is not None
         assert intent_session.state == "committed"
         assert intent_session.committed_changeset_ref == changeset.ref_id
         assert session.scalar(select(func.count()).select_from(ChangeSetRevision)) == 1
@@ -433,60 +558,43 @@ def test_interactive_clarification_resumes_commits_and_replays(session_factory) 
             f"discord:{settings.discord_guild_id}:{settings.chat_channel_id}:"
             "1542799000000000010:0"
         )
-        content = ChangeSetContent.model_validate({
-            "basis_refs": [resolution_utterance],
-            "expected_versions": {conflict.ref_id: conflict.version},
-            "resolution_changes": [
-                {
-                    "change_id": "resolve-office-hours-interactively",
-                    "action": "update",
-                    "object_type": "conflict_resolution",
-                    "object_ref": conflict.ref_id,
-                    "affected_fields": ["office_hours"],
-                    "basis_refs": [resolution_utterance],
-                    "payload": {
-                        "expected_version": conflict.version,
-                        "authority_utterance_ref": resolution_utterance,
-                        "resolution": "resolved_supersession",
-                        "chosen_interpretation": {
-                            "office_hours": "Wednesday 2 PM"
-                        },
-                        "statements_superseded": [prior.ref_id],
-                        "statements_retained": [incoming.ref_id],
-                        "effective_scope": {},
-                        "canonical_effects": [],
-                    },
-                }
-            ],
-        })
-        second = service.process_turn(
+        resolution_request = ConflictResolve(
+            conflict_ref=conflict.ref_id,
+            expected_version=conflict.version,
+            authority_utterance_ref=resolution_utterance,
+            resolution="resolved_supersession",
+            chosen_interpretation={"office_hours": "Wednesday 2 PM"},
+            statements_superseded=[prior.ref_id],
+            statements_retained=[incoming.ref_id],
+            effective_scope={},
+            canonical_effects=[],
+        )
+        resolution_statement = StatementInput(
+            statement_kind="conflict_resolution",
+            subject_refs=conflict.subject_refs,
+            predicate="conflict_resolution",
+            value_json={"office_hours": "Wednesday 2 PM"},
+            affected_fields=conflict.affected_fields,
+            interpreter_version="test-conflict-wrapper-v1",
+        )
+        second = service.process_conflict_resolution(
             utterance_ref=resolution_utterance,
             request_key=second_key,
             actor_id=settings.operator_discord_user_id,
             intent_session_ref=session_ref,
             expected_session_version=session_version,
-            statements=[],
-            relations=[],
-            resolved_intent_json={"conflict_ref": conflict.ref_id, "replace": True},
-            blocking_clarifications=[],
-            content=content,
-            changeset_ref=None,
-            expected_changeset_version=None,
+            statement=resolution_statement,
+            resolution=resolution_request,
         )
         assert second["state"] == "committed"
-        replay = service.process_turn(
+        replay = service.process_conflict_resolution(
             utterance_ref=resolution_utterance,
             request_key=second_key,
             actor_id=settings.operator_discord_user_id,
             intent_session_ref=session_ref,
             expected_session_version=session_version,
-            statements=[],
-            relations=[],
-            resolved_intent_json={"conflict_ref": conflict.ref_id, "replace": True},
-            blocking_clarifications=[],
-            content=content,
-            changeset_ref=None,
-            expected_changeset_version=None,
+            statement=resolution_statement,
+            resolution=resolution_request,
         )
         assert replay["disposition"] == "replayed_request"
         assert replay["ref"] == second["ref"]
@@ -582,11 +690,11 @@ def test_open_conflict_blocks_whole_changeset_until_blocked_effect_removed(
             return {
                 "change_id": change_id,
                 "action": "create",
-                "object_type": "fact",
-                "create_spec": {
-                    "subject_refs": [subject_ref],
-                    "predicate": "test_fact",
-                    "value": change_id,
+                    "object_type": "fact",
+                    "create_spec": {
+                        "subject_ref": subject_ref,
+                        "predicate": "test_fact",
+                        "value_json": change_id,
                 },
                 "affected_fields": ["office_hours"],
                 "basis_refs": [basis_ref],

@@ -171,11 +171,24 @@ def test_rich_registry_graph_commits_atomically_with_create_references(
                         "create_spec": {
                             "handle_type": "email",
                             "value": "isaac@example.com",
-                            "entity_change_id": "isaac",
-                            "binding_rule": "operator_selection",
                         },
                         "affected_fields": ["identity_binding"],
                         "basis_refs": basis,
+                    },
+                    {
+                        "change_id": "bind-isaac-email",
+                        "action": "bind",
+                        "object_type": "identity_binding",
+                        "object_change_id": "isaac-email",
+                        "payload": {
+                            "entity_change_id": "isaac",
+                            "resolution_basis": {
+                                "kind": "operator_selection",
+                                "utterance_ref": utterance_ref,
+                            },
+                        },
+                        "affected_fields": ["identity_binding"],
+                        "basis_refs": [utterance_ref],
                     },
                     {
                         "change_id": "isaac-affiliation",

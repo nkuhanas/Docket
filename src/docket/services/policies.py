@@ -25,14 +25,13 @@ from docket.models import (
     SourceItem,
 )
 from docket.models.base import utc_now
-from docket.schemas.authority import CanonicalChangeInput
 from docket.schemas.policy import (
     CalendarLaneCreateSpec,
     LaneRoutingDecisionCreateSpec,
     PreferenceCreateSpec,
 )
 
-PolicyHandler = Callable[[Session, ChangeSet, CanonicalChangeInput], list[str]]
+PolicyHandler = Callable[[Session, ChangeSet, Any], list[str]]
 
 
 def _aware(value: datetime) -> datetime:
@@ -53,7 +52,7 @@ class ContextPolicyService:
         }
 
     @staticmethod
-    def _provenance(changeset: ChangeSet, change: CanonicalChangeInput) -> dict[str, Any]:
+    def _provenance(changeset: ChangeSet, change: Any) -> dict[str, Any]:
         return {
             "basis_refs": list(change.basis_refs),
             "decision_refs": [
@@ -69,7 +68,7 @@ class ContextPolicyService:
         event_type: str,
         item: Any,
         changeset: ChangeSet,
-        change: CanonicalChangeInput,
+        change: Any,
         affected_refs: list[str],
     ) -> None:
         self.session.add(
@@ -160,7 +159,7 @@ class ContextPolicyService:
         self,
         _session: Session,
         changeset: ChangeSet,
-        change: CanonicalChangeInput,
+        change: Any,
     ) -> list[str]:
         if change.action == "create":
             spec = PreferenceCreateSpec.model_validate(change.create_spec)
@@ -282,7 +281,7 @@ class ContextPolicyService:
         self,
         _session: Session,
         changeset: ChangeSet,
-        change: CanonicalChangeInput,
+        change: Any,
     ) -> list[str]:
         if change.action == "create":
             spec = CalendarLaneCreateSpec.model_validate(change.create_spec)
@@ -400,7 +399,7 @@ class ContextPolicyService:
         self,
         _session: Session,
         changeset: ChangeSet,
-        change: CanonicalChangeInput,
+        change: Any,
     ) -> list[str]:
         if change.action != "create":
             raise DocketError(

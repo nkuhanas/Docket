@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-08-28-v8"
+CONTRACT_VERSION = "docket-tools-2026-08-28-v9"
 
 
 class ToolContractEntry(TypedDict):
@@ -127,7 +127,8 @@ def _interactive_entries() -> tuple[ToolContractEntry, ...]:
                 "use_when": (
                     (
                         "Commit one resolved request; for AttentionCase replies read the "
-                        "case once, use its exact caserev_, and send one typed resolution."
+                        "case once, use its exact caserev_, and send one fully typed "
+                        "atomic scope."
                     )
                     if name == "docket_commit_changeset"
                     else "Current authenticated Operator explicitly requests this effect."
@@ -136,8 +137,9 @@ def _interactive_entries() -> tuple[ToolContractEntry, ...]:
                 ),
                 "do_not_use_when": (
                     (
-                        "Never trial schemas or mark omitted supporting CaseItems rejected; "
-                        "use keep_open when required items remain unresolved."
+                        "Never probe schemas, split one selected option, or mark omitted "
+                        "supporting CaseItems rejected; use keep_open only when required "
+                        "items genuinely remain unresolved."
                     )
                     if name == "docket_commit_changeset"
                     else "Intent is inferred, unresolved, conflicted, or external."
@@ -237,7 +239,9 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
             "Codes: P-READ=authorized profile+bounded args; P-MUT=persisted current "
             "utt_+trusted Discord actor/source+exact refs/versions; S-READ=succeeded; "
             "S-MUT=created|updated|archived|restored|execution_queued|no_op|"
-            "replayed_request; S-CHANGESET=committed|needs_clarification|replayed_request."
+            "replayed_request; S-CHANGESET=committed|needs_clarification|no_op|"
+            "replayed_request|rejected_validation|rejected_authority|"
+            "rejected_conflict|blocked_version|failed|unknown."
         ),
         (
             "Handling: O-STD=trust ok/state/ref, omissions are not absence, follow next; "
@@ -252,8 +256,9 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
             [
                 (
                     "ChangeSet references: use *_ref for an existing public object; use "
-                    "*_change_id for an object created earlier in the same atomic "
-                    "ChangeSet."
+                    "*_change_id for an object created in the same atomic ChangeSet. "
+                    "Every mutation uses the schema's exact mutation_type; the complete "
+                    "dependency graph must validate before any effect begins."
                 )
             ]
             if profile == "interactive"
@@ -267,6 +272,32 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
                     "explicit Operator resolved/rejected choices, and basis_refs. Omitted "
                     "supporting items become not_pursued only on terminal closure."
                 )
+            ]
+            if profile == "interactive"
+            else []
+        ),
+        *(
+            [
+                (
+                    "Composite example: registry_changes=[{mutation_type:entity_create,"
+                    "change_id:create-org,action:create,object_type:entity,create_spec:"
+                    "{entity_kind:institution,display_name:Cal Poly},affected_fields:"
+                    "[identity],basis_refs:[utt_...]},{mutation_type:identity_binding_bind,"
+                    "change_id:bind-email,action:bind,object_type:identity_binding,"
+                    "object_ref:idn_...,payload:{entity_change_id:create-org,"
+                    "resolution_basis:{kind:operator_selection,utterance_ref:utt_...}},"
+                    "affected_fields:[identity_binding],basis_refs:[utt_...]}]; "
+                    "resolution_changes=[{mutation_type:attention_case_resolution,"
+                    "change_id:close-case,action:update,object_type:"
+                    "attention_case_resolution,object_ref:case_...,case_revision_ref:"
+                    "caserev_...,case_outcome:resolved,item_dispositions:[{item_ref:"
+                    "item_...,disposition:resolved}],basis_refs:[utt_...]}]."
+                ),
+                (
+                    "ConflictResolution is accepted only by docket_resolve_conflict. "
+                    "A validation/runtime failure preserves resolved authority; report "
+                    "the returned disposition and never ask for equivalent authorization."
+                ),
             ]
             if profile == "interactive"
             else []

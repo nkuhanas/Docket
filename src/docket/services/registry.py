@@ -27,7 +27,6 @@ from docket.models import (
     SenderIdentityEmail,
 )
 from docket.models.base import utc_now
-from docket.schemas.authority import CanonicalChangeInput
 from docket.schemas.registry import (
     AffiliationCreateSpec,
     EntityCreateSpec,
@@ -37,7 +36,7 @@ from docket.schemas.registry import (
     RelationshipCreateSpec,
 )
 
-RegistryHandler = Callable[[Session, ChangeSet, CanonicalChangeInput], list[str]]
+RegistryHandler = Callable[[Session, ChangeSet, Any], list[str]]
 _SPACE = re.compile(r"\s+")
 
 
@@ -74,7 +73,7 @@ class RegistryService:
     @staticmethod
     def _provenance(
         changeset: ChangeSet,
-        change: CanonicalChangeInput,
+        change: Any,
         *,
         extra_sources: list[str] | None = None,
     ) -> dict[str, Any]:
@@ -120,7 +119,7 @@ class RegistryService:
         sender: IdentityHandle,
         email_ref: str,
         changeset: ChangeSet,
-        change: CanonicalChangeInput,
+        change: Any,
     ) -> str:
         if sender.handle_type != "sender_label":
             raise DocketError(
@@ -228,7 +227,7 @@ class RegistryService:
         event_type: str,
         item: Any,
         changeset: ChangeSet,
-        change: CanonicalChangeInput,
+        change: Any,
         affected_refs: list[str],
     ) -> None:
         self.session.add(
@@ -289,7 +288,7 @@ class RegistryService:
         self,
         _session: Session,
         changeset: ChangeSet,
-        change: CanonicalChangeInput,
+        change: Any,
     ) -> list[str]:
         if change.action == "create":
             spec = EntityCreateSpec.model_validate(change.create_spec)
@@ -404,7 +403,7 @@ class RegistryService:
         self,
         _session: Session,
         changeset: ChangeSet,
-        change: CanonicalChangeInput,
+        change: Any,
     ) -> list[str]:
         handle: IdentityHandle
         if change.action == "create":
@@ -550,7 +549,12 @@ class RegistryService:
                     )
                 entity_ref = str(change.payload.get("entity_ref", ""))
                 entity = self._entity(entity_ref)
-                binding_rule = str(change.payload.get("binding_rule", ""))
+                resolution_basis = change.payload.get("resolution_basis")
+                binding_rule = (
+                    str(resolution_basis.get("kind", ""))
+                    if isinstance(resolution_basis, dict)
+                    else ""
+                )
                 if binding_rule not in {
                     "exact_identity_handle",
                     "operator_alias",
@@ -562,6 +566,16 @@ class RegistryService:
                         code="invalid_identity_resolution_basis",
                         message="Identity binding requires a deterministic resolution rule.",
                     )
+                if binding_rule == "operator_selection":
+                    selection_ref = str(resolution_basis.get("utterance_ref", ""))
+                    if selection_ref not in change.basis_refs:
+                        raise DocketError(
+                            code="invalid_identity_resolution_basis",
+                            message=(
+                                "Operator-selection identity binding must cite its exact "
+                                "selection utterance in basis_refs."
+                            ),
+                        )
                 active_bindings = list(
                     self.session.scalars(
                         select(IdentityBinding).where(
@@ -632,7 +646,7 @@ class RegistryService:
         self,
         *,
         changeset: ChangeSet,
-        change: CanonicalChangeInput,
+        change: Any,
         model: type[Any],
         schema: type[Any],
         creator: Callable[[Any, dict[str, Any]], Any],
@@ -697,9 +711,14 @@ class RegistryService:
         return refs
 
     def apply_affiliation(
-        self, _session: Session, changeset: ChangeSet, change: CanonicalChangeInput
+        self, _session: Session, changeset: ChangeSet, change: Any
     ) -> list[str]:
         def create(spec: AffiliationCreateSpec, provenance: dict[str, Any]) -> Affiliation:
+            if spec.subject_ref is None or spec.organization_ref is None:
+                raise DocketError(
+                    code="create_reference_unresolved",
+                    message="Affiliation dependencies were not resolved before execution.",
+                )
             subject = self._entity(spec.subject_ref)
             organization = self._entity(spec.organization_ref)
             if organization.entity_class not in {"organization", "institution"}:
@@ -727,9 +746,14 @@ class RegistryService:
         )
 
     def apply_relationship(
-        self, _session: Session, changeset: ChangeSet, change: CanonicalChangeInput
+        self, _session: Session, changeset: ChangeSet, change: Any
     ) -> list[str]:
         def create(spec: RelationshipCreateSpec, provenance: dict[str, Any]) -> Relationship:
+            if spec.subject_ref is None or spec.object_ref is None:
+                raise DocketError(
+                    code="create_reference_unresolved",
+                    message="Relationship dependencies were not resolved before execution.",
+                )
             return Relationship(
                 subject_entity_id=self._entity(spec.subject_ref).id,
                 object_entity_id=self._entity(spec.object_ref).id,
@@ -750,9 +774,14 @@ class RegistryService:
         )
 
     def apply_fact(
-        self, _session: Session, changeset: ChangeSet, change: CanonicalChangeInput
+        self, _session: Session, changeset: ChangeSet, change: Any
     ) -> list[str]:
         def create(spec: FactCreateSpec, provenance: dict[str, Any]) -> Fact:
+            if spec.subject_ref is None:
+                raise DocketError(
+                    code="create_reference_unresolved",
+                    message="Fact dependency was not resolved before execution.",
+                )
             return Fact(
                 subject_entity_id=self._entity(spec.subject_ref).id,
                 predicate=spec.predicate,
@@ -775,7 +804,7 @@ class RegistryService:
         self,
         _session: Session,
         changeset: ChangeSet,
-        change: CanonicalChangeInput,
+        change: Any,
     ) -> list[str]:
         if change.action != "create":
             raise DocketError(
@@ -804,8 +833,15 @@ class RegistryService:
         )
         self.session.add(interaction)
         self.session.flush()
+        participant_refs: list[str] = []
         for participant in spec.participants:
+            if participant.entity_ref is None:
+                raise DocketError(
+                    code="create_reference_unresolved",
+                    message="Interaction participant was not resolved before execution.",
+                )
             entity = self._entity(participant.entity_ref)
+            participant_refs.append(participant.entity_ref)
             self.session.add(
                 InteractionParticipant(
                     interaction_id=interaction.id,
@@ -820,7 +856,7 @@ class RegistryService:
             change=change,
             affected_refs=[
                 interaction.ref_id,
-                *[participant.entity_ref for participant in spec.participants],
+                *participant_refs,
             ],
         )
         return [interaction.ref_id]

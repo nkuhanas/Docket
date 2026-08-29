@@ -3,11 +3,32 @@ from __future__ import annotations
 from datetime import date
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
-from docket.domain.public_refs import is_public_ref, parse_public_ref
+from docket.domain.public_refs import is_public_ref
+from docket.schemas.common import PublicRef, StrictModel, validate_refs
+from docket.schemas.events import CanonicalEventCreateSpec, CanonicalEventPatchSpec
+from docket.schemas.policy import (
+    CalendarLaneCreateSpec,
+    CalendarLanePatchSpec,
+    LaneRoutingDecisionCreateSpec,
+    PreferenceCreateSpec,
+    PreferencePatchSpec,
+)
+from docket.schemas.registry import (
+    AffiliationCreateSpec,
+    AssertionUpdateSpec,
+    EmptyMutationSpec,
+    EntityCreateSpec,
+    EntityPatchSpec,
+    FactCreateSpec,
+    IdentityAssociationPatchSpec,
+    IdentityBindingBindSpec,
+    IdentityHandleOnlyCreateSpec,
+    InteractionCreateSpec,
+    RelationshipCreateSpec,
+)
 
-PublicRef = Annotated[str, Field(min_length=30, max_length=40)]
 UtteranceRef = Annotated[str, Field(pattern=r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")]
 StatementRef = Annotated[str, Field(pattern=r"^stm_[0-9A-HJKMNP-TV-Z]{26}$")]
 SessionRef = Annotated[str, Field(pattern=r"^ses_[0-9A-HJKMNP-TV-Z]{26}$")]
@@ -19,54 +40,8 @@ AttentionCaseRevisionRef = Annotated[
 ]
 CaseItemRef = Annotated[str, Field(pattern=r"^item_[0-9A-HJKMNP-TV-Z]{26}$")]
 
-_PROVENANCE_PREFIXES = frozenset(
-    {
-        "utt",
-        "src",
-        "stm",
-        "dec",
-        "cnf",
-        "chg",
-        "ent",
-        "idn",
-        "aff",
-        "rel",
-        "fact",
-        "int",
-        "pref",
-        "lane",
-        "route",
-        "evt",
-        "rsp",
-        "tri",
-        "case",
-        "caserev",
-        "item",
-        "brief",
-        "ctx",
-        "ses",
-        "turn",
-        "call",
-        "aud",
-        "op",
-    }
-)
-
-
-class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
 def _validate_refs(values: list[str], *, provenance_only: bool = False) -> list[str]:
-    if len(values) != len(set(values)):
-        raise ValueError("public reference lists must not contain duplicates")
-    for value in values:
-        if not is_public_ref(value):
-            raise ValueError("value must be a typed Docket public reference")
-        prefix, _payload = parse_public_ref(value)
-        if provenance_only and prefix not in _PROVENANCE_PREFIXES:
-            raise ValueError("value is not an allowed ProvenanceRef")
-    return values
+    return validate_refs(values, provenance_only=provenance_only)
 
 
 class StatementInput(StrictModel):
@@ -171,69 +146,411 @@ class IntentTurnFinalize(StrictModel):
         return self
 
 
-class CanonicalChangeInput(StrictModel):
+class MutationBase(StrictModel):
     change_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-    action: Literal["create", "update", "supersede", "retract", "bind", "unbind"]
-    object_type: Literal[
-        "entity",
-        "identity_binding",
-        "affiliation",
-        "relationship",
-        "fact",
-        "interaction",
-        "preference",
-        "calendar_lane",
-        "lane_routing_decision",
-        "canonical_event",
-        "conflict_resolution",
-    ]
-    object_ref: PublicRef | None = None
-    create_spec: dict[str, Any] | None = Field(
-        default=None,
-        description=(
-            "Object-specific create body. identity_binding creates use handle_type and "
-            "value, with optional entity_ref, binding_rule, source_refs, and "
-            "associated_email_refs. A downstream same-ChangeSet dependency uses the "
-            "corresponding *_change_id field rather than a guessed public ref."
-        ),
-        json_schema_extra={
-            "examples": [
-                {"handle_type": "email", "value": "sender@example.com"},
-            ]
-        },
-    )
     affected_fields: list[str] = Field(min_length=1, max_length=50)
     basis_refs: list[PublicRef] = Field(min_length=1, max_length=100)
-    payload: dict[str, Any] = Field(
-        default_factory=dict,
-        description=(
-            "Object-specific non-create patch. A sender_label identity_binding update "
-            "uses exactly one add_associated_email_ref or remove_associated_email_ref "
-            "for an existing email idn_. When the email is created earlier in this "
-            "ChangeSet, use add_associated_email_change_id with that create change_id."
-        ),
-        json_schema_extra={
-            "examples": [
-                {"add_associated_email_ref": "idn_01ARZ3NDEKTSV4RRFFQ69G5FAV"},
-                {"add_associated_email_change_id": "create-exact-email"},
-                {"policy_json": {"disposition": "suppress"}},
-            ]
-        },
-    )
 
     @field_validator("basis_refs")
     @classmethod
     def validate_basis_refs(cls, values: list[str]) -> list[str]:
         return _validate_refs(values, provenance_only=True)
 
+
+
+class EntityCreate(MutationBase):
+    mutation_type: Literal["entity_create"] = "entity_create"
+    action: Literal["create"]
+    object_type: Literal["entity"]
+    object_ref: None = None
+    create_spec: EntityCreateSpec
+    payload: None = None
+
+
+class EntityModify(MutationBase):
+    mutation_type: Literal["entity_modify"] = "entity_modify"
+    action: Literal["update", "supersede"]
+    object_type: Literal["entity"]
+    object_ref: Annotated[str, Field(pattern=r"^ent_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: EntityPatchSpec
+
+
+class EntityRetract(MutationBase):
+    mutation_type: Literal["entity_retract"] = "entity_retract"
+    action: Literal["retract"]
+    object_type: Literal["entity"]
+    object_ref: Annotated[str, Field(pattern=r"^ent_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: EmptyMutationSpec = Field(default_factory=EmptyMutationSpec)
+
+
+class IdentityHandleCreate(MutationBase):
+    mutation_type: Literal["identity_handle_create"] = "identity_handle_create"
+    action: Literal["create"]
+    object_type: Literal["identity_binding"]
+    object_ref: None = None
+    create_spec: IdentityHandleOnlyCreateSpec
+    payload: None = None
+
+
+class IdentityHandleModify(MutationBase):
+    mutation_type: Literal["identity_handle_modify"] = "identity_handle_modify"
+    action: Literal["update", "supersede"]
+    object_type: Literal["identity_binding"]
+    object_ref: Annotated[str, Field(pattern=r"^idn_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: IdentityAssociationPatchSpec
+
+
+class IdentityBindingBind(MutationBase):
+    mutation_type: Literal["identity_binding_bind"] = "identity_binding_bind"
+    action: Literal["bind"]
+    object_type: Literal["identity_binding"]
+    object_ref: Annotated[
+        str, Field(pattern=r"^idn_[0-9A-HJKMNP-TV-Z]{26}$")
+    ] | None = None
+    object_change_id: str | None = Field(
+        default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    )
+    create_spec: None = None
+    payload: IdentityBindingBindSpec
+
     @model_validator(mode="after")
-    def target_is_exact(self) -> CanonicalChangeInput:
-        if self.action == "create":
-            if self.create_spec is None or self.object_ref is not None:
-                raise ValueError("create requires create_spec and no object_ref")
-        elif self.object_ref is None or self.create_spec is not None:
-            raise ValueError("non-create change requires object_ref and no create_spec")
+    def target_is_exact(self) -> IdentityBindingBind:
+        if (self.object_ref is None) == (self.object_change_id is None):
+            raise ValueError("identity binding target uses object_ref or object_change_id")
         return self
+
+
+class IdentityBindingUnbind(MutationBase):
+    mutation_type: Literal["identity_binding_unbind"] = "identity_binding_unbind"
+    action: Literal["unbind"]
+    object_type: Literal["identity_binding"]
+    object_ref: Annotated[str, Field(pattern=r"^idn_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: EmptyMutationSpec = Field(default_factory=EmptyMutationSpec)
+
+
+class IdentityHandleRetract(MutationBase):
+    mutation_type: Literal["identity_handle_retract"] = "identity_handle_retract"
+    action: Literal["retract"]
+    object_type: Literal["identity_binding"]
+    object_ref: Annotated[str, Field(pattern=r"^idn_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: EmptyMutationSpec = Field(default_factory=EmptyMutationSpec)
+
+
+class AffiliationCreate(MutationBase):
+    mutation_type: Literal["affiliation_create"] = "affiliation_create"
+    action: Literal["create"]
+    object_type: Literal["affiliation"]
+    object_ref: None = None
+    create_spec: AffiliationCreateSpec
+    payload: None = None
+
+
+class AffiliationUpdate(MutationBase):
+    mutation_type: Literal["affiliation_update"] = "affiliation_update"
+    action: Literal["update"]
+    object_type: Literal["affiliation"]
+    object_ref: Annotated[str, Field(pattern=r"^aff_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: AssertionUpdateSpec
+
+
+class AffiliationSupersede(MutationBase):
+    mutation_type: Literal["affiliation_supersede"] = "affiliation_supersede"
+    action: Literal["supersede"]
+    object_type: Literal["affiliation"]
+    object_ref: Annotated[str, Field(pattern=r"^aff_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: Annotated[dict[str, AffiliationCreateSpec], Field(min_length=1, max_length=1)]
+
+    @field_validator("payload")
+    @classmethod
+    def replacement_only(
+        cls, value: dict[str, AffiliationCreateSpec]
+    ) -> dict[str, AffiliationCreateSpec]:
+        if set(value) != {"replacement"}:
+            raise ValueError("supersede payload contains only replacement")
+        return value
+
+
+class AffiliationRetract(MutationBase):
+    mutation_type: Literal["affiliation_retract"] = "affiliation_retract"
+    action: Literal["retract"]
+    object_type: Literal["affiliation"]
+    object_ref: Annotated[str, Field(pattern=r"^aff_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: EmptyMutationSpec = Field(default_factory=EmptyMutationSpec)
+
+
+class RelationshipCreate(MutationBase):
+    mutation_type: Literal["relationship_create"] = "relationship_create"
+    action: Literal["create"]
+    object_type: Literal["relationship"]
+    object_ref: None = None
+    create_spec: RelationshipCreateSpec
+    payload: None = None
+
+
+class RelationshipUpdate(MutationBase):
+    mutation_type: Literal["relationship_update"] = "relationship_update"
+    action: Literal["update"]
+    object_type: Literal["relationship"]
+    object_ref: Annotated[str, Field(pattern=r"^rel_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: AssertionUpdateSpec
+
+
+class RelationshipSupersede(MutationBase):
+    mutation_type: Literal["relationship_supersede"] = "relationship_supersede"
+    action: Literal["supersede"]
+    object_type: Literal["relationship"]
+    object_ref: Annotated[str, Field(pattern=r"^rel_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: Annotated[dict[str, RelationshipCreateSpec], Field(min_length=1, max_length=1)]
+
+    @field_validator("payload")
+    @classmethod
+    def replacement_only(
+        cls, value: dict[str, RelationshipCreateSpec]
+    ) -> dict[str, RelationshipCreateSpec]:
+        if set(value) != {"replacement"}:
+            raise ValueError("supersede payload contains only replacement")
+        return value
+
+
+class RelationshipRetract(MutationBase):
+    mutation_type: Literal["relationship_retract"] = "relationship_retract"
+    action: Literal["retract"]
+    object_type: Literal["relationship"]
+    object_ref: Annotated[str, Field(pattern=r"^rel_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: EmptyMutationSpec = Field(default_factory=EmptyMutationSpec)
+
+
+class FactCreate(MutationBase):
+    mutation_type: Literal["fact_create"] = "fact_create"
+    action: Literal["create"]
+    object_type: Literal["fact"]
+    object_ref: None = None
+    create_spec: FactCreateSpec
+    payload: None = None
+
+
+class FactUpdate(MutationBase):
+    mutation_type: Literal["fact_update"] = "fact_update"
+    action: Literal["update"]
+    object_type: Literal["fact"]
+    object_ref: Annotated[str, Field(pattern=r"^fact_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: AssertionUpdateSpec
+
+
+class FactSupersede(MutationBase):
+    mutation_type: Literal["fact_supersede"] = "fact_supersede"
+    action: Literal["supersede"]
+    object_type: Literal["fact"]
+    object_ref: Annotated[str, Field(pattern=r"^fact_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: Annotated[dict[str, FactCreateSpec], Field(min_length=1, max_length=1)]
+
+    @field_validator("payload")
+    @classmethod
+    def replacement_only(
+        cls, value: dict[str, FactCreateSpec]
+    ) -> dict[str, FactCreateSpec]:
+        if set(value) != {"replacement"}:
+            raise ValueError("supersede payload contains only replacement")
+        return value
+
+
+class FactRetract(MutationBase):
+    mutation_type: Literal["fact_retract"] = "fact_retract"
+    action: Literal["retract"]
+    object_type: Literal["fact"]
+    object_ref: Annotated[str, Field(pattern=r"^fact_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: EmptyMutationSpec = Field(default_factory=EmptyMutationSpec)
+
+
+class InteractionCreate(MutationBase):
+    mutation_type: Literal["interaction_create"] = "interaction_create"
+    action: Literal["create"]
+    object_type: Literal["interaction"]
+    object_ref: None = None
+    create_spec: InteractionCreateSpec
+    payload: None = None
+
+
+class PreferenceCreate(MutationBase):
+    mutation_type: Literal["preference_create"] = "preference_create"
+    action: Literal["create"]
+    object_type: Literal["preference"]
+    object_ref: None = None
+    create_spec: PreferenceCreateSpec
+    payload: None = None
+
+
+class PreferenceModify(MutationBase):
+    mutation_type: Literal["preference_modify"] = "preference_modify"
+    action: Literal["update", "supersede"]
+    object_type: Literal["preference"]
+    object_ref: Annotated[str, Field(pattern=r"^pref_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: PreferencePatchSpec
+
+
+class PreferenceRetract(MutationBase):
+    mutation_type: Literal["preference_retract"] = "preference_retract"
+    action: Literal["retract"]
+    object_type: Literal["preference"]
+    object_ref: Annotated[str, Field(pattern=r"^pref_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: EmptyMutationSpec = Field(default_factory=EmptyMutationSpec)
+
+
+class CalendarLaneCreate(MutationBase):
+    mutation_type: Literal["calendar_lane_create"] = "calendar_lane_create"
+    action: Literal["create"]
+    object_type: Literal["calendar_lane"]
+    object_ref: None = None
+    create_spec: CalendarLaneCreateSpec
+    payload: None = None
+
+
+class CalendarLaneModify(MutationBase):
+    mutation_type: Literal["calendar_lane_modify"] = "calendar_lane_modify"
+    action: Literal["update", "supersede"]
+    object_type: Literal["calendar_lane"]
+    object_ref: Annotated[str, Field(pattern=r"^lane_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: CalendarLanePatchSpec
+
+
+class CalendarLaneRetract(MutationBase):
+    mutation_type: Literal["calendar_lane_retract"] = "calendar_lane_retract"
+    action: Literal["retract"]
+    object_type: Literal["calendar_lane"]
+    object_ref: Annotated[str, Field(pattern=r"^lane_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: EmptyMutationSpec = Field(default_factory=EmptyMutationSpec)
+
+
+class LaneRoutingDecisionCreate(MutationBase):
+    mutation_type: Literal["lane_routing_decision_create"] = (
+        "lane_routing_decision_create"
+    )
+    action: Literal["create"]
+    object_type: Literal["lane_routing_decision"]
+    object_ref: None = None
+    create_spec: LaneRoutingDecisionCreateSpec
+    payload: None = None
+
+
+class CanonicalEventCreate(MutationBase):
+    mutation_type: Literal["canonical_event_create"] = "canonical_event_create"
+    action: Literal["create"]
+    object_type: Literal["canonical_event"]
+    object_ref: None = None
+    create_spec: CanonicalEventCreateSpec
+    payload: None = None
+
+
+class CanonicalEventModify(MutationBase):
+    mutation_type: Literal["canonical_event_modify"] = "canonical_event_modify"
+    action: Literal["update", "supersede"]
+    object_type: Literal["canonical_event"]
+    object_ref: Annotated[str, Field(pattern=r"^evt_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: CanonicalEventPatchSpec
+
+
+class CanonicalEventCancel(MutationBase):
+    mutation_type: Literal["canonical_event_cancel"] = "canonical_event_cancel"
+    action: Literal["retract"]
+    object_type: Literal["canonical_event"]
+    object_ref: Annotated[str, Field(pattern=r"^evt_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: EmptyMutationSpec = Field(default_factory=EmptyMutationSpec)
+
+
+type RegistryMutation = (
+    EntityCreate
+    | EntityModify
+    | EntityRetract
+    | IdentityHandleCreate
+    | IdentityHandleModify
+    | IdentityBindingBind
+    | IdentityBindingUnbind
+    | IdentityHandleRetract
+    | AffiliationCreate
+    | AffiliationUpdate
+    | AffiliationSupersede
+    | AffiliationRetract
+    | RelationshipCreate
+    | RelationshipUpdate
+    | RelationshipSupersede
+    | RelationshipRetract
+    | FactCreate
+    | FactUpdate
+    | FactSupersede
+    | FactRetract
+    | InteractionCreate
+)
+type PreferenceMutation = PreferenceCreate | PreferenceModify | PreferenceRetract
+type LaneMutation = (
+    CalendarLaneCreate
+    | CalendarLaneModify
+    | CalendarLaneRetract
+    | LaneRoutingDecisionCreate
+)
+type EventMutation = CanonicalEventCreate | CanonicalEventModify | CanonicalEventCancel
+type CanonicalMutation = (
+    EntityCreate
+    | EntityModify
+    | EntityRetract
+    | IdentityHandleCreate
+    | IdentityHandleModify
+    | IdentityBindingBind
+    | IdentityBindingUnbind
+    | IdentityHandleRetract
+    | AffiliationCreate
+    | AffiliationUpdate
+    | AffiliationSupersede
+    | AffiliationRetract
+    | RelationshipCreate
+    | RelationshipUpdate
+    | RelationshipSupersede
+    | RelationshipRetract
+    | FactCreate
+    | FactUpdate
+    | FactSupersede
+    | FactRetract
+    | InteractionCreate
+    | PreferenceCreate
+    | PreferenceModify
+    | PreferenceRetract
+    | CalendarLaneCreate
+    | CalendarLaneModify
+    | CalendarLaneRetract
+    | LaneRoutingDecisionCreate
+    | CanonicalEventCreate
+    | CanonicalEventModify
+    | CanonicalEventCancel
+)
+
+type RegistryChangeInput = Annotated[RegistryMutation, Field(discriminator="mutation_type")]
+type PreferenceChangeInput = Annotated[
+    PreferenceMutation, Field(discriminator="mutation_type")
+]
+type LaneChangeInput = Annotated[LaneMutation, Field(discriminator="mutation_type")]
+type EventChangeInput = Annotated[EventMutation, Field(discriminator="mutation_type")]
+type CanonicalChangeInput = Annotated[
+    CanonicalMutation, Field(discriminator="mutation_type")
+]
 
 
 class AttentionCaseItemDisposition(StrictModel):
@@ -242,6 +559,7 @@ class AttentionCaseItemDisposition(StrictModel):
 
 
 class AttentionCaseResolutionInput(StrictModel):
+    mutation_type: Literal["attention_case_resolution"] = "attention_case_resolution"
     change_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     action: Literal["update"]
     object_type: Literal["attention_case_resolution"]
@@ -267,10 +585,7 @@ class AttentionCaseResolutionInput(StrictModel):
         return values
 
 
-type ResolutionChangeInput = Annotated[
-    CanonicalChangeInput | AttentionCaseResolutionInput,
-    Field(discriminator="object_type"),
-]
+type ResolutionChangeInput = AttentionCaseResolutionInput
 
 
 class ProviderIntentInput(StrictModel):
@@ -310,14 +625,67 @@ class ProviderIntentInput(StrictModel):
 class ChangeSetContent(StrictModel):
     basis_refs: list[PublicRef] = Field(min_length=1, max_length=100)
     expected_versions: dict[PublicRef, int] = Field(default_factory=dict, max_length=100)
-    registry_changes: list[CanonicalChangeInput] = Field(default_factory=list, max_length=100)
-    preference_changes: list[CanonicalChangeInput] = Field(default_factory=list, max_length=100)
-    lane_changes: list[CanonicalChangeInput] = Field(default_factory=list, max_length=100)
-    event_changes: list[CanonicalChangeInput] = Field(default_factory=list, max_length=100)
+    registry_changes: list[RegistryChangeInput] = Field(default_factory=list, max_length=100)
+    preference_changes: list[PreferenceChangeInput] = Field(
+        default_factory=list, max_length=100
+    )
+    lane_changes: list[LaneChangeInput] = Field(default_factory=list, max_length=100)
+    event_changes: list[EventChangeInput] = Field(default_factory=list, max_length=100)
     resolution_changes: list[ResolutionChangeInput] = Field(
         default_factory=list, max_length=100
     )
     provider_intents: list[ProviderIntentInput] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="before")
+    @classmethod
+    def infer_legacy_mutation_tags(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        result = dict(value)
+        groups = (
+            "registry_changes",
+            "preference_changes",
+            "lane_changes",
+            "event_changes",
+            "resolution_changes",
+        )
+        aliases = {
+            ("entity", "update"): "entity_modify",
+            ("entity", "supersede"): "entity_modify",
+            ("identity_binding", "create"): "identity_handle_create",
+            ("identity_binding", "update"): "identity_handle_modify",
+            ("identity_binding", "supersede"): "identity_handle_modify",
+            ("identity_binding", "bind"): "identity_binding_bind",
+            ("identity_binding", "unbind"): "identity_binding_unbind",
+            ("identity_binding", "retract"): "identity_handle_retract",
+            ("preference", "update"): "preference_modify",
+            ("preference", "supersede"): "preference_modify",
+            ("calendar_lane", "update"): "calendar_lane_modify",
+            ("calendar_lane", "supersede"): "calendar_lane_modify",
+            ("canonical_event", "update"): "canonical_event_modify",
+            ("canonical_event", "supersede"): "canonical_event_modify",
+            ("canonical_event", "retract"): "canonical_event_cancel",
+            ("attention_case_resolution", "update"): "attention_case_resolution",
+        }
+        for group in groups:
+            changes = result.get(group)
+            if not isinstance(changes, list):
+                continue
+            tagged: list[Any] = []
+            for item in changes:
+                if not isinstance(item, dict) or "mutation_type" in item:
+                    tagged.append(item)
+                    continue
+                updated = dict(item)
+                object_type = str(updated.get("object_type", ""))
+                action = str(updated.get("action", ""))
+                updated["mutation_type"] = aliases.get(
+                    (object_type, action),
+                    f"{object_type}_{action}",
+                )
+                tagged.append(updated)
+            result[group] = tagged
+        return result
 
     @field_validator("basis_refs")
     @classmethod
@@ -409,4 +777,15 @@ class ConflictResolve(StrictModel):
     statements_superseded: list[StatementRef] = Field(default_factory=list, max_length=100)
     statements_retained: list[StatementRef] = Field(default_factory=list, max_length=100)
     effective_scope: dict[str, Any]
-    canonical_effects: list[dict[str, Any]] = Field(default_factory=list, max_length=100)
+    expected_versions: dict[PublicRef, int] = Field(default_factory=dict, max_length=100)
+    canonical_effects: list[CanonicalChangeInput] = Field(default_factory=list, max_length=100)
+
+    @field_validator("expected_versions")
+    @classmethod
+    def validate_expected_versions(cls, values: dict[str, int]) -> dict[str, int]:
+        for ref_id, version in values.items():
+            if not is_public_ref(ref_id):
+                raise ValueError("expected_versions keys must be typed public references")
+            if version < 1:
+                raise ValueError("expected versions must be positive")
+        return values

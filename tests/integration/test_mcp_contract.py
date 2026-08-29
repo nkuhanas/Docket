@@ -104,18 +104,27 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
         "resolution_changes",
         "provider_intents",
     }.issubset(content["properties"])
-    change = commit_schema["$defs"]["CanonicalChangeInput"]
-    assert "*_change_id" in change["properties"]["create_spec"]["description"]
-    payload_schema = change["properties"]["payload"]
-    assert "add_associated_email_change_id" in payload_schema["description"]
-    assert {"add_associated_email_change_id": "create-exact-email"} in payload_schema["examples"]
+    registry_union = commit_schema["$defs"]["RegistryChangeInput"]
+    assert registry_union["discriminator"]["propertyName"] == "mutation_type"
+    assert registry_union["discriminator"]["mapping"]["entity_create"] == (
+        "#/$defs/EntityCreate"
+    )
+    assert registry_union["discriminator"]["mapping"]["identity_binding_bind"] == (
+        "#/$defs/IdentityBindingBind"
+    )
+    identity_bind = commit_schema["$defs"]["IdentityBindingBind"]
+    assert identity_bind["additionalProperties"] is False
+    assert "object_change_id" in identity_bind["properties"]
+    assert identity_bind["properties"]["payload"] == {
+        "$ref": "#/$defs/IdentityBindingBindSpec"
+    }
+    identity_bind_spec = commit_schema["$defs"]["IdentityBindingBindSpec"]
+    assert "entity_change_id" in identity_bind_spec["properties"]
+    assert identity_bind_spec["properties"]["resolution_basis"] == {
+        "$ref": "#/$defs/IdentityResolutionBasis"
+    }
     assert "*_change_id" in (tools["docket_commit_changeset"].description or "")
-    resolution_union = commit_schema["$defs"]["ResolutionChangeInput"]
-    assert resolution_union["discriminator"]["propertyName"] == "object_type"
-    assert resolution_union["discriminator"]["mapping"][
-        "attention_case_resolution"
-    ] == "#/$defs/AttentionCaseResolutionInput"
-    case_resolution = commit_schema["$defs"]["AttentionCaseResolutionInput"]
+    case_resolution = commit_schema["$defs"]["ResolutionChangeInput"]
     assert case_resolution["additionalProperties"] is False
     assert case_resolution["properties"]["object_ref"]["pattern"].startswith("^case_")
     assert case_resolution["properties"]["case_revision_ref"]["pattern"].startswith(
@@ -123,6 +132,14 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
     )
     assert "payload" not in case_resolution["properties"]
     assert "affected_fields" not in case_resolution["properties"]
+    assert "ConflictResolution" not in repr(commit_schema)
+
+    conflict_schema = tools["docket_resolve_conflict"].inputSchema
+    canonical_effects = conflict_schema["properties"]["canonical_effects"]
+    assert canonical_effects["items"] == {"$ref": "#/$defs/CanonicalChangeInput"}
+    canonical_union = conflict_schema["$defs"]["CanonicalChangeInput"]
+    assert canonical_union["discriminator"]["propertyName"] == "mutation_type"
+    assert "conflict_resolution" not in canonical_union["discriminator"]["mapping"]
     for name in {
         "docket_list_calendar_lanes",
         "docket_list_calendar_events",

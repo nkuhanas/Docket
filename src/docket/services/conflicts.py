@@ -142,26 +142,16 @@ class ConflictService:
             )
         return conflict
 
-    def resolve(self, request: ConflictResolve) -> tuple[Conflict, Decision]:
+    def validate_resolution(
+        self, request: ConflictResolve
+    ) -> tuple[Conflict, OperatorUtterance]:
         conflict = self.get(request.conflict_ref)
         if conflict.status != "open":
-            if conflict.resolution_decision_ref is None:
-                raise DocketError(
-                    code="conflict_not_open",
-                    message="Conflict is no longer open.",
-                    details={"status": conflict.status},
-                )
-            decision = self.session.scalar(
-                select(Decision).where(
-                    Decision.ref_id == conflict.resolution_decision_ref
-                )
+            raise DocketError(
+                code="conflict_not_open",
+                message="Conflict is no longer open.",
+                details={"status": conflict.status},
             )
-            if decision is None:
-                raise DocketError(
-                    code="conflict_resolution_corrupt",
-                    message="Resolved Conflict has no Decision.",
-                )
-            return conflict, decision
         if conflict.version != request.expected_version:
             raise DocketError(
                 code="version_conflict",
@@ -199,6 +189,11 @@ class ConflictService:
                 code="invalid_conflict_resolution",
                 message="Resolution must name statements from the Conflict.",
             )
+        return conflict, utterance
+
+    def resolve(self, request: ConflictResolve) -> tuple[Conflict, Decision]:
+        conflict, utterance = self.validate_resolution(request)
+        settings = get_settings()
         decision = Decision(
             decision_kind="conflict_resolution",
             actor_ref=utterance.actor_ref,
@@ -212,7 +207,10 @@ class ConflictService:
                 "statements_superseded": request.statements_superseded,
                 "statements_retained": request.statements_retained,
                 "effective_scope": request.effective_scope,
-                "canonical_effects": request.canonical_effects,
+                "canonical_effects": [
+                    effect.model_dump(mode="json", exclude_none=True)
+                    for effect in request.canonical_effects
+                ],
                 "resolution": request.resolution,
             },
         )

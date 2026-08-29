@@ -1,10 +1,14 @@
+from __future__ import annotations
+
 from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import Field, field_validator, model_validator
 
-from docket.schemas.authority import PublicRef, StrictModel
+from docket.domain.public_refs import parse_public_ref
+from docket.schemas.common import PublicRef, StrictModel
+from docket.schemas.registry import EntityRef, EventRef
 
 PreferenceRef = Annotated[str, Field(pattern=r"^pref_[0-9A-HJKMNP-TV-Z]{26}$")]
 LaneRef = Annotated[str, Field(pattern=r"^lane_[0-9A-HJKMNP-TV-Z]{26}$")]
@@ -15,6 +19,7 @@ class PreferenceCreateSpec(StrictModel):
     policy_kind: Literal["behavior", "suppression", "calendar_route"]
     target_type: Literal["global", "entity", "identity", "source", "semantic_class"]
     target_ref: PublicRef | None = None
+    target_change_id: str | None = None
     semantic_class: str | None = Field(default=None, min_length=1, max_length=64)
     policy_text: str = Field(min_length=1, max_length=4000)
     policy_json: dict[str, Any] = Field(default_factory=dict)
@@ -25,12 +30,23 @@ class PreferenceCreateSpec(StrictModel):
     status: Literal["active"] = "active"
 
     @model_validator(mode="after")
-    def target_is_explicit(self) -> "PreferenceCreateSpec":
+    def target_is_explicit(self) -> PreferenceCreateSpec:
         if self.target_type in {"entity", "identity", "source"}:
-            if self.target_ref is None:
-                raise ValueError("entity, identity, and source targets require a public ref")
-        elif self.target_ref is not None:
+            if (self.target_ref is None) == (self.target_change_id is None):
+                raise ValueError(
+                    "entity, identity, and source targets require one ref or change id"
+                )
+        elif self.target_ref is not None or self.target_change_id is not None:
             raise ValueError("global and semantic-class targets omit exact target values")
+        if self.target_ref is not None:
+            prefix, _payload = parse_public_ref(self.target_ref)
+            expected_prefixes = {
+                "entity": {"ent"},
+                "identity": {"idn"},
+                "source": {"src"},
+            }
+            if prefix not in expected_prefixes[self.target_type]:
+                raise ValueError("preference target_ref type does not match target_type")
         if self.target_type == "semantic_class" and self.semantic_class is None:
             raise ValueError("semantic_class targets require semantic_class")
         if self.target_type != "semantic_class" and self.semantic_class is not None:
@@ -47,6 +63,24 @@ class PreferenceCreateSpec(StrictModel):
             raise ValueError(
                 "suppression policy requires policy_json.disposition='suppress'"
             )
+        if self.valid_from and self.valid_to and self.valid_to <= self.valid_from:
+            raise ValueError("valid_to must be later than valid_from")
+        return self
+
+
+class PreferencePatchSpec(StrictModel):
+    policy_text: str | None = Field(default=None, min_length=1, max_length=4000)
+    policy_json: dict[str, Any] | None = None
+    scope_json: dict[str, Any] | None = None
+    priority: int | None = Field(default=None, ge=0, le=10_000)
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+    status: Literal["active", "historical", "retracted"] | None = None
+
+    @model_validator(mode="after")
+    def has_change(self) -> PreferencePatchSpec:
+        if not self.model_fields_set:
+            raise ValueError("preference patch requires at least one field")
         if self.valid_from and self.valid_to and self.valid_to <= self.valid_from:
             raise ValueError("valid_to must be later than valid_from")
         return self
@@ -72,10 +106,26 @@ class CalendarLaneCreateSpec(StrictModel):
         return value.upper()
 
 
+class CalendarLanePatchSpec(StrictModel):
+    display_name: str | None = Field(default=None, min_length=1, max_length=255)
+    operator_policy_text: str | None = Field(default=None, min_length=1, max_length=4000)
+    metadata_json: dict[str, Any] | None = None
+    enabled: bool | None = None
+    priority: int | None = Field(default=None, ge=0, le=10_000)
+
+    @model_validator(mode="after")
+    def has_change(self) -> CalendarLanePatchSpec:
+        if not self.model_fields_set:
+            raise ValueError("CalendarLane patch requires at least one field")
+        return self
+
+
 class LaneRoutingDecisionCreateSpec(StrictModel):
-    lane_ref: LaneRef
-    event_ref: PublicRef | None = None
-    organization_ref: PublicRef | None = None
+    lane_ref: LaneRef | None = None
+    lane_change_id: str | None = None
+    event_ref: EventRef | None = None
+    event_change_id: str | None = None
+    organization_ref: EntityRef | None = None
     recurring_identity: str | None = Field(default=None, min_length=1, max_length=512)
     decision_kind: Literal[
         "explicit_operator",
@@ -88,8 +138,19 @@ class LaneRoutingDecisionCreateSpec(StrictModel):
     operator_confirmed: bool = False
 
     @model_validator(mode="after")
-    def has_applicability(self) -> "LaneRoutingDecisionCreateSpec":
-        if not any((self.event_ref, self.organization_ref, self.recurring_identity)):
+    def has_applicability(self) -> LaneRoutingDecisionCreateSpec:
+        if (self.lane_ref is None) == (self.lane_change_id is None):
+            raise ValueError("routing decision requires one lane ref or change id")
+        if self.event_ref is not None and self.event_change_id is not None:
+            raise ValueError("routing decision event uses a ref or change id, not both")
+        if not any(
+            (
+                self.event_ref,
+                self.event_change_id,
+                self.organization_ref,
+                self.recurring_identity,
+            )
+        ):
             raise ValueError("routing decision requires an event or applicability identity")
         if self.decision_kind == "explicit_operator" and not self.operator_confirmed:
             raise ValueError("explicit Operator routing must be operator_confirmed")

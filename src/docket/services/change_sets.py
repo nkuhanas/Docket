@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -63,7 +64,7 @@ _GROUP_TYPES: dict[str, frozenset[str]] = {
     "preference_changes": frozenset({"preference"}),
     "lane_changes": frozenset({"calendar_lane", "lane_routing_decision"}),
     "event_changes": frozenset({"canonical_event"}),
-    "resolution_changes": frozenset({"conflict_resolution", "attention_case_resolution"}),
+    "resolution_changes": frozenset({"attention_case_resolution"}),
 }
 
 _OBJECT_PREFIXES: dict[str, str] = {
@@ -77,16 +78,32 @@ _OBJECT_PREFIXES: dict[str, str] = {
     "calendar_lane": "lane",
     "lane_routing_decision": "route",
     "canonical_event": "evt",
-    "conflict_resolution": "cnf",
     "attention_case_resolution": "case",
 }
 
 
 def _content_payload(content: ChangeSetContent) -> dict[str, Any]:
-    return content.model_dump(mode="json")
+    payload = content.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
+    payload.setdefault("expected_versions", {})
+    for key in (
+        "registry_changes",
+        "preference_changes",
+        "lane_changes",
+        "event_changes",
+        "resolution_changes",
+        "provider_intents",
+    ):
+        payload.setdefault(key, [])
+    return payload
 
 
 ChangeInput = CanonicalChangeInput | AttentionCaseResolutionInput
+
+
+def _as_json(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
+    return value
 
 
 def _change_payload(change: ChangeInput) -> dict[str, Any]:
@@ -97,7 +114,9 @@ def _change_payload(change: ChangeInput) -> dict[str, Any]:
                 item.model_dump(mode="json") for item in change.item_dispositions
             ],
         }
-    return change.create_spec or change.payload
+    payload = change.create_spec or change.payload
+    converted = _as_json(payload)
+    return converted if isinstance(converted, dict) else {}
 
 
 def _change_affected_fields(change: ChangeInput) -> list[str]:
@@ -118,7 +137,7 @@ def _all_changes(content: ChangeSetContent) -> list[ChangeInput]:
             (
                 change
                 for change in pending
-                if _nested_change_refs(_change_payload(change)) <= resolved_ids
+                if _change_dependencies(change) <= resolved_ids
             ),
             None,
         )
@@ -133,7 +152,21 @@ def _all_changes(content: ChangeSetContent) -> list[ChangeInput]:
     return ordered
 
 
+def _change_dependencies(change: ChangeInput) -> set[str]:
+    refs = {change_id for _field, change_id in _dependency_edges(change)}
+    return refs
+
+
+def _dependency_edges(change: ChangeInput) -> list[tuple[str, str]]:
+    refs = _nested_change_edges(_change_payload(change))
+    object_change_id = getattr(change, "object_change_id", None)
+    if isinstance(object_change_id, str):
+        refs.append(("object_change_id", object_change_id))
+    return refs
+
+
 def _nested_public_refs(value: Any) -> set[str]:
+    value = _as_json(value)
     refs: set[str] = set()
     if isinstance(value, str) and is_public_ref(value):
         refs.add(value)
@@ -146,20 +179,121 @@ def _nested_public_refs(value: Any) -> set[str]:
     return refs
 
 
-def _nested_change_refs(value: Any) -> set[str]:
-    refs: set[str] = set()
+def _nested_change_edges(value: Any, *, path: str = "") -> list[tuple[str, str]]:
+    value = _as_json(value)
+    refs: list[tuple[str, str]] = []
     if isinstance(value, dict):
         for key, nested in value.items():
+            field_path = f"{path}.{key}" if path else key
             if key.endswith("_change_id") and isinstance(nested, str):
-                refs.add(nested)
+                refs.append((field_path, nested))
             elif key.endswith("_change_ids") and isinstance(nested, list):
-                refs.update(str(item) for item in nested)
+                refs.extend((field_path, str(item)) for item in nested)
             else:
-                refs.update(_nested_change_refs(nested))
+                refs.extend(_nested_change_edges(nested, path=field_path))
     elif isinstance(value, list | tuple):
-        for nested in value:
-            refs.update(_nested_change_refs(nested))
+        for index, nested in enumerate(value):
+            refs.extend(_nested_change_edges(nested, path=f"{path}[{index}]"))
     return refs
+
+
+def _dependency_expected_types(change: ChangeInput, field_path: str) -> set[str]:
+    field = field_path.rsplit(".", 1)[-1].split("[", 1)[0]
+    if field in {"lane_change_id"}:
+        return {"calendar_lane"}
+    if field in {"routing_decision_change_id"}:
+        return {"lane_routing_decision"}
+    if field in {"event_change_id"}:
+        return {"canonical_event"}
+    if field in {
+        "associated_email_change_id",
+        "associated_email_change_ids",
+    }:
+        return {"identity_binding"}
+    if (
+        field == "object_change_id"
+        and field_path == "object_change_id"
+        and getattr(change, "mutation_type", "") == "identity_binding_bind"
+    ):
+        return {"identity_binding"}
+    if field == "target_change_id":
+        target_type = _change_payload(change).get("target_type")
+        if target_type == "identity":
+            return {"identity_binding"}
+        if target_type == "entity":
+            return {"entity"}
+        return set()
+    if field in {
+        "parent_entity_change_id",
+        "entity_change_id",
+        "entity_change_ids",
+        "subject_change_id",
+        "organization_change_id",
+        "organization_change_ids",
+        "object_change_id",
+    }:
+        return {"entity"}
+    return set()
+
+
+def _dependency_cycle(changes: list[ChangeInput]) -> list[str] | None:
+    graph = {change.change_id: _change_dependencies(change) for change in changes}
+    visited: set[str] = set()
+    active: list[str] = []
+
+    def visit(change_id: str) -> list[str] | None:
+        if change_id in active:
+            start = active.index(change_id)
+            return [*active[start:], change_id]
+        if change_id in visited:
+            return None
+        active.append(change_id)
+        for dependency in graph.get(change_id, set()):
+            if dependency in graph:
+                cycle = visit(dependency)
+                if cycle is not None:
+                    return cycle
+        active.pop()
+        visited.add(change_id)
+        return None
+
+    for change_id in graph:
+        cycle = visit(change_id)
+        if cycle is not None:
+            return cycle
+    return None
+
+
+def _content_for_conflict_effects(request: ConflictResolve) -> ChangeSetContent | None:
+    if not request.canonical_effects:
+        return None
+    groups: dict[str, list[CanonicalChangeInput]] = {
+        "registry_changes": [],
+        "preference_changes": [],
+        "lane_changes": [],
+        "event_changes": [],
+    }
+    for effect in request.canonical_effects:
+        if effect.object_type in _GROUP_TYPES["registry_changes"]:
+            groups["registry_changes"].append(effect)
+        elif effect.object_type in _GROUP_TYPES["preference_changes"]:
+            groups["preference_changes"].append(effect)
+        elif effect.object_type in _GROUP_TYPES["lane_changes"]:
+            groups["lane_changes"].append(effect)
+        elif effect.object_type in _GROUP_TYPES["event_changes"]:
+            groups["event_changes"].append(effect)
+        else:  # pragma: no cover - the discriminated schema prevents this branch
+            raise DocketError(
+                code="unsupported_conflict_effect",
+                message="Conflict resolution contains an unsupported canonical effect.",
+            )
+    return ChangeSetContent.model_validate(
+        {
+            "basis_refs": [request.authority_utterance_ref],
+            "expected_versions": request.expected_versions,
+            **groups,
+        }
+    )
 
 
 def _resolved_create_spec(
@@ -168,6 +302,7 @@ def _resolved_create_spec(
 ) -> Any:
     """Resolve explicit in-ChangeSet create references after their targets commit."""
 
+    value = _as_json(value)
     if isinstance(value, list):
         return [_resolved_create_spec(item, refs_by_change_id) for item in value]
     if not isinstance(value, dict):
@@ -227,31 +362,8 @@ class ChangeSetService:
         provider_handler: ProviderIntentHandler | None = None,
     ) -> None:
         self.session = session
-        self.handlers: dict[str, CanonicalChangeHandler] = {
-            "conflict_resolution": self._apply_conflict_resolution,
-            **(handlers or {}),
-        }
+        self.handlers: dict[str, CanonicalChangeHandler] = dict(handlers or {})
         self.provider_handler = provider_handler
-
-    @staticmethod
-    def _apply_conflict_resolution(
-        session: Session,
-        _changeset: ChangeSet,
-        change: CanonicalChangeInput,
-    ) -> list[str]:
-        if change.object_ref is None:
-            raise DocketError(
-                code="conflict_ref_required",
-                message="Conflict resolution change requires a Conflict reference.",
-            )
-        request = ConflictResolve.model_validate(
-            {
-                "conflict_ref": change.object_ref,
-                **change.payload,
-            }
-        )
-        conflict, decision = ConflictService(session).resolve(request)
-        return [conflict.ref_id, decision.ref_id]
 
     def get(self, changeset_ref: str) -> ChangeSet:
         changeset = self.session.scalar(select(ChangeSet).where(ChangeSet.ref_id == changeset_ref))
@@ -262,6 +374,212 @@ class ChangeSetService:
                 details={"changeset_ref": changeset_ref},
             )
         return changeset
+
+    def _apply_content(
+        self,
+        changeset: ChangeSet,
+        content: ChangeSetContent,
+    ) -> list[str]:
+        affected_refs: list[str] = []
+        refs_by_change_id: dict[str, list[str]] = {}
+        for change in _all_changes(content):
+            resolved_change: ChangeInput = change
+            resolved_fields: dict[str, Any] = {}
+            if not isinstance(change, AttentionCaseResolutionInput):
+                object_change_id = getattr(change, "object_change_id", None)
+                if isinstance(object_change_id, str):
+                    refs = refs_by_change_id.get(object_change_id)
+                    if refs is None or len(refs) != 1:
+                        raise DocketError(
+                            code="create_reference_unresolved",
+                            message=(
+                                "A ChangeSet-local mutation target did not resolve exactly once."
+                            ),
+                            details={
+                                "change_id": object_change_id,
+                                "field": "object_change_id",
+                            },
+                        )
+                    resolved_fields["object_ref"] = refs[0]
+                if change.create_spec is not None:
+                    resolved_fields["create_spec"] = _resolved_create_spec(
+                        change.create_spec, refs_by_change_id
+                    )
+                if change.payload:
+                    resolved_fields["payload"] = _resolved_create_spec(
+                        change.payload, refs_by_change_id
+                    )
+            if resolved_fields:
+                resolved_change = change.model_copy(update=resolved_fields)
+            refs = self.handlers[change.object_type](
+                self.session, changeset, resolved_change
+            )
+            refs_by_change_id[change.change_id] = refs
+            for ref_id in refs:
+                if ref_id not in affected_refs:
+                    affected_refs.append(ref_id)
+        if self.provider_handler is not None:
+            provider_intents = sorted(
+                content.provider_intents,
+                key=lambda item: (
+                    0 if item.operation_type == "calendar_configure_lane" else 1,
+                    item.intent_id,
+                ),
+            )
+            for intent in provider_intents:
+                provider_refs = self.provider_handler(
+                    self.session,
+                    changeset,
+                    intent,
+                    refs_by_change_id,
+                )
+                for ref_id in provider_refs:
+                    if ref_id not in affected_refs:
+                        affected_refs.append(ref_id)
+        return affected_refs
+
+    def resolve_conflict(
+        self,
+        *,
+        intent_session: IntentSession,
+        request: ConflictResolve,
+        idempotency_key: str,
+    ) -> tuple[ChangeSet, list[str], bool]:
+        payload = request.model_dump(mode="json", exclude_defaults=True, exclude_none=True)
+        parameter_hash = sha256_json(payload)
+        existing = self.session.scalar(
+            select(ChangeSet).where(ChangeSet.idempotency_key == idempotency_key)
+        )
+        if existing is not None:
+            revision = self.session.scalar(
+                select(ChangeSetRevision).where(
+                    ChangeSetRevision.change_set_id == existing.id,
+                    ChangeSetRevision.revision == existing.current_revision,
+                )
+            )
+            if (
+                existing.intent_session_id != intent_session.id
+                or revision is None
+                or revision.parameter_hash != parameter_hash
+            ):
+                raise IdempotencyConflict(idempotency_key)
+            return existing, [], False
+        if intent_session.blocking_clarifications:
+            raise DocketError(
+                code="intent_needs_clarification",
+                message="Conflict resolution intent still has blocking clarification.",
+            )
+        conflict_service = ConflictService(self.session)
+        conflict_service.validate_resolution(request)
+        content = _content_for_conflict_effects(request)
+        if content is not None:
+            errors = self._validate(
+                intent_session,
+                content,
+                require_handlers=True,
+                resolving_conflict_ref=request.conflict_ref,
+            )
+            if errors:
+                intent_session.semantic_state = "ready"
+                intent_session.commit_state = "blocked_validation"
+                raise DocketError(
+                    code="changeset_validation_failed",
+                    message="Conflict resolution effects failed deterministic preflight.",
+                    details={"errors": errors},
+                )
+        changeset = ChangeSet(
+            intent_session_id=intent_session.id,
+            intent_session_ref=intent_session.ref_id,
+            idempotency_key=idempotency_key,
+            basis_refs=[request.authority_utterance_ref, request.conflict_ref],
+            expected_versions={request.conflict_ref: request.expected_version},
+            resolution_changes=[
+                {
+                    "mutation_type": "internal_conflict_resolution",
+                    "action": "update",
+                    "object_type": "conflict_resolution",
+                    "object_ref": request.conflict_ref,
+                    "payload": payload,
+                }
+            ],
+            state="validated",
+            version=1,
+            current_revision=1,
+        )
+        if content is not None:
+            self._sync_snapshot(changeset, content)
+            changeset.basis_refs = [request.authority_utterance_ref, request.conflict_ref]
+            changeset.expected_versions = {
+                **request.expected_versions,
+                request.conflict_ref: request.expected_version,
+            }
+            changeset.resolution_changes = [
+                {
+                    "mutation_type": "internal_conflict_resolution",
+                    "action": "update",
+                    "object_type": "conflict_resolution",
+                    "object_ref": request.conflict_ref,
+                    "payload": payload,
+                }
+            ]
+        self.session.add(changeset)
+        self.session.flush()
+        self.session.add(
+            ChangeSetRevision(
+                change_set_id=changeset.id,
+                revision=1,
+                basis_refs=list(changeset.basis_refs),
+                expected_versions=dict(changeset.expected_versions),
+                registry_changes=list(changeset.registry_changes),
+                preference_changes=list(changeset.preference_changes),
+                lane_changes=list(changeset.lane_changes),
+                event_changes=list(changeset.event_changes),
+                resolution_changes=list(changeset.resolution_changes),
+                provider_intents=[],
+                parameter_hash=parameter_hash,
+                preview_hash=sha256_json(
+                    {
+                        "conflict_ref": request.conflict_ref,
+                        "resolution": request.resolution,
+                    }
+                ),
+            )
+        )
+        intent_session.state = "ready"
+        intent_session.semantic_state = "ready"
+        intent_session.commit_state = "pending"
+        affected_refs = (
+            self._apply_content(changeset, content) if content is not None else []
+        )
+        conflict, decision = conflict_service.resolve(request)
+        changeset.state = "committed"
+        changeset.committed_at = utc_now()
+        changeset.version += 1
+        intent_session.state = "committed"
+        intent_session.semantic_state = "ready"
+        intent_session.commit_state = "committed"
+        intent_session.committed_changeset_ref = changeset.ref_id
+        intent_session.version += 1
+        affected_refs.extend([conflict.ref_id, decision.ref_id])
+        self.session.add(
+            AuditEvent(
+                event_type="changeset.committed",
+                entity_type="changeset",
+                entity_id=changeset.id,
+                actor_type="operator",
+                actor_id=get_settings().operator_discord_user_id,
+                request_id=None,
+                primary_ref=changeset.ref_id,
+                affected_refs=[changeset.ref_id, intent_session.ref_id, *affected_refs],
+                basis_refs=list(changeset.basis_refs),
+                data={
+                    "revision": 1,
+                    "canonical_effect_count": len(affected_refs),
+                },
+            )
+        )
+        self.session.flush()
+        return changeset, affected_refs, True
 
     @staticmethod
     def _content(changeset: ChangeSet) -> ChangeSetContent:
@@ -345,6 +663,7 @@ class ChangeSetService:
         content: ChangeSetContent,
         *,
         require_handlers: bool,
+        resolving_conflict_ref: str | None = None,
     ) -> list[dict[str, Any]]:
         errors: list[dict[str, Any]] = []
         provenance = ProvenanceRefService(self.session)
@@ -376,12 +695,74 @@ class ChangeSetService:
         changes = _all_changes(content)
         case_resolutions = AttentionCaseResolutionService(self.session)
         change_ids = {change.change_id for change in changes}
+        change_by_id = {change.change_id: change for change in changes}
+        cycle = _dependency_cycle(changes)
+        if cycle is not None:
+            errors.append(
+                {
+                    "code": "create_reference_cycle",
+                    "details": {"change_ids": cycle},
+                }
+            )
+        for change in changes:
+            for field_path, referenced_change_id in _dependency_edges(change):
+                dependency = change_by_id.get(referenced_change_id)
+                if dependency is None:
+                    continue
+                if dependency.action != "create":
+                    errors.append(
+                        {
+                            "code": "create_reference_not_create",
+                            "details": {
+                                "change_id": change.change_id,
+                                "field": field_path,
+                                "referenced_change_id": referenced_change_id,
+                            },
+                        }
+                    )
+                    continue
+                expected_types = _dependency_expected_types(change, field_path)
+                if expected_types and dependency.object_type not in expected_types:
+                    errors.append(
+                        {
+                            "code": "create_reference_type_mismatch",
+                            "details": {
+                                "change_id": change.change_id,
+                                "field": field_path,
+                                "referenced_change_id": referenced_change_id,
+                                "expected_object_types": sorted(expected_types),
+                                "actual_object_type": dependency.object_type,
+                            },
+                        }
+                    )
+                if field_path.rsplit(".", 1)[-1].startswith("organization_change_id"):
+                    dependency_payload = _change_payload(dependency)
+                    if dependency.object_type == "entity" and dependency_payload.get(
+                        "entity_kind"
+                    ) not in {"organization", "institution"}:
+                        errors.append(
+                            {
+                                "code": "create_reference_subtype_mismatch",
+                                "details": {
+                                    "change_id": change.change_id,
+                                    "field": field_path,
+                                    "referenced_change_id": referenced_change_id,
+                                    "expected_entity_kinds": [
+                                        "organization",
+                                        "institution",
+                                    ],
+                                    "actual_entity_kind": dependency_payload.get(
+                                        "entity_kind"
+                                    ),
+                                },
+                            }
+                        )
         seen_change_ids: set[str] = set()
         planned_refs: dict[str, str] = {}
         for change in changes:
             create_spec = (
-                change.create_spec or {}
-                if isinstance(change, CanonicalChangeInput)
+                _change_payload(change)
+                if not isinstance(change, AttentionCaseResolutionInput)
                 else {}
             )
             planned_ref = create_spec.get("ref_id")
@@ -537,7 +918,7 @@ class ChangeSetService:
                             }
                         )
                 for referenced_change_id in sorted(
-                    _nested_change_refs(_change_payload(change))
+                    _change_dependencies(change)
                 ):
                     if referenced_change_id not in change_ids:
                         errors.append(
@@ -550,11 +931,8 @@ class ChangeSetService:
                             }
                         )
                 if change.object_type == "canonical_event":
-                    assert isinstance(change, CanonicalChangeInput)
-                    formulation = (
-                        change.create_spec if change.action == "create" else change.payload
-                    )
-                    formulation = formulation or {}
+                    assert not isinstance(change, AttentionCaseResolutionInput)
+                    formulation = _change_payload(change)
                     lane_ref = formulation.get("lane_ref")
                     lane_change_id = formulation.get("lane_change_id")
                     if lane_ref is None and lane_change_id not in create_lane_ids:
@@ -599,21 +977,18 @@ class ChangeSetService:
         for event_change in content.event_changes:
             if event_change.object_type != "canonical_event":
                 continue
-            formulation = (
-                event_change.create_spec
-                if event_change.action == "create"
-                else event_change.payload
-            ) or {}
+            formulation = _change_payload(event_change)
             event_ref = event_change.object_ref
             route_ref = formulation.get("routing_decision_ref")
             matching_route = next(
                 (
                     route
                     for route in route_changes
-                    if (route.create_spec or {}).get("event_change_id") == event_change.change_id
+                    if _change_payload(route).get("event_change_id")
+                    == event_change.change_id
                     or (
                         event_ref is not None
-                        and (route.create_spec or {}).get("event_ref") == event_ref
+                        and _change_payload(route).get("event_ref") == event_ref
                     )
                 ),
                 None,
@@ -621,7 +996,7 @@ class ChangeSetService:
             route_lane_ref: str | None = None
             route_lane_change_id: str | None = None
             if matching_route is not None:
-                route_formulation = matching_route.create_spec or {}
+                route_formulation = _change_payload(matching_route)
                 route_lane_ref = route_formulation.get("lane_ref")
                 route_lane_change_id = route_formulation.get("lane_change_id")
             elif route_ref is not None:
@@ -650,6 +1025,8 @@ class ChangeSetService:
                 )
 
         for conflict in self.session.scalars(select(Conflict).where(Conflict.status == "open")):
+            if conflict.ref_id == resolving_conflict_ref:
+                continue
             for change in changes:
                 subject_refs = set(conflict.subject_refs)
                 target_refs = {change.object_ref} if change.object_ref is not None else set()
@@ -669,8 +1046,8 @@ class ChangeSetService:
                         if target_entity is not None:
                             target_refs.add(target_entity.ref_id)
                 create_spec = (
-                    change.create_spec or {}
-                    if isinstance(change, CanonicalChangeInput)
+                    _change_payload(change)
+                    if not isinstance(change, AttentionCaseResolutionInput)
                     else {}
                 )
                 create_subjects = create_spec.get("subject_refs", [])
@@ -735,6 +1112,18 @@ class ChangeSetService:
                         },
                     }
                 )
+            for target_change_id in intent.canonical_target_change_ids:
+                dependency = change_by_id.get(target_change_id)
+                if dependency is not None and dependency.action != "create":
+                    errors.append(
+                        {
+                            "code": "provider_target_not_create",
+                            "details": {
+                                "intent_id": intent.intent_id,
+                                "change_id": target_change_id,
+                            },
+                        }
+                    )
             if require_handlers and self.provider_handler is None:
                 errors.append(
                     {
@@ -764,35 +1153,60 @@ class ChangeSetService:
         changeset.validation_errors = errors
         if errors:
             changeset.state = "draft"
-            intent_session.state = "needs_clarification"
-            existing = list(intent_session.blocking_clarifications)
-            additional = self._clarifications(
-                [error for error in errors if error["code"] != "intent_needs_clarification"]
-            )
-            existing_keys = {
-                (
-                    item.get("code"),
-                    item.get("conflict_ref"),
-                    str(item.get("details", {})),
-                )
-                for item in existing
+            semantic_codes = {
+                "intent_needs_clarification",
+                "open_conflict",
+                "attention_case_reply_binding_mismatch",
+                "attention_case_item_revision_mismatch",
+                "attention_case_item_not_open",
             }
-            intent_session.blocking_clarifications = [
-                *existing,
-                *[
-                    item
-                    for item in additional
-                    if (
+            codes = {str(error["code"]) for error in errors}
+            if codes & semantic_codes:
+                intent_session.state = "needs_clarification"
+                intent_session.semantic_state = "needs_clarification"
+                intent_session.commit_state = (
+                    "blocked_conflict" if "open_conflict" in codes else "blocked_version"
+                )
+                existing = list(intent_session.blocking_clarifications)
+                additional = self._clarifications(
+                    [
+                        error
+                        for error in errors
+                        if error["code"] != "intent_needs_clarification"
+                    ]
+                )
+                existing_keys = {
+                    (
                         item.get("code"),
                         item.get("conflict_ref"),
                         str(item.get("details", {})),
                     )
-                    not in existing_keys
-                ],
-            ]
+                    for item in existing
+                }
+                intent_session.blocking_clarifications = [
+                    *existing,
+                    *[
+                        item
+                        for item in additional
+                        if (
+                            item.get("code"),
+                            item.get("conflict_ref"),
+                            str(item.get("details", {})),
+                        )
+                        not in existing_keys
+                    ],
+                ]
+            else:
+                intent_session.state = "ready"
+                intent_session.semantic_state = "ready"
+                intent_session.commit_state = (
+                    "blocked_version" if "version_conflict" in codes else "blocked_validation"
+                )
         else:
             changeset.state = "validated"
             intent_session.state = "ready"
+            intent_session.semantic_state = "ready"
+            intent_session.commit_state = "not_attempted"
             intent_session.blocking_clarifications = []
         intent_session.version += 1
 
@@ -965,52 +1379,22 @@ class ChangeSetService:
         errors = self._validate(intent_session, content, require_handlers=True)
         if errors:
             changeset.validation_errors = errors
+            intent_session.semantic_state = "ready"
+            intent_session.commit_state = "blocked_validation"
             raise DocketError(
                 code="changeset_validation_failed",
                 message="ChangeSet failed deterministic pre-commit validation.",
                 details={"errors": errors},
             )
-        affected_refs: list[str] = []
-        refs_by_change_id: dict[str, list[str]] = {}
-        for change in _all_changes(content):
-            resolved_change: ChangeInput = change
-            resolved_fields: dict[str, Any] = {}
-            if isinstance(change, CanonicalChangeInput):
-                if change.create_spec is not None:
-                    resolved_fields["create_spec"] = _resolved_create_spec(
-                        change.create_spec, refs_by_change_id
-                    )
-                if change.payload:
-                    resolved_fields["payload"] = _resolved_create_spec(
-                        change.payload, refs_by_change_id
-                    )
-            if resolved_fields:
-                resolved_change = change.model_copy(update=resolved_fields)
-            refs = self.handlers[change.object_type](self.session, changeset, resolved_change)
-            refs_by_change_id[change.change_id] = refs
-            affected_refs.extend(refs)
-        if self.provider_handler is not None:
-            provider_intents = sorted(
-                content.provider_intents,
-                key=lambda item: (
-                    0 if item.operation_type == "calendar_configure_lane" else 1,
-                    item.intent_id,
-                ),
-            )
-            for intent in provider_intents:
-                affected_refs.extend(
-                    self.provider_handler(
-                        self.session,
-                        changeset,
-                        intent,
-                        refs_by_change_id,
-                    )
-                )
+        intent_session.commit_state = "pending"
+        affected_refs = self._apply_content(changeset, content)
         changeset.state = "committed"
         changeset.committed_at = utc_now()
         changeset.version += 1
         changeset.validation_errors = []
         intent_session.state = "committed"
+        intent_session.semantic_state = "ready"
+        intent_session.commit_state = "committed"
         intent_session.committed_changeset_ref = changeset.ref_id
         intent_session.version += 1
         self.session.add(

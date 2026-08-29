@@ -28,8 +28,10 @@ from docket.schemas.actions import (
     ProposeCourseReconciliationInput,
 )
 from docket.schemas.authority import (
+    CanonicalChangeInput,
     ChangeSetContent,
     ConflictRef,
+    ConflictResolve,
     SessionRef,
     StatementInput,
     StatementRef,
@@ -1748,12 +1750,13 @@ def docket_resolve_conflict(
     statements_superseded: list[StatementRef],
     statements_retained: list[StatementRef],
     effective_scope: dict[str, Any],
-    canonical_effects: list[dict[str, Any]],
+    canonical_effects: list[CanonicalChangeInput],
     request_key: DiscordRequestKey,
     source: RecordSourceInput,
     actor_id: DiscordId,
     intent_session_ref: SessionRef | None = None,
     expected_session_version: int | None = None,
+    expected_versions: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Resolve one Conflict from the current utterance through an atomic ChangeSet."""
     try:
@@ -1774,45 +1777,26 @@ def docket_resolve_conflict(
                 interpretation_json={"conflict_ref": conflict.ref_id},
                 interpreter_version="docket-conflict-tool-v1",
             )
-            content = ChangeSetContent.model_validate(
-                {
-                    "basis_refs": [utterance_ref],
-                    "expected_versions": {conflict.ref_id: expected_conflict_version},
-                    "resolution_changes": [
-                        {
-                            "change_id": f"resolve-{conflict.ref_id}",
-                            "action": "update",
-                            "object_type": "conflict_resolution",
-                            "object_ref": conflict.ref_id,
-                            "affected_fields": conflict.affected_fields,
-                            "basis_refs": [utterance_ref],
-                            "payload": {
-                                "expected_version": expected_conflict_version,
-                                "authority_utterance_ref": utterance_ref,
-                                "resolution": resolution,
-                                "chosen_interpretation": chosen_interpretation,
-                                "statements_superseded": statements_superseded,
-                                "statements_retained": statements_retained,
-                                "effective_scope": effective_scope,
-                                "canonical_effects": canonical_effects,
-                            },
-                        }
-                    ],
-                }
+            resolution_request = ConflictResolve(
+                conflict_ref=conflict.ref_id,
+                expected_version=expected_conflict_version,
+                authority_utterance_ref=utterance_ref,
+                resolution=resolution,
+                chosen_interpretation=chosen_interpretation,
+                statements_superseded=statements_superseded,
+                statements_retained=statements_retained,
+                effective_scope=effective_scope,
+                expected_versions=expected_versions or {},
+                canonical_effects=canonical_effects,
             )
-            return InteractiveAuthorityService(session).process_turn(
+            return InteractiveAuthorityService(session).process_conflict_resolution(
                 utterance_ref=utterance_ref,
                 request_key=request_key,
                 actor_id=actor_id,
                 intent_session_ref=intent_session_ref,
                 expected_session_version=expected_session_version,
-                statements=[statement],
-                relations=[],
-                resolved_intent_json={"conflict_ref": conflict.ref_id},
-                blocking_clarifications=[],
-                content=content,
-                changeset_ref=None,
-                expected_changeset_version=None,
+                statement=statement,
+                resolution=resolution_request,
             )
     except Exception as exc:
         return _error(exc)

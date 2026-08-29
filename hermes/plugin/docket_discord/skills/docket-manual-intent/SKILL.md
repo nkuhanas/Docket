@@ -82,13 +82,18 @@ one `docket_commit_changeset` call:
 - `preference_changes`: explicit Operator behavioral/routing policy;
 - `lane_changes`: CalendarLanes and LaneRoutingDecisions;
 - `event_changes`: CanonicalEvents;
-- `resolution_changes`: exact Conflict and AttentionCase resolutions; and
+- `resolution_changes`: exact AttentionCase resolutions; and
 - `provider_intents`: external effects that follow canonical commit.
 
-Every change and provider intent carries `basis_refs`. Use stable `change_id`
-values and `*_change_id` references when one create depends on another in the same
-ChangeSet. Use exact expected versions for existing objects. Never expose internal
-UUIDs when a public ref exists.
+Conflict resolution is accepted only by `docket_resolve_conflict`; never encode a
+ConflictResolution inside `docket_commit_changeset`.
+
+Every change and provider intent carries `basis_refs`. Every canonical change uses
+the exact discriminated `mutation_type` shown by the MCP schema. Use stable
+`change_id` values and `*_change_id` references when one create depends on another
+in the same ChangeSet. The full dependency graph must validate before any handler
+runs. Use exact expected versions for existing objects. Never expose internal UUIDs
+when a public ref exists.
 
 For an AttentionCase or DailyBrief reply, read each addressed `case_` once and use
 the returned current `caserev_`, version, item refs, roles, and statuses. Submit the
@@ -135,16 +140,19 @@ expected_versions:
   pref_EXISTING_POLICY: 1
 registry_changes:
   - change_id: create-exact-email
+    mutation_type: identity_handle_create
     action: create
     object_type: identity_binding
     create_spec: {handle_type: email, value: sender@example.com}
   - change_id: associate-exact-email
+    mutation_type: identity_handle_modify
     action: update
     object_type: identity_binding
     object_ref: idn_EXISTING_SENDER
     payload: {add_associated_email_change_id: create-exact-email}
 preference_changes:
   - change_id: activate-suppression
+    mutation_type: preference_modify
     action: update
     object_type: preference
     object_ref: pref_EXISTING_POLICY
@@ -181,6 +189,11 @@ tool transcripts, or provider payloads in chat.
 Tool transport completion and Docket domain success are different. Treat a durable
 `call_` with rejected or failed domain state as unsuccessful even when MCP transport
 completed; an unreconciled call is unknown, never assumed successful.
+
+An implementation or structural validation failure does not erase resolved Operator
+intent. Report the exact blocked/failure disposition and keep the existing session;
+never ask the Operator to repeat an equivalent authorization and never narrow the
+selected semantic scope as a fallback.
 
 Final responses are concise and distinguish canonical commit, queued provider
 projection, provider completion, and reconciliation-required states. Do not tell

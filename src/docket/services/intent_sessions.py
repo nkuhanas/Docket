@@ -77,6 +77,8 @@ class IntentSessionService:
             brief_ref=request.brief_ref,
             trusted_context_refs=list(request.trusted_context_refs),
             state="open",
+            semantic_state="open",
+            commit_state="not_attempted",
         )
         self.session.add(intent_session)
         self.session.flush()
@@ -196,6 +198,8 @@ class IntentSessionService:
         intent_session.state = (
             "needs_clarification" if request.blocking_clarifications else "open"
         )
+        intent_session.semantic_state = intent_session.state
+        intent_session.commit_state = "not_attempted"
         intent_session.version += 1
         self.session.add(
             AuditEvent(
@@ -229,6 +233,8 @@ class IntentSessionService:
         return {
             "ref": intent_session.ref_id,
             "state": intent_session.state,
+            "semantic_state": intent_session.semantic_state,
+            "commit_state": intent_session.commit_state,
             "version": intent_session.version,
             "source_utterance_ref": intent_session.source_utterance_ref,
             "case_refs": intent_session.case_refs,

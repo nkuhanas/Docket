@@ -3,7 +3,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator
 
-from docket.schemas.authority import PublicRef, StrictModel
+from docket.schemas.common import PublicRef, StrictModel
 
 TriageRunRef = Annotated[str, Field(pattern=r"^tri_[0-9A-HJKMNP-TV-Z]{26}$")]
 ContextRef = Annotated[str, Field(pattern=r"^ctx_[0-9A-HJKMNP-TV-Z]{26}$")]
