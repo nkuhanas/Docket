@@ -412,6 +412,28 @@ class SemanticOptionService:
                     SemanticRequest.authority_scope_hash == option.authority_scope_hash,
                 )
             )
+            compiled_content = complete_selection_provenance(
+                option.compilation_template_json,
+                existing.ref_id,
+            )
+            if semantic_request is None:
+                semantic_request = self._create_semantic_request(
+                    option=option,
+                    utterance=existing,
+                )
+                projection.status = "selected"
+                self._append_selection_audit(
+                    request=request,
+                    option=option,
+                    utterance=existing,
+                    semantic_request=semantic_request,
+                )
+            if ingress is not None:
+                ingress.selected_option_binding_json = {
+                    **(ingress.selected_option_binding_json or {}),
+                    "semantic_request_ref": semantic_request.ref_id,
+                    "compiled_content": compiled_content,
+                }
             lease_ref, execution_ready = self._claim_selection_ingress(
                 ingress,
                 utterance=existing,
@@ -467,37 +489,10 @@ class SemanticOptionService:
             )
         )
         if semantic_request is None:
-            intent_session = self.session.scalar(
-                select(IntentSession).where(IntentSession.ref_id == option.intent_session_ref)
+            semantic_request = self._create_semantic_request(
+                option=option,
+                utterance=utterance,
             )
-            if intent_session is None:
-                raise DocketError(
-                    code="intent_session_not_found",
-                    message="Semantic option's IntentSession no longer exists.",
-                )
-            semantic_request = SemanticRequest(
-                intent_session_id=intent_session.id,
-                intent_session_ref=intent_session.ref_id,
-                authority_scope_hash=option.authority_scope_hash,
-                current_precondition_hash=option.precondition_hash,
-                origin_utterance_refs=[utterance.ref_id],
-                selected_option_binding={
-                    "prompt_projection_ref": option.prompt_projection_ref,
-                    "prompt_projection_version": option.prompt_projection_version,
-                    "option_id": option.option_id,
-                    "authority_scope_hash": option.authority_scope_hash,
-                    "selected_precondition_hash": option.precondition_hash,
-                },
-                authority_availability="available",
-                commit_state="not_attempted",
-                current_case_revision_ref=option.case_revision_ref,
-                symbolic_substitutions_json={CURRENT_SELECTION_UTTERANCE: utterance.ref_id},
-            )
-            self.session.add(semantic_request)
-            self.session.flush()
-            intent_session.semantic_state = "ready"
-            intent_session.commit_state = "not_attempted"
-            intent_session.semantic_request_ref = semantic_request.ref_id
 
         ingress = DeferredIngress(
             source_key=source_key,
@@ -522,6 +517,70 @@ class SemanticOptionService:
             gateway_instance_ref=request.gateway_instance_ref,
         )
         projection.status = "selected"
+        self._append_selection_audit(
+            request=request,
+            option=option,
+            utterance=utterance,
+            semantic_request=semantic_request,
+        )
+        self.session.flush()
+        return self._selection_result(
+            utterance,
+            option,
+            semantic_request,
+            ingress,
+            replay=False,
+            execution_lease_ref=lease_ref,
+            execution_ready=execution_ready,
+        )
+
+    def _create_semantic_request(
+        self,
+        *,
+        option: PersistedSemanticOption,
+        utterance: OperatorUtterance,
+    ) -> SemanticRequest:
+        intent_session = self.session.scalar(
+            select(IntentSession).where(IntentSession.ref_id == option.intent_session_ref)
+        )
+        if intent_session is None:
+            raise DocketError(
+                code="intent_session_not_found",
+                message="Semantic option's IntentSession no longer exists.",
+            )
+        semantic_request = SemanticRequest(
+            intent_session_id=intent_session.id,
+            intent_session_ref=intent_session.ref_id,
+            authority_scope_hash=option.authority_scope_hash,
+            current_precondition_hash=option.precondition_hash,
+            origin_utterance_refs=[utterance.ref_id],
+            selected_option_binding={
+                "prompt_projection_ref": option.prompt_projection_ref,
+                "prompt_projection_version": option.prompt_projection_version,
+                "option_id": option.option_id,
+                "authority_scope_hash": option.authority_scope_hash,
+                "selected_precondition_hash": option.precondition_hash,
+            },
+            authority_availability="available",
+            commit_state="not_attempted",
+            current_case_revision_ref=option.case_revision_ref,
+            symbolic_substitutions_json={CURRENT_SELECTION_UTTERANCE: utterance.ref_id},
+        )
+        self.session.add(semantic_request)
+        self.session.flush()
+        intent_session.semantic_state = "ready"
+        intent_session.commit_state = "not_attempted"
+        intent_session.semantic_request_ref = semantic_request.ref_id
+        return semantic_request
+
+    def _append_selection_audit(
+        self,
+        *,
+        request: SemanticOptionSelection,
+        option: PersistedSemanticOption,
+        utterance: OperatorUtterance,
+        semantic_request: SemanticRequest,
+    ) -> None:
         self.session.add(
             AuditEvent(
                 event_type="semantic_option.selected",
@@ -541,16 +600,6 @@ class SemanticOptionService:
                     "precondition_hash": option.precondition_hash,
                 },
             )
-        )
-        self.session.flush()
-        return self._selection_result(
-            utterance,
-            option,
-            semantic_request,
-            ingress,
-            replay=False,
-            execution_lease_ref=lease_ref,
-            execution_ready=execution_ready,
         )
 
     def _claim_selection_ingress(

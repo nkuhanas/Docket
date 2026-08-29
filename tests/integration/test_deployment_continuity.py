@@ -1,14 +1,18 @@
 import uuid
+from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from docket.config import get_settings
 from docket.domain.errors import DocketError
 from docket.internal_api.schemas import OperatorUtteranceCapture
-from docket.models import DeferredIngress, ExecutionLease
+from docket.models import DeferredIngress, ExecutionLease, IntentSession, OperatorUtterance
+from docket.providers.discord import FakeDiscordProjectionAdapter
 from docket.services.continuity import ContinuityService
+from docket.services.deferred_ingress import DeferredIngressRunner
 from docket.services.gateway_lifetimes import GatewayLifetimeService
+from docket.services.ingress_ledger import IngressIdentity, IngressLedgerService
 from docket.services.provenance import ProvenanceService
 
 
@@ -108,3 +112,38 @@ def test_authenticated_message_is_captured_and_deferred_during_drain(
         assert row.utterance_ref == result["ref"]
         assert row.status == "pending"
         assert row.drain_ref is not None
+
+
+@pytest.mark.integration
+def test_stable_ingress_captures_typed_message_without_domain_authority(
+    session_factory,
+) -> None:
+    settings = get_settings()
+    with session_factory.begin() as session:
+        captured = IngressLedgerService(
+            session,
+            identity=IngressIdentity(
+                operator_id=settings.operator_discord_user_id,
+                guild_id=settings.discord_guild_id,
+                chat_channel_id=settings.chat_channel_id,
+                queue_channel_id=settings.queue_channel_id,
+            ),
+            signing_key=settings.read_secret(settings.interaction_signing_key_file).encode(),
+        ).capture_message(
+            actor_id=settings.operator_discord_user_id,
+            guild_id=settings.discord_guild_id,
+            channel_id=settings.chat_channel_id,
+            parent_channel_id=None,
+            message_id="1542799000000000410",
+            reply_to_message_id=None,
+            verbatim_text="Keep this message across deployment.",
+            said_at=datetime.now(UTC),
+        )
+        assert captured["state"] == "pending"
+        assert session.scalar(select(func.count(OperatorUtterance.id))) == 1
+        assert session.scalar(select(func.count(DeferredIngress.id))) == 1
+        assert session.scalar(select(func.count(IntentSession.id))) == 0
+
+    adapter = FakeDiscordProjectionAdapter()
+    assert DeferredIngressRunner(session_factory, adapter).run_once() is True
+    assert adapter.deferred_ingress[0]["utterance_ref"] == captured["utterance_ref"]

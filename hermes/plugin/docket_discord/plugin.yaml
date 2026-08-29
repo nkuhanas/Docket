@@ -1,5 +1,5 @@
 name: docket-discord
-version: 0.21.0
+version: 0.22.0
 description: Trusted Discord utterance, response, tool-call, projection, ChangeSet, and legacy-approval-drain bridge for Docket
 provides_hooks:
   - pre_gateway_dispatch
@@ -36,4 +36,7 @@ requires_env:
     secret: false
   - name: DOCKET_PLUGIN_PORT
     description: Private Compose listener port for outbound projection requests
+    secret: false
+  - name: DOCKET_STABLE_INGRESS_ENABLED
+    description: Leaves semantic option acknowledgement to the deployment-stable ingress process
     secret: false

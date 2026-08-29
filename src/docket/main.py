@@ -38,6 +38,7 @@ from docket.services.backups import BackupService
 from docket.services.briefs import DailyBriefService
 from docket.services.calendar_sync import CalendarSyncService
 from docket.services.continuity import ExecutionLeaseCoordinator
+from docket.services.deferred_ingress import DeferredIngressRunner
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.events import SemanticCandidateCompiler
 from docket.services.gateway_lifetimes import GatewayLifetimeReconciler
@@ -81,6 +82,16 @@ discord_projection_runner = (
         ),
         settings,
         lease_seconds=settings.discord_projection_lease_seconds,
+    )
+    if settings.discord_projection_enabled
+    else None
+)
+deferred_ingress_runner = (
+    DeferredIngressRunner(
+        get_session_factory(),
+        HttpDiscordProjectionAdapter(
+            settings.discord_projection_url, settings.docket_to_hermes_token()
+        ),
     )
     if settings.discord_projection_enabled
     else None
@@ -138,6 +149,7 @@ worker = WorkerRuntime(
     retention_poll_seconds=settings.retention_poll_seconds,
     gateway_lifetime_reconciler=GatewayLifetimeReconciler(get_session_factory()),
     execution_lease_coordinator=ExecutionLeaseCoordinator(get_session_factory()),
+    deferred_ingress_runner=deferred_ingress_runner,
 )
 
 

@@ -38,6 +38,8 @@ class DiscordProjectionAdapter(Protocol):
         self, projection_id: uuid.UUID, payload: dict[str, Any]
     ) -> dict[str, Any]: ...
 
+    def post_deferred_ingress(self, payload: dict[str, Any]) -> dict[str, Any]: ...
+
 
 class HttpDiscordProjectionAdapter:
     def __init__(self, base_url: str, token: str, *, timeout_seconds: float = 20.0) -> None:
@@ -120,6 +122,9 @@ class HttpDiscordProjectionAdapter:
             payload,
         )
 
+    def post_deferred_ingress(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", "/internal/docket/discord/deferred-ingress", payload)
+
 
 @dataclass
 class FakeDiscordBackend:
@@ -145,6 +150,16 @@ class FakeDiscordProjectionAdapter:
         self.discard_next_thread_ack = False
         self.discard_next_projection_ack = False
         self.discard_next_notification_ack = False
+        self.deferred_ingress: list[dict[str, Any]] = []
+
+    def post_deferred_ingress(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self._check_request(payload)
+        self.deferred_ingress.append(copy.deepcopy(payload))
+        return {
+            "request_id": payload["request_id"],
+            "deferred_ingress_ref": payload["deferred_ingress_ref"],
+            "accepted": True,
+        }
 
     @staticmethod
     def _check_request(payload: dict[str, Any]) -> None:

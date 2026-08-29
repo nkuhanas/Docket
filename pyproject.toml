@@ -11,6 +11,7 @@ requires-python = ">=3.12,<3.15"
 dependencies = [
   "alembic==1.18.5",
   "cryptography==50.0.0",
+  "discord-py==2.7.1",
   "fastapi==0.139.2",
   "google-auth-oauthlib==1.4.0",
   "httpx==0.28.1",
@@ -34,6 +35,9 @@ dev = [
 
 [project.scripts]
 docket = "docket.main:run"
+docket-continuity = "docket.continuity_cli:main"
+docket-discord-ingress = "docket.discord_ingress:main"
+docket-provision-ingress-role = "docket.ingress_credentials:main"
 docket-google-auth = "docket.google_oauth_cli:main"
 docket-production-config = "docket.production_config:main"
 

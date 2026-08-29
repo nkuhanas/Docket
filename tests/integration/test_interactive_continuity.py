@@ -22,9 +22,12 @@ from docket.models import (
     SemanticRequestAttempt,
     ToolInvocation,
 )
+from docket.providers.discord import FakeDiscordProjectionAdapter
 from docket.schemas.authority import SemanticOptionDraft
 from docket.security import issue_semantic_option_token
+from docket.services.deferred_ingress import DeferredIngressRunner
 from docket.services.gateway_lifetimes import GatewayLifetimeService
+from docket.services.ingress_ledger import IngressIdentity, IngressLedgerService
 from docket.services.interactive_authority import InteractiveAuthorityService
 from docket.services.provenance import ProvenanceService
 from docket.services.semantic_options import CURRENT_SELECTION_UTTERANCE
@@ -185,6 +188,107 @@ def test_persisted_selection_compiles_once_and_preserves_exact_authority(
         assert semantic_request.committed_changeset_ref == selection["execution"]["ref"]
         assert session.scalar(select(func.count(ChangeSet.id))) == 1
         assert session.scalar(select(func.count(SemanticRequestAttempt.id))) == 1
+        assert session.scalar(select(func.count(Entity.id))) == 1
+
+
+@pytest.mark.integration
+def test_stable_ingress_selection_persists_before_worker_execution(session_factory) -> None:
+    settings = get_settings()
+    initial_message_id = "1542799000000000210"
+    interaction_id = "1542799000000000211"
+    prompt_message_id = "1542799000000000212"
+    with session_factory.begin() as session:
+        initial_utterance_ref = _capture_utterance(
+            session,
+            message_id=initial_message_id,
+            text="Create Cal Poly.",
+        )
+        InteractiveAuthorityService(session).process_turn(
+            utterance_ref=initial_utterance_ref,
+            request_key=(
+                f"discord:{settings.discord_guild_id}:{settings.chat_channel_id}:"
+                f"{initial_message_id}:0"
+            ),
+            actor_id=settings.operator_discord_user_id,
+            intent_session_ref=None,
+            expected_session_version=None,
+            statements=[],
+            relations=[],
+            resolved_intent_json={"kind": "identity_clarification"},
+            blocking_clarifications=[
+                {
+                    "blocking": True,
+                    "code": "identity_resolution_required",
+                    "question": "Should Docket register Cal Poly?",
+                }
+            ],
+            content=None,
+            changeset_ref=None,
+            expected_changeset_version=None,
+            semantic_options=[_entity_option(initial_utterance_ref)],
+        )
+        prompt = session.scalar(select(SemanticPromptProjection))
+        option = session.scalar(select(PersistedSemanticOption))
+        assert prompt is not None and option is not None
+        prompt.message_id = prompt_message_id
+        prompt.status = "delivered"
+        token = issue_semantic_option_token(
+            option_row_id=option.id,
+            projection_version=option.prompt_projection_version,
+            actor_id=settings.operator_discord_user_id,
+            expires_at=datetime.now(UTC) + timedelta(days=1),
+            signing_key=settings.read_secret(settings.interaction_signing_key_file).encode(),
+        )
+        recorded = IngressLedgerService(
+            session,
+            identity=IngressIdentity(
+                operator_id=settings.operator_discord_user_id,
+                guild_id=settings.discord_guild_id,
+                chat_channel_id=settings.chat_channel_id,
+                queue_channel_id=settings.queue_channel_id,
+            ),
+            signing_key=settings.read_secret(settings.interaction_signing_key_file).encode(),
+        ).capture_semantic_selection(
+            actor_id=settings.operator_discord_user_id,
+            guild_id=settings.discord_guild_id,
+            channel_id=settings.chat_channel_id,
+            parent_channel_id=None,
+            interaction_id=interaction_id,
+            message_id=prompt_message_id,
+            option_token=token,
+            responded_at=datetime.now(UTC),
+        )
+        assert recorded["state"] == "pending"
+        assert session.scalar(select(func.count(SemanticRequest.id))) == 0
+        assert session.scalar(select(func.count(Entity.id))) == 0
+
+    adapter = FakeDiscordProjectionAdapter()
+    assert DeferredIngressRunner(session_factory, adapter).run_once() is True
+    assert len(adapter.deferred_ingress) == 1
+    binding = adapter.deferred_ingress[0]["selected_option_binding"]
+    selection_payload = SemanticOptionSelection.model_validate(
+        {
+            key: value
+            for key, value in binding.items()
+            if key
+            in {
+                "discord_interaction_id",
+                "discord_user_id",
+                "guild_id",
+                "channel_id",
+                "parent_channel_id",
+                "message_id",
+                "option_token",
+                "responded_at",
+            }
+        }
+        | {"request_id": str(uuid.uuid4())}
+    )
+    result = semantic_option_selection(selection_payload)
+    assert result["state"] == "committed"
+    with session_factory.begin() as session:
+        assert session.scalar(select(func.count(OperatorUtterance.id))) == 2
+        assert session.scalar(select(func.count(SemanticRequest.id))) == 1
         assert session.scalar(select(func.count(Entity.id))) == 1
 
 

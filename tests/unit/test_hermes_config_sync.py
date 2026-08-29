@@ -77,3 +77,23 @@ def test_sync_fails_closed_on_unmanaged_or_ambiguous_block() -> None:
     bad = """    tools:\n      include:\n        - shell\n      prompts: false\n"""
     with pytest.raises(module.HermesConfigSyncError):
         module.synchronize(bad, bad)
+
+
+def test_docket_discord_profile_has_no_mutation_escape_capabilities() -> None:
+    module = _module()
+    template = Path("hermes/config.example.yaml").read_text(encoding="utf-8")
+    start, end = module._nested_section(template, "platform_toolsets", "discord")
+    toolset = template[start:end]
+
+    for forbidden in (
+        "browser",
+        "code_execution",
+        "computer_use",
+        "delegation",
+        "file",
+        "terminal",
+        "web",
+    ):
+        assert f"    - {forbidden}\n" not in toolset
+    assert template.count("        - docket_commit_changeset\n") == 1
+    assert template.count("        - docket_resolve_conflict\n") == 1

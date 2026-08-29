@@ -20,6 +20,11 @@ for tool selection, authority, side effects, and output handling. Current MCP
 schemas are authoritative for exact arguments. Legacy read tools exist only to
 inspect undrained state; legacy mutation tools are unavailable.
 
+The Docket Discord profile deliberately has no terminal, code-execution, file,
+browser, generic HTTP, raw MCP, web, or delegation capability. Those paths are
+not a fallback for schema discovery or mutation. Canonical mutation is possible
+only through the two authenticated Docket mutation tools in the loaded contract.
+
 ## Read path
 
 1. Use `docket_network_search` for people, organizations, institutions, courses,

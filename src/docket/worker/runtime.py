@@ -11,6 +11,7 @@ from docket.services.backups import BackupService
 from docket.services.briefs import DailyBriefService
 from docket.services.calendar_sync import CalendarSyncService
 from docket.services.continuity import ExecutionLeaseCoordinator
+from docket.services.deferred_ingress import DeferredIngressRunner
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.events import SemanticCandidateCompiler
 from docket.services.gateway_lifetimes import GatewayLifetimeReconciler
@@ -53,6 +54,7 @@ class WorkerRuntime:
         retention_poll_seconds: float = 3600.0,
         gateway_lifetime_reconciler: GatewayLifetimeReconciler | None = None,
         execution_lease_coordinator: ExecutionLeaseCoordinator | None = None,
+        deferred_ingress_runner: DeferredIngressRunner | None = None,
     ) -> None:
         self.heartbeat_seconds = heartbeat_seconds
         self.operation_runner = operation_runner
@@ -80,6 +82,7 @@ class WorkerRuntime:
         self.retention_poll_seconds = retention_poll_seconds
         self.gateway_lifetime_reconciler = gateway_lifetime_reconciler
         self.execution_lease_coordinator = execution_lease_coordinator
+        self.deferred_ingress_runner = deferred_ingress_runner
         self.last_heartbeat: datetime | None = None
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -180,6 +183,7 @@ class WorkerRuntime:
         next_daily_brief = 0.0
         next_retention = 0.0
         next_projection_repair = 0.0
+        next_deferred_ingress = 0.0
         while not self._stop.is_set():
             self.last_heartbeat = datetime.now(UTC)
             now = time.monotonic()
@@ -212,6 +216,13 @@ class WorkerRuntime:
                     if repairs:
                         self.wake_discord_projection()
                     next_projection_repair = now + 60.0
+                if self.deferred_ingress_runner is not None and now >= next_deferred_ingress:
+                    await self._run_leased(
+                        "outbox_delivery",
+                        "deferred-discord-ingress",
+                        self.deferred_ingress_runner.run_once,
+                    )
+                    next_deferred_ingress = now + self.discord_projection_poll_seconds
                 if self.rollover_service is not None and now >= next_rollover:
                     await self._run_leased(
                         "cron_execution",

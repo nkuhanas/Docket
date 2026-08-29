@@ -67,6 +67,9 @@ _GATEWAY_INSTANCE_REF: str | None = None
 _GATEWAY_LIFETIME_LOCK = threading.Lock()
 _GATEWAY_HEARTBEAT_STARTED = False
 _GATEWAY_HEARTBEAT_STOP = threading.Event()
+_DEFERRED_REPLAY_ACTIVE: set[str] = set()
+_DEFERRED_REPLAY_LOCK = threading.Lock()
+_DEFERRED_REPLAY_TASKS: set[asyncio.Task[None]] = set()
 
 
 def _load_interactive_tool_contract() -> tuple[str, str, str, str]:
@@ -3539,6 +3542,12 @@ async def _on_docket_interaction(interaction: object) -> None:
         token = match.group(2)
         semantic_option = match.group(1) == "s"
         if semantic_option:
+            if os.environ.get("DOCKET_STABLE_INGRESS_ENABLED", "").casefold() in {
+                "1",
+                "true",
+                "yes",
+            }:
+                return
             guild_id, queue_channel_id, operator_id = _configured_identity()
             chat_channel_id = os.environ.get("DOCKET_CHAT_CHANNEL_ID", "")
             channel = interaction.channel
@@ -3840,6 +3849,197 @@ async def _install_interaction_listener() -> dict[str, Any]:
     return {"installed": True}
 
 
+async def _run_deferred_typed_message(payload: dict[str, Any]) -> None:
+    import discord
+    from gateway.config import Platform
+    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.session import SessionSource
+
+    loop, adapter, client = _discord_runtime()
+    del loop
+    channel = await client.fetch_channel(int(str(payload["channel_id"])))
+    message = await channel.fetch_message(int(str(payload["source_id"])))
+    if (
+        str(message.author.id) != os.environ.get("DOCKET_OPERATOR_DISCORD_USER_ID", "")
+        or str(message.guild.id) != os.environ.get("DOCKET_DISCORD_GUILD_ID", "")
+        or message.content != str(payload["verbatim_text"])
+    ):
+        raise PluginAPIError(
+            "deferred_ingress_source_mismatch",
+            "Deferred Discord message no longer matches its ledger evidence",
+            409,
+        )
+    parent_id = getattr(channel, "parent_id", None)
+    reply_message = None
+    reply_to_message_id = payload.get("reply_to_message_id")
+    if reply_to_message_id:
+        try:
+            reply_message = await channel.fetch_message(int(str(reply_to_message_id)))
+        except discord.NotFound:
+            reply_message = None
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id=str(channel.id),
+        chat_name=getattr(channel, "name", None),
+        chat_type="thread" if isinstance(channel, discord.Thread) else "channel",
+        user_id=str(message.author.id),
+        user_name=str(message.author),
+        scope_id=str(message.guild.id),
+        parent_chat_id=str(parent_id) if parent_id is not None else None,
+        message_id=str(message.id),
+    )
+    event = MessageEvent(
+        text=message.content,
+        message_type=MessageType.TEXT,
+        source=source,
+        raw_message=message,
+        message_id=str(message.id),
+        reply_to_message_id=(str(reply_to_message_id) if reply_to_message_id else None),
+        reply_to_text=(reply_message.content if reply_message is not None else None),
+        reply_to_author_id=(
+            str(reply_message.author.id) if reply_message is not None else None
+        ),
+        reply_to_author_name=(str(reply_message.author) if reply_message is not None else None),
+        reply_to_is_own_message=(
+            bool(client.user is not None and reply_message.author.id == client.user.id)
+            if reply_message is not None
+            else False
+        ),
+        timestamp=message.created_at,
+    )
+    runner = __import__("gateway.run", fromlist=["_gateway_runner_ref"])._gateway_runner_ref()
+    if runner is None:
+        raise PluginAPIError("discord_runtime_unavailable", "Gateway is not running", 503)
+    response = await runner._handle_message(event)
+    if isinstance(response, str) and response.strip():
+        await adapter.send(
+            str(channel.id),
+            response,
+            metadata={"reply_to": str(message.id)},
+        )
+
+
+async def _run_deferred_semantic_selection(payload: dict[str, Any]) -> None:
+    import discord
+
+    binding = payload.get("selected_option_binding")
+    if not isinstance(binding, dict):
+        raise PluginAPIError(
+            "deferred_ingress_binding_missing",
+            "Deferred selection has no persisted option binding",
+            409,
+        )
+    channel = (await _discord_runtime()[2].fetch_channel(int(str(payload["channel_id"]))))
+    message = await channel.fetch_message(int(str(binding["message_id"])))
+    request_payload = {
+        "request_id": str(uuid.uuid4()),
+        "discord_interaction_id": binding["discord_interaction_id"],
+        "discord_user_id": binding["discord_user_id"],
+        "guild_id": binding["guild_id"],
+        "channel_id": binding["channel_id"],
+        "parent_channel_id": binding.get("parent_channel_id"),
+        "message_id": binding["message_id"],
+        "option_token": binding["option_token"],
+        "responded_at": binding["responded_at"],
+        "gateway_instance_ref": _GATEWAY_INSTANCE_REF,
+    }
+    result = await asyncio.to_thread(_post_semantic_option_selection, request_payload)
+    response_ref = str(result.get("response_ref") or "")
+    response_text = str(result.get("response_text") or "").strip()
+    if _RESPONSE_REF.fullmatch(response_ref) is None or not response_text:
+        raise PluginAPIError(
+            "invalid_docket_response",
+            "Docket returned no durable deferred-selection response",
+            502,
+        )
+    delivered = result.get("response_delivery_state") == "delivered"
+    if not delivered:
+        try:
+            await message.reply(
+                response_text,
+                mention_author=False,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except discord.HTTPException:
+            await asyncio.to_thread(
+                _post_agent_response_delivery,
+                {
+                    "response_ref": response_ref,
+                    "guild_id": str(payload["guild_id"]),
+                    "source_channel_id": str(payload["channel_id"]),
+                    "parent_channel_id": payload.get("parent_channel_id"),
+                    "source_message_id": str(binding["discord_interaction_id"]),
+                    "actor_id": str(binding["discord_user_id"]),
+                },
+                delivered=False,
+            )
+            raise
+        await asyncio.to_thread(
+            _post_agent_response_delivery,
+            {
+                "response_ref": response_ref,
+                "guild_id": str(payload["guild_id"]),
+                "source_channel_id": str(payload["channel_id"]),
+                "parent_channel_id": payload.get("parent_channel_id"),
+                "source_message_id": str(binding["discord_interaction_id"]),
+                "actor_id": str(binding["discord_user_id"]),
+            },
+            delivered=True,
+        )
+    try:
+        await message.edit(view=None)
+    except discord.HTTPException:
+        logger.warning("Deferred semantic selection committed but controls remain visible")
+
+
+async def _run_deferred_ingress(payload: dict[str, Any]) -> None:
+    ingress_ref = str(payload["deferred_ingress_ref"])
+    try:
+        if payload.get("ingress_kind") == "typed_message":
+            await _run_deferred_typed_message(payload)
+        elif payload.get("ingress_kind") == "button_selection":
+            await _run_deferred_semantic_selection(payload)
+        else:
+            raise PluginAPIError(
+                "unsupported_deferred_ingress",
+                "Deferred ingress kind is not supported",
+                422,
+            )
+    except Exception:
+        logger.exception("Deferred Docket ingress replay failed: %s", ingress_ref)
+    finally:
+        with _DEFERRED_REPLAY_LOCK:
+            _DEFERRED_REPLAY_ACTIVE.discard(ingress_ref)
+
+
+async def _schedule_deferred_ingress(payload: dict[str, Any]) -> dict[str, Any]:
+    _require_request_id(payload)
+    ingress_ref = str(payload.get("deferred_ingress_ref", ""))
+    if not ingress_ref.startswith("ing_") or _PUBLIC_REF.fullmatch(ingress_ref) is None:
+        raise PluginAPIError("invalid_deferred_ingress", "Ingress ref is invalid", 422)
+    with _DEFERRED_REPLAY_LOCK:
+        if ingress_ref in _DEFERRED_REPLAY_ACTIVE:
+            return {
+                "request_id": str(payload["request_id"]),
+                "deferred_ingress_ref": ingress_ref,
+                "accepted": True,
+                "replayed": True,
+            }
+        _DEFERRED_REPLAY_ACTIVE.add(ingress_ref)
+    task = asyncio.create_task(
+        _run_deferred_ingress(payload),
+        name=f"docket-deferred-ingress:{ingress_ref}",
+    )
+    _DEFERRED_REPLAY_TASKS.add(task)
+    task.add_done_callback(_DEFERRED_REPLAY_TASKS.discard)
+    return {
+        "request_id": str(payload["request_id"]),
+        "deferred_ingress_ref": ingress_ref,
+        "accepted": True,
+        "replayed": False,
+    }
+
+
 class _PluginRequestHandler(BaseHTTPRequestHandler):
     server_version = "DocketHermesBridge/0.5"
 
@@ -3900,6 +4100,8 @@ class _PluginRequestHandler(BaseHTTPRequestHandler):
             elif method == "POST" and self.path == "/internal/docket/discord/notifications":
                 with _operation_lock(f"calendar-reminder:{payload.get('notification_id')}"):
                     result = _run_on_discord(_post_calendar_reminder(payload))
+            elif method == "POST" and self.path == "/internal/docket/discord/deferred-ingress":
+                result = _run_on_discord(_schedule_deferred_ingress(payload))
             elif method == "PUT" and (match := _MCP_TRACE_PATH.fullmatch(self.path)):
                 trace_id = uuid.UUID(match.group(1))
                 with _operation_lock(f"mcp-trace:{trace_id}"):
