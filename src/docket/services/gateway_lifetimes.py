@@ -12,6 +12,7 @@ from docket.domain.errors import DocketError
 from docket.models import (
     DeferredIngress,
     DiscordMcpTrace,
+    DrainBarrier,
     ExecutionLease,
     GatewayLifetime,
     SemanticRequest,
@@ -74,14 +75,41 @@ class GatewayLifetimeService:
             select(GatewayLifetime).where(
                 GatewayLifetime.instance_kind == instance_kind,
                 GatewayLifetime.status.in_(("active", "draining")),
-            )
+            ).with_for_update()
         )
+        replaced_gateway_ref: str | None = None
         if live is not None:
-            raise DocketError(
-                code="gateway_lifetime_already_active",
-                message="A live gateway lifetime already owns this instance kind.",
-                details={"gateway_instance_ref": live.ref_id},
+            barrier = self.session.scalar(
+                select(DrainBarrier)
+                .where(DrainBarrier.status.in_(("requested", "draining")))
+                .order_by(DrainBarrier.requested_at.desc())
+                .with_for_update()
             )
+            drained = False
+            if barrier is not None and instance_kind == "hermes_discord_gateway":
+                # Imported locally to keep the two operational services from
+                # acquiring a module-level dependency cycle.
+                from docket.services.continuity import ContinuityService
+
+                drained = bool(
+                    ContinuityService(self.session).drain_status(barrier.ref_id)["drained"]
+                )
+            if not drained:
+                raise DocketError(
+                    code="gateway_lifetime_already_active",
+                    message="A live gateway lifetime already owns this instance kind.",
+                    details={"gateway_instance_ref": live.ref_id},
+                )
+            # A drained deployment has proven that the prior process owns no
+            # in-flight semantic execution. Its container may not run Python
+            # atexit handlers under s6/Docker replacement, so fence that
+            # lifetime atomically with registration of the replacement.
+            now = self._database_now()
+            live.clean_shutdown_at = now
+            live.heartbeat_at = now
+            live.lease_expires_at = now
+            live.status = "clean_shutdown"
+            replaced_gateway_ref = live.ref_id
         generation = int(
             self.session.scalar(
                 select(func.max(GatewayLifetime.lease_generation)).where(
@@ -102,7 +130,10 @@ class GatewayLifetimeService:
         )
         self.session.add(lifetime)
         self.session.flush()
-        return self._projection(lifetime, disposition="created")
+        result = self._projection(lifetime, disposition="created")
+        if replaced_gateway_ref is not None:
+            result["replaced_gateway_ref"] = replaced_gateway_ref
+        return result
 
     def require_live(self, gateway_instance_ref: str) -> GatewayLifetime:
         self.expire_and_reconcile()

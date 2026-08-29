@@ -7,7 +7,13 @@ from sqlalchemy import func, select
 from docket.config import get_settings
 from docket.domain.errors import DocketError
 from docket.internal_api.schemas import OperatorUtteranceCapture
-from docket.models import DeferredIngress, ExecutionLease, IntentSession, OperatorUtterance
+from docket.models import (
+    DeferredIngress,
+    ExecutionLease,
+    GatewayLifetime,
+    IntentSession,
+    OperatorUtterance,
+)
 from docket.providers.discord import FakeDiscordProjectionAdapter
 from docket.services.continuity import ContinuityService
 from docket.services.deferred_ingress import DeferredIngressRunner
@@ -70,6 +76,61 @@ def test_drain_timeout_aborts_without_cancelling_active_work(session_factory) ->
         assert result["state"] == "aborted"
         stored = session.scalar(select(ExecutionLease).where(ExecutionLease.ref_id == lease.ref_id))
         assert stored is not None and stored.status == "active"
+
+
+@pytest.mark.integration
+def test_drained_deployment_fences_prior_gateway_during_replacement(
+    session_factory,
+) -> None:
+    with session_factory.begin() as session:
+        prior = GatewayLifetimeService(session).register(
+            registration_key=uuid.uuid4(),
+            instance_kind="hermes_discord_gateway",
+        )
+        ContinuityService(session).request_drain(
+            requested_by="test deployment",
+            timeout_seconds=60,
+        )
+        replacement = GatewayLifetimeService(session).register(
+            registration_key=uuid.uuid4(),
+            instance_kind="hermes_discord_gateway",
+        )
+
+        assert replacement["replaced_gateway_ref"] == prior["ref"]
+        assert replacement["lease_generation"] == 2
+        lifetimes = list(
+            session.scalars(
+                select(GatewayLifetime).order_by(GatewayLifetime.lease_generation)
+            )
+        )
+        assert [lifetime.status for lifetime in lifetimes] == ["clean_shutdown", "active"]
+
+
+@pytest.mark.integration
+def test_gateway_replacement_remains_fenced_while_prebarrier_work_is_active(
+    session_factory,
+) -> None:
+    with session_factory.begin() as session:
+        prior = GatewayLifetimeService(session).register(
+            registration_key=uuid.uuid4(),
+            instance_kind="hermes_discord_gateway",
+        )
+        ContinuityService(session).acquire_execution_lease(
+            lease_key="test:gateway-replacement-active",
+            lease_kind="interactive_turn",
+            gateway_instance_ref=str(prior["ref"]),
+        )
+        ContinuityService(session).request_drain(
+            requested_by="test deployment",
+            timeout_seconds=60,
+        )
+
+        with pytest.raises(DocketError) as exc_info:
+            GatewayLifetimeService(session).register(
+                registration_key=uuid.uuid4(),
+                instance_kind="hermes_discord_gateway",
+            )
+        assert exc_info.value.code == "gateway_lifetime_already_active"
 
 
 @pytest.mark.integration
