@@ -190,6 +190,16 @@ architecture authority only; its implementation authority remains
 registry, Calendar-lane, AttentionCase, triage-authority, or provider-operation
 semantics.
 
+Manifest-bound amendment sign-offs use the same ledger path. A later amendment
+may name the existing ledger-backed architecture Decision as its prerequisite;
+the earlier case-resolution amendment retains its one-time bootstrap evidence.
+An exact sign-off rejected for an ineligible hash or unmet prerequisite remains
+a durable `utt_`, creates no authority Decision, and reaches Hermes with a
+trusted bounded error result so the Operator receives an explicit failure
+instead of only a gateway reaction. Successful sign-off dispatch likewise
+includes the already-created `dec_` so Hermes confirms it without replaying the
+mutation.
+
 Plugin `0.20.2` renders timed reminder start/end values as Docket-supplied native
 Discord timestamps, puts the event subject under the native `Title` field, and
 omits a redundant timezone field. All-day reminders instead render fixed

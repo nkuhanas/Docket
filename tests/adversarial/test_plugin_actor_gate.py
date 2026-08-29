@@ -738,6 +738,106 @@ def test_exact_final_signoff_is_recorded_before_model_dispatch(
 
     assert result is not None and result["action"] == "rewrite"
     assert captured == [(plugin_module._FINAL_ARCHITECTURE_SIGNOFF_TEXT, utterance_ref)]
+    assert '"decision_ref": "dec_33333333333333333333333333"' in result["text"]
+    assert '"ok": true' in result["text"]
+    assert "already persisted this exact specification sign-off" in result["text"]
+
+
+@pytest.mark.adversarial
+def test_rejected_signoff_reaches_model_with_safe_failure_context(
+    plugin_module, monkeypatch
+) -> None:
+    actor = "111111111111111111"
+    guild = "222222222222222222"
+    channel = "333333333333333333"
+    message = "444444444444444444"
+    utterance_ref = f"utt_{'2' * 26}"
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", channel)
+    monkeypatch.setattr(
+        plugin_module,
+        "_capture_operator_utterance",
+        lambda _event: utterance_ref,
+    )
+
+    def reject_signoff(_event, _ref):
+        raise plugin_module.PluginAPIError(
+            "specification_signoff_artifact_mismatch",
+            "Specification sign-off does not identify an eligible frozen artifact.",
+        )
+
+    monkeypatch.setattr(
+        plugin_module,
+        "_record_final_signoff_if_explicit",
+        reject_signoff,
+    )
+    event = SimpleNamespace(
+        text=(
+            "I accept ONT-DELTA-2026-08-28-UNKNOWN frozen at SHA-256 "
+            f"{'9' * 64} and authorize implementation of that amendment."
+        ),
+        message_id=message,
+        source=SimpleNamespace(
+            platform="discord",
+            user_id=actor,
+            guild_id=guild,
+            chat_id=channel,
+        ),
+    )
+
+    result = plugin_module._pre_gateway_dispatch(event)
+
+    assert result is not None and result["action"] == "rewrite"
+    assert '"ok": false' in result["text"]
+    assert (
+        '"error_code": "specification_signoff_artifact_mismatch"'
+        in result["text"]
+    )
+    assert "It did not create implementation authority" in result["text"]
+
+
+@pytest.mark.adversarial
+def test_unknown_signoff_outcome_remains_fail_closed(plugin_module, monkeypatch) -> None:
+    actor = "111111111111111111"
+    guild = "222222222222222222"
+    channel = "333333333333333333"
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", channel)
+    monkeypatch.setattr(
+        plugin_module,
+        "_capture_operator_utterance",
+        lambda _event: f"utt_{'2' * 26}",
+    )
+
+    def lose_signoff_outcome(_event, _ref):
+        raise plugin_module.PluginAPIError(
+            "invalid_decision_ref",
+            "Docket did not return a typed Decision reference",
+            502,
+        )
+
+    monkeypatch.setattr(
+        plugin_module,
+        "_record_final_signoff_if_explicit",
+        lose_signoff_outcome,
+    )
+    event = SimpleNamespace(
+        text=plugin_module._FINAL_ARCHITECTURE_SIGNOFF_TEXT,
+        message_id="444444444444444444",
+        source=SimpleNamespace(
+            platform="discord",
+            user_id=actor,
+            guild_id=guild,
+            chat_id=channel,
+        ),
+    )
+
+    assert plugin_module._pre_gateway_dispatch(event) == {
+        "action": "skip",
+        "reason": "docket-signoff-persistence-failed",
+    }
 
 
 @pytest.mark.adversarial

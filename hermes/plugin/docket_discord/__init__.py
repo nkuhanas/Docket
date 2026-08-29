@@ -1114,6 +1114,7 @@ def _rewrite_with_source_context(
     event: object,
     utterance_ref: str,
     reply_binding: dict[str, Any] | None = None,
+    signoff_result: dict[str, Any] | None = None,
 ) -> dict[str, str] | None:
     source = getattr(event, "source", None)
     ingress = _trusted_ingress_context(source)
@@ -1149,6 +1150,26 @@ def _rewrite_with_source_context(
     }
     if reply_binding is not None:
         context["reply_binding"] = reply_binding
+    signoff_context = ""
+    if signoff_result is not None:
+        signoff_context = (
+            '\n\n<docket_specification_signoff trusted="true">\n'
+            f"{json.dumps(signoff_result, sort_keys=True)}\n"
+            "</docket_specification_signoff>\n"
+        )
+        if signoff_result.get("ok") is True:
+            signoff_context += (
+                "The trusted gateway already persisted this exact specification "
+                "sign-off. Do not call a tool to repeat it. Confirm the ledger-backed "
+                "Decision reference concisely."
+            )
+        else:
+            signoff_context += (
+                "The trusted gateway attempted this specification sign-off, but Docket "
+                "rejected it. It did not create implementation authority. Do not run "
+                "mutation tools or claim the amendment is signed. Tell the Operator the "
+                "safe error code and message concisely."
+            )
     preferences = _operator_preferences()
     preference_context = (
         "\n\n<docket_operator_preferences trusted=\"true\">\n"
@@ -1197,6 +1218,7 @@ def _rewrite_with_source_context(
         f"{preference_context}"
         f"{authority_context}"
         f"{contract_context}"
+        f"{signoff_context}"
         '<docket_gateway_context trusted="true">\n'
         f"{json.dumps(context, sort_keys=True)}\n"
         "</docket_gateway_context>\n"
@@ -1226,6 +1248,7 @@ def _pre_gateway_dispatch(
         return {"action": "skip", "reason": "docket-chat-root-only"}
     utterance_ref: str | None = None
     reply_binding: dict[str, Any] | None = None
+    signoff_result: dict[str, Any] | None = None
     if _provenance_ingress_context(source) is not None:
         try:
             captured = _capture_operator_utterance(event)
@@ -1237,7 +1260,29 @@ def _pre_gateway_dispatch(
             logger.exception("Docket OperatorUtterance persistence failed; turn rejected")
             return {"action": "skip", "reason": "docket-utterance-persistence-failed"}
         try:
-            _record_final_signoff_if_explicit(event, utterance_ref)
+            decision_ref = _record_final_signoff_if_explicit(event, utterance_ref)
+            if decision_ref is not None:
+                signoff_result = {
+                    "attempted": True,
+                    "decision_ref": decision_ref,
+                    "ok": True,
+                }
+        except PluginAPIError as exc:
+            if exc.status >= 500:
+                logger.exception(
+                    "Docket specification sign-off outcome was unavailable; turn rejected"
+                )
+                return {"action": "skip", "reason": "docket-signoff-persistence-failed"}
+            logger.warning(
+                "Docket specification sign-off rejected: %s",
+                exc.code,
+            )
+            signoff_result = {
+                "attempted": True,
+                "error_code": exc.code,
+                "message": str(exc),
+                "ok": False,
+            }
         except (OSError, RuntimeError, urllib.error.URLError):
             logger.exception("Docket specification sign-off persistence failed; turn rejected")
             return {"action": "skip", "reason": "docket-signoff-persistence-failed"}
@@ -1261,7 +1306,12 @@ def _pre_gateway_dispatch(
         if utterance_ref is None:
             return None
         _register_trace_context(event, session_store, utterance_ref)
-        return _rewrite_with_source_context(event, utterance_ref, reply_binding)
+        return _rewrite_with_source_context(
+            event,
+            utterance_ref,
+            reply_binding,
+            signoff_result,
+        )
 
     allowed_actor = os.environ.get("DOCKET_OPERATOR_DISCORD_USER_ID", "")
     allowed_guild = os.environ.get("DOCKET_DISCORD_GUILD_ID", "")
