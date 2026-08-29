@@ -435,6 +435,9 @@ def test_tool_invocation_is_created_before_validation(session_factory) -> None:
         assert invocation is not None
         assert invocation.ref_id.startswith("call_")
         assert invocation.status == "rejected_validation"
+        assert invocation.transport_state == "completed"
+        assert invocation.domain_state == "rejected"
+        assert invocation.result_disposition == "rejected_validation"
         assert invocation.normalized_argument_hash is None
         assert invocation.completed_at is not None
 
@@ -485,7 +488,7 @@ def test_mutating_tool_requires_and_binds_operator_utterance_authority(
     ) -> dict[str, object]:
         del utterance_ref
         calls.append(request_key)
-        return {"ok": True, "state": "committed"}
+        return {"ok": True, "state": "committed", "disposition": "committed"}
 
     request_key = (
         f"discord:{settings.discord_guild_id}:{settings.chat_channel_id}:"
@@ -504,6 +507,9 @@ def test_mutating_tool_requires_and_binds_operator_utterance_authority(
         rejected = session.scalar(select(ToolInvocation))
         assert rejected is not None
         assert rejected.status == "rejected_authority"
+        assert rejected.transport_state == "completed"
+        assert rejected.domain_state == "rejected"
+        assert rejected.result_disposition == "rejected_authority"
         assert rejected.error_code == "operator_utterance_authority_required"
         assert rejected.normalized_argument_hash == sha256_json(arguments)
         assert rejected.actor_ref is None
@@ -525,6 +531,9 @@ def test_mutating_tool_requires_and_binds_operator_utterance_authority(
             .order_by(ToolInvocation.started_at.desc())
         )
         assert succeeded is not None
+        assert succeeded.transport_state == "completed"
+        assert succeeded.domain_state == "succeeded"
+        assert succeeded.result_disposition == "committed"
         assert succeeded.actor_ref == f"discord_user:{settings.operator_discord_user_id}"
         assert succeeded.utterance_refs == [utterance_ref]
 

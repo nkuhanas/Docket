@@ -286,17 +286,18 @@ class McpTraceService:
 
     @staticmethod
     def _domain_state(invocation: ToolInvocation | None) -> str:
-        if invocation is None or invocation.status == "received":
+        if invocation is None:
             return "unknown"
-        if invocation.status in {
-            "rejected_validation",
-            "rejected_authority",
-            "rejected_conflict",
-        }:
-            return "rejected"
-        if invocation.status == "succeeded":
-            return "succeeded"
-        return "failed"
+        if invocation.domain_state == "unknown":
+            if invocation.status in {
+                "rejected_validation",
+                "rejected_authority",
+                "rejected_conflict",
+            }:
+                return "rejected"
+            if invocation.status == "failed":
+                return "failed"
+        return invocation.domain_state
 
     def _reconcile_calls(self, trace: DiscordMcpTrace, now: datetime) -> bool:
         changed = False
@@ -347,7 +348,7 @@ class McpTraceService:
                 "tool_call_ref": invocation.ref_id if invocation is not None else None,
                 "disposition": (
                     invocation.result_disposition
-                    if invocation is not None and domain_state == "succeeded"
+                    if invocation is not None and domain_state != "unknown"
                     else None
                 ),
                 "domain_error_code": (

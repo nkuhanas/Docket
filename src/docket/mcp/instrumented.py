@@ -93,6 +93,18 @@ def _terminal_status(error_code: str | None) -> str:
     return "rejected_validation"
 
 
+def _domain_state(status: str) -> str:
+    if status == "succeeded":
+        return "succeeded"
+    if status in {
+        "rejected_validation",
+        "rejected_authority",
+        "rejected_conflict",
+    }:
+        return "rejected"
+    return "failed"
+
+
 def _omit_nulls(value: Any) -> Any:
     if isinstance(value, dict):
         return {
@@ -268,6 +280,7 @@ class ProvenanceFastMCP(FastMCP[Any]):
         result_refs: list[str],
         result_disposition: str | None,
         error_code: str | None,
+        domain_state: str | None = None,
     ) -> None:
         invocation = session.get(ToolInvocation, invocation_id)
         if invocation is None:
@@ -278,6 +291,8 @@ class ProvenanceFastMCP(FastMCP[Any]):
         invocation.normalized_argument_hash = normalized_argument_hash
         invocation.result_refs = result_refs
         invocation.result_disposition = result_disposition
+        invocation.transport_state = "completed"
+        invocation.domain_state = domain_state or _domain_state(status)
         invocation.error_code = error_code
         invocation.completed_at = utc_now()
 
@@ -333,7 +348,7 @@ class ProvenanceFastMCP(FastMCP[Any]):
                         status="rejected_authority",
                         normalized_argument_hash=normalized_hash,
                         result_refs=[],
-                        result_disposition=None,
+                        result_disposition="rejected_authority",
                         error_code="operator_utterance_authority_required",
                     )
                 else:
@@ -342,6 +357,11 @@ class ProvenanceFastMCP(FastMCP[Any]):
                         raise RuntimeError("ToolInvocation disappeared before authority binding")
                     bound_invocation.actor_ref = utterance.actor_ref
                     bound_invocation.utterance_refs = [utterance.ref_id]
+                    semantic_request_ref = normalized_arguments.get(
+                        "semantic_request_ref"
+                    )
+                    if isinstance(semantic_request_ref, str):
+                        bound_invocation.semantic_request_ref = semantic_request_ref
             if utterance is None:
                 raise ToolError(
                     "operator_utterance_authority_required: mutating Docket calls require "
@@ -359,7 +379,7 @@ class ProvenanceFastMCP(FastMCP[Any]):
                     status=_terminal_status(error_code),
                     normalized_argument_hash=normalized_hash,
                     result_refs=[],
-                    result_disposition=None,
+                    result_disposition=_terminal_status(error_code),
                     error_code=error_code[:128],
                 )
             raise
@@ -400,6 +420,15 @@ class ProvenanceFastMCP(FastMCP[Any]):
         result_disposition = (
             str(raw_disposition)[:64] if isinstance(raw_disposition, str) else None
         )
+        domain_state = _domain_state(status)
+        if name in INTERACTIVE_MUTATION_TOOLS and result_disposition is None:
+            # The durable result may have committed even if a faulty tool omitted
+            # its disposition. Preserve that uncertainty rather than calling it
+            # success or converting it into a fresh authority request.
+            result_disposition = "unknown"
+            domain_state = "unknown"
+        elif result_disposition is None and status != "succeeded":
+            result_disposition = status
         with session_scope() as session:
             self._finish_invocation(
                 session,
@@ -416,5 +445,6 @@ class ProvenanceFastMCP(FastMCP[Any]):
                 ),
                 result_disposition=result_disposition,
                 error_code=response_error_code,
+                domain_state=domain_state,
             )
         return result
