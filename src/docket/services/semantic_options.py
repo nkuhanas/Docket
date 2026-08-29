@@ -681,11 +681,13 @@ class SemanticOptionService:
                 affected_refs=[semantic_request.ref_id],
                 basis_refs=list(semantic_request.origin_utterance_refs),
                 data={
-                    "authority_scope_hash": selected_option.authority_scope_hash,
-                    "original_precondition_hash": selected_option.precondition_hash,
-                    "rebased_precondition_hash": execution_option.precondition_hash,
-                    "original_revision": selected_option.case_revision_ref,
-                    "rebased_revision": execution_option.case_revision_ref,
+                    "original_authority_scope_hash": (
+                        selected_option.authority_scope_hash
+                    ),
+                    "old_precondition_hash": selected_option.precondition_hash,
+                    "new_precondition_hash": execution_option.precondition_hash,
+                    "original_case_revision_ref": selected_option.case_revision_ref,
+                    "rebased_case_revision_ref": execution_option.case_revision_ref,
                     "semantic_scope_changed": False,
                 },
             )

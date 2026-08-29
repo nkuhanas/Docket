@@ -461,11 +461,11 @@ def test_old_option_safe_rebase_preserves_immutable_selection_evidence(
         assert changeset.precondition_hash == new_precondition_hash
         assert changeset.execution_binding_json["case_revision_ref"] == new_revision_ref
         assert audit.data == {
-            "authority_scope_hash": old_authority_hash,
-            "original_precondition_hash": old_precondition_hash,
-            "rebased_precondition_hash": new_precondition_hash,
-            "original_revision": old_revision_ref,
-            "rebased_revision": new_revision_ref,
+            "original_authority_scope_hash": old_authority_hash,
+            "old_precondition_hash": old_precondition_hash,
+            "new_precondition_hash": new_precondition_hash,
+            "original_case_revision_ref": old_revision_ref,
+            "rebased_case_revision_ref": new_revision_ref,
             "semantic_scope_changed": False,
         }
 
