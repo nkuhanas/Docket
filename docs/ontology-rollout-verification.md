@@ -46,6 +46,44 @@ The implementation preserves the 22-tool interactive and four-tool triage
 profiles. It introduces no direct case-mutation tool and no additional triage or
 provider authority.
 
+## Signed interactive-continuity amendment
+
+`ONT-DELTA-2026-08-28-INTERACTIVE-CONTINUITY` is a private signed amendment
+frozen at SHA-256
+`972784149dd2a219d027684a76f04fac37d8147e9656a3ff06326d883fd06579`.
+
+The first exact Discord sign-off attempt was durably captured as
+`utt_01M15DNA8XAKVDANT222F26HD0`, but the then-deployed eligible-artifact
+manifest did not yet contain the frozen amendment. Docket correctly created no
+Decision, although Hermes exposed the rejection only as a gateway reaction.
+
+Revision `9278391ef82a1b70fa9a422f83f2544f2f276ff3` registered the exact artifact
+against the existing August 27 ledger prerequisite and changed plugin `0.20.7`
+to provide bounded trusted success/rejection context to Hermes. It does not
+implement the amendment's persisted-option, authority-retry, mutation-schema,
+gateway-lifetime, stable-ingress, or drain-barrier behavior.
+
+After GitHub Actions run `33223214400` passed both required jobs, the supported
+deployment created
+`backups/docket-20260829T002503Z-9278391ef82a.dump`, retained
+`docket-docket:rollback-20260829T002503Z`, and installed image
+`sha256:58344f3999b14cd875a8e75441d7eee9e4e0af44a73304c9188b76473cc87cfc`.
+
+The normal Docket sign-off service then reprocessed the same immutable
+utterance; it created ledger-backed `specification_signoff` Decision
+`dec_01M15EHKNXVKRBM7MZ3FN39X3E` and AuditEvent
+`aud_01M15EHKNZR8EPCA1P306WMK6F`. The Decision has exactly that `utt_` as its
+basis, names the frozen hash, grants `architecture_authority = true`, and limits
+implementation authority to
+`interactive_authority_continuity_and_deployment_drain_amendment`. A second
+service invocation returned `replayed_request`; exactly one Decision exists.
+
+Post-deploy verification found Docket healthy at the expected source revision,
+Hermes running plugin `0.20.7`, no active provider operations, no pending outbox
+delivery, and no bounded post-deploy Docket/Hermes error. The amendment is now
+implementation-authoritative within its signed scope; its substantive behavior
+has not yet been implemented.
+
 ## Implemented persistence sequence
 
 The migration sequence is additive through `0041`:
