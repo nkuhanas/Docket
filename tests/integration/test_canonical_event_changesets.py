@@ -1,4 +1,5 @@
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import func, select
@@ -9,16 +10,21 @@ from docket.internal_api.schemas import OperatorUtteranceCapture
 from docket.models import (
     Account,
     Approval,
+    AttentionCase,
+    AttentionCaseRevision,
     CalendarLane,
     CanonicalEvent,
+    CaseItem,
     ChangeSet,
     Interaction,
     LaneRoutingDecision,
     Operation,
     ProviderEventBinding,
+    SemanticRequestAttempt,
 )
 from docket.providers.google.fake_calendar import FakeCalendarProvider
-from docket.schemas.authority import ChangeSetContent, StatementInput
+from docket.schemas.authority import ChangeSetContent, IntentSessionOpen, StatementInput
+from docket.services.intent_sessions import IntentSessionService
 from docket.services.interactive_authority import InteractiveAuthorityService
 from docket.services.operations import OperationRunner
 from docket.services.provenance import ProvenanceService
@@ -218,6 +224,200 @@ def test_rich_event_changeset_commits_event_route_and_provider_intents_without_a
         assert event_operation is not None and event_operation.status == "succeeded"
         assert binding is not None and binding.canonical_event_id == event.id
         assert session.scalar(select(func.count(Interaction.id))) == 0
+
+
+@pytest.mark.integration
+def test_package_pickup_case_reply_commits_event_route_and_resolution_first_try(
+    session_factory,
+) -> None:
+    settings = get_settings()
+    with session_factory.begin() as session:
+        account = Account(
+            provider="google",
+            external_account_id="package-pickup-account",
+            capabilities=["google_calendar"],
+            enabled=True,
+        )
+        session.add(account)
+        session.flush()
+        utterance_ref, request_key = _capture(
+            session,
+            message_id="1542802000000000003",
+            text="I'll grab it at 1 pm tomorrow, 15 minutes i guess",
+        )
+        lane = CalendarLane(
+            account_id=account.id,
+            lane="personal",
+            display_name="Personal",
+            color_hex="#8E24AA",
+            calendar_id="personal@example.com",
+            status="active",
+            basis_refs=[utterance_ref],
+            provenance_status="complete",
+        )
+        case = AttentionCase(
+            situation_key="package-pickup-pacheco-post",
+            title="Package ready for pickup at Pacheco Post",
+            summary="A package is waiting at Pacheco Post Mail Center.",
+            semantic_classes=["action_request"],
+            first_observed_at=datetime(2026, 8, 28, 20, 23, tzinfo=UTC),
+            last_observed_at=datetime(2026, 8, 28, 20, 23, tzinfo=UTC),
+        )
+        session.add_all([lane, case])
+        session.flush()
+        item = CaseItem(
+            attention_case_id=case.id,
+            item_key="pickup-decision",
+            item_type="event_candidate",
+            resolution_role="required",
+            basis_refs=[utterance_ref],
+        )
+        session.add(item)
+        session.flush()
+        revision = AttentionCaseRevision(
+            attention_case_id=case.id,
+            case_ref=case.ref_id,
+            revision=1,
+            title=case.title,
+            summary=case.summary,
+            semantic_classes=list(case.semantic_classes),
+            item_refs=[item.ref_id],
+            source_refs=[],
+            content_hash="4" * 64,
+        )
+        session.add(revision)
+        session.flush()
+        intent_session, created = IntentSessionService(session).open(
+            IntentSessionOpen(
+                source_utterance_ref=utterance_ref,
+                case_refs=[case.ref_id],
+                case_revision_refs=[revision.ref_id],
+            )
+        )
+        assert created is True
+
+        statement = StatementInput.model_validate(
+            {
+                "statement_kind": "package_pickup_plan",
+                "subject_refs": [case.ref_id],
+                "predicate": "pickup_time",
+                "value_json": {
+                    "start_local": "2026-08-29T13:00:00",
+                    "duration_minutes": 15,
+                },
+                "affected_fields": ["event", "case_status"],
+                "interpreter_version": "package-pickup-test-v1",
+            }
+        )
+        content = ChangeSetContent.model_validate(
+            {
+                "basis_refs": [utterance_ref],
+                "expected_versions": {case.ref_id: case.version},
+                "lane_changes": [
+                    {
+                        "mutation_type": "lane_routing_decision_create",
+                        "change_id": "route-package-pickup-personal",
+                        "action": "create",
+                        "object_type": "lane_routing_decision",
+                        "create_spec": {
+                            "lane_ref": lane.ref_id,
+                            "event_change_id": "create-package-pickup-event",
+                            "recurring_identity": "pacheco-post-package-pickup",
+                            "decision_kind": "explicit_operator",
+                            "operator_confirmed": True,
+                        },
+                        "affected_fields": ["lane"],
+                        "basis_refs": [utterance_ref],
+                    }
+                ],
+                "event_changes": [
+                    {
+                        "mutation_type": "canonical_event_create",
+                        "change_id": "create-package-pickup-event",
+                        "action": "create",
+                        "object_type": "canonical_event",
+                        "create_spec": {
+                            "title": "Pick up package at Pacheco Post",
+                            "lane_ref": lane.ref_id,
+                            "event_spec": {
+                                "title": "Pick up package at Pacheco Post",
+                                "calendar_lane": "personal",
+                                "timing": {
+                                    "kind": "timed",
+                                    "start_local": "2026-08-29T13:00:00",
+                                    "end_local": "2026-08-29T13:15:00",
+                                    "timezone": "America/Los_Angeles",
+                                },
+                                "location": "Pacheco Post",
+                                "reminder_plan": {
+                                    "delivery_channels": ["google_popup"],
+                                    "lead_seconds": [600],
+                                },
+                            },
+                        },
+                        "affected_fields": ["event", "lane", "time", "reminder"],
+                        "basis_refs": [utterance_ref],
+                    }
+                ],
+                "resolution_changes": [
+                    {
+                        "mutation_type": "attention_case_resolution",
+                        "change_id": "resolve-package-pickup-case",
+                        "action": "update",
+                        "object_type": "attention_case_resolution",
+                        "object_ref": case.ref_id,
+                        "case_revision_ref": revision.ref_id,
+                        "case_outcome": "resolved",
+                        "item_dispositions": [
+                            {"item_ref": item.ref_id, "disposition": "resolved"}
+                        ],
+                        "basis_refs": [utterance_ref],
+                    }
+                ],
+                "provider_intents": [
+                    {
+                        "intent_id": "project-package-pickup-event",
+                        "operation_type": "calendar_create_event",
+                        "provider_binding": f"account:{account.id}",
+                        "canonical_target_change_ids": [
+                            "create-package-pickup-event"
+                        ],
+                        "basis_refs": [utterance_ref],
+                        "idempotency_key": "package-pickup-first-attempt",
+                        "parameters": {},
+                    }
+                ],
+            }
+        )
+        result = InteractiveAuthorityService(session).process_turn(
+            utterance_ref=utterance_ref,
+            request_key=request_key,
+            actor_id=settings.operator_discord_user_id,
+            intent_session_ref=intent_session.ref_id,
+            expected_session_version=intent_session.version,
+            statements=[statement],
+            relations=[],
+            resolved_intent_json={"kind": "package_pickup_event"},
+            blocking_clarifications=[],
+            content=content,
+            changeset_ref=None,
+            expected_changeset_version=None,
+        )
+
+        assert result["ok"] is True
+        assert result["state"] == "committed"
+        assert result["disposition"] == "committed"
+        event = session.scalar(select(CanonicalEvent))
+        route = session.scalar(select(LaneRoutingDecision))
+        operation = session.scalar(select(Operation))
+        assert event is not None and route is not None and operation is not None
+        assert event.routing_decision_ref == route.ref_id
+        assert route.event_ref == event.ref_id
+        assert case.status == "resolved"
+        assert item.status == "resolved"
+        assert operation.canonical_target_refs == [event.ref_id]
+        assert session.scalar(select(func.count(ChangeSet.id))) == 1
+        assert session.scalar(select(func.count(SemanticRequestAttempt.id))) == 1
 
 
 @pytest.mark.integration
