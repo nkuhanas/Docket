@@ -228,6 +228,7 @@ class SemanticOptionSelection(InternalModel):
     option_token: str = Field(min_length=40, max_length=100)
     responded_at: datetime
     gateway_instance_ref: str | None = Field(default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
+    resume_authorized_execution: bool = False
 
 
 class GatewayLifetimeRegister(InternalModel):
@@ -271,6 +272,7 @@ class AgentResponseCapture(InternalModel):
     generated_at: datetime
     trace_id: UUID
     gateway_instance_ref: str | None = Field(default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
+    finalize_intent_turn: bool = True
 
 
 class AgentTurnNoResponse(InternalModel):

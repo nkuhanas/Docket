@@ -3,7 +3,7 @@ import uuid
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from starlette.requests import Request
 
 from docket.config import get_settings
@@ -25,7 +25,13 @@ from docket.internal_api.schemas import (
     SemanticOptionSelection,
     SpecificationSignoffCapture,
 )
-from docket.models import DeferredIngress, SemanticRequest
+from docket.models import (
+    AgentResponse,
+    DeferredIngress,
+    IntentSession,
+    SemanticRequest,
+    SemanticRequestAttempt,
+)
 from docket.models.base import utc_now
 from docket.providers.google.runtime import get_calendar_read_provider
 from docket.schemas.authority import ChangeSetContent
@@ -316,6 +322,42 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
             status_code=error_status,
             detail=exc.as_dict()["error"],
         ) from exc
+    retry_turn_id = (
+        f"semantic-option:{payload.discord_interaction_id}:retry:{payload.request_id}"
+    )
+    if payload.resume_authorized_execution and not selection.get("execution_ready"):
+        response_key = (
+            f"discord:{payload.guild_id}:{payload.channel_id}:"
+            f"{payload.discord_interaction_id}:response:{retry_turn_id}"
+        )
+        with session_scope() as session:
+            prior_retry_response = session.scalar(
+                select(AgentResponse).where(AgentResponse.response_key == response_key)
+            )
+        if prior_retry_response is not None:
+            commit_state = str(selection.get("commit_state") or "unknown")
+            disposition = (
+                "rejected_validation"
+                if commit_state == "blocked_validation"
+                else "rejected_conflict"
+                if commit_state == "blocked_conflict"
+                else "blocked_version"
+                if commit_state == "blocked_version"
+                else commit_state
+            )
+            return {
+                **selection,
+                "state": commit_state,
+                "disposition": disposition,
+                "execution": {
+                    "ok": commit_state == "committed",
+                    "state": commit_state,
+                    "disposition": disposition,
+                },
+                "response_ref": prior_retry_response.ref_id,
+                "response_text": prior_retry_response.verbatim_text,
+                "response_delivery_state": prior_retry_response.delivery_state,
+            }
     execution: dict[str, object]
     replayed_execution: dict[str, object] | None = None
     with session_scope() as session:
@@ -346,12 +388,40 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
     if replayed_execution is not None:
         execution = replayed_execution
     elif not selection.get("execution_ready"):
-        execution = {
-            "ok": True,
-            "state": "deferred",
-            "summary": "Decision is durably recorded and awaiting execution.",
-            "disposition": "execution_deferred",
-        }
+        commit_state = str(selection.get("commit_state") or "not_attempted")
+        if commit_state in {
+            "blocked_validation",
+            "blocked_conflict",
+            "blocked_version",
+            "failed",
+            "unknown",
+        }:
+            disposition = (
+                "rejected_conflict"
+                if commit_state == "blocked_conflict"
+                else "blocked_version"
+                if commit_state == "blocked_version"
+                else "rejected_validation"
+                if commit_state == "blocked_validation"
+                else commit_state
+            )
+            execution = {
+                "ok": False,
+                "state": commit_state,
+                "summary": "The prior attempt remains blocked; authority is preserved.",
+                "disposition": disposition,
+                "error": {
+                    "code": disposition,
+                    "message": "Docket has not committed the selected semantic scope.",
+                },
+            }
+        else:
+            execution = {
+                "ok": True,
+                "state": "deferred",
+                "summary": "Decision is durably recorded and awaiting execution.",
+                "disposition": "execution_deferred",
+            }
     else:
         try:
             compiled = ChangeSetContent.model_validate(selection["compiled_content"])
@@ -383,8 +453,18 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
                     )
                 )
                 if ingress is not None:
-                    ingress.status = "completed"
-                    ingress.completed_at = utc_now()
+                    if execution.get("state") == "committed":
+                        ingress.status = "completed"
+                        ingress.completed_at = utc_now()
+                        ingress.last_error_code = None
+                    else:
+                        ingress.status = "rejected"
+                        ingress.claimed_by_gateway_ref = None
+                        ingress.claim_token = None
+                        ingress.claimed_at = None
+                        ingress.last_error_code = str(
+                            execution.get("disposition", "unknown")
+                        )[:128]
                 lease_ref = selection.get("execution_lease_ref")
                 if isinstance(lease_ref, str):
                     ContinuityService(session).complete_execution_lease(
@@ -416,11 +496,63 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
                         .with_for_update()
                     )
                     if ingress is not None:
-                        ingress.status = "pending"
+                        ingress.status = "rejected"
                         ingress.claimed_by_gateway_ref = None
                         ingress.claim_token = None
                         ingress.claimed_at = None
                         ingress.last_error_code = str(error["code"])
+                    semantic_request = session.scalar(
+                        select(SemanticRequest)
+                        .where(
+                            SemanticRequest.ref_id == selection["semantic_request_ref"]
+                        )
+                        .with_for_update()
+                    )
+                    if (
+                        semantic_request is not None
+                        and semantic_request.authority_availability == "available"
+                    ):
+                        semantic_request.commit_state = "blocked_validation"
+                        intent_session = session.scalar(
+                            select(IntentSession).where(
+                                IntentSession.ref_id
+                                == semantic_request.intent_session_ref
+                            )
+                        )
+                        if intent_session is not None:
+                            intent_session.state = "ready"
+                            intent_session.semantic_state = "ready"
+                            intent_session.commit_state = "blocked_validation"
+                        attempt_number = int(
+                            session.scalar(
+                                select(
+                                    func.max(SemanticRequestAttempt.attempt_number)
+                                ).where(
+                                    SemanticRequestAttempt.semantic_request_id
+                                    == semantic_request.id
+                                )
+                            )
+                            or 0
+                        ) + 1
+                        session.add(
+                            SemanticRequestAttempt(
+                                semantic_request_id=semantic_request.id,
+                                semantic_request_ref=semantic_request.ref_id,
+                                attempt_number=attempt_number,
+                                authority_scope_hash=semantic_request.authority_scope_hash,
+                                precondition_hash=(
+                                    semantic_request.current_precondition_hash
+                                ),
+                                case_revision_ref=(
+                                    semantic_request.current_case_revision_ref
+                                ),
+                                gateway_instance_ref=payload.gateway_instance_ref,
+                                state="blocked_validation",
+                                error_code=str(error["code"])[:128],
+                                error_details_json={"error": error},
+                                completed_at=utc_now(),
+                            )
+                        )
                     ContinuityService(session).complete_execution_lease(
                         lease_ref,
                         metadata={"disposition": "rejected_validation"},
@@ -455,13 +587,18 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
                 source_message_id=payload.discord_interaction_id,
                 actor_id=payload.discord_user_id,
                 utterance_ref=str(selection["utterance_ref"]),
-                turn_id=f"semantic-option:{payload.discord_interaction_id}",
+                turn_id=(
+                    retry_turn_id
+                    if payload.resume_authorized_execution
+                    else f"semantic-option:{payload.discord_interaction_id}"
+                ),
                 session_id=str(selection["semantic_request_ref"]),
                 model_identifier="docket-deterministic-selection-v1",
                 verbatim_text=response_text,
                 generated_at=utc_now(),
                 trace_id=trace_id,
                 gateway_instance_ref=payload.gateway_instance_ref,
+                finalize_intent_turn=not payload.resume_authorized_execution,
             )
         )
     selection_affected = selection.get("affected_refs")

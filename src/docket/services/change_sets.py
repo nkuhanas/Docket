@@ -1245,8 +1245,34 @@ class ChangeSetService:
                 existing.intent_session_id != intent_session.id
                 or revision is None
                 or revision.parameter_hash != payload_hash
+                or existing.semantic_request_ref != request.semantic_request_ref
+                or existing.authority_scope_hash != request.authority_scope_hash
+                or existing.precondition_hash != request.precondition_hash
+                or existing.execution_binding_json != request.execution_binding
             ):
                 raise IdempotencyConflict(request.idempotency_key)
+            if request.semantic_request_ref is not None and existing.state != "committed":
+                errors = self._validate(intent_session, request.content, require_handlers=False)
+                self._apply_validation(intent_session, existing, errors)
+                self.session.add(
+                    AuditEvent(
+                        event_type="changeset.revalidated",
+                        entity_type="changeset",
+                        entity_id=existing.id,
+                        actor_type="docket_compiler",
+                        actor_id=None,
+                        request_id=None,
+                        primary_ref=existing.ref_id,
+                        affected_refs=[existing.ref_id, intent_session.ref_id],
+                        basis_refs=existing.basis_refs,
+                        data={
+                            "revision": existing.current_revision,
+                            "state": existing.state,
+                            "validation_error_count": len(errors),
+                            "semantic_request_ref": request.semantic_request_ref,
+                        },
+                    )
+                )
             return existing, False
         changeset = ChangeSet(
             intent_session_id=intent_session.id,

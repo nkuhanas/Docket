@@ -437,6 +437,9 @@ class SemanticOptionService:
             lease_ref, execution_ready = self._claim_selection_ingress(
                 ingress,
                 utterance=existing,
+                semantic_request=semantic_request,
+                allow_retry=request.resume_authorized_execution,
+                retry_request_id=request.request_id,
                 gateway_instance_ref=request.gateway_instance_ref,
             )
             return self._selection_result(
@@ -514,6 +517,9 @@ class SemanticOptionService:
         lease_ref, execution_ready = self._claim_selection_ingress(
             ingress,
             utterance=utterance,
+            semantic_request=semantic_request,
+            allow_retry=request.resume_authorized_execution,
+            retry_request_id=request.request_id,
             gateway_instance_ref=request.gateway_instance_ref,
         )
         projection.status = "selected"
@@ -607,10 +613,38 @@ class SemanticOptionService:
         ingress: DeferredIngress | None,
         *,
         utterance: OperatorUtterance,
+        semantic_request: SemanticRequest,
+        allow_retry: bool,
+        retry_request_id: uuid.UUID,
         gateway_instance_ref: str | None,
     ) -> tuple[str | None, bool]:
-        if ingress is None or ingress.status in {"completed", "rejected", "claimed"}:
+        if ingress is None or ingress.status in {"completed", "claimed"}:
             return None, False
+        if ingress.status == "rejected" and not allow_retry:
+            return None, False
+        if semantic_request.commit_state != "not_attempted" and not (
+            allow_retry
+            and semantic_request.authority_availability == "available"
+            and semantic_request.commit_state
+            in {
+                "blocked_validation",
+                "blocked_conflict",
+                "blocked_version",
+                "failed",
+                "unknown",
+            }
+        ):
+            return None, False
+        if allow_retry:
+            binding = ingress.selected_option_binding_json or {}
+            if binding.get("last_retry_request_id") == str(retry_request_id):
+                return None, False
+            ingress.selected_option_binding_json = {
+                **binding,
+                "last_retry_request_id": str(retry_request_id),
+            }
+            ingress.status = "pending"
+            ingress.last_error_code = None
         claim_token = uuid.uuid4()
         try:
             lease = ContinuityService(self.session).acquire_execution_lease(

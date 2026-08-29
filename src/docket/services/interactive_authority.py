@@ -209,8 +209,10 @@ class InteractiveAuthorityService:
                 ChangeSet.idempotency_key == f"{request_key}:changeset"
             )
         )
-        if replay is not None and (
-            changeset_ref is None or replay.ref_id == changeset_ref
+        if (
+            replay is not None
+            and (changeset_ref is None or replay.ref_id == changeset_ref)
+            and (replay.state == "committed" or semantic_request is None)
         ):
             return {
                 "ok": True,

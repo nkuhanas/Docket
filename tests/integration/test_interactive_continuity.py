@@ -81,6 +81,33 @@ def _entity_option(authority_ref: str) -> SemanticOptionDraft:
     )
 
 
+def _invalid_dependency_option(authority_ref: str) -> SemanticOptionDraft:
+    return SemanticOptionDraft.model_validate(
+        {
+            "option_id": "create-orphaned-institution",
+            "selection_authority_ref": authority_ref,
+            "content": {
+                "basis_refs": [authority_ref],
+                "registry_changes": [
+                    {
+                        "mutation_type": "entity_create",
+                        "change_id": "create-cal-poly",
+                        "action": "create",
+                        "object_type": "entity",
+                        "create_spec": {
+                            "entity_kind": "institution",
+                            "display_name": "Cal Poly",
+                            "parent_entity_change_id": "missing-parent",
+                        },
+                        "affected_fields": ["identity", "hierarchy"],
+                        "basis_refs": [authority_ref],
+                    }
+                ],
+            },
+        }
+    )
+
+
 @pytest.mark.integration
 def test_ingress_handoff_quiesces_and_regenerates_exact_semantic_options(
     session_factory,
@@ -273,6 +300,92 @@ def test_persisted_selection_compiles_once_and_preserves_exact_authority(
         assert session.scalar(select(func.count(ChangeSet.id))) == 1
         assert session.scalar(select(func.count(SemanticRequestAttempt.id))) == 1
         assert session.scalar(select(func.count(Entity.id))) == 1
+
+
+@pytest.mark.integration
+def test_selection_validation_failure_preserves_authority_without_duplicate_attempt(
+    session_factory,
+) -> None:
+    settings = get_settings()
+    with session_factory.begin() as session:
+        initial_ref = _capture_utterance(
+            session,
+            message_id="1542799000000000205",
+            text="Offer the Cal Poly creation choice.",
+        )
+        InteractiveAuthorityService(session).process_turn(
+            utterance_ref=initial_ref,
+            request_key=(
+                f"discord:{settings.discord_guild_id}:{settings.chat_channel_id}:"
+                "1542799000000000205:0"
+            ),
+            actor_id=settings.operator_discord_user_id,
+            intent_session_ref=None,
+            expected_session_version=None,
+            statements=[],
+            relations=[],
+            resolved_intent_json={"kind": "identity_clarification"},
+            blocking_clarifications=[
+                {
+                    "blocking": True,
+                    "code": "identity_resolution_required",
+                    "question": "Should Docket register Cal Poly?",
+                }
+            ],
+            content=None,
+            changeset_ref=None,
+            expected_changeset_version=None,
+            semantic_options=[_invalid_dependency_option(initial_ref)],
+        )
+        prompt = session.scalar(select(SemanticPromptProjection))
+        option = session.scalar(select(PersistedSemanticOption))
+        assert prompt is not None and option is not None
+        prompt.message_id = "1542799000000000206"
+        prompt.status = "delivered"
+        token = issue_semantic_option_token(
+            option_row_id=option.id,
+            projection_version=option.prompt_projection_version,
+            actor_id=settings.operator_discord_user_id,
+            expires_at=datetime.now(UTC) + timedelta(days=1),
+            signing_key=settings.read_secret(settings.interaction_signing_key_file).encode(),
+        )
+
+    payload = SemanticOptionSelection(
+        request_id=uuid.uuid4(),
+        discord_interaction_id="1542799000000000207",
+        discord_user_id=settings.operator_discord_user_id,
+        guild_id=settings.discord_guild_id,
+        channel_id=settings.chat_channel_id,
+        message_id="1542799000000000206",
+        option_token=token,
+        responded_at=datetime.now(UTC),
+    )
+    first = semantic_option_selection(payload)
+    second = semantic_option_selection(payload.model_copy(update={"request_id": uuid.uuid4()}))
+    assert first["state"] == second["state"] == "blocked_validation"
+    assert first["utterance_ref"] == second["utterance_ref"]
+    assert first["semantic_request_ref"] == second["semantic_request_ref"]
+
+    retry_payload = payload.model_copy(
+        update={
+            "request_id": uuid.uuid4(),
+            "resume_authorized_execution": True,
+        }
+    )
+    retry = semantic_option_selection(retry_payload)
+    retry_replay = semantic_option_selection(retry_payload)
+    assert retry["state"] == retry_replay["state"] == "blocked_validation"
+    assert retry["utterance_ref"] == first["utterance_ref"]
+    assert retry["semantic_request_ref"] == first["semantic_request_ref"]
+
+    with session_factory.begin() as session:
+        semantic_request = session.scalar(select(SemanticRequest))
+        assert semantic_request is not None
+        assert semantic_request.authority_availability == "available"
+        assert semantic_request.commit_state == "blocked_validation"
+        assert session.scalar(select(func.count(SemanticRequestAttempt.id))) == 2
+        assert session.scalar(select(func.count(OperatorUtterance.id))) == 2
+        assert session.scalar(select(func.count(Entity.id))) == 0
 
 
 @pytest.mark.integration

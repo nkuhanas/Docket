@@ -368,12 +368,13 @@ class ProvenanceService:
                 or existing.responds_to_utterance_refs != [utterance.ref_id]
             ):
                 raise IdempotencyConflict(response_key)
-            self._finalize_intent_turn(
-                utterance=utterance,
-                trace_id=request.trace_id,
-                response=existing,
-                response_disposition="final_response",
-            )
+            if request.finalize_intent_turn:
+                self._finalize_intent_turn(
+                    utterance=utterance,
+                    trace_id=request.trace_id,
+                    response=existing,
+                    response_disposition="final_response",
+                )
             return {
                 "ok": True,
                 "ref": existing.ref_id,
@@ -459,12 +460,13 @@ class ProvenanceService:
                 },
             )
         )
-        self._finalize_intent_turn(
-            utterance=utterance,
-            trace_id=request.trace_id,
-            response=response,
-            response_disposition="final_response",
-        )
+        if request.finalize_intent_turn:
+            self._finalize_intent_turn(
+                utterance=utterance,
+                trace_id=request.trace_id,
+                response=response,
+                response_disposition="final_response",
+            )
         return {
             "ok": True,
             "ref": response.ref_id,
