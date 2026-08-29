@@ -44,6 +44,20 @@ def plugin_module(monkeypatch):
     return module
 
 
+def test_repeated_plugin_loads_share_one_process_registration_key() -> None:
+    def load(name: str) -> ModuleType:
+        spec = importlib.util.spec_from_file_location(name, PLUGIN_PATH)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    first = load("docket_discord_plugin_first")
+    second = load("docket_discord_plugin_second")
+
+    assert first._GATEWAY_REGISTRATION_KEY == second._GATEWAY_REGISTRATION_KEY
+
+
 def test_plugin_accepts_version_bound_schedule_decision_token(plugin_module) -> None:
     approval_id = uuid.uuid4()
     projection_id = uuid.uuid4()

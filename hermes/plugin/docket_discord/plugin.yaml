@@ -1,5 +1,5 @@
 name: docket-discord
-version: 0.22.1
+version: 0.22.2
 description: Trusted Discord utterance, response, tool-call, projection, ChangeSet, and legacy-approval-drain bridge for Docket
 provides_hooks:
   - pre_gateway_dispatch

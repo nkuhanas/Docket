@@ -62,10 +62,31 @@ _LISTENER_CLIENT_ID: int | None = None
 _OPERATION_LOCKS: dict[str, threading.Lock] = {}
 _OPERATION_LOCKS_GUARD = threading.Lock()
 _MCP_TRACE_NAMESPACE = uuid.UUID("326f8ee5-f0d5-4d08-b777-31dbac1f8265")
+_GATEWAY_REGISTRATION_NAMESPACE = uuid.UUID("3d80955a-3bff-49ad-94f8-99df02d2b819")
 _DOCKET_TOOL_PREFIX = "mcp__docket__"
 _TOOL_CONTRACT_PATH = Path(__file__).resolve().parent / "contracts" / "interactive.md"
 _TOOL_CONTRACT_LIMIT = 24 * 1024
-_GATEWAY_REGISTRATION_KEY = uuid.uuid4()
+
+
+def _gateway_process_registration_key() -> uuid.UUID:
+    """Return one stable key across repeated plugin loads in this process."""
+    epoch = ""
+    try:
+        from gateway.drain_control import current_instantiation_epoch
+
+        epoch = current_instantiation_epoch()
+    except (ImportError, OSError):
+        pass
+    if not epoch:
+        try:
+            stat = Path(f"/proc/{os.getpid()}/stat").read_text(encoding="utf-8")
+            epoch = stat.rsplit(")", 1)[1].split()[19]
+        except (OSError, IndexError):
+            epoch = "process-local"
+    return uuid.uuid5(_GATEWAY_REGISTRATION_NAMESPACE, f"{epoch}:{os.getpid()}")
+
+
+_GATEWAY_REGISTRATION_KEY = _gateway_process_registration_key()
 _GATEWAY_INSTANCE_REF: str | None = None
 _GATEWAY_LIFETIME_LOCK = threading.Lock()
 _GATEWAY_HEARTBEAT_STARTED = False
@@ -274,6 +295,11 @@ def _gateway_heartbeat_worker() -> None:
                 method="PUT",
                 timeout=5,
             )
+        except PluginAPIError as exc:
+            if exc.code == "gateway_lifetime_fenced":
+                logger.info("Docket gateway lifetime was fenced by its replacement")
+                return
+            logger.exception("Docket gateway lifetime heartbeat failed")
         except Exception:
             logger.exception("Docket gateway lifetime heartbeat failed")
 
