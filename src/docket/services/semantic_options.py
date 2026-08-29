@@ -78,7 +78,10 @@ def complete_selection_provenance(template: dict[str, Any], utterance_ref: str) 
     return ChangeSetContent.model_validate(completed).model_dump(mode="json")
 
 
-def _authority_scope(content: dict[str, Any], exclusions: list[str]) -> dict[str, Any]:
+def semantic_authority_scope(
+    content: dict[str, Any], exclusions: list[str]
+) -> dict[str, Any]:
+    """Return the execution-identifier-free semantic scope for a ChangeSet."""
     evidence_keys = {
         "basis_refs",
         "source_refs",
@@ -256,7 +259,7 @@ class SemanticOptionService:
                     code="selection_authority_slot_missing",
                     message="Option did not contain a replaceable selection authority slot.",
                 )
-            scope = _authority_scope(template, draft.explicit_exclusions)
+            scope = semantic_authority_scope(template, draft.explicit_exclusions)
             preconditions = {
                 "expected_versions": content.get("expected_versions", {}),
                 "case_ref": case_ref,

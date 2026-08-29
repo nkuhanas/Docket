@@ -18,6 +18,8 @@ from docket.models import (
     IntentTurn,
     InterpretedStatement,
     OperatorUtterance,
+    SemanticRequest,
+    SemanticRequestAttempt,
 )
 from docket.schemas.authority import (
     ChangeSetContent,
@@ -233,6 +235,140 @@ def test_dependency_cycle_blocks_before_any_handler_runs(session_factory) -> Non
             for error in result["changeset"]["validation_errors"]
         )
         assert applied == []
+
+
+@pytest.mark.integration
+def test_freeform_failed_draft_replay_stays_failed_and_rebases_same_request(
+    session_factory,
+) -> None:
+    settings = get_settings()
+    with session_factory.begin() as session:
+        entity = Entity(
+            entity_class="organization",
+            canonical_name="Pacheco Post",
+            normalized_name="pacheco post",
+            registration_state="registered",
+            status="active",
+            attributes={},
+            authority="operator",
+        )
+        session.add(entity)
+        session.flush()
+        utterance_ref = _capture_utterance(
+            session,
+            message_id="1542799000000000098",
+            text="Rename Pacheco Post to Pacheco Post Mail Center.",
+        )
+        request_key = (
+            f"discord:{settings.discord_guild_id}:{settings.chat_channel_id}:"
+            "1542799000000000098:0"
+        )
+
+        def content(expected_version: int) -> ChangeSetContent:
+            return ChangeSetContent.model_validate(
+                {
+                    "basis_refs": [utterance_ref],
+                    "expected_versions": {entity.ref_id: expected_version},
+                    "registry_changes": [
+                        {
+                            "mutation_type": "entity_modify",
+                            "change_id": "rename-pacheco-post",
+                            "action": "update",
+                            "object_type": "entity",
+                            "object_ref": entity.ref_id,
+                            "payload": {
+                                "display_name": "Pacheco Post Mail Center"
+                            },
+                            "affected_fields": ["display_name"],
+                            "basis_refs": [utterance_ref],
+                        }
+                    ],
+                }
+            )
+
+        service = InteractiveAuthorityService(session)
+        first = service.process_turn(
+            utterance_ref=utterance_ref,
+            request_key=request_key,
+            actor_id=settings.operator_discord_user_id,
+            intent_session_ref=None,
+            expected_session_version=None,
+            statements=[],
+            relations=[],
+            resolved_intent_json={"kind": "rename_entity"},
+            blocking_clarifications=[],
+            content=content(2),
+            changeset_ref=None,
+            expected_changeset_version=None,
+        )
+        assert first["ok"] is False
+        assert first["state"] == "blocked_version"
+        assert first["disposition"] == "blocked_version"
+        semantic_request_ref = first["semantic_request_ref"]
+        assert semantic_request_ref.startswith("sreq_")
+
+        replay = service.process_turn(
+            utterance_ref=utterance_ref,
+            request_key=request_key,
+            actor_id=settings.operator_discord_user_id,
+            intent_session_ref=None,
+            expected_session_version=None,
+            statements=[],
+            relations=[],
+            resolved_intent_json={"kind": "rename_entity"},
+            blocking_clarifications=[],
+            content=content(2),
+            changeset_ref=None,
+            expected_changeset_version=None,
+        )
+        assert replay["ok"] is False
+        assert replay["state"] == "blocked_version"
+        assert replay["disposition"] == "blocked_version"
+        assert replay["semantic_request_ref"] == semantic_request_ref
+
+        retry = service.process_turn(
+            utterance_ref=utterance_ref,
+            request_key=request_key,
+            actor_id=settings.operator_discord_user_id,
+            intent_session_ref=first["intent_session"]["ref"],
+            expected_session_version=first["intent_session"]["version"],
+            statements=[],
+            relations=[],
+            resolved_intent_json={"kind": "rename_entity"},
+            blocking_clarifications=[],
+            content=content(1),
+            changeset_ref=first["changeset"]["ref"],
+            expected_changeset_version=first["changeset"]["version"],
+        )
+        assert retry["state"] == "committed"
+        assert retry["semantic_request_ref"] == semantic_request_ref
+        assert retry["precondition_hash"] != first["precondition_hash"]
+        assert entity.canonical_name == "Pacheco Post Mail Center"
+
+        semantic_request = session.scalar(
+            select(SemanticRequest).where(
+                SemanticRequest.ref_id == semantic_request_ref
+            )
+        )
+        attempts = list(
+            session.scalars(
+                select(SemanticRequestAttempt).where(
+                    SemanticRequestAttempt.semantic_request_ref
+                    == semantic_request_ref
+                )
+            )
+        )
+        changeset = session.scalar(select(ChangeSet))
+        assert semantic_request is not None
+        assert semantic_request.authority_availability == "consumed_committed"
+        assert semantic_request.commit_state == "committed"
+        assert [attempt.state for attempt in attempts] == [
+            "blocked_version",
+            "committed",
+        ]
+        assert changeset is not None and changeset.state == "committed"
+        assert changeset.precondition_hash == retry["precondition_hash"]
+        assert session.scalar(select(func.count()).select_from(ChangeSetRevision)) == 2
 
 
 @pytest.mark.integration

@@ -24,6 +24,7 @@ from docket.models import (
     LaneRoutingDecision,
     OperatorUtterance,
     Relationship,
+    SemanticRequest,
 )
 from docket.models.base import utc_now
 from docket.schemas.authority import (
@@ -1334,6 +1335,39 @@ class ChangeSetService:
                 code="intent_session_not_found",
                 message="ChangeSet lost its IntentSession binding.",
             )
+        if request.semantic_request_ref is not None:
+            semantic_request = self.session.scalar(
+                select(SemanticRequest).where(
+                    SemanticRequest.ref_id == request.semantic_request_ref,
+                    SemanticRequest.intent_session_ref == intent_session.ref_id,
+                    SemanticRequest.authority_scope_hash
+                    == request.authority_scope_hash,
+                )
+            )
+            if semantic_request is None:
+                raise DocketError(
+                    code="semantic_request_binding_mismatch",
+                    message="ChangeSet revision does not match its SemanticRequest.",
+                )
+            if changeset.semantic_request_ref != semantic_request.ref_id:
+                prior_request = (
+                    self.session.scalar(
+                        select(SemanticRequest).where(
+                            SemanticRequest.ref_id == changeset.semantic_request_ref
+                        )
+                    )
+                    if changeset.semantic_request_ref is not None
+                    else None
+                )
+                if (
+                    prior_request is not None
+                    and prior_request.authority_availability == "available"
+                ):
+                    prior_request.authority_availability = "superseded"
+            changeset.semantic_request_ref = semantic_request.ref_id
+            changeset.authority_scope_hash = semantic_request.authority_scope_hash
+            changeset.precondition_hash = request.precondition_hash
+            changeset.execution_binding_json = dict(request.execution_binding)
         next_revision = changeset.current_revision + 1
         self._sync_snapshot(changeset, request.content)
         changeset.current_revision = next_revision

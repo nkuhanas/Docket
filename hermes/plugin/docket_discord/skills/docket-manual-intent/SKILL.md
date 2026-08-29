@@ -206,9 +206,12 @@ interactive IntentSession through its exact trusted revision binding.
 
 `committed` means canonical state and provider intents are durable; it does not
 mean the provider call has completed. `needs_clarification` means the session and
-evidence are preserved. `replayed_request` is the same idempotent result. Follow
-the compact `next` field and public refs. Do not reproduce raw provenance chains,
-tool transcripts, or provider payloads in chat.
+evidence are preserved. `replayed_request` is only a replay of an already terminal
+successful/no-op result. A duplicate failed draft remains failed: follow its
+`next.changeset_ref` and `expected_changeset_version`, revise that exact ChangeSet,
+and preserve the returned `semantic_request_ref`. Follow compact public refs; do
+not reproduce raw provenance chains, tool transcripts, or provider payloads in
+chat.
 
 Tool transport completion and Docket domain success are different. Treat a durable
 `call_` with rejected or failed domain state as unsuccessful even when MCP transport

@@ -805,6 +805,23 @@ class ChangeSetRevise(StrictModel):
     changeset_ref: ChangeSetRef
     expected_version: int = Field(ge=1)
     content: ChangeSetContent
+    semantic_request_ref: SemanticRequestRef | None = None
+    authority_scope_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    precondition_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    execution_binding: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def continuity_fields_are_complete(self) -> ChangeSetRevise:
+        values = (
+            self.semantic_request_ref,
+            self.authority_scope_hash,
+            self.precondition_hash,
+        )
+        if any(value is not None for value in values) and not all(
+            value is not None for value in values
+        ):
+            raise ValueError("continuity fields must be supplied together")
+        return self
 
 
 class ChangeSetCommit(StrictModel):

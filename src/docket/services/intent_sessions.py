@@ -258,6 +258,7 @@ class IntentSessionService:
             "trusted_context_refs": intent_session.trusted_context_refs,
             "resolved_intent": intent_session.resolved_intent_json,
             "blocking_clarifications": intent_session.blocking_clarifications,
+            "semantic_request_ref": intent_session.semantic_request_ref,
             "committed_changeset_ref": intent_session.committed_changeset_ref,
             "turns": [
                 {

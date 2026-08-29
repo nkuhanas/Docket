@@ -15,7 +15,7 @@ from docket.database import session_scope
 from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
 from docket.domain.public_refs import is_public_ref
-from docket.models import OperatorUtterance, ToolInvocation
+from docket.models import OperatorUtterance, SemanticRequestAttempt, ToolInvocation
 from docket.models.base import utc_now
 from docket.services.continuity import ContinuityService
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash
@@ -274,6 +274,7 @@ class ProvenanceFastMCP(FastMCP[Any]):
         result_disposition: str | None,
         error_code: str | None,
         domain_state: str | None = None,
+        semantic_request_ref: str | None = None,
     ) -> None:
         invocation = session.get(ToolInvocation, invocation_id)
         if invocation is None:
@@ -288,6 +289,20 @@ class ProvenanceFastMCP(FastMCP[Any]):
         invocation.domain_state = domain_state or _domain_state(status)
         invocation.error_code = error_code
         invocation.completed_at = utc_now()
+        if semantic_request_ref is not None:
+            invocation.semantic_request_ref = semantic_request_ref
+            attempt = session.scalar(
+                select(SemanticRequestAttempt)
+                .where(
+                    SemanticRequestAttempt.semantic_request_ref
+                    == semantic_request_ref,
+                    SemanticRequestAttempt.tool_call_ref.is_(None),
+                )
+                .order_by(SemanticRequestAttempt.attempt_number.desc())
+                .with_for_update()
+            )
+            if attempt is not None:
+                attempt.tool_call_ref = invocation.ref_id
 
     async def call_tool(
         self,
@@ -440,6 +455,14 @@ class ProvenanceFastMCP(FastMCP[Any]):
         )
         raw_disposition = envelope.get("disposition") if envelope is not None else None
         result_disposition = str(raw_disposition)[:64] if isinstance(raw_disposition, str) else None
+        raw_semantic_request_ref = (
+            envelope.get("semantic_request_ref") if envelope is not None else None
+        )
+        result_semantic_request_ref = (
+            str(raw_semantic_request_ref)
+            if isinstance(raw_semantic_request_ref, str)
+            else None
+        )
         domain_state = _domain_state(status)
         if name in INTERACTIVE_MUTATION_TOOLS and result_disposition is None:
             # The durable result may have committed even if a faulty tool omitted
@@ -462,6 +485,7 @@ class ProvenanceFastMCP(FastMCP[Any]):
                 result_disposition=result_disposition,
                 error_code=response_error_code,
                 domain_state=domain_state,
+                semantic_request_ref=result_semantic_request_ref,
             )
             if execution_lease_ref is not None:
                 ContinuityService(session).complete_execution_lease(

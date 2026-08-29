@@ -6,11 +6,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from docket.config import get_settings
+from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
 from docket.models import (
     AttentionCase,
+    AuditEvent,
     CaseItem,
     ChangeSet,
+    IntentSession,
     OperatorUtterance,
     PersistedSemanticOption,
     SemanticRequest,
@@ -50,6 +53,7 @@ from docket.services.semantic_options import (
     CURRENT_SELECTION_UTTERANCE,
     SemanticOptionService,
     complete_selection_provenance,
+    semantic_authority_scope,
 )
 
 
@@ -112,6 +116,150 @@ class InteractiveAuthorityService:
             )
         return utterance
 
+    @staticmethod
+    def _freeform_scope(
+        content: ChangeSetContent,
+        resolved_intent_json: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "resolved_intent": resolved_intent_json,
+            **semantic_authority_scope(content.model_dump(mode="json"), []),
+        }
+
+    @staticmethod
+    def _freeform_preconditions(
+        content: ChangeSetContent,
+        intent_session: IntentSession,
+    ) -> dict[str, Any]:
+        return {
+            "expected_versions": content.expected_versions,
+            "case_refs": list(intent_session.case_refs),
+            "case_revision_refs": list(intent_session.case_revision_refs),
+        }
+
+    def _ensure_freeform_semantic_request(
+        self,
+        *,
+        utterance: OperatorUtterance,
+        request_key: str,
+        intent_session: IntentSession,
+        content: ChangeSetContent,
+        resolved_intent_json: dict[str, Any],
+    ) -> SemanticRequest:
+        scope = self._freeform_scope(content, resolved_intent_json)
+        authority_scope_hash = sha256_json(scope)
+        preconditions = self._freeform_preconditions(content, intent_session)
+        precondition_hash = sha256_json(preconditions)
+        semantic_request = self.session.scalar(
+            select(SemanticRequest).where(
+                SemanticRequest.intent_session_ref == intent_session.ref_id,
+                SemanticRequest.authority_scope_hash == authority_scope_hash,
+            )
+        )
+        if semantic_request is None:
+            semantic_request = SemanticRequest(
+                intent_session_id=intent_session.id,
+                intent_session_ref=intent_session.ref_id,
+                authority_scope_hash=authority_scope_hash,
+                current_precondition_hash=precondition_hash,
+                origin_utterance_refs=[utterance.ref_id],
+                selected_option_binding={
+                    "kind": "freeform_turn",
+                    "request_key": request_key,
+                    "scope": scope,
+                },
+                authority_availability="available",
+                commit_state="not_attempted",
+                current_case_revision_ref=(
+                    intent_session.case_revision_refs[0]
+                    if len(intent_session.case_revision_refs) == 1
+                    else None
+                ),
+                symbolic_substitutions_json={},
+            )
+            self.session.add(semantic_request)
+            self.session.flush()
+            self.session.add(
+                AuditEvent(
+                    event_type="semantic_request.created",
+                    entity_type="semantic_request",
+                    entity_id=semantic_request.id,
+                    actor_type="operator",
+                    actor_id=get_settings().operator_discord_user_id,
+                    request_id=None,
+                    primary_ref=semantic_request.ref_id,
+                    affected_refs=[semantic_request.ref_id, intent_session.ref_id],
+                    basis_refs=[utterance.ref_id],
+                    data={
+                        "kind": "freeform_turn",
+                        "authority_scope_hash": authority_scope_hash,
+                        "precondition_hash": precondition_hash,
+                    },
+                )
+            )
+        elif utterance.ref_id not in semantic_request.origin_utterance_refs:
+            raise DocketError(
+                code="semantic_request_binding_mismatch",
+                message="Freeform retry does not originate from the authorized utterance.",
+            )
+        if semantic_request.current_precondition_hash != precondition_hash:
+            old_precondition_hash = semantic_request.current_precondition_hash
+            semantic_request.current_precondition_hash = precondition_hash
+            semantic_request.current_case_revision_ref = (
+                intent_session.case_revision_refs[0]
+                if len(intent_session.case_revision_refs) == 1
+                else None
+            )
+            self.session.add(
+                AuditEvent(
+                    event_type="semantic_request.safely_rebased",
+                    entity_type="semantic_request",
+                    entity_id=semantic_request.id,
+                    actor_type="docket_compiler",
+                    actor_id=None,
+                    request_id=None,
+                    primary_ref=semantic_request.ref_id,
+                    affected_refs=[semantic_request.ref_id, intent_session.ref_id],
+                    basis_refs=list(semantic_request.origin_utterance_refs),
+                    data={
+                        "original_authority_scope_hash": authority_scope_hash,
+                        "old_precondition_hash": old_precondition_hash,
+                        "new_precondition_hash": precondition_hash,
+                        "semantic_scope_changed": False,
+                    },
+                )
+            )
+        intent_session.semantic_request_ref = semantic_request.ref_id
+        return semantic_request
+
+    def _start_semantic_attempt(
+        self,
+        *,
+        semantic_request: SemanticRequest,
+        gateway_instance_ref: str | None,
+    ) -> SemanticRequestAttempt:
+        next_attempt = int(
+            self.session.scalar(
+                select(func.max(SemanticRequestAttempt.attempt_number)).where(
+                    SemanticRequestAttempt.semantic_request_id == semantic_request.id
+                )
+            )
+            or 0
+        ) + 1
+        attempt = SemanticRequestAttempt(
+            semantic_request_id=semantic_request.id,
+            semantic_request_ref=semantic_request.ref_id,
+            attempt_number=next_attempt,
+            authority_scope_hash=semantic_request.authority_scope_hash,
+            precondition_hash=semantic_request.current_precondition_hash,
+            case_revision_ref=semantic_request.current_case_revision_ref,
+            gateway_instance_ref=gateway_instance_ref,
+            state="pending",
+        )
+        self.session.add(attempt)
+        semantic_request.commit_state = "pending"
+        return attempt
+
     def process_turn(
         self,
         *,
@@ -162,7 +310,6 @@ class InteractiveAuthorityService:
                 semantic_request is None
                 or semantic_request.intent_session_ref != intent_session_ref
                 or semantic_request.authority_scope_hash != authority_scope_hash
-                or semantic_request.current_precondition_hash != precondition_hash
                 or utterance.ref_id not in semantic_request.origin_utterance_refs
                 or semantic_request.authority_availability != "available"
             ):
@@ -171,60 +318,93 @@ class InteractiveAuthorityService:
                     message="Execution does not match the available selected authority scope.",
                 )
             binding = semantic_request.selected_option_binding or {}
-            option = self.session.scalar(
-                select(PersistedSemanticOption).where(
-                    PersistedSemanticOption.prompt_projection_ref
-                    == binding.get(
-                        "execution_prompt_projection_ref",
-                        binding.get("prompt_projection_ref"),
-                    ),
-                    PersistedSemanticOption.prompt_projection_version
-                    == binding.get(
-                        "execution_prompt_projection_version",
-                        binding.get("prompt_projection_version"),
-                    ),
-                    PersistedSemanticOption.option_id == binding.get("option_id"),
-                    PersistedSemanticOption.authority_scope_hash == authority_scope_hash,
-                    PersistedSemanticOption.precondition_hash == precondition_hash,
+            if binding.get("kind") == "freeform_turn":
+                bound_session = self.session.get(
+                    IntentSession, semantic_request.intent_session_id
                 )
-            )
-            if option is None or complete_selection_provenance(
-                option.compilation_template_json, utterance.ref_id
-            ) != content.model_dump(mode="json"):
-                raise DocketError(
-                    code="semantic_request_scope_mismatch",
-                    message="Submitted ChangeSet differs from the exact persisted option scope.",
+                if bound_session is None:
+                    raise DocketError(
+                        code="intent_session_not_found",
+                        message="SemanticRequest lost its IntentSession binding.",
+                    )
+                calculated_scope_hash = sha256_json(
+                    self._freeform_scope(content, resolved_intent_json)
                 )
-            next_attempt = int(
-                self.session.scalar(
-                    select(func.max(SemanticRequestAttempt.attempt_number)).where(
-                        SemanticRequestAttempt.semantic_request_id == semantic_request.id
+                if calculated_scope_hash != semantic_request.authority_scope_hash:
+                    raise DocketError(
+                        code="semantic_request_scope_mismatch",
+                        message=(
+                            "Submitted ChangeSet changes the authorized freeform "
+                            "semantic scope."
+                        ),
+                    )
+                if precondition_hash != semantic_request.current_precondition_hash:
+                    raise DocketError(
+                        code="semantic_request_binding_mismatch",
+                        message="Freeform retry did not name the current preconditions.",
+                    )
+                semantic_request = self._ensure_freeform_semantic_request(
+                    utterance=utterance,
+                    request_key=request_key,
+                    intent_session=bound_session,
+                    content=content,
+                    resolved_intent_json=resolved_intent_json,
+                )
+                authority_scope_hash = semantic_request.authority_scope_hash
+                precondition_hash = semantic_request.current_precondition_hash
+            else:
+                if semantic_request.current_precondition_hash != precondition_hash:
+                    raise DocketError(
+                        code="semantic_request_binding_mismatch",
+                        message="Selection execution preconditions no longer match.",
+                    )
+                option = self.session.scalar(
+                    select(PersistedSemanticOption).where(
+                        PersistedSemanticOption.prompt_projection_ref
+                        == binding.get(
+                            "execution_prompt_projection_ref",
+                            binding.get("prompt_projection_ref"),
+                        ),
+                        PersistedSemanticOption.prompt_projection_version
+                        == binding.get(
+                            "execution_prompt_projection_version",
+                            binding.get("prompt_projection_version"),
+                        ),
+                        PersistedSemanticOption.option_id == binding.get("option_id"),
+                        PersistedSemanticOption.authority_scope_hash
+                        == authority_scope_hash,
+                        PersistedSemanticOption.precondition_hash == precondition_hash,
                     )
                 )
-                or 0
-            ) + 1
-            semantic_attempt = SemanticRequestAttempt(
-                semantic_request_id=semantic_request.id,
-                semantic_request_ref=semantic_request.ref_id,
-                attempt_number=next_attempt,
-                authority_scope_hash=authority_scope_hash,
-                precondition_hash=precondition_hash,
-                case_revision_ref=semantic_request.current_case_revision_ref,
+                if option is None or complete_selection_provenance(
+                    option.compilation_template_json, utterance.ref_id
+                ) != content.model_dump(mode="json"):
+                    raise DocketError(
+                        code="semantic_request_scope_mismatch",
+                        message=(
+                            "Submitted ChangeSet differs from the exact persisted "
+                            "option scope."
+                        ),
+                    )
+            semantic_attempt = self._start_semantic_attempt(
+                semantic_request=semantic_request,
                 gateway_instance_ref=gateway_instance_ref,
-                state="pending",
             )
-            self.session.add(semantic_attempt)
-            semantic_request.commit_state = "pending"
         replay = self.session.scalar(
             select(ChangeSet).where(
                 ChangeSet.idempotency_key == f"{request_key}:changeset"
             )
         )
-        if (
-            replay is not None
-            and (changeset_ref is None or replay.ref_id == changeset_ref)
-            and (replay.state == "committed" or semantic_request is None)
-        ):
+        if replay is not None and replay.state == "committed":
+            replay_request = (
+                self.session.scalar(
+                    select(SemanticRequest).where(
+                        SemanticRequest.ref_id == replay.semantic_request_ref
+                    )
+                )
+                if replay.semantic_request_ref is not None
+                else None
+            )
             return {
                 "ok": True,
                 "ref": replay.ref_id,
@@ -232,14 +412,81 @@ class InteractiveAuthorityService:
                 "summary": "Replayed the existing durable ChangeSet result.",
                 "affected_refs": [],
                 "basis_refs": replay.basis_refs,
-                "next": (
-                    None
-                    if replay.state == "committed"
-                    else {"clarifications": replay.validation_errors}
-                ),
+                "next": None,
                 "warnings": [],
                 "disposition": "replayed_request",
                 "intent_session_ref": replay.intent_session_ref,
+                "semantic_request_ref": replay.semantic_request_ref,
+                "authority_scope_hash": (
+                    replay_request.authority_scope_hash
+                    if replay_request is not None
+                    else None
+                ),
+                "precondition_hash": (
+                    replay_request.current_precondition_hash
+                    if replay_request is not None
+                    else None
+                ),
+            }
+        if (
+            replay is not None
+            and changeset_ref is None
+            and semantic_request is None
+        ):
+            replay_session = self.session.get(IntentSession, replay.intent_session_id)
+            commit_state = (
+                replay_session.commit_state
+                if replay_session is not None
+                else "unknown"
+            )
+            disposition = (
+                "blocked_version"
+                if commit_state == "blocked_version"
+                else "rejected_conflict"
+                if commit_state == "blocked_conflict"
+                else "rejected_validation"
+                if replay.validation_errors
+                else "unknown"
+            )
+            replay_request = (
+                self.session.scalar(
+                    select(SemanticRequest).where(
+                        SemanticRequest.ref_id == replay.semantic_request_ref
+                    )
+                )
+                if replay.semantic_request_ref is not None
+                else None
+            )
+            return {
+                "ok": False,
+                "ref": replay.ref_id,
+                "state": commit_state,
+                "error": {
+                    "code": disposition,
+                    "message": "The existing durable ChangeSet did not commit.",
+                    "details": {"errors": replay.validation_errors},
+                },
+                "affected_refs": [replay.ref_id, replay.intent_session_ref],
+                "basis_refs": replay.basis_refs,
+                "next": {
+                    "action": "revise_failed_changeset",
+                    "changeset_ref": replay.ref_id,
+                    "expected_changeset_version": replay.version,
+                },
+                "warnings": ["duplicate_delivery_of_failed_request"],
+                "disposition": disposition,
+                "intent_session_ref": replay.intent_session_ref,
+                "semantic_request_ref": replay.semantic_request_ref,
+                "authority_scope_hash": (
+                    replay_request.authority_scope_hash
+                    if replay_request is not None
+                    else None
+                ),
+                "precondition_hash": (
+                    replay_request.current_precondition_hash
+                    if replay_request is not None
+                    else None
+                ),
             }
         intent_service = IntentSessionService(self.session)
         if intent_session_ref is None:
@@ -269,6 +516,35 @@ class InteractiveAuthorityService:
                         "current_version": intent_session.version,
                     },
                 )
+        if (
+            semantic_request is None
+            and content is not None
+            and not blocking_clarifications
+        ):
+            if replay is not None and replay.semantic_request_ref is not None:
+                semantic_request = self.session.scalar(
+                    select(SemanticRequest).where(
+                        SemanticRequest.ref_id == replay.semantic_request_ref
+                    )
+                )
+                if semantic_request is None:
+                    raise DocketError(
+                        code="semantic_request_not_found",
+                        message="Failed ChangeSet lost its SemanticRequest lineage.",
+                    )
+            semantic_request = self._ensure_freeform_semantic_request(
+                utterance=utterance,
+                request_key=request_key,
+                intent_session=intent_session,
+                content=content,
+                resolved_intent_json=resolved_intent_json,
+            )
+            authority_scope_hash = semantic_request.authority_scope_hash
+            precondition_hash = semantic_request.current_precondition_hash
+            semantic_attempt = self._start_semantic_attempt(
+                semantic_request=semantic_request,
+                gateway_instance_ref=gateway_instance_ref,
+            )
         if semantic_request is not None and content is not None:
             selected_binding_statements = IdentityBindingConflictCompiler(
                 self.session
@@ -302,6 +578,8 @@ class InteractiveAuthorityService:
                 authority_substitutions=(
                     {CURRENT_SELECTION_UTTERANCE: utterance.ref_id}
                     if semantic_request is not None
+                    and (semantic_request.selected_option_binding or {}).get("kind")
+                    != "freeform_turn"
                     else {}
                 ),
                 gateway_instance_ref=gateway_instance_ref,
@@ -413,6 +691,9 @@ class InteractiveAuthorityService:
                         {
                             "selection_utterance_ref": utterance.ref_id,
                             "case_revision_ref": semantic_request.current_case_revision_ref,
+                            "kind": (
+                                semantic_request.selected_option_binding or {}
+                            ).get("kind", "selected_option"),
                         }
                         if semantic_request is not None
                         else {}
@@ -430,6 +711,26 @@ class InteractiveAuthorityService:
                     changeset_ref=changeset_ref,
                     expected_version=expected_changeset_version,
                     content=content,
+                    semantic_request_ref=(
+                        semantic_request.ref_id
+                        if semantic_request is not None
+                        else None
+                    ),
+                    authority_scope_hash=authority_scope_hash,
+                    precondition_hash=precondition_hash,
+                    execution_binding=(
+                        {
+                            "selection_utterance_ref": utterance.ref_id,
+                            "case_revision_ref": (
+                                semantic_request.current_case_revision_ref
+                            ),
+                            "kind": (
+                                semantic_request.selected_option_binding or {}
+                            ).get("kind", "selected_option"),
+                        }
+                        if semantic_request is not None
+                        else {}
+                    ),
                 )
             )
         if changeset.state != "validated":
@@ -454,7 +755,12 @@ class InteractiveAuthorityService:
                 ),
                 None,
             )
-            if semantic_request is not None and selected_conflict_error is not None:
+            if (
+                semantic_request is not None
+                and (semantic_request.selected_option_binding or {}).get("kind")
+                != "freeform_turn"
+                and selected_conflict_error is not None
+            ):
                 conflict_ref = str(
                     selected_conflict_error.get("details", {}).get("conflict_ref", "")
                 )
@@ -487,6 +793,13 @@ class InteractiveAuthorityService:
                     },
                     "warnings": [],
                     "disposition": "rejected_conflict",
+                    "semantic_request_ref": (
+                        semantic_request.ref_id
+                        if semantic_request is not None
+                        else None
+                    ),
+                    "authority_scope_hash": authority_scope_hash,
+                    "precondition_hash": precondition_hash,
                     "intent_session": intent_service.projection(intent_session),
                     "changeset": self.changesets.projection(changeset),
                 }
@@ -517,6 +830,13 @@ class InteractiveAuthorityService:
                     },
                     "disposition": "blocked_version",
                     "next": exact_case_error.get("details", {}).get("next"),
+                    "semantic_request_ref": (
+                        semantic_request.ref_id
+                        if semantic_request is not None
+                        else None
+                    ),
+                    "authority_scope_hash": authority_scope_hash,
+                    "precondition_hash": precondition_hash,
                 }
             if intent_session.semantic_state == "ready":
                 disposition = (
@@ -547,6 +867,13 @@ class InteractiveAuthorityService:
                     "next": None,
                     "warnings": [],
                     "disposition": disposition,
+                    "semantic_request_ref": (
+                        semantic_request.ref_id
+                        if semantic_request is not None
+                        else None
+                    ),
+                    "authority_scope_hash": authority_scope_hash,
+                    "precondition_hash": precondition_hash,
                     "intent_session": intent_service.projection(intent_session),
                     "changeset": self.changesets.projection(changeset),
                 }
@@ -567,6 +894,11 @@ class InteractiveAuthorityService:
                 },
                 "warnings": [],
                 "disposition": "needs_clarification",
+                "semantic_request_ref": (
+                    semantic_request.ref_id if semantic_request is not None else None
+                ),
+                "authority_scope_hash": authority_scope_hash,
+                "precondition_hash": precondition_hash,
                 "intent_session": intent_service.projection(intent_session),
                 "changeset": self.changesets.projection(changeset),
             }
@@ -640,6 +972,11 @@ class InteractiveAuthorityService:
             "disposition": "committed",
             "intent_session_ref": intent_session.ref_id,
             "intent_turn_ref": turn.ref_id,
+            "semantic_request_ref": (
+                semantic_request.ref_id if semantic_request is not None else None
+            ),
+            "authority_scope_hash": authority_scope_hash,
+            "precondition_hash": precondition_hash,
         }
 
     def process_conflict_resolution(
