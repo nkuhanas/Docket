@@ -36,6 +36,9 @@ from docket.models import (
     Preference,
     ProvenanceSource,
     Relationship,
+    SemanticPromptProjection,
+    SemanticRequest,
+    SemanticRequestAttempt,
     SourceItem,
     ToolInvocation,
     TriageBriefEntry,
@@ -72,6 +75,9 @@ PROVENANCE_PREFIXES = frozenset(
         "call",
         "aud",
         "op",
+        "proj",
+        "satt",
+        "sreq",
     }
 )
 
@@ -104,6 +110,9 @@ _PHASE_TWO_MODELS: dict[str, type[Any]] = {
     "call": ToolInvocation,
     "aud": AuditEvent,
     "op": Operation,
+    "proj": SemanticPromptProjection,
+    "satt": SemanticRequestAttempt,
+    "sreq": SemanticRequest,
 }
 
 
@@ -219,6 +228,8 @@ class ProvenanceRefService:
                 stack.append(item.utterance_ref)
             elif isinstance(item, ToolInvocation):
                 stack.extend(item.utterance_refs)
+            elif isinstance(item, SemanticRequest):
+                stack.extend(item.origin_utterance_refs)
             elif isinstance(
                 item,
                 Entity

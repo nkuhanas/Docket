@@ -68,9 +68,12 @@ An intent is ready only when all of these are true:
 - no blocking clarification remains.
 
 Confidence, plausibility, or “obvious” is never a substitute. Consolidate related
-unknowns into the smallest natural question. If clarification is required, call
-`docket_commit_changeset` with no content and the blocking clarifications so the
-IntentSession survives restart.
+unknowns into the smallest natural question. If a bounded choice would authorize a
+mutation, call `docket_commit_changeset` with no content, the blocking clarification,
+and one through four fully typed `semantic_options`. Docket persists the exact scopes
+before projecting deterministic visible choices. Never use a generic clarification
+tool for a mutation-authorizing choice. For a genuinely open-ended question, ask in
+the final response so the existing IntentSession survives restart.
 
 ## Mutation path
 
@@ -87,6 +90,14 @@ one `docket_commit_changeset` call:
 
 Conflict resolution is accepted only by `docket_resolve_conflict`; never encode a
 ConflictResolution inside `docket_commit_changeset`.
+
+One persisted semantic option is one indivisible authorized scope and compiles to
+one atomic ChangeSet. Build each option from the exact discriminated ChangeSet
+schema and set `selection_authority_ref` to the current `utt_`; Docket replaces only
+that provenance slot with the future selection `utt_` after the Operator clicks.
+Visible option text is rendered by Docket from the typed effects. Do not supply or
+reparse button prose, split a selected option, narrow it after validation failure,
+or ask the Operator to authorize the same scope again.
 
 Every change and provider intent carries `basis_refs`. Every canonical change uses
 the exact discriminated `mutation_type` shown by the MCP schema. Use stable

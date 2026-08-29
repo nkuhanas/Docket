@@ -32,10 +32,12 @@ from docket.models import (
     DiscordProjection,
     Operation,
     OutboxEvent,
+    PersistedSemanticOption,
     QueueItem,
     ReminderRule,
     ScheduledNotification,
     SemanticCandidate,
+    SemanticPromptProjection,
 )
 from docket.models.base import utc_now
 from docket.policy import BATCH_CALENDAR_ACTION_TYPES
@@ -46,6 +48,7 @@ from docket.security import (
     issue_projection_local_action_token,
     issue_projection_proposal_control_token,
     issue_projection_review_navigation_token,
+    issue_semantic_option_token,
 )
 from docket.services.queue import ensure_local_actions, queue_projection_date
 
@@ -58,6 +61,7 @@ _SUPPORTED_EVENTS = {
     "discord.system_log.requested",
     "discord.mcp_trace.requested",
     "discord.calendar_reminder.requested",
+    "discord.semantic_prompt.requested",
 }
 _PROJECTION_EVENTS = {
     "discord.projection.requested",
@@ -3170,6 +3174,144 @@ class DiscordProjectionRunner:
             outbox.next_attempt_at = None
             outbox.last_error_code = "notification_no_longer_current"
 
+    def _semantic_prompt_request(
+        self, event_id: uuid.UUID, lease_token: uuid.UUID
+    ) -> tuple[uuid.UUID, dict[str, Any]]:
+        with self.session_factory() as session:
+            outbox = session.get(OutboxEvent, event_id)
+            if outbox is None or outbox.lease_token != lease_token:
+                raise DiscordProjectionError("delivery_lease_lost", "Outbox lease was lost")
+            projection = session.get(SemanticPromptProjection, outbox.aggregate_id)
+            if projection is None:
+                raise DiscordProjectionError(
+                    "semantic_prompt_missing", "Semantic prompt projection is missing"
+                )
+            options = list(
+                session.scalars(
+                    select(PersistedSemanticOption)
+                    .where(
+                        PersistedSemanticOption.prompt_projection_id == projection.id,
+                        PersistedSemanticOption.prompt_projection_version
+                        == projection.projection_version,
+                    )
+                    .order_by(PersistedSemanticOption.created_at, PersistedSemanticOption.option_id)
+                )
+            )
+            if not 1 <= len(options) <= 4:
+                raise DiscordProjectionError(
+                    "semantic_option_count_invalid",
+                    "Semantic prompt does not contain one through four options",
+                )
+            signing_key = self.settings.read_secret(
+                self.settings.interaction_signing_key_file
+            ).encode()
+            expires_at = utc_now() + timedelta(days=30)
+            controls = [
+                {
+                    "label": f"Select {index}",
+                    "custom_id": "dkt:s:"
+                    + issue_semantic_option_token(
+                        option_row_id=option.id,
+                        projection_version=projection.projection_version,
+                        actor_id=self.settings.operator_discord_user_id,
+                        expires_at=expires_at,
+                        signing_key=signing_key,
+                    ),
+                }
+                for index, option in enumerate(options, start=1)
+            ]
+            component_binding = {
+                "projection_ref": projection.ref_id,
+                "projection_version": projection.projection_version,
+                "options": [
+                    {
+                        "option_id": option.option_id,
+                        "authority_scope_hash": option.authority_scope_hash,
+                        "precondition_hash": option.precondition_hash,
+                    }
+                    for option in options
+                ],
+            }
+            render = {
+                "question": projection.question_text,
+                "options": [option.visible_text for option in options],
+                "intent_session_ref": projection.intent_session_ref,
+                "case_ref": projection.case_ref,
+                "case_revision_ref": projection.case_revision_ref,
+            }
+            if sha256_json(render) != projection.render_sha256:
+                raise DiscordProjectionError(
+                    "semantic_prompt_render_mismatch",
+                    "Semantic prompt render no longer matches its persisted options",
+                )
+            if sha256_json(component_binding) != projection.component_sha256:
+                raise DiscordProjectionError(
+                    "semantic_prompt_component_mismatch",
+                    "Semantic prompt controls no longer match persisted option bindings",
+                )
+            return projection.id, {
+                "request_id": str(outbox.id),
+                "projection_id": str(projection.id),
+                "projection_ref": projection.ref_id,
+                "projection_version": projection.projection_version,
+                "guild_id": projection.guild_id,
+                "channel_id": projection.channel_id,
+                "parent_channel_id": projection.parent_channel_id,
+                "source_message_id": projection.source_message_id,
+                "known_message_id": projection.message_id,
+                "operator_user_id": self.settings.operator_discord_user_id,
+                "render_sha256": projection.render_sha256,
+                "component_sha256": projection.component_sha256,
+                "render": render,
+                "controls": controls,
+                "component_binding": component_binding,
+            }
+
+    def _accept_semantic_prompt_ack(
+        self,
+        event_id: uuid.UUID,
+        lease_token: uuid.UUID,
+        projection_id: uuid.UUID,
+        request: dict[str, Any],
+        ack: dict[str, Any],
+    ) -> None:
+        exact = all(
+            ack.get(field) == request[field]
+            for field in (
+                "request_id",
+                "projection_id",
+                "projection_ref",
+                "projection_version",
+                "guild_id",
+                "channel_id",
+                "render_sha256",
+                "component_sha256",
+            )
+        )
+        if not exact or not str(ack.get("message_id", "")).isdigit():
+            raise DiscordProjectionError(
+                "invalid_discord_ack",
+                "Semantic prompt acknowledgement did not echo its exact binding",
+            )
+        with self.session_factory.begin() as session:
+            outbox = session.get(OutboxEvent, event_id)
+            projection = session.get(SemanticPromptProjection, projection_id)
+            if (
+                outbox is None
+                or outbox.lease_token != lease_token
+                or projection is None
+            ):
+                raise DiscordProjectionError("delivery_lease_lost", "Outbox lease was lost")
+            projection.message_id = str(ack["message_id"])
+            projection.status = "delivered"
+            projection.delivered_at = utc_now()
+            projection.last_error_code = None
+            outbox.status = OutboxStatus.DELIVERED.value
+            outbox.lease_token = None
+            outbox.leased_until = None
+            outbox.next_attempt_at = None
+            outbox.last_error_code = None
+
     def _retry(self, event_id: uuid.UUID, lease_token: uuid.UUID, code: str) -> None:
         with self.session_factory.begin() as session:
             event = session.get(OutboxEvent, event_id)
@@ -3344,6 +3486,20 @@ class DiscordProjectionRunner:
                     self._accept_notification_ack(
                         event_id, lease_token, notification_request, notification_ack
                     )
+            elif event_type == "discord.semantic_prompt.requested":
+                projection_id, prompt_request = self._semantic_prompt_request(
+                    event_id, lease_token
+                )
+                prompt_ack = self.adapter.put_semantic_prompt(
+                    projection_id, prompt_request
+                )
+                self._accept_semantic_prompt_ack(
+                    event_id,
+                    lease_token,
+                    projection_id,
+                    prompt_request,
+                    prompt_ack,
+                )
             else:
                 raise DiscordProjectionError(
                     "unsupported_outbox_event", "Discord outbox event is unsupported"

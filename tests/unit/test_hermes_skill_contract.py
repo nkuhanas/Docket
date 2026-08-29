@@ -14,6 +14,12 @@ def test_manual_skill_uses_ledger_authority_without_redundant_approval() -> None
     assert "`docket_resolve_conflict`" in skill
 
 
+def test_docket_profile_has_no_unbound_generic_clarification_tool() -> None:
+    config = Path("hermes/config.example.yaml").read_text(encoding="utf-8")
+
+    assert "    - clarify\n" not in config
+
+
 def test_manual_skill_preserves_evidence_interpretation_and_conflicts() -> None:
     skill = " ".join(SKILL_PATH.read_text(encoding="utf-8").split())
 

@@ -642,6 +642,10 @@ class ChangeSetService:
             provider_intents=payload["provider_intents"],
             parameter_hash=parameter_hash,
             preview_hash=preview_hash,
+            semantic_request_ref=changeset.semantic_request_ref,
+            authority_scope_hash=changeset.authority_scope_hash,
+            precondition_hash=changeset.precondition_hash,
+            execution_binding_json=changeset.execution_binding_json,
         )
         self.session.add(item)
         return item
@@ -1251,6 +1255,10 @@ class ChangeSetService:
             state="draft",
             version=1,
             current_revision=1,
+            semantic_request_ref=request.semantic_request_ref,
+            authority_scope_hash=request.authority_scope_hash,
+            precondition_hash=request.precondition_hash,
+            execution_binding_json=dict(request.execution_binding),
         )
         self._sync_snapshot(changeset, request.content)
         self.session.add(changeset)

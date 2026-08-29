@@ -33,6 +33,7 @@ UtteranceRef = Annotated[str, Field(pattern=r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")]
 StatementRef = Annotated[str, Field(pattern=r"^stm_[0-9A-HJKMNP-TV-Z]{26}$")]
 SessionRef = Annotated[str, Field(pattern=r"^ses_[0-9A-HJKMNP-TV-Z]{26}$")]
 ChangeSetRef = Annotated[str, Field(pattern=r"^chg_[0-9A-HJKMNP-TV-Z]{26}$")]
+SemanticRequestRef = Annotated[str, Field(pattern=r"^sreq_[0-9A-HJKMNP-TV-Z]{26}$")]
 ConflictRef = Annotated[str, Field(pattern=r"^cnf_[0-9A-HJKMNP-TV-Z]{26}$")]
 AttentionCaseRef = Annotated[str, Field(pattern=r"^case_[0-9A-HJKMNP-TV-Z]{26}$")]
 AttentionCaseRevisionRef = Annotated[
@@ -118,6 +119,8 @@ class IntentTurnAppend(StrictModel):
     response_disposition: Literal["pending", "final_response", "no_response"] = "pending"
     resolved_intent_json: dict[str, Any] = Field(default_factory=dict)
     blocking_clarifications: list[dict[str, Any]] = Field(default_factory=list, max_length=25)
+    semantic_request_ref: SemanticRequestRef | None = None
+    authority_substitutions: dict[str, UtteranceRef] = Field(default_factory=dict)
 
     @field_validator("context_refs", "tool_call_refs")
     @classmethod
@@ -733,11 +736,66 @@ class ChangeSetContent(StrictModel):
         return self
 
 
+class SemanticOptionDraft(StrictModel):
+    """Typed pending ChangeSet scope rendered and persisted by Docket."""
+
+    option_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,127}$")
+    action_kind: Literal["commit_changeset"] = "commit_changeset"
+    selection_authority_ref: UtteranceRef
+    content: ChangeSetContent
+    explicit_exclusions: list[str] = Field(default_factory=list, max_length=25)
+
+    @field_validator("explicit_exclusions")
+    @classmethod
+    def exclusions_are_bounded(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("explicit_exclusions must not contain duplicates")
+        if any(not value.strip() or len(value) > 255 for value in values):
+            raise ValueError("explicit exclusions must be 1..255 characters")
+        return values
+
+    @model_validator(mode="after")
+    def selection_authority_slot_exists(self) -> SemanticOptionDraft:
+        serialized = self.content.model_dump(mode="json")
+
+        def contains(value: Any) -> bool:
+            if value == self.selection_authority_ref:
+                return True
+            if isinstance(value, dict):
+                return any(contains(item) for item in value.values())
+            if isinstance(value, list):
+                return any(contains(item) for item in value)
+            return False
+
+        if not contains(serialized):
+            raise ValueError(
+                "selection_authority_ref must occupy at least one provenance slot"
+            )
+        return self
+
+
 class ChangeSetPrepare(StrictModel):
     intent_session_ref: SessionRef
     expected_session_version: int = Field(ge=1)
     idempotency_key: str = Field(min_length=8, max_length=512)
     content: ChangeSetContent
+    semantic_request_ref: SemanticRequestRef | None = None
+    authority_scope_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    precondition_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    execution_binding: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def continuity_fields_are_complete(self) -> ChangeSetPrepare:
+        values = (
+            self.semantic_request_ref,
+            self.authority_scope_hash,
+            self.precondition_hash,
+        )
+        if any(value is not None for value in values) and not all(
+            value is not None for value in values
+        ):
+            raise ValueError("continuity fields must be supplied together")
+        return self
 
 
 class ChangeSetRevise(StrictModel):

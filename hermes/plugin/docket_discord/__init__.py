@@ -43,11 +43,14 @@ _THREAD_LIFECYCLE_PATH = re.compile(
     r"^/internal/docket/discord/threads/([0-9a-fA-F-]{36})/lifecycle$"
 )
 _MCP_TRACE_PATH = re.compile(r"^/internal/docket/discord/mcp-traces/([0-9a-fA-F-]{36})$")
+_SEMANTIC_PROMPT_PATH = re.compile(
+    r"^/internal/docket/discord/semantic-prompts/([0-9a-fA-F-]{36})$"
+)
 _UTTERANCE_REF = re.compile(r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")
 _RESPONSE_REF = re.compile(r"^rsp_[0-9A-HJKMNP-TV-Z]{26}$")
 _PUBLIC_REF = re.compile(r"^[a-z][a-z0-9]{1,7}_[0-9A-HJKMNP-TV-Z]{26}$")
 _SAFE_ERROR_CODE = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
-_CONTROL_ID = re.compile(r"^dkt:([arlnp]):([A-Za-z0-9_-]{70,90})$")
+_CONTROL_ID = re.compile(r"^dkt:([arlnps]):([A-Za-z0-9_-]{40,100})$")
 _MAX_REQUEST_BYTES = 65536
 _SERVER: ThreadingHTTPServer | None = None
 _SERVER_STARTING = False
@@ -2843,6 +2846,202 @@ async def _post_calendar_reminder(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+async def _put_semantic_prompt(
+    projection_id: uuid.UUID, payload: dict[str, Any]
+) -> dict[str, Any]:
+    import discord
+
+    request_id = _require_request_id(payload)
+    if str(payload.get("projection_id")) != str(projection_id):
+        raise PluginAPIError(
+            "invalid_semantic_prompt", "Projection path and body differ", 422
+        )
+    projection_ref = str(payload.get("projection_ref", ""))
+    if _PUBLIC_REF.fullmatch(projection_ref) is None or not projection_ref.startswith("proj_"):
+        raise PluginAPIError(
+            "invalid_semantic_prompt", "Projection reference is invalid", 422
+        )
+    try:
+        projection_version = int(payload["projection_version"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PluginAPIError(
+            "invalid_semantic_prompt", "Projection version is invalid", 422
+        ) from exc
+    if projection_version < 1:
+        raise PluginAPIError(
+            "invalid_semantic_prompt", "Projection version is invalid", 422
+        )
+    guild_id = _require_snowflake(payload.get("guild_id"), "guild_id")
+    channel_id = _require_snowflake(payload.get("channel_id"), "channel_id")
+    parent_value = payload.get("parent_channel_id")
+    parent_channel_id = (
+        _require_snowflake(parent_value, "parent_channel_id")
+        if parent_value is not None
+        else None
+    )
+    operator_user_id = _validate_operator_target(payload.get("operator_user_id"))
+    expected_guild = os.environ.get("DOCKET_DISCORD_GUILD_ID", "")
+    chat_channel = os.environ.get("DOCKET_CHAT_CHANNEL_ID", "")
+    queue_channel = os.environ.get("DOCKET_QUEUE_CHANNEL_ID", "")
+    if not hmac.compare_digest(guild_id, expected_guild) or not (
+        (channel_id == chat_channel and parent_channel_id is None)
+        or (parent_channel_id == queue_channel and channel_id != queue_channel)
+    ):
+        raise PluginAPIError(
+            "discord_target_not_allowed",
+            "Semantic prompt target is not a configured Docket conversation",
+            403,
+        )
+    render = payload.get("render")
+    controls = payload.get("controls")
+    component_binding = payload.get("component_binding")
+    if (
+        not isinstance(render, dict)
+        or not isinstance(controls, list)
+        or not 1 <= len(controls) <= 4
+    ):
+        raise PluginAPIError(
+            "invalid_semantic_prompt", "Semantic prompt render is invalid", 422
+        )
+    render_sha256 = str(payload.get("render_sha256", ""))
+    calculated_render = hashlib.sha256(
+        json.dumps(
+            render,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    if not hmac.compare_digest(calculated_render, render_sha256):
+        raise PluginAPIError(
+            "semantic_prompt_render_mismatch",
+            "Semantic prompt render differs from its persisted digest",
+            422,
+        )
+    if not isinstance(component_binding, dict):
+        raise PluginAPIError(
+            "invalid_semantic_prompt",
+            "Semantic prompt component binding is invalid",
+            422,
+        )
+    component_sha256 = str(payload.get("component_sha256", ""))
+    calculated_components = hashlib.sha256(
+        json.dumps(
+            component_binding,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    if not hmac.compare_digest(calculated_components, component_sha256):
+        raise PluginAPIError(
+            "semantic_prompt_component_mismatch",
+            "Semantic prompt controls differ from their persisted digest",
+            422,
+        )
+    question = str(render.get("question", "")).strip()
+    options = render.get("options")
+    if (
+        not question
+        or len(question) > 4000
+        or not isinstance(options, list)
+        or len(options) != len(controls)
+        or any(not isinstance(value, str) or not value.strip() for value in options)
+    ):
+        raise PluginAPIError(
+            "invalid_semantic_prompt", "Semantic prompt options are invalid", 422
+        )
+    normalized_controls: list[tuple[str, str]] = []
+    for index, control in enumerate(controls, start=1):
+        if not isinstance(control, dict):
+            raise PluginAPIError(
+                "invalid_semantic_prompt", "Semantic prompt control is invalid", 422
+            )
+        label = str(control.get("label", ""))
+        custom_id = str(control.get("custom_id", ""))
+        if label != f"Select {index}" or _CONTROL_ID.fullmatch(custom_id) is None:
+            raise PluginAPIError(
+                "invalid_semantic_prompt", "Semantic prompt control binding is invalid", 422
+            )
+        normalized_controls.append((label, custom_id))
+
+    _loop, _adapter, client = _discord_runtime()
+    try:
+        channel = await client.fetch_channel(int(channel_id))
+    except discord.NotFound as exc:
+        raise PluginAPIError(
+            "semantic_prompt_channel_missing", "Semantic prompt channel was not found", 404
+        ) from exc
+    if str(channel.guild.id) != guild_id or (
+        parent_channel_id is not None
+        and str(getattr(channel, "parent_id", "")) != parent_channel_id
+    ):
+        raise PluginAPIError(
+            "semantic_prompt_target_changed", "Semantic prompt channel binding changed", 409
+        )
+    view = discord.ui.View(timeout=None)
+    for label, custom_id in normalized_controls:
+        view.add_item(
+            discord.ui.Button(
+                label=label,
+                style=discord.ButtonStyle.primary,
+                custom_id=custom_id,
+            )
+        )
+    option_lines = "\n".join(
+        f"**{index}.** {value}" for index, value in enumerate(options, start=1)
+    )
+    content = f"❓ **Docket needs your decision**\n\n{question}\n\n{option_lines}"
+    embed = discord.Embed(
+        title="Docket clarification",
+        description=f"{question}\n\n{option_lines}"[:4096],
+        color=discord.Color.orange(),
+    )
+    known_message_id = payload.get("known_message_id")
+    message = None
+    created = False
+    if known_message_id is not None:
+        try:
+            message = await channel.fetch_message(int(_require_snowflake(
+                known_message_id, "known_message_id"
+            )))
+        except discord.NotFound:
+            message = None
+    if message is None:
+        reference = None
+        source_message_id = payload.get("source_message_id")
+        if source_message_id is not None:
+            reference = discord.MessageReference(
+                message_id=int(_require_snowflake(source_message_id, "source_message_id")),
+                channel_id=int(channel_id),
+                guild_id=int(guild_id),
+                fail_if_not_exists=False,
+            )
+        message = await channel.send(
+            content=content[:2000],
+            embed=embed,
+            view=view,
+            reference=reference,
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+        created = True
+    else:
+        await message.edit(content=content[:2000], embed=embed, view=view)
+    return {
+        "request_id": request_id,
+        "projection_id": str(projection_id),
+        "projection_ref": projection_ref,
+        "projection_version": projection_version,
+        "guild_id": guild_id,
+        "channel_id": channel_id,
+        "operator_user_id": operator_user_id,
+        "message_id": str(message.id),
+        "render_sha256": render_sha256,
+        "component_sha256": component_sha256,
+        "created": created,
+    }
+
+
 def _post_button_response(payload: dict[str, Any], *, local_action: bool = False) -> dict[str, Any]:
     endpoint = "local-action-responses" if local_action else "approval-responses"
     request = urllib.request.Request(
@@ -2868,6 +3067,14 @@ def _post_button_response(payload: dict[str, Any], *, local_action: bool = False
     if not isinstance(body, dict):
         raise PluginAPIError("invalid_docket_response", "Docket returned invalid JSON", 502)
     return body
+
+
+def _post_semantic_option_selection(payload: dict[str, Any]) -> dict[str, Any]:
+    return _docket_internal_request(
+        "/internal/v1/discord/semantic-option-selections",
+        payload,
+        timeout=30,
+    )
 
 
 async def _open_custom_reminder_modal(
@@ -3076,6 +3283,106 @@ async def _on_docket_interaction(interaction: object) -> None:
         return
     try:
         token = match.group(2)
+        semantic_option = match.group(1) == "s"
+        if semantic_option:
+            guild_id, queue_channel_id, operator_id = _configured_identity()
+            chat_channel_id = os.environ.get("DOCKET_CHAT_CHANNEL_ID", "")
+            channel = interaction.channel
+            parent_id = getattr(channel, "parent_id", None)
+            message = interaction.message
+            channel_id = str(interaction.channel_id)
+            authorized_surface = (
+                channel_id == chat_channel_id and parent_id is None
+            ) or (
+                str(parent_id) == queue_channel_id
+                and channel_id != queue_channel_id
+                and isinstance(channel, discord.Thread)
+            )
+            if (
+                str(interaction.user.id) != operator_id
+                or str(interaction.guild_id) != guild_id
+                or not authorized_surface
+                or message is None
+            ):
+                raise PluginAPIError(
+                    "unauthorized_interaction",
+                    "This Docket semantic option is not authorized",
+                    403,
+                )
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            payload = {
+                "request_id": str(uuid.uuid4()),
+                "discord_interaction_id": str(interaction.id),
+                "discord_user_id": str(interaction.user.id),
+                "guild_id": str(interaction.guild_id),
+                "channel_id": channel_id,
+                "parent_channel_id": str(parent_id) if parent_id is not None else None,
+                "message_id": str(message.id),
+                "option_token": token,
+                "responded_at": datetime.now(UTC).isoformat(),
+            }
+            result = await asyncio.to_thread(_post_semantic_option_selection, payload)
+            response_ref = str(result.get("response_ref") or "")
+            response_text = str(result.get("response_text") or "").strip()
+            if _RESPONSE_REF.fullmatch(response_ref) is None or not response_text:
+                raise PluginAPIError(
+                    "invalid_docket_response",
+                    "Docket did not return a persisted semantic-option response",
+                    502,
+                )
+            delivered = result.get("response_delivery_state") == "delivered"
+            if not delivered:
+                try:
+                    await message.reply(
+                        response_text,
+                        mention_author=False,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                except discord.HTTPException:
+                    await asyncio.to_thread(
+                        _post_agent_response_delivery,
+                        {
+                            "response_ref": response_ref,
+                            "guild_id": str(interaction.guild_id),
+                            "source_channel_id": channel_id,
+                            "parent_channel_id": (
+                                str(parent_id) if parent_id is not None else None
+                            ),
+                            "source_message_id": str(interaction.id),
+                            "actor_id": str(interaction.user.id),
+                        },
+                        delivered=False,
+                    )
+                    raise
+                await asyncio.to_thread(
+                    _post_agent_response_delivery,
+                    {
+                        "response_ref": response_ref,
+                        "guild_id": str(interaction.guild_id),
+                        "source_channel_id": channel_id,
+                        "parent_channel_id": (
+                            str(parent_id) if parent_id is not None else None
+                        ),
+                        "source_message_id": str(interaction.id),
+                        "actor_id": str(interaction.user.id),
+                    },
+                    delivered=True,
+                )
+            try:
+                await message.edit(view=None)
+            except discord.HTTPException as exc:
+                logger.warning(
+                    "Docket recorded semantic selection but could not disable controls: %s",
+                    exc,
+                )
+            state = str(result.get("state", "recorded"))
+            acknowledgement = (
+                "Decision recorded and committed."
+                if state == "committed"
+                else "Decision recorded; execution is blocked, but no new authorization is needed."
+            )
+            await interaction.followup.send(acknowledgement, ephemeral=True)
+            return
         local_action = match.group(1) == "l"
         proposal_control = match.group(1) == "p"
         review_navigation = match.group(1) == "n"
@@ -3346,6 +3653,12 @@ class _PluginRequestHandler(BaseHTTPRequestHandler):
                 trace_id = uuid.UUID(match.group(1))
                 with _operation_lock(f"mcp-trace:{trace_id}"):
                     result = _run_on_discord(_put_mcp_trace(trace_id, payload))
+            elif method == "PUT" and (match := _SEMANTIC_PROMPT_PATH.fullmatch(self.path)):
+                projection_id = uuid.UUID(match.group(1))
+                with _operation_lock(f"semantic-prompt:{projection_id}"):
+                    result = _run_on_discord(
+                        _put_semantic_prompt(projection_id, payload)
+                    )
             elif method == "PUT" and (match := _THREAD_LIFECYCLE_PATH.fullmatch(self.path)):
                 daily_thread_id = uuid.UUID(match.group(1))
                 result = _run_on_discord(_set_thread_lifecycle(daily_thread_id, payload))

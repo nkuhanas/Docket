@@ -32,6 +32,7 @@ from docket.schemas.authority import (
     ChangeSetContent,
     ConflictRef,
     ConflictResolve,
+    SemanticOptionDraft,
     SessionRef,
     StatementInput,
     StatementRef,
@@ -1708,6 +1709,10 @@ def docket_commit_changeset(
     expected_session_version: int | None = None,
     changeset_ref: str | None = None,
     expected_changeset_version: int | None = None,
+    semantic_options: list[SemanticOptionDraft] | None = None,
+    semantic_request_ref: str | None = None,
+    authority_scope_hash: str | None = None,
+    precondition_hash: str | None = None,
 ) -> dict[str, Any]:
     """Commit resolved intent atomically; use *_change_id and exact case_/caserev_."""
     try:
@@ -1728,9 +1733,13 @@ def docket_commit_changeset(
                 relations=relations,
                 resolved_intent_json=resolved_intent,
                 blocking_clarifications=blocking_clarifications,
+                semantic_options=semantic_options,
                 content=content,
                 changeset_ref=changeset_ref,
                 expected_changeset_version=expected_changeset_version,
+                semantic_request_ref=semantic_request_ref,
+                authority_scope_hash=authority_scope_hash,
+                precondition_hash=precondition_hash,
             )
     except Exception as exc:
         return _error(exc)

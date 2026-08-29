@@ -65,6 +65,7 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
         "semantic_request_attempts",
         "change_sets",
         "change_set_revisions",
+        "semantic_prompt_projections",
         "persisted_semantic_options",
         "conflicts",
         "provenance_sources",
@@ -146,6 +147,7 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
         "deferred_ingress",
         "semantic_requests",
         "semantic_request_attempts",
+        "semantic_prompt_projections",
     ):
         assert "ref_id" in {column["name"] for column in inspect(engine).get_columns(public_table)}
     assert "legacy_ref_id" in {

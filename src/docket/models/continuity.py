@@ -49,10 +49,10 @@ class PersistedSemanticOption(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     prompt_projection_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("discord_projections.id", ondelete="RESTRICT"), nullable=False
+        ForeignKey("semantic_prompt_projections.id", ondelete="RESTRICT"), nullable=False
     )
     prompt_projection_ref: Mapped[str] = mapped_column(
-        ForeignKey("discord_projections.ref_id", ondelete="RESTRICT"), nullable=False
+        ForeignKey("semantic_prompt_projections.ref_id", ondelete="RESTRICT"), nullable=False
     )
     prompt_projection_version: Mapped[int] = mapped_column(Integer, nullable=False)
     option_id: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -71,6 +71,52 @@ class PersistedSemanticOption(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
+
+
+class SemanticPromptProjection(Base):
+    __tablename__ = "semantic_prompt_projections"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'delivered', 'failed', 'selected', 'superseded')",
+            name="ck_semantic_prompt_projections_status",
+        ),
+        UniqueConstraint(
+            "intent_session_ref",
+            "projection_version",
+            name="uq_semantic_prompt_projections_session_version",
+        ),
+        UniqueConstraint("message_id", name="uq_semantic_prompt_projections_message"),
+        Index(
+            "ix_semantic_prompt_projections_status_created",
+            "status",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    ref_id: Mapped[str] = mapped_column(
+        String(40), unique=True, nullable=False, default=lambda: new_public_ref("proj")
+    )
+    intent_session_ref: Mapped[str] = mapped_column(
+        ForeignKey("intent_sessions.ref_id", ondelete="RESTRICT"), nullable=False
+    )
+    projection_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    guild_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    channel_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    parent_channel_id: Mapped[str | None] = mapped_column(String(64))
+    source_message_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    question_text: Mapped[str] = mapped_column(Text, nullable=False)
+    case_ref: Mapped[str | None] = mapped_column(String(40))
+    case_revision_ref: Mapped[str | None] = mapped_column(String(40))
+    render_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    component_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    message_id: Mapped[str | None] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
+    last_error_code: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class GatewayLifetime(Base):

@@ -451,6 +451,48 @@ def upgrade() -> None:
     )
 
     op.create_table(
+        "semantic_prompt_projections",
+        sa.Column("id", sa.Uuid(), nullable=False),
+        sa.Column("ref_id", sa.String(length=40), nullable=False),
+        sa.Column("intent_session_ref", sa.String(length=40), nullable=False),
+        sa.Column("projection_version", sa.Integer(), nullable=False),
+        sa.Column("guild_id", sa.String(length=64), nullable=False),
+        sa.Column("channel_id", sa.String(length=64), nullable=False),
+        sa.Column("parent_channel_id", sa.String(length=64)),
+        sa.Column("source_message_id", sa.String(length=64), nullable=False),
+        sa.Column("question_text", sa.Text(), nullable=False),
+        sa.Column("case_ref", sa.String(length=40)),
+        sa.Column("case_revision_ref", sa.String(length=40)),
+        sa.Column("render_sha256", sa.String(length=64), nullable=False),
+        sa.Column("component_sha256", sa.String(length=64), nullable=False),
+        sa.Column("message_id", sa.String(length=64)),
+        sa.Column("status", sa.String(length=32), nullable=False),
+        sa.Column("last_error_code", sa.String(length=128)),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("delivered_at", sa.DateTime(timezone=True)),
+        sa.CheckConstraint(
+            "status IN ('pending', 'delivered', 'failed', 'selected', 'superseded')",
+            name="ck_semantic_prompt_projections_status",
+        ),
+        sa.ForeignKeyConstraint(
+            ["intent_session_ref"], ["intent_sessions.ref_id"], ondelete="RESTRICT"
+        ),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("ref_id"),
+        sa.UniqueConstraint("message_id", name="uq_semantic_prompt_projections_message"),
+        sa.UniqueConstraint(
+            "intent_session_ref",
+            "projection_version",
+            name="uq_semantic_prompt_projections_session_version",
+        ),
+    )
+    op.create_index(
+        "ix_semantic_prompt_projections_status_created",
+        "semantic_prompt_projections",
+        ["status", "created_at"],
+    )
+
+    op.create_table(
         "persisted_semantic_options",
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("prompt_projection_id", sa.Uuid(), nullable=False),
@@ -469,10 +511,10 @@ def upgrade() -> None:
         sa.Column("precondition_hash", sa.String(length=64), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.ForeignKeyConstraint(
-            ["prompt_projection_id"], ["discord_projections.id"], ondelete="RESTRICT"
+            ["prompt_projection_id"], ["semantic_prompt_projections.id"], ondelete="RESTRICT"
         ),
         sa.ForeignKeyConstraint(
-            ["prompt_projection_ref"], ["discord_projections.ref_id"], ondelete="RESTRICT"
+            ["prompt_projection_ref"], ["semantic_prompt_projections.ref_id"], ondelete="RESTRICT"
         ),
         sa.ForeignKeyConstraint(
             ["intent_session_ref"], ["intent_sessions.ref_id"], ondelete="RESTRICT"
@@ -644,6 +686,11 @@ def downgrade() -> None:
         table_name="persisted_semantic_options",
     )
     op.drop_table("persisted_semantic_options")
+    op.drop_index(
+        "ix_semantic_prompt_projections_status_created",
+        table_name="semantic_prompt_projections",
+    )
+    op.drop_table("semantic_prompt_projections")
     op.drop_index("ix_semantic_request_attempts_request", table_name="semantic_request_attempts")
     op.drop_table("semantic_request_attempts")
     op.drop_index("ix_semantic_requests_session_state", table_name="semantic_requests")

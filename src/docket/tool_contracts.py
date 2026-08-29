@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-08-28-v9"
+CONTRACT_VERSION = "docket-tools-2026-08-28-v10"
 
 
 class ToolContractEntry(TypedDict):
@@ -128,7 +128,8 @@ def _interactive_entries() -> tuple[ToolContractEntry, ...]:
                     (
                         "Commit one resolved request; for AttentionCase replies read the "
                         "case once, use its exact caserev_, and send one fully typed "
-                        "atomic scope."
+                        "atomic scope. When a bounded choice is required, send content=null "
+                        "plus typed semantic_options; Docket persists and projects them."
                     )
                     if name == "docket_commit_changeset"
                     else "Current authenticated Operator explicitly requests this effect."
@@ -138,8 +139,8 @@ def _interactive_entries() -> tuple[ToolContractEntry, ...]:
                 "do_not_use_when": (
                     (
                         "Never probe schemas, split one selected option, or mark omitted "
-                        "supporting CaseItems rejected; use keep_open only when required "
-                        "items genuinely remain unresolved."
+                        "supporting CaseItems rejected. Never use a generic clarification "
+                        "widget for mutation-authorizing choices."
                     )
                     if name == "docket_commit_changeset"
                     else "Intent is inferred, unresolved, conflicted, or external."

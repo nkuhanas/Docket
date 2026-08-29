@@ -2,12 +2,20 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from docket.config import get_settings
 from docket.domain.errors import DocketError
-from docket.models import AttentionCase, CaseItem, ChangeSet, OperatorUtterance
+from docket.models import (
+    AttentionCase,
+    CaseItem,
+    ChangeSet,
+    OperatorUtterance,
+    PersistedSemanticOption,
+    SemanticRequest,
+    SemanticRequestAttempt,
+)
 from docket.schemas.authority import (
     ChangeSetCommit,
     ChangeSetContent,
@@ -16,6 +24,7 @@ from docket.schemas.authority import (
     ConflictResolve,
     IntentSessionOpen,
     IntentTurnAppend,
+    SemanticOptionDraft,
     StatementInput,
     StatementRelationInput,
 )
@@ -32,6 +41,11 @@ from docket.services.provider_intents import ProviderIntentService
 from docket.services.registry import RegistryService
 from docket.services.registry_conflicts import RegistryConflictCompiler
 from docket.services.reply_bindings import ReplyBindingService
+from docket.services.semantic_options import (
+    CURRENT_SELECTION_UTTERANCE,
+    SemanticOptionService,
+    complete_selection_provenance,
+)
 
 
 class InteractiveAuthorityService:
@@ -108,12 +122,77 @@ class InteractiveAuthorityService:
         content: ChangeSetContent | None,
         changeset_ref: str | None,
         expected_changeset_version: int | None,
+        semantic_options: list[SemanticOptionDraft] | None = None,
+        semantic_request_ref: str | None = None,
+        authority_scope_hash: str | None = None,
+        precondition_hash: str | None = None,
     ) -> dict[str, Any]:
         utterance = self._authority_utterance(
             utterance_ref=utterance_ref,
             request_key=request_key,
             actor_id=actor_id,
         )
+        semantic_request: SemanticRequest | None = None
+        semantic_attempt: SemanticRequestAttempt | None = None
+        if semantic_request_ref is not None:
+            if content is None or authority_scope_hash is None or precondition_hash is None:
+                raise DocketError(
+                    code="semantic_request_binding_incomplete",
+                    message="Semantic request execution requires content and both hashes.",
+                )
+            semantic_request = self.session.scalar(
+                select(SemanticRequest).where(SemanticRequest.ref_id == semantic_request_ref)
+            )
+            if (
+                semantic_request is None
+                or semantic_request.intent_session_ref != intent_session_ref
+                or semantic_request.authority_scope_hash != authority_scope_hash
+                or semantic_request.current_precondition_hash != precondition_hash
+                or utterance.ref_id not in semantic_request.origin_utterance_refs
+                or semantic_request.authority_availability != "available"
+            ):
+                raise DocketError(
+                    code="semantic_request_binding_mismatch",
+                    message="Execution does not match the available selected authority scope.",
+                )
+            binding = semantic_request.selected_option_binding or {}
+            option = self.session.scalar(
+                select(PersistedSemanticOption).where(
+                    PersistedSemanticOption.prompt_projection_ref
+                    == binding.get("prompt_projection_ref"),
+                    PersistedSemanticOption.prompt_projection_version
+                    == binding.get("prompt_projection_version"),
+                    PersistedSemanticOption.option_id == binding.get("option_id"),
+                    PersistedSemanticOption.authority_scope_hash == authority_scope_hash,
+                    PersistedSemanticOption.precondition_hash == precondition_hash,
+                )
+            )
+            if option is None or complete_selection_provenance(
+                option.compilation_template_json, utterance.ref_id
+            ) != content.model_dump(mode="json"):
+                raise DocketError(
+                    code="semantic_request_scope_mismatch",
+                    message="Submitted ChangeSet differs from the exact persisted option scope.",
+                )
+            next_attempt = int(
+                self.session.scalar(
+                    select(func.max(SemanticRequestAttempt.attempt_number)).where(
+                        SemanticRequestAttempt.semantic_request_id == semantic_request.id
+                    )
+                )
+                or 0
+            ) + 1
+            semantic_attempt = SemanticRequestAttempt(
+                semantic_request_id=semantic_request.id,
+                semantic_request_ref=semantic_request.ref_id,
+                attempt_number=next_attempt,
+                authority_scope_hash=authority_scope_hash,
+                precondition_hash=precondition_hash,
+                case_revision_ref=semantic_request.current_case_revision_ref,
+                state="pending",
+            )
+            self.session.add(semantic_attempt)
+            semantic_request.commit_state = "pending"
         replay = self.session.scalar(
             select(ChangeSet).where(
                 ChangeSet.idempotency_key == f"{request_key}:changeset"
@@ -175,6 +254,14 @@ class InteractiveAuthorityService:
                 resolved_intent_json=resolved_intent_json,
                 blocking_clarifications=blocking_clarifications,
                 response_disposition="pending",
+                semantic_request_ref=(
+                    semantic_request.ref_id if semantic_request is not None else None
+                ),
+                authority_substitutions=(
+                    {CURRENT_SELECTION_UTTERANCE: utterance.ref_id}
+                    if semantic_request is not None
+                    else {}
+                ),
             )
         )
         conflict_refs = RegistryConflictCompiler(self.session).compile(
@@ -216,6 +303,22 @@ class InteractiveAuthorityService:
                         "clarification."
                     ),
                 )
+            option_projection = None
+            if semantic_options:
+                question = next(
+                    (
+                        str(item.get("question", "")).strip()
+                        for item in intent_session.blocking_clarifications
+                        if str(item.get("question", "")).strip()
+                    ),
+                    "Choose how Docket should resolve this intent.",
+                )
+                option_projection = SemanticOptionService(self.session).persist_prompt(
+                    utterance=utterance,
+                    intent_session=intent_session,
+                    question=question,
+                    drafts=semantic_options,
+                )
             return {
                 "ok": True,
                 "ref": intent_session.ref_id,
@@ -223,7 +326,18 @@ class InteractiveAuthorityService:
                 "summary": "Intent was preserved and requires consolidated clarification.",
                 "affected_refs": [intent_session.ref_id, turn.ref_id],
                 "basis_refs": [utterance.ref_id],
-                "next": {"clarifications": intent_session.blocking_clarifications},
+                "next": {
+                    "clarifications": intent_session.blocking_clarifications,
+                    **(
+                        {
+                            "semantic_prompt_ref": option_projection.ref_id,
+                            "projection_version": option_projection.projection_version,
+                            "delivery": "queued",
+                        }
+                        if option_projection is not None
+                        else {}
+                    ),
+                },
                 "warnings": [],
                 "disposition": "needs_clarification",
                 "intent_session": intent_service.projection(intent_session),
@@ -236,6 +350,19 @@ class InteractiveAuthorityService:
                     expected_session_version=intent_session.version,
                     idempotency_key=f"{request_key}:changeset",
                     content=content,
+                    semantic_request_ref=(
+                        semantic_request.ref_id if semantic_request is not None else None
+                    ),
+                    authority_scope_hash=authority_scope_hash,
+                    precondition_hash=precondition_hash,
+                    execution_binding=(
+                        {
+                            "selection_utterance_ref": utterance.ref_id,
+                            "case_revision_ref": semantic_request.current_case_revision_ref,
+                        }
+                        if semantic_request is not None
+                        else {}
+                    ),
                 )
             )
         else:
@@ -252,6 +379,18 @@ class InteractiveAuthorityService:
                 )
             )
         if changeset.state != "validated":
+            if semantic_request is not None and semantic_attempt is not None:
+                semantic_request.commit_state = intent_session.commit_state
+                semantic_attempt.state = intent_session.commit_state
+                semantic_attempt.change_set_ref = changeset.ref_id
+                semantic_attempt.error_code = (
+                    str(changeset.validation_errors[0].get("code"))[:128]
+                    if changeset.validation_errors
+                    else "changeset_validation_failed"
+                )
+                semantic_attempt.error_details_json = {
+                    "errors": changeset.validation_errors
+                }
             exact_case_error = next(
                 (
                     error
@@ -340,6 +479,13 @@ class InteractiveAuthorityService:
                 authority_utterance_ref=utterance.ref_id,
             )
         )
+        if semantic_request is not None and semantic_attempt is not None:
+            semantic_request.authority_availability = "consumed_committed"
+            semantic_request.commit_state = "committed"
+            semantic_request.committed_changeset_ref = committed.ref_id
+            semantic_attempt.state = "committed"
+            semantic_attempt.change_set_ref = committed.ref_id
+            semantic_attempt.completed_at = committed.committed_at
         partial_case_refs = [
             change.object_ref
             for change in content.resolution_changes

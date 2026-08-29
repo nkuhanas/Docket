@@ -222,6 +222,20 @@ class OperatorUtteranceCapture(InternalModel):
         return self
 
 
+class SemanticOptionSelection(InternalModel):
+    request_id: UUID
+    discord_interaction_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
+    discord_user_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
+    guild_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
+    channel_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
+    parent_channel_id: DiscordSnowflake | None = Field(
+        default=None, pattern=r"^[0-9]{17,20}$"
+    )
+    message_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
+    option_token: str = Field(min_length=40, max_length=100)
+    responded_at: datetime
+
+
 class AgentResponseCapture(InternalModel):
     request_id: UUID
     guild_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")

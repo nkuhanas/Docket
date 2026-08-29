@@ -34,6 +34,10 @@ class DiscordProjectionAdapter(Protocol):
 
     def post_calendar_reminder(self, payload: dict[str, Any]) -> dict[str, Any]: ...
 
+    def put_semantic_prompt(
+        self, projection_id: uuid.UUID, payload: dict[str, Any]
+    ) -> dict[str, Any]: ...
+
 
 class HttpDiscordProjectionAdapter:
     def __init__(self, base_url: str, token: str, *, timeout_seconds: float = 20.0) -> None:
@@ -107,6 +111,15 @@ class HttpDiscordProjectionAdapter:
     def post_calendar_reminder(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/internal/docket/discord/notifications", payload)
 
+    def put_semantic_prompt(
+        self, projection_id: uuid.UUID, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        return self._request(
+            "PUT",
+            f"/internal/docket/discord/semantic-prompts/{projection_id}",
+            payload,
+        )
+
 
 @dataclass
 class FakeDiscordBackend:
@@ -116,6 +129,7 @@ class FakeDiscordBackend:
     system_logs: dict[str, dict[str, Any]] = field(default_factory=dict)
     mcp_traces: dict[str, dict[str, Any]] = field(default_factory=dict)
     notification_messages: dict[str, dict[str, Any]] = field(default_factory=dict)
+    semantic_prompts: dict[str, dict[str, Any]] = field(default_factory=dict)
     next_snowflake: int = 10000000000000000
 
     def snowflake(self) -> str:
@@ -344,3 +358,38 @@ class FakeDiscordProjectionAdapter:
             self.discard_next_notification_ack = False
             raise DiscordProjectionError("discarded_ack", "Notification acknowledgement discarded")
         return copy.deepcopy(result)
+
+    def put_semantic_prompt(
+        self, projection_id: uuid.UUID, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        self._check_request(payload)
+        key = str(projection_id)
+        created = key not in self.backend.semantic_prompts
+        if created:
+            self.backend.semantic_prompts[key] = {
+                "message_id": self.backend.snowflake(),
+                "channel_id": payload["channel_id"],
+            }
+        message = self.backend.semantic_prompts[key]
+        if message["channel_id"] != payload["channel_id"]:
+            raise DiscordProjectionError(
+                "semantic_prompt_target_changed", "Semantic prompt target changed"
+            )
+        message.update(
+            render_sha256=payload["render_sha256"],
+            component_sha256=payload["component_sha256"],
+            render=copy.deepcopy(payload["render"]),
+            controls=copy.deepcopy(payload["controls"]),
+        )
+        return {
+            "request_id": payload["request_id"],
+            "projection_id": key,
+            "projection_ref": payload["projection_ref"],
+            "projection_version": payload["projection_version"],
+            "guild_id": payload["guild_id"],
+            "channel_id": payload["channel_id"],
+            "message_id": message["message_id"],
+            "render_sha256": message["render_sha256"],
+            "component_sha256": message["component_sha256"],
+            "created": created,
+        }

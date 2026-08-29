@@ -2,6 +2,7 @@ import uuid
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
 from starlette.requests import Request
 
 from docket.config import get_settings
@@ -16,16 +17,21 @@ from docket.internal_api.schemas import (
     LocalActionResponse,
     McpTraceUpdate,
     OperatorUtteranceCapture,
+    SemanticOptionSelection,
     SpecificationSignoffCapture,
 )
+from docket.models import DeferredIngress, SemanticRequest
 from docket.models.base import utc_now
 from docket.providers.google.runtime import get_calendar_read_provider
+from docket.schemas.authority import ChangeSetContent
 from docket.services.approvals import ApprovalService
 from docket.services.calendar_sync import CalendarSyncService
+from docket.services.interactive_authority import InteractiveAuthorityService
 from docket.services.local_actions import LocalActionService
 from docket.services.mcp_traces import McpTraceService
 from docket.services.proposal_controls import ProposalControlService
 from docket.services.provenance import ProvenanceService
+from docket.services.semantic_options import SemanticOptionService
 
 logger = structlog.get_logger(__name__)
 
@@ -154,6 +160,148 @@ def operator_utterance_capture(payload: OperatorUtteranceCapture) -> dict[str, o
             status_code=status.HTTP_409_CONFLICT,
             detail=exc.as_dict()["error"],
         ) from exc
+
+
+@router.post("/semantic-option-selections")
+def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, object]:
+    try:
+        with session_scope() as session:
+            selection = SemanticOptionService(session).capture_selection(payload)
+    except DocketError as exc:
+        error_status = (
+            status.HTTP_404_NOT_FOUND
+            if exc.code in {"semantic_option_not_found", "intent_session_not_found"}
+            else status.HTTP_403_FORBIDDEN
+            if exc.code == "unauthorized_interaction"
+            else status.HTTP_409_CONFLICT
+        )
+        raise HTTPException(
+            status_code=error_status,
+            detail=exc.as_dict()["error"],
+        ) from exc
+    execution: dict[str, object]
+    try:
+        compiled = ChangeSetContent.model_validate(selection["compiled_content"])
+        with session_scope() as session:
+            semantic_request = session.scalar(
+                select(SemanticRequest).where(
+                    SemanticRequest.ref_id == selection["semantic_request_ref"]
+                )
+            )
+            if (
+                semantic_request is not None
+                and semantic_request.authority_availability == "consumed_committed"
+                and semantic_request.committed_changeset_ref is not None
+            ):
+                execution = {
+                    "ok": True,
+                    "ref": semantic_request.committed_changeset_ref,
+                    "state": "committed",
+                    "summary": "Replayed the existing selected semantic result.",
+                    "affected_refs": [
+                        semantic_request.ref_id,
+                        semantic_request.committed_changeset_ref,
+                    ],
+                    "basis_refs": list(semantic_request.origin_utterance_refs),
+                    "next": None,
+                    "warnings": [],
+                    "disposition": "replayed_request",
+                }
+            else:
+                execution = InteractiveAuthorityService(session).process_turn(
+                    utterance_ref=str(selection["utterance_ref"]),
+                    request_key=str(selection["request_key"]),
+                    actor_id=payload.discord_user_id,
+                    intent_session_ref=str(selection["intent_session_ref"]),
+                    expected_session_version=None,
+                    statements=[],
+                    relations=[],
+                    resolved_intent_json={
+                        "selected_option": selection["visible_choice_text"],
+                        "authority_scope_hash": selection["authority_scope_hash"],
+                    },
+                    blocking_clarifications=[],
+                    content=compiled,
+                    changeset_ref=None,
+                    expected_changeset_version=None,
+                    semantic_request_ref=str(selection["semantic_request_ref"]),
+                    authority_scope_hash=str(selection["authority_scope_hash"]),
+                    precondition_hash=str(selection["precondition_hash"]),
+                )
+            ingress = session.scalar(
+                select(DeferredIngress).where(
+                    DeferredIngress.ref_id == selection["deferred_ingress_ref"]
+                )
+            )
+            if ingress is not None:
+                ingress.status = "completed"
+                ingress.completed_at = utc_now()
+    except DocketError as exc:
+        execution = {
+            "ok": False,
+            "state": "blocked_validation",
+            "summary": "Decision remains authorized, but Docket could not execute it.",
+            "disposition": "rejected_validation",
+            "error": exc.as_dict()["error"],
+        }
+    disposition = str(execution.get("disposition", "unknown"))
+    if execution.get("state") == "committed" or disposition == "replayed_request":
+        response_text = f"Done — {selection['visible_choice_text']}"
+    else:
+        error = execution.get("error")
+        error_code = (
+            str(error.get("code", "unknown"))
+            if isinstance(error, dict)
+            else disposition
+        )
+        response_text = (
+            "I recorded your decision, but Docket could not apply it "
+            f"(`{error_code}`). Your authorization remains available; you do not "
+            "need to repeat it."
+        )
+    trace_id = uuid.uuid5(
+        uuid.NAMESPACE_URL,
+        f"docket:semantic-option-selection:{payload.discord_interaction_id}",
+    )
+    with session_scope() as session:
+        response = ProvenanceService(session).capture_agent_response(
+            AgentResponseCapture(
+                request_id=payload.request_id,
+                guild_id=payload.guild_id,
+                channel_id=payload.channel_id,
+                parent_channel_id=payload.parent_channel_id,
+                source_message_id=payload.discord_interaction_id,
+                actor_id=payload.discord_user_id,
+                utterance_ref=str(selection["utterance_ref"]),
+                turn_id=f"semantic-option:{payload.discord_interaction_id}",
+                session_id=str(selection["semantic_request_ref"]),
+                model_identifier="docket-deterministic-selection-v1",
+                verbatim_text=response_text,
+                generated_at=utc_now(),
+                trace_id=trace_id,
+            )
+        )
+    selection_affected = selection.get("affected_refs")
+    execution_affected = execution.get("affected_refs")
+    return {
+        **selection,
+        "state": execution.get("state", selection["state"]),
+        "summary": execution.get("summary", selection["summary"]),
+        "affected_refs": list(
+            dict.fromkeys(
+                [
+                    *(selection_affected if isinstance(selection_affected, list) else []),
+                    *(execution_affected if isinstance(execution_affected, list) else []),
+                    str(response["ref"]),
+                ]
+            )
+        ),
+        "disposition": disposition,
+        "execution": execution,
+        "response_ref": response["ref"],
+        "response_text": response_text,
+        "response_delivery_state": response["state"],
+    }
 
 
 @router.post("/specification-signoffs")

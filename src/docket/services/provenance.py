@@ -29,6 +29,7 @@ from docket.models import (
     OperatorUtterance,
     Record,
     RecordSource,
+    SemanticRequest,
     ToolInvocation,
 )
 from docket.models.base import utc_now
@@ -77,6 +78,22 @@ def _conversation_ref(guild_id: str, channel_id: str) -> str:
 
 def _message_ref(guild_id: str, channel_id: str, message_id: str) -> str:
     return f"discord_message:{guild_id}:{channel_id}:{message_id}"
+
+
+def _interaction_ref(guild_id: str, channel_id: str, interaction_id: str) -> str:
+    return f"discord_interaction:{guild_id}:{channel_id}:{interaction_id}"
+
+
+def _response_source_ref(
+    utterance: OperatorUtterance,
+    *,
+    guild_id: str,
+    channel_id: str,
+    source_message_id: str,
+) -> str:
+    if utterance.utterance_kind in {"button_selection", "select_selection"}:
+        return _interaction_ref(guild_id, channel_id, source_message_id)
+    return _message_ref(guild_id, channel_id, source_message_id)
 
 
 def _actor_ref(actor_id: str) -> str:
@@ -246,14 +263,19 @@ class ProvenanceService:
         utterance = self.session.scalar(
             select(OperatorUtterance).where(OperatorUtterance.ref_id == request.utterance_ref)
         )
-        expected_message_ref = _message_ref(
-            request.guild_id,
-            request.channel_id,
-            request.source_message_id,
+        if utterance is None:
+            raise DocketError(
+                code="response_utterance_binding_invalid",
+                message="Agent response does not bind to the authenticated source utterance.",
+            )
+        expected_message_ref = _response_source_ref(
+            utterance,
+            guild_id=request.guild_id,
+            channel_id=request.channel_id,
+            source_message_id=request.source_message_id,
         )
         if (
-            utterance is None
-            or utterance.source_message_ref != expected_message_ref
+            utterance.source_message_ref != expected_message_ref
             or utterance.actor_ref != _actor_ref(request.actor_id)
         ):
             raise DocketError(
@@ -386,14 +408,19 @@ class ProvenanceService:
                 OperatorUtterance.ref_id == request.utterance_ref
             )
         )
-        expected_message_ref = _message_ref(
-            request.guild_id,
-            request.channel_id,
-            request.source_message_id,
+        if utterance is None:
+            raise DocketError(
+                code="response_utterance_binding_invalid",
+                message="Agent turn does not bind to the authenticated source utterance.",
+            )
+        expected_message_ref = _response_source_ref(
+            utterance,
+            guild_id=request.guild_id,
+            channel_id=request.channel_id,
+            source_message_id=request.source_message_id,
         )
         if (
-            utterance is None
-            or utterance.source_message_ref != expected_message_ref
+            utterance.source_message_ref != expected_message_ref
             or utterance.actor_ref != _actor_ref(request.actor_id)
         ):
             raise DocketError(
@@ -473,6 +500,22 @@ class ProvenanceService:
             for ref in invocation.result_refs:
                 if ref not in resulting_semantic_refs:
                     resulting_semantic_refs.append(ref)
+        if turn.semantic_request_ref is not None:
+            semantic_request = self.session.scalar(
+                select(SemanticRequest).where(
+                    SemanticRequest.ref_id == turn.semantic_request_ref
+                )
+            )
+            if semantic_request is not None:
+                for semantic_ref in (
+                    semantic_request.ref_id,
+                    semantic_request.committed_changeset_ref,
+                ):
+                    if (
+                        semantic_ref is not None
+                        and semantic_ref not in resulting_semantic_refs
+                    ):
+                        resulting_semantic_refs.append(semantic_ref)
         finalized = IntentSessionService(self.session).finalize_turn(
             IntentTurnFinalize(
                 turn_ref=turn.ref_id,
@@ -509,10 +552,20 @@ class ProvenanceService:
             .where(AgentResponseProjection.response_id == response.id)
             .with_for_update()
         )
-        expected_message_ref = _message_ref(
-            request.guild_id,
-            request.channel_id,
-            request.source_message_id,
+        utterance_ref = response.responds_to_utterance_refs[0]
+        utterance = self.session.scalar(
+            select(OperatorUtterance).where(OperatorUtterance.ref_id == utterance_ref)
+        )
+        if utterance is None:
+            raise DocketError(
+                code="response_utterance_binding_invalid",
+                message="Agent response source utterance no longer exists.",
+            )
+        expected_message_ref = _response_source_ref(
+            utterance,
+            guild_id=request.guild_id,
+            channel_id=request.channel_id,
+            source_message_id=request.source_message_id,
         )
         if projection is None or projection.source_message_ref != expected_message_ref:
             raise DocketError(

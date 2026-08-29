@@ -12,7 +12,6 @@ display:
 platform_toolsets:
   discord:
     - browser
-    - clarify
     - code_execution
     - computer_use
     - delegation

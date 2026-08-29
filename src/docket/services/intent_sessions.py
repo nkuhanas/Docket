@@ -190,6 +190,8 @@ class IntentSessionService:
             agent_response_ref=request.agent_response_ref,
             resulting_semantic_refs=[],
             response_disposition=request.response_disposition,
+            semantic_request_ref=request.semantic_request_ref,
+            authority_substitutions_json=dict(request.authority_substitutions),
         )
         self.session.add(turn)
         self.session.flush()

@@ -38,6 +38,7 @@ from docket.models.continuity import (
     ExecutionLease,
     GatewayLifetime,
     PersistedSemanticOption,
+    SemanticPromptProjection,
 )
 from docket.models.core import (
     Account,
@@ -166,6 +167,7 @@ __all__ = [
     "RuntimeLogEntry",
     "ScheduledNotification",
     "SemanticCandidate",
+    "SemanticPromptProjection",
     "SemanticRequest",
     "SemanticRequestAttempt",
     "SenderIdentityEmail",
