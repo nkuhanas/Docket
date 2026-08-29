@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 from pydantic import ValidationError
@@ -61,8 +61,8 @@ def calendar_fixture(session: Session) -> tuple[Account, CalendarSyncState]:
     state = CalendarSyncState(
         account_id=account.id,
         calendar_id=get_settings().google_calendar_id,
-        window_start=now - timedelta(days=30),
-        window_end=now + timedelta(days=400),
+        window_start=datetime(2026, 7, 1, tzinfo=UTC),
+        window_end=datetime(2027, 10, 1, tzinfo=UTC),
         snapshot_generation=None,
         status="current",
         last_attempt_at=now,
