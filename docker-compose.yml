@@ -1,5 +1,39 @@
 name: docket
 
+x-discord-ingress: &discord-ingress
+  image: docket-docket:latest
+  build:
+    context: .
+    args:
+      DOCKET_BUILD_REVISION: ${DOCKET_BUILD_REVISION:-unknown}
+  user: "${DOCKET_UID:-10001}:${DOCKET_GID:-10001}"
+  command: ["./.venv/bin/docket-discord-ingress"]
+  environment:
+    DOCKET_INGRESS_DB_HOST: postgres
+    DOCKET_INGRESS_DB_PORT: "5432"
+    DOCKET_INGRESS_DB_NAME: docket
+    DOCKET_INGRESS_DB_PASSWORD_FILE: /run/secrets/discord_ingress_db_password
+    DOCKET_DISCORD_BOT_TOKEN_FILE: /run/secrets/discord_bot_token
+    DOCKET_INTERACTION_SIGNING_KEY_FILE: /run/secrets/interaction_signing_key
+    DOCKET_OPERATOR_DISCORD_USER_ID: ${DOCKET_OPERATOR_DISCORD_USER_ID:-000000000000000001}
+    DOCKET_DISCORD_GUILD_ID: ${DOCKET_DISCORD_GUILD_ID:-000000000000000002}
+    DOCKET_CHAT_CHANNEL_ID: ${DOCKET_CHAT_CHANNEL_ID:-000000000000000003}
+    DOCKET_QUEUE_CHANNEL_ID: ${DOCKET_QUEUE_CHANNEL_ID:-000000000000000004}
+    DOCKET_LOG_LEVEL: ${DOCKET_LOG_LEVEL:-INFO}
+  depends_on:
+    docket:
+      condition: service_healthy
+  secrets:
+    - discord_ingress_db_password
+    - discord_bot_token
+    - interaction_signing_key
+  healthcheck:
+    test: ["CMD", "test", "-f", "/tmp/docket-ingress-ready"]
+    interval: 5s
+    timeout: 2s
+    retries: 20
+  networks: [docket-internal]
+
 services:
   postgres:
     image: postgres:16.9-bookworm
@@ -61,40 +95,14 @@ services:
     networks: [docket-internal]
 
   discord-ingress:
+    <<: *discord-ingress
     profiles: ["hermes"]
-    image: docket-docket:latest
-    build:
-      context: .
-      args:
-        DOCKET_BUILD_REVISION: ${DOCKET_BUILD_REVISION:-unknown}
     restart: unless-stopped
-    user: "${DOCKET_UID:-10001}:${DOCKET_GID:-10001}"
-    command: ["./.venv/bin/docket-discord-ingress"]
-    environment:
-      DOCKET_INGRESS_DB_HOST: postgres
-      DOCKET_INGRESS_DB_PORT: "5432"
-      DOCKET_INGRESS_DB_NAME: docket
-      DOCKET_INGRESS_DB_PASSWORD_FILE: /run/secrets/discord_ingress_db_password
-      DOCKET_DISCORD_BOT_TOKEN_FILE: /run/secrets/discord_bot_token
-      DOCKET_INTERACTION_SIGNING_KEY_FILE: /run/secrets/interaction_signing_key
-      DOCKET_OPERATOR_DISCORD_USER_ID: ${DOCKET_OPERATOR_DISCORD_USER_ID:-000000000000000001}
-      DOCKET_DISCORD_GUILD_ID: ${DOCKET_DISCORD_GUILD_ID:-000000000000000002}
-      DOCKET_CHAT_CHANNEL_ID: ${DOCKET_CHAT_CHANNEL_ID:-000000000000000003}
-      DOCKET_QUEUE_CHANNEL_ID: ${DOCKET_QUEUE_CHANNEL_ID:-000000000000000004}
-      DOCKET_LOG_LEVEL: ${DOCKET_LOG_LEVEL:-INFO}
-    depends_on:
-      docket:
-        condition: service_healthy
-    secrets:
-      - discord_ingress_db_password
-      - discord_bot_token
-      - interaction_signing_key
-    healthcheck:
-      test: ["CMD", "test", "-f", "/tmp/docket-ingress-ready"]
-      interval: 5s
-      timeout: 2s
-      retries: 20
-    networks: [docket-internal]
+
+  discord-ingress-handoff:
+    <<: *discord-ingress
+    profiles: ["ingress-handoff"]
+    restart: "no"
 
   searxng:
     image: ${SEARXNG_IMAGE:-docker.io/searxng/searxng:2026.7.19-6da6eee26@sha256:b8ca38ba06eea544d7555e88321e212ddc0d5c3c7de055419cfb2e5c6bf30812}

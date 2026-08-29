@@ -957,6 +957,7 @@ scripts/docket compose-smoke
 scripts/docket build
 scripts/docket predeploy
 scripts/docket deploy
+scripts/docket deploy-ingress
 scripts/docket backup
 DOCKET_BACKUP_AGE_IDENTITY_FILE=secrets/restore/backup_age_identity \
   scripts/docket verify-restore
@@ -966,13 +967,35 @@ scripts/docket status
 `compose-smoke` is forced onto a separate Compose project, volume, port, dummy
 credential directory, and `.env.example`; it is safe when the production
 `.env` exists. `predeploy` requires a clean `main` exactly equal to
-`origin/main`, successful GitHub CI for that SHA, production mode, and drained
-operations/outbox state. `deploy` then writes a PostgreSQL custom-format backup
-under ignored `backups/`, retains the old image with a timestamped rollback
-tag, rebuilds and recreates Docket and Hermes, and verifies Docket health,
-Alembic head, the Discord gateway, the matching 19-tool Docket and Hermes
-registries, the declared Hermes plugin version, its private listener, and
-drained durable state.
+`origin/main`, successful GitHub CI for that SHA, and production mode. `deploy`
+builds first, then creates a database drain barrier and asks Hermes to stop
+claiming new turns. The deployment-stable `discord-ingress` remains connected
+and appends authenticated messages and semantic selections to PostgreSQL while
+execution is deferred. The command waits for all pre-barrier execution leases
+and actual provider/outbox claims, takes the custom-format backup, applies
+migrations, recreates only Docket and Hermes, releases the drain, and verifies
+Docket health, Alembic head, both Discord gateway processes, the matching
+22-tool Docket and Hermes registries, the declared plugin version, and the
+private listener. Queued Operations, reconciliation-required rows, and
+unclaimed outbox events are durable and intentionally do not block restart.
+
+The first rollout of the continuity schema is a narrow expand-only bootstrap:
+the new image takes a pre-bootstrap backup, adds the compatible tables and
+restricted `docket_ingress` role, and connects stable ingress while the old
+Hermes gateway is still live. It then enters the same drain sequence and takes
+the authoritative drained backup before replacing workers. Later normal
+deployments request the drain before backup and migration.
+
+`deploy` never replaces `discord-ingress`. Use `deploy-ingress` only for code
+whose operational target is that minimal writer. It drains execution, removes
+the buttons from every delivered persisted semantic prompt, starts the new
+`discord-ingress-handoff` writer before replacing the primary, verifies the new
+primary is connected, stops the handoff, and creates fresh projections from the
+exact persisted semantic scopes. During overlap, typed-message writes are
+idempotent; no mutation-authorizing component is visible. If the procedure
+fails after handoff starts, it leaves that writer running and reports the
+failure rather than creating an ingress gap. Do not use a raw Compose restart
+for this service.
 
 The deploy-time custom dump is an immediate local rollback safeguard. The
 independent durable backup worker must also be enabled with
@@ -990,8 +1013,9 @@ before running older application code.
 
 | Change | Required action | Why |
 | --- | --- | --- |
-| Docket Python source or dependency lock | `docker compose up -d --build docket` | Source and virtual environment are image layers |
-| Alembic migration | Rebuild/recreate Docket | Startup runs `alembic upgrade head` |
+| Docket Python source or dependency lock | `scripts/docket deploy` | Source and virtual environment are image layers; the supported path preserves ingress and drains execution |
+| Stable Discord ingress source | `scripts/docket deploy-ingress` after its compatible Docket release | Semantic controls require explicit quiescence and rolling writer handoff |
+| Alembic migration | `scripts/docket deploy` | Backup, migration, and worker replacement occur behind the durable drain |
 | Hermes plugin Python | Restart Hermes | Module and hook registration are process-cached |
 | Mounted Hermes skill | Restart Hermes; use a new turn | Registry/session context can retain old guidance |
 | `.runtime/hermes/config.yaml` | Restart Hermes | Active config is read at gateway startup |

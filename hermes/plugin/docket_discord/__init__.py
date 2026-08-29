@@ -47,6 +47,9 @@ _MCP_TRACE_PATH = re.compile(r"^/internal/docket/discord/mcp-traces/([0-9a-fA-F-
 _SEMANTIC_PROMPT_PATH = re.compile(
     r"^/internal/docket/discord/semantic-prompts/([0-9a-fA-F-]{36})$"
 )
+_SEMANTIC_PROMPT_QUIESCE_PATH = re.compile(
+    r"^/internal/docket/discord/semantic-prompts/([0-9a-fA-F-]{36})/quiesce$"
+)
 _UTTERANCE_REF = re.compile(r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")
 _RESPONSE_REF = re.compile(r"^rsp_[0-9A-HJKMNP-TV-Z]{26}$")
 _PUBLIC_REF = re.compile(r"^[a-z][a-z0-9]{1,7}_[0-9A-HJKMNP-TV-Z]{26}$")
@@ -3299,6 +3302,44 @@ async def _put_semantic_prompt(projection_id: uuid.UUID, payload: dict[str, Any]
     }
 
 
+async def _quiesce_semantic_prompt(
+    projection_id: uuid.UUID, payload: dict[str, Any]
+) -> dict[str, Any]:
+    import discord
+
+    request_id = _require_request_id(payload)
+    if str(payload.get("projection_id")) != str(projection_id):
+        raise PluginAPIError("invalid_semantic_prompt", "Projection path and body differ", 422)
+    projection_ref = str(payload.get("projection_ref", ""))
+    if _PUBLIC_REF.fullmatch(projection_ref) is None or not projection_ref.startswith("proj_"):
+        raise PluginAPIError("invalid_semantic_prompt", "Projection reference is invalid", 422)
+    try:
+        projection_version = int(payload["projection_version"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PluginAPIError(
+            "invalid_semantic_prompt", "Projection version is invalid", 422
+        ) from exc
+    channel_id = _require_snowflake(payload.get("channel_id"), "channel_id")
+    message_id = _require_snowflake(payload.get("message_id"), "message_id")
+    _loop, _adapter, client = _discord_runtime()
+    try:
+        channel = await client.fetch_channel(int(channel_id))
+        message = await channel.fetch_message(int(message_id))
+    except discord.NotFound as exc:
+        raise PluginAPIError(
+            "semantic_prompt_not_found", "Semantic prompt was not found", 404
+        ) from exc
+    await message.edit(view=None)
+    return {
+        "request_id": request_id,
+        "projection_id": str(projection_id),
+        "projection_ref": projection_ref,
+        "projection_version": projection_version,
+        "message_id": message_id,
+        "quiesced": True,
+    }
+
+
 def _post_button_response(payload: dict[str, Any], *, local_action: bool = False) -> dict[str, Any]:
     endpoint = "local-action-responses" if local_action else "approval-responses"
     request = urllib.request.Request(
@@ -4110,6 +4151,14 @@ class _PluginRequestHandler(BaseHTTPRequestHandler):
                 projection_id = uuid.UUID(match.group(1))
                 with _operation_lock(f"semantic-prompt:{projection_id}"):
                     result = _run_on_discord(_put_semantic_prompt(projection_id, payload))
+            elif method == "POST" and (
+                match := _SEMANTIC_PROMPT_QUIESCE_PATH.fullmatch(self.path)
+            ):
+                projection_id = uuid.UUID(match.group(1))
+                with _operation_lock(f"semantic-prompt:{projection_id}"):
+                    result = _run_on_discord(
+                        _quiesce_semantic_prompt(projection_id, payload)
+                    )
             elif method == "PUT" and (match := _THREAD_LIFECYCLE_PATH.fullmatch(self.path)):
                 daily_thread_id = uuid.UUID(match.group(1))
                 result = _run_on_discord(_set_thread_lifecycle(daily_thread_id, payload))

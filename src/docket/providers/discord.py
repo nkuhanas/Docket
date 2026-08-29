@@ -38,6 +38,10 @@ class DiscordProjectionAdapter(Protocol):
         self, projection_id: uuid.UUID, payload: dict[str, Any]
     ) -> dict[str, Any]: ...
 
+    def quiesce_semantic_prompt(
+        self, projection_id: uuid.UUID, payload: dict[str, Any]
+    ) -> dict[str, Any]: ...
+
     def post_deferred_ingress(self, payload: dict[str, Any]) -> dict[str, Any]: ...
 
 
@@ -122,6 +126,15 @@ class HttpDiscordProjectionAdapter:
             payload,
         )
 
+    def quiesce_semantic_prompt(
+        self, projection_id: uuid.UUID, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/internal/docket/discord/semantic-prompts/{projection_id}/quiesce",
+            payload,
+        )
+
     def post_deferred_ingress(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/internal/docket/discord/deferred-ingress", payload)
 
@@ -159,6 +172,26 @@ class FakeDiscordProjectionAdapter:
             "request_id": payload["request_id"],
             "deferred_ingress_ref": payload["deferred_ingress_ref"],
             "accepted": True,
+        }
+
+    def quiesce_semantic_prompt(
+        self, projection_id: uuid.UUID, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        self._check_request(payload)
+        key = str(projection_id)
+        message = self.backend.semantic_prompts.get(key)
+        if message is None or message["message_id"] != payload["message_id"]:
+            raise DiscordProjectionError(
+                "semantic_prompt_not_found", "Semantic prompt was not found"
+            )
+        message["controls"] = []
+        return {
+            "request_id": payload["request_id"],
+            "projection_id": key,
+            "projection_ref": payload["projection_ref"],
+            "projection_version": payload["projection_version"],
+            "message_id": message["message_id"],
+            "quiesced": True,
         }
 
     @staticmethod

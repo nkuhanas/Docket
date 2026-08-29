@@ -16,6 +16,7 @@ from docket.models import (
     Entity,
     GatewayLifetime,
     OperatorUtterance,
+    OutboxEvent,
     PersistedSemanticOption,
     SemanticPromptProjection,
     SemanticRequest,
@@ -27,6 +28,7 @@ from docket.schemas.authority import SemanticOptionDraft
 from docket.security import issue_semantic_option_token
 from docket.services.deferred_ingress import DeferredIngressRunner
 from docket.services.gateway_lifetimes import GatewayLifetimeService
+from docket.services.ingress_deployment import IngressDeploymentService
 from docket.services.ingress_ledger import IngressIdentity, IngressLedgerService
 from docket.services.interactive_authority import InteractiveAuthorityService
 from docket.services.provenance import ProvenanceService
@@ -77,6 +79,88 @@ def _entity_option(authority_ref: str) -> SemanticOptionDraft:
             },
         }
     )
+
+
+@pytest.mark.integration
+def test_ingress_handoff_quiesces_and_regenerates_exact_semantic_options(
+    session_factory,
+) -> None:
+    settings = get_settings()
+    adapter = FakeDiscordProjectionAdapter()
+    with session_factory.begin() as session:
+        utterance_ref = _capture_utterance(
+            session,
+            message_id="1542799000000000190",
+            text="Offer the exact Cal Poly registration choice.",
+        )
+        InteractiveAuthorityService(session).process_turn(
+            utterance_ref=utterance_ref,
+            request_key=(
+                f"discord:{settings.discord_guild_id}:{settings.chat_channel_id}:"
+                "1542799000000000190:0"
+            ),
+            actor_id=settings.operator_discord_user_id,
+            intent_session_ref=None,
+            expected_session_version=None,
+            statements=[],
+            relations=[],
+            resolved_intent_json={"kind": "identity_clarification"},
+            blocking_clarifications=[
+                {
+                    "blocking": True,
+                    "code": "identity_resolution_required",
+                    "question": "Should Docket register Cal Poly?",
+                }
+            ],
+            content=None,
+            changeset_ref=None,
+            expected_changeset_version=None,
+            semantic_options=[_entity_option(utterance_ref)],
+        )
+        prompt = session.scalar(select(SemanticPromptProjection))
+        option = session.scalar(select(PersistedSemanticOption))
+        assert prompt is not None and option is not None
+        prompt.status = "delivered"
+        prompt.message_id = "1542799000000000191"
+        original_ref = prompt.ref_id
+        original_authority_hash = option.authority_scope_hash
+        original_precondition_hash = option.precondition_hash
+        original_visible_text = option.visible_text
+        adapter.backend.semantic_prompts[str(prompt.id)] = {
+            "message_id": prompt.message_id,
+            "channel_id": prompt.channel_id,
+            "controls": [{"custom_id": "persisted"}],
+        }
+
+    service = IngressDeploymentService(session_factory, adapter)
+    assert service.quiesce()["projection_refs"] == [original_ref]
+    assert service.regenerate()["count"] == 1
+
+    with session_factory.begin() as session:
+        prompts = list(
+            session.scalars(
+                select(SemanticPromptProjection).order_by(
+                    SemanticPromptProjection.projection_version
+                )
+            )
+        )
+        assert len(prompts) == 2
+        assert prompts[0].status == "superseded"
+        assert prompts[0].last_error_code == "ingress_deployment_regenerated"
+        assert prompts[1].status == "pending"
+        replacement = session.scalar(
+            select(PersistedSemanticOption).where(
+                PersistedSemanticOption.prompt_projection_id == prompts[1].id
+            )
+        )
+        assert replacement is not None
+        assert replacement.authority_scope_hash == original_authority_hash
+        assert replacement.precondition_hash != original_precondition_hash
+        assert replacement.visible_text == original_visible_text
+        assert session.scalar(
+            select(OutboxEvent).where(OutboxEvent.aggregate_id == prompts[1].id)
+        ) is not None
+    assert adapter.backend.semantic_prompts[str(prompts[0].id)]["controls"] == []
 
 
 @pytest.mark.integration

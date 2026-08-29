@@ -19,6 +19,44 @@ def test_hermes_readiness_uses_generated_mcp_tool_count() -> None:
     assert deploy.index("gmail_triage_setup") < deploy.index("postdeploy")
 
 
+def test_deploy_drains_execution_but_preserves_queued_durable_work() -> None:
+    script = Path("scripts/docket").read_text(encoding="utf-8")
+    deploy = script.split("\ndeploy() {", 1)[1].split("\n}\n", 1)[0]
+    ingress_deploy = script.split("\ndeploy_ingress() {", 1)[1].split("\n}\n", 1)[0]
+
+    assert "where status = 'running'" in script
+    assert "where status = 'delivering'" in script
+    assert "reconciliation_required" not in script.split("operational_counts()", 1)[1].split(
+        "\n}", 1
+    )[0]
+    assert "request_database_drain" in deploy
+    assert "wait_for_database_drain" in deploy
+    drained = deploy.index('wait_for_operational_idle')
+    assert drained < deploy.index('backup=$(backup_database)', drained)
+    assert deploy.index('backup=$(backup_database)', drained) < deploy.index(
+        "alembic upgrade head", drained
+    )
+    assert "compose up -d --no-build --force-recreate docket hermes" in deploy
+    assert "--force-recreate docket hermes discord-ingress" not in deploy
+
+    for marker in (
+        "quiesce-ingress-options",
+        "discord-ingress-handoff",
+        "--force-recreate discord-ingress",
+        "regenerate-ingress-options",
+    ):
+        assert marker in ingress_deploy
+    assert ingress_deploy.index("quiesce-ingress-options") < ingress_deploy.index(
+        "discord-ingress-handoff"
+    )
+    assert ingress_deploy.index("discord-ingress-handoff") < ingress_deploy.index(
+        "--force-recreate discord-ingress"
+    )
+    assert ingress_deploy.index("--force-recreate discord-ingress") < ingress_deploy.rindex(
+        "regenerate-ingress-options"
+    )
+
+
 def test_gmail_triage_installer_pins_an_isolated_profile_and_local_delivery() -> None:
     script = Path("scripts/setup-hermes-triage.sh").read_text(encoding="utf-8")
     config = Path("hermes/triage-config.example.yaml").read_text(encoding="utf-8")

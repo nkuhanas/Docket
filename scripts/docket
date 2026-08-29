@@ -105,6 +105,23 @@ compose_smoke() (
     smoke_compose config --quiet
     smoke_compose up -d --build --wait --wait-timeout 180 postgres docket
     uv run python scripts/compose-mcp-smoke.py
+    smoke_compose exec -T docket ./.venv/bin/python - <<'PY'
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import ProgrammingError
+
+from docket.discord_ingress import ingress_database_url
+
+engine = create_engine(ingress_database_url())
+with engine.connect() as connection:
+    assert connection.scalar(text("SELECT count(*) FROM persisted_semantic_options")) == 0
+    try:
+        connection.execute(text("UPDATE operator_utterances SET verbatim_text = verbatim_text"))
+    except ProgrammingError:
+        connection.rollback()
+    else:
+        raise AssertionError("restricted ingress role unexpectedly has UPDATE authority")
+engine.dispose()
+PY
 )
 
 build_image() {
@@ -133,10 +150,10 @@ operational_counts() {
     compose exec -T postgres psql -U docket -d docket -Atc \
         "select
            (select count(*) from operations
-             where status in ('pending','running','reconciliation_required'))
+             where status = 'running')
            || ' ' ||
            (select count(*) from outbox_events
-             where status in ('pending','delivering'));"
+             where status = 'delivering');"
 }
 
 assert_operationally_idle() {
@@ -146,9 +163,9 @@ assert_operationally_idle() {
     counts=$(operational_counts)
     read -r operations outbox <<<"$counts"
     [[ "$operations" == "0" ]] ||
-        die "deployment blocked: $operations active or reconciliation-required operation(s)"
+        die "deployment blocked: $operations provider operation(s) are executing"
     [[ "$outbox" == "0" ]] ||
-        die "deployment blocked: $outbox pending or delivering outbox event(s)"
+        die "deployment blocked: $outbox outbox delivery or deliveries are in flight"
 }
 
 wait_for_operational_idle() {
@@ -200,8 +217,101 @@ predeploy() {
 
     init_docker
     [[ -n "$(compose ps -q postgres)" ]] || die "the production PostgreSQL service is not running"
-    assert_operationally_idle
     printf 'Predeploy passed for %s at %s\n' "$repo" "$revision"
+}
+
+ensure_ingress_credential() {
+    local configured_credentials_dir
+    local credential_path
+    configured_credentials_dir=$(env_value DOCKET_CREDENTIALS_DIR)
+    case "$configured_credentials_dir" in
+        /*) credential_path="$configured_credentials_dir/discord_ingress_db_password" ;;
+        *) credential_path="$ROOT/${configured_credentials_dir#./}/discord_ingress_db_password" ;;
+    esac
+    if [[ -s "$credential_path" ]]; then
+        return
+    fi
+    mkdir -p "$(dirname "$credential_path")"
+    umask 077
+    require_command openssl
+    openssl rand -hex 32 >"$credential_path"
+    chmod 600 "$credential_path"
+    printf 'Created the restricted Discord ingress database credential.\n'
+}
+
+request_hermes_drain() {
+    local principal=${1:-scripts/docket deploy}
+    compose exec -T hermes python -c \
+        "from gateway.drain_control import write_drain_request; write_drain_request(principal='$principal', suppress_notification=True)" \
+        >/dev/null
+}
+
+clear_hermes_drain() {
+    compose exec -T hermes python -c \
+        "from gateway.drain_control import clear_drain_request; clear_drain_request()" \
+        >/dev/null 2>&1 || true
+}
+
+wait_for_hermes_drain() {
+    local attempt
+    local state
+    for attempt in {1..180}; do
+        if [[ -f "$ROOT/.runtime/hermes/gateway_state.json" ]]; then
+            state=$(uv run python -c \
+                "import json; d=json.load(open('.runtime/hermes/gateway_state.json')); print(f\"{d.get('gateway_state')} {d.get('active_agents', -1)}\")")
+            if [[ "$state" == "draining 0" ]]; then
+                return
+            fi
+        fi
+        sleep 1
+    done
+    die "Hermes did not reach draining with zero active turns within 180 seconds"
+}
+
+wait_for_discord_ingress() {
+    local service=${1:-discord-ingress}
+    local attempt
+    local container
+    local health
+    container=$(compose ps -q "$service")
+    [[ -n "$container" ]] || die "$service is not running"
+    for attempt in {1..120}; do
+        health=$(docker_engine inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container")
+        [[ "$health" == "healthy" ]] && return
+        [[ "$health" == "unhealthy" || "$health" == "exited" ]] && break
+        sleep 1
+    done
+    die "$service did not become healthy"
+}
+
+database_continuity() {
+    compose run --rm --no-deps docket ./.venv/bin/docket-continuity "$@"
+}
+
+request_database_drain() {
+    local output
+    output=$(database_continuity request --requested-by "scripts/docket deploy")
+    uv run python -c "import json,sys; print(json.load(sys.stdin)['ref'])" <<<"$output"
+}
+
+wait_for_database_drain() {
+    local drain_ref=$1
+    local attempt
+    local output
+    local status_line
+    for attempt in {1..180}; do
+        output=$(database_continuity status "$drain_ref")
+        status_line=$(uv run python -c \
+            "import json,sys; d=json.load(sys.stdin); print(f\"{int(d['drained'])} {int(d['timed_out'])}\")" \
+            <<<"$output")
+        [[ "$status_line" == "1 0" ]] && return
+        [[ "$status_line" == "0 1" ]] && {
+            printf '%s\n' "$output" >&2
+            return 1
+        }
+        sleep 1
+    done
+    return 1
 }
 
 backup_database() {
@@ -270,6 +380,7 @@ postdeploy() {
     local expected_plugin_version
     local plugin_line
     wait_for_docket
+    wait_for_discord_ingress
     compose exec -T docket ./.venv/bin/alembic current | rg -q '\(head\)' ||
         die "Docket database is not at the Alembic head"
     expected_plugin_version=$(
@@ -284,23 +395,34 @@ postdeploy() {
     compose exec -T hermes python -c \
         "import socket; s=socket.create_connection(('127.0.0.1',8787),3); s.close()" ||
         die "Hermes projection listener is unreachable"
-    wait_for_operational_idle
+    assert_operationally_idle
 }
 
 deploy() {
     predeploy
     local backup
+    local drain_ref=""
     local old_container
     local old_image
     local rollback_tag
     local log_first_line=1
     local revision
     local timestamp
+    local cleanup_on_failure=0
+
+    deploy_failure_cleanup() {
+        if ((cleanup_on_failure)); then
+            if [[ -n "$drain_ref" ]]; then
+                database_continuity abort "$drain_ref" >/dev/null 2>&1 || true
+            fi
+            clear_hermes_drain
+            printf 'Deployment failed; released the drain barrier without killing active work.\n' >&2
+        fi
+    }
 
     revision=$(git rev-parse --short=12 HEAD)
     timestamp=$(date -u +%Y%m%dT%H%M%SZ)
-    backup=$(backup_database)
-    printf 'Database backup created: %s\n' "$backup"
+    ensure_ingress_credential
     old_container=$(compose ps -q docket)
     if [[ -n "$old_container" ]]; then
         old_image=$(docker_engine inspect --format '{{.Image}}' "$old_container")
@@ -316,12 +438,94 @@ deploy() {
     fi
 
     build_image
+    if [[ -z "$(compose ps -q discord-ingress)" ]]; then
+        backup=$(backup_database)
+        printf 'Pre-bootstrap database backup created: %s\n' "$backup"
+        compose run --rm --no-deps docket sh -c \
+            './.venv/bin/alembic upgrade head && ./.venv/bin/docket-provision-ingress-role'
+        compose up -d --no-build --wait --wait-timeout 120 discord-ingress
+        printf 'Started deployment-stable Discord ingress.\n'
+    fi
+    wait_for_discord_ingress
+    drain_ref=$(request_database_drain)
+    cleanup_on_failure=1
+    trap deploy_failure_cleanup EXIT
+    printf 'Deployment drain requested: %s\n' "$drain_ref"
+    request_hermes_drain
+    if ! wait_for_hermes_drain || ! wait_for_database_drain "$drain_ref"; then
+        database_continuity abort "$drain_ref" >/dev/null || true
+        clear_hermes_drain
+        die "deployment drain timed out; active work was not interrupted"
+    fi
+    wait_for_operational_idle
+    backup=$(backup_database)
+    printf 'Drained database backup created: %s\n' "$backup"
+    compose run --rm --no-deps docket sh -c \
+        './.venv/bin/alembic upgrade head && ./.venv/bin/docket-provision-ingress-role'
     compose up -d --no-build --force-recreate docket hermes
     wait_for_hermes "$log_first_line"
+    clear_hermes_drain
+    database_continuity release "$drain_ref" >/dev/null
     gmail_triage_setup
     postdeploy
+    cleanup_on_failure=0
+    trap - EXIT
     printf 'Deployed %s\nBackup: %s\nPrevious image: %s\n' \
         "$revision" "$backup" "$rollback_tag"
+}
+
+deploy_ingress() {
+    predeploy
+    local drain_ref=""
+    local cleanup_on_failure=0
+    local options_quiesced=0
+
+    ingress_failure_cleanup() {
+        if ((cleanup_on_failure)); then
+            if ((options_quiesced)); then
+                database_continuity regenerate-ingress-options >/dev/null 2>&1 || true
+            fi
+            if [[ -n "$drain_ref" ]]; then
+                database_continuity abort "$drain_ref" >/dev/null 2>&1 || true
+            fi
+            clear_hermes_drain
+            printf 'Ingress deployment failed; the handoff writer was left running if started.\n' >&2
+        fi
+    }
+
+    ensure_ingress_credential
+    [[ -n "$(compose ps -q discord-ingress)" ]] ||
+        die "ingress-only deployment requires the stable ingress to be running"
+    compose exec -T docket ./.venv/bin/alembic current | rg -q '\(head\)' ||
+        die "ingress-only deployment requires the database at the current Alembic head"
+    build_image
+    drain_ref=$(request_database_drain)
+    cleanup_on_failure=1
+    trap ingress_failure_cleanup EXIT
+    request_hermes_drain "scripts/docket deploy-ingress"
+    if ! wait_for_hermes_drain || ! wait_for_database_drain "$drain_ref"; then
+        die "ingress deployment drain timed out; active work was not interrupted"
+    fi
+    wait_for_operational_idle
+    database_continuity quiesce-ingress-options >/dev/null
+    options_quiesced=1
+
+    compose --profile ingress-handoff up -d --no-build --force-recreate \
+        discord-ingress-handoff
+    wait_for_discord_ingress discord-ingress-handoff
+    compose up -d --no-build --force-recreate discord-ingress
+    wait_for_discord_ingress discord-ingress
+    compose --profile ingress-handoff stop discord-ingress-handoff >/dev/null
+    compose --profile ingress-handoff rm -f discord-ingress-handoff >/dev/null
+
+    database_continuity regenerate-ingress-options >/dev/null
+    options_quiesced=0
+    clear_hermes_drain
+    database_continuity release "$drain_ref" >/dev/null
+    postdeploy
+    cleanup_on_failure=0
+    trap - EXIT
+    printf 'Deployed the Discord ingress through a quiesced rolling handoff.\n'
 }
 
 status() {
@@ -331,7 +535,7 @@ status() {
     if [[ -n "$(compose ps -q postgres)" ]]; then
         local counts
         counts=$(operational_counts)
-        printf 'Active operations / pending outbox: %s\n' "$counts"
+        printf 'Executing operations / delivering outbox: %s\n' "$counts"
     fi
 }
 
@@ -438,6 +642,7 @@ Commands:
   build           Validate Compose and build a revision-labelled Docket image.
   predeploy       Verify source, CI, environment, and durable-state gates.
   deploy          Back up PostgreSQL, rebuild/recreate, and verify the live stack.
+  deploy-ingress  Replace only stable Discord ingress through a quiesced handoff.
   backup          Create or confirm today's encrypted PostgreSQL backup.
   verify-restore  Restore an encrypted backup into disposable PostgreSQL and verify it.
   setup-triage    Install the isolated Hermes Gmail-triage profile and cron.
@@ -466,6 +671,7 @@ case "${1:-}" in
     build) build_image ;;
     predeploy) predeploy ;;
     deploy) deploy ;;
+    deploy-ingress) deploy_ingress ;;
     backup) encrypted_backup ;;
     verify-restore) verify_restore "${2:-}" ;;
     setup-triage) gmail_triage_setup ;;

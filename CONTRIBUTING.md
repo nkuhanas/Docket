@@ -53,15 +53,26 @@ contract change.
 - `HEAD` exactly matches `origin/main`;
 - CI succeeded for that exact commit;
 - the configured environment is `production`;
-- no operation is pending, running, or awaiting reconciliation;
-- no outbox delivery is pending.
+- no provider call, model turn, cron execution, or outbox delivery is currently
+  claimed/in flight.
 
 The command prepares the ignored backup directory for the invoking operator,
-creates a PostgreSQL custom-format backup before rebuilding, retains the
-previous image under a timestamped rollback tag, applies migrations through
-Docket startup, and verifies Docket health, Alembic head, the Hermes gateway,
-the pinned plugin version, the 20-tool MCP registry, the private projection
-listener, and drained durable work.
+creates a durable drain barrier, waits for pre-barrier execution leases, creates
+a PostgreSQL custom-format backup, retains the previous image under a
+timestamped rollback tag, applies migrations, and replaces Docket and Hermes
+while the restricted Discord ingress remains connected. It then verifies
+Docket health, Alembic head, the Hermes gateway, the pinned plugin version, the
+22-tool MCP registry, the private projection listener, and zero in-flight work.
+Queued Operations, reconciliation work, and unclaimed outbox entries survive
+the restart and do not block it.
+
+The stable Discord ingress is deliberately excluded from normal deployment.
+Deploy ingress-only code with `scripts/docket deploy-ingress`; that path drains
+execution, removes all mutation-authorizing semantic controls, overlaps a
+temporary append-only ingress writer, replaces the primary writer, and
+regenerates exact persisted options before releasing the drain. Do not recreate
+the ingress ad hoc with Compose because that would reopen an undefined Discord
+receipt interval.
 
 An image rollback does not reverse a database migration. Use the backup and the
 migration-specific recovery procedure rather than blindly retagging an older
