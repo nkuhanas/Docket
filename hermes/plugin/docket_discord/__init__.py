@@ -485,6 +485,8 @@ def _register_trace_context(
     event: object,
     session_store: object | None,
     utterance_ref: str,
+    *,
+    deterministic_response_text: str | None = None,
 ) -> None:
     if session_store is None:
         return
@@ -529,6 +531,7 @@ def _register_trace_context(
             "calls": {},
             "started": False,
             "terminal": False,
+            "deterministic_response_text": deterministic_response_text,
         }
         _TRACE_CONTEXTS[session_id] = context
     try:
@@ -804,6 +807,18 @@ def _on_post_llm_call(
         deadline = time.monotonic() + 5
         while _TRACE_DELIVERY_QUEUE.unfinished_tasks and time.monotonic() < deadline:
             time.sleep(0.01)
+    if not assistant_response and payload_context.get("deterministic_response_text"):
+        try:
+            response_ref = _persist_deterministic_response(payload_context)
+        except (OSError, RuntimeError, urllib.error.URLError):
+            logger.exception("Docket deterministic AgentResponse persistence failed")
+            with _TRACE_CONTEXT_LOCK:
+                context["response_persistence_failed"] = True
+            return
+        with _TRACE_CONTEXT_LOCK:
+            context["response_ref"] = response_ref
+            context["response_persistence_failed"] = False
+        return
     if not assistant_response:
         payload = {
             "request_id": str(uuid.uuid4()),
@@ -862,6 +877,39 @@ def _on_post_llm_call(
     with _TRACE_CONTEXT_LOCK:
         context["response_ref"] = response_ref
         context["response_persistence_failed"] = False
+
+
+def _persist_deterministic_response(context: dict[str, Any]) -> str:
+    response_text = str(context.get("deterministic_response_text") or "").strip()
+    if not response_text:
+        raise RuntimeError("deterministic response text is unavailable")
+    result = _docket_internal_request(
+        "/internal/v1/discord/agent-responses",
+        {
+            "request_id": str(uuid.uuid4()),
+            "guild_id": context["guild_id"],
+            "channel_id": context["source_channel_id"],
+            "parent_channel_id": context.get("parent_channel_id"),
+            "source_message_id": context["source_message_id"],
+            "actor_id": context["actor_id"],
+            "utterance_ref": context["utterance_ref"],
+            "turn_id": f"deterministic:{context['source_message_id']}",
+            "session_id": context.get("session_key") or context["trace_id"],
+            "model_identifier": "docket-deterministic-signoff-v1",
+            "verbatim_text": response_text,
+            "generated_at": datetime.now(UTC).isoformat(),
+            "trace_id": context["trace_id"],
+            "gateway_instance_ref": context.get("gateway_instance_ref"),
+        },
+    )
+    response_ref = str(result.get("ref") or "")
+    if _RESPONSE_REF.fullmatch(response_ref) is None:
+        raise PluginAPIError(
+            "invalid_response_ref",
+            "Docket did not return a typed deterministic AgentResponse reference",
+            502,
+        )
+    return response_ref
 
 
 def _trace_context_for_event(
@@ -1040,12 +1088,28 @@ def _install_processing_outcome_listener(adapter: object) -> None:
         context = _trace_context_for_event(event, adapter)
         if context is None or context.get("delivery_recorded"):
             return
-        outcome_value = str(getattr(outcome, "value", outcome)).casefold()
+        deterministic_text = str(context.get("deterministic_response_text") or "").strip()
+        if deterministic_text and _RESPONSE_REF.fullmatch(
+            str(context.get("response_ref") or "")
+        ):
+            try:
+                result = await adapter.send(
+                    chat_id=str(context["source_channel_id"]),
+                    content=deterministic_text,
+                    reply_to=str(context["source_message_id"]),
+                    metadata={"notify": True},
+                )
+                delivered = bool(getattr(result, "success", False))
+            except Exception:
+                logger.exception("Docket deterministic sign-off delivery failed")
+                delivered = False
+        else:
+            delivered = str(getattr(outcome, "value", outcome)).casefold() == "success"
         try:
             await asyncio.to_thread(
                 _post_agent_response_delivery,
                 dict(context),
-                delivered=outcome_value == "success",
+                delivered=delivered,
             )
         except (OSError, RuntimeError, urllib.error.URLError):
             logger.exception("Docket AgentResponse delivery-state update failed")
@@ -1397,7 +1461,25 @@ def _pre_gateway_dispatch(
                 return {"action": "skip", "reason": "unauthorized-docket-thread"}
         if utterance_ref is None:
             return None
-        _register_trace_context(event, session_store, utterance_ref)
+        deterministic_response_text: str | None = None
+        if signoff_result is not None:
+            if signoff_result.get("ok") is True:
+                deterministic_response_text = (
+                    "Signed and recorded — Docket created ledger-backed Decision "
+                    f"`{signoff_result['decision_ref']}`."
+                )
+            else:
+                deterministic_response_text = (
+                    "Docket did not authorize that specification sign-off "
+                    f"(`{signoff_result.get('error_code', 'unknown')}`): "
+                    f"{signoff_result.get('message', 'The request was rejected.')}"
+                )
+        _register_trace_context(
+            event,
+            session_store,
+            utterance_ref,
+            deterministic_response_text=deterministic_response_text,
+        )
         return _rewrite_with_source_context(
             event,
             utterance_ref,

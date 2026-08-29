@@ -316,6 +316,115 @@ def test_empty_model_turn_is_reported_as_no_response(plugin_module, monkeypatch)
     assert requests[-1][1]["source_message_id"] == message_id
 
 
+@pytest.mark.adversarial
+def test_empty_signoff_turn_persists_deterministic_response(
+    plugin_module, monkeypatch
+) -> None:
+    actor = "111111111111111111"
+    guild = "222222222222222222"
+    chat = "333333333333333333"
+    message_id = "444444444444444444"
+    decision_ref = f"dec_{'3' * 26}"
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", chat)
+    monkeypatch.setenv("DOCKET_QUEUE_CHANNEL_ID", "555555555555555555")
+    monkeypatch.setenv("DOCKET_SYSTEM_CHANNEL_ID", "666666666666666666")
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def fake_request(path, payload, **_kwargs):
+        requests.append((path, dict(payload)))
+        if path == "/internal/v1/discord/agent-responses":
+            return {"ok": True, "ref": f"rsp_{'4' * 26}", "state": "pending"}
+        return {"ok": True}
+
+    monkeypatch.setattr(plugin_module, "_docket_internal_request", fake_request)
+    monkeypatch.setattr(
+        plugin_module,
+        "_record_final_signoff_if_explicit",
+        lambda _event, _ref: decision_ref,
+    )
+    monkeypatch.setattr(plugin_module, "_enqueue_trace_update", lambda *_args, **_kwargs: None)
+    event = SimpleNamespace(
+        text=plugin_module._FINAL_ARCHITECTURE_SIGNOFF_TEXT,
+        message_id=message_id,
+        source=SimpleNamespace(
+            platform="discord",
+            user_id=actor,
+            guild_id=guild,
+            chat_id=chat,
+        ),
+    )
+    store = SimpleNamespace(
+        get_or_create_session=lambda _source: SimpleNamespace(
+            session_id="session-signoff",
+            session_key="session-signoff",
+        )
+    )
+
+    plugin_module._pre_gateway_dispatch(event, session_store=store)
+    plugin_module._on_post_llm_call(
+        task_id="session-signoff",
+        session_id="session-signoff",
+        turn_id="turn-signoff",
+        assistant_response="",
+    )
+
+    assert requests[-1][0] == "/internal/v1/discord/agent-responses"
+    assert requests[-1][1]["model_identifier"] == "docket-deterministic-signoff-v1"
+    assert decision_ref in str(requests[-1][1]["verbatim_text"])
+    assert not any(path.endswith("/no-response") for path, _payload in requests)
+
+
+@pytest.mark.asyncio
+@pytest.mark.adversarial
+async def test_processing_completion_delivers_persisted_signoff_fallback(
+    plugin_module, monkeypatch
+) -> None:
+    deliveries: list[tuple[dict[str, object], bool]] = []
+
+    class FakeAdapter:
+        async def on_processing_complete(self, _event, _outcome) -> None:
+            return None
+
+        async def send(self, **kwargs):
+            self.sent = kwargs
+            return SimpleNamespace(success=True)
+
+    adapter = FakeAdapter()
+    context = {
+        "response_ref": f"rsp_{'4' * 26}",
+        "deterministic_response_text": "Signed and recorded.",
+        "guild_id": "222222222222222222",
+        "source_channel_id": "333333333333333333",
+        "source_message_id": "444444444444444444",
+        "actor_id": "111111111111111111",
+    }
+    monkeypatch.setattr(
+        plugin_module,
+        "_trace_context_for_event",
+        lambda _event, _adapter: context,
+    )
+    monkeypatch.setattr(
+        plugin_module,
+        "_post_agent_response_delivery",
+        lambda payload, *, delivered: deliveries.append((payload, delivered)),
+    )
+    plugin_module._install_processing_outcome_listener(adapter)
+
+    await adapter.on_processing_complete(SimpleNamespace(), "success")
+
+    assert adapter.sent == {
+        "chat_id": "333333333333333333",
+        "content": "Signed and recorded.",
+        "reply_to": "444444444444444444",
+        "metadata": {"notify": True},
+    }
+    assert len(deliveries) == 1
+    assert deliveries[0][0]["response_ref"] == context["response_ref"]
+    assert deliveries[0][1] is True
+
+
 @pytest.mark.asyncio
 async def test_mcp_trace_projection_creates_then_edits_one_system_message(
     plugin_module, monkeypatch
