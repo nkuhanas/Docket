@@ -39,6 +39,7 @@ from docket.services.briefs import DailyBriefService
 from docket.services.calendar_sync import CalendarSyncService
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.events import SemanticCandidateCompiler
+from docket.services.gateway_lifetimes import GatewayLifetimeReconciler
 from docket.services.gmail_ingestion import GmailIngestionService
 from docket.services.operations import OperationRunner
 from docket.services.provenance import ProvenanceService
@@ -134,6 +135,7 @@ worker = WorkerRuntime(
         RetentionService(get_session_factory(), settings) if settings.retention_enabled else None
     ),
     retention_poll_seconds=settings.retention_poll_seconds,
+    gateway_lifetime_reconciler=GatewayLifetimeReconciler(get_session_factory()),
 )
 
 
@@ -145,6 +147,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         AccountService(session).ensure_configured_google(settings)
         bootstrap_refs = ProvenanceService(session).backfill_bootstrap_authorization()
         _app.state.provenance_bootstrap_refs = bootstrap_refs
+    GatewayLifetimeReconciler(get_session_factory()).run_once()
     await worker.start()
     async with mcp.session_manager.run(), triage_mcp.session_manager.run():
         yield

@@ -14,6 +14,7 @@ client delivers them as ordinary messages.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import base64
 import errno
 import hashlib
@@ -61,6 +62,11 @@ _MCP_TRACE_NAMESPACE = uuid.UUID("326f8ee5-f0d5-4d08-b777-31dbac1f8265")
 _DOCKET_TOOL_PREFIX = "mcp__docket__"
 _TOOL_CONTRACT_PATH = Path(__file__).resolve().parent / "contracts" / "interactive.md"
 _TOOL_CONTRACT_LIMIT = 24 * 1024
+_GATEWAY_REGISTRATION_KEY = uuid.uuid4()
+_GATEWAY_INSTANCE_REF: str | None = None
+_GATEWAY_LIFETIME_LOCK = threading.Lock()
+_GATEWAY_HEARTBEAT_STARTED = False
+_GATEWAY_HEARTBEAT_STOP = threading.Event()
 
 
 def _load_interactive_tool_contract() -> tuple[str, str, str, str]:
@@ -219,6 +225,84 @@ def _docket_internal_request(
     if not isinstance(body, dict) or body.get("ok") is not True:
         raise PluginAPIError("invalid_docket_response", "Docket returned invalid JSON", 502)
     return body
+
+
+def _register_gateway_lifetime() -> str:
+    global _GATEWAY_INSTANCE_REF
+    with _GATEWAY_LIFETIME_LOCK:
+        if _GATEWAY_INSTANCE_REF is not None:
+            return _GATEWAY_INSTANCE_REF
+        result = _docket_internal_request(
+            "/internal/v1/discord/gateway-lifetimes",
+            {
+                "request_id": str(uuid.uuid4()),
+                "registration_key": str(_GATEWAY_REGISTRATION_KEY),
+                "instance_kind": "hermes_discord_gateway",
+            },
+            timeout=10,
+        )
+        gateway_ref = str(result.get("ref") or "")
+        if not gateway_ref.startswith("gwy_") or _PUBLIC_REF.fullmatch(gateway_ref) is None:
+            raise RuntimeError("Docket did not return a typed GatewayLifetime reference")
+        _GATEWAY_INSTANCE_REF = gateway_ref
+        return gateway_ref
+
+
+def _gateway_heartbeat_worker() -> None:
+    interval = max(float(os.environ.get("DOCKET_GATEWAY_HEARTBEAT_SECONDS", "10")), 1.0)
+    while not _GATEWAY_HEARTBEAT_STOP.wait(interval):
+        with _GATEWAY_LIFETIME_LOCK:
+            gateway_ref = _GATEWAY_INSTANCE_REF
+        if gateway_ref is None:
+            continue
+        try:
+            _docket_internal_request(
+                f"/internal/v1/discord/gateway-lifetimes/{gateway_ref}/heartbeat",
+                {
+                    "request_id": str(uuid.uuid4()),
+                    "gateway_instance_ref": gateway_ref,
+                    "status": "active",
+                },
+                method="PUT",
+                timeout=5,
+            )
+        except Exception:
+            logger.exception("Docket gateway lifetime heartbeat failed")
+
+
+def _clean_shutdown_gateway_lifetime() -> None:
+    _GATEWAY_HEARTBEAT_STOP.set()
+    with _GATEWAY_LIFETIME_LOCK:
+        gateway_ref = _GATEWAY_INSTANCE_REF
+    if gateway_ref is None:
+        return
+    try:
+        _docket_internal_request(
+            f"/internal/v1/discord/gateway-lifetimes/{gateway_ref}/shutdown",
+            {
+                "request_id": str(uuid.uuid4()),
+                "gateway_instance_ref": gateway_ref,
+            },
+            method="PUT",
+            timeout=3,
+        )
+    except Exception:
+        logger.exception("Docket gateway lifetime clean-shutdown update failed")
+
+
+def _start_gateway_lifetime() -> None:
+    global _GATEWAY_HEARTBEAT_STARTED
+    _register_gateway_lifetime()
+    with _GATEWAY_LIFETIME_LOCK:
+        if _GATEWAY_HEARTBEAT_STARTED:
+            return
+        threading.Thread(
+            target=_gateway_heartbeat_worker,
+            name="docket-gateway-lifetime-heartbeat",
+            daemon=True,
+        ).start()
+        _GATEWAY_HEARTBEAT_STARTED = True
+        atexit.register(_clean_shutdown_gateway_lifetime)
 
 
 def _capture_operator_utterance(
@@ -386,6 +470,7 @@ def _enqueue_trace_update(
         "tool_contract_version": context["tool_contract_version"],
         "tool_contract_hash": context["tool_contract_hash"],
         "caller_profile": context["caller_profile"],
+        "gateway_instance_ref": context.get("gateway_instance_ref"),
         "updated_at": datetime.now(UTC).isoformat(),
         "turn_status": turn_status,
         "call": call,
@@ -437,6 +522,7 @@ def _register_trace_context(
             "tool_contract_version": _TOOL_CONTRACT_VERSION,
             "tool_contract_hash": _TOOL_CONTRACT_HASH,
             "caller_profile": _TOOL_CONTRACT_PROFILE,
+            "gateway_instance_ref": _GATEWAY_INSTANCE_REF,
             "session_key": session_key,
             "turn_id": None,
             "next_ordinal": 1,
@@ -730,6 +816,7 @@ def _on_post_llm_call(
             "turn_id": turn_id or f"turn-{payload_context['source_message_id']}",
             "session_id": session_id or task_id,
             "trace_id": payload_context["trace_id"],
+            "gateway_instance_ref": payload_context.get("gateway_instance_ref"),
         }
         try:
             _docket_internal_request(
@@ -753,6 +840,7 @@ def _on_post_llm_call(
         "verbatim_text": assistant_response,
         "generated_at": datetime.now(UTC).isoformat(),
         "trace_id": payload_context["trace_id"],
+        "gateway_instance_ref": payload_context.get("gateway_instance_ref"),
     }
     try:
         result = _docket_internal_request(
@@ -930,6 +1018,7 @@ def _post_agent_response_delivery(
         "outcome": "delivered" if delivered else "failed",
         "completed_at": datetime.now(UTC).isoformat(),
         "error_code": None if delivered else "discord_delivery_failed",
+        "gateway_instance_ref": context.get("gateway_instance_ref") or _GATEWAY_INSTANCE_REF,
     }
     _docket_internal_request(
         f"/internal/v1/discord/agent-responses/{response_ref}/delivery",
@@ -3320,6 +3409,7 @@ async def _on_docket_interaction(interaction: object) -> None:
                 "message_id": str(message.id),
                 "option_token": token,
                 "responded_at": datetime.now(UTC).isoformat(),
+                "gateway_instance_ref": _GATEWAY_INSTANCE_REF,
             }
             result = await asyncio.to_thread(_post_semantic_option_selection, payload)
             response_ref = str(result.get("response_ref") or "")
@@ -3765,6 +3855,7 @@ def _validate_channel_lanes() -> None:
 
 def register(ctx: object) -> None:
     _validate_channel_lanes()
+    _start_gateway_lifetime()
     ctx.register_hook("pre_gateway_dispatch", _pre_gateway_dispatch)
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)
     ctx.register_hook("post_tool_call", _on_post_tool_call)

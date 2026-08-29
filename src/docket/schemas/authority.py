@@ -121,6 +121,9 @@ class IntentTurnAppend(StrictModel):
     blocking_clarifications: list[dict[str, Any]] = Field(default_factory=list, max_length=25)
     semantic_request_ref: SemanticRequestRef | None = None
     authority_substitutions: dict[str, UtteranceRef] = Field(default_factory=dict)
+    gateway_instance_ref: str | None = Field(
+        default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$"
+    )
 
     @field_validator("context_refs", "tool_call_refs")
     @classmethod

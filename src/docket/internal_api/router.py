@@ -14,6 +14,9 @@ from docket.internal_api.schemas import (
     AgentResponseDeliveryUpdate,
     AgentTurnNoResponse,
     ApprovalResponse,
+    GatewayLifetimeHeartbeat,
+    GatewayLifetimeRegister,
+    GatewayLifetimeShutdown,
     LocalActionResponse,
     McpTraceUpdate,
     OperatorUtteranceCapture,
@@ -26,6 +29,7 @@ from docket.providers.google.runtime import get_calendar_read_provider
 from docket.schemas.authority import ChangeSetContent
 from docket.services.approvals import ApprovalService
 from docket.services.calendar_sync import CalendarSyncService
+from docket.services.gateway_lifetimes import GatewayLifetimeService
 from docket.services.interactive_authority import InteractiveAuthorityService
 from docket.services.local_actions import LocalActionService
 from docket.services.mcp_traces import McpTraceService
@@ -40,6 +44,70 @@ router = APIRouter(
     tags=["trusted-internal"],
     dependencies=[Depends(require_hermes_service)],
 )
+
+
+@router.post("/gateway-lifetimes")
+def gateway_lifetime_register(payload: GatewayLifetimeRegister) -> dict[str, object]:
+    try:
+        with session_scope() as session:
+            return GatewayLifetimeService(session).register(
+                registration_key=payload.registration_key,
+                instance_kind=payload.instance_kind,
+            )
+    except DocketError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.as_dict()["error"],
+        ) from exc
+
+
+@router.put("/gateway-lifetimes/{gateway_instance_ref}/heartbeat")
+def gateway_lifetime_heartbeat(
+    gateway_instance_ref: str,
+    payload: GatewayLifetimeHeartbeat,
+) -> dict[str, object]:
+    if gateway_instance_ref != payload.gateway_instance_ref:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "gateway_lifetime_binding_mismatch",
+                "message": "Gateway lifetime path and body differ.",
+            },
+        )
+    try:
+        with session_scope() as session:
+            return GatewayLifetimeService(session).heartbeat(
+                gateway_instance_ref,
+                status=payload.status,
+            )
+    except DocketError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.as_dict()["error"],
+        ) from exc
+
+
+@router.put("/gateway-lifetimes/{gateway_instance_ref}/shutdown")
+def gateway_lifetime_shutdown(
+    gateway_instance_ref: str,
+    payload: GatewayLifetimeShutdown,
+) -> dict[str, object]:
+    if gateway_instance_ref != payload.gateway_instance_ref:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "gateway_lifetime_binding_mismatch",
+                "message": "Gateway lifetime path and body differ.",
+            },
+        )
+    try:
+        with session_scope() as session:
+            return GatewayLifetimeService(session).clean_shutdown(gateway_instance_ref)
+    except DocketError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.as_dict()["error"],
+        ) from exc
 
 
 def _wake_projection_worker(request: Request) -> None:
@@ -227,6 +295,7 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
                     semantic_request_ref=str(selection["semantic_request_ref"]),
                     authority_scope_hash=str(selection["authority_scope_hash"]),
                     precondition_hash=str(selection["precondition_hash"]),
+                    gateway_instance_ref=payload.gateway_instance_ref,
                 )
             ingress = session.scalar(
                 select(DeferredIngress).where(
@@ -279,6 +348,7 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
                 verbatim_text=response_text,
                 generated_at=utc_now(),
                 trace_id=trace_id,
+                gateway_instance_ref=payload.gateway_instance_ref,
             )
         )
     selection_affected = selection.get("affected_refs")

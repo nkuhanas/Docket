@@ -27,6 +27,7 @@ from docket.models import (
 )
 from docket.schemas.authority import ChangeSetContent, SemanticOptionDraft
 from docket.security import decode_semantic_option_token, verify_semantic_option_token
+from docket.services.gateway_lifetimes import GatewayLifetimeService
 
 CURRENT_SELECTION_UTTERANCE = "$current_selection_utterance"
 
@@ -326,6 +327,10 @@ class SemanticOptionService:
 
     def capture_selection(self, request: SemanticOptionSelection) -> dict[str, Any]:
         settings = get_settings()
+        if request.gateway_instance_ref is not None:
+            GatewayLifetimeService(self.session).require_live(
+                request.gateway_instance_ref
+            )
         decoded = decode_semantic_option_token(request.option_token)
         if decoded is None:
             raise DocketError(
@@ -504,6 +509,7 @@ class SemanticOptionService:
                 "compiled_content": compiled_content,
             },
             status="pending",
+            claimed_by_gateway_ref=request.gateway_instance_ref,
         )
         self.session.add(ingress)
         projection.status = "selected"

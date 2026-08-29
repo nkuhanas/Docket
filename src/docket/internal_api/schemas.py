@@ -182,6 +182,9 @@ class McpTraceUpdate(InternalModel):
     tool_contract_version: str = Field(min_length=1, max_length=128)
     tool_contract_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     caller_profile: Literal["interactive"]
+    gateway_instance_ref: str | None = Field(
+        default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$"
+    )
     updated_at: datetime
     turn_status: Literal["running", "completed", "failed", "interrupted"] = "running"
     call: McpTraceCallUpdate | None = None
@@ -234,6 +237,26 @@ class SemanticOptionSelection(InternalModel):
     message_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
     option_token: str = Field(min_length=40, max_length=100)
     responded_at: datetime
+    gateway_instance_ref: str | None = Field(
+        default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$"
+    )
+
+
+class GatewayLifetimeRegister(InternalModel):
+    request_id: UUID
+    registration_key: UUID
+    instance_kind: Literal["hermes_discord_gateway", "discord_ingress"]
+
+
+class GatewayLifetimeHeartbeat(InternalModel):
+    request_id: UUID
+    gateway_instance_ref: str = Field(pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
+    status: Literal["active", "draining"] = "active"
+
+
+class GatewayLifetimeShutdown(InternalModel):
+    request_id: UUID
+    gateway_instance_ref: str = Field(pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
 
 
 class AgentResponseCapture(InternalModel):
@@ -252,6 +275,9 @@ class AgentResponseCapture(InternalModel):
     verbatim_text: str = Field(min_length=1, max_length=100_000)
     generated_at: datetime
     trace_id: UUID
+    gateway_instance_ref: str | None = Field(
+        default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$"
+    )
 
 
 class AgentTurnNoResponse(InternalModel):
@@ -267,6 +293,9 @@ class AgentTurnNoResponse(InternalModel):
     turn_id: str = Field(min_length=1, max_length=255)
     session_id: str = Field(min_length=1, max_length=255)
     trace_id: UUID
+    gateway_instance_ref: str | None = Field(
+        default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$"
+    )
 
 
 class AgentResponseDeliveryUpdate(InternalModel):
@@ -282,6 +311,9 @@ class AgentResponseDeliveryUpdate(InternalModel):
     outcome: Literal["delivered", "failed"]
     completed_at: datetime
     error_code: str | None = Field(default=None, min_length=1, max_length=128)
+    gateway_instance_ref: str | None = Field(
+        default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$"
+    )
 
     @model_validator(mode="after")
     def delivery_error_matches_outcome(self) -> "AgentResponseDeliveryUpdate":

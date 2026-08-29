@@ -12,15 +12,19 @@ from docket.internal_api.schemas import OperatorUtteranceCapture, SemanticOption
 from docket.models import (
     AgentResponse,
     ChangeSet,
+    DiscordMcpTrace,
     Entity,
+    GatewayLifetime,
     OperatorUtterance,
     PersistedSemanticOption,
     SemanticPromptProjection,
     SemanticRequest,
     SemanticRequestAttempt,
+    ToolInvocation,
 )
 from docket.schemas.authority import SemanticOptionDraft
 from docket.security import issue_semantic_option_token
+from docket.services.gateway_lifetimes import GatewayLifetimeService
 from docket.services.interactive_authority import InteractiveAuthorityService
 from docket.services.provenance import ProvenanceService
 from docket.services.semantic_options import CURRENT_SELECTION_UTTERANCE
@@ -182,3 +186,111 @@ def test_persisted_selection_compiles_once_and_preserves_exact_authority(
         assert session.scalar(select(func.count(ChangeSet.id))) == 1
         assert session.scalar(select(func.count(SemanticRequestAttempt.id))) == 1
         assert session.scalar(select(func.count(Entity.id))) == 1
+
+
+@pytest.mark.integration
+def test_expired_gateway_reconciles_terminal_and_unknown_call_outcomes(
+    session_factory,
+) -> None:
+    trace_id = uuid.uuid4()
+    registration_key = uuid.uuid4()
+    now = datetime.now(UTC)
+    with session_factory.begin() as session:
+        registered = GatewayLifetimeService(session).register(
+            registration_key=registration_key,
+            instance_kind="hermes_discord_gateway",
+        )
+        replay = GatewayLifetimeService(session).register(
+            registration_key=registration_key,
+            instance_kind="hermes_discord_gateway",
+        )
+        assert replay["ref"] == registered["ref"]
+        gateway = session.scalar(
+            select(GatewayLifetime).where(GatewayLifetime.ref_id == registered["ref"])
+        )
+        assert gateway is not None
+        gateway.lease_expires_at = now - timedelta(seconds=1)
+        trace = DiscordMcpTrace(
+            id=trace_id,
+            guild_id="000000000000000002",
+            source_channel_id="000000000000000003",
+            source_message_id="1542799000000000300",
+            actor_id="000000000000000001",
+            tool_contract_version="test",
+            tool_contract_hash="0" * 64,
+            caller_profile="interactive",
+            gateway_instance_ref=gateway.ref_id,
+            status="running",
+            calls=[
+                {
+                    "call_id": "committed-call",
+                    "ordinal": 1,
+                    "tool_name": "docket_commit_changeset",
+                    "transport_state": "running",
+                },
+                {
+                    "call_id": "unknown-call",
+                    "ordinal": 2,
+                    "tool_name": "docket_commit_changeset",
+                    "transport_state": "running",
+                },
+            ],
+            last_ordinal=2,
+            started_at=now,
+        )
+        session.add(trace)
+        session.add_all(
+            [
+                ToolInvocation(
+                    tool_name="docket_commit_changeset",
+                    tool_contract_version="test",
+                    caller_profile="interactive",
+                    status="succeeded",
+                    transport_state="completed",
+                    domain_state="succeeded",
+                    received_argument_hash="a" * 64,
+                    normalized_argument_hash="a" * 64,
+                    result_disposition="committed",
+                    completed_at=now,
+                    trace_id=trace_id,
+                    trace_call_id="committed-call",
+                    trace_ordinal=1,
+                    gateway_instance_ref=gateway.ref_id,
+                ),
+                ToolInvocation(
+                    tool_name="docket_commit_changeset",
+                    tool_contract_version="test",
+                    caller_profile="interactive",
+                    status="received",
+                    transport_state="running",
+                    domain_state="unknown",
+                    received_argument_hash="b" * 64,
+                    trace_id=trace_id,
+                    trace_call_id="unknown-call",
+                    trace_ordinal=2,
+                    gateway_instance_ref=gateway.ref_id,
+                ),
+            ]
+        )
+
+    with session_factory.begin() as session:
+        expired = GatewayLifetimeService(session).expire_and_reconcile()
+        assert expired == [registered["ref"]]
+
+    with session_factory() as session:
+        gateway = session.scalar(select(GatewayLifetime))
+        trace = session.get(DiscordMcpTrace, trace_id)
+        invocations = {
+            item.trace_call_id: item
+            for item in session.scalars(select(ToolInvocation))
+        }
+        assert gateway is not None and gateway.status == "expired"
+        assert trace is not None and trace.status == "interrupted"
+        assert trace.calls[0]["domain_state"] == "succeeded"
+        assert trace.calls[0]["disposition"] == "committed"
+        unknown = invocations["unknown-call"]
+        assert unknown.transport_state == "timed_out"
+        assert unknown.domain_state == "unknown"
+        assert unknown.result_disposition == "unknown"
+        assert trace.calls[1]["domain_state"] == "unknown"
+        assert trace.calls[1]["disposition"] == "unknown"

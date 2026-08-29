@@ -19,6 +19,7 @@ from docket.models import (
     ToolInvocation,
 )
 from docket.models.base import utc_now
+from docket.services.gateway_lifetimes import GatewayLifetimeService
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash, contract_tool_names
 
 MCP_TRACE_NAMESPACE = uuid.UUID("326f8ee5-f0d5-4d08-b777-31dbac1f8265")
@@ -114,6 +115,10 @@ class McpTraceService:
             raise DocketError(
                 code="invalid_tool_contract",
                 message="The MCP trace is not bound to the repository interactive contract.",
+            )
+        if request.gateway_instance_ref is not None:
+            GatewayLifetimeService(self.session).require_live(
+                request.gateway_instance_ref
             )
 
     @staticmethod
@@ -280,6 +285,7 @@ class McpTraceService:
         invocation.trace_id = trace.id
         invocation.trace_call_id = call.call_id
         invocation.trace_ordinal = call.ordinal
+        invocation.gateway_instance_ref = trace.gateway_instance_ref
         invocation.actor_ref = f"discord_user:{trace.actor_id}"
         invocation.utterance_refs = [utterance.ref_id] if utterance is not None else []
         return invocation
@@ -329,6 +335,7 @@ class McpTraceService:
                     invocation.trace_id = trace.id
                     invocation.trace_call_id = call_id
                     invocation.trace_ordinal = int(call.get("ordinal", 0))
+                    invocation.gateway_instance_ref = trace.gateway_instance_ref
                     invocation.actor_ref = f"discord_user:{trace.actor_id}"
                     source_message_ref = (
                         f"discord_message:{trace.guild_id}:{trace.source_channel_id}:"
@@ -401,6 +408,7 @@ class McpTraceService:
                 tool_contract_version=request.tool_contract_version,
                 tool_contract_hash=request.tool_contract_hash,
                 caller_profile=request.caller_profile,
+                gateway_instance_ref=request.gateway_instance_ref,
                 status="running",
                 calls=[],
                 last_ordinal=0,
@@ -417,6 +425,7 @@ class McpTraceService:
             or trace.tool_contract_version != request.tool_contract_version
             or trace.tool_contract_hash != request.tool_contract_hash
             or trace.caller_profile != request.caller_profile
+            or trace.gateway_instance_ref != request.gateway_instance_ref
         ):
             raise DocketError(
                 code="mcp_trace_binding_mismatch",

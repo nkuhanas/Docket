@@ -35,6 +35,7 @@ from docket.services.change_sets import (
     ChangeSetService,
     ProviderIntentHandler,
 )
+from docket.services.gateway_lifetimes import GatewayLifetimeService
 from docket.services.intent_sessions import IntentSessionService
 from docket.services.policies import ContextPolicyService
 from docket.services.provider_intents import ProviderIntentService
@@ -126,12 +127,22 @@ class InteractiveAuthorityService:
         semantic_request_ref: str | None = None,
         authority_scope_hash: str | None = None,
         precondition_hash: str | None = None,
+        gateway_instance_ref: str | None = None,
     ) -> dict[str, Any]:
         utterance = self._authority_utterance(
             utterance_ref=utterance_ref,
             request_key=request_key,
             actor_id=actor_id,
         )
+        if gateway_instance_ref is not None:
+            GatewayLifetimeService(self.session).require_live(gateway_instance_ref)
+        else:
+            active_gateway = GatewayLifetimeService(self.session).current_live(
+                "hermes_discord_gateway"
+            )
+            gateway_instance_ref = (
+                active_gateway.ref_id if active_gateway is not None else None
+            )
         semantic_request: SemanticRequest | None = None
         semantic_attempt: SemanticRequestAttempt | None = None
         if semantic_request_ref is not None:
@@ -262,6 +273,7 @@ class InteractiveAuthorityService:
                     if semantic_request is not None
                     else {}
                 ),
+                gateway_instance_ref=gateway_instance_ref,
             )
         )
         conflict_refs = RegistryConflictCompiler(self.session).compile(
@@ -595,6 +607,9 @@ class InteractiveAuthorityService:
                         "current_version": intent_session.version,
                     },
                 )
+        active_gateway = GatewayLifetimeService(self.session).current_live(
+            "hermes_discord_gateway"
+        )
         intent_session, turn = intent_service.append_turn(
             IntentTurnAppend(
                 intent_session_ref=intent_session.ref_id,
@@ -604,6 +619,9 @@ class InteractiveAuthorityService:
                 resolved_intent_json={"conflict_ref": resolution.conflict_ref},
                 blocking_clarifications=[],
                 response_disposition="pending",
+                gateway_instance_ref=(
+                    active_gateway.ref_id if active_gateway is not None else None
+                ),
             )
         )
         intent_session.semantic_state = "ready"

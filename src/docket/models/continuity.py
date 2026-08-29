@@ -131,6 +131,7 @@ class GatewayLifetime(Base):
             "lease_generation",
             name="uq_gateway_lifetimes_generation",
         ),
+        UniqueConstraint("registration_key", name="uq_gateway_lifetimes_registration"),
         Index("ix_gateway_lifetimes_status_expiry", "status", "lease_expires_at"),
     )
 
@@ -138,6 +139,7 @@ class GatewayLifetime(Base):
     ref_id: Mapped[str] = mapped_column(
         String(40), unique=True, nullable=False, default=lambda: new_public_ref("gwy")
     )
+    registration_key: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
     instance_kind: Mapped[str] = mapped_column(String(64), nullable=False)
     lease_generation: Mapped[int] = mapped_column(Integer, nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

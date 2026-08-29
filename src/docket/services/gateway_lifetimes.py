@@ -1,0 +1,249 @@
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session, sessionmaker
+
+from docket.config import get_settings
+from docket.domain.errors import DocketError
+from docket.models import (
+    DiscordMcpTrace,
+    GatewayLifetime,
+    SemanticRequest,
+    ToolInvocation,
+)
+
+
+def _aware(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+class GatewayLifetimeService:
+    """Lease and reconcile operational Discord gateway process lifetimes."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def _database_now(self) -> datetime:
+        value = self.session.scalar(select(func.current_timestamp()))
+        if not isinstance(value, datetime):
+            raise RuntimeError("database did not return its current timestamp")
+        return _aware(value)
+
+    @staticmethod
+    def _projection(lifetime: GatewayLifetime, *, disposition: str) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "ref": lifetime.ref_id,
+            "state": lifetime.status,
+            "summary": "Gateway lifetime lease is durable.",
+            "affected_refs": [lifetime.ref_id],
+            "basis_refs": [],
+            "next": None,
+            "warnings": [],
+            "disposition": disposition,
+            "lease_generation": lifetime.lease_generation,
+            "lease_expires_at": lifetime.lease_expires_at.isoformat(),
+        }
+
+    def register(
+        self,
+        *,
+        registration_key: uuid.UUID,
+        instance_kind: str,
+    ) -> dict[str, Any]:
+        self.expire_and_reconcile()
+        existing = self.session.scalar(
+            select(GatewayLifetime).where(
+                GatewayLifetime.registration_key == registration_key
+            )
+        )
+        if existing is not None:
+            if existing.status not in {"active", "draining"}:
+                raise DocketError(
+                    code="gateway_lifetime_fenced",
+                    message="An expired or closed gateway lifetime cannot be resurrected.",
+                )
+            return self._projection(existing, disposition="replayed_request")
+        live = self.session.scalar(
+            select(GatewayLifetime).where(
+                GatewayLifetime.instance_kind == instance_kind,
+                GatewayLifetime.status.in_(("active", "draining")),
+            )
+        )
+        if live is not None:
+            raise DocketError(
+                code="gateway_lifetime_already_active",
+                message="A live gateway lifetime already owns this instance kind.",
+                details={"gateway_instance_ref": live.ref_id},
+            )
+        generation = int(
+            self.session.scalar(
+                select(func.max(GatewayLifetime.lease_generation)).where(
+                    GatewayLifetime.instance_kind == instance_kind
+                )
+            )
+            or 0
+        ) + 1
+        now = self._database_now()
+        lifetime = GatewayLifetime(
+            registration_key=registration_key,
+            instance_kind=instance_kind,
+            lease_generation=generation,
+            started_at=now,
+            heartbeat_at=now,
+            lease_expires_at=now + timedelta(seconds=get_settings().gateway_lease_seconds),
+            status="active",
+        )
+        self.session.add(lifetime)
+        self.session.flush()
+        return self._projection(lifetime, disposition="created")
+
+    def require_live(self, gateway_instance_ref: str) -> GatewayLifetime:
+        self.expire_and_reconcile()
+        lifetime = self.session.scalar(
+            select(GatewayLifetime).where(
+                GatewayLifetime.ref_id == gateway_instance_ref
+            )
+        )
+        if lifetime is None:
+            raise DocketError(
+                code="gateway_lifetime_not_found",
+                message="Gateway lifetime reference does not exist.",
+            )
+        if lifetime.status not in {"active", "draining"}:
+            raise DocketError(
+                code="gateway_lifetime_fenced",
+                message="Gateway lifetime is no longer allowed to update turns.",
+            )
+        return lifetime
+
+    def current_live(self, instance_kind: str) -> GatewayLifetime | None:
+        self.expire_and_reconcile()
+        return self.session.scalar(
+            select(GatewayLifetime).where(
+                GatewayLifetime.instance_kind == instance_kind,
+                GatewayLifetime.status.in_(("active", "draining")),
+            )
+        )
+
+    def heartbeat(self, gateway_instance_ref: str, *, status: str) -> dict[str, Any]:
+        lifetime = self.require_live(gateway_instance_ref)
+        now = self._database_now()
+        lifetime.heartbeat_at = now
+        lifetime.lease_expires_at = now + timedelta(
+            seconds=get_settings().gateway_lease_seconds
+        )
+        lifetime.status = status
+        return self._projection(lifetime, disposition="updated")
+
+    def clean_shutdown(self, gateway_instance_ref: str) -> dict[str, Any]:
+        lifetime = self.require_live(gateway_instance_ref)
+        now = self._database_now()
+        lifetime.clean_shutdown_at = now
+        lifetime.heartbeat_at = now
+        lifetime.lease_expires_at = now
+        lifetime.status = "clean_shutdown"
+        return self._projection(lifetime, disposition="updated")
+
+    def _reconcile_trace(self, trace: DiscordMcpTrace, now: datetime) -> None:
+        calls = [dict(item) for item in trace.calls]
+        for call in calls:
+            invocation = self.session.scalar(
+                select(ToolInvocation).where(
+                    ToolInvocation.trace_id == trace.id,
+                    ToolInvocation.trace_call_id == str(call.get("call_id", "")),
+                )
+            )
+            if invocation is not None and invocation.status == "received":
+                semantic_request = (
+                    self.session.scalar(
+                        select(SemanticRequest).where(
+                            SemanticRequest.ref_id == invocation.semantic_request_ref
+                        )
+                    )
+                    if invocation.semantic_request_ref is not None
+                    else None
+                )
+                if (
+                    semantic_request is not None
+                    and semantic_request.commit_state == "committed"
+                    and semantic_request.committed_changeset_ref is not None
+                ):
+                    invocation.status = "succeeded"
+                    invocation.transport_state = "completed"
+                    invocation.domain_state = "succeeded"
+                    invocation.result_disposition = "committed"
+                    invocation.result_refs = [
+                        semantic_request.ref_id,
+                        semantic_request.committed_changeset_ref,
+                    ]
+                    invocation.completed_at = now
+                else:
+                    invocation.status = "failed"
+                    invocation.transport_state = "timed_out"
+                    invocation.domain_state = "unknown"
+                    invocation.result_disposition = "unknown"
+                    invocation.error_code = "gateway_interrupted"
+                    invocation.completed_at = now
+            if call.get("transport_state", call.get("state")) == "running":
+                call["transport_state"] = "timed_out"
+                call["transport_error_code"] = "gateway_interrupted"
+                call.pop("state", None)
+            call["domain_state"] = (
+                invocation.domain_state if invocation is not None else "unknown"
+            )
+            call["disposition"] = (
+                invocation.result_disposition if invocation is not None else "unknown"
+            )
+            call["domain_error_code"] = (
+                invocation.error_code if invocation is not None else "gateway_interrupted"
+            )
+            call["tool_call_ref"] = invocation.ref_id if invocation is not None else None
+        trace.calls = calls
+        trace.status = "interrupted"
+        trace.completed_at = now
+        trace.version += 1
+
+    def expire_and_reconcile(self) -> list[str]:
+        now = self._database_now()
+        expired = list(
+            self.session.scalars(
+                select(GatewayLifetime)
+                .where(
+                    GatewayLifetime.clean_shutdown_at.is_(None),
+                    GatewayLifetime.status.in_(("active", "draining")),
+                    GatewayLifetime.lease_expires_at < func.current_timestamp(),
+                )
+                .with_for_update()
+            )
+        )
+        expired_refs: list[str] = []
+        for lifetime in expired:
+            lifetime.status = "expired"
+            expired_refs.append(lifetime.ref_id)
+            traces = list(
+                self.session.scalars(
+                    select(DiscordMcpTrace)
+                    .where(
+                        DiscordMcpTrace.gateway_instance_ref == lifetime.ref_id,
+                        DiscordMcpTrace.status == "running",
+                    )
+                    .with_for_update()
+                )
+            )
+            for trace in traces:
+                self._reconcile_trace(trace, now)
+        return expired_refs
+
+
+class GatewayLifetimeReconciler:
+    def __init__(self, session_factory: sessionmaker[Session]) -> None:
+        self.session_factory = session_factory
+
+    def run_once(self) -> list[str]:
+        with self.session_factory.begin() as session:
+            return GatewayLifetimeService(session).expire_and_reconcile()

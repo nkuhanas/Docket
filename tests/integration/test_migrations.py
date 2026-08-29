@@ -184,6 +184,10 @@ def test_initial_migration_upgrades_and_downgrades(tmp_path, monkeypatch) -> Non
             for column in inspect(engine).get_columns("tool_invocations")
         }
     )
+    assert "registration_key" in {
+        column["name"]
+        for column in inspect(engine).get_columns("gateway_lifetimes")
+    }
     assert {
         tuple(constraint["column_names"])
         for constraint in inspect(engine).get_unique_constraints("record_sources")

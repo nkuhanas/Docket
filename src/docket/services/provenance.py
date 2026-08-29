@@ -34,6 +34,7 @@ from docket.models import (
 )
 from docket.models.base import utc_now
 from docket.schemas.authority import IntentTurnFinalize
+from docket.services.gateway_lifetimes import GatewayLifetimeService
 from docket.services.intent_sessions import IntentSessionService
 from docket.services.mcp_traces import trace_id_for_source
 from docket.services.reply_bindings import ReplyBindingService
@@ -260,6 +261,10 @@ class ProvenanceService:
             parent_channel_id=request.parent_channel_id,
             actor_id=request.actor_id,
         )
+        if request.gateway_instance_ref is not None:
+            GatewayLifetimeService(self.session).require_live(
+                request.gateway_instance_ref
+            )
         utterance = self.session.scalar(
             select(OperatorUtterance).where(OperatorUtterance.ref_id == request.utterance_ref)
         )
@@ -318,6 +323,15 @@ class ProvenanceService:
             )
         )
         intent_turn, intent_session = self._intent_turn_for_utterance(utterance)
+        if (
+            intent_turn is not None
+            and request.gateway_instance_ref is not None
+            and intent_turn.gateway_instance_ref != request.gateway_instance_ref
+        ):
+            raise DocketError(
+                code="gateway_lifetime_binding_mismatch",
+                message="Agent response does not belong to the turn's gateway lifetime.",
+            )
         context_packet_refs = (
             [ref for ref in intent_turn.context_refs if ref.startswith("ctx_")]
             if intent_turn is not None
@@ -340,6 +354,7 @@ class ProvenanceService:
             delivery_state="pending",
             generated_at=request.generated_at,
             projection_ref=projection_ref,
+            gateway_instance_ref=request.gateway_instance_ref,
         )
         self.session.add(response)
         self.session.flush()
@@ -403,6 +418,10 @@ class ProvenanceService:
             parent_channel_id=request.parent_channel_id,
             actor_id=request.actor_id,
         )
+        if request.gateway_instance_ref is not None:
+            GatewayLifetimeService(self.session).require_live(
+                request.gateway_instance_ref
+            )
         utterance = self.session.scalar(
             select(OperatorUtterance).where(
                 OperatorUtterance.ref_id == request.utterance_ref
@@ -537,6 +556,10 @@ class ProvenanceService:
             parent_channel_id=request.parent_channel_id,
             actor_id=request.actor_id,
         )
+        if request.gateway_instance_ref is not None:
+            GatewayLifetimeService(self.session).require_live(
+                request.gateway_instance_ref
+            )
         response = self.session.scalar(
             select(AgentResponse)
             .where(AgentResponse.ref_id == request.response_ref)

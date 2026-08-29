@@ -545,6 +545,7 @@ def upgrade() -> None:
         "gateway_lifetimes",
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("ref_id", sa.String(length=40), nullable=False),
+        sa.Column("registration_key", sa.Uuid(), nullable=False),
         sa.Column("instance_kind", sa.String(length=64), nullable=False),
         sa.Column("lease_generation", sa.Integer(), nullable=False),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
@@ -558,6 +559,9 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("ref_id"),
+        sa.UniqueConstraint(
+            "registration_key", name="uq_gateway_lifetimes_registration"
+        ),
         sa.UniqueConstraint(
             "instance_kind", "lease_generation", name="uq_gateway_lifetimes_generation"
         ),

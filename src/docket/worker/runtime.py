@@ -9,6 +9,7 @@ from docket.services.briefs import DailyBriefService
 from docket.services.calendar_sync import CalendarSyncService
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.events import SemanticCandidateCompiler
+from docket.services.gateway_lifetimes import GatewayLifetimeReconciler
 from docket.services.gmail_ingestion import GmailIngestionService
 from docket.services.operations import OperationRunner
 from docket.services.reminders import ReminderDispatcher
@@ -46,6 +47,7 @@ class WorkerRuntime:
         daily_brief_poll_seconds: float = 30.0,
         retention_service: RetentionService | None = None,
         retention_poll_seconds: float = 3600.0,
+        gateway_lifetime_reconciler: GatewayLifetimeReconciler | None = None,
     ) -> None:
         self.heartbeat_seconds = heartbeat_seconds
         self.operation_runner = operation_runner
@@ -71,6 +73,7 @@ class WorkerRuntime:
         self.daily_brief_poll_seconds = daily_brief_poll_seconds
         self.retention_service = retention_service
         self.retention_poll_seconds = retention_poll_seconds
+        self.gateway_lifetime_reconciler = gateway_lifetime_reconciler
         self.last_heartbeat: datetime | None = None
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -185,6 +188,10 @@ class WorkerRuntime:
                         )
                     if self.calendar_sync_service is not None:
                         await asyncio.to_thread(self.calendar_sync_service.recover_expired_leases)
+                    if self.gateway_lifetime_reconciler is not None:
+                        await asyncio.to_thread(
+                            self.gateway_lifetime_reconciler.run_once
+                        )
                     next_recovery = now + self.stale_lease_poll_seconds
                 if self.discord_projection_runner is not None and now >= next_projection_repair:
                     repairs = await asyncio.to_thread(
