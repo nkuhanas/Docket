@@ -2,11 +2,22 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from docket.domain.public_refs import is_public_ref, parse_public_ref
 
-PublicRef = Annotated[str, Field(min_length=30, max_length=40)]
+
+def _validate_public_ref(value: str) -> str:
+    if not is_public_ref(value):
+        raise ValueError("value must be a typed Docket public reference")
+    return value
+
+
+PublicRef = Annotated[
+    str,
+    Field(min_length=29, max_length=35),
+    AfterValidator(_validate_public_ref),
+]
 
 HistoryObjectType = Literal[
     "operator_utterance",

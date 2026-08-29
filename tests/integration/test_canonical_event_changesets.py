@@ -6,9 +6,10 @@ from sqlalchemy import func, select
 
 from docket.config import get_settings
 from docket.domain.public_refs import new_public_ref
-from docket.internal_api.schemas import OperatorUtteranceCapture
+from docket.internal_api.schemas import AgentResponseCapture, OperatorUtteranceCapture
 from docket.models import (
     Account,
+    AgentResponse,
     Approval,
     AttentionCase,
     AttentionCaseRevision,
@@ -16,11 +17,13 @@ from docket.models import (
     CanonicalEvent,
     CaseItem,
     ChangeSet,
+    IntentTurn,
     Interaction,
     LaneRoutingDecision,
     Operation,
     ProviderEventBinding,
     SemanticRequestAttempt,
+    ToolInvocation,
 )
 from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.schemas.authority import ChangeSetContent, IntentSessionOpen, StatementInput
@@ -29,6 +32,7 @@ from docket.services.calendar_projection_invariants import (
 )
 from docket.services.intent_sessions import IntentSessionService
 from docket.services.interactive_authority import InteractiveAuthorityService
+from docket.services.mcp_traces import trace_id_for_source
 from docket.services.operations import OperationRunner
 from docket.services.provenance import ProvenanceService
 from docket.services.statements import StatementService
@@ -384,6 +388,12 @@ def test_package_pickup_case_reply_commits_event_route_and_resolution_first_try(
     session_factory,
 ) -> None:
     settings = get_settings()
+    message_id = "1542802000000000003"
+    trace_id = trace_id_for_source(
+        settings.discord_guild_id,
+        settings.chat_channel_id,
+        message_id,
+    )
     with session_factory.begin() as session:
         account = Account(
             provider="google",
@@ -395,7 +405,7 @@ def test_package_pickup_case_reply_commits_event_route_and_resolution_first_try(
         session.flush()
         utterance_ref, request_key = _capture(
             session,
-            message_id="1542802000000000003",
+            message_id=message_id,
             text="I'll grab it at 1 pm tomorrow, 15 minutes i guess",
         )
         lane = CalendarLane(
@@ -565,6 +575,63 @@ def test_package_pickup_case_reply_commits_event_route_and_resolution_first_try(
         }
         assert session.scalar(select(func.count(ChangeSet.id))) == 1
         assert session.scalar(select(func.count(SemanticRequestAttempt.id))) == 1
+        invocation = ToolInvocation(
+            tool_name="docket_commit_changeset",
+            tool_contract_version="test",
+            caller_profile="interactive",
+            status="succeeded",
+            transport_state="completed",
+            domain_state="succeeded",
+            result_disposition="committed",
+            received_argument_hash="a" * 64,
+            normalized_argument_hash="a" * 64,
+            result_refs=[
+                changeset.ref_id,
+                event.ref_id,
+                route.ref_id,
+                operation.ref_id,
+            ],
+            completed_at=datetime.now(UTC),
+            trace_id=trace_id,
+            trace_call_id="package-pickup-commit",
+            trace_ordinal=1,
+            utterance_refs=[utterance_ref],
+            intent_session_ref=intent_session.ref_id,
+        )
+        session.add(invocation)
+        session.flush()
+        call_ref = invocation.ref_id
+        operation_ref = operation.ref_id
+
+    capture = AgentResponseCapture.model_validate(
+        {
+            "request_id": str(uuid.uuid4()),
+            "guild_id": settings.discord_guild_id,
+            "channel_id": settings.chat_channel_id,
+            "source_message_id": message_id,
+            "actor_id": settings.operator_discord_user_id,
+            "utterance_ref": utterance_ref,
+            "turn_id": "package-pickup-final-response",
+            "session_id": "package-pickup-session",
+            "model_identifier": "test-model",
+            "verbatim_text": "The event is on your calendar.",
+            "generated_at": datetime.now(UTC).isoformat(),
+            "trace_id": str(trace_id),
+        }
+    )
+    with session_factory.begin() as session:
+        response_result = ProvenanceService(session).capture_agent_response(capture)
+
+    with session_factory() as session:
+        response = session.scalar(
+            select(AgentResponse).where(AgentResponse.ref_id == response_result["ref"])
+        )
+        turn = session.scalar(select(IntentTurn).where(IntentTurn.utterance_ref == utterance_ref))
+        assert response is not None and turn is not None
+        assert response.tool_call_refs == [call_ref]
+        assert operation_ref in turn.resulting_semantic_refs
+        assert turn.agent_response_ref == response.ref_id
+        assert turn.response_disposition == "final_response"
 
 
 @pytest.mark.integration
