@@ -85,6 +85,7 @@ def _authority_scope(content: dict[str, Any], exclusions: list[str]) -> dict[str
         "expected_versions",
         "idempotency_key",
         "utterance_ref",
+        "case_revision_ref",
     }
     execution_keys = {"change_id", "intent_id"}
 
@@ -353,7 +354,11 @@ class SemanticOptionService:
                 code="semantic_option_not_found",
                 message="Persisted semantic option was not found.",
             )
-        projection = self.session.get(SemanticPromptProjection, option.prompt_projection_id)
+        projection = self.session.scalar(
+            select(SemanticPromptProjection)
+            .where(SemanticPromptProjection.id == option.prompt_projection_id)
+            .with_for_update()
+        )
         if (
             projection is None
             or option.prompt_projection_ref != projection.ref_id
@@ -387,6 +392,7 @@ class SemanticOptionService:
                 code="semantic_option_hash_mismatch",
                 message="Persisted semantic option no longer matches its signed scope.",
             )
+        execution_option = self._latest_compatible_option(option)
 
         source_key = (
             f"discord:{request.guild_id}:{request.channel_id}:{request.discord_interaction_id}:0"
@@ -412,27 +418,40 @@ class SemanticOptionService:
                     SemanticRequest.authority_scope_hash == option.authority_scope_hash,
                 )
             )
-            compiled_content = complete_selection_provenance(
-                option.compilation_template_json,
-                existing.ref_id,
-            )
             if semantic_request is None:
                 semantic_request = self._create_semantic_request(
                     option=option,
                     utterance=existing,
                 )
-                projection.status = "selected"
+                self._apply_safe_rebase(
+                    semantic_request=semantic_request,
+                    selected_option=option,
+                    execution_option=execution_option,
+                    request=request,
+                )
                 self._append_selection_audit(
                     request=request,
                     option=option,
                     utterance=existing,
                     semantic_request=semantic_request,
                 )
+            execution_option = self._execution_option(
+                semantic_request,
+                fallback=execution_option,
+            )
+            compiled_content = complete_selection_provenance(
+                execution_option.compilation_template_json,
+                existing.ref_id,
+            )
             if ingress is not None:
                 ingress.selected_option_binding_json = {
                     **(ingress.selected_option_binding_json or {}),
                     "semantic_request_ref": semantic_request.ref_id,
                     "compiled_content": compiled_content,
+                    "execution_prompt_projection_ref": (
+                        execution_option.prompt_projection_ref
+                    ),
+                    "execution_precondition_hash": execution_option.precondition_hash,
                 }
             lease_ref, execution_ready = self._claim_selection_ingress(
                 ingress,
@@ -444,7 +463,7 @@ class SemanticOptionService:
             )
             return self._selection_result(
                 existing,
-                option,
+                execution_option,
                 semantic_request,
                 ingress,
                 replay=True,
@@ -452,6 +471,23 @@ class SemanticOptionService:
                 execution_ready=execution_ready,
             )
 
+        prior_prompt_selection = self.session.scalar(
+            select(OperatorUtterance).where(
+                OperatorUtterance.prompt_projection_ref == option.prompt_projection_ref,
+                OperatorUtterance.selected_option_id.is_not(None),
+            )
+        )
+        if prior_prompt_selection is not None:
+            raise DocketError(
+                code="semantic_prompt_already_selected",
+                message="This semantic prompt was already resolved by another selection.",
+                details={"utterance_ref": prior_prompt_selection.ref_id},
+            )
+        if projection.status == "selected":
+            raise DocketError(
+                code="semantic_prompt_already_selected",
+                message="This semantic prompt was already resolved by another selection.",
+            )
         utterance = OperatorUtterance(
             actor_ref=f"discord_user:{request.discord_user_id}",
             transport="discord",
@@ -482,7 +518,7 @@ class SemanticOptionService:
         self.session.add(utterance)
         self.session.flush()
         compiled_content = complete_selection_provenance(
-            option.compilation_template_json,
+            execution_option.compilation_template_json,
             utterance.ref_id,
         )
         semantic_request = self.session.scalar(
@@ -495,6 +531,12 @@ class SemanticOptionService:
             semantic_request = self._create_semantic_request(
                 option=option,
                 utterance=utterance,
+            )
+            self._apply_safe_rebase(
+                semantic_request=semantic_request,
+                selected_option=option,
+                execution_option=execution_option,
+                request=request,
             )
 
         ingress = DeferredIngress(
@@ -509,6 +551,10 @@ class SemanticOptionService:
                 "precondition_hash": option.precondition_hash,
                 "semantic_request_ref": semantic_request.ref_id,
                 "compiled_content": compiled_content,
+                "execution_prompt_projection_ref": (
+                    execution_option.prompt_projection_ref
+                ),
+                "execution_precondition_hash": execution_option.precondition_hash,
             },
             status="pending",
         )
@@ -522,7 +568,12 @@ class SemanticOptionService:
             retry_request_id=request.request_id,
             gateway_instance_ref=request.gateway_instance_ref,
         )
-        projection.status = "selected"
+        execution_projection = self.session.get(
+            SemanticPromptProjection,
+            execution_option.prompt_projection_id,
+        )
+        if execution_projection is not None:
+            execution_projection.status = "selected"
         self._append_selection_audit(
             request=request,
             option=option,
@@ -532,12 +583,112 @@ class SemanticOptionService:
         self.session.flush()
         return self._selection_result(
             utterance,
-            option,
+            execution_option,
             semantic_request,
             ingress,
             replay=False,
             execution_lease_ref=lease_ref,
             execution_ready=execution_ready,
+        )
+
+    def _latest_compatible_option(
+        self,
+        selected: PersistedSemanticOption,
+    ) -> PersistedSemanticOption:
+        candidate = self.session.scalar(
+            select(PersistedSemanticOption)
+            .join(
+                SemanticPromptProjection,
+                SemanticPromptProjection.id
+                == PersistedSemanticOption.prompt_projection_id,
+            )
+            .where(
+                PersistedSemanticOption.intent_session_ref
+                == selected.intent_session_ref,
+                PersistedSemanticOption.option_id == selected.option_id,
+                PersistedSemanticOption.authority_scope_hash
+                == selected.authority_scope_hash,
+                SemanticPromptProjection.status.in_(("pending", "delivered")),
+            )
+            .order_by(PersistedSemanticOption.prompt_projection_version.desc())
+        )
+        if candidate is None or candidate.prompt_projection_version <= (
+            selected.prompt_projection_version
+        ):
+            return selected
+        if (
+            candidate.authority_scope_json != selected.authority_scope_json
+            or candidate.visible_text != selected.visible_text
+        ):
+            return selected
+        return candidate
+
+    def _execution_option(
+        self,
+        semantic_request: SemanticRequest | None,
+        *,
+        fallback: PersistedSemanticOption,
+    ) -> PersistedSemanticOption:
+        if semantic_request is None:
+            return fallback
+        binding = semantic_request.selected_option_binding or {}
+        projection_ref = binding.get("execution_prompt_projection_ref")
+        projection_version = binding.get("execution_prompt_projection_version")
+        precondition_hash = binding.get("execution_precondition_hash")
+        if not all((projection_ref, projection_version, precondition_hash)):
+            return fallback
+        return self.session.scalar(
+            select(PersistedSemanticOption).where(
+                PersistedSemanticOption.prompt_projection_ref == projection_ref,
+                PersistedSemanticOption.prompt_projection_version == projection_version,
+                PersistedSemanticOption.option_id == fallback.option_id,
+                PersistedSemanticOption.authority_scope_hash
+                == fallback.authority_scope_hash,
+                PersistedSemanticOption.precondition_hash == precondition_hash,
+            )
+        ) or fallback
+
+    def _apply_safe_rebase(
+        self,
+        *,
+        semantic_request: SemanticRequest,
+        selected_option: PersistedSemanticOption,
+        execution_option: PersistedSemanticOption,
+        request: SemanticOptionSelection,
+    ) -> None:
+        if execution_option.id == selected_option.id:
+            return
+        semantic_request.current_precondition_hash = execution_option.precondition_hash
+        semantic_request.current_case_revision_ref = execution_option.case_revision_ref
+        semantic_request.selected_option_binding = {
+            **(semantic_request.selected_option_binding or {}),
+            "execution_prompt_projection_ref": execution_option.prompt_projection_ref,
+            "execution_prompt_projection_version": (
+                execution_option.prompt_projection_version
+            ),
+            "execution_precondition_hash": execution_option.precondition_hash,
+            "execution_case_revision_ref": execution_option.case_revision_ref,
+        }
+        self.session.add(
+            AuditEvent(
+                event_type="semantic_option.safely_rebased",
+                entity_type="semantic_request",
+                entity_id=semantic_request.id,
+                actor_type="docket_compiler",
+                actor_id=None,
+                request_id=request.request_id,
+                primary_ref=semantic_request.ref_id,
+                affected_refs=[semantic_request.ref_id],
+                basis_refs=list(semantic_request.origin_utterance_refs),
+                data={
+                    "authority_scope_hash": selected_option.authority_scope_hash,
+                    "original_precondition_hash": selected_option.precondition_hash,
+                    "rebased_precondition_hash": execution_option.precondition_hash,
+                    "original_revision": selected_option.case_revision_ref,
+                    "rebased_revision": execution_option.case_revision_ref,
+                    "semantic_scope_changed": False,
+                },
+            )
         )
 
     def _create_semantic_request(

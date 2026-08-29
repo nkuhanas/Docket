@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from docket.domain.canonical import sha256_json
 from docket.models import (
+    AttentionCase,
     DeferredIngress,
     IntentSession,
     OutboxEvent,
@@ -18,6 +19,52 @@ from docket.models import (
 from docket.providers.discord import DiscordProjectionAdapter
 
 _QUIESCED = "ingress_deployment_quiesced"
+
+
+def _rebase_case_execution(
+    value: Any,
+    *,
+    case_ref: str | None,
+    old_revision_ref: str | None,
+    new_revision_ref: str | None,
+    case_version: int | None,
+) -> Any:
+    if isinstance(value, list):
+        return [
+            _rebase_case_execution(
+                item,
+                case_ref=case_ref,
+                old_revision_ref=old_revision_ref,
+                new_revision_ref=new_revision_ref,
+                case_version=case_version,
+            )
+            for item in value
+        ]
+    if not isinstance(value, dict):
+        return value
+    result: dict[str, Any] = {}
+    for key, nested in value.items():
+        if (
+            key == "case_revision_ref"
+            and old_revision_ref is not None
+            and nested == old_revision_ref
+            and new_revision_ref is not None
+        ):
+            result[key] = new_revision_ref
+        elif key == "expected_versions" and isinstance(nested, dict):
+            expected = copy.deepcopy(nested)
+            if case_ref is not None and case_version is not None and case_ref in expected:
+                expected[case_ref] = case_version
+            result[key] = expected
+        else:
+            result[key] = _rebase_case_execution(
+                nested,
+                case_ref=case_ref,
+                old_revision_ref=old_revision_ref,
+                new_revision_ref=new_revision_ref,
+                case_version=case_version,
+            )
+    return result
 
 
 class IngressDeploymentService:
@@ -175,6 +222,23 @@ class IngressDeploymentService:
                 SemanticPromptProjection.intent_session_ref == projection.intent_session_ref
             )
         )
+        current_case_ref = (
+            intent_session.case_refs[0]
+            if len(intent_session.case_refs) == 1
+            else projection.case_ref
+        )
+        current_case_revision_ref = (
+            intent_session.case_revision_refs[0]
+            if len(intent_session.case_revision_refs) == 1
+            else projection.case_revision_ref
+        )
+        current_case = (
+            session.scalar(
+                select(AttentionCase).where(AttentionCase.ref_id == current_case_ref)
+            )
+            if current_case_ref is not None
+            else None
+        )
         replacement = SemanticPromptProjection(
             intent_session_ref=projection.intent_session_ref,
             projection_version=int(current_version or 0) + 1,
@@ -183,8 +247,8 @@ class IngressDeploymentService:
             parent_channel_id=projection.parent_channel_id,
             source_message_id=projection.source_message_id,
             question_text=projection.question_text,
-            case_ref=projection.case_ref,
-            case_revision_ref=projection.case_revision_ref,
+            case_ref=current_case_ref,
+            case_revision_ref=current_case_revision_ref,
             render_sha256="0" * 64,
             component_sha256="0" * 64,
             status="pending",
@@ -199,7 +263,24 @@ class IngressDeploymentService:
                     "prompt_projection_ref": replacement.ref_id,
                     "prompt_projection_version": replacement.projection_version,
                     "intent_session_version": intent_session.version,
+                    "case_ref": current_case_ref,
+                    "case_revision_ref": current_case_revision_ref,
                 }
+            )
+            expected_versions = preconditions.get("expected_versions")
+            if (
+                isinstance(expected_versions, dict)
+                and current_case_ref is not None
+                and current_case is not None
+                and current_case_ref in expected_versions
+            ):
+                expected_versions[current_case_ref] = current_case.version
+            compilation_template = _rebase_case_execution(
+                copy.deepcopy(prior.compilation_template_json),
+                case_ref=current_case_ref,
+                old_revision_ref=prior.case_revision_ref,
+                new_revision_ref=current_case_revision_ref,
+                case_version=current_case.version if current_case is not None else None,
             )
             option = PersistedSemanticOption(
                 prompt_projection_id=replacement.id,
@@ -210,9 +291,9 @@ class IngressDeploymentService:
                 action_kind=prior.action_kind,
                 authority_scope_json=copy.deepcopy(prior.authority_scope_json),
                 execution_preconditions_json=preconditions,
-                compilation_template_json=copy.deepcopy(prior.compilation_template_json),
-                case_ref=prior.case_ref,
-                case_revision_ref=prior.case_revision_ref,
+                compilation_template_json=compilation_template,
+                case_ref=current_case_ref,
+                case_revision_ref=current_case_revision_ref,
                 intent_session_ref=prior.intent_session_ref,
                 authority_scope_hash=prior.authority_scope_hash,
                 precondition_hash=sha256_json(preconditions),

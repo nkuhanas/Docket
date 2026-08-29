@@ -41,7 +41,10 @@ from docket.services.intent_sessions import IntentSessionService
 from docket.services.policies import ContextPolicyService
 from docket.services.provider_intents import ProviderIntentService
 from docket.services.registry import RegistryService
-from docket.services.registry_conflicts import RegistryConflictCompiler
+from docket.services.registry_conflicts import (
+    IdentityBindingConflictCompiler,
+    RegistryConflictCompiler,
+)
 from docket.services.reply_bindings import ReplyBindingService
 from docket.services.semantic_options import (
     CURRENT_SELECTION_UTTERANCE,
@@ -171,9 +174,15 @@ class InteractiveAuthorityService:
             option = self.session.scalar(
                 select(PersistedSemanticOption).where(
                     PersistedSemanticOption.prompt_projection_ref
-                    == binding.get("prompt_projection_ref"),
+                    == binding.get(
+                        "execution_prompt_projection_ref",
+                        binding.get("prompt_projection_ref"),
+                    ),
                     PersistedSemanticOption.prompt_projection_version
-                    == binding.get("prompt_projection_version"),
+                    == binding.get(
+                        "execution_prompt_projection_version",
+                        binding.get("prompt_projection_version"),
+                    ),
                     PersistedSemanticOption.option_id == binding.get("option_id"),
                     PersistedSemanticOption.authority_scope_hash == authority_scope_hash,
                     PersistedSemanticOption.precondition_hash == precondition_hash,
@@ -260,6 +269,24 @@ class InteractiveAuthorityService:
                         "current_version": intent_session.version,
                     },
                 )
+        if semantic_request is not None and content is not None:
+            selected_binding_statements = IdentityBindingConflictCompiler(
+                self.session
+            ).selected_statements(content)
+            known_binding_subjects = {
+                subject_ref
+                for statement in statements
+                if statement.predicate == "identity_binding"
+                for subject_ref in statement.subject_refs
+            }
+            statements = [
+                *statements,
+                *[
+                    statement
+                    for statement in selected_binding_statements
+                    if not known_binding_subjects.intersection(statement.subject_refs)
+                ],
+            ]
         intent_session, turn = intent_service.append_turn(
             IntentTurnAppend(
                 intent_session_ref=intent_session.ref_id,
@@ -280,8 +307,17 @@ class InteractiveAuthorityService:
                 gateway_instance_ref=gateway_instance_ref,
             )
         )
-        conflict_refs = RegistryConflictCompiler(self.session).compile(
-            list(turn.statement_refs)
+        conflict_refs = list(
+            dict.fromkeys(
+                [
+                    *RegistryConflictCompiler(self.session).compile(
+                        list(turn.statement_refs)
+                    ),
+                    *IdentityBindingConflictCompiler(self.session).compile(
+                        list(turn.statement_refs)
+                    ),
+                ]
+            )
         )
         if conflict_refs:
             compiled_clarifications = [
@@ -309,6 +345,8 @@ class InteractiveAuthorityService:
                 ],
             ]
             intent_session.state = "needs_clarification"
+            intent_session.semantic_state = "needs_clarification"
+            intent_session.commit_state = "blocked_conflict"
             intent_session.version += 1
         if content is None:
             if not intent_session.blocking_clarifications:
@@ -408,6 +446,50 @@ class InteractiveAuthorityService:
                     "errors": changeset.validation_errors
                 }
                 semantic_attempt.completed_at = utc_now()
+            selected_conflict_error = next(
+                (
+                    error
+                    for error in changeset.validation_errors
+                    if error.get("code") == "open_conflict"
+                ),
+                None,
+            )
+            if semantic_request is not None and selected_conflict_error is not None:
+                conflict_ref = str(
+                    selected_conflict_error.get("details", {}).get("conflict_ref", "")
+                )
+                return {
+                    "ok": False,
+                    "ref": changeset.ref_id,
+                    "state": "blocked_conflict",
+                    "error": {
+                        "code": "identity_binding_conflict",
+                        "message": (
+                            "Canonical state changed after the option was projected; "
+                            "the selected identity binding now conflicts with the "
+                            "current binding."
+                        ),
+                        "details": {
+                            "conflict_ref": conflict_ref,
+                            "selected_authority_preserved": True,
+                        },
+                    },
+                    "affected_refs": [
+                        intent_session.ref_id,
+                        turn.ref_id,
+                        changeset.ref_id,
+                        *([conflict_ref] if conflict_ref else []),
+                    ],
+                    "basis_refs": changeset.basis_refs,
+                    "next": {
+                        "clarifications": intent_session.blocking_clarifications,
+                        "action": "resolve_changed_identity_binding",
+                    },
+                    "warnings": [],
+                    "disposition": "rejected_conflict",
+                    "intent_session": intent_service.projection(intent_session),
+                    "changeset": self.changesets.projection(changeset),
+                }
             exact_case_error = next(
                 (
                     error

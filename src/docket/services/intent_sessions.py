@@ -115,12 +115,6 @@ class IntentSessionService:
 
     def append_turn(self, request: IntentTurnAppend) -> tuple[IntentSession, IntentTurn]:
         intent_session = self.get(request.intent_session_ref)
-        if intent_session.state not in {"open", "needs_clarification"}:
-            raise DocketError(
-                code="intent_session_not_open",
-                message="This IntentSession no longer accepts turns.",
-                details={"state": intent_session.state},
-            )
         utterance = self._utterance(request.utterance_ref)
         if utterance.conversation_ref != intent_session.conversation_ref:
             raise DocketError(
@@ -135,6 +129,19 @@ class IntentSessionService:
         )
         if existing is not None:
             return intent_session, existing
+        resumes_selected_authority = bool(
+            request.semantic_request_ref
+            and intent_session.state == "ready"
+            and intent_session.semantic_request_ref == request.semantic_request_ref
+        )
+        if intent_session.state not in {"open", "needs_clarification"} and not (
+            resumes_selected_authority
+        ):
+            raise DocketError(
+                code="intent_session_not_open",
+                message="This IntentSession no longer accepts turns.",
+                details={"state": intent_session.state},
+            )
         provenance = ProvenanceRefService(self.session)
         provenance.require_all(request.context_refs)
         statements = StatementService(self.session).derive(
@@ -198,11 +205,16 @@ class IntentSessionService:
         self.session.flush()
         intent_session.resolved_intent_json = dict(request.resolved_intent_json)
         intent_session.blocking_clarifications = list(request.blocking_clarifications)
-        intent_session.state = (
-            "needs_clarification" if request.blocking_clarifications else "open"
-        )
-        intent_session.semantic_state = intent_session.state
-        intent_session.commit_state = "not_attempted"
+        if request.semantic_request_ref is not None:
+            intent_session.state = "ready"
+            intent_session.semantic_state = "ready"
+            intent_session.commit_state = "pending"
+        else:
+            intent_session.state = (
+                "needs_clarification" if request.blocking_clarifications else "open"
+            )
+            intent_session.semantic_state = intent_session.state
+            intent_session.commit_state = "not_attempted"
         intent_session.version += 1
         self.session.add(
             AuditEvent(

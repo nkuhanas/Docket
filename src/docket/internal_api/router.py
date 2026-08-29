@@ -619,11 +619,21 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
     else:
         error = execution.get("error")
         error_code = str(error.get("code", "unknown")) if isinstance(error, dict) else disposition
-        response_text = (
-            "I recorded your decision, but Docket could not apply it "
-            f"(`{error_code}`). Your authorization remains available; you do not "
-            "need to repeat it."
-        )
+        if error_code == "identity_binding_conflict":
+            details = error.get("details", {}) if isinstance(error, dict) else {}
+            conflict_ref = str(details.get("conflict_ref") or "the open conflict")
+            response_text = (
+                "I recorded your decision, but the identity binding changed after "
+                f"the option was projected (`{conflict_ref}`). Nothing committed. "
+                "Your original selection remains recorded; the changed binding must "
+                "be resolved before Docket can continue."
+            )
+        else:
+            response_text = (
+                "I recorded your decision, but Docket could not apply it "
+                f"(`{error_code}`). Your authorization remains available; you do not "
+                "need to repeat it."
+            )
     with session_scope() as session:
         response = ProvenanceService(session).capture_agent_response(
             AgentResponseCapture(
