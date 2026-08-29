@@ -16,6 +16,7 @@ from docket.services.ingress_ledger import IngressIdentity, IngressLedgerService
 
 logger = logging.getLogger("docket.discord_ingress")
 _SEMANTIC_OPTION_PREFIX = "dkt:s:"
+_READY_PATH = Path("/tmp/docket-ingress-ready")
 
 
 def _required(name: str) -> str:
@@ -102,11 +103,15 @@ class StableDiscordIngress(discord.Client):
             )
 
     async def on_ready(self) -> None:
-        Path("/tmp/docket-ingress-ready").touch()
+        _READY_PATH.touch()
         logger.info("deployment-stable Discord ingress connected as %s", self.user)
 
+    async def on_resumed(self) -> None:
+        _READY_PATH.touch()
+        logger.info("deployment-stable Discord ingress resumed its gateway session")
+
     async def on_disconnect(self) -> None:
-        Path("/tmp/docket-ingress-ready").unlink(missing_ok=True)
+        _READY_PATH.unlink(missing_ok=True)
 
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot or str(message.author.id) != self.identity.operator_id:
