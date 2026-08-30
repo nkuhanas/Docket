@@ -122,6 +122,17 @@ with engine.connect() as connection:
         raise AssertionError("restricted ingress role unexpectedly has UPDATE authority")
 engine.dispose()
 PY
+
+    smoke_compose exec -T postgres createdb -U docket docket_readiness_rehearsal
+    smoke_compose exec -T postgres createdb -U docket docket_readiness_restore
+    smoke_compose run --rm --no-deps docket \
+        ./.venv/bin/python -m docket.tracked_context_readiness synthetic-rehearsal \
+        --rehearsal-url \
+        postgresql+psycopg://docket:docket-smoke@postgres:5432/docket_readiness_rehearsal \
+        --restore-url \
+        postgresql+psycopg://docket:docket-smoke@postgres:5432/docket_readiness_restore \
+        --backup /tmp/tracked-context-readiness.dump \
+        --output /tmp/tracked-context-readiness-evidence.json
 )
 
 build_image() {
@@ -630,6 +641,116 @@ gmail() {
     compose exec -T docket ./.venv/bin/python -m docket.gmail_cli "$@"
 }
 
+tracked_context_readiness() (
+    init_docker
+    local live_container
+    local live_image
+    local live_revision
+    local timestamp
+    local output_dir
+    local snapshot
+    local network
+    local postgres_container
+    local password
+    local database_url
+
+    live_container=$(compose ps -q docket)
+    [[ -n "$live_container" ]] || die "tracked-context rehearsal requires live Docket"
+    live_image=$(docker_engine inspect --format '{{.Image}}' "$live_container")
+    live_revision=$(docker_engine inspect \
+        --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+        "$live_container")
+    [[ -n "$live_image" && -n "$live_revision" ]] ||
+        die "could not resolve the matching pre-reset application image"
+
+    timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+    output_dir="$ROOT/backups/tracked-context-readiness-$timestamp"
+    mkdir -p "$output_dir"
+    chmod 700 "$output_dir"
+    umask 077
+    snapshot="$output_dir/pre-reset-source.dump"
+    compose exec -T postgres pg_dump -U docket -d docket --format=custom >"$snapshot"
+    [[ -s "$snapshot" ]] || die "read-only production snapshot is empty"
+    chmod 600 "$snapshot"
+
+    build_image
+    network="docket-readiness-${UID:-local}-$$"
+    postgres_container="$network-postgres"
+    password="docket-readiness-$$"
+    cleanup_readiness() {
+        local status=$?
+        docker_engine rm -f "$postgres_container" >/dev/null 2>&1 || true
+        docker_engine network rm "$network" >/dev/null 2>&1 || true
+        return "$status"
+    }
+    trap cleanup_readiness EXIT INT TERM
+    docker_engine network create "$network" >/dev/null
+    docker_engine run -d --name "$postgres_container" --network "$network" \
+        -e POSTGRES_DB=docket_source \
+        -e POSTGRES_USER=docket \
+        -e "POSTGRES_PASSWORD=$password" \
+        postgres:16.9-bookworm >/dev/null
+    for _attempt in {1..60}; do
+        if docker_engine exec "$postgres_container" \
+            pg_isready -U docket -d docket_source >/dev/null 2>&1; then
+            break
+        fi
+        sleep 1
+    done
+    docker_engine exec "$postgres_container" \
+        pg_isready -U docket -d docket_source >/dev/null ||
+        die "isolated readiness PostgreSQL did not become ready"
+    docker_engine cp "$snapshot" "$postgres_container:/tmp/pre-reset-source.dump"
+    docker_engine exec "$postgres_container" pg_restore \
+        -U docket -d docket_source --exit-on-error --no-owner --no-privileges \
+        /tmp/pre-reset-source.dump
+    docker_engine exec "$postgres_container" createdb \
+        -U docket docket_readiness_rehearsal
+    docker_engine exec "$postgres_container" createdb \
+        -U docket docket_readiness_restore
+
+    database_url="postgresql+psycopg://docket:$password@$postgres_container:5432"
+    docker_engine run --rm --network "$network" \
+        -e "DOCKET_DATABASE_URL=$database_url/docket_source" \
+        -e "DATABASE_TARGET=postgresql://docket:$password@$postgres_container:5432/docket_source" \
+        "$live_image" sh -ec \
+        './.venv/bin/alembic current | grep -F "(head)"
+         psql "$DATABASE_TARGET" -v ON_ERROR_STOP=1 -Atc \
+           "SELECT count(*) FROM operator_utterances;
+            SELECT count(*) FROM decisions;
+            SELECT count(*) FROM operations;"' \
+        >"$output_dir/matching-image-restore.txt"
+    chmod 600 "$output_dir/matching-image-restore.txt"
+
+    docker_engine run --rm --user "$(id -u):$(id -g)" --network "$network" \
+        -v "$output_dir:/output" \
+        -v "$ROOT/deltas/docket-ontology-readiness-status-08-27-2026.yaml:/input/ontology-readiness.yaml:ro" \
+        docket-docket:latest ./.venv/bin/python -m docket.tracked_context_readiness \
+        export-governance --database-url "$database_url/docket_source" \
+        --seed-file /input/ontology-readiness.yaml \
+        --output /output/governance-closure.json
+    docker_engine run --rm --user "$(id -u):$(id -g)" --network "$network" \
+        -v "$output_dir:/output" \
+        docket-docket:latest ./.venv/bin/python -m docket.tracked_context_readiness \
+        provider-inventory --database-url "$database_url/docket_source" \
+        --output /output/provider-disposition-manifest.json
+    docker_engine run --rm --user "$(id -u):$(id -g)" --network "$network" \
+        -v "$output_dir:/output" \
+        docket-docket:latest ./.venv/bin/python -m docket.tracked_context_readiness \
+        rehearse --closure /output/governance-closure.json \
+        --provider-manifest /output/provider-disposition-manifest.json \
+        --rehearsal-url "$database_url/docket_readiness_rehearsal" \
+        --restore-url "$database_url/docket_readiness_restore" \
+        --backup /output/clean-rehearsal.dump \
+        --output /output/clean-rehearsal-evidence.json
+
+    sha256sum "$snapshot" >"$output_dir/pre-reset-source.dump.sha256"
+    chmod 600 "$output_dir/pre-reset-source.dump.sha256"
+    printf 'Tracked-context readiness rehearsal passed.\n'
+    printf 'Private evidence: %s\n' "$output_dir"
+    printf 'Matching pre-reset image: %s (%s)\n' "$live_image" "$live_revision"
+)
+
 verify_restore() {
     "$ROOT/scripts/verify-restore.sh" "${1:-}"
 }
@@ -647,6 +768,8 @@ Commands:
   deploy-ingress  Replace only stable Discord ingress through a quiesced handoff.
   backup          Create or confirm today's encrypted PostgreSQL backup.
   verify-restore  Restore an encrypted backup into disposable PostgreSQL and verify it.
+  readiness-rehearsal
+                  Snapshot production read-only and rehearse tracked-context reset offline.
   setup-triage    Install the isolated Hermes Gmail-triage profile and cron.
   setup-hermes-auth [--main|--triage|--all]
                   Reauthorize Hermes's OpenAI Codex model credential.
@@ -676,6 +799,7 @@ case "${1:-}" in
     deploy-ingress) deploy_ingress ;;
     backup) encrypted_backup ;;
     verify-restore) verify_restore "${2:-}" ;;
+    readiness-rehearsal) tracked_context_readiness ;;
     setup-triage) gmail_triage_setup ;;
     setup-hermes-auth) hermes_oauth_setup "${2:---main}" ;;
     gmail-status) gmail status ;;

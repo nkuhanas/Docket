@@ -1022,6 +1022,18 @@ ephemeral PostgreSQL container, verifies the Alembic revision and bounded
 integrity queries, destroys the disposable database, and records the result in
 audit. Never place the private age identity in `.env` or `secrets/local/`.
 
+For the signed tracked-context amendment, run
+`scripts/docket readiness-rehearsal` before substantive implementation and
+again when producing the eventual reset manifest. The command reads production
+only through `pg_dump`, restores that snapshot beside the exact live Docket
+image in an isolated PostgreSQL container, computes the G.3 governance closure,
+inventories every provider effect/binding with an explicit disposition, and
+rehearses the clean governance/account/attachment backup and restore. Exact
+provider identifiers, retained utterances, and dumps remain mode-`0600` under
+an ignored timestamped `backups/tracked-context-readiness-*` directory. Only
+hashes, counts, and pass/fail evidence belong in the tracked readiness record.
+The command cannot perform the production reset, deploy, or call a provider.
+
 The image tag is recovery evidence, not permission to downgrade a migrated
 database. Restore or migrate the database according to the affected revision
 before running older application code.
