@@ -270,7 +270,44 @@ scripts/docket readiness-rehearsal
 It snapshots production, restores the matching pre-reset image, exports the
 governance closure, inventories provider effects, creates isolated clean
 databases, and verifies attachment backup/restore. Private evidence remains in
-mode-`0600` ignored backup storage.
+mode-`0600` ignored backup storage. A successful run also writes a sealed
+`production-reset-manifest.json` and prints the one exact authorization message
+bound to its backup hash and the full deployment revision. Any subsequent code
+commit requires a new rehearsal and manifest because the revision binding no
+longer matches.
+
+Send that byte-exact authorization through the trusted Docket/Discord path.
+Before cutover, verify that it produced an immutable `utt_`, a
+`production_reset_authorization` `dec_`, and its `aud_`. A checkmark or ordinary
+chat response is not sufficient evidence.
+
+The destructive command is intentionally separate from rehearsal and from the
+Discord authorization:
+
+```bash
+scripts/docket production-reset \
+  backups/tracked-context-readiness-YYYYMMDDTHHMMSSZ \
+  --execute
+```
+
+Run it only after a separate explicit Operator direction to perform the reset
+and deployment. The command requires synchronized `main`, green GitHub CI, the
+exact evidence directory, the exact ledger Decision, and the matching old image.
+It verifies everything before drain and again after drain; stops all database
+writers; recomputes the final governance closure with the reset-authorization
+chain; materializes and verifies an empty `docket_cutover_*` database; then swaps
+database names. The pre-reset database and image remain quarantined only until
+the clean service, ingress, Hermes registry, schema head, and authority chain
+pass. They are then removed from the live cluster while the sealed custom-format
+backup remains offline.
+
+Before the final database swap, any failure drops only the explicitly named
+empty cutover database and restores the pre-reset image. After the swap but
+before verification completes, failure renames the quarantined pre-reset
+database back to `docket`, restores the matching image, and removes the failed
+clean database. If that recovery itself fails, leave PostgreSQL and application
+services stopped and restore the sealed backup with the matching image; never
+start either image against the other schema.
 
 Never execute a production reset without a later exact authenticated Operator
 instruction bound to the reset manifest, backup, and deployment revision. The

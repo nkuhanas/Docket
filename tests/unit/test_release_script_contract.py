@@ -61,6 +61,39 @@ def test_deploy_drains_execution_but_preserves_queued_durable_work() -> None:
     )
 
 
+def test_production_reset_is_manifest_bound_and_swaps_only_after_clean_verification() -> None:
+    script = Path("scripts/docket").read_text(encoding="utf-8")
+    readiness = script.split("\ntracked_context_readiness() (", 1)[1].split("\n)\n", 1)[0]
+    reset = script.split("\nproduction_reset() {", 1)[1].split("\n}\n", 1)[0]
+
+    assert "build-manifest" in readiness
+    assert "production-reset-authorization.txt" in readiness
+    assert "authorization-text" in readiness
+    assert '"$execution_flag" == "--execute"' in reset
+    assert reset.count("verify-execution") == 2
+    first_verify = reset.index("verify-execution")
+    drain = reset.index("request_database_drain")
+    second_verify = reset.index("verify-execution", first_verify + 1)
+    stop_writers = reset.index(
+        "compose stop -t 30 discord-ingress hermes docket", second_verify
+    )
+    materialize = reset.index("materialize-clean", stop_writers)
+    clean_authority = reset.index("verify-authority", materialize)
+    rename_old = reset.index("ALTER DATABASE docket RENAME TO", clean_authority)
+    rename_clean = reset.index("ALTER DATABASE $clean_database RENAME TO docket")
+    postdeploy = reset.index("postdeploy")
+    completion = reset.index("record-completion")
+    drop_old = reset.rindex('drop_cutover_database "$quarantine_database"')
+
+    assert first_verify < drain < second_verify < stop_writers
+    assert stop_writers < materialize < clean_authority < rename_old < rename_clean
+    assert rename_clean < postdeploy < completion < drop_old
+    assert "matching pre-reset image is unavailable" in reset
+    assert "production_reset_authorization" not in reset
+    assert "old_renamed" in reset
+    assert 'docker_engine image tag "$old_image" docket-docket:latest' in reset
+
+
 def test_gmail_triage_installer_pins_an_isolated_profile_and_local_delivery() -> None:
     script = Path("scripts/setup-hermes-triage.sh").read_text(encoding="utf-8")
     config = Path("hermes/triage-config.example.yaml").read_text(encoding="utf-8")

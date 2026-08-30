@@ -213,8 +213,10 @@ bindings, 28 links, eight affected events, six lanes, and 36 exact external
 targets. Every target disposition is `leave_external_unmanaged`; no running or
 uncertain execution remains.
 
-The clean rehearsal restored the governance closure and one hashed `acct_`
-ProviderAccount into a schema containing no enumerated obsolete table. An
+The clean rehearsal restores the governance closure and hashed `acct_`
+ProviderAccounts through the repository's actual clean Alembic baseline—not a
+reduced test-only DDL facsimile—and verifies every current model table plus the
+head revision while excluding every enumerated obsolete table. An
 encrypted attachment fixture survived custom-format backup/restore and
 decrypted to its original SHA-256. Exact dumps, utterances, labels, account
 addresses, and provider IDs remain mode-`0600` in ignored backup storage. The
@@ -225,6 +227,15 @@ This closes implementation readiness only. No clean-model migration, production
 deployment, destructive reset, production row deletion, or provider mutation
 occurred. Production reset remains blocked on the later manifest-, backup-, and
 deployment-revision-bound authenticated authorization required by G.3.
+
+The production-reset entrypoint additionally binds the sealed backup, closure,
+provider manifest, rehearsal evidence, and exact Git revision; verifies the
+ledger-backed reset Decision before and after drain; recomputes only the
+governance extension caused by that authority turn; and verifies the authority
+chain again inside the clean database before any old database is removed. A
+successful cutover appends `production_reset.completed` as an `aud_` whose basis
+is the exact reset authorization chain. This machinery does not itself grant
+reset or deployment authority.
 
 ## Implemented persistence sequence
 
