@@ -11,6 +11,7 @@ from docket.models import (
     IdentityBinding,
     IdentityHandle,
     InterpretedStatement,
+    TemporalBinding,
 )
 from docket.schemas.authority import ChangeSetContent, ConflictOpen, StatementInput
 from docket.services.conflicts import ConflictService
@@ -240,4 +241,145 @@ class IdentityBindingConflictCompiler:
                 )
                 if conflict.ref_id not in conflicts:
                     conflicts.append(conflict.ref_id)
+        return conflicts
+
+
+class TemporalBindingConflictCompiler:
+    """Compile ambiguous Time replacements against one effective binding identity."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    @staticmethod
+    def _predicate(*, role: str, binding_key: str) -> str:
+        return f"temporal_binding:{role}:{binding_key}"
+
+    @classmethod
+    def selected_statements(cls, content: ChangeSetContent) -> list[StatementInput]:
+        statements: list[StatementInput] = []
+        for change in content.tracked_context_changes:
+            if change.mutation_type != "temporal_binding_create":
+                continue
+            spec = change.create_spec
+            if spec.subject_ref is None:
+                continue
+            predicate = cls._predicate(
+                role=spec.role,
+                binding_key=spec.binding_key,
+            )
+            statements.append(
+                StatementInput(
+                    statement_kind="selected_temporal_binding",
+                    subject_refs=[spec.subject_ref],
+                    predicate=predicate,
+                    value_json=spec.temporal_value.model_dump(mode="json"),
+                    affected_fields=[predicate],
+                    interpretation_json={
+                        "change_id": change.change_id,
+                        "deterministic_from_typed_changeset": True,
+                    },
+                    interpreter_version="docket-temporal-binding-v1",
+                )
+            )
+        return statements
+
+    def _prior_statement(self, binding: TemporalBinding) -> InterpretedStatement | None:
+        statement_refs = [
+            ref
+            for ref in binding.basis_refs
+            if isinstance(ref, str) and ref.startswith("stm_")
+        ]
+        if statement_refs:
+            statement = self.session.scalar(
+                select(InterpretedStatement).where(
+                    InterpretedStatement.ref_id.in_(statement_refs),
+                    InterpretedStatement.predicate
+                    == self._predicate(
+                        role=binding.role,
+                        binding_key=binding.binding_key,
+                    ),
+                )
+            )
+            if statement is not None:
+                return statement
+        utterance_ref = next(
+            (
+                ref
+                for ref in binding.basis_refs
+                if isinstance(ref, str) and ref.startswith("utt_")
+            ),
+            None,
+        )
+        if utterance_ref is None:
+            return None
+        predicate = self._predicate(
+            role=binding.role,
+            binding_key=binding.binding_key,
+        )
+        return StatementService(self.session).derive(
+            utterance_ref,
+            [
+                StatementInput(
+                    statement_kind="canonical_temporal_binding_basis",
+                    subject_refs=[binding.subject_ref],
+                    predicate=predicate,
+                    value_json=dict(binding.temporal_value),
+                    affected_fields=[predicate],
+                    interpretation_json={
+                        "temporal_binding_ref": binding.ref_id,
+                        "deterministic_from_canonical_binding": True,
+                    },
+                    interpreter_version="docket-canonical-temporal-binding-v1",
+                )
+            ],
+        )[0]
+
+    def compile(self, incoming_refs: list[str]) -> list[str]:
+        conflicts: list[str] = []
+        incoming = list(
+            self.session.scalars(
+                select(InterpretedStatement).where(
+                    InterpretedStatement.ref_id.in_(incoming_refs),
+                    InterpretedStatement.statement_kind
+                    == "selected_temporal_binding",
+                )
+            )
+        )
+        for statement in incoming:
+            for subject_ref in statement.subject_refs:
+                bindings = list(
+                    self.session.scalars(
+                        select(TemporalBinding).where(
+                            TemporalBinding.subject_ref == subject_ref,
+                            TemporalBinding.canonical_status == "active",
+                        )
+                    )
+                )
+                for binding in bindings:
+                    predicate = self._predicate(
+                        role=binding.role,
+                        binding_key=binding.binding_key,
+                    )
+                    if statement.predicate != predicate:
+                        continue
+                    if statement.value_json == binding.temporal_value:
+                        continue
+                    prior = self._prior_statement(binding)
+                    if prior is None:
+                        continue
+                    conflict = ConflictService(self.session).open(
+                        ConflictOpen(
+                            subject_refs=[subject_ref],
+                            affected_fields=[predicate],
+                            prior_statement_refs=[prior.ref_id],
+                            incoming_statement_refs=[statement.ref_id],
+                            conflicting_effects_json={
+                                "temporal_binding_ref": binding.ref_id,
+                                "prior": binding.temporal_value,
+                                "incoming": statement.value_json,
+                            },
+                        )
+                    )
+                    if conflict.ref_id not in conflicts:
+                        conflicts.append(conflict.ref_id)
         return conflicts

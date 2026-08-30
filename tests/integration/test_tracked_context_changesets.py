@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import func, select
 
 from docket.config import get_settings
+from docket.domain.errors import DocketError
 from docket.domain.public_refs import new_public_ref
 from docket.models import (
     AuditEvent,
@@ -20,6 +21,7 @@ from docket.models import (
     TemporalBinding,
 )
 from docket.schemas.authority import ChangeSetCommit, ChangeSetContent, ChangeSetPrepare
+from docket.services.canonical_events import CanonicalEventAuthorityService
 from docket.services.change_sets import ChangeSetService
 from docket.services.tracked_context import TrackedContextService
 
@@ -224,3 +226,117 @@ def test_temporal_supersession_preserves_prior_binding(session) -> None:
     assert prior.canonical_status == "historical"
     assert replacement.supersedes_ref == prior.ref_id
     assert set(affected) == {prior.ref_id, replacement.ref_id}
+
+
+@pytest.mark.integration
+def test_item_parent_update_rejects_transitive_cycle(session) -> None:
+    root = Item(
+        title="Root",
+        basis_refs=[],
+        decision_refs=[],
+        source_refs=[],
+        created_by_changeset_ref=new_public_ref("chg"),
+    )
+    session.add(root)
+    session.flush()
+    child = Item(
+        title="Child",
+        parent_item_ref=root.ref_id,
+        basis_refs=[],
+        decision_refs=[],
+        source_refs=[],
+        created_by_changeset_ref=new_public_ref("chg"),
+    )
+    session.add(child)
+    session.flush()
+    changeset = ChangeSet(
+        intent_session_id=uuid.uuid4(),
+        intent_session_ref=new_public_ref("ses"),
+        idempotency_key="test:item-parent-cycle",
+        basis_refs=[new_public_ref("utt")],
+        state="validated",
+    )
+    change = ChangeSetContent.model_validate(
+        {
+            "basis_refs": changeset.basis_refs,
+            "tracked_context_changes": [
+                {
+                    "mutation_type": "item_modify",
+                    "change_id": "cycle-root",
+                    "action": "update",
+                    "object_type": "item",
+                    "object_ref": root.ref_id,
+                    "affected_fields": ["parent_item_ref"],
+                    "basis_refs": changeset.basis_refs,
+                    "payload": {"parent_item_ref": child.ref_id},
+                }
+            ],
+        }
+    ).tracked_context_changes[0]
+
+    with pytest.raises(DocketError) as error:
+        TrackedContextService(session).apply_item(session, changeset, change)
+    assert error.value.code == "item_parent_cycle"
+
+
+@pytest.mark.integration
+def test_event_realization_requires_compatible_temporal_bounds(session) -> None:
+    item = Item(
+        title="Midterm",
+        basis_refs=[],
+        decision_refs=[],
+        source_refs=[],
+        created_by_changeset_ref=new_public_ref("chg"),
+    )
+    binding = TemporalBinding(
+        subject_ref="item_01M18DYEYJVVJ7TW5VQQBCA6NC",
+        role="scheduled_on",
+        temporal_value={
+            "kind": "date",
+            "date": "2026-09-18",
+            "timezone": "America/Los_Angeles",
+        },
+        basis_refs=[],
+        decision_refs=[],
+        source_refs=[],
+        created_by_changeset_ref=new_public_ref("chg"),
+    )
+    session.add(item)
+    session.flush()
+    binding.subject_ref = item.ref_id
+    session.add(binding)
+    session.flush()
+    event = CanonicalEvent(
+        canonical_key="midterm-wrong-day",
+        title="Midterm",
+        status="active",
+        event_spec={
+            "title": "Midterm",
+            "calendar_lane": "academics",
+            "timing": {
+                "kind": "timed",
+                "start_local": "2026-09-19T10:10:00",
+                "end_local": "2026-09-19T11:00:00",
+                "timezone": "America/Los_Angeles",
+            },
+        },
+        authority="explicit_operator",
+        basis_refs=[],
+        created_by_changeset_ref=new_public_ref("chg"),
+    )
+    session.add(event)
+    session.flush()
+
+    with pytest.raises(DocketError) as error:
+        CanonicalEventAuthorityService._require_temporal_compatibility(
+            event=event,
+            binding=binding,
+        )
+    assert error.value.code == "event_temporal_bounds_incompatible"
+
+    event.event_spec["timing"]["start_local"] = "2026-09-18T10:10:00"
+    event.event_spec["timing"]["end_local"] = "2026-09-18T11:00:00"
+    CanonicalEventAuthorityService._require_temporal_compatibility(
+        event=event,
+        binding=binding,
+    )
