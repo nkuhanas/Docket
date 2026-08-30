@@ -1,765 +1,192 @@
-import uuid
-from datetime import UTC, date, datetime, time, timedelta
-from zoneinfo import ZoneInfo
+from __future__ import annotations
+
+import hashlib
+from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from docket.config import get_settings
-from docket.internal_api.schemas import ApprovalResponse, LocalActionResponse
 from docket.models import (
-    Account,
-    CalendarSyncState,
+    AttentionCase,
+    AttentionCaseRevision,
+    BriefEntry,
     DailyBrief,
-    DiscordDailyThread,
-    DiscordProjection,
+    DailyBriefCaseMembership,
+    DailyBriefEntryMembership,
+    OperatorProjection,
+    OperatorUtterance,
     OutboxEvent,
-    QueueItem,
-    SemanticCandidate,
-    SourceItem,
-    TriageWindow,
-    TriageWindowMembership,
+    ProjectionDelivery,
+    TriageRun,
 )
-from docket.providers.discord import FakeDiscordBackend, FakeDiscordProjectionAdapter
-from docket.providers.google.fake_gmail import FakeGmailProvider
-from docket.schemas.triage import SemanticCandidateInput, SubmitSemanticCandidatesInput
-from docket.services.approvals import ApprovalService
+from docket.providers.discord import FakeDiscordProjectionAdapter
 from docket.services.briefs import DailyBriefService
 from docket.services.discord_projection import DiscordProjectionRunner
-from docket.services.events import SemanticCandidateCompiler
-from docket.services.gmail_ingestion import GmailIngestionService
-from docket.services.local_actions import LocalActionService
-from docket.services.proposal_controls import ProposalControlService
-from docket.services.triage import TriageService
+from docket.services.reply_bindings import ReplyBindingService
 
 
 def _settings():
     return get_settings().model_copy(
         update={
-            "gmail_ingestion_enabled": True,
-            "gmail_claim_batch_size": 20,
-            "gmail_triage_lease_seconds": 900,
-            "waking_window_start_hour": 7,
-            "waking_window_end_hour": 22,
-        }
-    )
-
-
-def test_wrapping_waking_window_has_bounded_evening_and_overnight_intervals(
-    session_factory,
-) -> None:
-    settings = _settings().model_copy(
-        update={
+            "timezone": "UTC",
             "waking_window_start_hour": 8,
             "waking_window_end_hour": 1,
         }
     )
-    briefs = DailyBriefService(session_factory, settings)
 
-    assert briefs._window_bounds("waking", date(2026, 8, 24)) == (
-        datetime(2026, 8, 24, 15, 0, tzinfo=UTC),
-        datetime(2026, 8, 25, 8, 0, tzinfo=UTC),
+
+def _triage_run(session) -> TriageRun:
+    run = TriageRun(
+        claimed_by="test",
+        contract_version="test",
+        contract_hash="a" * 64,
     )
-    assert briefs._window_bounds("overnight", date(2026, 8, 24)) == (
-        datetime(2026, 8, 24, 8, 0, tzinfo=UTC),
-        datetime(2026, 8, 24, 15, 0, tzinfo=UTC),
+    session.add(run)
+    session.flush()
+    return run
+
+
+def _case(session, *, observed_at: datetime, status: str = "open") -> AttentionCase:
+    case = AttentionCase(
+        situation_key=hashlib.sha256(observed_at.isoformat().encode()).hexdigest(),
+        title="Overnight decision",
+        summary="One concrete unresolved consequence.",
+        status=status,
+        semantic_classes=["action_request"],
+        source_refs=["src_01M16BRIEFCASE000000000000"],
+        first_observed_at=observed_at,
+        last_observed_at=observed_at,
+        resolved_at=observed_at if status == "resolved" else None,
     )
-
-
-def test_projection_repair_enqueues_a_missing_attention_card(session_factory) -> None:
-    settings = _settings()
-    with session_factory.begin() as session:
-        queue_item = QueueItem(
-            deduplication_key="missing-attention-projection",
-            material_fingerprint="9" * 64,
-            category="clarification",
-            title="Clarification needed",
-            summary="One material fact still needs the operator.",
-            status="pending",
-            priority="normal",
-            presentation="clarification",
-            received_at=datetime(2026, 8, 26, 9, 0, tzinfo=UTC),
-        )
-        session.add(queue_item)
-        session.flush()
-        queue_item_id = queue_item.id
-
-    runner = DiscordProjectionRunner(
-        session_factory,
-        FakeDiscordProjectionAdapter(FakeDiscordBackend()),
-        settings,
+    session.add(case)
+    session.flush()
+    revision = AttentionCaseRevision(
+        attention_case_id=case.id,
+        case_ref=case.ref_id,
+        revision=1,
+        title=case.title,
+        summary=case.summary,
+        semantic_classes=case.semantic_classes,
+        source_refs=case.source_refs,
+        admission_rule_ref="triage.canonical_consequence.v1",
+        admission_basis_refs=case.source_refs,
+        required_case_item_refs=[],
+        canonical_consequence_classes=["task_disposition"],
+        content_hash="b" * 64,
+        created_at=observed_at,
     )
-    assert runner.enqueue_stale_projection_repairs() == 1
-    assert runner.enqueue_stale_projection_repairs() == 0
-    with session_factory() as session:
-        repair = session.scalar(
-            select(OutboxEvent).where(OutboxEvent.aggregate_id == queue_item_id)
-        )
-        assert repair is not None
-        assert repair.event_type == "discord.projection.requested"
-        assert repair.payload["reason"] == "missing_attention_projection"
+    session.add(revision)
+    return case
 
 
-def test_open_window_reconciles_and_late_evening_does_not_close_it(
-    session_factory,
-) -> None:
-    previous = _settings()
-    current = previous.model_copy(
-        update={
-            "waking_window_start_hour": 8,
-            "waking_window_end_hour": 1,
-        }
+def _entry(
+    session,
+    *,
+    created_at: datetime,
+    disposition: str = "include",
+) -> BriefEntry:
+    run = _triage_run(session)
+    entry = BriefEntry(
+        triage_run_id=run.id,
+        source_ref="src_01M16BRIEFENTRY0000000000",
+        semantic_classes=["informational"],
+        title="Useful context",
+        summary="A bounded informational update.",
+        disposition=disposition,
+        reason="explicit_preference" if disposition == "suppress" else None,
+        created_at=created_at,
     )
-    with session_factory.begin() as session:
-        old_window = DailyBriefService(session_factory, previous)._window(
-            session,
-            kind="waking",
-            local_date=date(2026, 8, 24),
-        )
-        old_version = old_window.version
-
-    briefs = DailyBriefService(session_factory, current)
-    briefs.run_due_once(datetime(2026, 8, 25, 5, 0, tzinfo=UTC))  # 22:00 PDT
-    with session_factory() as session:
-        window = session.scalar(
-            select(TriageWindow).where(
-                TriageWindow.window_kind == "waking",
-                TriageWindow.local_date == date(2026, 8, 24),
-            )
-        )
-        night = session.scalar(
-            select(DailyBrief).where(
-                DailyBrief.brief_kind == "night",
-                DailyBrief.local_date == date(2026, 8, 24),
-            )
-        )
-        assert window is not None
-        assert window.starts_at.replace(tzinfo=UTC) == datetime(
-            2026, 8, 24, 15, 0, tzinfo=UTC
-        )
-        assert window.ends_at.replace(tzinfo=UTC) == datetime(
-            2026, 8, 25, 8, 0, tzinfo=UTC
-        )
-        assert window.version == old_version + 1
-        assert night is None
-
-    assert briefs.run_due_once(datetime(2026, 8, 25, 8, 0, tzinfo=UTC))
-    with session_factory() as session:
-        night = session.scalar(
-            select(DailyBrief).where(
-                DailyBrief.brief_kind == "night",
-                DailyBrief.local_date == date(2026, 8, 24),
-            )
-        )
-        assert night is not None and night.status == "published"
+    session.add(entry)
+    session.flush()
+    return entry
 
 
 @pytest.mark.integration
-def test_delayed_candidate_advances_past_every_published_window(
-    session_factory,
-) -> None:
+def test_overnight_cases_publish_once_in_replyable_morning_brief(session_factory) -> None:
     settings = _settings()
-    briefs = DailyBriefService(session_factory, settings)
+    observed_at = datetime(2026, 8, 30, 3, 0, tzinfo=UTC)
     with session_factory.begin() as session:
-        account = Account(
-            provider="google",
-            external_account_id="delayed-window-test",
-            capabilities=["gmail"],
-            enabled=True,
-        )
-        session.add(account)
-        session.flush()
-        source = SourceItem(
-            account_id=account.id,
-            provider="gmail",
-            external_object_id="delayed-source",
-            external_parent_id="delayed-thread",
-            source_version="1",
-            source_fingerprint="f" * 64,
-            received_at=datetime(2026, 8, 24, 19, 0, tzinfo=UTC),
-            status="classified",
-        )
-        session.add(source)
-        session.flush()
-        candidate = SemanticCandidate(
-            source_item_id=source.id,
-            candidate_index=0,
-            candidate_key="delayed-awareness",
-            semantic_key="e" * 64,
-            kind="information",
-            mutation="none",
-            title="Delayed material update",
-            summary="This source was classified after several brief boundaries.",
-            confidence=0.9,
-            status="resolved",
-        )
-        session.add(candidate)
-        session.flush()
-        for kind, local_date in (
-            ("waking", date(2026, 8, 24)),
-            ("overnight", date(2026, 8, 25)),
-            ("waking", date(2026, 8, 25)),
-        ):
-            briefs._window(session, kind=kind, local_date=local_date).status = "published"
+        case = _case(session, observed_at=observed_at)
+        entry = _entry(session, created_at=observed_at)
+        case_ref = case.ref_id
+        entry_ref = entry.ref_id
 
-        membership = briefs.assign_candidate(
-            session,
-            candidate,
-            observed_at=source.received_at,
-        )
-        session.flush()
-        target = session.get(TriageWindow, membership.window_id)
-        assert target is not None
-        assert target.window_kind == "overnight"
-        assert target.local_date == date(2026, 8, 26)
-        assert target.status == "open"
-        assert membership.reason == "delayed_after_multiple_briefs"
-        assert session.scalar(select(TriageWindowMembership)) is membership
+    service = DailyBriefService(session_factory, settings)
+    assert service.run_due_once(datetime(2026, 8, 30, 8, 1, tzinfo=UTC)) is True
+    assert service.run_due_once(datetime(2026, 8, 30, 8, 2, tzinfo=UTC)) is False
 
-
-@pytest.mark.integration
-def test_overnight_attention_projects_immediately_and_brief_remains_idempotent(
-    session_factory,
-) -> None:
-    settings = _settings()
-    zone = ZoneInfo(settings.timezone)
-    local_date = datetime.now(zone).date() + timedelta(days=1)
-    event_date = local_date + timedelta(days=1)
-    overnight_event_at = datetime.combine(local_date, time(2), tzinfo=zone).astimezone(UTC)
-    overnight_awareness_at = datetime.combine(
-        local_date, time(3), tzinfo=zone
-    ).astimezone(UTC)
-    morning = datetime.combine(local_date, time(7, 1), tzinfo=zone).astimezone(UTC)
-    provider = FakeGmailProvider()
-    provider.add_message(
-        message_id="overnight-event",
-        thread_id="overnight-thread",
-        source_version="1",
-        subject="Morning review",
-        received_at=overnight_event_at,
-    )
-    provider.add_message(
-        message_id="overnight-awareness",
-        thread_id="overnight-awareness-thread",
-        source_version="1",
-        subject="Application received",
-        received_at=overnight_awareness_at,
-    )
-    now = datetime.now(UTC)
-    with session_factory.begin() as session:
-        account = Account(
-            provider="google",
-            external_account_id="daily-brief-test",
-            capabilities=["gmail", "google_calendar"],
-            enabled=True,
-        )
-        session.add(account)
-        session.flush()
-        session.add(
-            CalendarSyncState(
-                account_id=account.id,
-                calendar_id=settings.google_calendar_id,
-                window_start=now - timedelta(days=30),
-                window_end=now + timedelta(days=400),
-                status="current",
-                last_attempt_at=now,
-                last_success_at=now,
-            )
-        )
-    assert (
-        GmailIngestionService(session_factory, provider, settings)
-        .run_due_once(force=True)
-        .completed
-    )
-    briefs = DailyBriefService(session_factory, settings)
-    assert not briefs.run_due_once(morning)
-    triage = TriageService(session_factory, provider, settings)
-    claim = triage.claim_batch()
-    sources = {source["external_object_id"]: source for source in claim["sources"]}
-    triage.submit_candidates(
-        SubmitSemanticCandidatesInput(
-            source_id=str(sources["overnight-event"]["source_id"]),
-            claim_token=str(claim["claim_token"]),
-            candidates=[
-                SemanticCandidateInput(
-                    candidate_key="morning-review",
-                    kind="event",
-                    calendar_relevance="recommended",
-                    mutation="create",
-                    title="Morning review",
-                    summary="A review is scheduled for this morning.",
-                    event={
-                        "title": "Morning review",
-                        "timing": {
-                            "kind": "timed",
-                            "start_local": f"{event_date.isoformat()}T09:00:00",
-                            "end_local": f"{event_date.isoformat()}T09:30:00",
-                        },
-                    },
-                    confidence=0.95,
-                ),
-                SemanticCandidateInput(
-                    candidate_key="morning-clarification",
-                    kind="event",
-                    calendar_relevance="recommended",
-                    mutation="create",
-                    title="Incomplete overnight event",
-                    summary="The source does not establish when this occurs.",
-                    missing_fields=["start", "end"],
-                    confidence=0.7,
-                ),
-            ],
-        )
-    )
-    triage.submit_candidates(
-        SubmitSemanticCandidatesInput(
-            source_id=str(sources["overnight-awareness"]["source_id"]),
-            claim_token=str(claim["claim_token"]),
-            candidates=[
-                SemanticCandidateInput(
-                    candidate_key="application-received",
-                    kind="information",
-                    title="Application received",
-                    summary="The employer confirmed receipt; no action is required.",
-                    confidence=0.99,
-                )
-            ],
-        )
-    )
-    compiler = SemanticCandidateCompiler(session_factory, settings)
-    assert compiler.run_due_once()
-    assert compiler.run_due_once()
-    assert compiler.run_due_once()
-    with session_factory() as session:
-        window = session.scalar(select(TriageWindow))
-        candidates = {
-            candidate.candidate_key: candidate
-            for candidate in session.scalars(select(SemanticCandidate))
-        }
-        assert window is not None and window.window_kind == "overnight"
-        assert candidates["morning-review"].status == "proposed"
-        assert candidates["morning-clarification"].status == "needs_clarification"
-        assert candidates["application-received"].status == "resolved"
-        outbox = list(session.scalars(select(OutboxEvent).order_by(OutboxEvent.created_at)))
-        assert len(outbox) == 2
-        assert {event.aggregate_id for event in outbox} == {
-            candidates["morning-review"].queue_item_id,
-            candidates["morning-clarification"].queue_item_id,
-        }
-
-    backend = FakeDiscordBackend()
-    projection_runner = DiscordProjectionRunner(
-        session_factory,
-        FakeDiscordProjectionAdapter(backend),
-        settings,
-    )
-    while projection_runner.run_due_once():
-        pass
-    assert len(backend.messages) == 2
-    immediate_titles = {
-        message["embed"]["title"] for message in backend.messages.values()
-    }
-    assert "Review new event" in immediate_titles
-    assert any(title.startswith("Clarification needed") for title in immediate_titles)
-
-    assert briefs.run_due_once(morning)
-    assert not briefs.run_due_once(morning)
     with session_factory() as session:
         brief = session.scalar(select(DailyBrief))
-        queue_items = list(session.scalars(select(QueueItem).order_by(QueueItem.created_at)))
-        outbox = list(session.scalars(select(OutboxEvent).order_by(OutboxEvent.created_at)))
-        assert brief is not None and brief.status == "published"
-        assert len(queue_items) == 3
-        assert queue_items[2].title == "Morning brief"
-        assert "Calendar (2)" in queue_items[2].summary
-        assert "Awareness (1)" in queue_items[2].summary
-        assert "Application received" in queue_items[2].summary
-        assert len(outbox) == 3
-        assert outbox[-1].aggregate_id == brief.queue_item_id
-        brief_queue_item_id = brief.queue_item_id
+        projection = session.scalar(select(OperatorProjection))
+        delivery = session.scalar(select(ProjectionDelivery))
+        assert brief is not None and brief.brief_kind == "morning"
+        assert brief.case_refs == [case_ref]
+        assert projection is not None and projection.brief_ref == brief.ref_id
+        assert projection.projection_kind == "daily_brief"
+        assert delivery is not None and delivery.status == "pending"
+        assert session.scalar(select(func.count(DailyBriefCaseMembership.id))) == 1
+        assert session.scalar(select(func.count()).select_from(DailyBriefEntryMembership)) == 1
+        included_entry = session.scalar(
+            select(BriefEntry).where(BriefEntry.ref_id == entry_ref)
+        )
+        assert included_entry is not None
+        assert included_entry.included_brief_ref == brief.ref_id
+        assert session.scalar(select(func.count(OutboxEvent.id))) == 1
+        projection_ref = projection.ref_id
+        brief_ref = brief.ref_id
 
-    assert projection_runner.run_due_once()
-    brief_card = next(
-        message
-        for message in backend.messages.values()
-        if message["embed"]["title"] == "Morning brief"
-    )
-    assert brief_card["embed"]["title"] == "Morning brief"
-    assert brief_card["embed"]["fields"] == []
-    assert [control["label"] for control in brief_card["controls"]] == ["Review decisions"]
-    assert len(backend.messages) == 3
-
-    with session_factory() as session:
-        projection = session.scalar(
-            select(DiscordProjection).where(
-                DiscordProjection.queue_item_id == brief_queue_item_id
-            )
-        )
-        thread = (
-            session.get(DiscordDailyThread, projection.daily_thread_id)
-            if projection is not None
-            else None
-        )
-        assert projection is not None and projection.message_id is not None
-        assert thread is not None and thread.thread_id is not None
-        projection_id = projection.id
-        message_id = projection.message_id
-        thread_id = thread.thread_id
-        review = brief_card["controls"][0]
+    adapter = FakeDiscordProjectionAdapter()
+    assert DiscordProjectionRunner(session_factory, adapter, settings).run_due_once() is True
     with session_factory.begin() as session:
-        ProposalControlService(session).respond(
-            LocalActionResponse(
-                request_id=uuid.uuid4(),
-                discord_interaction_id="morning-brief-review",
-                discord_user_id=settings.operator_discord_user_id,
-                guild_id=settings.discord_guild_id,
-                channel_id=thread_id,
-                parent_channel_id=settings.queue_channel_id,
-                projection_id=projection_id,
-                message_id=message_id,
-                responded_at=datetime.now(UTC),
-                action_revision_id=uuid.UUID(review["action_revision_id"]),
-                action_token=review["token"],
-                transition="proposal_review_navigate",
-                source_view="summary",
-                target_view="brief_review",
-                target_page=1,
+        delivery = session.scalar(
+            select(ProjectionDelivery).where(
+                ProjectionDelivery.projection_ref == projection_ref
             )
         )
-    while projection_runner.run_due_once():
-        pass
-    decision_card = backend.messages[str(projection_id)]
-    assert decision_card["embed"]["title"] == "Review new event"
-    assert next(
-        field["value"]
-        for field in decision_card["embed"]["fields"]
-        if field["name"] == "Morning brief review"
-    ) == "Decision 1 of 2"
-    assert {control["label"] for control in decision_card["controls"]} >= {
-        "Approve",
-        "Reject",
-        "Edit details",
-        "Snooze until tomorrow",
-        "Back to brief",
-        "Next",
-    }
-    assert {control.get("field") for control in decision_card["controls"]} >= {
-        "priority",
-        "reminder_preset",
-    }
-    priority_control = next(
-        control for control in decision_card["controls"] if control.get("field") == "priority"
-    )
-    proposal_revision_id = next(
-        control["action_revision_id"]
-        for control in decision_card["controls"]
-        if control.get("kind") == "proposal_action"
-    )
-    with session_factory.begin() as session:
-        ProposalControlService(session).respond(
-            LocalActionResponse(
-                request_id=uuid.uuid4(),
-                discord_interaction_id="morning-brief-priority",
-                discord_user_id=settings.operator_discord_user_id,
-                guild_id=settings.discord_guild_id,
-                channel_id=thread_id,
-                parent_channel_id=settings.queue_channel_id,
-                projection_id=projection_id,
-                message_id=message_id,
-                responded_at=datetime.now(UTC),
-                action_revision_id=uuid.UUID(proposal_revision_id),
-                action_token=priority_control["token"],
-                transition="proposal_field_change",
-                field="priority",
-                value="high",
-            )
+        assert delivery is not None and delivery.external_message_ref is not None
+        thread_id = delivery.external_message_ref.split(":")[2]
+        assert thread_id != settings.queue_channel_id
+        reply_text = "Handle the first case."
+        reply = OperatorUtterance(
+            actor_ref=f"discord_user:{settings.operator_discord_user_id}",
+            transport="discord",
+            source_message_ref=(
+                f"discord_message:{settings.discord_guild_id}:{thread_id}:"
+                "1542799000000000601"
+            ),
+            conversation_ref=f"discord_conversation:{settings.discord_guild_id}:{thread_id}",
+            reply_to_source_ref=delivery.external_message_ref,
+            said_at=datetime.now(UTC),
+            verbatim_text=reply_text,
+            content_hash=hashlib.sha256(reply_text.encode()).hexdigest(),
+            request_key="daily-brief-reply",
         )
-    while projection_runner.run_due_once():
-        pass
-    decision_card = backend.messages[str(projection_id)]
-    assert "High priority" in next(
-        field["value"]
-        for field in decision_card["embed"]["fields"]
-        if field["name"] == "Details"
-    )
-    approval_control = next(
-        control for control in decision_card["controls"] if control.get("decision") == "approve"
-    )
-    with session_factory.begin() as session:
-        ApprovalService(session).respond(
-            ApprovalResponse(
-                request_id=uuid.uuid4(),
-                discord_interaction_id="morning-brief-approve",
-                approval_id=uuid.UUID(approval_control["approval_id"]),
-                approval_token=approval_control["token"],
-                short_code=None,
-                decision="approve",
-                discord_user_id=settings.operator_discord_user_id,
-                guild_id=settings.discord_guild_id,
-                channel_id=thread_id,
-                parent_channel_id=settings.queue_channel_id,
-                projection_id=projection_id,
-                message_id=message_id,
-                responded_at=datetime.now(UTC),
-            )
-        )
-    while projection_runner.run_due_once():
-        pass
-    in_progress = backend.messages[str(projection_id)]
-    next_control = next(
-        control for control in in_progress["controls"] if control["label"] == "Next"
-    )
-    with session_factory.begin() as session:
-        ProposalControlService(session).respond(
-            LocalActionResponse(
-                request_id=uuid.uuid4(),
-                discord_interaction_id="morning-brief-next",
-                discord_user_id=settings.operator_discord_user_id,
-                guild_id=settings.discord_guild_id,
-                channel_id=thread_id,
-                parent_channel_id=settings.queue_channel_id,
-                projection_id=projection_id,
-                message_id=message_id,
-                responded_at=datetime.now(UTC),
-                action_revision_id=uuid.UUID(next_control["action_revision_id"]),
-                action_token=next_control["token"],
-                transition="proposal_review_navigate",
-                source_view="brief_review",
-                source_page=1,
-                target_view="brief_review",
-                target_page=2,
-            )
-        )
-    while projection_runner.run_due_once():
-        pass
-    clarification = backend.messages[str(projection_id)]
-    assert clarification["embed"]["title"].startswith("Clarification needed")
-    assert next(
-        field["value"]
-        for field in clarification["embed"]["fields"]
-        if field["name"] == "Morning brief review"
-    ) == "Decision 2 of 2"
-    assert {control["label"] for control in clarification["controls"]} == {
-        "Snooze until tomorrow",
-        "Ignore",
-        "Back to brief",
-        "Previous",
-    }
-    ignore_control = next(
-        control for control in clarification["controls"] if control["label"] == "Ignore"
-    )
-    with session_factory.begin() as session:
-        LocalActionService(session).respond(
-            LocalActionResponse(
-                request_id=uuid.uuid4(),
-                discord_interaction_id="morning-brief-ignore",
-                discord_user_id=settings.operator_discord_user_id,
-                guild_id=settings.discord_guild_id,
-                channel_id=thread_id,
-                parent_channel_id=settings.queue_channel_id,
-                projection_id=projection_id,
-                message_id=message_id,
-                responded_at=datetime.now(UTC),
-                action_revision_id=uuid.UUID(ignore_control["action_revision_id"]),
-                action_token=ignore_control["token"],
-            )
-        )
-    while projection_runner.run_due_once():
-        pass
-    ignored = backend.messages[str(projection_id)]
-    assert {control["label"] for control in ignored["controls"]} == {
-        "Back to brief",
-        "Previous",
-    }
-    assert len(backend.messages) == 3
+        session.add(reply)
+        session.flush()
+        binding = ReplyBindingService(session).resolve(reply)
+        assert binding is not None
+        assert binding["brief_ref"] == brief_ref
+        assert binding["case_refs"] == [case_ref]
 
 
 @pytest.mark.integration
-def test_night_brief_consolidates_daytime_action_and_awareness(
-    session_factory,
-) -> None:
+def test_night_brief_includes_resolved_cases_and_suppressed_entries(session_factory) -> None:
     settings = _settings()
-    now = datetime.now(UTC)
+    observed_at = datetime(2026, 8, 29, 20, 0, tzinfo=UTC)
     with session_factory.begin() as session:
-        account = Account(
-            provider="google",
-            external_account_id="night-brief-test",
-            capabilities=["gmail", "google_calendar"],
-            enabled=True,
-        )
-        session.add(account)
-        session.flush()
-        session.add(
-            CalendarSyncState(
-                account_id=account.id,
-                calendar_id=settings.google_calendar_id,
-                window_start=now - timedelta(days=30),
-                window_end=now + timedelta(days=400),
-                status="current",
-                last_attempt_at=now,
-                last_success_at=now,
-            )
-        )
-    briefs = DailyBriefService(session_factory, settings)
-    assert briefs.run_due_once(datetime(2026, 8, 26, 14, 1, tzinfo=UTC))
+        _case(session, observed_at=observed_at, status="resolved")
+        _entry(session, created_at=observed_at, disposition="suppress")
 
-    provider = FakeGmailProvider()
-    provider.add_message(
-        message_id="daytime-summary",
-        thread_id="daytime-thread",
-        source_version="1",
-        subject="Daytime items",
-        received_at=datetime(2026, 8, 26, 19, 0, tzinfo=UTC),
-    )
-    provider.add_message(
-        message_id="daytime-summary-followup",
-        thread_id="daytime-followup-thread",
-        source_version="1",
-        subject="Application receipt follow-up",
-        received_at=datetime(2026, 8, 26, 20, 0, tzinfo=UTC),
-    )
-    provider.add_message(
-        message_id="different-application-receipt",
-        thread_id="different-application-thread",
-        source_version="1",
-        subject="Another application receipt",
-        received_at=datetime(2026, 8, 26, 20, 30, tzinfo=UTC),
-    )
-    assert (
-        GmailIngestionService(session_factory, provider, settings)
-        .run_due_once(force=True)
-        .completed
-    )
-    triage = TriageService(session_factory, provider, settings)
-    claim = triage.claim_batch()
-    sources = {source["external_object_id"]: source for source in claim["sources"]}
-    triage.submit_candidates(
-        SubmitSemanticCandidatesInput(
-            source_id=str(sources["daytime-summary"]["source_id"]),
-            claim_token=str(claim["claim_token"]),
-            candidates=[
-                SemanticCandidateInput(
-                    candidate_key="submit-form",
-                    kind="task",
-                    title="Submit department form",
-                    summary="A department form needs a response.",
-                    confidence=0.9,
-                ),
-                SemanticCandidateInput(
-                    candidate_key="reply-department",
-                    kind="response",
-                    title="Reply to the department",
-                    summary="The department is waiting for a reply.",
-                    confidence=0.9,
-                ),
-                SemanticCandidateInput(
-                    candidate_key="application-received",
-                    kind="information",
-                    title="Application received",
-                    summary="The employer confirmed receipt.",
-                    topic_key="application:primary-employer",
-                    confidence=0.99,
-                ),
-            ],
-        )
-    )
-    triage.submit_candidates(
-        SubmitSemanticCandidatesInput(
-            source_id=str(sources["daytime-summary-followup"]["source_id"]),
-            claim_token=str(claim["claim_token"]),
-            candidates=[
-                SemanticCandidateInput(
-                    candidate_key="application-received-followup",
-                    kind="information",
-                    title="Application received",
-                    summary="The employer repeated the receipt confirmation.",
-                    topic_key="application:primary-employer",
-                    confidence=0.99,
-                )
-            ],
-        )
-    )
-    triage.submit_candidates(
-        SubmitSemanticCandidatesInput(
-            source_id=str(sources["different-application-receipt"]["source_id"]),
-            claim_token=str(claim["claim_token"]),
-            candidates=[
-                SemanticCandidateInput(
-                    candidate_key="different-application-received",
-                    kind="information",
-                    title="Application received",
-                    summary="A different employer confirmed a separate application.",
-                    topic_key="application:different-employer",
-                    confidence=0.99,
-                )
-            ],
-        )
-    )
-    compiler = SemanticCandidateCompiler(session_factory, settings)
-    assert compiler.run_due_once()
-    assert compiler.run_due_once()
-    assert compiler.run_due_once()
-    assert compiler.run_due_once()
-    assert compiler.run_due_once()
+    assert DailyBriefService(session_factory, settings).run_due_once(
+        datetime(2026, 8, 30, 1, 1, tzinfo=UTC)
+    ) is True
 
-    with session_factory.begin() as session:
-        completed = session.scalar(
-            select(QueueItem).where(QueueItem.title == "Submit department form")
-        )
-        assert completed is not None
-        completed.status = "completed"
-        completed.resolved_at = datetime.now(UTC)
-        completed.resolution_code = "acknowledged"
-        completed.version += 1
-
-    # Simulate a restart after the 22:00 boundary. The missed closeout is still
-    # due at 03:01 local time and must not be lost merely because the hour wrapped.
-    night = datetime(2026, 8, 27, 10, 1, tzinfo=UTC)
-    assert briefs.run_due_once(night)
-    assert not briefs.run_due_once(night)
     with session_factory() as session:
-        night_brief = session.scalar(select(DailyBrief).where(DailyBrief.brief_kind == "night"))
-        assert night_brief is not None
-        queue_item = session.get(QueueItem, night_brief.queue_item_id)
-        assert queue_item is not None
-        assert "Completed / resolved (1)" in queue_item.summary
-        assert "Submit department form" in queue_item.summary
-        assert "Still needs you (1)" in queue_item.summary
-        assert "Reply to the department" in queue_item.summary
-        assert "Awareness (2)" in queue_item.summary
-        assert queue_item.summary.count("Application received") == 2
-
-    backend = FakeDiscordBackend()
-    projection_runner = DiscordProjectionRunner(
-        session_factory,
-        FakeDiscordProjectionAdapter(backend),
-        settings,
-    )
-    while projection_runner.run_due_once():
-        pass
-    action_card = next(
-        message
-        for message in backend.messages.values()
-        if message["embed"]["title"] == "Submit department form"
-    )
-    assert action_card["embed"]["fields"] == []
-    assert action_card["controls"] == []
-    unresolved_card = next(
-        message
-        for message in backend.messages.values()
-        if message["embed"]["title"] == "Reply to the department"
-    )
-    assert {control["label"] for control in unresolved_card["controls"]} == {
-        "Snooze until tomorrow",
-        "Acknowledge",
-    }
-    assert not any(
-        message["embed"]["title"] == "Application received" for message in backend.messages.values()
-    )
-    assert (
-        sum(
-            message["embed"]["title"] == "Night brief"
-            for message in backend.messages.values()
-        )
-        == 1
-    )
+        brief = session.scalar(select(DailyBrief))
+        projection = session.scalar(select(OperatorProjection))
+        assert brief is not None and brief.brief_kind == "night"
+        assert brief.local_date.isoformat() == "2026-08-29"
+        assert projection is not None
+        assert "Completed / resolved" in projection.visible_text
+        assert "Suppressed" in projection.visible_text
