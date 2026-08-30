@@ -81,6 +81,96 @@ def test_governance_closure_reports_missing_typed_edges() -> None:
     assert missing == [missing_utterance_ref]
 
 
+def test_governance_closure_does_not_expand_shared_runtime_or_domain_results() -> None:
+    utterance_ref = new_public_ref("utt")
+    unrelated_utterance_ref = new_public_ref("utt")
+    decision_ref = new_public_ref("dec")
+    response_ref = new_public_ref("rsp")
+    gateway_ref = new_public_ref("gwy")
+    call_ref = new_public_ref("call")
+    unrelated_call_ref = new_public_ref("call")
+    semantic_request_ref = new_public_ref("sreq")
+    change_set_ref = new_public_ref("chg")
+    case_revision_ref = new_public_ref("caserev")
+    rows = [
+        ClosureRow(
+            "operator_utterances",
+            utterance_ref,
+            {"ref_id": utterance_ref, "verbatim_text": "signed"},
+        ),
+        ClosureRow(
+            "operator_utterances",
+            unrelated_utterance_ref,
+            {"ref_id": unrelated_utterance_ref, "verbatim_text": "domain command"},
+        ),
+        ClosureRow(
+            "decisions",
+            decision_ref,
+            {"ref_id": decision_ref, "basis_refs": [utterance_ref]},
+        ),
+        ClosureRow(
+            "agent_responses",
+            response_ref,
+            {
+                "ref_id": response_ref,
+                "basis_refs": [utterance_ref],
+                "gateway_instance_ref": gateway_ref,
+            },
+        ),
+        ClosureRow(
+            "gateway_lifetimes",
+            gateway_ref,
+            {"ref_id": gateway_ref},
+        ),
+        ClosureRow(
+            "tool_invocations",
+            call_ref,
+            {
+                "ref_id": call_ref,
+                "utterance_refs": [utterance_ref],
+                "gateway_instance_ref": gateway_ref,
+                "semantic_request_ref": semantic_request_ref,
+                "result_refs": [change_set_ref],
+            },
+        ),
+        ClosureRow(
+            "tool_invocations",
+            unrelated_call_ref,
+            {
+                "ref_id": unrelated_call_ref,
+                "utterance_refs": [unrelated_utterance_ref],
+                "gateway_instance_ref": gateway_ref,
+            },
+        ),
+        ClosureRow(
+            "semantic_requests",
+            semantic_request_ref,
+            {"ref_id": semantic_request_ref, "basis_refs": [utterance_ref]},
+        ),
+        ClosureRow(
+            "change_sets",
+            change_set_ref,
+            {"ref_id": change_set_ref, "basis_refs": [case_revision_ref]},
+        ),
+        ClosureRow(
+            "attention_case_revisions",
+            case_revision_ref,
+            {"ref_id": case_revision_ref},
+        ),
+    ]
+
+    closure, missing = compute_governance_closure(rows, seed_refs=[decision_ref])
+
+    assert missing == []
+    assert {row.ref_id for row in closure} == {
+        utterance_ref,
+        decision_ref,
+        response_ref,
+        gateway_ref,
+        call_ref,
+    }
+
+
 def test_readiness_file_seeds_only_frozen_governance_categories(tmp_path: Path) -> None:
     utterance_ref = new_public_ref("utt")
     audit_ref = new_public_ref("aud")
