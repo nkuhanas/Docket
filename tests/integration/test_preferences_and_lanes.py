@@ -9,7 +9,7 @@ from docket.domain.errors import DocketError
 from docket.domain.public_refs import new_public_ref
 from docket.internal_api.schemas import OperatorUtteranceCapture
 from docket.models import (
-    Account,
+    ProviderAccount,
     CalendarLane,
     ChangeSet,
     Entity,
@@ -213,9 +213,10 @@ def test_sender_label_groups_exact_emails_and_owns_suppression_policy(
                 "basis_refs": basis,
                 "registry_changes": [
                     {
+                        "mutation_type": "identity_handle_create",
                         "change_id": "mustang-email",
                         "action": "create",
-                        "object_type": "identity_binding",
+                        "object_type": "identity_handle",
                         "create_spec": {
                             "handle_type": "email",
                             "value": "shop@em.efollett.com",
@@ -224,9 +225,10 @@ def test_sender_label_groups_exact_emails_and_owns_suppression_policy(
                         "basis_refs": basis,
                     },
                     {
+                        "mutation_type": "identity_handle_create",
                         "change_id": "mustang-sender",
                         "action": "create",
-                        "object_type": "identity_binding",
+                        "object_type": "identity_handle",
                         "create_spec": {
                             "handle_type": "sender_label",
                             "value": "Cal Poly Mustang Shop",
@@ -238,6 +240,7 @@ def test_sender_label_groups_exact_emails_and_owns_suppression_policy(
                 ],
                 "preference_changes": [
                     {
+                        "mutation_type": "preference_create",
                         "change_id": "mustang-suppression",
                         "action": "create",
                         "object_type": "preference",
@@ -348,9 +351,10 @@ def test_existing_label_and_inert_preference_are_corrected_atomically(
                 "expected_versions": {sender_ref: 1, preference_ref: 1},
                 "registry_changes": [
                     {
+                        "mutation_type": "identity_handle_create",
                         "change_id": "mustang-email",
                         "action": "create",
-                        "object_type": "identity_binding",
+                        "object_type": "identity_handle",
                         "create_spec": {
                             "handle_type": "email",
                             "value": "shop@em.efollett.com",
@@ -359,9 +363,10 @@ def test_existing_label_and_inert_preference_are_corrected_atomically(
                         "basis_refs": basis,
                     },
                     {
+                        "mutation_type": "identity_handle_modify",
                         "change_id": "associate-mustang-email",
                         "action": "update",
-                        "object_type": "identity_binding",
+                        "object_type": "identity_handle",
                         "object_ref": sender_ref,
                         "payload": {"add_associated_email_change_id": "mustang-email"},
                         "affected_fields": ["associated_emails"],
@@ -370,6 +375,7 @@ def test_existing_label_and_inert_preference_are_corrected_atomically(
                 ],
                 "preference_changes": [
                     {
+                        "mutation_type": "preference_modify",
                         "change_id": "activate-mustang-suppression",
                         "action": "update",
                         "object_type": "preference",
@@ -411,7 +417,7 @@ def test_ignore_unknown_sender_and_create_lane_route_commit_in_one_changeset(
     session_factory,
 ) -> None:
     with session_factory.begin() as session:
-        account = Account(
+        account = ProviderAccount(
             provider="google",
             external_account_id="policy-lane-test",
             capabilities=["google_calendar", "gmail"],
@@ -448,9 +454,10 @@ def test_ignore_unknown_sender_and_create_lane_route_commit_in_one_changeset(
                 "basis_refs": basis,
                 "registry_changes": [
                     {
+                        "mutation_type": "identity_handle_create",
                         "change_id": "isaac-identity",
                         "action": "create",
-                        "object_type": "identity_binding",
+                        "object_type": "identity_handle",
                         "create_spec": {
                             "handle_type": "email",
                             "value": "isaac@example.com",
@@ -462,6 +469,7 @@ def test_ignore_unknown_sender_and_create_lane_route_commit_in_one_changeset(
                 ],
                 "preference_changes": [
                     {
+                        "mutation_type": "preference_create",
                         "change_id": "ignore-isaac",
                         "action": "create",
                         "object_type": "preference",
@@ -479,6 +487,7 @@ def test_ignore_unknown_sender_and_create_lane_route_commit_in_one_changeset(
                 ],
                 "lane_changes": [
                     {
+                        "mutation_type": "calendar_lane_create",
                         "change_id": "clubs-lane",
                         "action": "create",
                         "object_type": "calendar_lane",
@@ -497,6 +506,7 @@ def test_ignore_unknown_sender_and_create_lane_route_commit_in_one_changeset(
                         "basis_refs": basis,
                     },
                     {
+                        "mutation_type": "lane_routing_decision_create",
                         "change_id": "polyuas-route",
                         "action": "create",
                         "object_type": "lane_routing_decision",
@@ -536,7 +546,8 @@ def test_ignore_unknown_sender_and_create_lane_route_commit_in_one_changeset(
         assert preference is not None and preference.target_ref == handle.ref_id
         assert lane is not None and lane.ref_id == lane_ref
         assert lane.operator_policy_text == "Extracurricular campus organizations."
-        assert lane.provenance_status == "complete"
+        assert lane.basis_refs == basis
+        assert lane.created_by_changeset_ref == result["ref"]
         assert route is not None and route.lane_ref == lane.ref_id
         assert route.operator_confirmed is True
         stored_preference = HistoryService(session).get_entry(preference.ref_id)["entry"]
@@ -551,7 +562,7 @@ def test_lane_precedent_requires_three_latest_consistent_operator_decisions(
     session_factory,
 ) -> None:
     with session_factory.begin() as session:
-        account = Account(
+        account = ProviderAccount(
             provider="google",
             external_account_id="precedent-test",
             capabilities=["google_calendar"],
@@ -568,6 +579,7 @@ def test_lane_precedent_requires_three_latest_consistent_operator_decisions(
             calendar_id="clubs@example.com",
             enabled=True,
             metadata_json={"organization_types": ["student_club"]},
+            created_by_changeset_ref=new_public_ref("chg"),
         )
         session.add(clubs)
         session.flush()
@@ -619,7 +631,7 @@ def test_semantic_class_route_preference_applies_only_to_matching_class(
     session_factory,
 ) -> None:
     with session_factory.begin() as session:
-        account = Account(
+        account = ProviderAccount(
             provider="google",
             external_account_id="semantic-route-test",
             capabilities=["google_calendar"],
@@ -635,6 +647,7 @@ def test_semantic_class_route_preference_applies_only_to_matching_class(
             status="active",
             calendar_id="clubs-semantic@example.com",
             enabled=True,
+            created_by_changeset_ref=new_public_ref("chg"),
         )
         session.add(clubs)
         session.flush()
@@ -666,7 +679,7 @@ def test_lane_routing_precedence_distinguishes_exact_triage_and_broad_policy(
     session_factory,
 ) -> None:
     with session_factory.begin() as session:
-        account = Account(
+        account = ProviderAccount(
             provider="google",
             external_account_id="route-precedence-test",
             capabilities=["google_calendar"],
@@ -682,6 +695,7 @@ def test_lane_routing_precedence_distinguishes_exact_triage_and_broad_policy(
             status="active",
             calendar_id="clubs-precedence@example.com",
             enabled=True,
+            created_by_changeset_ref=new_public_ref("chg"),
         )
         academic = CalendarLane(
             account_id=account.id,
@@ -691,6 +705,7 @@ def test_lane_routing_precedence_distinguishes_exact_triage_and_broad_policy(
             status="active",
             calendar_id="academic-precedence@example.com",
             enabled=True,
+            created_by_changeset_ref=new_public_ref("chg"),
         )
         session.add_all([clubs, academic])
         session.flush()
