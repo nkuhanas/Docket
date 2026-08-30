@@ -20,8 +20,8 @@ authority:
 
 implementation_gate:
   total: 8
-  resolved: 3
-  in_progress: 3
+  resolved: 4
+  in_progress: 2
   blocked_pending_implementation: 2
   implementation_start_permitted: false
 
@@ -76,13 +76,14 @@ implementation_start_blockers:
       alias or decoder retained.
 
   - blocker_ref: tracked_context_requirement_traceability
-    status: in_progress
-    finding: >-
-      The frozen amendment contains 68 normative clauses and 29 Acceptance
-      scenarios. The machine-readable requirement rows are being mapped before
-      any substantive implementation begins.
-    next_evidence:
-      - deltas/docket-tracked-context-traceability-08-29-2026.csv
+    status: resolved
+    evidence:
+      path: deltas/docket-tracked-context-traceability-08-29-2026.csv
+      normative_clauses: 68
+      acceptance_scenarios: 29
+    resolution: >-
+      Every normative clause has one planned or verified test/operational
+      procedure and Acceptance coverage before substantive implementation.
 
   - blocker_ref: clean_tool_contract_cutover_mapping
     status: resolved

@@ -1,3 +1,4 @@
+import csv
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,78 @@ READINESS = Path("deltas/docket-tracked-context-readiness-status-08-29-2026.yaml
 NAMESPACE = Path("deltas/docket-tracked-context-namespace-cutover-08-29-2026.yaml")
 TOOLS = Path("deltas/docket-tracked-context-tool-cutover-matrix-08-29-2026.yaml")
 TRIAGE = Path("deltas/docket-tracked-context-triage-admission-matrix-08-29-2026.yaml")
+TRACEABILITY = Path("deltas/docket-tracked-context-traceability-08-29-2026.csv")
+
+NORMATIVE_REFS = {
+    "ONT-TRACK-INV-0010",
+    "ONT-TRACK-DEC-0003",
+    "ONT-TRACK-REQ-0042",
+    "ONT-TRACK-INV-0001",
+    "ONT-TRACK-INV-0011",
+    "ONT-TRACK-INV-0012",
+    "ONT-TRACK-REQ-0043",
+    "ONT-TRACK-INV-0002",
+    "ONT-TRACK-REQ-0001",
+    "ONT-TRACK-INV-0003",
+    "ONT-TRACK-REQ-0002",
+    "ONT-TRACK-REQ-0003",
+    "ONT-TRACK-REQ-0004",
+    "ONT-TRACK-REQ-0005",
+    "ONT-TRACK-REQ-0006",
+    "ONT-TRACK-REQ-0038",
+    "ONT-TRACK-REQ-0007",
+    "ONT-TRACK-DEC-0001",
+    "ONT-TRACK-REQ-0008",
+    "ONT-TRACK-INV-0004",
+    "ONT-TRACK-REQ-0009",
+    "ONT-TRACK-REQ-0010",
+    "ONT-TRACK-INV-0005",
+    "ONT-TRACK-REQ-0011",
+    "ONT-TRACK-REQ-0012",
+    "ONT-TRACK-REQ-0013",
+    "ONT-TRACK-INV-0006",
+    "ONT-TRACK-REQ-0014",
+    "ONT-TRACK-REQ-0015",
+    "ONT-TRACK-REQ-0016",
+    "ONT-TRACK-REQ-0017",
+    "ONT-TRACK-REQ-0039",
+    "ONT-TRACK-INV-0007",
+    "ONT-TRACK-REQ-0018",
+    "ONT-TRACK-REQ-0040",
+    "ONT-TRACK-REQ-0019",
+    "ONT-TRACK-INV-0013",
+    "ONT-TRACK-REQ-0044",
+    "ONT-TRACK-REQ-0045",
+    "ONT-TRACK-REQ-0046",
+    "ONT-TRACK-REQ-0047",
+    "ONT-TRACK-REQ-0048",
+    "ONT-TRACK-INV-0008",
+    "ONT-TRACK-REQ-0020",
+    "ONT-TRACK-REQ-0021",
+    "ONT-TRACK-REQ-0022",
+    "ONT-TRACK-REQ-0023",
+    "ONT-TRACK-REQ-0024",
+    "ONT-TRACK-REQ-0041",
+    "ONT-TRACK-REQ-0025",
+    "ONT-TRACK-DEC-0002",
+    "ONT-TRACK-REQ-0026",
+    "ONT-TRACK-REQ-0027",
+    "ONT-TRACK-REQ-0028",
+    "ONT-TRACK-REQ-0029",
+    "ONT-TRACK-REQ-0030",
+    "ONT-TRACK-REQ-0031",
+    "ONT-TRACK-REQ-0032",
+    "ONT-TRACK-REQ-0033",
+    "ONT-TRACK-REQ-0049",
+    "ONT-TRACK-REQ-0034",
+    "ONT-TRACK-REQ-0035",
+    "ONT-TRACK-REQ-0036",
+    "ONT-TRACK-REQ-0037",
+    "ONT-TRACK-REQ-0050",
+    "ONT-TRACK-REQ-0051",
+    "ONT-TRACK-INV-0014",
+    "ONT-TRACK-INV-0009",
+}
 
 
 def _load(path: Path) -> dict[str, object]:
@@ -105,6 +178,27 @@ def test_triage_admission_fixture_matrix_covers_every_disposition_boundary() -> 
 
 
 @pytest.mark.integration
+def test_every_normative_tracked_context_clause_is_mapped() -> None:
+    with TRACEABILITY.open(encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == len(NORMATIVE_REFS) == 68
+    assert {row["requirement_ref"] for row in rows} == NORMATIVE_REFS
+    assert len({row["requirement_ref"] for row in rows}) == len(rows)
+    assert all(row["status"] in {"planned", "implemented_verified"} for row in rows)
+    assert all(row["test_refs"] or row["operational_verification_refs"] for row in rows)
+    assert all(row["acceptance_refs"] for row in rows)
+
+    for row in rows:
+        if row["status"] != "implemented_verified":
+            continue
+        for test_ref in row["test_refs"].split("|"):
+            path_value, separator, function_name = test_ref.partition("::")
+            assert separator and function_name.startswith("test_")
+            source = Path(path_value).read_text(encoding="utf-8")
+            assert f"def {function_name}(" in source
+
+
+@pytest.mark.integration
 def test_readiness_status_is_honest_about_remaining_start_blockers() -> None:
     readiness = _load(READINESS)
     assert readiness["frozen_artifact_hash"] == (
@@ -113,7 +207,7 @@ def test_readiness_status_is_honest_about_remaining_start_blockers() -> None:
     assert readiness["authority"]["production_reset_authority"] is False
     gate = readiness["implementation_gate"]
     assert gate["total"] == 8
-    assert gate["resolved"] == 3
+    assert gate["resolved"] == 4
     assert gate["implementation_start_permitted"] is False
     blockers = readiness["implementation_start_blockers"]
     assert len(blockers) == 8
