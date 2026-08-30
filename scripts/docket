@@ -126,6 +126,7 @@ PY
 
     smoke_compose exec -T postgres createdb -U docket docket_readiness_rehearsal
     smoke_compose exec -T postgres createdb -U docket docket_readiness_restore
+    smoke_compose exec -T postgres createdb -U docket docket_cutover_smoke
     smoke_compose run --rm --no-deps docket \
         ./.venv/bin/python -m docket.tracked_context_readiness synthetic-rehearsal \
         --rehearsal-url \
@@ -134,6 +135,50 @@ PY
         postgresql+psycopg://docket:docket-smoke@postgres:5432/docket_readiness_restore \
         --backup /tmp/tracked-context-readiness.dump \
         --output /tmp/tracked-context-readiness-evidence.json
+    smoke_compose run --rm --no-deps docket ./.venv/bin/python - <<'PY'
+import json
+
+import psycopg
+
+from docket.tracked_context_readiness import (
+    _sha256,
+    _synthetic_payload,
+    materialize_clean_cutover_database,
+)
+
+database_url = (
+    "postgresql+psycopg://docket:docket-smoke@postgres:5432/docket_cutover_smoke"
+)
+provider_manifest = {
+    "schema_version": 1,
+    "document_ref": "ONT-DELTA-2026-08-29-TRACKED-CONTEXT",
+    "generated_at": "2026-08-30T00:00:00+00:00",
+    "provider_mutation_authorized": False,
+    "reset_blockers": {
+        "operations": [],
+        "operation_items": [],
+        "execution_attempts": [],
+    },
+    "accounts": [],
+    "targets": [],
+}
+provider_manifest["manifest_sha256"] = _sha256(
+    {
+        key: value
+        for key, value in provider_manifest.items()
+        if key != "generated_at"
+    }
+)
+result = materialize_clean_cutover_database(
+    database_url=database_url,
+    payload=_synthetic_payload(),
+    provider_manifest=provider_manifest,
+)
+with psycopg.connect(database_url.replace("postgresql+psycopg://", "postgresql://")) as connection:
+    assert connection.execute("SELECT count(*) FROM attachment_evidence_metadata").fetchone()[0] == 0
+    assert connection.execute("SELECT count(*) FROM decisions").fetchone()[0] == 4
+print(json.dumps(result, sort_keys=True))
+PY
 )
 
 build_image() {
@@ -332,8 +377,9 @@ database_continuity() {
 }
 
 request_database_drain() {
+    local principal=${1:-scripts/docket deploy}
     local output
-    output=$(database_continuity request --requested-by "scripts/docket deploy")
+    output=$(database_continuity request --requested-by "$principal")
     uv run python -c "import json,sys; print(json.load(sys.stdin)['ref'])" <<<"$output"
 }
 
@@ -675,6 +721,7 @@ tracked_context_readiness() (
     local live_container
     local live_image
     local live_revision
+    local deployment_revision
     local timestamp
     local output_dir
     local snapshot
@@ -691,6 +738,7 @@ tracked_context_readiness() (
         "$live_container")
     [[ -n "$live_image" && -n "$live_revision" ]] ||
         die "could not resolve the matching pre-reset application image"
+    deployment_revision=$(git rev-parse HEAD)
 
     timestamp=$(date -u +%Y%m%dT%H%M%SZ)
     output_dir="$ROOT/backups/tracked-context-readiness-$timestamp"
@@ -775,10 +823,299 @@ tracked_context_readiness() (
 
     sha256sum "$snapshot" >"$output_dir/pre-reset-source.dump.sha256"
     chmod 600 "$output_dir/pre-reset-source.dump.sha256"
+    docker_engine run --rm --user "$(id -u):$(id -g)" \
+        -v "$output_dir:/output" \
+        docket-docket:latest ./.venv/bin/python -m docket.production_cutover \
+        build-manifest --backup /output/pre-reset-source.dump \
+        --backup-ref pre-reset-source.dump \
+        --deployment-revision "$deployment_revision" \
+        --matching-application-image "$live_image" \
+        --matching-application-revision "$live_revision" \
+        --matching-restore-evidence /output/matching-image-restore.txt \
+        --closure /output/governance-closure.json \
+        --provider-manifest /output/provider-disposition-manifest.json \
+        --rehearsal-evidence /output/clean-rehearsal-evidence.json \
+        --output /output/production-reset-manifest.json
+    docker_engine run --rm --user "$(id -u):$(id -g)" \
+        -v "$output_dir:/output:ro" \
+        docket-docket:latest ./.venv/bin/python -m docket.production_cutover \
+        authorization-text --manifest /output/production-reset-manifest.json \
+        >"$output_dir/production-reset-authorization.txt"
+    chmod 600 "$output_dir/production-reset-authorization.txt"
     printf 'Tracked-context readiness rehearsal passed.\n'
     printf 'Private evidence: %s\n' "$output_dir"
     printf 'Matching pre-reset image: %s (%s)\n' "$live_image" "$live_revision"
+    printf 'Exact production reset authorization (not yet granted):\n'
+    cat "$output_dir/production-reset-authorization.txt"
 )
+
+json_field() {
+    local path=$1
+    local field=$2
+    uv run python -c \
+        'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))[sys.argv[2]])' \
+        "$path" "$field"
+}
+
+database_url_for_name() {
+    local database_url=$1
+    local database_name=$2
+    uv run python -c \
+        'import sys; from urllib.parse import urlsplit,urlunsplit; p=urlsplit(sys.argv[1]); print(urlunsplit((p.scheme,p.netloc,"/"+sys.argv[2],p.query,p.fragment)))' \
+        "$database_url" "$database_name"
+}
+
+database_exists() {
+    local database_name=$1
+    compose exec -T postgres psql -U docket -d postgres -Atc \
+        "SELECT count(*) FROM pg_database WHERE datname = '$database_name';"
+}
+
+drop_cutover_database() {
+    local database_name=$1
+    [[ "$database_name" =~ ^docket_(cutover|pre_reset|failed_clean)_[0-9a-f]{12}_[0-9]{8}T[0-9]{6}Z$ ]] ||
+        die "refusing to drop database outside the cutover namespace: $database_name"
+    compose exec -T postgres psql -U docket -d postgres -v ON_ERROR_STOP=1 -c \
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$database_name' AND pid <> pg_backend_pid();" \
+        >/dev/null
+    compose exec -T postgres dropdb -U docket --if-exists "$database_name"
+}
+
+production_reset() {
+    local evidence_dir_input=${1:-}
+    local execution_flag=${2:-}
+    [[ -n "$evidence_dir_input" && "$execution_flag" == "--execute" ]] ||
+        die "usage: scripts/docket production-reset EVIDENCE_DIR --execute"
+    require_command realpath
+    local evidence_dir
+    evidence_dir=$(realpath "$evidence_dir_input")
+    case "$evidence_dir/" in
+        "$ROOT/backups/"*) ;;
+        *) die "production reset evidence must be inside $ROOT/backups" ;;
+    esac
+
+    local manifest="$evidence_dir/production-reset-manifest.json"
+    local backup="$evidence_dir/pre-reset-source.dump"
+    local closure="$evidence_dir/governance-closure.json"
+    local provider_manifest="$evidence_dir/provider-disposition-manifest.json"
+    local rehearsal="$evidence_dir/clean-rehearsal-evidence.json"
+    local authority_evidence="$evidence_dir/production-reset-authority.json"
+    local final_closure="$evidence_dir/final-governance-closure.json"
+    local closure_extension="$evidence_dir/final-governance-extension.json"
+    local materialization="$evidence_dir/clean-materialization.json"
+    local clean_authority="$evidence_dir/clean-authority-verification.json"
+    local completion_evidence="$evidence_dir/production-reset-completion.json"
+    local required_path
+    for required_path in \
+        "$manifest" "$backup" "$closure" "$provider_manifest" "$rehearsal"; do
+        [[ -s "$required_path" ]] || die "required reset artifact is missing: $required_path"
+    done
+
+    predeploy
+    ensure_ingress_credential
+    ensure_attachment_encryption_key
+
+    local revision
+    local short_revision
+    local timestamp
+    local database_url
+    local clean_database
+    local clean_database_url
+    local quarantine_database
+    local failed_clean_database
+    local old_image
+    local rollback_tag
+    local drain_ref=""
+    local log_first_line=1
+    local authority_decision_ref
+    local authority_audit_ref
+    local clean_created=0
+    local old_renamed=0
+    local reset_complete=0
+
+    revision=$(git rev-parse HEAD)
+    short_revision=${revision:0:12}
+    timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+    database_url=$(env_value DOCKET_DATABASE_URL)
+    [[ -n "$database_url" ]] || die "DOCKET_DATABASE_URL is not configured"
+    clean_database="docket_cutover_${short_revision}_${timestamp}"
+    quarantine_database="docket_pre_reset_${short_revision}_${timestamp}"
+    failed_clean_database="docket_failed_clean_${short_revision}_${timestamp}"
+    clean_database_url=$(database_url_for_name "$database_url" "$clean_database")
+    old_image=$(json_field "$manifest" matching_application_image)
+    docker_engine image inspect "$old_image" >/dev/null ||
+        die "matching pre-reset image is unavailable: $old_image"
+    rollback_tag="docket-docket:pre-reset-$timestamp"
+    docker_engine image tag "$old_image" "$rollback_tag"
+    printf 'Matching pre-reset image retained as %s.\n' "$rollback_tag"
+
+    reset_failure_cleanup() {
+        local status=$?
+        if ((reset_complete)); then
+            return "$status"
+        fi
+        set +e
+        compose stop -t 30 discord-ingress hermes docket >/dev/null 2>&1
+        if ((old_renamed)); then
+            if [[ "$(database_exists docket)" == "1" ]]; then
+                compose exec -T postgres psql -U docket -d postgres -v ON_ERROR_STOP=1 -c \
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'docket' AND pid <> pg_backend_pid();" \
+                    >/dev/null
+                compose exec -T postgres psql -U docket -d postgres -v ON_ERROR_STOP=1 -c \
+                    "ALTER DATABASE docket RENAME TO $failed_clean_database;" >/dev/null
+            fi
+            if [[ "$(database_exists "$quarantine_database")" == "1" ]]; then
+                compose exec -T postgres psql -U docket -d postgres -v ON_ERROR_STOP=1 -c \
+                    "ALTER DATABASE $quarantine_database RENAME TO docket;" >/dev/null
+            fi
+            if [[ "$(database_exists "$failed_clean_database")" == "1" ]]; then
+                drop_cutover_database "$failed_clean_database" >/dev/null
+            fi
+        elif ((clean_created)) && [[ "$(database_exists "$clean_database")" == "1" ]]; then
+            drop_cutover_database "$clean_database" >/dev/null
+        fi
+        docker_engine image tag "$old_image" docket-docket:latest >/dev/null 2>&1
+        compose up -d --no-build --force-recreate docket hermes discord-ingress >/dev/null 2>&1
+        if [[ -n "$drain_ref" ]]; then
+            database_continuity abort "$drain_ref" >/dev/null 2>&1
+        fi
+        clear_hermes_drain
+        printf 'Production reset failed; the pre-reset database and image were restored.\n' >&2
+        return "$status"
+    }
+    trap reset_failure_cleanup EXIT INT TERM
+
+    build_image
+    compose run --rm --no-deps --user "$(id -u):$(id -g)" \
+        -v "$evidence_dir:/reset" \
+        -e "RESET_DEPLOYMENT_REVISION=$revision" \
+        docket sh -ec \
+        './.venv/bin/python -m docket.production_cutover verify-execution
+           --manifest /reset/production-reset-manifest.json
+           --backup /reset/pre-reset-source.dump
+           --closure /reset/governance-closure.json
+           --provider-manifest /reset/provider-disposition-manifest.json
+           --rehearsal-evidence /reset/clean-rehearsal-evidence.json
+           --database-url "$DOCKET_DATABASE_URL"
+           --operator-discord-user-id "$DOCKET_OPERATOR_DISCORD_USER_ID"
+           --deployment-revision "$RESET_DEPLOYMENT_REVISION"
+           --output /reset/production-reset-authority.json'
+
+    if [[ -f "$ROOT/.runtime/hermes/logs/agent.log" ]]; then
+        log_first_line=$(( $(wc -l <"$ROOT/.runtime/hermes/logs/agent.log") + 1 ))
+    fi
+    drain_ref=$(request_database_drain "scripts/docket production-reset")
+    printf 'Production reset drain requested: %s\n' "$drain_ref"
+    request_hermes_drain "scripts/docket production-reset"
+    if ! wait_for_database_drain "$drain_ref" || ! wait_for_hermes_drain; then
+        die "production reset drain timed out; no database replacement occurred"
+    fi
+    wait_for_operational_idle
+
+    compose run --rm --no-deps --user "$(id -u):$(id -g)" \
+        -v "$evidence_dir:/reset" \
+        -e "RESET_DEPLOYMENT_REVISION=$revision" \
+        docket sh -ec \
+        './.venv/bin/python -m docket.production_cutover verify-execution
+           --manifest /reset/production-reset-manifest.json
+           --backup /reset/pre-reset-source.dump
+           --closure /reset/governance-closure.json
+           --provider-manifest /reset/provider-disposition-manifest.json
+           --rehearsal-evidence /reset/clean-rehearsal-evidence.json
+           --database-url "$DOCKET_DATABASE_URL"
+           --operator-discord-user-id "$DOCKET_OPERATOR_DISCORD_USER_ID"
+           --deployment-revision "$RESET_DEPLOYMENT_REVISION"
+           --output /reset/production-reset-authority.json'
+    authority_decision_ref=$(json_field "$authority_evidence" decision_ref)
+    authority_audit_ref=$(json_field "$authority_evidence" audit_ref)
+
+    compose stop -t 30 discord-ingress hermes docket
+    compose run --rm --no-deps --user "$(id -u):$(id -g)" \
+        -e "DOCKET_DATABASE_URL=$database_url" \
+        -v "$evidence_dir:/output" \
+        -v "$ROOT/deltas/docket-ontology-readiness-status-08-27-2026.yaml:/input/ontology-readiness.yaml:ro" \
+        docket ./.venv/bin/python -m docket.tracked_context_readiness \
+        export-governance --database-url "$database_url" \
+        --seed-file /input/ontology-readiness.yaml \
+        --seed-ref "$authority_decision_ref" \
+        --seed-ref "$authority_audit_ref" \
+        --output /output/final-governance-closure.json
+    docker_engine run --rm --user "$(id -u):$(id -g)" \
+        -v "$evidence_dir:/reset" \
+        docket-docket:latest ./.venv/bin/python -m docket.production_cutover \
+        verify-closure-extension \
+        --sealed-closure /reset/governance-closure.json \
+        --final-closure /reset/final-governance-closure.json \
+        --authority-evidence /reset/production-reset-authority.json \
+        --output /reset/final-governance-extension.json
+
+    [[ "$(database_exists "$clean_database")" == "0" ]] ||
+        die "clean cutover database already exists: $clean_database"
+    compose exec -T postgres createdb -U docket "$clean_database"
+    clean_created=1
+    compose run --rm --no-deps --user "$(id -u):$(id -g)" \
+        -v "$evidence_dir:/reset" \
+        -e "DOCKET_DATABASE_URL=$clean_database_url" \
+        docket sh -ec \
+        './.venv/bin/python -m docket.tracked_context_readiness materialize-clean
+           --closure /reset/final-governance-closure.json
+           --provider-manifest /reset/provider-disposition-manifest.json
+           --database-url "$DOCKET_DATABASE_URL"
+           --output /reset/clean-materialization.json'
+    compose run --rm --no-deps -e "DOCKET_DATABASE_URL=$clean_database_url" \
+        docket ./.venv/bin/docket-provision-ingress-role
+    compose run --rm --no-deps --user "$(id -u):$(id -g)" \
+        -v "$evidence_dir:/reset" \
+        -e "DOCKET_DATABASE_URL=$clean_database_url" \
+        docket sh -ec \
+        './.venv/bin/python -m docket.production_cutover verify-authority
+           --manifest /reset/production-reset-manifest.json
+           --database-url "$DOCKET_DATABASE_URL"
+           --operator-discord-user-id "$DOCKET_OPERATOR_DISCORD_USER_ID"
+           --output /reset/clean-authority-verification.json'
+
+    compose exec -T postgres psql -U docket -d postgres -v ON_ERROR_STOP=1 -c \
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'docket' AND pid <> pg_backend_pid();" \
+        >/dev/null
+    compose exec -T postgres psql -U docket -d postgres -v ON_ERROR_STOP=1 -c \
+        "ALTER DATABASE docket RENAME TO $quarantine_database;" >/dev/null
+    old_renamed=1
+    compose exec -T postgres psql -U docket -d postgres -v ON_ERROR_STOP=1 -c \
+        "ALTER DATABASE $clean_database RENAME TO docket;" >/dev/null
+    clean_created=0
+
+    compose up -d --no-build --force-recreate docket hermes discord-ingress
+    clear_hermes_drain
+    wait_for_hermes "$log_first_line"
+    postdeploy
+    compose run --rm --no-deps --user "$(id -u):$(id -g)" \
+        -v "$evidence_dir:/reset" \
+        docket sh -ec \
+        './.venv/bin/python -m docket.production_cutover verify-authority
+           --manifest /reset/production-reset-manifest.json
+           --database-url "$DOCKET_DATABASE_URL"
+           --operator-discord-user-id "$DOCKET_OPERATOR_DISCORD_USER_ID"
+           --output /reset/clean-authority-verification.json'
+    compose run --rm --no-deps --user "$(id -u):$(id -g)" \
+        -v "$evidence_dir:/reset" \
+        docket sh -ec \
+        './.venv/bin/python -m docket.production_cutover record-completion
+           --manifest /reset/production-reset-manifest.json
+           --closure-extension /reset/final-governance-extension.json
+           --database-url "$DOCKET_DATABASE_URL"
+           --operator-discord-user-id "$DOCKET_OPERATOR_DISCORD_USER_ID"
+           --output /reset/production-reset-completion.json'
+    gmail_triage_setup
+    drop_cutover_database "$quarantine_database"
+    reset_complete=1
+    trap - EXIT INT TERM
+    printf 'Production reset completed at revision %s.\n' "$revision"
+    printf 'Sealed backup retained at %s.\n' "$backup"
+    printf 'Governance extension: %s\n' "$closure_extension"
+    printf 'Clean materialization: %s\n' "$materialization"
+    printf 'Clean authority verification: %s\n' "$clean_authority"
+    printf 'Completion audit evidence: %s\n' "$completion_evidence"
+}
 
 verify_restore() {
     "$ROOT/scripts/verify-restore.sh" "${1:-}"
@@ -798,7 +1135,9 @@ Commands:
   backup          Create or confirm today's encrypted PostgreSQL backup.
   verify-restore  Restore an encrypted backup into disposable PostgreSQL and verify it.
   readiness-rehearsal
-                  Snapshot production read-only and rehearse tracked-context reset offline.
+                  Snapshot production, rehearse reset, and seal exact authorization text.
+  production-reset EVIDENCE_DIR --execute
+                  Execute the exact authorized clean reset and verified cutover.
   setup-triage    Install the isolated Hermes Gmail-triage profile and cron.
   setup-hermes-auth [--main|--triage|--all]
                   Reauthorize Hermes's OpenAI Codex model credential.
@@ -826,6 +1165,7 @@ case "${1:-}" in
     backup) encrypted_backup ;;
     verify-restore) verify_restore "${2:-}" ;;
     readiness-rehearsal) tracked_context_readiness ;;
+    production-reset) production_reset "${2:-}" "${3:-}" ;;
     setup-triage) gmail_triage_setup ;;
     setup-hermes-auth) hermes_oauth_setup "${2:---main}" ;;
     gmail-status) gmail status ;;
