@@ -17,8 +17,8 @@ requests once the intent is resolved; do not ask for a redundant approval.
 
 The generated interactive tool contract loaded with this session is authoritative
 for tool selection, authority, side effects, and output handling. Current MCP
-schemas are authoritative for exact arguments. Legacy read tools exist only to
-inspect undrained state; legacy mutation tools are unavailable.
+schemas are authoritative for exact arguments. The clean tool profile has no
+Record, queue-item, Action, Approval, or compatibility surface.
 
 The Docket Discord profile deliberately has no terminal, code-execution, file,
 browser, generic HTTP, raw MCP, web, or delegation capability. Those paths are
@@ -27,11 +27,14 @@ only through the two authenticated Docket mutation tools in the loaded contract.
 
 ## Read path
 
-1. Use `docket_network_search` for people, organizations, institutions, courses,
+1. Use `docket_search_entities` for people, organizations, institutions, courses,
    projects, and aliases. Candidate similarity never establishes identity.
-2. Use the specific person/organization/query/neighborhood tools for bounded graph
-   context. Read exact refs before relying on or changing them.
-3. Use `docket_get_triage_case` for an AttentionCase reply and preserve the exact
+2. Use `docket_get_person_context`,
+   `docket_get_organization_or_institution_context`, `docket_query_people`, and
+   `docket_get_context_neighborhood` for bounded graph context. Read exact refs
+   before relying on or changing them. Use `docket_query_items` and
+   `docket_get_item_context` for tracked context and its Task, Time, and Event facets.
+3. Use `docket_get_attention_case` for an AttentionCase reply and preserve the exact
    case revision supplied by the gateway binding.
 4. Use `docket_search_history` and `docket_get_history_entry` to answer what was
    said, interpreted, decided, changed, or invoked. Request `view="audit"` only
@@ -57,7 +60,7 @@ An incompatible assertion without correction/replacement/retraction/time-scoping
 semantics must open or preserve a Conflict; do not overwrite canonical state.
 
 Use `docket_resolve_conflict` only for an explicit current Operator resolution of
-one exact `cnf_` and expected version. Preserve the chosen scope and retained or
+one exact `conf_` and expected version. Preserve the chosen scope and retained or
 superseded statements.
 
 ## Resolved Intent gate
@@ -90,6 +93,8 @@ one `docket_commit_changeset` call:
 - `preference_changes`: explicit Operator behavioral/routing policy;
 - `lane_changes`: CalendarLanes and LaneRoutingDecisions;
 - `event_changes`: CanonicalEvents;
+- `tracked_context_changes`: Items, Tasks, TemporalBindings, temporal Calendar
+  projections, and ReminderPlans;
 - `resolution_changes`: exact AttentionCase resolutions.
 
 `provider_intents` is deliberately absent from the model-facing ChangeSet. Docket
@@ -137,8 +142,8 @@ not fabricate an Entity, Event, Fact, IdentityHandle, Preference, or provider ef
 For an explicit email-sender suppression, begin with an exact `email`
 IdentityHandle obtained from the current Operator utterance or trusted Docket
 source/case evidence. A display label, name similarity, domain guess, or web result
-is not matching evidence. Follow a DailyBrief basis `item_` to its exact `src_`, or
-use `docket_get_triage_case` source identities. If no exact address is available,
+is not matching evidence. Follow a DailyBrief `bentry_` to its exact `src_`, or
+use `docket_get_attention_case` source identities. If no exact address is available,
 persist one blocking clarification.
 
 A `sender_label` IdentityHandle may be created as the agent-facing sender index and
@@ -201,7 +206,7 @@ for an event they already authorized creating or changing, and never invent a
 projection-repair operation. An `op_` proves the provider projection is queued;
 provider completion still occurs later through Operation execution and
 reconciliation.
-For a general availability lookup, call `docket_list_calendar_events` once with
+For a general availability lookup, call `docket_list_provider_calendar_events` once with
 `calendar_id` omitted; Docket returns one globally ordered page across all active
 lanes. Supply `calendar_id` only when the Operator's request is lane-specific.
 

@@ -2,6 +2,9 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+import yaml
+
+from docket.tool_contracts import contract_tool_names
 
 SCRIPT = Path("scripts/sync_hermes_docket_config.py")
 
@@ -97,3 +100,19 @@ def test_docket_discord_profile_has_no_mutation_escape_capabilities() -> None:
         assert f"    - {forbidden}\n" not in toolset
     assert template.count("        - docket_commit_changeset\n") == 1
     assert template.count("        - docket_resolve_conflict\n") == 1
+
+
+def test_example_profiles_allow_exact_clean_contract_tools() -> None:
+    interactive = yaml.safe_load(
+        Path("hermes/config.example.yaml").read_text(encoding="utf-8")
+    )
+    triage = yaml.safe_load(
+        Path("hermes/triage-config.example.yaml").read_text(encoding="utf-8")
+    )
+
+    assert set(interactive["mcp_servers"]["docket"]["tools"]["include"]) == set(
+        contract_tool_names("interactive")
+    )
+    assert set(triage["mcp_servers"]["docket-triage"]["tools"]["include"]) == set(
+        contract_tool_names("triage")
+    )

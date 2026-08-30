@@ -47,7 +47,7 @@ Hermes Discord gateway + docket-discord plugin
         +------> trusted internal API (/internal/v1/discord/...)
         |
         v
-Interactive MCP boundary (/mcp/; 22 bounded tools)
+Interactive MCP boundary (/mcp/; 19 bounded tools)
   - call_ starts after service authentication
   - reads are bounded
   - mutations require current utterance authority
@@ -123,7 +123,7 @@ canonical state or provenance authority.
 3. Every canonical mutation has public `basis_refs`; operator-owned mutations
    ultimately trace to an authenticated utterance.
 4. Explicit, unambiguous correction may supersede old state while retaining
-   history. Ambiguous incompatibility creates `cnf_` and blocks the affected
+   history. Ambiguous incompatibility creates `conf_` and blocks the affected
    ChangeSet until resolution.
 5. Resolved operator intent compiles into one immutable `chg_`. Canonical state
    and required provider intents commit in one PostgreSQL transaction.
@@ -136,15 +136,16 @@ canonical state or provenance authority.
    failure must not erase canonical, session, provenance, or outbox state.
 9. Public references (`utt_`, `rsp_`, `stm_`, `ent_`, `chg_`, `op_`, `call_`,
    and peers) cross tool and audit boundaries. Internal UUIDs do not.
-10. Legacy rows remain readable and honestly labeled. Never fabricate missing
-    provenance or semantic meaning during a backfill.
+10. The clean runtime exposes no legacy aliases, decoders, or domain backfills.
+    Governance evidence is preserved explicitly; disposable pre-cutover domain
+    state is reset rather than translated into invented semantics.
 
 ## Tool and context boundaries
 
-The current interactive surface has exactly 22 tools, with only
+The current interactive surface has exactly 19 tools, with only
 `docket_commit_changeset` and `docket_resolve_conflict` able to mutate canonical
 state. The isolated triage surface has exactly four non-authoritative tools.
-`docket_get_triage_case` is the only deliberately shared tool.
+`docket_get_attention_case` is the only deliberately shared tool.
 
 When changing a tool:
 
@@ -178,8 +179,9 @@ ToolInvocation or runtime logs.
   upgrade, downgrade, and re-upgrade on PostgreSQL when risk warrants it.
 - Preserve append-only triggers and immutable rows. A migration may suspend a
   trigger only around its own narrowly scoped reversible work.
-- Backfill only facts already supported by durable evidence. Use explicit
-  `legacy_preledger` or equivalent status when complete provenance is unknown.
+- Do not add compatibility backfills to the clean baseline. Preserve governance
+  evidence through the explicit clean-ledger export/restore path and reset
+  disposable domain state when the signed cutover requires it.
 - Use expected versions, idempotency keys, and exact public references at
   mutation boundaries.
 - Do not edit production rows manually to make a test or migration pass.

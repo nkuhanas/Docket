@@ -86,7 +86,7 @@ def test_gmail_triage_installer_pins_an_isolated_profile_and_local_delivery() ->
     for tool in (
         "docket_get_triage_context",
         "docket_submit_triage_analysis",
-        "docket_get_triage_case",
+        "docket_get_attention_case",
         "docket_apply_existing_suppression",
     ):
         assert tool in script

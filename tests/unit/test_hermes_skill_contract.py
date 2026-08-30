@@ -9,7 +9,7 @@ def test_manual_skill_uses_ledger_authority_without_redundant_approval() -> None
 
     assert "current `utt_` reference" in skill
     assert "do not ask for a redundant approval" in skill
-    assert "legacy mutation tools are unavailable" in skill
+    assert "no Record, queue-item, Action, Approval, or compatibility surface" in skill
     assert "`docket_commit_changeset`" in skill
     assert "`docket_resolve_conflict`" in skill
 

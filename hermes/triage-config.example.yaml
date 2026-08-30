@@ -37,7 +37,7 @@ mcp_servers:
       include:
         - docket_get_triage_context
         - docket_submit_triage_analysis
-        - docket_get_triage_case
+        - docket_get_attention_case
         - docket_apply_existing_suppression
       prompts: false
       resources: false
