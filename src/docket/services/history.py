@@ -13,6 +13,7 @@ from docket.domain.public_refs import parse_public_ref
 from docket.models import (
     Affiliation,
     AgentResponse,
+    AttachmentEvidence,
     AttentionCase,
     AttentionCaseRevision,
     AuditEvent,
@@ -634,7 +635,7 @@ class HistoryService:
                 "created_at": _iso(item.created_at),
             }
         if isinstance(item, Source):
-            return {
+            summary = {
                 **base,
                 "source_kind": item.source_kind,
                 "external_ref": item.external_ref,
@@ -642,6 +643,28 @@ class HistoryService:
                 "content_hash": item.content_hash,
                 "created_at": _iso(item.created_at),
             }
+            attachment = self.session.scalar(
+                select(AttachmentEvidence).where(AttachmentEvidence.ref_id == item.ref_id)
+            )
+            if attachment is not None:
+                summary["attachment"] = {
+                    "transport": attachment.transport,
+                    "transport_attachment_ref": attachment.transport_attachment_ref,
+                    "source_message_ref": attachment.source_message_ref,
+                    "operator_utterance_ref": attachment.operator_utterance_ref,
+                    "filename": attachment.filename,
+                    "media_type": attachment.media_type,
+                    "byte_size": attachment.byte_size,
+                    "content_hash": attachment.content_hash,
+                    "received_at": _iso(attachment.received_at),
+                    "recorded_at": _iso(attachment.recorded_at),
+                    "ingest_state": attachment.ingest_state,
+                    "retention_disposition": attachment.retention_disposition,
+                    "derived_content_refs": attachment.derived_content_refs,
+                    "source_revision": 1,
+                    "untrusted_content": True,
+                }
+            return summary
         if isinstance(item, ProviderAccount):
             return {
                 **base,

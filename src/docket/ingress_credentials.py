@@ -9,14 +9,23 @@ from sqlalchemy import create_engine
 
 _INGRESS_ROLE = "docket_ingress"
 _READ_TABLES = (
+    "attachment_evidence_metadata",
     "deferred_ingress",
     "discord_daily_threads",
     "drain_barriers",
+    "encrypted_attachment_blobs",
+    "operator_projections",
     "operator_utterances",
     "persisted_semantic_options",
-    "semantic_prompt_projections",
+    "sources",
 )
-_APPEND_TABLES = ("operator_utterances", "deferred_ingress")
+_APPEND_TABLES = (
+    "attachment_evidence_metadata",
+    "deferred_ingress",
+    "encrypted_attachment_blobs",
+    "operator_utterances",
+    "sources",
+)
 
 
 def provision_ingress_role(database_url: str, password: str) -> None:
@@ -71,6 +80,15 @@ def provision_ingress_role(database_url: str, password: str) -> None:
                         sql.SQL(", ").join(
                             sql.Identifier("public", table_name) for table_name in _READ_TABLES
                         ),
+                        sql.Identifier(_INGRESS_ROLE),
+                    )
+                )
+                cursor.execute(
+                    sql.SQL(
+                        "GRANT UPDATE (ingest_state, retention_disposition, content_hash) "
+                        "ON {} TO {}"
+                    ).format(
+                        sql.Identifier("public", "attachment_evidence_metadata"),
                         sql.Identifier(_INGRESS_ROLE),
                     )
                 )

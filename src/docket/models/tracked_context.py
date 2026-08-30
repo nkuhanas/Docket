@@ -16,6 +16,8 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    event,
+    inspect,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -289,6 +291,17 @@ class AttachmentEvidence(Base):
             "'metadata_only', 'rejected')",
             name="ck_attachment_evidence_retention",
         ),
+        CheckConstraint(
+            "(ingest_state = 'pending' AND retention_disposition = 'pending' "
+            "AND content_hash IS NULL) OR "
+            "(ingest_state = 'available' AND retention_disposition IN "
+            "('retained_encrypted', 'derived_only') AND content_hash IS NOT NULL) OR "
+            "(ingest_state = 'failed' AND retention_disposition = 'metadata_only' "
+            "AND content_hash IS NULL) OR "
+            "(ingest_state = 'rejected' AND retention_disposition = 'rejected' "
+            "AND content_hash IS NULL)",
+            name="ck_attachment_evidence_state_retention_hash",
+        ),
         UniqueConstraint(
             "transport",
             "transport_attachment_ref",
@@ -305,7 +318,9 @@ class AttachmentEvidence(Base):
     transport: Mapped[str] = mapped_column(String(32), nullable=False)
     transport_attachment_ref: Mapped[str] = mapped_column(String(512), nullable=False)
     source_message_ref: Mapped[str] = mapped_column(String(512), nullable=False)
-    operator_utterance_ref: Mapped[str] = mapped_column(String(40), nullable=False)
+    operator_utterance_ref: Mapped[str] = mapped_column(
+        ForeignKey("operator_utterances.ref_id", ondelete="RESTRICT"), nullable=False
+    )
     filename: Mapped[str | None] = mapped_column(String(512))
     media_type: Mapped[str | None] = mapped_column(String(255))
     byte_size: Mapped[int | None] = mapped_column(Integer)
@@ -338,3 +353,63 @@ class EncryptedAttachmentBlob(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
+
+
+def _guard_attachment_enrichment(
+    _mapper: object, _connection: object, target: AttachmentEvidence
+) -> None:
+    state = inspect(target)
+    immutable_fields = (
+        "ref_id",
+        "transport",
+        "transport_attachment_ref",
+        "source_message_ref",
+        "operator_utterance_ref",
+        "filename",
+        "media_type",
+        "byte_size",
+        "received_at",
+        "recorded_at",
+    )
+    if any(state.attrs[field].history.has_changes() for field in immutable_fields):
+        raise ValueError("AttachmentEvidence identity and manifest fields are immutable")
+    prior_state = state.attrs.ingest_state.history.deleted
+    if prior_state and prior_state[0] != "pending":
+        raise ValueError("terminal AttachmentEvidence ingest state is immutable")
+    prior_hash = state.attrs.content_hash.history.deleted
+    if prior_hash and prior_hash[0] is not None:
+        raise ValueError("AttachmentEvidence content hash is immutable once available")
+    valid_outcome = (
+        (
+            target.ingest_state == "pending"
+            and target.retention_disposition == "pending"
+            and target.content_hash is None
+        )
+        or (
+            target.ingest_state == "available"
+            and target.retention_disposition in {"retained_encrypted", "derived_only"}
+            and target.content_hash is not None
+        )
+        or (
+            target.ingest_state == "failed"
+            and target.retention_disposition == "metadata_only"
+            and target.content_hash is None
+        )
+        or (
+            target.ingest_state == "rejected"
+            and target.retention_disposition == "rejected"
+            and target.content_hash is None
+        )
+    )
+    if not valid_outcome:
+        raise ValueError("AttachmentEvidence state, retention, and hash are inconsistent")
+
+
+def _reject_attachment_delete(_mapper: object, _connection: object, target: object) -> None:
+    raise ValueError(f"{type(target).__name__} is append-only")
+
+
+event.listen(AttachmentEvidence, "before_update", _guard_attachment_enrichment)
+event.listen(AttachmentEvidence, "before_delete", _reject_attachment_delete)
+event.listen(EncryptedAttachmentBlob, "before_update", _reject_attachment_delete)
+event.listen(EncryptedAttachmentBlob, "before_delete", _reject_attachment_delete)

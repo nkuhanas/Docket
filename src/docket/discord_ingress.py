@@ -12,6 +12,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from docket.domain.errors import DocketError
+from docket.services.attachment_evidence import AttachmentCapture
 from docket.services.ingress_ledger import IngressIdentity, IngressLedgerService
 
 logger = logging.getLogger("docket.discord_ingress")
@@ -56,16 +57,44 @@ class StableDiscordIngress(discord.Client):
             queue_channel_id=_required("DOCKET_QUEUE_CHANNEL_ID"),
         )
         self.signing_key = _read_secret("DOCKET_INTERACTION_SIGNING_KEY_FILE").encode()
+        try:
+            self.attachment_encryption_key = bytes.fromhex(
+                _read_secret("DOCKET_ATTACHMENT_ENCRYPTION_KEY_FILE")
+            )
+        except ValueError as exc:
+            raise RuntimeError("attachment encryption key must be hexadecimal") from exc
+        if len(self.attachment_encryption_key) != 32:
+            raise RuntimeError("attachment encryption key must contain exactly 32 bytes")
+        self.attachment_encryption_key_ref = os.environ.get(
+            "DOCKET_ATTACHMENT_ENCRYPTION_KEY_REF", "attachment-v1"
+        )
+        self.attachment_max_bytes = int(
+            os.environ.get("DOCKET_ATTACHMENT_MAX_BYTES", str(8 * 1024 * 1024))
+        )
+        self.attachment_total_max_bytes = int(
+            os.environ.get("DOCKET_ATTACHMENT_TOTAL_MAX_BYTES", str(16 * 1024 * 1024))
+        )
 
-    def _capture_message(self, message: discord.Message) -> dict[str, object]:
+    def _ledger(self, session: Session) -> IngressLedgerService:
+        return IngressLedgerService(
+            session,
+            identity=self.identity,
+            signing_key=self.signing_key,
+            attachment_encryption_key=self.attachment_encryption_key,
+            attachment_encryption_key_ref=self.attachment_encryption_key_ref,
+            attachment_max_bytes=self.attachment_max_bytes,
+            attachment_total_max_bytes=self.attachment_total_max_bytes,
+        )
+
+    def _capture_message(
+        self,
+        message: discord.Message,
+        attachments: list[AttachmentCapture],
+    ) -> dict[str, object]:
         parent_id = getattr(message.channel, "parent_id", None)
         reply_to = message.reference.message_id if message.reference is not None else None
         with self.session_factory.begin() as session:
-            return IngressLedgerService(
-                session,
-                identity=self.identity,
-                signing_key=self.signing_key,
-            ).capture_message(
+            return self._ledger(session).capture_message(
                 actor_id=str(message.author.id),
                 guild_id=str(message.guild.id) if message.guild is not None else "",
                 channel_id=str(message.channel.id),
@@ -74,6 +103,7 @@ class StableDiscordIngress(discord.Client):
                 reply_to_message_id=str(reply_to) if reply_to is not None else None,
                 verbatim_text=message.content,
                 said_at=message.created_at.astimezone(UTC),
+                attachments=attachments,
             )
 
     def _capture_selection(
@@ -87,11 +117,7 @@ class StableDiscordIngress(discord.Client):
             )
         parent_id = getattr(interaction.channel, "parent_id", None)
         with self.session_factory.begin() as session:
-            return IngressLedgerService(
-                session,
-                identity=self.identity,
-                signing_key=self.signing_key,
-            ).capture_semantic_selection(
+            return self._ledger(session).capture_semantic_selection(
                 actor_id=str(interaction.user.id),
                 guild_id=str(interaction.guild_id or ""),
                 channel_id=str(interaction.channel_id or ""),
@@ -101,6 +127,53 @@ class StableDiscordIngress(discord.Client):
                 option_token=token,
                 responded_at=interaction.created_at.astimezone(UTC),
             )
+
+    async def _attachment_captures(
+        self, message: discord.Message
+    ) -> list[AttachmentCapture]:
+        captures: list[AttachmentCapture] = []
+        declared_total = 0
+        retained_total = 0
+        for attachment in list(message.attachments)[:10]:
+            byte_size = int(attachment.size) if attachment.size is not None else None
+            declared_total += byte_size or 0
+            plaintext: bytes | None = None
+            ingest_error_code: str | None = None
+            if (
+                byte_size is not None
+                and (
+                    byte_size > self.attachment_max_bytes
+                    or declared_total > self.attachment_total_max_bytes
+                )
+            ):
+                ingest_error_code = "attachment_too_large"
+            else:
+                try:
+                    plaintext = await attachment.read(use_cached=True)
+                except Exception:
+                    ingest_error_code = "attachment_download_failed"
+                else:
+                    retained_total += len(plaintext)
+                    if (
+                        len(plaintext) > self.attachment_max_bytes
+                        or retained_total > self.attachment_total_max_bytes
+                    ):
+                        plaintext = None
+                        ingest_error_code = "attachment_too_large"
+                    else:
+                        byte_size = len(plaintext)
+            captures.append(
+                AttachmentCapture(
+                    transport_attachment_ref=str(attachment.id),
+                    filename=attachment.filename,
+                    media_type=attachment.content_type,
+                    byte_size=byte_size,
+                    received_at=message.created_at.astimezone(UTC),
+                    plaintext=plaintext,
+                    ingest_error_code=ingest_error_code,
+                )
+            )
+        return captures
 
     async def on_ready(self) -> None:
         _READY_PATH.touch()
@@ -117,7 +190,8 @@ class StableDiscordIngress(discord.Client):
         if message.author.bot or str(message.author.id) != self.identity.operator_id:
             return
         try:
-            await asyncio.to_thread(self._capture_message, message)
+            attachments = await self._attachment_captures(message)
+            await asyncio.to_thread(self._capture_message, message, attachments)
         except DocketError as exc:
             if exc.code != "unauthorized_ingress":
                 logger.exception("Discord message ledger capture rejected: %s", exc.code)

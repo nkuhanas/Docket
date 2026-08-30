@@ -15,7 +15,12 @@ from docket.database import session_scope
 from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
 from docket.domain.public_refs import is_public_ref
-from docket.models import OperatorUtterance, SemanticRequestAttempt, ToolInvocation
+from docket.models import (
+    AttachmentEvidence,
+    OperatorUtterance,
+    SemanticRequestAttempt,
+    ToolInvocation,
+)
 from docket.models.base import utc_now
 from docket.services.continuity import ContinuityService
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash
@@ -32,9 +37,6 @@ _LIST_RESULT_KEYS = (
     "calendar_lanes",
     "events",
     "lanes",
-    "queue_items",
-    "records",
-    "reminder_rules",
     "results",
 )
 
@@ -373,6 +375,7 @@ class ProvenanceFastMCP(FastMCP[Any]):
             and name in INTERACTIVE_MUTATION_TOOLS
             and normalized_arguments is not None
         ):
+            attachment_error = False
             with session_scope() as session:
                 utterance = _operator_utterance_authority(session, normalized_arguments)
                 if utterance is None:
@@ -399,10 +402,51 @@ class ProvenanceFastMCP(FastMCP[Any]):
                     semantic_request_ref = normalized_arguments.get("semantic_request_ref")
                     if isinstance(semantic_request_ref, str):
                         bound_invocation.semantic_request_ref = semantic_request_ref
+                    attachment_evidence = list(
+                        session.scalars(
+                            select(AttachmentEvidence).where(
+                                AttachmentEvidence.ref_id.in_(
+                                    utterance.attachment_source_refs
+                                )
+                            )
+                        )
+                    )
+                    evidence_by_ref = {
+                        attachment.ref_id: attachment for attachment in attachment_evidence
+                    }
+                    unavailable_refs = [
+                        ref
+                        for ref in utterance.attachment_source_refs
+                        if ref not in evidence_by_ref
+                        or evidence_by_ref[ref].ingest_state != "available"
+                    ]
+                    if unavailable_refs:
+                        attachment_error = True
+                        self._finish_invocation(
+                            session,
+                            invocation_id,
+                            status="rejected_validation",
+                            normalized_argument_hash=normalized_hash,
+                            result_refs=unavailable_refs,
+                            result_disposition="attachment_evidence_unavailable",
+                            error_code="attachment_evidence_unavailable",
+                        )
+                        if execution_completion_token is not None:
+                            ContinuityService(session).complete_execution_lease(
+                                execution_completion_token,
+                                metadata={
+                                    "disposition": "attachment_evidence_unavailable"
+                                },
+                            )
             if utterance is None:
                 raise ToolError(
                     "operator_utterance_authority_required: mutating Docket calls require "
                     "a persisted authenticated OperatorUtterance"
+                )
+            if attachment_error:
+                raise ToolError(
+                    "attachment_evidence_unavailable: canonical mutation is blocked until "
+                    "every attachment supplied with this utterance has durable plaintext evidence"
                 )
 
         try:

@@ -40,6 +40,7 @@ def _install_postgres_guards() -> None:
         "operator_projections",
         "sources",
         "item_source_bindings",
+        "encrypted_attachment_blobs",
     ):
         op.execute(
             f"CREATE TRIGGER trg_{table_name}_immutable "
@@ -80,12 +81,57 @@ def _install_postgres_guards() -> None:
         "CREATE TRIGGER trg_items_acyclic BEFORE INSERT OR UPDATE OF parent_item_ref "
         "ON items FOR EACH ROW EXECUTE FUNCTION docket_guard_item_parent()"
     )
+    op.execute(
+        """
+        CREATE FUNCTION docket_guard_attachment_evidence_enrichment()
+        RETURNS trigger AS $$
+        BEGIN
+            IF NEW.ref_id IS DISTINCT FROM OLD.ref_id
+               OR NEW.transport IS DISTINCT FROM OLD.transport
+               OR NEW.transport_attachment_ref IS DISTINCT FROM OLD.transport_attachment_ref
+               OR NEW.source_message_ref IS DISTINCT FROM OLD.source_message_ref
+               OR NEW.operator_utterance_ref IS DISTINCT FROM OLD.operator_utterance_ref
+               OR NEW.filename IS DISTINCT FROM OLD.filename
+               OR NEW.media_type IS DISTINCT FROM OLD.media_type
+               OR NEW.byte_size IS DISTINCT FROM OLD.byte_size
+               OR NEW.received_at IS DISTINCT FROM OLD.received_at
+               OR NEW.recorded_at IS DISTINCT FROM OLD.recorded_at THEN
+                RAISE EXCEPTION 'attachment evidence manifest is immutable';
+            END IF;
+            IF OLD.ingest_state <> 'pending'
+               AND NEW.ingest_state IS DISTINCT FROM OLD.ingest_state THEN
+                RAISE EXCEPTION 'terminal attachment ingest state is immutable';
+            END IF;
+            IF OLD.content_hash IS NOT NULL
+               AND NEW.content_hash IS DISTINCT FROM OLD.content_hash THEN
+                RAISE EXCEPTION 'attachment plaintext hash is immutable';
+            END IF;
+            IF OLD.ingest_state = 'pending'
+               AND NEW.ingest_state NOT IN ('pending', 'available', 'failed', 'rejected') THEN
+                RAISE EXCEPTION 'invalid attachment ingest transition';
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+        """
+    )
+    op.execute(
+        "CREATE TRIGGER trg_attachment_evidence_enrichment "
+        "BEFORE UPDATE ON attachment_evidence_metadata FOR EACH ROW "
+        "EXECUTE FUNCTION docket_guard_attachment_evidence_enrichment()"
+    )
+    op.execute(
+        "CREATE TRIGGER trg_attachment_evidence_immutable_delete "
+        "BEFORE DELETE ON attachment_evidence_metadata FOR EACH ROW "
+        "EXECUTE FUNCTION docket_reject_immutable_row()"
+    )
 
 
 def _drop_postgres_guards() -> None:
     if op.get_bind().dialect.name != "postgresql":
         return
     op.execute("DROP FUNCTION IF EXISTS docket_guard_item_parent() CASCADE")
+    op.execute("DROP FUNCTION IF EXISTS docket_guard_attachment_evidence_enrichment() CASCADE")
     op.execute("DROP FUNCTION IF EXISTS docket_reject_immutable_row() CASCADE")
 
 
@@ -722,6 +768,8 @@ def upgrade() -> None:
     sa.Column('derived_content_refs', sa.JSON(), nullable=False),
     sa.CheckConstraint("ingest_state IN ('pending', 'available', 'failed', 'rejected')", name='ck_attachment_evidence_ingest_state'),
     sa.CheckConstraint("retention_disposition IN ('pending', 'retained_encrypted', 'derived_only', 'metadata_only', 'rejected')", name='ck_attachment_evidence_retention'),
+    sa.CheckConstraint("(ingest_state = 'pending' AND retention_disposition = 'pending' AND content_hash IS NULL) OR (ingest_state = 'available' AND retention_disposition IN ('retained_encrypted', 'derived_only') AND content_hash IS NOT NULL) OR (ingest_state = 'failed' AND retention_disposition = 'metadata_only' AND content_hash IS NULL) OR (ingest_state = 'rejected' AND retention_disposition = 'rejected' AND content_hash IS NULL)", name='ck_attachment_evidence_state_retention_hash'),
+    sa.ForeignKeyConstraint(['operator_utterance_ref'], ['operator_utterances.ref_id'], ondelete='RESTRICT'),
     sa.ForeignKeyConstraint(['ref_id'], ['sources.ref_id'], ondelete='RESTRICT'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('ref_id'),

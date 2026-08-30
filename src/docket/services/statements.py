@@ -8,9 +8,11 @@ from sqlalchemy.orm import Session
 from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
 from docket.models import (
+    AttachmentEvidence,
     AuditEvent,
     InterpretedStatement,
     OperatorUtterance,
+    Source,
     StatementRelation,
 )
 from docket.schemas.authority import StatementInput, StatementRelationInput
@@ -36,6 +38,14 @@ class StatementService:
                 message="Statements require one persisted source OperatorUtterance.",
                 details={"utterance_ref": utterance_ref},
             )
+        attachment_evidence_by_ref = {
+            evidence.ref_id: evidence
+            for evidence in self.session.scalars(
+                select(AttachmentEvidence).where(
+                    AttachmentEvidence.ref_id.in_(utterance.attachment_source_refs)
+                )
+            )
+        }
         existing = list(
             self.session.scalars(
                 select(InterpretedStatement).where(
@@ -51,6 +61,28 @@ class StatementService:
         results: list[InterpretedStatement] = []
         created_refs: list[str] = []
         for ordinal, statement_input in enumerate(statements):
+            if statement_input.source_ref is not None:
+                source = self.session.scalar(
+                    select(Source).where(Source.ref_id == statement_input.source_ref)
+                )
+                if source is None:
+                    raise DocketError(
+                        code="statement_source_not_found",
+                        message="A derived statement references an unknown Source.",
+                        details={"source_ref": statement_input.source_ref},
+                    )
+                attachment = attachment_evidence_by_ref.get(statement_input.source_ref)
+                if source.source_kind == "attachment" and (
+                    attachment is None or attachment.ingest_state != "available"
+                ):
+                    raise DocketError(
+                        code="attachment_evidence_unavailable",
+                        message=(
+                            "An attachment-derived statement requires available evidence "
+                            "bound to this OperatorUtterance."
+                        ),
+                        details={"source_ref": statement_input.source_ref},
+                    )
             payload = statement_input.model_dump(mode="json")
             derivation_hash = sha256_json(
                 {"utterance_ref": utterance_ref, "ordinal": ordinal, "statement": payload}
@@ -74,9 +106,24 @@ class StatementService:
                 effective_to=statement_input.effective_to,
                 interpretation_json=interpretation_json,
                 interpreter_version=statement_input.interpreter_version,
+                source_ref=statement_input.source_ref,
+                source_fragment_locator=statement_input.source_fragment_locator,
+                source_fragment_hash=statement_input.source_fragment_hash,
+                extractor_identifier=statement_input.extractor_identifier,
+                extractor_version=statement_input.extractor_version,
             )
             self.session.add(statement)
             self.session.flush()
+            if statement_input.source_ref is not None:
+                attachment = attachment_evidence_by_ref.get(statement_input.source_ref)
+                if (
+                    attachment is not None
+                    and statement.ref_id not in attachment.derived_content_refs
+                ):
+                    attachment.derived_content_refs = [
+                        *attachment.derived_content_refs,
+                        statement.ref_id,
+                    ]
             results.append(statement)
             created_refs.append(statement.ref_id)
         if created_refs:
