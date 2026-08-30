@@ -951,7 +951,8 @@ production_reset() {
 
     reset_failure_cleanup() {
         local status=$?
-        if ((reset_complete)); then
+        trap - EXIT INT TERM
+        if ((${reset_complete:-0})); then
             return "$status"
         fi
         set +e
@@ -990,15 +991,15 @@ production_reset() {
         -v "$evidence_dir:/reset" \
         -e "RESET_DEPLOYMENT_REVISION=$revision" \
         docket sh -ec \
-        './.venv/bin/python -m docket.production_cutover verify-execution
-           --manifest /reset/production-reset-manifest.json
-           --backup /reset/pre-reset-source.dump
-           --closure /reset/governance-closure.json
-           --provider-manifest /reset/provider-disposition-manifest.json
-           --rehearsal-evidence /reset/clean-rehearsal-evidence.json
-           --database-url "$DOCKET_DATABASE_URL"
-           --operator-discord-user-id "$DOCKET_OPERATOR_DISCORD_USER_ID"
-           --deployment-revision "$RESET_DEPLOYMENT_REVISION"
+        './.venv/bin/python -m docket.production_cutover verify-execution \
+           --manifest /reset/production-reset-manifest.json \
+           --backup /reset/pre-reset-source.dump \
+           --closure /reset/governance-closure.json \
+           --provider-manifest /reset/provider-disposition-manifest.json \
+           --rehearsal-evidence /reset/clean-rehearsal-evidence.json \
+           --database-url "$DOCKET_DATABASE_URL" \
+           --operator-discord-user-id "$DOCKET_OPERATOR_DISCORD_USER_ID" \
+           --deployment-revision "$RESET_DEPLOYMENT_REVISION" \
            --output /reset/production-reset-authority.json'
 
     if [[ -f "$ROOT/.runtime/hermes/logs/agent.log" ]]; then
@@ -1016,15 +1017,15 @@ production_reset() {
         -v "$evidence_dir:/reset" \
         -e "RESET_DEPLOYMENT_REVISION=$revision" \
         docket sh -ec \
-        './.venv/bin/python -m docket.production_cutover verify-execution
-           --manifest /reset/production-reset-manifest.json
-           --backup /reset/pre-reset-source.dump
-           --closure /reset/governance-closure.json
-           --provider-manifest /reset/provider-disposition-manifest.json
-           --rehearsal-evidence /reset/clean-rehearsal-evidence.json
-           --database-url "$DOCKET_DATABASE_URL"
-           --operator-discord-user-id "$DOCKET_OPERATOR_DISCORD_USER_ID"
-           --deployment-revision "$RESET_DEPLOYMENT_REVISION"
+        './.venv/bin/python -m docket.production_cutover verify-execution \
+           --manifest /reset/production-reset-manifest.json \
+           --backup /reset/pre-reset-source.dump \
+           --closure /reset/governance-closure.json \
+           --provider-manifest /reset/provider-disposition-manifest.json \
+           --rehearsal-evidence /reset/clean-rehearsal-evidence.json \
+           --database-url "$DOCKET_DATABASE_URL" \
+           --operator-discord-user-id "$DOCKET_OPERATOR_DISCORD_USER_ID" \
+           --deployment-revision "$RESET_DEPLOYMENT_REVISION" \
            --output /reset/production-reset-authority.json'
     authority_decision_ref=$(json_field "$authority_evidence" decision_ref)
     authority_audit_ref=$(json_field "$authority_evidence" audit_ref)
@@ -1057,10 +1058,10 @@ production_reset() {
         -v "$evidence_dir:/reset" \
         -e "DOCKET_DATABASE_URL=$clean_database_url" \
         docket sh -ec \
-        './.venv/bin/python -m docket.tracked_context_readiness materialize-clean
-           --closure /reset/final-governance-closure.json
-           --provider-manifest /reset/provider-disposition-manifest.json
-           --database-url "$DOCKET_DATABASE_URL"
+        './.venv/bin/python -m docket.tracked_context_readiness materialize-clean \
+           --closure /reset/final-governance-closure.json \
+           --provider-manifest /reset/provider-disposition-manifest.json \
+           --database-url "$DOCKET_DATABASE_URL" \
            --output /reset/clean-materialization.json'
     compose run --rm --no-deps -e "DOCKET_DATABASE_URL=$clean_database_url" \
         docket ./.venv/bin/docket-provision-ingress-role
@@ -1068,10 +1069,10 @@ production_reset() {
         -v "$evidence_dir:/reset" \
         -e "DOCKET_DATABASE_URL=$clean_database_url" \
         docket sh -ec \
-        './.venv/bin/python -m docket.production_cutover verify-authority
-           --manifest /reset/production-reset-manifest.json
-           --database-url "$DOCKET_DATABASE_URL"
-           --operator-discord-user-id "$DOCKET_OPERATOR_DISCORD_USER_ID"
+        './.venv/bin/python -m docket.production_cutover verify-authority \
+           --manifest /reset/production-reset-manifest.json \
+           --database-url "$DOCKET_DATABASE_URL" \
+           --operator-discord-user-id "$DOCKET_OPERATOR_DISCORD_USER_ID" \
            --output /reset/clean-authority-verification.json'
 
     compose exec -T postgres psql -U docket -d postgres -v ON_ERROR_STOP=1 -c \
@@ -1091,19 +1092,19 @@ production_reset() {
     compose run --rm --no-deps --user "$(id -u):$(id -g)" \
         -v "$evidence_dir:/reset" \
         docket sh -ec \
-        './.venv/bin/python -m docket.production_cutover verify-authority
-           --manifest /reset/production-reset-manifest.json
-           --database-url "$DOCKET_DATABASE_URL"
-           --operator-discord-user-id "$DOCKET_OPERATOR_DISCORD_USER_ID"
+        './.venv/bin/python -m docket.production_cutover verify-authority \
+           --manifest /reset/production-reset-manifest.json \
+           --database-url "$DOCKET_DATABASE_URL" \
+           --operator-discord-user-id "$DOCKET_OPERATOR_DISCORD_USER_ID" \
            --output /reset/clean-authority-verification.json'
     compose run --rm --no-deps --user "$(id -u):$(id -g)" \
         -v "$evidence_dir:/reset" \
         docket sh -ec \
-        './.venv/bin/python -m docket.production_cutover record-completion
-           --manifest /reset/production-reset-manifest.json
-           --closure-extension /reset/final-governance-extension.json
-           --database-url "$DOCKET_DATABASE_URL"
-           --operator-discord-user-id "$DOCKET_OPERATOR_DISCORD_USER_ID"
+        './.venv/bin/python -m docket.production_cutover record-completion \
+           --manifest /reset/production-reset-manifest.json \
+           --closure-extension /reset/final-governance-extension.json \
+           --database-url "$DOCKET_DATABASE_URL" \
+           --operator-discord-user-id "$DOCKET_OPERATOR_DISCORD_USER_ID" \
            --output /reset/production-reset-completion.json'
     gmail_triage_setup
     drop_cutover_database "$quarantine_database"

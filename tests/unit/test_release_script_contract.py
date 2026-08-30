@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -92,6 +93,21 @@ def test_production_reset_is_manifest_bound_and_swaps_only_after_clean_verificat
     assert "production_reset_authorization" not in reset
     assert "old_renamed" in reset
     assert 'docker_engine image tag "$old_image" docket-docket:latest' in reset
+
+
+def test_production_reset_multiline_shell_commands_preserve_their_arguments() -> None:
+    script = Path("scripts/docket").read_text(encoding="utf-8")
+    reset = script.split("\nproduction_reset() {", 1)[1].split("\n}\n", 1)[0]
+    commands = re.findall(r"docket sh -ec \\\n\s+'(.*?)'", reset, flags=re.DOTALL)
+
+    assert len(commands) == 6
+    for command in commands:
+        lines = command.splitlines()
+        assert len(lines) > 1
+        assert all(line.rstrip().endswith("\\") for line in lines[:-1])
+
+    assert "trap - EXIT INT TERM" in reset
+    assert "${reset_complete:-0}" in reset
 
 
 def test_gmail_triage_installer_pins_an_isolated_profile_and_local_delivery() -> None:
