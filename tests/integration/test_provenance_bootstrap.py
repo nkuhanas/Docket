@@ -41,7 +41,7 @@ from docket.services.provenance import (
     FROZEN_DOCUMENT_REF,
     ProvenanceService,
 )
-from docket.specification_artifacts import specification_artifact
+from docket.specification_artifacts import DecisionPrerequisite, specification_artifact
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash
 
 MESSAGE_ID = "1542778234028953620"
@@ -66,6 +66,19 @@ def _utterance_request(
                 f"{message_id}:0"
             ),
         }
+    )
+
+
+def _prerequisite_decision(binding: DecisionPrerequisite, actor_ref: str) -> Decision:
+    return Decision(
+        ref_id=binding.decision_ref or new_public_ref("dec"),
+        decision_kind=binding.decision_kind,
+        actor_ref=actor_ref,
+        basis_refs=[f"utt_{'1' * 26}"],
+        document_ref=binding.document_ref,
+        frozen_artifact_hash=binding.frozen_artifact_hash,
+        architecture_authority=binding.architecture_authority,
+        implementation_authority="prerequisite_fixture",
     )
 
 
@@ -812,17 +825,13 @@ def test_manifest_bound_amendment_signoff_requires_bootstrap_and_base_signoff(
                 ),
             )
         )
-        session.add(
-            Decision(
-                decision_kind=artifact.prerequisite.decision_kind,
-                actor_ref=f"discord_user:{settings.operator_discord_user_id}",
-                basis_refs=[artifact.bootstrap_authority.utterance_ref],
-                document_ref=artifact.prerequisite.document_ref,
-                frozen_artifact_hash=artifact.prerequisite.frozen_artifact_hash,
-                architecture_authority=True,
-                implementation_authority="gated_by_ONT-INV-0011",
-            )
+        prerequisite = _prerequisite_decision(
+            artifact.prerequisites[0],
+            f"discord_user:{settings.operator_discord_user_id}",
         )
+        prerequisite.basis_refs = [artifact.bootstrap_authority.utterance_ref]
+        session.add(prerequisite)
+        prerequisite_ref = prerequisite.ref_id
 
     signoff_message_id = "1543024000000000000"
     with session_factory.begin() as session:
@@ -857,6 +866,8 @@ def test_manifest_bound_amendment_signoff_requires_bootstrap_and_base_signoff(
         )
         assert decision.architecture_authority is True
         assert decision.implementation_authority == "amendment_scope"
+        assert decision.payload_json["prerequisite_decision_refs"] == [prerequisite_ref]
+        assert decision.payload_json["production_reset_authority"] is False
         assert decision.payload_json["bootstrap_utterance_ref"] == (
             artifact.bootstrap_authority.utterance_ref
         )
@@ -884,14 +895,9 @@ def test_later_manifest_bound_amendment_uses_existing_base_signoff(
     assert artifact.bootstrap_authority is None
 
     with session_factory.begin() as session:
-        prerequisite = Decision(
-            decision_kind=artifact.prerequisite.decision_kind,
-            actor_ref=f"discord_user:{settings.operator_discord_user_id}",
-            basis_refs=[f"utt_{'1' * 26}"],
-            document_ref=artifact.prerequisite.document_ref,
-            frozen_artifact_hash=artifact.prerequisite.frozen_artifact_hash,
-            architecture_authority=True,
-            implementation_authority="gated_by_ONT-INV-0011",
+        prerequisite = _prerequisite_decision(
+            artifact.prerequisites[0],
+            f"discord_user:{settings.operator_discord_user_id}",
         )
         session.add(prerequisite)
         session.flush()
@@ -930,5 +936,123 @@ def test_later_manifest_bound_amendment_uses_existing_base_signoff(
         )
         assert decision.architecture_authority is True
         assert decision.implementation_authority == "amendment_scope"
-        assert decision.payload_json["prerequisite_decision_ref"] == prerequisite_ref
+        assert decision.payload_json["prerequisite_decision_refs"] == [prerequisite_ref]
         assert decision.payload_json["bootstrap_utterance_ref"] is None
+        assert decision.payload_json["production_reset_authority"] is False
+
+
+@pytest.mark.integration
+def test_tracked_context_signoff_requires_and_records_exact_prerequisite_dag(
+    session_factory,
+) -> None:
+    settings = get_settings()
+    document_ref = "ONT-DELTA-2026-08-29-TRACKED-CONTEXT"
+    frozen_hash = "830c33c9d78485a6a6a8f872b6dfad996869f8a7eaea9a5f7d39d52e9357cf48"
+    artifact = specification_artifact(document_ref, frozen_hash)
+    assert artifact is not None
+    assert len(artifact.prerequisites) == 3
+    actor_ref = f"discord_user:{settings.operator_discord_user_id}"
+
+    with session_factory.begin() as session:
+        session.add_all(
+            [_prerequisite_decision(binding, actor_ref) for binding in artifact.prerequisites]
+        )
+
+    with session_factory.begin() as session:
+        signoff_ref = ProvenanceService(session).capture_operator_utterance(
+            _utterance_request(
+                text=artifact.signoff_text,
+                message_id="1543090000000000000",
+            )
+        )["ref"]
+        request = SpecificationSignoffCapture(
+            request_id=uuid.uuid4(),
+            utterance_ref=signoff_ref,
+            document_ref=document_ref,
+            frozen_artifact_hash=frozen_hash,
+        )
+        result = ProvenanceService(session).record_final_architecture_signoff(request)
+        replay = ProvenanceService(session).record_final_architecture_signoff(request)
+
+    prerequisite_refs = [item.decision_ref for item in artifact.prerequisites]
+    assert replay == {**result, "disposition": "replayed_request"}
+    assert result["document_ref"] == document_ref
+    assert result["frozen_artifact_hash"] == frozen_hash
+    assert result["authorized_scope"] == artifact.authorized_scope
+    assert result["production_reset_authority"] is False
+    assert result["prerequisite_decision_refs"] == prerequisite_refs
+
+    with session_factory() as session:
+        decision = session.scalar(
+            select(Decision).where(
+                Decision.document_ref == document_ref,
+                Decision.frozen_artifact_hash == frozen_hash,
+            )
+        )
+        assert decision is not None
+        assert decision.basis_refs == [signoff_ref]
+        assert decision.authorized_scope == artifact.authorized_scope
+        assert decision.architecture_authority is True
+        assert decision.implementation_authority == "amendment_scope"
+        assert decision.payload_json["prerequisite_decision_refs"] == prerequisite_refs
+        assert decision.payload_json["production_reset_authority"] is False
+        audit = session.scalar(
+            select(AuditEvent).where(
+                AuditEvent.event_type == "decision.specification_signoff_recorded",
+                AuditEvent.primary_ref == decision.ref_id,
+            )
+        )
+        assert audit is not None
+        assert audit.data["prerequisite_decision_refs"] == prerequisite_refs
+        assert audit.data["production_reset_authority"] is False
+
+
+@pytest.mark.integration
+def test_tracked_context_signoff_fails_closed_on_missing_exact_prerequisite(
+    session_factory,
+) -> None:
+    settings = get_settings()
+    document_ref = "ONT-DELTA-2026-08-29-TRACKED-CONTEXT"
+    frozen_hash = "830c33c9d78485a6a6a8f872b6dfad996869f8a7eaea9a5f7d39d52e9357cf48"
+    artifact = specification_artifact(document_ref, frozen_hash)
+    assert artifact is not None
+    actor_ref = f"discord_user:{settings.operator_discord_user_id}"
+    missing = artifact.prerequisites[-1]
+
+    with session_factory.begin() as session:
+        session.add_all(
+            [_prerequisite_decision(binding, actor_ref) for binding in artifact.prerequisites[:-1]]
+        )
+
+    with session_factory.begin() as session:
+        signoff_ref = ProvenanceService(session).capture_operator_utterance(
+            _utterance_request(
+                text=artifact.signoff_text,
+                message_id="1543090000000000001",
+            )
+        )["ref"]
+        request = SpecificationSignoffCapture(
+            request_id=uuid.uuid4(),
+            utterance_ref=signoff_ref,
+            document_ref=document_ref,
+            frozen_artifact_hash=frozen_hash,
+        )
+        with pytest.raises(DocketError) as exc_info:
+            ProvenanceService(session).record_final_architecture_signoff(request)
+
+    assert exc_info.value.code == "specification_signoff_prerequisite_missing"
+    assert exc_info.value.details == {
+        "decision_ref": missing.decision_ref,
+        "document_ref": missing.document_ref,
+        "frozen_artifact_hash": missing.frozen_artifact_hash,
+    }
+    with session_factory() as session:
+        assert session.scalar(
+            select(func.count())
+            .select_from(Decision)
+            .where(Decision.document_ref == document_ref)
+        ) == 0
+        utterance = session.scalar(
+            select(OperatorUtterance).where(OperatorUtterance.ref_id == signoff_ref)
+        )
+        assert utterance is not None

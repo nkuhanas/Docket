@@ -12,9 +12,14 @@ class _ManifestModel(BaseModel):
 
 
 class DecisionPrerequisite(_ManifestModel):
+    decision_ref: str | None = Field(
+        default=None,
+        pattern=r"^dec_[0-9A-HJKMNP-TV-Z]{26}$",
+    )
     decision_kind: str = Field(min_length=1, max_length=128)
     document_ref: str = Field(pattern=r"^ONT-DELTA-[A-Z0-9-]+$")
     frozen_artifact_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    architecture_authority: bool
 
 
 class BootstrapAuthority(_ManifestModel):
@@ -25,12 +30,13 @@ class BootstrapAuthority(_ManifestModel):
 class SpecificationArtifact(_ManifestModel):
     document_ref: str = Field(pattern=r"^ONT-DELTA-[A-Z0-9-]+$")
     frozen_artifact_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    status: Literal["signed_architecture", "candidate_spec"]
+    status: Literal["signed_architecture", "candidate_spec", "frozen_candidate"]
     signoff_text: str = Field(min_length=1, max_length=1000)
     architecture_authority: bool
     implementation_authority: str = Field(min_length=1, max_length=128)
     authorized_scope: str | None = Field(default=None, min_length=1, max_length=128)
-    prerequisite: DecisionPrerequisite
+    production_reset_authority: Literal[False]
+    prerequisites: tuple[DecisionPrerequisite, ...] = Field(min_length=1)
     bootstrap_authority: BootstrapAuthority | None = None
 
     @model_validator(mode="after")
@@ -40,11 +46,27 @@ class SpecificationArtifact(_ManifestModel):
             or self.frozen_artifact_hash not in self.signoff_text
         ):
             raise ValueError("signoff_text must name the exact document ref and hash")
+        prerequisite_refs = [
+            item.decision_ref for item in self.prerequisites if item.decision_ref is not None
+        ]
+        prerequisite_bindings = [
+            (
+                item.decision_kind,
+                item.document_ref,
+                item.frozen_artifact_hash,
+                item.architecture_authority,
+            )
+            for item in self.prerequisites
+        ]
+        if len(prerequisite_refs) != len(set(prerequisite_refs)) or len(
+            prerequisite_bindings
+        ) != len(set(prerequisite_bindings)):
+            raise ValueError("specification prerequisite bindings must be unique")
         return self
 
 
 class SpecificationArtifactManifest(_ManifestModel):
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     artifacts: tuple[SpecificationArtifact, ...] = Field(min_length=1)
 
     @model_validator(mode="after")

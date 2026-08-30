@@ -404,7 +404,10 @@ def _capture_operator_utterance(
     )
 
 
-def _record_final_signoff_if_explicit(event: object, utterance_ref: str) -> str | None:
+def _record_final_signoff_if_explicit(
+    event: object,
+    utterance_ref: str,
+) -> dict[str, Any] | None:
     text = str(getattr(event, "text", ""))
     if text == _FINAL_ARCHITECTURE_SIGNOFF_TEXT:
         document_ref = _FROZEN_DOCUMENT_REF
@@ -431,7 +434,7 @@ def _record_final_signoff_if_explicit(event: object, utterance_ref: str) -> str 
             "Docket did not return a typed Decision reference",
             502,
         )
-    return decision_ref
+    return result
 
 
 def _source_value(source: object, *names: str) -> str:
@@ -1577,11 +1580,12 @@ def _pre_gateway_dispatch(
             )
             return {"action": "skip", "reason": "docket-ingress-deferred"}
         try:
-            decision_ref = _record_final_signoff_if_explicit(event, utterance_ref)
-            if decision_ref is not None:
+            recorded_signoff = _record_final_signoff_if_explicit(event, utterance_ref)
+            if recorded_signoff is not None:
                 signoff_result = {
+                    **recorded_signoff,
                     "attempted": True,
-                    "decision_ref": decision_ref,
+                    "decision_ref": str(recorded_signoff["ref"]),
                     "ok": True,
                 }
         except PluginAPIError as exc:
@@ -1650,9 +1654,18 @@ def _pre_gateway_dispatch(
         deterministic_response_text: str | None = None
         if signoff_result is not None:
             if signoff_result.get("ok") is True:
+                scope = str(signoff_result.get("authorized_scope") or "").strip()
+                scope_text = f" Implementation scope: `{scope}`." if scope else ""
+                reset_text = (
+                    " This does not authorize production deployment or the production "
+                    "reset."
+                    if signoff_result.get("production_reset_authority") is False
+                    else ""
+                )
                 deterministic_response_text = (
                     "Signed and recorded — Docket created ledger-backed Decision "
                     f"`{signoff_result['decision_ref']}`."
+                    f"{scope_text}{reset_text}"
                 )
             else:
                 deterministic_response_text = (
