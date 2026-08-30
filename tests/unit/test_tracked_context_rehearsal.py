@@ -5,7 +5,7 @@ import pytest
 from docket.domain.public_refs import new_public_ref
 from docket.tracked_context_readiness import (
     _ALLOWED_PROVIDER_DISPOSITIONS,
-    _CLEAN_DDL,
+    _CLEAN_TABLES,
     _OBSOLETE_TABLES,
     ClosureRow,
     _new_clean_rehearsal_ref,
@@ -154,15 +154,14 @@ def test_clean_rehearsal_refs_do_not_activate_live_prefixes() -> None:
     assert _new_clean_rehearsal_ref("acct").startswith("acct_")
 
 
-def test_clean_rehearsal_ddl_excludes_obsolete_tables() -> None:
-    normalized = _CLEAN_DDL.lower()
+def test_clean_rehearsal_uses_actual_clean_model_metadata() -> None:
     for table in _OBSOLETE_TABLES:
-        assert f"create table {table} " not in normalized
-    assert "create table items " in normalized
-    assert "create table temporal_bindings " in normalized
-    assert "create table tasks " in normalized
-    assert "create table attachment_evidence_metadata " in normalized
-    assert "create table encrypted_attachment_blobs " in normalized
+        assert table not in _CLEAN_TABLES
+    assert "items" in _CLEAN_TABLES
+    assert "temporal_bindings" in _CLEAN_TABLES
+    assert "tasks" in _CLEAN_TABLES
+    assert "attachment_evidence_metadata" in _CLEAN_TABLES
+    assert "encrypted_attachment_blobs" in _CLEAN_TABLES
 
 
 def test_provider_inventory_has_one_safe_nonmutating_default() -> None:

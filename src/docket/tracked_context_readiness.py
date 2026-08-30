@@ -6,8 +6,10 @@ import json
 import os
 import re
 import subprocess
+import sys
+import uuid
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -17,8 +19,10 @@ import psycopg
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from psycopg import sql
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from docket.domain.public_refs import new_public_ref
+from docket.models import Base
 from docket.specification_artifacts import specification_artifact_manifest
 
 _PUBLIC_REF = re.compile(r"^[a-z][a-z0-9]{1,7}_[0-9A-HJKMNP-TV-Z]{26}$")
@@ -74,26 +78,7 @@ _GOVERNANCE_PREFIXES = frozenset(
         "utt",
     }
 )
-_CLEAN_TABLES = frozenset(
-    {
-        "agent_responses",
-        "attachment_evidence_metadata",
-        "audit_events",
-        "decisions",
-        "encrypted_attachment_blobs",
-        "event_item_links",
-        "governance_closure_rows",
-        "item_source_bindings",
-        "items",
-        "operator_utterances",
-        "provider_accounts",
-        "runtime_log_entries",
-        "tasks",
-        "temporal_bindings",
-        "temporal_calendar_projections",
-        "tool_invocations",
-    }
-)
+_CLEAN_TABLES = frozenset(Base.metadata.tables)
 _OBSOLETE_TABLES = frozenset(
     {
         "accounts",
@@ -175,6 +160,7 @@ class ClosureRow:
     table: str
     ref_id: str
     row: dict[str, Any]
+    restore_hints: dict[str, Any] = field(default_factory=dict)
 
     @property
     def refs(self) -> set[str]:
@@ -183,11 +169,15 @@ class ClosureRow:
     @property
     def authority_refs(self) -> set[str]:
         refs: set[str] = set()
-        for field, value in self.row.items():
+        for field_name, value in self.row.items():
             candidates = _refs(value)
-            if field in _AUTHORITY_REF_FIELDS:
+            if field_name in _AUTHORITY_REF_FIELDS:
                 refs.update(candidates)
-            elif field in {"affected_refs", "result_refs", "resulting_semantic_refs"}:
+            elif field_name in {
+                "affected_refs",
+                "result_refs",
+                "resulting_semantic_refs",
+            }:
                 refs.update(
                     ref for ref in candidates if ref.partition("_")[0] in _GOVERNANCE_PREFIXES
                 )
@@ -217,7 +207,7 @@ class ClosureRow:
         return refs
 
     def export(self) -> dict[str, Any]:
-        return {
+        exported = {
             "table": self.table,
             "ref_id": self.ref_id,
             "row_sha256": _sha256(self.row),
@@ -225,6 +215,10 @@ class ClosureRow:
             "authority_edges": sorted(self.authority_refs),
             "row": self.row,
         }
+        if self.restore_hints:
+            exported["restore_hints"] = self.restore_hints
+            exported["restore_hints_sha256"] = _sha256(self.restore_hints)
+        return exported
 
 
 def compute_governance_closure(
@@ -298,8 +292,28 @@ def _snapshot_rows(
         ).format(sql.Identifier(table))
         for result in connection.execute(query).fetchall():
             row_json = json.loads(str(result["row_json"]))
+            restore_hints: dict[str, Any] = {}
+            if table == "facts":
+                subject_ref = row_json.get("subject_ref")
+                if subject_ref is None and row_json.get("subject_entity_id") is not None:
+                    subject = connection.execute(
+                        "SELECT ref_id FROM entities WHERE id = %s",
+                        (row_json["subject_entity_id"],),
+                    ).fetchone()
+                    if subject is None:
+                        raise RuntimeError(
+                            f"fact {result['ref_id']} has no resolvable subject"
+                        )
+                    subject_ref = subject["ref_id"]
+                if subject_ref is not None:
+                    restore_hints["subject_ref"] = str(subject_ref)
             rows.append(
-                ClosureRow(table=table, ref_id=str(result["ref_id"]), row=row_json)
+                ClosureRow(
+                    table=table,
+                    ref_id=str(result["ref_id"]),
+                    row=row_json,
+                    restore_hints=restore_hints,
+                )
             )
     return rows
 
@@ -638,88 +652,182 @@ def provider_disposition_inventory(*, database_url: str) -> dict[str, Any]:
     return payload
 
 
-_CLEAN_DDL = r"""
-CREATE TABLE governance_closure_rows (
-    ref_id text PRIMARY KEY,
-    source_table text NOT NULL,
-    row_sha256 text NOT NULL CHECK (length(row_sha256) = 64),
-    row_json jsonb NOT NULL
-);
-CREATE TABLE operator_utterances (
-    ref_id text PRIMARY KEY CHECK (ref_id ~ '^utt_'),
-    content_hash text NOT NULL,
-    source_message_ref text NOT NULL,
-    verbatim_text text NOT NULL,
-    row_json jsonb NOT NULL
-);
-CREATE TABLE agent_responses (
-    ref_id text PRIMARY KEY CHECK (ref_id ~ '^rsp_'),
-    basis_refs jsonb NOT NULL,
-    row_json jsonb NOT NULL
-);
-CREATE TABLE decisions (
-    ref_id text PRIMARY KEY CHECK (ref_id ~ '^dec_'),
-    decision_kind text NOT NULL,
-    document_ref text,
-    frozen_artifact_hash text,
-    architecture_authority boolean NOT NULL,
-    basis_refs jsonb NOT NULL,
-    row_json jsonb NOT NULL
-);
-CREATE TABLE audit_events (
-    ref_id text PRIMARY KEY CHECK (ref_id ~ '^aud_'),
-    event_type text NOT NULL,
-    primary_ref text,
-    basis_refs jsonb NOT NULL,
-    row_json jsonb NOT NULL
-);
-CREATE TABLE tool_invocations (
-    ref_id text PRIMARY KEY CHECK (ref_id ~ '^call_'),
-    transport_state text NOT NULL,
-    domain_state text NOT NULL,
-    result_disposition text,
-    row_json jsonb NOT NULL
-);
-CREATE TABLE runtime_log_entries (
-    ref_id text PRIMARY KEY CHECK (ref_id ~ '^log_'),
-    related_refs jsonb NOT NULL,
-    row_json jsonb NOT NULL
-);
-CREATE TABLE provider_accounts (
-    ref_id text PRIMARY KEY CHECK (ref_id ~ '^acct_'),
-    provider text NOT NULL,
-    external_identity_sha256 text NOT NULL,
-    UNIQUE (provider, external_identity_sha256)
-);
-CREATE TABLE items (ref_id text PRIMARY KEY CHECK (ref_id ~ '^item_'));
-CREATE TABLE item_source_bindings (id uuid PRIMARY KEY);
-CREATE TABLE temporal_bindings (ref_id text PRIMARY KEY CHECK (ref_id ~ '^time_'));
-CREATE TABLE tasks (ref_id text PRIMARY KEY CHECK (ref_id ~ '^task_'));
-CREATE TABLE event_item_links (id uuid PRIMARY KEY);
-CREATE TABLE temporal_calendar_projections (
-    ref_id text PRIMARY KEY CHECK (ref_id ~ '^tproj_')
-);
-CREATE TABLE attachment_evidence_metadata (
-    ref_id text PRIMARY KEY CHECK (ref_id ~ '^src_'),
-    operator_utterance_ref text NOT NULL,
-    filename text,
-    media_type text NOT NULL,
-    byte_size bigint NOT NULL,
-    content_hash text NOT NULL,
-    retention_disposition text NOT NULL,
-    received_at timestamptz NOT NULL
-);
-CREATE TABLE encrypted_attachment_blobs (
-    attachment_ref text PRIMARY KEY REFERENCES attachment_evidence_metadata(ref_id),
-    nonce bytea NOT NULL,
-    ciphertext bytea NOT NULL,
-    ciphertext_sha256 text NOT NULL
-);
-"""
-
-
 def _json_list(value: object) -> list[str]:
     return [str(item) for item in value] if isinstance(value, list) else []
+
+
+_GOVERNANCE_RESTORE_ORDER = {
+    "operator_utterances": 10,
+    "gateway_lifetimes": 20,
+    "intent_sessions": 30,
+    "interpreted_statements": 40,
+    "change_sets": 50,
+    "intent_turns": 60,
+    "facts": 70,
+    "decisions": 80,
+    "tool_invocations": 90,
+    "runtime_log_entries": 100,
+    "agent_responses": 110,
+    "audit_events": 120,
+}
+_TRANSFORMED_RESTORE_FIELDS = {
+    "agent_responses": {"projection_ref"},
+}
+
+
+def _table_columns(
+    connection: psycopg.Connection[dict[str, Any]],
+    table: str,
+) -> dict[str, str]:
+    rows = connection.execute(
+        """
+        SELECT column_name, data_type
+          FROM information_schema.columns
+         WHERE table_schema = 'public'
+           AND table_name = %s
+         ORDER BY ordinal_position
+        """,
+        (table,),
+    ).fetchall()
+    if not rows:
+        raise RuntimeError(f"clean governance target table is missing: {table}")
+    return {str(row["column_name"]): str(row["data_type"]) for row in rows}
+
+
+def _adapt_value(value: object, data_type: str) -> object:
+    if data_type in {"json", "jsonb"}:
+        return Jsonb(value)
+    return value
+
+
+def _insert_mapping(
+    connection: psycopg.Connection[dict[str, Any]],
+    table: str,
+    values: Mapping[str, Any],
+) -> None:
+    column_types = _table_columns(connection, table)
+    unknown = sorted(set(values) - set(column_types))
+    if unknown:
+        raise RuntimeError(
+            f"clean restore attempted unknown {table} columns: {', '.join(unknown)}"
+        )
+    columns = list(values)
+    query = sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
+        sql.Identifier(table),
+        sql.SQL(", ").join(sql.Identifier(column) for column in columns),
+        sql.SQL(", ").join(sql.Placeholder() for _column in columns),
+    )
+    connection.execute(
+        query,
+        tuple(_adapt_value(values[column], column_types[column]) for column in columns),
+    )
+
+
+def _projection_for_agent_response(
+    connection: psycopg.Connection[dict[str, Any]],
+    row: Mapping[str, Any],
+) -> str:
+    projection_ref = new_public_ref("proj")
+    basis_refs = _json_list(row.get("basis_refs"))
+    operator_ref = "governance_restore"
+    for utterance_ref in basis_refs:
+        if not utterance_ref.startswith("utt_"):
+            continue
+        utterance = connection.execute(
+            "SELECT actor_ref FROM operator_utterances WHERE ref_id = %s",
+            (utterance_ref,),
+        ).fetchone()
+        if utterance is not None:
+            operator_ref = str(utterance["actor_ref"])
+            break
+    visible_text = str(row["verbatim_text"])
+    semantic_content = {
+        "governance_restore": True,
+        "pre_reset_projection_ref": row.get("projection_ref"),
+    }
+    _insert_mapping(
+        connection,
+        "operator_projections",
+        {
+            "id": uuid.uuid4(),
+            "ref_id": projection_ref,
+            "projection_kind": "agent_response",
+            "operator_ref": operator_ref,
+            "primary_public_ref": row["ref_id"],
+            "primary_revision_ref": None,
+            "supersedes_projection_ref": None,
+            "intent_session_ref": row.get("intent_session_ref"),
+            "case_ref": None,
+            "case_revision_ref": None,
+            "brief_ref": None,
+            "semantic_content": semantic_content,
+            "visible_text": visible_text,
+            "render_schema_version": 1,
+            "render_sha256": hashlib.sha256(visible_text.encode()).hexdigest(),
+            "component_sha256": hashlib.sha256(b"{}").hexdigest(),
+            "basis_refs": basis_refs,
+            "created_at": row.get("generated_at") or row.get("submitted_at"),
+        },
+    )
+    return projection_ref
+
+
+def _clean_governance_values(
+    connection: psycopg.Connection[dict[str, Any]],
+    exported: Mapping[str, Any],
+) -> dict[str, Any]:
+    table = str(exported["table"])
+    row = dict(exported["row"])
+    target_columns = _table_columns(connection, table)
+    values = {key: value for key, value in row.items() if key in target_columns}
+    now = datetime.now(UTC)
+    if "id" in target_columns:
+        values.setdefault("id", uuid.uuid4())
+    if table == "operator_utterances":
+        values.setdefault("actor_ref", "readiness:synthetic-operator")
+        values.setdefault("transport", "discord")
+        values.setdefault("conversation_ref", "readiness:synthetic-conversation")
+        values.setdefault("reply_to_source_ref", None)
+        values.setdefault("said_at", now)
+        values.setdefault("recorded_at", now)
+        values.setdefault("request_key", f"readiness:{row['ref_id']}")
+        values.setdefault("attachment_source_refs", [])
+        values.setdefault("utterance_kind", "typed_message")
+        values.setdefault("selected_option_ref", None)
+        values.setdefault("projection_ref", None)
+    elif table == "agent_responses":
+        values["projection_ref"] = _projection_for_agent_response(connection, row)
+    elif table == "decisions":
+        values.setdefault("actor_ref", "readiness:synthetic-operator")
+        values.setdefault("authorized_scope", "architecture_and_implementation")
+        values.setdefault("implementation_authority", "authorized")
+        values.setdefault("payload_json", {})
+        values.setdefault("created_at", now)
+    elif table == "audit_events":
+        values.setdefault("entity_type", "decision")
+        values.setdefault("entity_id", None)
+        values.setdefault("actor_type", "operator")
+        values.setdefault("actor_id", "readiness:synthetic-operator")
+        values.setdefault("request_id", None)
+        values.setdefault("affected_refs", [])
+        values.setdefault("data", {})
+        values.setdefault("created_at", now)
+    elif table == "change_sets":
+        values.setdefault("import_scope_json", None)
+        values.setdefault("tracked_context_changes", [])
+    elif table == "facts":
+        hints = dict(exported.get("restore_hints", {}))
+        if exported.get("restore_hints_sha256") != _sha256(hints):
+            raise RuntimeError(f"fact restore hints changed for {row['ref_id']}")
+        subject_ref = hints.get("subject_ref") or row.get("subject_ref")
+        if not isinstance(subject_ref, str):
+            raise RuntimeError(f"fact restore subject is missing for {row['ref_id']}")
+        values["subject_ref"] = subject_ref
+    elif table == "tool_invocations":
+        values.setdefault("transport_state", "completed")
+        values.setdefault("domain_state", "unknown")
+        values.setdefault("trace_ref", None)
+    return values
 
 
 def _materialize_governance_row(
@@ -732,70 +840,37 @@ def _materialize_governance_row(
     row_hash = str(exported["row_sha256"])
     if _sha256(row) != row_hash:
         raise RuntimeError(f"governance row hash mismatch for {ref_id}")
-    connection.execute(
-        "INSERT INTO governance_closure_rows VALUES (%s, %s, %s, %s)",
-        (ref_id, table, row_hash, json.dumps(row)),
+    if table not in _GOVERNANCE_RESTORE_ORDER:
+        raise RuntimeError(f"no clean governance restore mapping exists for {table}")
+    _insert_mapping(connection, table, _clean_governance_values(connection, exported))
+
+
+def _verify_materialized_row(
+    connection: psycopg.Connection[dict[str, Any]],
+    exported: Mapping[str, Any],
+) -> None:
+    table = str(exported["table"])
+    ref_id = str(exported["ref_id"])
+    target_columns = _table_columns(connection, table)
+    query = sql.SQL(
+        "SELECT to_jsonb(restored)::text AS row_json FROM {} AS restored "
+        "WHERE ref_id = %s"
+    ).format(sql.Identifier(table))
+    restored = connection.execute(query, (ref_id,)).fetchone()
+    if restored is None:
+        raise RuntimeError(f"restored governance row is missing for {ref_id}")
+    actual = json.loads(str(restored["row_json"]))
+    original = dict(exported["row"])
+    compared_fields = (
+        set(original)
+        & set(target_columns)
+        - _TRANSFORMED_RESTORE_FIELDS.get(table, set())
     )
-    if table == "operator_utterances":
-        connection.execute(
-            "INSERT INTO operator_utterances VALUES (%s,%s,%s,%s,%s)",
-            (
-                ref_id,
-                row["content_hash"],
-                row["source_message_ref"],
-                row["verbatim_text"],
-                json.dumps(row),
-            ),
-        )
-    elif table == "agent_responses":
-        connection.execute(
-            "INSERT INTO agent_responses VALUES (%s,%s,%s)",
-            (ref_id, json.dumps(_json_list(row.get("basis_refs"))), json.dumps(row)),
-        )
-    elif table == "decisions":
-        connection.execute(
-            "INSERT INTO decisions VALUES (%s,%s,%s,%s,%s,%s,%s)",
-            (
-                ref_id,
-                row["decision_kind"],
-                row.get("document_ref"),
-                row.get("frozen_artifact_hash"),
-                bool(row.get("architecture_authority")),
-                json.dumps(_json_list(row.get("basis_refs"))),
-                json.dumps(row),
-            ),
-        )
-    elif table == "audit_events":
-        connection.execute(
-            "INSERT INTO audit_events VALUES (%s,%s,%s,%s,%s)",
-            (
-                ref_id,
-                row["event_type"],
-                row.get("primary_ref"),
-                json.dumps(_json_list(row.get("basis_refs"))),
-                json.dumps(row),
-            ),
-        )
-    elif table == "tool_invocations":
-        connection.execute(
-            "INSERT INTO tool_invocations VALUES (%s,%s,%s,%s,%s)",
-            (
-                ref_id,
-                row.get("transport_state", "completed"),
-                row.get("domain_state", "unknown"),
-                row.get("result_disposition"),
-                json.dumps(row),
-            ),
-        )
-    elif table == "runtime_log_entries":
-        connection.execute(
-            "INSERT INTO runtime_log_entries VALUES (%s,%s,%s)",
-            (
-                ref_id,
-                json.dumps(_json_list(row.get("related_refs"))),
-                json.dumps(row),
-            ),
-        )
+    for field_name in compared_fields:
+        if _sha256(actual[field_name]) != _sha256(original[field_name]):
+            raise RuntimeError(
+                f"restored governance field changed for {ref_id}.{field_name}"
+            )
 
 
 def _verify_governance(
@@ -803,21 +878,9 @@ def _verify_governance(
     payload: Mapping[str, Any],
 ) -> dict[str, Any]:
     expected_rows = list(payload["rows"])
-    restored_row = connection.execute(
-        "SELECT count(*) FROM governance_closure_rows"
-    ).fetchone()
-    if restored_row is None:
-        raise RuntimeError("governance closure count query returned no row")
-    restored = int(restored_row["count"])
-    if restored != len(expected_rows):
-        raise RuntimeError("governance closure row count changed during restore")
     for exported in expected_rows:
-        ref_id = str(exported["ref_id"])
-        restored_row = connection.execute(
-            "SELECT row_json FROM governance_closure_rows WHERE ref_id = %s", (ref_id,)
-        ).fetchone()
-        if restored_row is None or _sha256(restored_row["row_json"]) != exported["row_sha256"]:
-            raise RuntimeError(f"restored governance row mismatch for {ref_id}")
+        _verify_materialized_row(connection, exported)
+    restored = len(expected_rows)
 
     artifacts = specification_artifact_manifest().artifacts
     signoff_count = 0
@@ -861,11 +924,17 @@ def _verify_governance(
     missing_clean = sorted(_CLEAN_TABLES - tables)
     if missing_clean:
         raise RuntimeError("clean rehearsal tables are missing: " + ", ".join(missing_clean))
+    revision_row = connection.execute(
+        "SELECT version_num FROM alembic_version"
+    ).fetchone()
+    if revision_row is None:
+        raise RuntimeError("clean rehearsal has no Alembic revision")
     return {
         "restored_rows": restored,
         "verified_signoffs": signoff_count,
         "obsolete_tables": [],
         "clean_table_count": len(_CLEAN_TABLES),
+        "schema_revision": revision_row["version_num"],
     }
 
 
@@ -885,24 +954,56 @@ def _create_clean_database(
         ).fetchone()
         if existing is None or int(existing["total"]) != 0:
             raise RuntimeError("clean rehearsal database must start empty")
-        for statement in _CLEAN_DDL.split(";\n"):
-            if statement.strip():
-                connection.execute(statement)
-        for row in payload["rows"]:
+    repository_root = Path(__file__).resolve().parents[2]
+    migration_environment = os.environ.copy()
+    migration_environment["DOCKET_DATABASE_URL"] = database_url
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(repository_root / "alembic.ini"),
+            "upgrade",
+            "head",
+        ],
+        check=True,
+        cwd=repository_root,
+        env=migration_environment,
+    )
+    with psycopg.connect(_psycopg_url(database_url), row_factory=dict_row) as connection:
+        ordered_rows = sorted(
+            payload["rows"],
+            key=lambda row: (
+                _GOVERNANCE_RESTORE_ORDER.get(str(row["table"]), 10_000),
+                str(row["ref_id"]),
+            ),
+        )
+        for row in ordered_rows:
             _materialize_governance_row(connection, row)
         provider_accounts = (
             list(provider_manifest.get("accounts", []))
             if provider_manifest is not None
             else []
         )
+        now = datetime.now(UTC)
         for account in provider_accounts:
-            connection.execute(
-                "INSERT INTO provider_accounts VALUES (%s,%s,%s)",
-                (
-                    account["clean_account_ref"],
-                    account["provider"],
-                    account["external_identity_sha256"],
-                ),
+            _insert_mapping(
+                connection,
+                "provider_accounts",
+                {
+                    "id": uuid.uuid4(),
+                    "ref_id": account["clean_account_ref"],
+                    "provider": account["provider"],
+                    "external_account_id": account["external_account_id"],
+                    "display_name": account.get("display_name"),
+                    "email_address": account.get("email_address"),
+                    "capabilities": account.get("capabilities", []),
+                    "enabled": account.get("enabled", True),
+                    "credential_ref": account.get("credential_ref"),
+                    "created_at": now,
+                    "updated_at": now,
+                },
             )
 
         attachment_ref = new_public_ref("src")
@@ -914,33 +1015,72 @@ def _create_clean_database(
             ),
             "utt_00000000000000000000000000",
         )
+        utterance_row = next(
+            (
+                dict(row["row"])
+                for row in payload["rows"]
+                if row["table"] == "operator_utterances"
+                and row["ref_id"] == utterance_ref
+            ),
+            {},
+        )
+        source_message_ref = str(
+            utterance_row.get("source_message_ref", "readiness:synthetic")
+        )
+        content_hash = hashlib.sha256(attachment_plaintext).hexdigest()
+        _insert_mapping(
+            connection,
+            "sources",
+            {
+                "id": uuid.uuid4(),
+                "ref_id": attachment_ref,
+                "source_kind": "attachment",
+                "external_ref": "readiness-fixture",
+                "observed_at": now,
+                "content_hash": content_hash,
+                "metadata_json": {"purpose": "clean_attachment_restore_rehearsal"},
+                "created_at": now,
+            },
+        )
+        _insert_mapping(
+            connection,
+            "attachment_evidence_metadata",
+            {
+                "id": uuid.uuid4(),
+                "ref_id": attachment_ref,
+                "transport": "discord",
+                "transport_attachment_ref": "readiness-fixture",
+                "source_message_ref": source_message_ref,
+                "operator_utterance_ref": utterance_ref,
+                "filename": "readiness-fixture.bin",
+                "media_type": "application/octet-stream",
+                "byte_size": len(attachment_plaintext),
+                "content_hash": content_hash,
+                "received_at": now,
+                "recorded_at": now,
+                "ingest_state": "available",
+                "retention_disposition": "retained_encrypted",
+                "derived_content_refs": [],
+            },
+        )
         nonce = os.urandom(12)
         ciphertext = AESGCM(attachment_key).encrypt(
             nonce,
             attachment_plaintext,
             attachment_ref.encode(),
         )
-        connection.execute(
-            "INSERT INTO attachment_evidence_metadata VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-            (
-                attachment_ref,
-                utterance_ref,
-                "readiness-fixture.bin",
-                "application/octet-stream",
-                len(attachment_plaintext),
-                hashlib.sha256(attachment_plaintext).hexdigest(),
-                "retain_encrypted",
-                datetime.now(UTC),
-            ),
-        )
-        connection.execute(
-            "INSERT INTO encrypted_attachment_blobs VALUES (%s,%s,%s,%s)",
-            (
-                attachment_ref,
-                nonce,
-                ciphertext,
-                hashlib.sha256(ciphertext).hexdigest(),
-            ),
+        _insert_mapping(
+            connection,
+            "encrypted_attachment_blobs",
+            {
+                "id": uuid.uuid4(),
+                "attachment_source_ref": attachment_ref,
+                "encryption_key_ref": "readiness-fixture",
+                "nonce": nonce,
+                "ciphertext": ciphertext,
+                "ciphertext_hash": hashlib.sha256(ciphertext).hexdigest(),
+                "created_at": now,
+            },
         )
         verification = _verify_governance(connection, payload)
         restored_account_row = connection.execute(
@@ -970,10 +1110,10 @@ def _verify_attachment_restore(
         row = connection.execute(
             """
             SELECT metadata.content_hash, metadata.byte_size,
-                   blob.nonce, blob.ciphertext, blob.ciphertext_sha256
+                   blob.nonce, blob.ciphertext, blob.ciphertext_hash
               FROM attachment_evidence_metadata metadata
               JOIN encrypted_attachment_blobs blob
-                ON blob.attachment_ref = metadata.ref_id
+                ON blob.attachment_source_ref = metadata.ref_id
              WHERE metadata.ref_id = %s
             """,
             (attachment_ref,),
@@ -981,7 +1121,7 @@ def _verify_attachment_restore(
         if row is None:
             raise RuntimeError("attachment fixture was not restored")
         ciphertext = bytes(row["ciphertext"])
-        if hashlib.sha256(ciphertext).hexdigest() != row["ciphertext_sha256"]:
+        if hashlib.sha256(ciphertext).hexdigest() != row["ciphertext_hash"]:
             raise RuntimeError("restored attachment ciphertext hash mismatch")
         plaintext = AESGCM(attachment_key).decrypt(
             bytes(row["nonce"]), ciphertext, attachment_ref.encode()
@@ -992,7 +1132,7 @@ def _verify_attachment_restore(
             "attachment_ref": attachment_ref,
             "byte_size": row["byte_size"],
             "plaintext_sha256": expected_plaintext_sha256,
-            "ciphertext_sha256": row["ciphertext_sha256"],
+            "ciphertext_sha256": row["ciphertext_hash"],
         }
 
 
