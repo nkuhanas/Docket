@@ -54,6 +54,89 @@ AttentionCaseRevisionRef = Annotated[
 ]
 CaseItemRef = Annotated[str, Field(pattern=r"^citem_[0-9A-HJKMNP-TV-Z]{26}$")]
 SourceRef = Annotated[str, Field(pattern=r"^src_[0-9A-HJKMNP-TV-Z]{26}$")]
+CURRENT_IMPORT_AUTHORITY_STATEMENT = "current_import_authority_statement"
+ImportAuthorityStatementRef = StatementRef | Literal[
+    "current_import_authority_statement"
+]
+
+ImportEffect = Literal[
+    "entity",
+    "identity_handle",
+    "identity_binding",
+    "affiliation",
+    "relationship",
+    "fact",
+    "interaction",
+    "preference",
+    "calendar_lane",
+    "lane_routing_decision",
+    "canonical_event",
+    "item",
+    "temporal_binding",
+    "task",
+    "temporal_calendar_projection",
+    "reminder_plan",
+    "attention_case_resolution",
+]
+
+
+def _context_import_effects() -> list[ImportEffect]:
+    return ["fact", "item", "temporal_binding"]
+
+
+class ImportScope(StrictModel):
+    """Exact authority boundary for canonical effects derived from source evidence."""
+
+    mode: Literal["context_only", "operator_explicit"] = "context_only"
+    source_refs: list[SourceRef] = Field(min_length=1, max_length=25)
+    authorized_effects: list[ImportEffect] = Field(
+        default_factory=_context_import_effects,
+        min_length=1,
+        max_length=18,
+    )
+    authority_statement_refs: list[ImportAuthorityStatementRef] = Field(
+        default_factory=list,
+        max_length=25,
+    )
+    partition_key: str = Field(default="default", pattern=r"^[a-z0-9][a-z0-9._-]{0,127}$")
+
+    @field_validator("source_refs")
+    @classmethod
+    def refs_are_unique(cls, values: list[str]) -> list[str]:
+        return _validate_refs(values)
+
+    @field_validator("authority_statement_refs")
+    @classmethod
+    def authority_refs_are_unique(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("authority_statement_refs must not contain duplicates")
+        return values
+
+    @field_validator("authorized_effects")
+    @classmethod
+    def effects_are_unique_and_canonical(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("authorized_effects must not contain duplicates")
+        return sorted(values)
+
+    @model_validator(mode="after")
+    def mode_has_exact_authority_shape(self) -> ImportScope:
+        context_effects = ["fact", "item", "temporal_binding"]
+        if self.mode == "context_only":
+            if self.authorized_effects != context_effects:
+                raise ValueError(
+                    "context_only import scope has exactly fact, item, and "
+                    "temporal_binding effects"
+                )
+            if self.authority_statement_refs:
+                raise ValueError(
+                    "context_only import scope does not accept authority statements"
+                )
+        elif not self.authority_statement_refs:
+            raise ValueError(
+                "operator_explicit import scope requires an Operator-derived authority statement"
+            )
+        return self
 
 
 def _validate_refs(values: list[str], *, provenance_only: bool = False) -> list[str]:
@@ -901,6 +984,7 @@ class OperatorChangeSetContent(StrictModel):
     """Model-facing canonical effects; provider projection is compiler-owned."""
 
     basis_refs: list[PublicRef] = Field(min_length=1, max_length=100)
+    import_scope: ImportScope | None = None
     expected_versions: dict[PublicRef, int] = Field(default_factory=dict, max_length=100)
     registry_changes: list[RegistryChangeInput] = Field(default_factory=list, max_length=100)
     preference_changes: list[PreferenceChangeInput] = Field(
@@ -967,6 +1051,7 @@ class ChangeSetContent(StrictModel):
     """Internal canonical effects plus deterministic provider projection."""
 
     basis_refs: list[PublicRef] = Field(min_length=1, max_length=100)
+    import_scope: ImportScope | None = None
     expected_versions: dict[PublicRef, int] = Field(default_factory=dict, max_length=100)
     registry_changes: list[RegistryChangeInput] = Field(default_factory=list, max_length=100)
     preference_changes: list[PreferenceChangeInput] = Field(

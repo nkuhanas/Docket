@@ -15,7 +15,7 @@ from docket.domain.public_refs import (
     public_ref_type,
 )
 from docket.models import BriefEntry, CaseItem, Conflict, ProviderAccount, SemanticRequestAttempt
-from docket.schemas.authority import OperatorChangeSetContent
+from docket.schemas.authority import ImportScope, OperatorChangeSetContent
 from docket.schemas.tracked_context import (
     DateTemporalValue,
     ItemInput,
@@ -235,3 +235,30 @@ def test_model_facing_changeset_rejects_legacy_shapes_and_provider_intents() -> 
                 "provider_intents": [],
             }
         )
+
+
+def test_import_scope_has_exact_safe_default_and_explicit_authority_shape() -> None:
+    source_ref = _ref("src")
+    default_scope = ImportScope(source_refs=[source_ref])
+    assert default_scope.mode == "context_only"
+    assert default_scope.authorized_effects == ["fact", "item", "temporal_binding"]
+
+    with pytest.raises(ValidationError, match="exactly fact, item"):
+        ImportScope(
+            source_refs=[source_ref],
+            authorized_effects=["item", "task"],
+        )
+    with pytest.raises(ValidationError, match="requires an Operator-derived"):
+        ImportScope(
+            mode="operator_explicit",
+            source_refs=[source_ref],
+            authorized_effects=["item", "task"],
+        )
+
+    explicit = ImportScope(
+        mode="operator_explicit",
+        source_refs=[source_ref],
+        authorized_effects=["task", "item"],
+        authority_statement_refs=[_ref("stm")],
+    )
+    assert explicit.authorized_effects == ["item", "task"]
