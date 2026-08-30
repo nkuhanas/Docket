@@ -22,6 +22,7 @@ from docket.internal_api.schemas import (
     LocalActionResponse,
     McpTraceUpdate,
     OperatorUtteranceCapture,
+    ProductionResetAuthorizationCapture,
     SemanticOptionSelection,
     SpecificationSignoffCapture,
 )
@@ -687,6 +688,25 @@ def specification_signoff_capture(payload: SpecificationSignoffCapture) -> dict[
     try:
         with session_scope() as session:
             return ProvenanceService(session).record_final_architecture_signoff(payload)
+    except DocketError as exc:
+        error_status = (
+            status.HTTP_404_NOT_FOUND
+            if exc.code == "operator_utterance_not_found"
+            else status.HTTP_409_CONFLICT
+        )
+        raise HTTPException(
+            status_code=error_status,
+            detail=exc.as_dict()["error"],
+        ) from exc
+
+
+@router.post("/production-reset-authorizations")
+def production_reset_authorization_capture(
+    payload: ProductionResetAuthorizationCapture,
+) -> dict[str, object]:
+    try:
+        with session_scope() as session:
+            return ProvenanceService(session).record_production_reset_authorization(payload)
     except DocketError as exc:
         error_status = (
             status.HTTP_404_NOT_FOUND

@@ -55,6 +55,15 @@ _UTTERANCE_REF = re.compile(r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")
 _RESPONSE_REF = re.compile(r"^rsp_[0-9A-HJKMNP-TV-Z]{26}$")
 _PUBLIC_REF = re.compile(r"^[a-z][a-z0-9]{1,7}_[0-9A-HJKMNP-TV-Z]{26}$")
 _SAFE_ERROR_CODE = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
+_PRODUCTION_RESET_AUTHORIZATION = re.compile(
+    r"I authorize execution of the production reset for "
+    r"`(?P<document_ref>ONT-DELTA-[A-Z0-9-]+)` frozen at SHA-256 "
+    r"`(?P<frozen_artifact_hash>[0-9a-f]{64})`, bound to reset manifest "
+    r"SHA-256 `(?P<reset_manifest_sha256>[0-9a-f]{64})`, verified backup "
+    r"artifact `(?P<verified_backup_ref>[A-Za-z0-9][A-Za-z0-9._-]{0,254})` "
+    r"at SHA-256 `(?P<verified_backup_sha256>[0-9a-f]{64})`, and deployment "
+    r"revision `(?P<deployment_revision>[0-9a-f]{40})`\."
+)
 _CONTROL_ID = re.compile(r"^dkt:([arlnps]):([A-Za-z0-9_-]{40,100})$")
 _MAX_REQUEST_BYTES = 65536
 _SERVER: ThreadingHTTPServer | None = None
@@ -439,6 +448,31 @@ def _record_final_signoff_if_explicit(
         raise PluginAPIError(
             "invalid_decision_ref",
             "Docket did not return a typed Decision reference",
+            502,
+        )
+    return result
+
+
+def _record_production_reset_authorization_if_explicit(
+    event: object,
+    utterance_ref: str,
+) -> dict[str, Any] | None:
+    match = _PRODUCTION_RESET_AUTHORIZATION.fullmatch(str(getattr(event, "text", "")))
+    if match is None:
+        return None
+    result = _docket_internal_request(
+        "/internal/v1/discord/production-reset-authorizations",
+        {
+            "request_id": str(uuid.uuid4()),
+            "utterance_ref": utterance_ref,
+            **match.groupdict(),
+        },
+    )
+    decision_ref = str(result.get("ref") or "")
+    if not decision_ref.startswith("dec_"):
+        raise PluginAPIError(
+            "invalid_decision_ref",
+            "Docket did not return a typed production-reset Decision reference",
             502,
         )
     return result
@@ -1432,6 +1466,7 @@ def _rewrite_with_source_context(
     utterance_ref: str,
     reply_binding: dict[str, Any] | None = None,
     signoff_result: dict[str, Any] | None = None,
+    reset_authorization_result: dict[str, Any] | None = None,
 ) -> dict[str, str] | None:
     source = getattr(event, "source", None)
     ingress = _trusted_ingress_context(source)
@@ -1487,6 +1522,24 @@ def _rewrite_with_source_context(
                 "mutation tools or claim the amendment is signed. Tell the Operator the "
                 "safe error code and message concisely."
             )
+    reset_authorization_context = ""
+    if reset_authorization_result is not None:
+        reset_authorization_context = (
+            '\n\n<docket_production_reset_authorization trusted="true">\n'
+            f"{json.dumps(reset_authorization_result, sort_keys=True)}\n"
+            "</docket_production_reset_authorization>\n"
+        )
+        if reset_authorization_result.get("ok") is True:
+            reset_authorization_context += (
+                "The trusted gateway recorded authority for exactly the named reset "
+                "manifest, backup, and deployment revision. No reset or deployment has "
+                "run. Confirm the ledger-backed Decision reference concisely."
+            )
+        else:
+            reset_authorization_context += (
+                "Docket rejected this production-reset authorization. Do not claim "
+                "authority or execute a reset. Report the safe error code and message."
+            )
     preferences = _operator_preferences()
     preference_context = (
         '\n\n<docket_operator_preferences trusted="true">\n'
@@ -1536,6 +1589,7 @@ def _rewrite_with_source_context(
         f"{authority_context}"
         f"{contract_context}"
         f"{signoff_context}"
+        f"{reset_authorization_context}"
         '<docket_gateway_context trusted="true">\n'
         f"{json.dumps(context, sort_keys=True)}\n"
         "</docket_gateway_context>\n"
@@ -1567,6 +1621,7 @@ def _pre_gateway_dispatch(
     reply_binding: dict[str, Any] | None = None
     ingress_binding: dict[str, Any] | None = None
     signoff_result: dict[str, Any] | None = None
+    reset_authorization_result: dict[str, Any] | None = None
     if _provenance_ingress_context(source) is not None:
         try:
             captured = _capture_operator_utterance(event)
@@ -1624,6 +1679,53 @@ def _pre_gateway_dispatch(
                 error_code="docket_signoff_persistence_failed",
             )
             return {"action": "skip", "reason": "docket-signoff-persistence-failed"}
+        if signoff_result is None:
+            try:
+                recorded_reset_authorization = _record_production_reset_authorization_if_explicit(
+                    event,
+                    utterance_ref,
+                )
+                if recorded_reset_authorization is not None:
+                    reset_authorization_result = {
+                        **recorded_reset_authorization,
+                        "attempted": True,
+                        "decision_ref": str(recorded_reset_authorization["ref"]),
+                        "ok": True,
+                    }
+            except PluginAPIError as exc:
+                if exc.status >= 500:
+                    logger.exception(
+                        "Docket production-reset authority outcome was unavailable; turn rejected"
+                    )
+                    _complete_captured_ingress(
+                        ingress_binding,
+                        outcome="failed",
+                        error_code="docket_reset_authority_persistence_failed",
+                    )
+                    return {
+                        "action": "skip",
+                        "reason": "docket-reset-authority-persistence-failed",
+                    }
+                logger.warning("Docket production-reset authority rejected: %s", exc.code)
+                reset_authorization_result = {
+                    "attempted": True,
+                    "error_code": exc.code,
+                    "message": str(exc),
+                    "ok": False,
+                }
+            except (OSError, RuntimeError, urllib.error.URLError):
+                logger.exception(
+                    "Docket production-reset authority persistence failed; turn rejected"
+                )
+                _complete_captured_ingress(
+                    ingress_binding,
+                    outcome="failed",
+                    error_code="docket_reset_authority_persistence_failed",
+                )
+                return {
+                    "action": "skip",
+                    "reason": "docket-reset-authority-persistence-failed",
+                }
     if _GENERIC_DELIVERY_COMMAND.match(text.strip()) and (
         _is_channel_surface(source, os.environ.get("DOCKET_CHAT_CHANNEL_ID", ""))
         or _is_configured_queue(source)
@@ -1680,6 +1782,21 @@ def _pre_gateway_dispatch(
                     f"(`{signoff_result.get('error_code', 'unknown')}`): "
                     f"{signoff_result.get('message', 'The request was rejected.')}"
                 )
+        elif reset_authorization_result is not None:
+            if reset_authorization_result.get("ok") is True:
+                deterministic_response_text = (
+                    "Authorized and recorded — Docket created ledger-backed production "
+                    f"reset Decision `{reset_authorization_result['decision_ref']}` for "
+                    f"manifest `{reset_authorization_result['reset_manifest_sha256']}` and "
+                    f"revision `{reset_authorization_result['deployment_revision']}`. "
+                    "No reset or deployment has run."
+                )
+            else:
+                deterministic_response_text = (
+                    "Docket did not authorize that production reset "
+                    f"(`{reset_authorization_result.get('error_code', 'unknown')}`): "
+                    f"{reset_authorization_result.get('message', 'The request was rejected.')}"
+                )
         _register_trace_context(
             event,
             session_store,
@@ -1707,6 +1824,7 @@ def _pre_gateway_dispatch(
             utterance_ref,
             reply_binding,
             signoff_result,
+            reset_authorization_result,
         )
 
     allowed_actor = os.environ.get("DOCKET_OPERATOR_DISCORD_USER_ID", "")
@@ -1739,7 +1857,6 @@ def _pre_gateway_dispatch(
         return {"action": "skip", "reason": "docket-control-delivery-failed"}
     _complete_captured_ingress(ingress_binding, outcome="completed")
     return {"action": "skip", "reason": "docket-control-handled"}
-
 
 def _read_outbound_token() -> str:
     path = Path(os.environ["DOCKET_TO_HERMES_TOKEN_FILE"])

@@ -10,12 +10,19 @@ from sqlalchemy.orm import Session
 
 from docket.config import get_settings
 from docket.domain.errors import DocketError, IdempotencyConflict
+from docket.domain.production_reset import (
+    TRACKED_CONTEXT_DOCUMENT_REF,
+    TRACKED_CONTEXT_FROZEN_ARTIFACT_HASH,
+    ProductionResetAuthorityBinding,
+    production_reset_authorization_text,
+)
 from docket.domain.public_refs import new_public_ref
 from docket.internal_api.schemas import (
     AgentResponseCapture,
     AgentResponseDeliveryUpdate,
     AgentTurnNoResponse,
     OperatorUtteranceCapture,
+    ProductionResetAuthorizationCapture,
     SpecificationSignoffCapture,
 )
 from docket.models import (
@@ -1011,6 +1018,134 @@ class ProvenanceService:
             "implementation_authority": artifact.implementation_authority,
             "production_reset_authority": artifact.production_reset_authority,
             "prerequisite_decision_refs": prerequisite_decision_refs,
+        }
+
+    def record_production_reset_authorization(
+        self,
+        request: ProductionResetAuthorizationCapture,
+    ) -> dict[str, Any]:
+        if (
+            request.document_ref != TRACKED_CONTEXT_DOCUMENT_REF
+            or request.frozen_artifact_hash != TRACKED_CONTEXT_FROZEN_ARTIFACT_HASH
+        ):
+            raise DocketError(
+                code="production_reset_artifact_mismatch",
+                message="Production reset authority does not identify the frozen amendment.",
+            )
+        artifact = specification_artifact(
+            request.document_ref,
+            request.frozen_artifact_hash,
+        )
+        if artifact is None or artifact.production_reset_authority is not False:
+            raise DocketError(
+                code="production_reset_artifact_ineligible",
+                message="The frozen artifact is not eligible for a later reset authorization.",
+            )
+        binding = ProductionResetAuthorityBinding(
+            document_ref=request.document_ref,
+            frozen_artifact_hash=request.frozen_artifact_hash,
+            reset_manifest_sha256=request.reset_manifest_sha256,
+            verified_backup_ref=request.verified_backup_ref,
+            verified_backup_sha256=request.verified_backup_sha256,
+            deployment_revision=request.deployment_revision,
+        )
+        utterance = self.session.scalar(
+            select(OperatorUtterance).where(OperatorUtterance.ref_id == request.utterance_ref)
+        )
+        if utterance is None:
+            raise DocketError(
+                code="operator_utterance_not_found",
+                message="Production reset authority must reference a persisted OperatorUtterance.",
+            )
+        settings = get_settings()
+        if (
+            utterance.actor_ref != _actor_ref(settings.operator_discord_user_id)
+            or utterance.transport != "discord"
+            or utterance.verbatim_text != production_reset_authorization_text(binding)
+            or utterance.content_hash != _sha256_text(utterance.verbatim_text)
+        ):
+            raise DocketError(
+                code="production_reset_authorization_not_explicit",
+                message=(
+                    "OperatorUtterance is not the exact manifest, backup, and revision-bound "
+                    "production reset command."
+                ),
+            )
+
+        payload = {
+            "reset_manifest_sha256": request.reset_manifest_sha256,
+            "verified_backup_ref": request.verified_backup_ref,
+            "verified_backup_sha256": request.verified_backup_sha256,
+            "deployment_revision": request.deployment_revision,
+        }
+        candidates = self.session.scalars(
+            select(Decision).where(
+                Decision.decision_kind == "production_reset_authorization",
+                Decision.document_ref == request.document_ref,
+                Decision.frozen_artifact_hash == request.frozen_artifact_hash,
+            )
+        ).all()
+        existing = next(
+            (
+                decision
+                for decision in candidates
+                if decision.basis_refs == [utterance.ref_id] and decision.payload_json == payload
+            ),
+            None,
+        )
+        if existing is not None:
+            return {
+                "ok": True,
+                "ref": existing.ref_id,
+                "state": "authorized",
+                "disposition": "replayed_request",
+                "document_ref": request.document_ref,
+                "frozen_artifact_hash": request.frozen_artifact_hash,
+                **payload,
+                "production_reset_executed": False,
+            }
+
+        decision = Decision(
+            decision_kind="production_reset_authorization",
+            actor_ref=utterance.actor_ref,
+            basis_refs=[utterance.ref_id],
+            document_ref=request.document_ref,
+            frozen_artifact_hash=request.frozen_artifact_hash,
+            authorized_scope="production_reset_exact_manifest_revision",
+            architecture_authority=False,
+            implementation_authority=None,
+            payload_json=payload,
+        )
+        self.session.add(decision)
+        self.session.flush()
+        self.session.add(
+            AuditEvent(
+                event_type="decision.production_reset_authorization_recorded",
+                entity_type="decision",
+                entity_id=decision.id,
+                actor_type="operator",
+                actor_id=settings.operator_discord_user_id,
+                request_id=request.request_id,
+                primary_ref=decision.ref_id,
+                affected_refs=[decision.ref_id, utterance.ref_id],
+                basis_refs=[utterance.ref_id],
+                data={
+                    "document_ref": request.document_ref,
+                    "frozen_artifact_hash": request.frozen_artifact_hash,
+                    **payload,
+                    "production_reset_executed": False,
+                },
+            )
+        )
+        return {
+            "ok": True,
+            "ref": decision.ref_id,
+            "state": "authorized",
+            "disposition": "created",
+            "document_ref": request.document_ref,
+            "frozen_artifact_hash": request.frozen_artifact_hash,
+            **payload,
+            "production_reset_executed": False,
         }
 
 

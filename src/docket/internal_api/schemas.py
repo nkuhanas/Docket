@@ -320,3 +320,18 @@ class SpecificationSignoffCapture(InternalModel):
         max_length=64,
         pattern=r"^[0-9a-f]{64}$",
     )
+
+
+class ProductionResetAuthorizationCapture(InternalModel):
+    request_id: UUID
+    utterance_ref: str = Field(pattern=r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")
+    document_ref: str = Field(pattern=r"^ONT-DELTA-[A-Z0-9-]+$", max_length=255)
+    frozen_artifact_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reset_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    verified_backup_ref: str = Field(
+        min_length=1,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    )
+    verified_backup_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    deployment_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
