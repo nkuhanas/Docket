@@ -548,33 +548,33 @@ class OperationRunner:
     def _execute(self, claim: ClaimedOperation) -> None:
         self.mark_provider_call_started(claim)
         if claim.operation_type == "calendar_configure_lane":
-            result = self.provider.ensure_calendar_lane(
+            lane_result = self.provider.ensure_calendar_lane(
                 claim.lane_request(create_if_missing=True)
             )
-            self._finish_lane_success(claim, result)
+            self._finish_lane_success(claim, lane_result)
             return
         if claim.operation_type == "calendar_delete_lane":
-            result = self.provider.delete_calendar_lane(
+            lane_delete_result = self.provider.delete_calendar_lane(
                 claim.lane_request(create_if_missing=False)
             )
-            self._finish_lane_success(claim, result)
+            self._finish_lane_success(claim, lane_delete_result)
             return
         request = claim.calendar_request()
         if claim.operation_type == "calendar_create_event":
-            result = self.provider.create_event(request)
+            event_result = self.provider.create_event(request)
         elif claim.operation_type in {
             "calendar_update_event",
             "calendar_update_reminders",
         }:
-            result = self.provider.update_event(request)
+            event_result = self.provider.update_event(request)
         elif claim.operation_type == "calendar_cancel_event":
-            result = self.provider.cancel_event(request)
+            event_result = self.provider.cancel_event(request)
         else:  # model constraint prevents this branch
             raise DocketError(
                 code="provider_operation_not_supported",
                 message="Provider Operation type is unsupported.",
             )
-        self._finish_event_success(claim, result)
+        self._finish_event_success(claim, event_result)
 
     def run_due_once(self) -> bool:
         claim = self.claim_due()

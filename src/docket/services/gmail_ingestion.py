@@ -207,7 +207,7 @@ class GmailIngestionService:
                         f"gmail:{claim.account_id}:{message.message_id}:"
                         f"{message.source_version}"
                     ),
-                    observed_at=_aware(message.received_at),
+                    observed_at=_aware(message.received_at or utc_now()),
                     content_hash=fingerprint,
                     metadata_json={
                         "account_ref": account.ref_id,

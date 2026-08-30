@@ -784,21 +784,21 @@ class NetworkQueryService:
             expanded.add(ref_id)
             current_prefix, _ = parse_public_ref(ref_id)
             if current_prefix == "item":
-                item = self.session.scalar(select(Item).where(Item.ref_id == ref_id))
-                if item is None or item.canonical_status != "active":
+                current_item = self.session.scalar(select(Item).where(Item.ref_id == ref_id))
+                if current_item is None or current_item.canonical_status != "active":
                     raise DocketError(code="item_not_found", message="Item was not found.")
                 nodes.setdefault(
                     ref_id,
                     {
                         "ref": ref_id,
                         "type": "item",
-                        "display_name": item.title,
+                        "display_name": current_item.title,
                         "depth": current_depth,
                     },
                 )
                 if current_depth >= depth:
                     continue
-                for entity_ref in item.context_entity_refs:
+                for entity_ref in current_item.context_entity_refs:
                     entity = self.session.scalar(select(Entity).where(Entity.ref_id == entity_ref))
                     if entity is not None:
                         nodes.setdefault(
@@ -830,22 +830,22 @@ class NetworkQueryService:
                     add_edge(ref_id, "realized_as_event", link.event_ref)
                     queue_ref(link.event_ref, current_depth + 1)
             elif current_prefix == "task":
-                task = self.session.scalar(select(Task).where(Task.ref_id == ref_id))
-                if task is None or task.canonical_status != "active":
+                current_task = self.session.scalar(select(Task).where(Task.ref_id == ref_id))
+                if current_task is None or current_task.canonical_status != "active":
                     raise DocketError(code="task_not_found", message="Task was not found.")
                 nodes.setdefault(
                     ref_id,
                     {
                         "ref": ref_id,
                         "type": "task",
-                        "display_name": task.title,
-                        "state": task.task_state,
+                        "display_name": current_task.title,
+                        "state": current_task.task_state,
                         "depth": current_depth,
                     },
                 )
                 if current_depth < depth:
-                    add_edge(ref_id, "about_item", task.item_ref)
-                    queue_ref(task.item_ref, current_depth + 1)
+                    add_edge(ref_id, "about_item", current_task.item_ref)
+                    queue_ref(current_task.item_ref, current_depth + 1)
                     for binding in self.session.scalars(
                         select(TemporalBinding).where(
                             TemporalBinding.subject_ref == ref_id,
@@ -855,10 +855,10 @@ class NetworkQueryService:
                         add_edge(ref_id, binding.role, binding.ref_id)
                         queue_ref(binding.ref_id, current_depth + 1)
             elif current_prefix == "time":
-                binding = self.session.scalar(
+                current_binding = self.session.scalar(
                     select(TemporalBinding).where(TemporalBinding.ref_id == ref_id)
                 )
-                if binding is None or binding.canonical_status != "active":
+                if current_binding is None or current_binding.canonical_status != "active":
                     raise DocketError(
                         code="temporal_binding_not_found", message="Time was not found."
                     )
@@ -867,14 +867,14 @@ class NetworkQueryService:
                     {
                         "ref": ref_id,
                         "type": "temporal_binding",
-                        "display_name": binding.role,
-                        "temporal_value": binding.temporal_value,
+                        "display_name": current_binding.role,
+                        "temporal_value": current_binding.temporal_value,
                         "depth": current_depth,
                     },
                 )
                 if current_depth < depth:
-                    add_edge(ref_id, "describes", binding.subject_ref)
-                    queue_ref(binding.subject_ref, current_depth + 1)
+                    add_edge(ref_id, "describes", current_binding.subject_ref)
+                    queue_ref(current_binding.subject_ref, current_depth + 1)
             elif current_prefix == "evt":
                 event = self.session.scalar(
                     select(CanonicalEvent).where(CanonicalEvent.ref_id == ref_id)

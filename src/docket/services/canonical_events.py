@@ -66,7 +66,9 @@ class CanonicalEventAuthorityService:
         temporal_binding_refs: list[str],
         basis_refs: list[str],
     ) -> None:
-        links_by_item = {item_ref: None for item_ref in item_refs}
+        links_by_item: dict[str, str | None] = {
+            item_ref: None for item_ref in item_refs
+        }
         for item_ref in item_refs:
             item = self.session.scalar(select(Item).where(Item.ref_id == item_ref))
             if item is None or item.canonical_status != "active":
@@ -75,15 +77,17 @@ class CanonicalEventAuthorityService:
                     message="CanonicalEvent Item link requires an active Item.",
                     details={"item_ref": item_ref},
                 )
-        for temporal_ref in temporal_binding_refs:
+        for temporal_binding_ref in temporal_binding_refs:
             binding = self.session.scalar(
-                select(TemporalBinding).where(TemporalBinding.ref_id == temporal_ref)
+                select(TemporalBinding).where(
+                    TemporalBinding.ref_id == temporal_binding_ref
+                )
             )
             if binding is None or binding.canonical_status != "active":
                 raise DocketError(
                     code="event_temporal_binding_unavailable",
                     message="Realized TemporalBinding must be active.",
-                    details={"temporal_binding_ref": temporal_ref},
+                    details={"temporal_binding_ref": temporal_binding_ref},
                 )
             prefix, _payload = parse_public_ref(binding.subject_ref)
             if prefix == "item":
@@ -104,7 +108,7 @@ class CanonicalEventAuthorityService:
                     message="One Event may realize at most one Time per linked Item.",
                     details={"item_ref": item_ref},
                 )
-            links_by_item[item_ref] = temporal_ref
+            links_by_item[item_ref] = temporal_binding_ref
         existing = list(
             self.session.scalars(
                 select(EventItemLink).where(EventItemLink.event_ref == event.ref_id)
@@ -112,12 +116,12 @@ class CanonicalEventAuthorityService:
         )
         for link in existing:
             self.session.delete(link)
-        for item_ref, temporal_ref in links_by_item.items():
+        for item_ref, realized_temporal_ref in links_by_item.items():
             self.session.add(
                 EventItemLink(
                     event_ref=event.ref_id,
                     item_ref=item_ref,
-                    realizes_temporal_binding_ref=temporal_ref,
+                    realizes_temporal_binding_ref=realized_temporal_ref,
                     basis_refs=basis_refs,
                 )
             )

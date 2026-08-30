@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field
@@ -125,7 +125,10 @@ def docket_search_entities(
     try:
         with session_scope() as session:
             return NetworkQueryService(session).network_search(
-                query=query, entity_kinds=entity_kinds, cursor=cursor, limit=limit
+                query=query,
+                entity_kinds=cast(list[str] | None, entity_kinds),
+                cursor=cursor,
+                limit=limit,
             )
     except Exception as exc:
         return _error(exc)

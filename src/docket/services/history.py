@@ -597,7 +597,6 @@ class HistoryService:
                 **base,
                 "title": item.title,
                 "status": item.status,
-                "calendar_lane": item.calendar_lane,
                 "lane_ref": item.lane_ref,
                 "routing_decision_ref": item.routing_decision_ref,
                 "authority": item.authority,
@@ -605,7 +604,6 @@ class HistoryService:
                 "decision_refs": item.decision_refs,
                 "source_refs": item.source_refs,
                 "created_by_changeset_ref": item.created_by_changeset_ref,
-                "provenance_status": item.provenance_status,
                 "version": item.version,
                 "created_at": _iso(item.created_at),
             }
@@ -663,7 +661,6 @@ class HistoryService:
                 "originating_changeset_ref": item.originating_changeset_ref,
                 "basis_refs": item.basis_refs,
                 "canonical_target_refs": item.canonical_target_refs,
-                "provenance_status": item.provenance_status,
                 "attempt_count": item.attempt_count,
                 "last_error_code": item.last_error_code,
                 "created_at": _iso(item.created_at),
@@ -682,7 +679,6 @@ class HistoryService:
                 "basis_refs": item.basis_refs,
                 "source_refs": item.source_refs,
                 "created_by_changeset_ref": item.created_by_changeset_ref,
-                "provenance_status": item.provenance_status,
                 "version": item.version,
                 "created_at": _iso(item.created_at),
             }
