@@ -631,11 +631,6 @@ gmail_triage_control() {
     esac
 }
 
-soak() {
-    init_docker
-    compose exec -T docket ./.venv/bin/python -m docket.soak_cli "$1"
-}
-
 gmail() {
     init_docker
     compose exec -T docket ./.venv/bin/python -m docket.gmail_cli "$@"
@@ -783,9 +778,6 @@ Commands:
   gmail-triage-pause   Pause semantic triage without changing Gmail ingestion.
   gmail-triage-run     Queue one isolated semantic-triage run.
   gmail-triage-resume  Resume the isolated 5-minute semantic-triage schedule.
-  soak-start      Start or report the current durable 72-hour soak.
-  soak-status     Report soak duration, gate checks, and visible incidents.
-  soak-complete   Complete the soak only after duration and every gate pass.
   status          Show source, service, and bounded durable-state status.
 EOF
 }
@@ -814,9 +806,6 @@ case "${1:-}" in
     gmail-triage-pause) gmail_triage_control pause ;;
     gmail-triage-run) gmail_triage_control run ;;
     gmail-triage-resume) gmail_triage_control resume ;;
-    soak-start) soak start ;;
-    soak-status) soak status ;;
-    soak-complete) soak complete ;;
     status) status ;;
     -h|--help|help) usage ;;
     *) usage >&2; exit 2 ;;
