@@ -61,7 +61,7 @@ timeout can strand at most one short-lived lease:
    `ctx_`, `src_`, and claim token returned by the context call. Provide a
    concise derived title, summary, and explanation without quoted body text,
    links, credentials, or codes.
-10. `docket_get_triage_case` is read-only and only for bounded follow-up on a
+10. `docket_get_attention_case` is read-only and only for bounded follow-up on a
     known `case_`; it does not broaden the run or authorize mutation.
 
 The triage session must expose exactly the four tools named above and no record,

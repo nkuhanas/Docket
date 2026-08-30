@@ -117,7 +117,7 @@ printf '%s\n' "$mcp_test_output"
 for expected_tool in \
     docket_get_triage_context \
     docket_submit_triage_analysis \
-    docket_get_triage_case \
+    docket_get_attention_case \
     docket_apply_existing_suppression
 do
     printf '%s\n' "$mcp_test_output" | grep -F "$expected_tool" >/dev/null || {
