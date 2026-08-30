@@ -2,11 +2,11 @@
 
 Start here when operating or changing the deployed stack:
 
-* [Operations runbook](operations-runbook.md) — symptom-first diagnosis,
-  reload/rebuild rules, safe recovery, and course/Calendar verification.
+* [Operations runbook](operations-runbook.md) — current clean-runtime diagnosis,
+  authority/projection recovery, provider reconciliation, and safe deployment.
 * [Ontology rollout verification](ontology-rollout-verification.md) — signed
-  authority, migrations, profile cutover, acceptance suites, PostgreSQL clone
-  rehearsal, and production rollout evidence.
+  authority, current clean tracked-context verification, PostgreSQL rehearsal,
+  and explicitly historical rollout evidence.
 * [Pinned integration contracts](pinned-integration-contracts.md) — fragile
   Hermes, MCP, container, and Compose assumptions that must be revalidated on
   upgrades.
@@ -38,8 +38,9 @@ Start here when operating or changing the deployed stack:
   — fail-closed production writes, paused execution, stale rejection, and the
   deployed pending-card state.
 
-These notes describe the current pinned stack. They are not a substitute for
-the private implementation provenance under the top-level `specs/` and
-`deltas/` directories or for migrations. When behavior and documentation
-disagree, capture live evidence, fail closed, and update both the implementation
-and these notes in the same change.
+The operations runbook describes the current runtime contract. Milestone and
+rollout documents retain historical evidence and are not compatibility
+instructions. None of these notes substitutes for private implementation
+provenance under `specs/` and `deltas/` or for migrations. When behavior and
+current documentation disagree, capture bounded evidence, fail closed, and
+update both implementation and active guidance in the same change.

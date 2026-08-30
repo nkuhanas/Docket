@@ -18,6 +18,52 @@ The readiness record is
 [`docket-ontology-readiness-status-08-27-2026.yaml`](../deltas/docket-ontology-readiness-status-08-27-2026.yaml).
 No approval or implementation authority is inferred from ordinary design chat.
 
+## Current clean tracked-context implementation
+
+The signed tracked-context amendment is frozen at SHA-256
+`830c33c9d78485a6a6a8f872b6dfad996869f8a7eaea9a5f7d39d52e9357cf48`.
+Its ledger authority is `utt_01M18D6GT2MXB80229HAEPZ2KB` ->
+`dec_01M18DYEYJVVJ7TW5VQQBCA6NC` ->
+`aud_01M18DYEYK9Y353AK546980XBK`, with final response
+`rsp_01M18DYEZ3DR3JVMJMH47CJQ0J`.
+
+The current repository implementation is a clean break:
+
+* `item_` means Item and `citem_` means CaseItem;
+* the public namespace has one meaning per prefix and no retired-prefix aliases;
+* Record, RecordSource, Action, Approval, QueueItem, and obsolete schema/tool
+  contracts are absent from the active model;
+* one clean Alembic baseline replaces pre-cutover migration history;
+* the interactive profile has 19 tools and the triage profile has four;
+* Item, Task, TemporalBinding, Event, ReminderPlan, and AttentionCase retain
+  distinct semantics;
+* Event and Time calendar writes are compiler-owned provider operations created
+  with canonical state in one ChangeSet transaction;
+* attachments are provenance-bearing, encrypted according to retention policy,
+  and imports bind exact source fragments;
+* ToolInvocation outcome is expressed only through `transport_state`,
+  `domain_state`, and `result_disposition`;
+* ExecutionLease completion uses an opaque internal token and has no public
+  reference namespace.
+
+All 68 normative tracked-context clauses are `implemented_verified` in
+[`docket-tracked-context-traceability-08-29-2026.csv`](../deltas/docket-tracked-context-traceability-08-29-2026.csv).
+CI rejects planned-only rows, missing test functions, and missing cited
+implementation paths.
+
+This implementation has not, by virtue of repository completion, performed the
+production destructive reset or deployment. Those remain separately authorized
+external actions. The active operational contract is
+[Operations runbook](operations-runbook.md).
+
+## Historical pre-clean-cutover evidence
+
+The remaining sections preserve the authority, deployment, and incident record
+that led to the clean tracked-context implementation. References below to 22
+tools, additive migrations, legacy rows, Approvals, Records, old prefixes, or
+compatibility behavior describe the former runtime only. They are not supported
+recovery procedures or requirements for the clean model.
+
 ## Signed case-resolution amendment
 
 `ONT-DELTA-2026-08-28-CASE-RESOLUTION` is a private signed amendment frozen

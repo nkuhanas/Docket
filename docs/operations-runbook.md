@@ -1,1748 +1,325 @@
 # Operations runbook
 
-This runbook is for the current Docket Compose deployment and its pinned Hermes
-integration. It is deliberately symptom-first: begin with the smallest check
-that can distinguish configuration, lifecycle, protocol, and persistence
-failures.
+This runbook describes the clean tracked-context runtime. Historical rollout
+evidence is retained separately in
+[Ontology rollout verification](ontology-rollout-verification.md); retired
+Record, Approval, Action, QueueItem, and pre-cutover MCP flows are not runtime
+recovery paths.
 
-Never paste service tokens, OAuth files, authorization headers, or an
-unredacted Hermes session export into tickets or chat. Discord snowflake IDs
-are identifiers rather than credentials, but still minimize their exposure.
+Never print or paste service tokens, OAuth files, attachment keys, raw Gmail
+bodies, authorization headers, or unredacted retained utterances. Prefer typed
+public references and bounded history views over internal UUIDs or table dumps.
 
-## Ledger-signed ontology operational invariant
+## Runtime invariants
 
-The architecture frozen at SHA-256
-`3d744f4d021f8a605086152eb76743a7ec5a7ed2c8754694e38c1a891a14b5e1`
-is authoritative through `utt_01M13MANKG7HJE2WHRPWRMT528` and
-`dec_01M13MANM19BX22EW8QC8AH9DT`. August 26 is a past-record-only artifact and
-is outside this authority chain.
-
-Current interactive mutation authority is deliberately narrow:
+PostgreSQL is the only durable authority. The live flow is:
 
 ```text
-authenticated Operator message
-  -> immutable utt_
-  -> statements / conflict detection / clarification
-  -> resolved IntentSession
-  -> one ChangeSet
-  -> canonical PostgreSQL commit + provider op_ intents in one transaction
-  -> asynchronous provider execution/reconciliation
+authenticated Operator input
+  -> immutable utt_ before interpretation
+  -> IntentSession / statements / conflict handling
+  -> one chg_ canonical transaction
+  -> canonical objects + required op_ provider intents
+  -> asynchronous provider execution and reconciliation
 ```
 
-Hermes exposes 22 interactive tools: 20 bounded compatibility/current reads and
-only two mutation tools, `docket_commit_changeset` and
-`docket_resolve_conflict`. The isolated triage profile exposes exactly four
-tools and cannot mutate canonical or provider state. Every result is compacted
-before MCP framing; default serialized JSON is at most 16 KiB and explicit
-audit view is at most 64 KiB.
+The interactive MCP profile exposes exactly 19 tools. Only
+`docket_commit_changeset` and `docket_resolve_conflict` can mutate canonical
+state. The isolated triage profile exposes four non-authoritative tools;
+`docket_get_attention_case` is the sole shared read.
 
-New direct workflows never create Approval rows. Existing Approval rows remain
-readable and the legacy internal interaction/worker paths remain available only
-to drain them. At the 2026-08-28 cutover check there were zero pending rows.
-The legacy Record/entity/Calendar sections below describe compatibility data
-and pre-cutover incident recovery; they do not authorize removed MCP mutations.
-
-A provider-affecting CanonicalEvent mutation is not canonical-only. The ChangeSet
-compiler deterministically adds the required Google create, update, reminder, or
-cancel intent and, for an unprovisioned lane, its preceding lane-configuration
-intent. Provider intents are absent from the Hermes mutation schema: both canonical
-state and the resulting `op_` rows commit together, or neither does. Hermes must not
-formulate a provider operation, ask for a second "push to Google" authorization, or
-attempt conversational projection repair; provider completion is reported
-separately after asynchronous execution or reconciliation.
-
-AttentionCase is the durable triage term. During the active window an actionable
-case is projected on the next normal outbox cycle. Overnight cases are durable
-but not individually projected and appear in one morning brief. The night brief
-covers daytime triage. Replies bind to the exact visible case/brief revision and
-bootstrap or resume an IntentSession.
-
-Inspect current authority and operation linkage without verbatim text:
-
-```bash
-sudo docker compose exec -T postgres psql -U docket -d docket -P pager=off -c \
-  "select ref_id, decision_kind, document_ref, frozen_artifact_hash, basis_refs
-     from decisions
-    where ref_id = 'dec_01M13MANM19BX22EW8QC8AH9DT';"
-
-sudo docker compose exec -T postgres psql -U docket -d docket -P pager=off -c \
-  "select ref_id, operation_type, status, originating_changeset_ref,
-          basis_refs, canonical_target_refs
-     from operations
-    where originating_changeset_ref is not null
-    order by created_at desc limit 25;"
-```
-
-The detailed rollout and rollback evidence is in
-[Ontology rollout verification](ontology-rollout-verification.md).
-
-## Provenance-bootstrap operational invariant
-
-The phase-one provenance deployment adds evidence capture without changing the
-existing mutation authority model.
-
-1. Every authenticated operator message on a trusted Docket Discord surface is
-   committed verbatim as one `utt_` before model interpretation or a mutating
-   Docket tool can run. A persistence failure rejects the turn. The shared MCP
-   dispatcher resolves every normalized interactive mutation request key to
-   that message's committed `:0` utterance, validates actor/source consistency,
-   and binds the `utt_` to `call_` before execution; failure records
-   `rejected_authority` and performs no mutation.
-2. The final assembled assistant message is committed as one `rsp_` after its
-   tool loop. Generation and Discord delivery are separate states; retries do
-   not create a second semantic response.
-3. Every Docket MCP request creates one `call_` at the authenticated service
-   boundary, including schema, authority, conflict, and service failures. Raw
-   arguments and results are not persisted in this log. The operator-facing
-   live trace may retain a separately derived, redacted argument preview capped
-   at 768 UTF-8 bytes; it is operational projection data, not `call_`
-   provenance or mutation authority.
-4. Semantic audit entries are append-only and expose `aud_`. Legacy entities,
-   events, briefs, sources, operations, and Calendar lanes receive stable typed
-   public references during migration.
-5. The verified bootstrap Discord message is deterministically backfilled to
-   one `utt_` and one `dec_` with scope `provenance_bootstrap_only` and
-   `architecture_authority = false`.
-6. An MCP request rejected before caller/profile authentication creates a
-   structured operational `log_` and no `call_`. Runtime logs are never valid
-   semantic basis references and contain no token or request body.
-
-Inspect the bootstrap without printing the retained verbatim message:
-
-```bash
-sudo docker compose exec -T postgres psql -U docket -d docket -P pager=off -c \
-  "select d.ref_id, d.decision_kind, d.document_ref,
-          d.frozen_artifact_hash, d.authorized_scope,
-          d.architecture_authority, d.basis_refs
-     from decisions d
-    where d.decision_kind = 'provenance_bootstrap_signoff';"
-```
-
-Trusted operational clients can inspect phase-one public references without
-traversing tables directly:
+The principal public vocabulary is:
 
 ```text
-GET /internal/v1/provenance/history/{public_ref}
-GET /internal/v1/provenance/history?object_type=...&related_ref=...&limit=25
-GET /internal/v1/provenance/conversations?conversation_ref=...
+ent_    persistent Entity       item_   bounded tracked Item
+task_   operator work           time_   temporal meaning
+evt_    actual occurrence       rem_    notification behavior
+case_   AttentionCase           citem_  case component
+utt_    Operator evidence       stm_    interpretation
+chg_    atomic mutation         op_     provider effect
+call_   tool invocation         aud_    semantic audit
 ```
 
-These routes require the Hermes-to-Docket service bearer and are not exposed as
-agent tools. Summary view omits verbatim response/utterance text and internal
-UUIDs. `view=audit` returns verbatim text in UTF-8 byte chunks of at most 32 KiB.
-Default list/entry payloads are bounded to 16 KiB serialized JSON; audit entry
-and conversation payloads are bounded to 64 KiB.
-
-Inspect one exact public reference through bounded table-specific queries. Do
-not dump all utterance or response text into a ticket:
-
-```bash
-sudo docker compose exec -T postgres psql -U docket -d docket -P pager=off -c \
-  "select ref_id, actor_ref, transport, source_message_ref,
-          conversation_ref, said_at, recorded_at, content_hash
-     from operator_utterances where ref_id = 'utt_REFERENCE';"
-
-sudo docker compose exec -T postgres psql -U docket -d docket -P pager=off -c \
-  "select ref_id, conversation_ref, generation_state, delivery_state,
-          generated_at, submitted_at, delivered_at, basis_refs, tool_call_refs
-     from agent_responses where ref_id = 'rsp_REFERENCE';"
-
-sudo docker compose exec -T postgres psql -U docket -d docket -P pager=off -c \
-  "select ref_id, tool_name, caller_profile, status, started_at, completed_at,
-          utterance_refs, result_refs, error_code
-     from tool_invocations where ref_id = 'call_REFERENCE';"
-```
-
-Database triggers reject update/delete of utterances, statements, statement
-relations, decisions, audit events, and runtime logs. They also reject changes
-to semantic AgentResponse fields while permitting delivery-state transitions.
-Treat a trigger rejection as an attempted provenance mutation, not as a reason
-to disable the trigger.
-
-## Legacy Record compatibility invariant
-
-An explicit Discord request to remember or store an operational fact succeeds
-only when all of the following are true:
-
-1. The trusted Hermes plugin appends `docket_gateway_context` to the current
-   authorized Discord event.
-2. Hermes calls `docket_store_record` with that context exactly.
-3. Docket authenticates Hermes, validates the source against the configured
-   operator/guild/channel, and commits the command, source, and audit event in
-   one transaction.
-4. The response reports `created`, `matched_existing`, or
-   `replayed_request` from the tool result.
-
-An existing canonical identity with materially different data returns
-`record_conflict`; Docket attaches no new source provenance in that case. A
-successful store result includes the authoritative canonical record snapshot.
-
-`docket_search_records` and `docket_get_record` are read-only. A conversational
-claim such as “stored” or “confirmed” after only search/get calls is a failure,
-even if the returned fact is correct.
-
-## Typed entity-registry inspection invariant
-
-Docket's entity registry is the durable source for known people,
-organizations, institutions, courses, locations, projects, and services.
-Hermes memory and past-session search are not substitutes.
-
-Before asking for a fact that may already be registered, use:
-
-1. `docket_network_search` to enumerate a bounded candidate set by canonical
-   name or alias;
-2. `docket_get_person_context` or `docket_get_organization_context` when the
-   candidate is a typed Person, Organization, or Institution; and
-3. `docket_get_network_neighborhood` at depth zero for another exact entity
-   kind.
-
-Relationships always read as `subject predicate object`. For example, an
-advisor person `advises` the operator person, while the operator person
-`member_of` an organization. Do not reverse those IDs to make a query happen to
-work. `is_operator: true` is allowed only on one active person, giving Hermes a
-stable anchor for phrases such as “my advisor” without making the user's name
-or Discord identity a global assumption.
-
-Canonical entity, identity, affiliation, relationship, and fact changes use
-`docket_commit_changeset`. They require an authenticated current `utt_`, exact
-public references or create specifications, conflict checks, and expected
-versions. Retraction and supersession preserve history.
-
-Every entity write consumes the trusted Discord request key through the
-ChangeSet idempotency contract. An exact retry
-returns `replayed_request`; reuse for another operation or payload returns
-`idempotency_conflict`. If an entity call appears to repeat or mutate twice,
-inspect `change_sets`, `tool_invocations`, and `audit_events` before changing
-registry data.
-
-After a deploy that changes this surface, restart Docket and Hermes and run
-`/reload-mcp` in the active Discord session. If Hermes still asks for a fact
-that is present, first inspect the `docket_network_search` trace in
-`#docket-system`; distinguish a missing call, an overly restrictive filter,
-ambiguous results, and a stale MCP schema before adding duplicate data.
-
-## Legacy approval/Calendar drain invariant
-
-A Calendar write succeeds only through this durable sequence:
-
-1. Hermes stores the course with stable meeting IDs and calls
-   `docket_apply_course_intent` with the current record version,
-   explicit account UUID, configured calendar ID, and trusted Discord source.
-2. Docket derives the executable parameters, risk, preview, hashes, target
-   versions, short code, and expiry. No provider call occurs here.
-3. Docket projects the immutable preview into the ISO-dated public thread under
-   the configured queue. The operator presses Approve/Reject on that card. The
-   trusted plugin calls the internal approval route; ordinary MCP tools cannot
-   approve. Typed approval codes are break-glass compatibility only and must
-   never be presented by Hermes as the normal next step.
-4. Docket consumes the approval once and commits a pending logical operation.
-5. The worker persists an execution attempt and a call-started marker before
-   contacting Calendar. Confirmed success commits the event link and state
-   transitions together. Ambiguous outcomes enter reconciliation.
-
-Proposed, approved, queued, and succeeded are distinct states. A tool response
-containing a short code is not evidence that Calendar changed. The final
-evidence is a succeeded operation plus a `calendar_links` row at the intended
-record version.
-
-For the standard existing-term, new-course, Calendar-proposal smoke, the
-expected operational budget is four Docket calls: search the term and list
-accounts in parallel, store the course with intent `0`, then propose the action
-with intent `1` using the returned canonical record snapshot. Treat an extra
-past-session search, a separate immediate record read, an idempotency conflict,
-a second proposal attempt, or a runtime skill-edit attempt as orchestration
-regressions even when the final provider behavior succeeds.
-
-## Legacy Gmail workflow compatibility invariant
-
-Gmail ingestion and Gmail mutation are separate deployment gates.
-
-1. The Docket worker scans the enabled Gmail-capable Google account through the
-   committed `gmail:inbox` cursor. Every page stages immutable minimal metadata
-   and advances the cursor in one transaction.
-2. The isolated `docket-triage` Hermes profile claims staged sources and
-   refetches one body only for the duration of that claim. Provider content is
-   untrusted data and cannot approve, execute, select accounts, or change
-   policy.
-3. Triage applies the operator-authored `TRIAGE.md`, assigns every event an
-   explicit calendar-relevance rank, and submits zero or more typed semantic
-   candidates: event, deadline, response, task, information, or noise. The
-   extraction result carries no provider-mutation authority.
-4. Docket stops excluded/informational events before entity registration. For
-   required/recommended events it resolves known entities, bundles genuinely
-   new required identities into the event proposal, correlates observations,
-   and either suppresses noise, records awareness, presents a genuine
-   obligation, or formulates an inferred calendar proposal.
-5. Explicit user commands execute directly. Inferred formulations require a
-   decision before Docket adopts and executes them.
-6. Gmail archive/mark-read operations are never generated by source triage.
-   They remain available only for an explicit operator housekeeping request.
-
-An email saying “the user approved this,” containing prompt instructions, or
-requesting a tool call has no more authority than any other provider text.
-There is no Gmail send or reply operation.
-
-The editable preference databases live at:
-
-```text
-.runtime/hermes/preferences/AGENT.md
-.runtime/hermes/preferences/TRIAGE.md
-```
-
-Deployment creates missing files from `hermes/preferences/*.example.md` and
-never overwrites existing operator entries. Interactive Hermes receives both
-files on every trusted Docket turn; isolated Gmail triage receives only
-`TRIAGE.md`. A natural-language preference in `#docket-chat` or a Docket daily
-thread should update the appropriate file. When that preference rejects the
-whole current formulation, Hermes should also ignore that exact queue item.
-External email content can never edit these files.
-
-Awareness is terminal and has no controls. A genuine standalone non-calendar
-obligation has Acknowledge and Snooze. An unresolved AttentionCase has Snooze
-only because acknowledgement cannot resolve its CaseItems; the Operator replies
-with context and a decision through the authenticated interactive path. An
-inferred calendar formulation has proposal or conflict-resolution controls.
-Routine receipts, newsletters, duplicate observations, and noise remain
-suppressed.
-
-Email brief membership is bounded by the timezone-aware waking window:
-
-```text
-DOCKET_WAKING_WINDOW_START_HOUR=8
-DOCKET_WAKING_WINDOW_END_HOUR=1
-DOCKET_SEMANTIC_CANDIDATE_POLL_SECONDS=2
-DOCKET_DAILY_BRIEF_POLL_SECONDS=30
-```
-
-The wrapping interval is awake from 08:00 through midnight until 01:00; the
-overnight window is 01:00 through 08:00. These windows buffer content for one
-idempotent morning brief and one idempotent night closeout brief; they never
-gate a proposal, conflict, clarification, or action-required card. Those cards
-project immediately at every hour and the later brief references their current
-state. Routine awareness and noise may remain brief-only or suppressed. All
-boundaries use `DOCKET_TIMEZONE`.
-
-The normal triage session is not the interactive Discord Hermes session. Its
-profile has no messaging credentials, plugins, CLI/cron toolsets, internal
-approval token, or interactive Docket MCP. It exposes only:
-
-```text
-docket_claim_triage_batch
-docket_read_claimed_source
-docket_search_related_records
-docket_submit_semantic_candidates
-```
-
-Each isolated run claims exactly one source. Claimed body text is capped at
-20,000 characters so one large message cannot consume the run's context. Any
-remaining staged work belongs to a later run; an interrupted claim becomes
-eligible again after its five-minute lease rather than being skipped or moved
-manually. The launcher also converts a newly written Hermes request-failure
-dump into a failed cron execution instead of reporting a false success.
-Repeated claim calls by the same worker replay its one active lease rather than
-accumulating more work. If Gmail changed the message version after staging,
-Docket preserves the obsolete source as superseded and transfers the lease to
-a fresh current-version source without persisting the message body.
-`scripts/docket gmail-status` reports the active batch/lease settings plus
-claimed, expired, missing-expiry, and earliest/latest lease counts without
-exposing source identifiers or content.
-
-Install or repair the profile with `scripts/docket setup-triage`. The installer
-creates or reconciles one root-owned 5-minute no-agent cron whose only script is the
-repository-owned launcher for a `docket-triage` one-shot. The root scheduler
-does not run the interactive model for this job; the child model sees only the
-isolated profile. Normal `[SILENT]` success emits no delivery; unexpected output
-or request failures become redacted failed runs. Cron delivery is local only.
-Do not add the triage MCP to the
-interactive Hermes configuration.
-
-A `record_conflict` is not permission to fetch the canonical record, copy its
-data, and retry the store under a new intent index. That sequence falsely binds
-the current Discord source to assertions found only in Docket. Stop and request
-an explicit update decision instead.
-
-## Queue operational invariant
-
-Discord threads and cards are projections; `queue_items`, typed actions,
-approvals, commands, and outbox rows are canonical. At or after 08:00 in
-`DOCKET_TIMEZONE`, Docket runs one durable rollover command per local ISO date:
-
-1. Create or recover exactly one `YYYY-MM-DD — Weekday` public thread under the
-   configured queue channel.
-2. Resume due snoozes, carry each unresolved item once, and add one daily
-   summary. Unique command and projection keys make a restart a replay, not a
-   duplicate.
-3. Put controls only on the newest projection. Historical cards are refreshed
-   without controls; an approval binding moves only after the new projection
-   is acknowledged.
-4. Archive past threads only after their card writes are no longer pending. A
-   later historical refresh may unarchive, edit, and then rearchive the same
-   stored thread rather than create a replacement.
-
-Snooze and Ignore are local writes. Their button tokens bind the immutable
-action revision, exact projection, queue version, and expiry; the callback also
-binds the operator, guild, queue parent, thread, and message. A copied, stale,
-expired, replayed, or cross-card control must fail without changing state.
-Snoozing to a local date wakes at the configured rollover hour with timezone
-rules applied on that date.
-
-Projection exhaustion never rolls back canonical state. The failed outbox row
-remains evidence and creates one deduplicated, bounded alert in the separately
-allowlisted Docket system channel.
+Provider writes are compiler-owned. An authorized Event or Time projection
+ChangeSet must create any required `op_` in the same transaction. Hermes does
+not formulate provider intents and must never ask for a second “push to Google”
+authorization after an already-authorized canonical mutation.
 
 ## First checks
 
-Run these before changing code or credentials:
+From the repository root:
 
 ```bash
+scripts/docket status
 sudo docker compose ps
-curl -fsS http://127.0.0.1:8000/health/ready
-sudo docker compose exec -T hermes hermes plugins list --plain --no-bundled
-sudo docker compose exec -T hermes hermes mcp test docket
-sudo docker compose logs --since=15m --no-color docket | tail -300
-tail -300 .runtime/hermes/logs/agent.log
+sudo docker compose logs --since 15m docket hermes discord-ingress
 ```
 
-Run the Hermes plugin-list probe only after the gateway log reports that Discord
-is connected and the gateway is running. Do not parallelize it with a Hermes
-restart: this pinned CLI imports user plugins, whose registration has the side
-effect of binding the private projection port. A startup-time probe can contend
-with the gateway on port 8787. Plugin `0.20.2` retries that bind, but avoiding the
-race keeps startup and diagnostics unambiguous.
+Keep log output bounded. For a reported tool problem, begin with its `call_`,
+`trace_`, `ses_`, `chg_`, `op_`, `case_`, or `proj_` reference through the
+bounded history tools or trusted internal history API. Do not start by dumping
+all utterances or provider payloads.
 
-Expected results:
-
-* PostgreSQL and Docket are healthy; Hermes and SearXNG are running.
-* `docket-discord` `0.20.2` is `enabled`.
-* `hermes mcp test docket` connects to `http://docket:8000/mcp/` and discovers
-  exactly 22 interactive tools. The only mutations are
-  `docket_commit_changeset` and `docket_resolve_conflict`; compatibility reads
-  remain bounded and contract-documented.
-* The restricted triage endpoint discovers exactly four tools, and the running
-  Hermes gateway registers the same 22 interactive tools.
-* Logs contain no startup, plugin-load, MCP-authentication, or migration error.
-
-After an MCP tool, schema, or allowlist change, send `/reload-mcp` in the active
-Hermes Discord session before testing. A healthy `hermes mcp test docket` checks
-server discovery, but the already-running conversation can retain its prior
-tool registry until this command is used. This was required in the first live
-Milestone 2 smoke.
-
-`hermes mcp test` proves discovery and prints abbreviated descriptions. It does
-not prove that the full generated input schema reached the model. Use the
-contract test under [Schema or tool mismatch](#schema-or-tool-mismatch).
-
-## Symptom lookup
-
-| Symptom | First investigation | Likely class of failure |
-| --- | --- | --- |
-| Hermes says trusted gateway context is missing | Compare the persisted Discord event identity with container environment | Wrong Discord ID, plugin not loaded, or pinned event-shape drift |
-| Hermes says a fact was stored but trace shows no committed `chg_` | Inspect IntentSession, ChangeSet, statement, and audit refs | Model/tool semantics failure; no canonical write occurred |
-| `docket_commit_changeset` is absent | Run `hermes mcp test docket`, verify contract hash/profile, then inspect the active Hermes allowlist | Docket was not rebuilt, the contract was not loaded, or active config is stale |
-| MCP returns 401 | Check the mounted service-token files and active Hermes MCP header configuration without printing the token | Token-file mismatch or wrong credential directory |
-| MCP returns `invalid_source_context` | Compare operator/guild IDs and either the chat root or the queue parent plus stored daily-thread binding | Plugin context and Docket settings disagree, or the message came from a foreign/unbound queue thread |
-| `/mcp` returns 307 or the client fails during initialization | Use `/mcp/` with the trailing slash | Pinned FastMCP mount-path behavior |
-| Docket is unhealthy after changing the database password | Check whether the PostgreSQL volume predates the new password | Compose environment changed but the existing database role did not |
-| Plugin or skill edit appears ignored | Restart Hermes, run `/reload-mcp` when MCP changed, and begin a new Discord turn | Bind-mounted file changed, but Python hook/skill/tool registration is cached |
-| A provider operation succeeds but the agent turn takes minutes | Compare Hermes model/compression time with `op_` history and confirm the 16 KiB boundary envelope | Oversized compatibility output, stale tool contract, or repeated polling forced context compression |
-| A stated preference does not affect later email triage | Inspect the active `pref_` and applicable `TRIAGE.md` rule, then inspect the ContextPacket basis refs | The Preference target/scope did not match, the freeform policy was not loaded, or the isolated triage contract is stale |
-| An irrelevant event asks for organization/person/location registration | Inspect the candidate's `calendar_relevance`, `relevance_basis`, entity-resolution states, and active `TRIAGE.md` | Relevance was omitted/misclassified, preferences were not loaded, or a pre-bundling compiler treated provisional registration as a clarification gate |
-| `skill_manage` reports a read-only `.SKILL.md.tmp` path | Edit the repository-owned skill on the host and restart Hermes | Docket's mounted manual skill is intentionally read-only inside Hermes; model-driven self-edit is not the update path |
-| Plugin load fails with `Address already in use` or projection listener is unreachable after restart | Stop running plugin probes, restart only Hermes, then verify port 8787 before further CLI inspection | Pinned plugin registration or a concurrent diagnostic process bypassed the retrying listener supervisor |
-| Docket Python edit appears ignored | Rebuild and recreate Docket | Application source is copied into the image, not bind-mounted |
-| Correct record is returned but no new provenance exists | Inspect `record_sources` and `record.matched` audit evidence | Read path passed; store path did not |
-| Proposal returns `action_unavailable` | Inspect the named stable meeting and missing-fields detail | Incomplete dates, local times, timezone, or no selected weekday in range |
-| Proposal returns `calendar_lane_unavailable` or `calendar_lane_mismatch` | Compare the event lane and exact ID returned by `docket_list_calendar_lanes` | Lane is not active, a display name was substituted, or the proposal paired one lane with another lane's opaque ID |
-| A standalone event uses the wrong timezone | Inspect the immutable timing payload for an explicit timezone, then compare `DOCKET_TIMEZONE` in the Docket container | The operator supplied another zone, Hermes sent an unintended override, or the configured default differs from the expected local zone |
-| Hermes tries a removed tool or cannot see a current one | Confirm server discovery, gateway allowlist, and both MCP-trace allowlists match the public registry; restart Hermes, run `/reload-mcp`, and begin a new turn | The conversation retained a stale model registry or skill |
-| Course batch is `partial_failed` | Inspect the parent result and only its failed `operation_items`; do not replay succeeded siblings | One or more provider items failed definitively after other items succeeded |
-| Course batch is `reconciliation_required` | Inspect the uncertain item, its attempts, and provider correlation (`operation_items.id`) | A provider call may have succeeded without a durable acknowledgement |
-| Daily thread exists but a course card is absent | Inspect the newest projection outbox row and Hermes response; a repeated HTTP 422 `invalid_control` means the plugin rejected Docket's deterministic component set | Pinned plugin control-kind/token-map drift; reproduce the exact view-specific component set, restart Hermes after the fix, and let the same durable outbox row retry |
-| Course card still shows a `Page 1 of N` dropdown or ephemeral item review | Compare the deployed migration/image/plugin with revision `0010` and inspect `discord_projections.view_mode` | Pre-carousel Docket or Hermes code is still active; rebuild/recreate both services and refresh the same durable projection |
-| **Begin review**, **Next**, or **Continue to decision** appears inert | Inspect the plugin callback log, the `proposal_review_navigate` command, projection status/version, and its refresh outbox row; the successful callback intentionally has no ephemeral reply | Listener drift, a stale version-bound token, projection delivery retry, or the active card is still being edited |
-| A button commits but the card changes two to five seconds later | Compare `command_requests.created_at/completed_at` with the matching projection outbox `created_at/updated_at`, then confirm `discord_projection_worker_started` after the deployed restart | Pre-wakeup Docket image, missing post-commit wake registration, a busy/crashed projection task, or delivery falling back to the durable five-second poll |
-| Approve/Reject succeeds but the clicked carried-forward card keeps its controls | Compare `approvals.response_projection_id` with the refresh outbox `payload.projection_id` and `target_local_date`; a second click should report the recorded decision and enqueue repair for that exact card | Pre-fix refresh routing fell back to `queue_items.received_at` and edited the historical source-day card instead of the active carried-forward projection |
-| Schedule card is stuck on a review page after a restart or lost acknowledgement | Read `view_mode`, `view_page`, `reviewed_through_page`, and `view_action_revision_id`, then inspect/retry the existing projection refresh outbox row | Durable view state succeeded but the same-message Discord edit was not acknowledged; do not recreate the proposal or card |
-| Approve/Reject appears before every schedule page was traversed | Stop before using the buttons and compare `reviewed_through_page` with the immutable page count | Projection renderer/state invariant regression; schedule button approvals must also fail closed unless the current delivered view is `decision` |
-| Schedule approval reports `target_version_changed` after review | Confirm the same card changes to **Calendar state changed** with **Reject** and **Rebuild preview**, compare the revision's `calendar_snapshot.last_success_at` with current sync state, then rebuild and review the replacement from Summary | Calendar sync advanced after compilation; if the card remains healthy-looking, inspect `approvals.refresh_required_at` and its projection outbox before retrying |
-| Approve reports `external_writes_disabled` | Check `/health/ready` for `calendar_write_mode=disabled`; leave the approval pending until the operator deliberately enables writes and recreates Docket | The production write gate is closed; Docket must not create an operation, consume the approval, or substitute a fake provider |
-| Gmail does not stage a new message | Inspect `gmail_sync`, the `gmail:inbox` checkpoint, enabled account capabilities, and Docket logs before changing OAuth | Ingestion gate disabled, no Gmail-capable account, active lease, scan not due, OAuth failure, cursor recovery, or rate limiting |
-| Gmail checkpoint is stale | Inspect `last_success_at`, `last_error_code`, lease expiry, and the deduplicated `#docket-system` alert | Worker unavailable, OAuth expired, cursor/page failure, or repeated provider throttling |
-| The triage cron sees general tools or Discord | Stop the job and inspect the named profile config and `.env` | The cron used the interactive profile, inherited messaging credentials, or ignored the empty CLI/cron toolsets |
-| Triage claims sources but a completed run leaves most of that batch claimed | Run `scripts/docket setup-triage` and verify its four discovered tools include `docket_submit_semantic_candidates`; compare the active profile with `hermes/triage-config.example.yaml` | The isolated profile retained a removed submission tool across deployment, so Hermes could claim work but could not persist typed candidates |
-| Gmail source remains `claimed` | Compare `claimed_until` with the current time and run the next bounded triage pass | Agent interruption; the lease must expire and become reclaimable without moving the checkpoint backward |
-| Awareness Gmail card has controls or an application receipt asks for approval | Inspect `presentation`, semantic candidate kind/mutation, and migration `0023` | An alpha housekeeping card survived migration, or extraction incorrectly formulated an obligation/event |
-| Two unrelated events with the same generic title converge into one proposal | Inspect the event observation's strong provider/sender identifiers and material event fingerprint; title equality alone is invalid correlation evidence | A create candidate fell through to the update/cancel title-hint fallback |
-| An actionable Gmail proposal, conflict, clarification, or action-required card does not appear promptly | Inspect its queue item, projection outbox, and Discord projection independently of its durable brief-window membership | Pre-always-on projection code deferred the card by cadence, missing projection repair has not run, or Discord delivery is retrying |
-| Morning/night brief duplicates after restart | Inspect `triage_windows`, `daily_briefs`, and their unique local-date keys before retrying | A deployment bypassed migrations or created projections outside the durable brief transaction |
-| Delayed Gmail source is absent after one or more brief boundaries | Inspect its candidate in `triage_window_memberships`; it must belong to the first still-open window after every published window it crossed, with a `delayed_after_*` reason | Pre-fix assignment advanced at most twice and could strand very late classification in an already-published window |
-| Inferred event card reports a newer semantic version | Reject the stale card and allow correlation to formulate the current observation | New evidence materially changed the pending formulation; the old approval must not adopt it |
-| A decision is accepted but its clicked card remains interactive | Inspect the exact response projection, pending refresh outbox, and the approval's `approval.projection_converged` audit event; `decision_to_card_ms` measures accepted interaction to acknowledged Discord render | Projection delivery is pending/retrying, the response projection binding was lost, or the plugin accepted the interaction without returning the exact edit acknowledgement |
-| Newer email evidence leaves an edited proposal actionable or creates two active proposals for the same canonical event | Compare the canonical event ID across current action revisions, confirm the prior current approval is `superseded`, and inspect the exact or aggregate projection refresh target | Pre-supersession code selected an historical revision, raw-versus-normalized event fingerprints diverged, or the morning aggregate projection was not targeted |
-| Gmail proposal or system log contains body text, quoted text, links, or codes | Stop the live gate and inspect triage persistence and deterministic renderers | Untrusted source content crossed the persistence/redaction boundary |
-| Reject reports Calendar target staleness | Treat this as a regression and inspect the approval validation split | Rejection must validate actor, projection, current immutable revision, hashes, and queue identity, but it must not require mutable Calendar/record/account freshness because it cannot create an external operation |
-| **Rebuild preview** appears on a healthy proposal | Inspect `approvals.refresh_required_at` and the renderer version; do not use the control | Pre-contextual renderer/plugin drift or stale approval state was copied incorrectly |
-| **Rebuild preview** appears inert or leaves the old revision/view | Inspect the fresh-sync command, `proposal_refresh` command, replacement action revision/approval, cancelled/recreated `calendar_reminder_plans`, and projection refresh outbox row | Fresh sync did not complete after the click, immutable schedule bindings changed, plugin control drift, or the durable same-message edit is retrying |
-| Approval button appears inert | Inspect the stored projection/message binding and interaction listener before using any break-glass code | Stale/copied card, wrong parent or actor, listener unavailable, token expired, or action already resolved |
-| No daily thread/card appears | Inspect projection outbox status, then the private plugin listener and Hermes logs | Hermes not recreated after plugin/env change, private listener unavailable, Discord permission/API failure, or retry backoff |
-| Daily thread exists but is hidden until **Join Thread** is used | Inspect the latest thread-ensure acknowledgement for the exact configured `operator_user_id` and `operator_joined=true`, then check Hermes for `daily_thread_member_add_failed` | Pre-`0.10.0` plugin, Hermes was not restarted, operator ID mismatch, missing `SEND_MESSAGES_IN_THREADS`, parent-channel access failure, archived-thread race, or Discord member limit |
-| Hermes ignores the configured operator inside a Docket daily thread | Confirm the event exposes the queue as `parent_chat_id`, the thread exists in `discord_daily_threads`, plugin `0.20.2` is active, and the operator is still the sole allowed user | Old control-only plugin, foreign thread, parent-ID event-shape drift, or Hermes/plugin authorization mismatch |
-| No rollover occurs after 08:00 local | Inspect `system:daily_rollover:ISO-DATE`, worker heartbeat, timezone, and rollover hour | Worker unavailable, wrong timezone/hour, or a prior command already owns the date |
-| Duplicate daily thread or card | Stop retries and inspect exact name/owner or footer-marker collisions | Archived lookup drift, manually copied marker, lost binding, or plugin concurrency regression |
-| Button says the control is unauthorized/stale | Compare stored control projection with actual parent/thread/message and actor | Copied/old card, wrong operator, changed thread parent, projection refresh, or callback drift |
-| Snoozed item does not return | Compare `snoozed_until`, `snooze_local_date`, local timezone, and the day's rollover audit | Wake time has not arrived, rollover did not run, or the item was resolved separately |
-| Past daily thread remains active | Check pending card outbox rows before its lifecycle event | Archival is intentionally waiting for projection convergence, or lifecycle delivery failed |
-| Canonical state exists but Discord never receives it | Inspect the exhausted projection and its deduplicated system-alert outbox event | Projection delivery exhausted; canonical ingestion correctly survived |
-| Hermes appears stuck on a Docket tool label | Confirm the tool's completion time, then find the following provider-request start/completion pair in `agent.log` | The MCP call may already be complete while the next model stream is stalled; the UI retains the last tool label |
-| Approval is consumed but no Calendar link appears | Inspect operation status, next attempt, attempts, and worker log | Worker stopped, provider failure, backoff, or reconciliation required |
-| Operation is `reconciliation_required` | Inspect attempt error and provider correlation; never force a create retry | Timeout/crash may have reached Google, or reconciliation found conflicting matches |
-| Update creates a second event | Stop external calls and compare action type, link, idempotency key, and external event ID | Update was proposed as create, link was missing, or execution contract regressed |
-| A recurring-series proposal fails or targets one occurrence | Inspect `target_scope`, the fresh lookup's `recurring_event_id`, the linked master ETag/snapshot, and the active MCP schema; then restart/reload MCP if stale | Hermes supplied an occurrence ID for series scope, a master ID for event scope, the master exact-read has not promoted, or the pre-series schema/skill is still active |
-| A card shows no conflicts, but Approve repeatedly reports changed conflicts after every rebuild | Inspect the current revision's hash-bound `preview.conflicts` and `target_versions.calendar_snapshot.conflict_fingerprint` | A pre-fix rebuild omitted the fingerprint; approval may recover it only from the immutable preview, while new rebuilds must persist it explicitly |
-| The first of several cancellation/reminder cards reports that the complete snapshot changed immediately after the later cards were proposed | Compare the bound/current target ETags and current cache freshness before refreshing the card | Pre-fix approval bound a non-conflict mutation to the global `last_success_at`; cancel/reminder approval should tolerate harmless complete-refresh churn while still requiring current cache and exact target identity/version |
-| Calendar lookup is empty or stale | Inspect `calendar_sync_states`, its covered window, and the prior cache generation before changing credentials | Read gate disabled, sync due/leased, OAuth failure, partial page walk, or requested range outside the cache |
-| A newly created provider event is absent from a healthy current-day lookup | Compare `last_success_at` with the event creation time, then retry the same bounded lookup with `require_fresh` | `prefer_cache` returned before the next five-minute synchronization; healthy and covered do not imply read-after-provider-write consistency |
-| A committed CanonicalEvent has no provider Operation or binding | Inspect `health/ready.calendar_projection_invariant` and the event's originating committed `chg_` and exact lane/account binding | Compiler invariant regression or a pre-contract orphan; the detector is read-only, so do not ask Hermes to invent or authorize a repair operation |
-| Hermes calls a terminal or time tool around a today/tomorrow Calendar lookup | Inspect the active lookup schema/result for `relative_day`, `start_local`, and `end_local`, then restart Hermes and run `/reload-mcp` | The active session cached the prior MCP schema or old manual-intent guidance |
-| Reminder does not arrive | Inspect rule version, event cache identity, scheduled row, bound daily thread, notification outbox, and plugin `0.20.2` logs | Rule disabled, event moved/cancelled, stale event already began, queue binding changed, thread ensure failed, or Discord retry |
-| Docket emits duplicate daily-thread reminders when Google popup is sufficient | Set the Calendar profile `default_reminder_delivery_channels` to `["google_popup"]`; verify all Docket rules are disabled and pending/delivering scheduled notifications are cancelled | The profile still includes `docket_queue`, a pre-profile operation reactivated rules, or the deployed worker predates profile-gated activation |
-| External action has no `docket-system` lifecycle entry | Inspect `discord.system_log.requested` outbox rows and the plugin `system-logs` endpoint before posting a manual summary | Plugin not recreated at `0.20.2`, system target mismatch, retry backoff, or marker ownership conflict; canonical operation/audit state remains authoritative |
-| A Docket-backed agent turn has no `docket-system` tool trace | Inspect Hermes for all four registered plugin hooks, then inspect `discord_mcp_traces` and `discord.mcp_trace.requested` outbox rows | Plugin `0.20.2` was not restarted, `/reload-mcp` still exposes a differently named server/tool, trusted chat/thread-to-session binding failed, plugin-to-Docket trace delivery failed, or projection is retrying |
-| The tool trace omits arguments | Confirm plugin `0.20.2` is active and inspect the trace's compact preview; secrets, verbatim text, raw bodies, deep nesting, and excess fields/items are intentionally redacted or omitted | Old plugin, an argument set containing only protected fields, or bounded-preview compaction |
-| A Docket turn reacts with ❌ after tools succeeded and sends no final response | Inspect the AgentResponse persistence error and `intent_turns.response_disposition`; on PostgreSQL `operator does not exist: json = json` means migration `0038` is not deployed | Fail-closed response provenance correctly blocked delivery after a database guard failure; deploy the trigger repair rather than bypassing provenance |
-| Hermes posts the generic “No home channel is set” reminder in a Docket thread | Confirm plugin `0.20.2` is active and the thread is a trusted Docket surface; do not run `/sethome` as a workaround | Old plugin, non-Docket surface, or missing trusted turn context; Docket intentionally has no generic Hermes home binding |
-| A Docket tool trace remains Running after the response | Compare the trace calls/status with Hermes `post_tool_call` and `post_llm_call` hook logs; start a new authorized chat turn to close an interrupted prior trace | Pinned hook drift, gateway interruption before turn finalization, plugin restart, or a trace update waiting in the bounded delivery queue |
-| Queue card exposes provider IDs, ETags, hashes, enum action names, or freshness timestamps | Stop treating the card as an operator-safe surface and inspect the deterministic renderer | Diagnostic metadata leaked into the projection; keep it in PostgreSQL/runbook queries and render only decision-relevant labels |
-| Calendar card repeats Status/Execution/Effect, uses the event subject as its long title/description, or dumps a generic Before record | Inspect the state-oriented renderer and rebuild/recreate Docket | Pre-polish image or renderer regression; standalone subjects belong under `Title`, successful terminal state needs no description, and updates use bounded `Delta · Property` fields with separate Before/After lines |
-| A timed card, reminder, or system entry displays raw `<t:...>` text or a manual IANA timezone | Confirm the value is in an embed description/field, Hermes runs plugin `0.20.2`, and the token survived escaping unchanged | Old renderer/plugin, malformed milliseconds or timestamp style, or a Discord-client rendering regression; all-day and recurrence-definition timezone text is intentionally exempt |
-| Duplicate reminder appears | Stop retries and compare notification ID, event-start key, outbox dedupe key, and `docket-calendar-reminder:<uuid>` footer marker | Marker collision, manual copy, lost binding, or plugin idempotency regression |
-
-## Missing trusted Discord context
-
-The most common failure is a mismatch among the real Discord event and these
-three settings:
-
-```text
-DOCKET_OPERATOR_DISCORD_USER_ID
-DOCKET_DISCORD_GUILD_ID
-DOCKET_CHAT_CHANNEL_ID
-```
-
-The operator value must be the user's Discord snowflake. A role ID, application
-ID, bot ID, or other server object ID has the same numeric shape but is not
-interchangeable.
-
-First inspect the most recent Discord session. Use a redacted, narrowly scoped
-export because the export contains conversation and system-prompt material:
+Health endpoints distinguish liveness from readiness:
 
 ```bash
-sudo docker compose exec -T hermes hermes sessions list --source discord --limit 5
-sudo docker compose exec -T hermes \
-  hermes sessions export - --format jsonl --session-id SESSION_ID --redact
+curl -fsS http://127.0.0.1:${DOCKET_PORT:-8080}/health/live
+curl -fsS http://127.0.0.1:${DOCKET_PORT:-8080}/health/ready
 ```
 
-In the exported session, `origin_json` is the live source of truth:
+A ready API does not prove that a provider operation succeeded or that a
+Discord projection was delivered. Inspect those durable lifecycles separately.
 
-```text
-user_id     -> DOCKET_OPERATOR_DISCORD_USER_ID
-scope_id or guild_id -> DOCKET_DISCORD_GUILD_ID
-chat_id     -> DOCKET_CHAT_CHANNEL_ID
-message_id  -> provenance source_object_id
-```
+## Local verification
 
-Check only the relevant environment values; do not dump the entire environment
-because it contains credentials:
-
-```bash
-sudo docker compose exec -T hermes sh -lc \
-  'env | sort | grep -E "^DOCKET_(OPERATOR_DISCORD_USER_ID|DISCORD_GUILD_ID|CHAT_CHANNEL_ID)="'
-sudo docker compose exec -T docket sh -lc \
-  'env | sort | grep -E "^DOCKET_(OPERATOR_DISCORD_USER_ID|DISCORD_GUILD_ID|CHAT_CHANNEL_ID)="'
-```
-
-If `.env` changes, a restart is insufficient because Docker does not replace a
-container's environment on restart. Recreate both services:
-
-```bash
-sudo docker compose --profile hermes up -d --force-recreate docket hermes
-```
-
-If all IDs match but context is absent, investigate the pinned hook contract in
-[Pinned integration contracts](pinned-integration-contracts.md). In particular,
-Hermes currently supplies `source.platform` as an enum, not a plain string.
-
-## Stored response without a write
-
-The bounded Docket tool trace in `docket-system` is the first signal:
-
-* `...docket_store_record...` is required for a remember/store request.
-* `...docket_search_records...` and `...docket_get_record...` prove only a read.
-
-Do not accept the prose response as evidence. Query durable state using a known
-record UUID:
-
-```bash
-sudo docker compose exec -T postgres sh -lc \
-  'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -x \
-    -c "select id, record_type, canonical_key, version, data, valid_from_date, valid_until_date from records where id = '\''RECORD_UUID'\'';" \
-    -c "select source_type, source_object_id, source_request_key, metadata, created_at from record_sources where record_id = '\''RECORD_UUID'\'' order by created_at;" \
-    -c "select event_type, actor_type, actor_id, request_id, data, created_at from audit_events where entity_id = '\''RECORD_UUID'\'' order by created_at;"'
-```
-
-For a successful match of an existing record, expect:
-
-* one new `record_sources` row with `source_type=discord_message`;
-* `source_object_id` equal to the current Discord message ID;
-* a request key formatted as
-  `discord:{guild_id}:{channel_id}:{message_id}:{intent_index}`;
-* a `record.matched` audit event with the Discord user snowflake as actor;
-* a succeeded `command_requests` row whose operation is `docket_store_record`
-  and disposition is `matched_existing`;
-* no record-version increment merely for attaching matching provenance.
-
-The initial pre-hardening `manual` source may remain as historical evidence.
-Do not rewrite or delete it to make the history look cleaner.
-
-## Replay verification
-
-An exact replay through `docket_store_record` with the same arguments must
-return the original record and request ID with disposition `replayed_request`.
-It must not insert a second command, source, or audit event. Historical commands
-whose stored operation name is `docket_remember_record` remain immutable
-evidence, but the renamed tool rejects their request keys with
-`idempotency_conflict`; do not rewrite those rows.
-
-The safest replay input is the captured tool call from a redacted Hermes session,
-not a hand-reconstructed payload. Reconstructing it risks changing the title,
-source metadata, or another hashed field and correctly triggering an
-idempotency conflict.
-
-Unit coverage for the same behavior lives in:
-
-```bash
-uv run pytest tests/unit/test_records.py -k 'replay or canonical'
-```
-
-For a live replay, record the source, audit, and command counts before and after
-calling the captured payload. All counts must remain unchanged.
-
-## Independent course lifecycle verification
-
-A term is shared temporal context; each course/section is an independent
-canonical record. The normal workflow is:
-
-1. store or resolve the term;
-2. store or explicitly update each course with stable meeting IDs;
-3. call `docket_apply_course_intent` in `sync` mode for each
-   successful course when Calendar application is requested or suggested; and
-4. retry only failed courses. Omission from a later import has no effect.
-
-Meeting-level dates and timezone override the associated term. A genuinely
-omitted meeting start date, end date, or timezone inherits only that missing
-value from the term during Calendar compilation; Docket does not rewrite the
-stored course field as though the operator supplied it. The course review card
-shows the effective range and labels any term-derived fallback. A course with
-different component ranges reports that dates vary and shows each range in its
-review items.
-
-Every state-changing call consumes its own successive Discord intent index.
-Account, profile, search, get, and Calendar lookup calls are reads and consume
-no index. An unchanged record match attaches current provenance; an unchanged
-course reconciliation returns `no_op` without a card. A materially identical
-`docket_update_record` request returns `matched_existing`, preserves the record
-version and canonical snapshot, and therefore cannot manufacture provider
-updates merely by advancing `last_synced_version`.
-
-Google may reorder RRULE properties in its response, including moving `UNTIL`
-ahead of `INTERVAL`. Docket canonicalizes recurrence property and multi-value
-ordering before material comparison. A same-version proposal showing only
-recurrence updates is therefore a defect: leave it unapproved and compare the
-stored provider snapshot with the compiled recurrence before retrying.
-
-An explicit drop uses `docket_apply_course_intent` in `drop` mode.
-Never archive a linked course first. The approved operation owns one durable
-cancellation item per active link. A partial failure leaves the course active;
-a new drop proposal includes only the remaining active links. The record is
-archived only when the complete cancellation ledger succeeds. Re-add uses
-`docket_restore_record` followed by `sync`, which creates fresh provider event
-IDs for the current stable meetings.
-
-Healthy course Summary and Decision views do not expose a refresh control. If
-review outlives the Calendar freshness window, or the course's record version,
-linked provider identity/ETag, or actual conflict set changes, approval fails
-closed and the same card exposes **Reject** plus **Rebuild preview**. A newer
-complete refresh or an unrelated course proposal/write does not invalidate the
-card by itself. If every card in a new multi-course import reports stale on its
-first approval, inspect `target_versions.calendar_snapshot` for legacy global
-timestamp binding before rebuilding cards individually. Rebuild refreshes
-Calendar, recompiles the current course, supersedes the approval, and resets the
-same message to Summary. Traverse the replacement review again.
-
-A course proposal whose complete immutable item detail fits within the bounded
-initial Discord embed opens directly in decision state. Its item content
-follows the contextual course/date/notification fields; redundant change-count
-and review-complete fields are omitted, and the card exposes **Approve**,
-**Reject**, and **Snooze until tomorrow** without navigation. Larger course
-proposals retain paged review and must traverse every page before decision.
-
-After approval, inspect the parent and item ledger without printing private
-event content:
-
-```bash
-sudo docker compose exec -T postgres sh -lc \
-  'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -x \
-    -c "select id, operation_type, status, result from operations where id = '\''OPERATION_UUID'\'';" \
-    -c "select item_key, item_type, status, attempt_count, last_error_code from operation_items where operation_id = '\''OPERATION_UUID'\'' order by item_key;" \
-    -c "select operation_item_id, attempt_number, kind, status, error_code from execution_attempts where operation_id = '\''OPERATION_UUID'\'' order by operation_item_id, attempt_number;"'
-```
-
-Expect one item per affected recurrence series or exceptional one-time occurrence.
-Successful items are terminal and must never be reset to pending during a
-restart or partial-failure recovery. `partial_failed` means at least one item
-succeeded and at least one failed; `reconciliation_required` means at least one
-provider outcome is still uncertain. Use the card's Review items/failures
-control for the bounded operator view. Never rerun successful sibling items to
-repair one failed item.
-
-## Approval message not received
-
-Discord channel admission occurs before Hermes constructs a `MessageEvent`, so
-it also occurs before the Docket `pre_gateway_dispatch` hook. In the current
-pin, an unmentioned ordinary message in a mention-required channel disappears
-without a Docket callback. The dedicated queue must therefore be present in all
-three active Discord lists:
-
-```text
-allowed_channels
-free_response_channels
-no_thread_channels
-```
-
-The plugin makes that free-response exception safe by dropping every queue
-message except an exact break-glass `docket approve CODE` or
-`docket reject CODE`, then checking the configured operator, guild, and channel
-before calling Docket. A queue message never belongs in a model session. Hermes
-does not receive short codes from Calendar proposal tools and must direct the
-operator to the persistent card buttons instead.
-
-When a decision appears inert, inspect the action graph by action UUID:
-
-```bash
-sudo docker compose exec -T postgres psql -U docket -d docket -x -c '
-select a.id as action_id, a.status as action_status,
-       p.id as approval_id, p.status as approval_status, p.expires_at,
-       p.discord_interaction_id, p.response_message_id,
-       p.consumed_operation_id
-from actions a
-join action_revisions r on r.action_id = a.id
-left join approvals p on p.action_revision_id = r.id
-where a.id = '\''ACTION_UUID'\''
-order by r.revision desc;
-select id, status, operation_type, attempt_count, last_error_code
-from operations
-where action_revision_id in (
-  select id from action_revisions where action_id = '\''ACTION_UUID'\''
-)
-order by created_at desc;'
-```
-
-`approval_pending` plus a pending approval whose interaction and response fields
-are null, with no operation, means the callback never arrived. Check the queue
-channel lists and plugin load before investigating the worker or Calendar. If
-`expires_at` has passed, create a fresh proposal after fixing ingress; never
-manually advance the expired row.
-
-## Hermes appears stuck after a completed Docket call
-
-The Discord progress display retains the last visible tool name while Hermes
-waits for the next model response. It does not prove that Docket is polling.
-Compare these ordered `agent.log` records:
-
-```text
-agent.tool_executor: tool mcp__docket__... completed (...s)
-run_agent: OpenAI client created (codex_stream_request, ...)
-run_agent: OpenAI client closed (request_complete, ...)
-```
-
-If the tool completed but the following client has no close/completion record,
-the wait is in the model-provider stream. `/stop` releases the active run lock
-but preserves conversation history. If the next attempt repeats the stall, use
-`/reset` for a clean session; use `/restart` when a fresh gateway/provider
-connection is also required. Before resubmitting, confirm whether any
-state-changing Docket call completed so a retry cannot create duplicate intent.
-
-## Discord projection or button failure
-
-Projection delivery is a durable outbox path. A successful card has all three
-layers committed: a delivered `outbox_events` row, an active
-`discord_daily_threads` row with the actual Discord thread ID, and a delivered
-`discord_projections` row with the actual bot-authored message ID. A pending
-approval additionally points `control_projection_id` at that delivered card.
-
-Authenticated button state is committed before projection delivery. After a
-successful approval, local action, or proposal-control transaction exits its
-commit scope, the endpoint sends a process-local wake to the dedicated
-projection task. That task drains all currently due Discord outbox rows.
-Multiple wakes may coalesce. The wake is advisory: a failure is logged as
-`discord_projection_wake_failed`, does not change the accepted response, and
-the configured `DOCKET_DISCORD_PROJECTION_POLL_SECONDS` loop remains the
-restart/lost-signal fallback. Do not replace this with a synchronous Discord
-edit inside the request transaction.
-
-Inspect bounded state without printing card bodies or tokens:
-
-```bash
-sudo docker compose exec -T postgres psql -U docket -d docket -x -c '
-select id, event_type, status, attempt_count, next_attempt_at, last_error_code
-from outbox_events where event_type like '''discord.%'''
-order by created_at desc limit 20;
-select id, local_date, thread_name, thread_id, status, auto_archive_minutes,
-       last_verified_at, last_error_code
-from discord_daily_threads order by local_date desc limit 10;
-select id, queue_item_id, daily_thread_id, projection_version, message_id,
-       status, last_error_code
-from discord_projections order by created_at desc limit 20;
-select id, status, last_ordinal, version, started_at, completed_at
-from discord_mcp_traces order by created_at desc limit 20;'
-```
-
-First failure points:
-
-* `discord_transport_error` or `discord_runtime_unavailable`: verify Hermes is
-  running, plugin `0.20.2` is enabled, port 8787 is exposed only internally, and
-  Hermes was recreated after Compose environment changes. The default ten
-  attempts cover ordinary Hermes startup; do not reduce the window without
-  measuring the pinned runtime's initialization time.
-* `daily_thread_name_conflict`: inspect exact active and archived matches under
-  the configured parent. Do not rename/adopt a foreign-owned collision or
-  delete evidence merely to unblock delivery.
-* `stored_thread_binding_mismatch`: the stored Discord ID changed parent, name,
-  type, or owner. Fail closed and investigate manual Discord changes.
-* `daily_thread_member_add_failed`: verify the independently configured
-  operator ID, the operator's access to the queue parent, and the bot's
-  `SEND_MESSAGES_IN_THREADS` permission. The ensure remains unacknowledged and
-  retries; do not downgrade membership to best-effort delivery.
-* `projection_marker_conflict`: more than one card, or a non-bot card, contains
-  the stable `docket-projection:<uuid>` footer marker. Do not choose one
-  arbitrarily.
-* `invalid_discord_ack`: the plugin response did not echo request, target, or
-  digest bindings. Treat this as a compatibility/security failure.
-* `invalid_mcp_trace_*`, `nonmonotonic_mcp_trace`, or
-  `mcp_trace_state_regression`: compare plugin `0.20.2` with the Docket image
-  and migration `0011`. Do not replay arguments/results or edit trace JSON;
-  these errors mean the pinned hook/schema contract drifted or a terminal
-  update arrived out of order.
-* `mcp_trace_marker_conflict`: more than one bot/foreign message contains the
-  compact trace marker. Do not choose or delete one automatically; preserve the
-  durable trace/outbox and resolve the Discord collision explicitly.
-* a button callback with no response fields: confirm the raw interaction
-  listener was installed after restart, then inspect Hermes logs. Buttons defer
-  first and report success only after Docket commits.
-
-Verify the private listener without sending a projection or reading a token:
-
-```bash
-sudo docker compose exec -T hermes python -c '
-import socket
-s = socket.create_connection(("127.0.0.1", 8787), timeout=2)
-s.close()
-print("projection listener reachable")'
-```
-
-Hermes plugin edits require a gateway restart. `/reload-mcp` is still required
-for MCP tool/schema changes, but it does not reload this Python plugin.
-
-The pinned Hermes runtime performs overlapping plugin discovery. Plugin `0.20.2`
-therefore starts port 8787 under a retrying supervisor: one discovery pass may
-log that startup is deferred because the port is in use, but plugin loading must
-still succeed and one listener must remain reachable. A warning that the plugin
-itself failed to load, or a refused connection after the gateway is running, is
-not healthy.
-
-## Daily rollover and queue recovery
-
-Inspect a specific local day without reading projection bodies or control
-tokens:
-
-```bash
-sudo docker compose exec -T postgres psql -U docket -d docket -x -c '
-select id, status, result, completed_at
-from command_requests
-where request_key = '''system:daily_rollover:YYYY-MM-DD''';
-select id, local_date, thread_name, thread_id, status, lifecycle_version,
-       archived_at, last_error_code
-from discord_daily_threads
-order by local_date desc limit 10;
-select queue_item_id, daily_thread_id, projection_version, message_id, status,
-       last_error_code
-from discord_projections
-order by created_at desc limit 30;'
-```
-
-For one item, use `docket_get_queue_item`; its `projection_dates` list should
-contain no more than one projection for a given ISO date.
-`docket_list_queue_items` can filter by canonical status, category, priority,
-projection date, or exact primary source-item UUID. These reads do not consume
-an intent index.
-
-If a rollover command succeeded but delivery is pending, leave the canonical
-command alone and investigate the outbox. Never delete the command to make the
-day run again. Once transport is repaired, reset only a specifically diagnosed
-failed outbox row to `pending`, retain its `attempt_count`, clear its lease and
-last error, and let the worker converge it. Record the intervention. Do not
-requeue an event whose error indicates a binding or marker conflict.
-
-The normal startup order is Hermes listener first, then Docket. This is an
-optimization rather than a correctness requirement: delivery retries are
-durable, and terminal exhaustion emits one system alert. The current default is
-`DOCKET_DISCORD_PROJECTION_MAX_ATTEMPTS=10` with capped exponential backoff.
-
-## Schema or tool mismatch
-
-Docket's MCP JSON schema is generated at runtime by FastMCP from the Python
-signature and Pydantic types. It is not copied into the Hermes skill.
-
-Run the local contract test first:
-
-```bash
-uv run pytest tests/integration/test_mcp_contract.py
-```
-
-It verifies the public tool set, descriptions, term/course/meeting schemas,
-proposal enum, absence of caller-controlled risk, Discord snowflake patterns,
-and structured source constraint. Then verify live discovery:
-
-```bash
-sudo docker compose exec -T hermes hermes mcp test docket
-```
-
-If a tool was renamed, update all of these together:
-
-* `src/docket/mcp/server.py`;
-* the operation name in `src/docket/services/records.py`;
-* `.runtime/hermes/config.yaml` (active ignored configuration);
-* `hermes/config.example.yaml` (checked-in template);
-* the mounted Docket skill;
-* MCP contract and service tests;
-* Compose smoke script;
-* the private implementation specification maintained outside Git.
-
-Rebuild Docket, restart/recreate Hermes, and start a new Discord turn after a
-rename. Existing conversation context may still describe the old tool.
-
-## Authentication and source-boundary checks
-
-The host MCP endpoint must reject an unauthenticated request:
-
-```bash
-code=$(curl -sS -o /dev/null -w '%{http_code}' \
-  -X POST http://127.0.0.1:8000/mcp/ \
-  -H 'Content-Type: application/json' \
-  --data '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}')
-test "$code" = 401
-```
-
-An authenticated call with a well-shaped but mismatched Discord actor, guild,
-chat root, or unbound queue-thread ID must return `invalid_source_context` and
-create no record. A bound active/archived daily thread is accepted only with
-the configured queue parent. The automated regression coverage is safer than
-manually handling the bearer:
-
-```bash
-uv run pytest tests/unit/test_records.py -k source
-uv run pytest tests/adversarial/test_plugin_actor_gate.py
-```
-
-Bearer authentication and source-field validation are separate controls. A
-valid bearer is necessary but not sufficient for a store operation.
-
-## Reload and rebuild matrix
-
-Use the checked-in lifecycle entry point instead of reconstructing the common
-sequences from this runbook:
+The required deterministic gate is:
 
 ```bash
 scripts/docket check
+```
+
+Changes to migrations, Compose, authentication, startup, MCP, tool contracts,
+providers, or dependencies additionally require:
+
+```bash
 scripts/docket compose-smoke
-scripts/docket build
-scripts/docket predeploy
-scripts/docket deploy
-scripts/docket deploy-ingress
-scripts/docket backup
-DOCKET_BACKUP_AGE_IDENTITY_FILE=secrets/restore/backup_age_identity \
-  scripts/docket verify-restore
-scripts/docket status
 ```
 
-`compose-smoke` is forced onto a separate Compose project, volume, port, dummy
-credential directory, and `.env.example`; it is safe when the production
-`.env` exists. `predeploy` requires a clean `main` exactly equal to
-`origin/main`, successful GitHub CI for that SHA, and production mode. `deploy`
-builds first, then creates a database drain barrier and asks Hermes to stop
-claiming new turns. The deployment-stable `discord-ingress` remains connected
-and appends authenticated messages and semantic selections to PostgreSQL while
-execution is deferred. The command waits for all pre-barrier execution leases
-and actual provider/outbox claims, then waits for Hermes to report `draining`
-with zero active agents. The marker is written as the Hermes service user so
-the gateway can read its mode-`0600` control file. The database barrier plus
-the Docket pre-dispatch hook remains the authoritative new-turn gate: every
-later Docket ingress is appended and deferred before model dispatch. The
-command then takes the custom-format backup, applies
-migrations, recreates only Docket and Hermes, releases the drain, and verifies
-Docket health, Alembic head, both Discord gateway processes, the matching
-22-tool Docket and Hermes registries, the declared plugin version, and the
-private listener. Queued Operations, reconciliation-required rows, and
-unclaimed outbox events are durable and intentionally do not block restart.
+The smoke stack uses `.env.example` and `secrets/smoke/`. It must never inherit
+the production `.env` or production credentials.
 
-The first rollout of the continuity schema is a narrow expand-only bootstrap:
-the new image takes a pre-bootstrap backup, adds the compatible tables and
-restricted `docket_ingress` role, and connects stable ingress while the old
-Hermes gateway is still live. It then enters the same drain sequence and takes
-the authoritative drained backup before replacing workers. Later normal
-deployments request the drain before backup and migration.
+## Tool and contract diagnosis
 
-`deploy` never replaces `discord-ingress`. Use `deploy-ingress` only for code
-whose operational target is that minimal writer. It drains execution, removes
-the buttons from every delivered persisted semantic prompt, starts the new
-`discord-ingress-handoff` writer before replacing the primary, verifies the new
-primary is connected, stops the handoff, and creates fresh projections from the
-exact persisted semantic scopes. During overlap, typed-message writes are
-idempotent; no mutation-authorizing component is visible. If the procedure
-fails after handoff starts, it leaves that writer running and reports the
-failure rather than creating an ingress gap. Do not use a raw Compose restart
-for this service.
+When Hermes appears to use the wrong schema:
 
-The deploy-time custom dump is an immediate local rollback safeguard. The
-independent durable backup worker must also be enabled with
-`scripts/setup-backup-age.sh`; it produces encrypted artifacts, SHA-256
-checksums, and manifests under ignored `backups/`. `backup` forces or confirms
-today's durable run. `verify-restore` checks the ciphertext hash, mounts the
-private identity only into a one-off container, restores into a separate
-ephemeral PostgreSQL container, verifies the Alembic revision and bounded
-integrity queries, destroys the disposable database, and records the result in
-audit. Never place the private age identity in `.env` or `secrets/local/`.
+1. Confirm the running Docket and Hermes image revisions.
+2. Confirm the interactive profile reports 19 tools and triage reports four.
+3. Compare the injected contract version, hash, and profile with the generated
+   repository artifacts.
+4. Inspect the `call_` lifecycle:
+   `transport_state`, `domain_state`, and `result_disposition` are distinct.
+5. Reload MCP only after the server and generated contract agree.
 
-For the signed tracked-context amendment, run
-`scripts/docket readiness-rehearsal` before substantive implementation and
-again when producing the eventual reset manifest. The command reads production
-only through `pg_dump`, restores that snapshot beside the exact live Docket
-image in an isolated PostgreSQL container, computes the G.3 governance closure,
-inventories every provider effect/binding with an explicit disposition, and
-rehearses the clean governance/account/attachment backup and restore. Exact
-provider identifiers, retained utterances, and dumps remain mode-`0600` under
-an ignored timestamped `backups/tracked-context-readiness-*` directory. Only
-hashes, counts, and pass/fail evidence belong in the tracked readiness record.
-The command cannot perform the production reset, deploy, or call a provider.
+Do not probe hidden HTTP endpoints or use terminal access to discover a mutation
+shape. The Pydantic/FastMCP schema is the structural contract; the generated
+Markdown contract supplies authority, selection, side-effect, and result rules.
 
-The image tag is recovery evidence, not permission to downgrade a migrated
-database. Restore or migrate the database according to the affected revision
-before running older application code.
+Every authenticated tool invocation receives one `call_`, including validation
+and authority rejection. Tool logs retain hashes and bounded references, not raw
+arguments or results. A conversational trace marked interrupted has
+`domain_state=unknown` unless a durable terminal Docket outcome proves otherwise.
 
-| Change | Required action | Why |
-| --- | --- | --- |
-| Docket Python source or dependency lock | `scripts/docket deploy` | Source and virtual environment are image layers; the supported path preserves ingress and drains execution |
-| Stable Discord ingress source | `scripts/docket deploy-ingress` after its compatible Docket release | Semantic controls require explicit quiescence and rolling writer handoff |
-| Alembic migration | `scripts/docket deploy` | Backup, migration, and worker replacement occur behind the durable drain |
-| Hermes plugin Python | Restart Hermes | Module and hook registration are process-cached |
-| Mounted Hermes skill | Restart Hermes; use a new turn | Registry/session context can retain old guidance |
-| `.runtime/hermes/config.yaml` | Restart Hermes | Active config is read at gateway startup |
-| Root `.env` value used by Docket or Hermes | Recreate affected containers | Restart preserves the old container environment |
-| `DOCKET_CREDENTIALS_DIR` | Recreate affected containers | Compose must replace the mount source |
-| Secret file contents at the same mounted path | Restart the consumer unless the code path is documented as rereading every call | Providers/settings may cache state |
-| MCP tool name/signature | Rebuild Docket, update both Hermes configs and skill, recreate/restart Hermes, then send `/reload-mcp` in active sessions | Server schema, client allowlist, and session tool registry must move atomically |
-| Hermes or MCP pin | Follow the full upgrade checklist | Internal event/schema adapter contracts may change |
+## Operator input and response failures
 
-After any lifecycle action, rerun the first checks.
+If an Operator message receives only a reaction or no final response:
 
-## Environment mode and credential bootstrap
+1. Verify that one `utt_` exists for the exact Discord message/interaction.
+2. Inspect its IntentSession and ToolInvocations.
+3. Determine whether a `chg_` committed before diagnosing delivery.
+4. Inspect `rsp_`, `proj_`, projection delivery, and outbox state separately.
+5. Reconcile a dead gateway lifetime against durable outcomes; never relabel a
+   committed ChangeSet as interrupted merely because response delivery failed.
 
-`DOCKET_ENVIRONMENT` accepts `smoke`, `development`, `test`, and `production`.
-A real Discord deployment should use `production`, even while
-`DOCKET_CALENDAR_READS_ENABLED=false` and
-`DOCKET_EXTERNAL_WRITES_ENABLED=false`. Both provider gates are independent of
-the environment label and of each other.
+An input that cannot be durably captured fails closed. A generated response may
+exist even when delivery failed; retry the same projection identity rather than
+creating another semantic response.
 
-Production mode adds safety checks: placeholder Discord IDs and automatic
-schema creation are rejected. It does not enable Google or other provider
-calls.
+## Attention and brief diagnosis
 
-`uv run docket-production-config` deliberately does only the following:
+Triage may suppress under an existing Preference, create `bentry_` informational
+output, or admit one `case_` for a concrete unresolved canonical consequence. An
+unknown sender alone is not an attention reason.
 
-* creates or reuses the PostgreSQL and SearXNG secrets;
-* updates the database URL and credential directory;
-* sets Docket's container UID/GID to the invoking host UID/GID;
-* writes `.env` and secret files atomically with restrictive modes.
+During the active window, a new AttentionCase is queued for individual
+projection. Overnight cases remain durable and appear in one morning brief. The
+night brief covers daytime triage. A Discord reply binds to the exact visible
+`proj_`, case or brief revision, and resumes an authenticated IntentSession.
 
-It does not set `DOCKET_ENVIRONMENT=production`, enable provider gates, fill in
-Discord IDs, rotate an existing PostgreSQL role, or authorize Google. Check
-those items separately.
-
-Real credentials live in `secrets/local/` and the ignored Hermes runtime in
-`.runtime/hermes/`. Both are operationally sensitive. In particular,
-`.runtime/hermes/.env` contains copied Discord and MCP tokens; do not print or
-attach it.
-
-Mode-`0600` credential files depend on container identity. Docket's UID/GID is
-configured from the host by the production setup. Hermes defaults to UID/GID
-1000. On a host whose credential owner is not compatible with the Hermes UID,
-Hermes will fail to read its mounted files even though the paths exist. Check
-numeric ownership and container UID before loosening permissions; do not solve
-the problem with world-readable secrets.
-
-`scripts/prepare-hermes-home.sh` preserves unrelated operator-managed Hermes settings:
-
-* it creates `.runtime/hermes/config.yaml` from the template only when the
-  active file does not already exist;
-* it synchronizes Docket's managed MCP tool allowlist, the Discord platform
-  toolset without generic cron delivery, and the four quiet-output display keys
-  on every run;
-* it rewrites `.runtime/hermes/.env` on every run.
-
-Other template changes remain deliberately non-destructive. The sync preserves
-unmanaged display keys, the CLI toolset (including CLI cron), and other active
-configuration. Diff template changes explicitly before applying, restart Hermes
-after active-config changes, and send `/reload-mcp` in existing sessions after a
-tool/schema change.
-
-Hermes's OpenAI Codex OAuth is separate from Google Workspace OAuth. The main
-Discord agent and the isolated `docket-triage` profile must use independent
-device-code sessions because OAuth refresh rotation makes copying one
-`auth.json` between profiles unsafe. Repair the interactive agent remotely with:
-
-```bash
-scripts/docket setup-hermes-auth
-```
-
-The command prints `https://auth.openai.com/codex/device` and a short-lived
-code. Open that URL on any computer; no callback listener or SSH tunnel is
-required. It backs up the prior main auth state, replaces only the main Codex
-credential, verifies it, clears stale exhaustion state, and restarts Hermes.
-If the isolated classifier itself reports logged out, repair it with a separate
-authorization:
-
-```bash
-scripts/docket setup-hermes-auth --triage
-```
-
-Use `--all` only when both profiles need repair; it deliberately requires two
-browser approvals. Never copy the main OAuth file into the triage profile or
-vice versa. A failed or interrupted device-code exchange restores the prior
-target credential.
-
-`scripts/docket deploy` runs this synchronization before recreating Hermes. This
-is a release invariant: the gateway readiness gate compares its startup registry
-with the tool contract, so a stale active allowlist fails the deployment instead
-of silently hiding newly published tools.
-
-Preparation rewrites the ignored Hermes `.env` from the credential files and
-maps `DOCKET_OPERATOR_DISCORD_USER_ID` to Hermes' `DISCORD_ALLOWED_USERS`. It
-does not carry forward `DISCORD_HOME_CHANNEL`. Compose repeats the operator
-mapping explicitly so a container recreation cannot silently lose gateway
-authorization. On Docket's Discord surface, background-process notifications
-are disabled and `/sethome` is rejected in chat, queue, and system lanes. If
-chat starts receiving unsolicited output, first check the effective
-home-channel variables, the four managed display keys, and
-`hermes cron list --all`; do not treat chat as a generic delivery target.
-
-## Calendar cache and reminder recovery
-
-Inspect only bounded metadata and deterministic notification state:
-
-```bash
-sudo docker compose exec -T postgres psql -U docket -d docket -x -c '
-select account_id, calendar_id, window_start, window_end, status,
-       last_attempt_at, last_success_at, last_error_code, leased_until
-from calendar_sync_states;
-select provider_event_id, status, is_all_day, start_at, start_date,
-       recurring_event_id, synced_at
-from calendar_event_cache order by coalesce(start_at, start_date::timestamp)
-limit 50;
-select external_event_id, recurrence_kind, provider_etag,
-       synced_snapshot->>'status' as provider_status
-from calendar_links
-where recurrence_kind = 'recurring'
-order by updated_at desc limit 20;
-select id, scope, provider_event_id, lead_seconds, queue_channel_id, enabled, version
-from reminder_rules order by updated_at desc limit 20;
-select id, reminder_rule_id, provider_event_id, event_start_key,
-       scheduled_for, daily_thread_id, status, attempt_count, last_error_code
-from scheduled_notifications order by scheduled_for desc limit 50;'
-```
-
-First failure points:
-
-* A sync in `syncing` past `leased_until` should be recovered by the worker. If
-  it is not, inspect the worker heartbeat before altering the row.
-* `stale` with a prior generation means Docket deliberately retained the last
-  complete cache. Investigate `last_error_code`; never delete the generation or
-  present it as fresh merely to clear the status.
-* `failed` with no `last_success_at` means no complete snapshot has ever
-  promoted. Check the read gate, OAuth status, exact Calendar ID, and Google
-  response class.
-* Expanded recurring occurrences are not their master. A whole-series update,
-  reminder change, or cancellation must bind `target_scope=series` to the
-  Docket-linked master `external_event_id`; never substitute one occurrence's
-  `provider_event_id`. A null/stale master ETag blocks proposal or approval.
-* `calendar_linked_series_too_large` means active Docket-owned recurring masters
-  exceeded the configured exact-read cap. Reconcile/close obsolete links or
-  deliberately raise `DOCKET_CALENDAR_LINKED_SERIES_MAX_READS`; do not bypass
-  master reads or present an occurrence ETag as the series version.
-* `missed_stale_calendar` means the event was first dispatchable only after it
-  had begun. Docket intentionally did not emit a misleading on-time reminder.
-* A notification in `delivering` is coupled to its outbox row. Recover/retry the
-  outbox; do not create a second notification or post a manual copy.
-* A reminder delivery retry verifies or unarchives the bound daily thread, then
-  searches that thread for the exact
-  `docket-calendar-reminder:<notification UUID>` footer. A foreign or duplicate
-  marker is a security failure, not a reason to pick one arbitrarily.
-
-## Google OAuth and calendar identifiers
-
-The OAuth client must be a Google Desktop-app client. Docket's host-side setup
-flow owns creation of `google_oauth_token.json`; do not hand-author it or copy
-the smoke placeholder into the production directory.
-
-```bash
-uv run docket-google-auth status --credentials-dir secrets/local
-scripts/setup-google-oauth.sh
-```
-
-From a remote shell, use the manual loopback-callback flow. Run this on the
-Docket host and open the printed authorization URL in the local browser:
-
-```bash
-scripts/setup-google-oauth.sh --force --remote
-```
-
-The wrapper selects `--remote` automatically when it detects no GUI/browser
-environment. Remote mode does not start a callback listener and requires no SSH
-port forwarding. It registers the loopback redirect
-`http://127.0.0.1:8765/`, then uses PKCE and a per-run OAuth state value. After
-consent, the local browser is expected to show a connection failure. Copy the
-complete URL from its address bar and paste it into Docket's hidden-input
-prompt. Docket rejects a different host, port, path, state, missing code, or
-denied authorization before exchanging the one-time code. Never paste that URL
-into chat, logs, shell arguments, or shell history.
-
-The default approved bundle requests Calendar events, Calendar ownership and
-Calendar-list presentation, Gmail modify, Sheets, and Docs together. Possessing
-those scopes does not expose raw provider APIs. Provider actions remain limited
-by implemented Docket adapters and the action registry. Gmail send/reply
-remains prohibited.
-
-The setup requests offline access, requires a refresh token, strips the
-short-lived access token before persistence, and writes the result with mode
-`0600`. The credentials directory is mounted read-only into the current Docket
-container. Future adapters must not assume they can persist a refreshed Google
-token through that mount; add an explicit secure refresh-persistence design
-before relying on runtime token rotation.
-
-`GOOGLE_CALENDAR_ID` is an opaque Google calendar identifier. An ID ending in
-`@group.calendar.google.com` is normal for a secondary/group calendar and must
-be preserved exactly. Do not strip the suffix or replace it with a display
-name.
-
-### Calendar lanes
-
-Docket seeds five stable default lanes per enabled Google account:
-
-| Lane | Default Google calendar | Default color | Routing purpose |
-| --- | --- | --- | --- |
-| `academic` | `Docket · Academic` | blue | courses, institutions, academic obligations |
-| `work` | `Docket · Work` | red | employment and professional obligations |
-| `organizations` | `Docket · Organizations` | green | clubs and other organizations |
-| `personal` | `Docket · Personal` | purple | personal appointments and commitments |
-| `unsorted` | existing `Docket` calendar | yellow | ambiguous events and pre-lane history |
-
-`GOOGLE_CALENDAR_ID` remains bound to `unsorted`; migration `0026` does not
-move or recolor existing events. The other defaults start `unprovisioned` and
-fail closed until explicitly configured. Migration `0027` makes the registry
-extensible: custom lowercase slugs may be explicitly created, and every active
-lane participates in reads and conflict scans. List authoritative state with
-`docket_list_calendar_lanes`. The model may call
-`docket_configure_calendar_lane` only from current trusted operator language;
-the mutation provisions a new slug or renames/recolors an existing lane while
-retaining its opaque Calendar ID.
-
-Provisioning and presentation changes are committed as durable
-`calendar_configure_lane` operations. Event relocation uses a separate
-`calendar_move_events` direct operation with durable per-event progress. A
-trusted, unambiguous operator command queues execution without an authorization
-card; ambiguous identity or series scope is clarified before the tool call.
-Google moves the selected default event or recurring master; only after
-confirmed provider success does Docket move its Calendar link, canonical
-provider binding, cached instances, reminder binding, and canonical lane.
-Partial batches remain honest and retryable. Pre-lane course series therefore
-move from `unsorted` to `academic` without cancel/recreate duplication.
-
-For migration discovery, use `docket_list_calendar_events` with
-`result_view=series`; the compact result supplies one provider identity and
-scope per recurring series instead of every occurrence. Routine execution
-checks use `docket_get_action(detail=status, wait_seconds=30)`. Full action
-detail is diagnostic-only, and a successful operation must not be followed by
-a fresh provider read solely for confirmation. The worker drains up to
-`DOCKET_OPERATION_DRAIN_LIMIT` ready items per poll (default 10), sequentially,
-so small batches retain quota-safe provider ordering without a five-second gap
-between each item.
-
-Google's move endpoint changes the organizing calendar and accepts only
-operator-organized `default` events. Docket rejects Gmail-derived, birthday,
-focus-time, out-of-office, working-location, and non-owned events before
-formulation. System logs retain guest-bearing move evidence because the
-organizing calendar changes even though Docket requests no guest update email.
-
-Lane deletion uses a direct, fail-closed `calendar_delete_lane` operation.
-`unsorted` cannot be deleted. Docket refuses execution while it knows of active
-events, and the provider adapter independently verifies that the complete
-Calendar is empty before deleting it. The conversational sequence for a
-populated lane is therefore move/cancel its events, wait for those operations
-to complete, then explicitly request lane deletion.
-
-Routing precedence is: explicit operator lane, active entity
-`calendar_lane_default`, bounded semantic inference, then `unsorted`. A person
-never chooses a lane. Course reconciliation accepts only the active `academic`
-lane. Standalone formulation rejects a mismatch between its `calendar_lane`
-and the supplied opaque Calendar ID. Conflict checks span every active lane,
-and the Calendar sync worker advances each lane independently.
-
-First failure checks:
-
-1. Run `scripts/setup-google-oauth.sh --force --remote` if OAuth status is
-   invalid after this migration; the older token lacks Calendar administration
-   scopes.
-2. Inspect `calendar_lanes.status`, `calendar_id`, `last_error_code`, and
-   `version`. Never copy an ID from a display name.
-3. For `calendar_lane_unavailable`, provision the named lane or correct the
-   explicit route; do not substitute `unsorted` silently.
-4. For `calendar_lane_mismatch`, compare the proposal event lane to the lane
-   owning its target Calendar ID.
-5. For incomplete conflict results, inspect `calendar_sync_states` for every
-   active lane rather than only the yellow legacy calendar.
-6. For `calendar_lane_series_scope_required`, repeat the migration selection
-   with the returned recurring master and `scope=series`.
-7. For `calendar_lane_not_empty`, migrate or cancel remaining events. If local
-   counts are zero but Google still refuses deletion, inspect unsupported or
-   externally created events directly in that Calendar; Docket will not erase
-   them as a side effect.
-
-`DOCKET_CALENDAR_READS_ENABLED` permits only bounded, paginated snapshots of the
-configured Calendar. `DOCKET_EXTERNAL_WRITES_ENABLED` independently selects the
-real mutation/reconciliation adapter. With writes disabled in production,
-Approve returns `external_writes_disabled` while leaving the approval pending,
-the worker does not claim pending or reconciliation operations, and the write
-provider fails closed if invoked unexpectedly. Production never substitutes
-fake external IDs or records fake success. Reject remains available after
-mutable target state advances because it creates no operation.
-
-Stateful fake write execution remains available only in smoke, development, and
-test environments. Real Calendar reads may be enabled alongside those fakes for
-bounded integration tests, but that mixed mode is not a production behavior.
-Changing the production write gate requires container recreation because the
-provider and operation runner mode are selected at process startup.
-
-When either gate is enabled, Docket loads the authorized-user file and refreshes
-an access token in memory. The read-only credential mount is sufficient because
-the long-lived refresh token is already persisted and access-token refresh does
-not need to rewrite the file. If Google rotates or replaces the refresh token,
-rerun the host OAuth setup deliberately.
-
-Before changing either gate, confirm the fake crash-window and snapshot suite:
-
-```bash
-uv run pytest \
-  tests/integration/test_standalone_calendar_operations.py \
-  tests/integration/test_course_reconciliation.py \
-  tests/integration/test_calendar_read_model.py
-```
-
-After an action attempt, inspect bounded operational state without dumping
-provider bodies or credentials:
-
-```bash
-sudo docker compose exec -T postgres psql -U docket -d docket -x -c '
-select id, operation_type, status, attempt_count, next_attempt_at,
-       last_error_code, provider_correlation
-from operations order by created_at desc limit 10;
-select operation_id, attempt_number, kind, status, error_code,
-       provider_request_id, started_at, completed_at
-from execution_attempts order by started_at desc limit 20;
-select record_id, meeting_id, calendar_id, external_event_id,
-       last_synced_version, updated_at
-from calendar_links order by updated_at desc limit 10;'
-```
-
-Never manually change a `reconciliation_required` operation to `pending` while
-the external outcome is unknown. Exactly one correlation match is linked;
-zero matches wait through the consistency window before the same operation is
-retried; multiple or mismatched results remain visible and emit a system-alert
-outbox event.
-
-## Gmail ingestion and triage recovery
-
-Deploy the Gmail schema and provider code before enabling either Gmail gate.
-The first live phase is read-only:
+For a noisy or stuck case, inspect:
 
 ```text
-DOCKET_GMAIL_INGESTION_ENABLED=true
-DOCKET_GMAIL_WRITES_ENABLED=false
+tri_ -> ctx_ -> source refs
+case_ -> caserev_ -> required/supporting citem_
+proj_ -> delivered Discord message
+reply utt_ -> ses_ -> chg_
 ```
 
-Pause the triage job before changing these values so no body can be read before
-the staged metadata count is inspected:
+Required CaseItems need an Operator-backed terminal disposition. Supporting
+items may become `not_pursued`; that is not the same as Operator rejection. A
+case reply must apply the narrowest effects supported by the utterance.
+
+Useful triage controls are:
 
 ```bash
+scripts/docket gmail-status
 scripts/docket gmail-triage-status
 scripts/docket gmail-triage-pause
-scripts/docket gmail-status
-```
-
-Recreate Docket after changing the values, then force exactly one bounded
-metadata scan:
-
-```bash
-scripts/docket gmail-scan
-scripts/docket gmail-status
-```
-
-`gmail-scan` never invokes Hermes or reads a message body. Review the observed
-and staged counts before resuming or manually running semantic triage. Then
-install or revalidate the isolated profile:
-
-```bash
-scripts/docket setup-triage
-scripts/docket gmail-triage-status
-```
-
-The named job must be `Docket Gmail triage`, run the fixed no-agent launcher,
-and deliver to local logs. The root `hermes cron status` must report that the
-gateway ticker is running. Test the isolated server:
-
-```bash
-sudo docker compose exec -T hermes \
-  hermes -p docket-triage mcp test docket-triage
-```
-
-Expect exactly four tools. The same profile must show no plugins and no Discord
-gateway. If its model credential reports logged out, repair that credential
-with `scripts/docket setup-hermes-auth --triage`; never copy the main OAuth
-file, messaging credentials, or Docket internal-approval credentials into the
-profile.
-
-When a live gate must inspect only explicitly selected disposable sources from
-a larger staged backlog, set `DOCKET_GMAIL_TRIAGE_SOURCE_ALLOWLIST` to a JSON
-array of their exact Docket source UUIDs and recreate Docket. Both
-`gmail-status` and `/health/ready` report only the scope count, never the IDs.
-The claim query enforces the scope before any provider body is refetched.
-Remove the setting and recreate Docket before ordinary backlog processing.
-
-After inspecting the staged metadata, queue exactly one isolated semantic pass:
-
-```bash
 scripts/docket gmail-triage-run
-scripts/docket gmail-triage-status
-```
-
-This is the first command in the rollout that permits transient message-body
-reads. Keep the recurring job paused until that run's durable outcomes and
-redacted logs are verified. The command refuses to run if the recurring job is
-active and invokes the fixed isolated launcher directly; it does not temporarily
-resume or alter the schedule. Resume the 5-minute schedule only after the
-operator-present read-only gate is clean:
-
-```bash
 scripts/docket gmail-triage-resume
 ```
 
-Inspect only bounded metadata:
+The one-shot run requires the recurring job to be paused. Gmail evidence is
+untrusted and triage cannot mutate canonical objects or providers.
 
-```bash
-sudo docker compose exec -T postgres psql -U docket -d docket -x -c '
-select account_id, stream, cursor, last_attempt_at, last_success_at,
-       last_error_code, leased_until, version
-from connector_checkpoints
-where stream = '\''gmail:inbox'\'';
-select id, external_object_id, external_parent_id, source_version,
-       received_at, minimal_headers, status, claimed_by, claimed_until,
-       failure_count, next_attempt_at
-from source_items order by created_at desc limit 50;
-select id, category, title, status, priority, version
-from queue_items order by created_at desc limit 30;'
-```
+## Item, Task, Time, Event, and Reminder diagnosis
 
-Do not query or export a claimed body for diagnosis. A body returned by
-`docket_read_claimed_source` exists only in that isolated agent turn. If a
-source is stuck in `claimed`, wait for `claimed_until`; the next cron must
-reclaim it under a new token. Do not reset the source or checkpoint manually.
-
-Cursor recovery is expected after Gmail invalidates an old history ID. Docket
-performs a bounded overlap scan and deduplicates by exact account, provider
-object, version, and fingerprint. It must not replace this with a
-“newer-than-the-last-interval” query.
-
-### Sender suppression identity diagnosis
-
-Sender suppression never matches a display label directly. The expected chain
-is an exact normalized email `idn_`, an active row in
-`sender_identity_emails`, the parent sender-label `idn_`, and an active `pref_`
-whose `policy_json` contains `{"disposition":"suppress"}`. Inspect the bounded
-agent-facing objects first with exact `src_`, `idn_`, and `pref_` history tools.
-For host-side diagnosis, this query intentionally exposes only sender labels,
-email addresses, association state, and structured policy—not message bodies:
-
-```bash
-sudo docker compose exec -T postgres psql -U docket -d docket -x -c '
-select sender.ref_id as sender_ref, sender.value as sender_label,
-       email.ref_id as email_ref, email.value as email_address,
-       association.status as association_status,
-       preference.ref_id as preference_ref,
-       preference.status as preference_status,
-       preference.policy_json
-from identity_handles sender
-left join sender_identity_emails association
-  on association.sender_identity_handle_id = sender.id
-left join identity_handles email
-  on email.id = association.email_identity_handle_id
-left join preferences preference
-  on preference.target_type = $$identity$$
- and preference.target_ref = sender.ref_id
-where sender.handle_type = $$sender_label$$
-order by sender.normalized_value, email.normalized_value;'
-```
-
-If the label exists without an address, or the Preference exists with an empty
-policy, do not edit these rows manually and do not claim suppression is active.
-Send an explicit correction through the authenticated Docket conversation so
-one ChangeSet can create/reuse the exact email handle, update the sender handle
-with `add_associated_email_ref`, and update the Preference disposition. The old
-utterance, statement, and prior object versions remain provenance.
-
-Autonomous triage never archives or marks mail read. If the operator explicitly
-requests a one-off Gmail housekeeping action, the controlled write path still
-requires all three values:
+Keep primitive boundaries explicit:
 
 ```text
-DOCKET_EXTERNAL_WRITES_ENABLED=true
-DOCKET_GMAIL_INGESTION_ENABLED=true
-DOCKET_GMAIL_WRITES_ENABLED=true
+Item     bounded thing being tracked
+Task     work the Operator needs to do
+Time     due/scheduled/open/expected/effective temporal meaning
+Event    occurrence with scheduling/attendance semantics
+Reminder notification behavior
 ```
 
-Recreate Docket, then publish the one authorized archive proposal against the
-disposable source's exact stored UUID and version:
+A date does not create an Event. A Time calendar marker is a provider projection
+of `time_`, remains distinguishable from `evt_`, and requires an explicit display
+policy and CalendarLane. An Event linked to an Item must be temporally compatible
+with the Time it claims to realize.
+
+For a missing Calendar object:
+
+1. Resolve whether the target is `evt_` or a Time marker (`time_` + `tproj_`).
+2. Verify the lane and active route or projection.
+3. Verify that the committing `chg_` contains a compiler-produced `op_` target.
+4. Inspect Operation and ExecutionAttempt state.
+5. If request transmission may have occurred, reconcile rather than retrying
+   blindly.
+6. Confirm the provider binding and fresh Calendar cache independently.
+
+A Google popup ReminderPlan requires an Event provider binding or an active/
+same-ChangeSet Time projection. Docket queue reminders can target Event or Time
+without turning a deadline into an Event.
+
+## Attachment evidence
+
+An Operator attachment first creates bounded `src_` metadata and, according to
+retention policy, an encrypted blob. Interpretation and mutation wait until
+durable bytes are available. Attachment contents remain untrusted.
+
+Imported Items must point to exact derived source-fragment statements. Exact
+fragment correlation is idempotent, while identical bytes from distinct uploads
+do not silently merge semantic Items. The safe default import scope permits
+context only; Task, Event, Reminder, provider, Preference, and destructive
+effects require explicit Operator scope.
+
+If attachment capture fails, verify the terminal ingest and retention
+disposition without printing plaintext. The encryption key must be retained with
+credential backups or retained blobs cannot be restored.
+
+## Provider operations and reconciliation
+
+Canonical commit and provider execution are separate outcomes. A failed or
+uncertain provider call never rolls back unrelated committed canonical state.
+
+Inspect:
+
+```text
+chg_ -> op_ -> execution attempt -> provider binding
+```
+
+Only retry when the durable state machine proves no transmitted request can be
+duplicated. Unknown-after-transmission uses reconciliation. Never mark an
+operation succeeded to clear a queue or make a deployment pass.
+
+External write gates in production fail closed. Enabling a gate does not itself
+authorize a new semantic effect.
+
+## Deployment and drain
+
+Deployment is distinct from push and requires explicit Operator direction.
+Normal deployment is:
 
 ```bash
-scripts/docket gmail-propose-archive \
-  SOURCE_UUID SOURCE_VERSION OPERATOR_REQUEST_KEY
+scripts/docket predeploy
+scripts/docket deploy
 ```
 
-The command accepts only an already-classified actionable source, rejects a
-newer staged version, binds the immutable action revision to the supplied
-version, deduplicates an existing active proposal, and never returns an
-approval secret. It refreshes the existing daily-thread card rather than
-creating an unrelated queue item. Replaying the same request key returns the
-same result; reusing it with different input is an idempotency conflict.
+`predeploy` requires a clean `main` exactly matching `origin/main`, both GitHub
+CI jobs green for that SHA, production configuration, and safe durable state.
+`deploy` establishes a drain barrier, lets pre-barrier execution leases finish,
+captures later ingress durably for deferred processing, creates a backup,
+upgrades the schema, replaces services, and verifies the result.
 
-Approve only that card. Verify the exact Gmail label and durable operation
-state. If the operation is `reconciliation_required`, let Docket refetch label
-state. Do not click twice, manually change the Gmail label as a recovery step,
-or force the operation back to pending.
+Queued durable operations and outbox rows survive restart; only claimed/in-flight
+work blocks the drain. A drain timeout aborts without cancelling active work.
 
-An older runtime may have accepted Gmail's HTTP 200 label mutation while
-rejecting a response that omitted `historyId` as `gmail_invalid_response`. Do
-not repeat the mutation or edit its operation row. After deploying the
-post-write metadata-refetch fix, promote only that exact failed operation into
-read-only provider reconciliation:
+Deploying the stable Discord ingress itself uses the separately quiesced path:
 
 ```bash
-scripts/docket gmail-reconcile-operation OPERATION_UUID OPERATOR_REQUEST_KEY
+scripts/docket deploy-ingress
 ```
 
-The command refuses every other failure signature and requires durable evidence
-that an execution call began. Reconciliation then observes current Gmail labels
-before deciding the operation outcome.
+Do not manually restart the gateway in the middle of an Operator turn. After an
+unclean lifetime expires, reconciliation preserves any durable domain result and
+marks only evidence-free conversational execution interrupted/unknown.
 
-## Retention and the 72-hour soak
+## Clean reset boundary
 
-The retention worker runs at most once per Los Angeles local day and records
-`retention.cleanup_completed`. It:
+The signed tracked-context amendment authorizes implementation and rehearsal of
+the clean reset. It does not authorize deleting production operator-domain data,
+performing provider mutations, or deploying the reset.
 
-* removes unreferenced ignored source metadata after 30 days;
-* removes other unreferenced source metadata after 365 days;
-* scrubs failed/unknown attempt diagnostics after 90 days;
-* removes execution attempts after 365 days while retaining append-only audit
-  events;
-* removes delivered/cancelled notification rows after 90 days; and
-* removes terminal operation-item results after 365 days only when no active
-  canonical record still references them.
-
-It never deletes canonical records. Queue-linked source metadata remains while
-the queue/audit relationship exists.
-
-After the controlled Gmail gate is clean and the latest encrypted backup has
-been restore-verified, begin the final release soak:
+Read-only rehearsal is available through:
 
 ```bash
-scripts/docket soak-start
-scripts/docket soak-status
+scripts/docket readiness-rehearsal
 ```
 
-The status is derived from PostgreSQL, not a local timer file. It reports
-elapsed time, current gate failures, and visible incidents. It fails release
-completion for disabled Gmail/backup/retention gates, missing Gmail account or
-stale checkpoint, duplicate or unapproved operations, unresolved operations or
-outbox work, expired claims, aged source work, overdue reminders, unreported
-terminal operations, a missing/failed latest backup restore, or a missing
-retention run.
+It snapshots production, restores the matching pre-reset image, exports the
+governance closure, inventories provider effects, creates isolated clean
+databases, and verifies attachment backup/restore. Private evidence remains in
+mode-`0600` ignored backup storage.
 
-Near the end of the 72 hours, create or confirm the latest encrypted backup and
-restore that exact manifest into the disposable database:
+Never execute a production reset without a later exact authenticated Operator
+instruction bound to the reset manifest, backup, and deployment revision. The
+governance ledger, specification-signoff Decisions, sign-off audits, artifact
+identities, provider/account configuration, and required authority provenance
+must survive. Disposable operator-domain state receives no compatibility alias,
+decoder, or synthetic backfill.
+
+## Backup and restore
+
+Create or confirm the encrypted backup:
 
 ```bash
 scripts/docket backup
-DOCKET_BACKUP_AGE_IDENTITY_FILE=secrets/restore/backup_age_identity \
-  scripts/docket verify-restore
-scripts/docket soak-status
-scripts/docket soak-complete
 ```
 
-`soak-complete` exits nonzero until 72 hours have elapsed and every durable
-check is zero. Failed or unknown attempts and system alerts are retained as
-visible incident counts even when recovered; inspect them before accepting the
-completion audit. An active Gmail triage source allowlist also fails the soak;
-the disposable-test scope must not become a permanent production filter.
-
-The unattended backup worker remains once per local day. The explicit
-`scripts/docket backup` command is intentionally forced and replaces the
-retained same-day artifact after a migration or other consequential change.
-
-## Private SearXNG routing
-
-The expected URL from Hermes is:
-
-```text
-http://searxng:8080
-```
-
-It is a Compose-network address, not a host URL. SearXNG publishes no host port;
-the Compose network still permits outbound access so SearXNG can reach search
-engines. Limiting is disabled only because the service is network-private.
-
-First checks:
+Verify restore into disposable PostgreSQL:
 
 ```bash
-sudo docker compose ps searxng
-sudo docker compose exec -T hermes python - <<'PY'
-import urllib.request
-with urllib.request.urlopen("http://searxng:8080/healthz", timeout=5) as response:
-    print(response.status)
-PY
+scripts/docket verify-restore BACKUP_PATH
 ```
 
-Expect HTTP 200. If health passes but Hermes search fails, check that the active
-Hermes configuration selects the `searxng` backend and that `SEARXNG_URL` is
-present without dumping the rest of `.runtime/hermes/.env`.
+An image rollback does not reverse a database migration. Use the exact migration
+recovery plan and verified backup; do not retag an old image against a newer
+schema and hope for compatibility.
 
-Do not publish port 8080 without adding authenticated ingress and revisiting
-the limiter/public-instance settings. The SearXNG secret is delivered as a
-Compose secret, not an environment value.
+## Credentials and external dependencies
 
-## PostgreSQL password mismatch
-
-`POSTGRES_PASSWORD` initializes the `docket` role only when the PostgreSQL
-volume is first created. Changing `.env` does not rotate the role password in an
-existing volume.
-
-If Docket reports authentication failure after credential generation:
-
-1. Confirm the volume already existed.
-2. Rotate the existing `docket` role password to the generated value without
-   printing it.
-3. Recreate Docket with the matching `DOCKET_DATABASE_URL`.
-4. Do not delete the volume as a shortcut; that destroys durable state.
-
-## Full verification
-
-Before declaring the stack healthy after a change:
+Production credentials belong in the configured secret directory, never the
+repository or logs. Reauthorize Hermes only through:
 
 ```bash
-uv run pytest
-uv run ruff check .
-uv run mypy
-sudo docker compose ps
-sudo docker compose exec -T hermes hermes plugins list --plain --no-bundled
-sudo docker compose exec -T hermes hermes mcp test docket
+scripts/docket setup-hermes-auth --main
+scripts/docket setup-hermes-auth --triage
 ```
 
-After backup, database, or migration changes, also run:
+Calendar and Gmail provider identity must resolve through clean `acct_`
+ProviderAccounts. SearXNG is a network-private search dependency for Hermes; it
+is never canonical state or provenance authority.
 
-```bash
-scripts/docket backup
-DOCKET_BACKUP_AGE_IDENTITY_FILE=secrets/restore/backup_age_identity \
-  scripts/docket verify-restore
-```
+## Handoff checklist
 
-For Milestone 3 queue/lifecycle changes, also run:
+Before reporting an operational change complete, record:
 
-```bash
-uv run pytest \
-  tests/unit/test_queue_lifecycle.py \
-  tests/integration/test_queue_rollover.py \
-  tests/integration/test_system_alerts.py \
-  tests/adversarial/test_plugin_actor_gate.py
-```
-
-For Milestone 3.5 Calendar cache/reminder changes, also run:
-
-```bash
-uv run pytest \
-  tests/unit/test_calendar_snapshot_provider.py \
-  tests/integration/test_calendar_read_model.py \
-  tests/adversarial/test_plugin_actor_gate.py
-```
-
-For Calendar control and independent course lifecycle changes, also run:
-
-```bash
-uv run pytest \
-  tests/unit/test_worker_runtime.py \
-  tests/unit/test_internal_projection_wakeup.py \
-  tests/integration/test_standalone_calendar_operations.py \
-  tests/integration/test_course_reconciliation.py \
-  tests/integration/test_mcp_contract.py \
-  tests/integration/test_migrations.py \
-  tests/adversarial/test_plugin_actor_gate.py
-```
-
-For Gmail ingestion, triage, or mutation changes, also run:
-
-```bash
-uv run pytest \
-  tests/integration/test_gmail_ingestion.py \
-  tests/integration/test_gmail_triage.py \
-  tests/integration/test_mcp_contract.py \
-  tests/integration/test_retention.py \
-  tests/integration/test_soak.py
-bash -n scripts/setup-hermes-triage.sh scripts/docket
-```
-
-After deployment, `scripts/docket setup-triage` must discover exactly four
-isolated tools. Do not send `/reload-mcp` merely for this profile: it is separate
-from the interactive Discord MCP registry.
-
-After deploying a tool/schema or skill change, restart the affected services,
-run `hermes mcp test docket`, and send `/reload-mcp` in the active Discord
-session before any live schedule smoke.
-
-For changes to manual Discord persistence, additionally require one real
-Discord remember request, durable source/audit/command evidence, an exact
-replay, an unauthenticated 401, and forged-source rejection.
-
-For entity-registry or inference changes, also run:
-
-```bash
-uv run pytest \
-  tests/unit/test_entities.py \
-  tests/unit/test_entity_mcp_idempotency.py \
-  tests/unit/test_hermes_skill_contract.py \
-  tests/integration/test_mcp_contract.py \
-  tests/integration/test_migrations.py
-```
+- exact behavior changed and public refs used for verification;
+- focused tests plus `scripts/docket check`;
+- `scripts/docket compose-smoke` when required;
+- commits created;
+- whether anything was pushed;
+- whether anything was deployed;
+- whether any production data or provider state changed;
+- remaining reconciliation, reset, or Operator step.
