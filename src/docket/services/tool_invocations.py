@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import uuid
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -59,8 +59,8 @@ class ToolInvocationService:
     def start_changeset_execution(
         self,
         *,
-        request_id: uuid.UUID,
-        trace_id: uuid.UUID,
+        request_id: UUID,
+        trace_ref: str,
         utterance_ref: str,
         actor_ref: str,
         intent_session_ref: str,
@@ -72,7 +72,7 @@ class ToolInvocationService:
         trace_ordinal = int(
             self.session.scalar(
                 select(func.max(ToolInvocation.trace_ordinal)).where(
-                    ToolInvocation.trace_id == trace_id
+                    ToolInvocation.trace_ref == trace_ref
                 )
             )
             or 0
@@ -86,7 +86,6 @@ class ToolInvocationService:
             utterance_refs=[utterance_ref],
             intent_session_ref=intent_session_ref,
             case_ref=case_ref,
-            status="received",
             received_argument_hash=sha256_json(arguments),
             normalized_argument_hash=None,
             result_refs=[],
@@ -95,7 +94,7 @@ class ToolInvocationService:
             semantic_request_ref=semantic_request_ref,
             gateway_instance_ref=gateway_instance_ref,
             mcp_request_id=str(request_id),
-            trace_id=trace_id,
+            trace_ref=trace_ref,
             trace_call_id=f"semantic-request:{semantic_request_ref}:{request_id}",
             trace_ordinal=trace_ordinal,
         )
@@ -118,12 +117,11 @@ class ToolInvocationService:
         )
         if invocation is None:
             raise RuntimeError("ToolInvocation disappeared before completion")
-        if invocation.status != "received":
+        if invocation.transport_state != "running":
             return invocation
         disposition = str(result.get("disposition") or "unknown")[:64]
         ok = bool(result.get("ok") is True)
-        status, domain_state = _status(disposition, ok)
-        invocation.status = status
+        _status_name, domain_state = _status(disposition, ok)
         invocation.normalized_argument_hash = (
             sha256_json(normalized_arguments)
             if normalized_arguments is not None

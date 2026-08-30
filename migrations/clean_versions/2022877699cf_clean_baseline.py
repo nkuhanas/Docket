@@ -278,6 +278,7 @@ def upgrade() -> None:
     op.create_table('execution_leases',
     sa.Column('id', sa.Uuid(), nullable=False),
     sa.Column('lease_key', sa.String(length=512), nullable=False),
+    sa.Column('completion_token', sa.String(length=64), nullable=False),
     sa.Column('lease_kind', sa.String(length=32), nullable=False),
     sa.Column('subject_ref', sa.String(length=40), nullable=True),
     sa.Column('gateway_instance_ref', sa.String(length=40), nullable=True),
@@ -291,6 +292,7 @@ def upgrade() -> None:
     sa.CheckConstraint("lease_kind IN ('interactive_turn', 'triage_turn', 'tool_invocation', 'provider_call', 'outbox_delivery', 'cron_execution')", name='ck_execution_leases_kind'),
     sa.CheckConstraint("status IN ('active', 'completed', 'expired', 'cancelled')", name='ck_execution_leases_status'),
     sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('completion_token', name='uq_execution_leases_completion_token'),
     sa.UniqueConstraint('lease_key', name='uq_execution_leases_key')
     )
     op.create_index('ix_execution_leases_status_expiry', 'execution_leases', ['status', 'lease_expires_at'], unique=False)
@@ -385,17 +387,6 @@ def upgrade() -> None:
     )
     op.create_index('ix_items_kind_status', 'items', ['kind', 'canonical_status'], unique=False)
     op.create_index('ix_items_parent', 'items', ['parent_item_ref'], unique=False)
-    op.create_table('operation_bundles',
-    sa.Column('id', sa.Uuid(), nullable=False),
-    sa.Column('originating_changeset_ref', sa.String(length=40), nullable=False),
-    sa.Column('status', sa.String(length=32), nullable=False),
-    sa.Column('result', sa.JSON(), nullable=True),
-    sa.Column('version', sa.Integer(), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.CheckConstraint("status IN ('pending', 'running', 'succeeded', 'partial_failed', 'failed', 'reconciliation_required')", name='ck_operation_bundles_status'),
-    sa.PrimaryKeyConstraint('id')
-    )
     op.create_table('operator_projections',
     sa.Column('id', sa.Uuid(), nullable=False),
     sa.Column('ref_id', sa.String(length=40), nullable=False),
@@ -1209,7 +1200,6 @@ def upgrade() -> None:
     sa.Column('originating_changeset_ref', sa.String(length=40), nullable=False),
     sa.Column('basis_refs', sa.JSON(), nullable=False),
     sa.Column('canonical_target_refs', sa.JSON(), nullable=False),
-    sa.Column('bundle_id', sa.Uuid(), nullable=True),
     sa.Column('predecessor_operation_id', sa.Uuid(), nullable=True),
     sa.Column('idempotency_key', sa.String(length=512), nullable=False),
     sa.Column('operation_type', sa.String(length=128), nullable=False),
@@ -1225,10 +1215,9 @@ def upgrade() -> None:
     sa.Column('last_error_message', sa.String(length=1000), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.CheckConstraint("operation_type IN ('calendar_create_event', 'calendar_update_event', 'calendar_delete_event', 'gmail_archive_message', 'gmail_trash_message')", name='ck_operations_type'),
+    sa.CheckConstraint("operation_type IN ('calendar_create_event', 'calendar_update_event', 'calendar_update_reminders', 'calendar_cancel_event', 'calendar_configure_lane', 'calendar_delete_lane')", name='ck_operations_type'),
     sa.CheckConstraint("status IN ('pending', 'running', 'succeeded', 'partial_failed', 'failed', 'reconciliation_required')", name='ck_operations_status'),
     sa.ForeignKeyConstraint(['account_id'], ['provider_accounts.id'], ondelete='RESTRICT'),
-    sa.ForeignKeyConstraint(['bundle_id'], ['operation_bundles.id'], ondelete='RESTRICT'),
     sa.ForeignKeyConstraint(['predecessor_operation_id'], ['operations.id'], ondelete='RESTRICT'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('idempotency_key'),
@@ -1807,7 +1796,6 @@ def downgrade() -> None:
     op.drop_table('operator_utterances')
     op.drop_index('ix_operator_projections_primary_created', table_name='operator_projections')
     op.drop_table('operator_projections')
-    op.drop_table('operation_bundles')
     op.drop_index('ix_items_parent', table_name='items')
     op.drop_index('ix_items_kind_status', table_name='items')
     op.drop_table('items')

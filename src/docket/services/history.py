@@ -11,38 +11,51 @@ from sqlalchemy.orm import Session
 from docket.domain.errors import DocketError
 from docket.domain.public_refs import parse_public_ref
 from docket.models import (
-    Account,
     Affiliation,
     AgentResponse,
     AttentionCase,
     AttentionCaseRevision,
     AuditEvent,
+    BriefEntry,
     CalendarLane,
     CanonicalEvent,
     CaseItem,
     ChangeSet,
     Conflict,
     ContextPacket,
+    ConversationalToolTrace,
     DailyBrief,
     Decision,
+    DeferredIngress,
+    DrainBarrier,
     Entity,
     Fact,
+    GatewayLifetime,
+    GmailSource,
     IdentityBinding,
     IdentityHandle,
     IntentSession,
     IntentTurn,
     Interaction,
     InterpretedStatement,
+    Item,
     LaneRoutingDecision,
     Operation,
+    OperatorProjection,
     OperatorUtterance,
+    PersistedSemanticOption,
     Preference,
-    ProvenanceSource,
+    ProviderAccount,
     Relationship,
+    ReminderPlan,
     RuntimeLogEntry,
-    SourceItem,
+    SemanticRequest,
+    SemanticRequestAttempt,
+    Source,
+    Task,
+    TemporalBinding,
+    TemporalCalendarProjection,
     ToolInvocation,
-    TriageBriefEntry,
     TriageRun,
 )
 from docket.services.source_identities import (
@@ -65,7 +78,7 @@ _PREFIX_MODELS: dict[str, tuple[str, type[Any], str]] = {
     "ses": ("intent_session", IntentSession, "created_at"),
     "turn": ("intent_turn", IntentTurn, "created_at"),
     "chg": ("changeset", ChangeSet, "created_at"),
-    "cnf": ("conflict", Conflict, "created_at"),
+    "conf": ("conflict", Conflict, "created_at"),
     "ent": ("entity", Entity, "created_at"),
     "idn": ("identity_handle", IdentityHandle, "created_at"),
     "aff": ("affiliation", Affiliation, "created_at"),
@@ -76,25 +89,36 @@ _PREFIX_MODELS: dict[str, tuple[str, type[Any], str]] = {
     "pref": ("preference", Preference, "created_at"),
     "route": ("lane_routing_decision", LaneRoutingDecision, "decided_at"),
     "evt": ("canonical_event", CanonicalEvent, "created_at"),
-    "src": ("source", SourceItem, "created_at"),
+    "src": ("source", Source, "created_at"),
     "brief": ("daily_brief", DailyBrief, "created_at"),
     "tri": ("triage_run", TriageRun, "started_at"),
     "ctx": ("context_packet", ContextPacket, "created_at"),
     "case": ("attention_case", AttentionCase, "created_at"),
     "caserev": ("attention_case_revision", AttentionCaseRevision, "created_at"),
-    "item": ("case_item", CaseItem, "created_at"),
+    "item": ("item", Item, "created_at"),
+    "task": ("task", Task, "created_at"),
+    "time": ("temporal_binding", TemporalBinding, "created_at"),
+    "tproj": ("temporal_calendar_projection", TemporalCalendarProjection, "created_at"),
+    "rem": ("reminder_plan", ReminderPlan, "created_at"),
+    "citem": ("case_item", CaseItem, "created_at"),
+    "bentry": ("brief_entry", BriefEntry, "created_at"),
+    "acct": ("provider_account", ProviderAccount, "created_at"),
     "op": ("operation", Operation, "created_at"),
     "call": ("tool_invocation", ToolInvocation, "started_at"),
     "aud": ("audit_event", AuditEvent, "created_at"),
     "log": ("runtime_log_entry", RuntimeLogEntry, "occurred_at"),
+    "proj": ("operator_projection", OperatorProjection, "created_at"),
+    "opt": ("persisted_semantic_option", PersistedSemanticOption, "created_at"),
+    "trace": ("conversational_tool_trace", ConversationalToolTrace, "created_at"),
+    "sreq": ("semantic_request", SemanticRequest, "created_at"),
+    "sattempt": ("semantic_request_attempt", SemanticRequestAttempt, "started_at"),
+    "gwy": ("gateway_lifetime", GatewayLifetime, "started_at"),
+    "drain": ("drain_barrier", DrainBarrier, "requested_at"),
+    "ing": ("deferred_ingress", DeferredIngress, "created_at"),
 }
 
 _SEARCH_SPECS: list[tuple[str, type[Any], str]] = [
     *_PREFIX_MODELS.values(),
-    ("attention_case_revision", AttentionCaseRevision, "created_at"),
-    ("triage_brief_entry", TriageBriefEntry, "created_at"),
-    ("source", ProvenanceSource, "created_at"),
-    ("provider_identity", Account, "created_at"),
 ]
 
 
@@ -224,7 +248,8 @@ class HistoryService:
                 "caller_profile": item.caller_profile,
                 "actor_ref": item.actor_ref,
                 "utterance_refs": item.utterance_refs,
-                "status": item.status,
+                "transport_state": item.transport_state,
+                "domain_state": item.domain_state,
                 "result_refs": item.result_refs,
                 "result_disposition": item.result_disposition,
                 "error_code": item.error_code,
@@ -237,9 +262,12 @@ class HistoryService:
                 "conversation_ref": item.conversation_ref,
                 "source_utterance_ref": item.source_utterance_ref,
                 "case_refs": item.case_refs,
+                "case_revision_refs": item.case_revision_refs,
                 "brief_ref": item.brief_ref,
                 "trusted_context_refs": item.trusted_context_refs,
-                "state": item.state,
+                "semantic_state": item.semantic_state,
+                "commit_state": item.commit_state,
+                "semantic_request_ref": item.semantic_request_ref,
                 "version": item.version,
                 "committed_changeset_ref": item.committed_changeset_ref,
                 "created_at": _iso(item.created_at),
@@ -323,12 +351,15 @@ class HistoryService:
         if isinstance(item, AttentionCaseRevision):
             return {
                 **base,
-                "legacy_ref_id": item.legacy_ref_id,
                 "case_ref": item.case_ref,
                 "revision": item.revision,
                 "semantic_classes": item.semantic_classes,
-                "item_refs": item.item_refs,
+                "case_item_refs": item.case_item_refs,
                 "source_refs": item.source_refs,
+                "admission_rule_ref": item.admission_rule_ref,
+                "admission_basis_refs": item.admission_basis_refs,
+                "required_case_item_refs": item.required_case_item_refs,
+                "canonical_consequence_classes": item.canonical_consequence_classes,
                 "content_hash": item.content_hash,
                 "created_at": _iso(item.created_at),
             }
@@ -349,7 +380,52 @@ class HistoryService:
                 "version": item.version,
                 "created_at": _iso(item.created_at),
             }
-        if isinstance(item, TriageBriefEntry):
+        if isinstance(item, Item):
+            return {
+                **base,
+                "title": item.title,
+                "kind": item.kind,
+                "context_entity_refs": item.context_entity_refs,
+                "parent_item_ref": item.parent_item_ref,
+                "canonical_status": item.canonical_status,
+                "basis_refs": item.basis_refs,
+                "decision_refs": item.decision_refs,
+                "source_refs": item.source_refs,
+                "created_by_changeset_ref": item.created_by_changeset_ref,
+                "version": item.version,
+                "created_at": _iso(item.created_at),
+            }
+        if isinstance(item, Task):
+            return {
+                **base,
+                "item_ref": item.item_ref,
+                "title": item.title,
+                "task_state": item.task_state,
+                "priority": item.priority,
+                "canonical_status": item.canonical_status,
+                "completed_at": _iso(item.completed_at),
+                "basis_refs": item.basis_refs,
+                "source_refs": item.source_refs,
+                "created_by_changeset_ref": item.created_by_changeset_ref,
+                "version": item.version,
+                "created_at": _iso(item.created_at),
+            }
+        if isinstance(item, TemporalBinding):
+            return {
+                **base,
+                "subject_ref": item.subject_ref,
+                "role": item.role,
+                "binding_key": item.binding_key,
+                "temporal_value": item.temporal_value,
+                "canonical_status": item.canonical_status,
+                "basis_refs": item.basis_refs,
+                "decision_refs": item.decision_refs,
+                "source_refs": item.source_refs,
+                "created_by_changeset_ref": item.created_by_changeset_ref,
+                "version": item.version,
+                "created_at": _iso(item.created_at),
+            }
+        if isinstance(item, BriefEntry):
             return {
                 **base,
                 "source_ref": item.source_ref,
@@ -523,7 +599,7 @@ class HistoryService:
                 "created_at": _iso(item.created_at),
                 "published_at": _iso(item.published_at),
             }
-        if isinstance(item, SourceItem):
+        if isinstance(item, GmailSource):
             return {
                 **base,
                 "provider": item.provider,
@@ -534,7 +610,7 @@ class HistoryService:
                 "received_at": _iso(item.received_at),
                 "created_at": _iso(item.created_at),
             }
-        if isinstance(item, ProvenanceSource):
+        if isinstance(item, Source):
             return {
                 **base,
                 "source_kind": item.source_kind,
@@ -543,10 +619,9 @@ class HistoryService:
                 "content_hash": item.content_hash,
                 "created_at": _iso(item.created_at),
             }
-        if isinstance(item, Account):
+        if isinstance(item, ProviderAccount):
             return {
                 **base,
-                "source_kind": "provider_identity",
                 "provider": item.provider,
                 "external_account_id": item.external_account_id,
                 "display_name": item.display_name,
@@ -660,27 +735,13 @@ class HistoryService:
                 message="This public-reference type is not available in the current migration.",
             )
         object_type, model, _time_field = spec
-        item = self.session.scalar(select(model).where(model.ref_id == ref_id))
+        item = (
+            self.session.scalar(select(GmailSource).where(GmailSource.ref_id == ref_id))
+            if prefix == "src"
+            else self.session.scalar(select(model).where(model.ref_id == ref_id))
+        )
         if item is None and prefix == "src":
-            item = self.session.scalar(
-                select(ProvenanceSource).where(ProvenanceSource.ref_id == ref_id)
-            )
-        if item is None and prefix == "src":
-            item = self.session.scalar(select(Account).where(Account.ref_id == ref_id))
-        if item is None and prefix == "case":
-            item = self.session.scalar(
-                select(AttentionCaseRevision).where(
-                    AttentionCaseRevision.legacy_ref_id == ref_id
-                )
-            )
-            if item is not None:
-                object_type = "attention_case_revision"
-        if item is None and prefix == "item":
-            item = self.session.scalar(
-                select(TriageBriefEntry).where(TriageBriefEntry.ref_id == ref_id)
-            )
-            if item is not None:
-                object_type = "triage_brief_entry"
+            item = self.session.scalar(select(Source).where(Source.ref_id == ref_id))
         if item is None:
             raise DocketError(code="history_entry_not_found", message="Public reference not found.")
         entry = self._summary(object_type, item)
@@ -729,13 +790,13 @@ class HistoryService:
                 entry["summary"] = item.summary
             elif isinstance(item, CaseItem):
                 entry["payload_json"] = item.payload_json
-            elif isinstance(item, TriageBriefEntry):
+            elif isinstance(item, BriefEntry):
                 entry["summary"] = item.summary
             elif isinstance(item, Fact):
                 entry["value_json"] = item.value_json
                 entry["decision_refs"] = item.decision_refs
                 entry["source_refs"] = item.source_refs
-            elif isinstance(item, ProvenanceSource):
+            elif isinstance(item, Source):
                 entry["metadata_json"] = item.metadata_json
             elif isinstance(item, IdentityHandle):
                 bindings = list(

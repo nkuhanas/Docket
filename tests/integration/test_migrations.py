@@ -83,9 +83,7 @@ def test_clean_baseline_matches_current_metadata(tmp_path, monkeypatch) -> None:
     assert set(inspect(engine).get_table_names()) <= {"alembic_version"}
 
     command.upgrade(config, "head")
-    assert set(inspect(engine).get_table_names()) - {"alembic_version"} == set(
-        Base.metadata.tables
-    )
+    assert set(inspect(engine).get_table_names()) - {"alembic_version"} == set(Base.metadata.tables)
 
     engine.dispose()
     clear_settings_cache()
@@ -106,15 +104,16 @@ def test_clean_namespace_columns_are_unambiguous(tmp_path, monkeypatch) -> None:
     assert "selected_option_ref" in {
         column["name"] for column in inspector.get_columns("operator_utterances")
     }
-    assert "trace_ref" in {
-        column["name"] for column in inspector.get_columns("tool_invocations")
-    }
-    assert "lease_key" in {
-        column["name"] for column in inspector.get_columns("execution_leases")
-    }
-    assert "ref_id" not in {
-        column["name"] for column in inspector.get_columns("execution_leases")
-    }
+    invocation_columns = {column["name"] for column in inspector.get_columns("tool_invocations")}
+    assert {
+        "trace_ref",
+        "transport_state",
+        "domain_state",
+        "result_disposition",
+    }.issubset(invocation_columns)
+    assert "status" not in invocation_columns
+    assert "lease_key" in {column["name"] for column in inspector.get_columns("execution_leases")}
+    assert "ref_id" not in {column["name"] for column in inspector.get_columns("execution_leases")}
 
     engine.dispose()
     clear_settings_cache()
