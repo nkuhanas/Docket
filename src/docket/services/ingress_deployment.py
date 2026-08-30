@@ -4,21 +4,24 @@ import copy
 import uuid
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from docket.domain.canonical import sha256_json
+from docket.domain.public_refs import new_public_ref
 from docket.models import (
     AttentionCase,
     DeferredIngress,
     IntentSession,
+    OperatorProjection,
     OutboxEvent,
     PersistedSemanticOption,
-    SemanticPromptProjection,
+    ProjectionDelivery,
 )
 from docket.providers.discord import DiscordProjectionAdapter
 
 _QUIESCED = "ingress_deployment_quiesced"
+_REGENERATED = "ingress_deployment_regenerated"
 
 
 def _rebase_case_execution(
@@ -67,8 +70,15 @@ def _rebase_case_execution(
     return result
 
 
+def _discord_message_parts(value: str) -> tuple[str, str, str]:
+    parts = value.split(":")
+    if len(parts) != 4 or parts[0] != "discord_message":
+        raise RuntimeError("projection delivery has no exact Discord message binding")
+    return parts[1], parts[2], parts[3]
+
+
 class IngressDeploymentService:
-    """Quiesce and regenerate semantic controls around an ingress-only rollout."""
+    """Quiesce and regenerate clean semantic options around an ingress rollout."""
 
     def __init__(
         self,
@@ -82,31 +92,35 @@ class IngressDeploymentService:
         with self.session_factory() as session:
             rows = list(
                 session.execute(
-                    select(
-                        SemanticPromptProjection.id,
-                        SemanticPromptProjection.ref_id,
-                        SemanticPromptProjection.projection_version,
-                        SemanticPromptProjection.channel_id,
-                        SemanticPromptProjection.message_id,
+                    select(OperatorProjection, ProjectionDelivery)
+                    .join(
+                        ProjectionDelivery,
+                        ProjectionDelivery.projection_id == OperatorProjection.id,
                     )
                     .where(
-                        SemanticPromptProjection.status == "delivered",
-                        SemanticPromptProjection.message_id.is_not(None),
+                        OperatorProjection.projection_kind == "clarification",
+                        ProjectionDelivery.status == "delivered",
+                        ProjectionDelivery.external_message_ref.is_not(None),
+                        ProjectionDelivery.last_error_code.is_(None),
                     )
-                    .order_by(SemanticPromptProjection.created_at)
+                    .order_by(OperatorProjection.created_at)
                 )
             )
         quiesced_refs: list[str] = []
-        for projection_id, projection_ref, version, channel_id, message_id in rows:
+        for projection, delivery in rows:
+            assert delivery.external_message_ref is not None
+            _guild_id, channel_id, message_id = _discord_message_parts(
+                delivery.external_message_ref
+            )
             request = {
                 "request_id": str(uuid.uuid4()),
-                "projection_id": str(projection_id),
-                "projection_ref": projection_ref,
-                "projection_version": version,
+                "projection_id": str(projection.id),
+                "projection_ref": projection.ref_id,
+                "projection_version": projection.render_schema_version,
                 "channel_id": channel_id,
                 "message_id": message_id,
             }
-            acknowledgement = self.adapter.quiesce_semantic_prompt(projection_id, request)
+            acknowledgement = self.adapter.quiesce_semantic_prompt(projection.id, request)
             if not all(
                 acknowledgement.get(field) == request[field]
                 for field in (
@@ -117,26 +131,13 @@ class IngressDeploymentService:
                     "message_id",
                 )
             ) or acknowledgement.get("quiesced") is not True:
-                raise RuntimeError(
-                    "Discord returned an invalid semantic quiescence acknowledgement"
-                )
+                raise RuntimeError("Discord returned an invalid quiescence acknowledgement")
             with self.session_factory.begin() as session:
-                projection = session.get(
-                    SemanticPromptProjection,
-                    projection_id,
-                    with_for_update=True,
-                )
-                if projection is None:
-                    raise RuntimeError("quiesced semantic projection disappeared")
-                if projection.status == "delivered":
-                    projection.status = "superseded"
-                    projection.last_error_code = _QUIESCED
-                elif not (
-                    projection.status == "superseded"
-                    and projection.last_error_code == _QUIESCED
-                ):
-                    raise RuntimeError("semantic projection changed during ingress quiescence")
-            quiesced_refs.append(projection_ref)
+                stored = session.get(ProjectionDelivery, delivery.id, with_for_update=True)
+                if stored is None or stored.status != "delivered":
+                    raise RuntimeError("projection delivery changed during ingress quiescence")
+                stored.last_error_code = _QUIESCED
+            quiesced_refs.append(projection.ref_id)
         return {
             "ok": True,
             "state": "quiesced",
@@ -148,14 +149,15 @@ class IngressDeploymentService:
         regenerated_refs: list[str] = []
         skipped_refs: list[str] = []
         with self.session_factory.begin() as session:
-            projections = list(
-                session.scalars(
-                    select(SemanticPromptProjection)
-                    .where(
-                        SemanticPromptProjection.status == "superseded",
-                        SemanticPromptProjection.last_error_code == _QUIESCED,
+            rows = list(
+                session.execute(
+                    select(OperatorProjection, ProjectionDelivery)
+                    .join(
+                        ProjectionDelivery,
+                        ProjectionDelivery.projection_id == OperatorProjection.id,
                     )
-                    .order_by(SemanticPromptProjection.created_at)
+                    .where(ProjectionDelivery.last_error_code == _QUIESCED)
+                    .order_by(OperatorProjection.created_at)
                     .with_for_update()
                 )
             )
@@ -169,11 +171,11 @@ class IngressDeploymentService:
                 )
             ]
             selected_projection_refs = {
-                str(binding.get("prompt_projection_ref"))
+                str(binding.get("projection_ref"))
                 for binding in pending_bindings
-                if binding.get("prompt_projection_ref")
+                if binding.get("projection_ref")
             }
-            for projection in projections:
+            for projection, delivery in rows:
                 intent_session = session.scalar(
                     select(IntentSession).where(
                         IntentSession.ref_id == projection.intent_session_ref
@@ -185,14 +187,16 @@ class IngressDeploymentService:
                     or intent_session.semantic_state != "needs_clarification"
                 ):
                     skipped_refs.append(projection.ref_id)
+                    delivery.last_error_code = _REGENERATED
                     continue
-                regenerated = self._clone_projection(
+                replacement = self._clone_projection(
                     session,
                     projection=projection,
+                    delivery=delivery,
                     intent_session=intent_session,
                 )
-                projection.last_error_code = "ingress_deployment_regenerated"
-                regenerated_refs.append(regenerated.ref_id)
+                delivery.last_error_code = _REGENERATED
+                regenerated_refs.append(replacement.ref_id)
         return {
             "ok": True,
             "state": "regenerated",
@@ -205,23 +209,19 @@ class IngressDeploymentService:
     def _clone_projection(
         session: Session,
         *,
-        projection: SemanticPromptProjection,
+        projection: OperatorProjection,
+        delivery: ProjectionDelivery,
         intent_session: IntentSession,
-    ) -> SemanticPromptProjection:
+    ) -> OperatorProjection:
         prior_options = list(
             session.scalars(
                 select(PersistedSemanticOption)
-                .where(PersistedSemanticOption.prompt_projection_id == projection.id)
+                .where(PersistedSemanticOption.projection_id == projection.id)
                 .order_by(PersistedSemanticOption.created_at, PersistedSemanticOption.option_id)
             )
         )
         if not 1 <= len(prior_options) <= 4:
             raise RuntimeError("quiesced projection has an invalid option count")
-        current_version = session.scalar(
-            select(func.max(SemanticPromptProjection.projection_version)).where(
-                SemanticPromptProjection.intent_session_ref == projection.intent_session_ref
-            )
-        )
         current_case_ref = (
             intent_session.case_refs[0]
             if len(intent_session.case_refs) == 1
@@ -233,35 +233,20 @@ class IngressDeploymentService:
             else projection.case_revision_ref
         )
         current_case = (
-            session.scalar(
-                select(AttentionCase).where(AttentionCase.ref_id == current_case_ref)
-            )
+            session.scalar(select(AttentionCase).where(AttentionCase.ref_id == current_case_ref))
             if current_case_ref is not None
             else None
         )
-        replacement = SemanticPromptProjection(
-            intent_session_ref=projection.intent_session_ref,
-            projection_version=int(current_version or 0) + 1,
-            guild_id=projection.guild_id,
-            channel_id=projection.channel_id,
-            parent_channel_id=projection.parent_channel_id,
-            source_message_id=projection.source_message_id,
-            question_text=projection.question_text,
-            case_ref=current_case_ref,
-            case_revision_ref=current_case_revision_ref,
-            render_sha256="0" * 64,
-            component_sha256="0" * 64,
-            status="pending",
-        )
-        session.add(replacement)
-        session.flush()
-        component_options: list[dict[str, str]] = []
+        projection_id = uuid.uuid4()
+        projection_ref = new_public_ref("proj")
+        option_rows: list[PersistedSemanticOption] = []
+        option_render: list[dict[str, str]] = []
+        option_components: list[dict[str, str]] = []
         for prior in prior_options:
             preconditions = copy.deepcopy(prior.execution_preconditions_json)
             preconditions.update(
                 {
-                    "prompt_projection_ref": replacement.ref_id,
-                    "prompt_projection_version": replacement.projection_version,
+                    "projection_ref": projection_ref,
                     "intent_session_version": intent_session.version,
                     "case_ref": current_case_ref,
                     "case_revision_ref": current_case_revision_ref,
@@ -275,7 +260,7 @@ class IngressDeploymentService:
                 and current_case_ref in expected_versions
             ):
                 expected_versions[current_case_ref] = current_case.version
-            compilation_template = _rebase_case_execution(
+            template = _rebase_case_execution(
                 copy.deepcopy(prior.compilation_template_json),
                 case_ref=current_case_ref,
                 old_revision_ref=prior.case_revision_ref,
@@ -283,58 +268,87 @@ class IngressDeploymentService:
                 case_version=current_case.version if current_case is not None else None,
             )
             option = PersistedSemanticOption(
-                prompt_projection_id=replacement.id,
-                prompt_projection_ref=replacement.ref_id,
-                prompt_projection_version=replacement.projection_version,
+                id=uuid.uuid4(),
+                ref_id=new_public_ref("opt"),
+                projection_id=projection_id,
+                projection_ref=projection_ref,
                 option_id=prior.option_id,
                 visible_text=prior.visible_text,
                 action_kind=prior.action_kind,
                 authority_scope_json=copy.deepcopy(prior.authority_scope_json),
                 execution_preconditions_json=preconditions,
-                compilation_template_json=compilation_template,
+                compilation_template_json=template,
                 case_ref=current_case_ref,
                 case_revision_ref=current_case_revision_ref,
                 intent_session_ref=prior.intent_session_ref,
                 authority_scope_hash=prior.authority_scope_hash,
                 precondition_hash=sha256_json(preconditions),
             )
-            session.add(option)
-            component_options.append(
+            option_rows.append(option)
+            option_render.append(
+                {"option_ref": option.ref_id, "visible_text": option.visible_text}
+            )
+            option_components.append(
                 {
-                    "option_id": option.option_id,
+                    "option_ref": option.ref_id,
                     "authority_scope_hash": option.authority_scope_hash,
                     "precondition_hash": option.precondition_hash,
                 }
             )
+        prior_render = projection.semantic_content.get("render", {})
+        question = str(prior_render.get("question", "Choose how Docket should proceed."))
         render = {
-            "question": replacement.question_text,
-            "options": [option.visible_text for option in prior_options],
-            "intent_session_ref": replacement.intent_session_ref,
-            "case_ref": replacement.case_ref,
-            "case_revision_ref": replacement.case_revision_ref,
+            "question": question,
+            "options": option_render,
+            "intent_session_ref": intent_session.ref_id,
+            "case_ref": current_case_ref,
+            "case_revision_ref": current_case_revision_ref,
         }
-        replacement.render_sha256 = sha256_json(render)
-        replacement.component_sha256 = sha256_json(
-            {
-                "projection_ref": replacement.ref_id,
-                "projection_version": replacement.projection_version,
-                "options": component_options,
-            }
+        component_binding = {
+            "projection_ref": projection_ref,
+            "options": option_components,
+        }
+        visible_text = question + "\n\n" + "\n".join(
+            f"{index}. {option.visible_text}"
+            for index, option in enumerate(option_rows, start=1)
+        )
+        replacement = OperatorProjection(
+            id=projection_id,
+            ref_id=projection_ref,
+            projection_kind="clarification",
+            operator_ref=projection.operator_ref,
+            primary_public_ref=current_case_ref or intent_session.ref_id,
+            primary_revision_ref=current_case_revision_ref,
+            supersedes_projection_ref=projection.ref_id,
+            intent_session_ref=intent_session.ref_id,
+            case_ref=current_case_ref,
+            case_revision_ref=current_case_revision_ref,
+            semantic_content={"render": render, "component_binding": component_binding},
+            visible_text=visible_text,
+            render_schema_version=projection.render_schema_version,
+            render_sha256=sha256_json(render),
+            component_sha256=sha256_json(component_binding),
+            basis_refs=list(projection.basis_refs),
+        )
+        session.add_all([replacement, *option_rows])
+        session.flush()
+        session.add(
+            ProjectionDelivery(
+                projection_id=replacement.id,
+                projection_ref=replacement.ref_id,
+                transport=delivery.transport,
+                destination_ref=delivery.destination_ref,
+                source_message_ref=delivery.source_message_ref,
+                status="pending",
+            )
         )
         session.add(
             OutboxEvent(
                 event_type="discord.semantic_prompt.requested",
-                aggregate_type="semantic_prompt_projection",
+                aggregate_type="operator_projection",
                 aggregate_id=replacement.id,
-                deduplication_key=(
-                    f"semantic_prompt:{replacement.ref_id}:"
-                    f"v{replacement.projection_version}"
-                ),
-                payload={
-                    "projection_ref": replacement.ref_id,
-                    "projection_version": replacement.projection_version,
-                    "reason": "ingress_deployment_regeneration",
-                },
+                deduplication_key=f"semantic_prompt:{replacement.ref_id}",
+                payload={"projection_ref": replacement.ref_id},
                 status="pending",
             )
         )
