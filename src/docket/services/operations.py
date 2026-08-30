@@ -1,49 +1,27 @@
+from __future__ import annotations
+
 import uuid
-from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta
+from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from docket.config import get_settings
 from docket.domain.canonical import sha256_json
-from docket.domain.enums import (
-    ActionStatus,
-    AttemptKind,
-    AttemptStatus,
-    OperationStatus,
-    OutboxStatus,
-    QueueItemStatus,
-)
+from docket.domain.enums import AttemptKind, AttemptStatus, OperationStatus
 from docket.domain.errors import DocketError
 from docket.models import (
-    Action,
-    ActionRevision,
-    Approval,
     AuditEvent,
     CalendarEventCache,
     CalendarLane,
-    CalendarLink,
-    CalendarReminderPlan,
-    CalendarSyncState,
-    CanonicalEvent,
-    Entity,
-    EntityResolution,
     ExecutionAttempt,
     Operation,
-    OperationBundle,
-    OperationItem,
-    OutboxEvent,
+    OperationTarget,
     ProviderEventBinding,
-    QueueItem,
-    Record,
-    ReminderRule,
-    SourceItem,
 )
 from docket.models.base import utc_now
-from docket.policy import BATCH_CALENDAR_ACTION_TYPES, GMAIL_MUTATION_ACTION_TYPES
 from docket.providers.google.calendar import (
     CalendarEventRequest,
     CalendarEventResult,
@@ -55,74 +33,51 @@ from docket.providers.google.calendar import (
     CalendarUnknownOutcome,
     event_matches_request,
 )
-from docket.providers.google.gmail import (
-    GmailMutationProvider,
-    GmailMutationRequest,
-    GmailMutationResult,
-    GmailProviderError,
-    GmailUnknownOutcome,
-)
-from docket.services.brief_projection import operation_projection_target
-from docket.services.operational_logs import enqueue_action_system_log
-
-
-def _as_utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 @dataclass(frozen=True, slots=True)
 class ClaimedOperation:
     operation_id: uuid.UUID
+    operation_target_id: uuid.UUID
     attempt_id: uuid.UUID
     lease_token: uuid.UUID
     operation_type: str
     provider_correlation: str
     parameters: dict[str, Any]
     attempt_number: int
-    operation_item_id: uuid.UUID | None = None
 
     def calendar_request(self) -> CalendarEventRequest:
         event = self.parameters.get("event")
         event_spec = dict(event) if isinstance(event, dict) else None
-        provider_before = self.parameters.get("provider_before")
-        before = dict(provider_before) if isinstance(provider_before, dict) else {}
+        before = self.parameters.get("provider_before")
+        provider_before = dict(before) if isinstance(before, dict) else {}
         summary = (
             str(event_spec["title"])
             if event_spec is not None
-            else str(self.parameters.get("summary") or before.get("summary") or "Docket event")
+            else str(provider_before.get("summary") or "Docket event")
         )
-
-        schedule = self.parameters.get("schedule")
-        reminder_plan = self.parameters.get("reminder_plan")
+        plan = self.parameters.get("reminder_plan")
         return CalendarEventRequest(
-            calendar_id=str(
-                self.parameters.get("source_calendar_id") or self.parameters["calendar_id"]
-            ),
+            calendar_id=str(self.parameters["calendar_id"]),
             provider_correlation=self.provider_correlation,
             summary=summary,
-            schedule=dict(schedule) if isinstance(schedule, dict) else None,
             external_event_id=self.parameters.get("external_event_id"),
             provider_etag=self.parameters.get("provider_etag"),
             event_spec=event_spec,
-            reminder_plan=(dict(reminder_plan) if isinstance(reminder_plan, dict) else None),
+            reminder_plan=dict(plan) if isinstance(plan, dict) else None,
             logical_key=self.parameters.get("logical_key"),
             priority=str(self.parameters.get("priority", "normal")),
-            priority_basis=str(self.parameters.get("priority_basis", "default")),
+            priority_basis=str(self.parameters.get("priority_basis", "explicit_operator")),
             reminder_plan_sha256=self.parameters.get("reminder_plan_sha256"),
-            origin_kind=self.parameters.get("origin_kind"),
+            origin_kind=(
+                "temporal_projection"
+                if self.parameters.get("target_kind") == "temporal_projection"
+                else "canonical_event"
+            ),
             operation_type=self.operation_type,
-            destination_calendar_id=self.parameters.get("destination_calendar_id"),
         )
 
-    def gmail_request(self) -> GmailMutationRequest:
-        return GmailMutationRequest(
-            message_id=str(self.parameters["message_id"]),
-            source_version=str(self.parameters["source_version"]),
-            remove_label_id=str(self.parameters["remove_label_id"]),
-            provider_correlation=self.provider_correlation,
-        )
-
-    def calendar_lane_request(self, *, create_if_missing: bool = True) -> CalendarLaneRequest:
+    def lane_request(self, *, create_if_missing: bool) -> CalendarLaneRequest:
         return CalendarLaneRequest(
             lane=str(self.parameters["lane"]),
             display_name=str(self.parameters["display_name"]),
@@ -134,61 +89,60 @@ class ClaimedOperation:
 
 
 class OperationRunner:
+    """Execute and reconcile clean provider Operations without proposal rows."""
+
     def __init__(
         self,
         session_factory: sessionmaker[Session],
         provider: CalendarProvider,
         *,
-        gmail_provider: GmailMutationProvider | None = None,
         lease_seconds: int = 60,
         max_attempts: int = 5,
         consistency_window_seconds: int = 30,
         execution_enabled: bool = True,
-        gmail_execution_enabled: bool = False,
     ) -> None:
         self.session_factory = session_factory
         self.provider = provider
-        self.gmail_provider = gmail_provider
         self.lease_seconds = lease_seconds
         self.max_attempts = max_attempts
         self.consistency_window_seconds = consistency_window_seconds
         self.execution_enabled = execution_enabled
-        self.gmail_execution_enabled = gmail_execution_enabled
 
     @staticmethod
-    def _bound_entities(
-        session: Session, operation: Operation
-    ) -> tuple[ActionRevision, Action, QueueItem]:
-        revision = session.get(ActionRevision, operation.action_revision_id)
-        if revision is None:
-            raise DocketError(code="invalid_operation_state", message="Action revision is missing.")
-        action = session.get(Action, revision.action_id)
-        if action is None or action.queue_item_id is None:
-            raise DocketError(code="invalid_operation_state", message="Action state is missing.")
-        queue_item = session.get(QueueItem, action.queue_item_id)
-        if queue_item is None:
-            raise DocketError(code="invalid_operation_state", message="Queue item is missing.")
-        return revision, action, queue_item
+    def _target(session: Session, operation: Operation) -> OperationTarget:
+        targets = list(
+            session.scalars(
+                select(OperationTarget).where(
+                    OperationTarget.operation_id == operation.id
+                )
+            )
+        )
+        if len(targets) != 1:
+            raise DocketError(
+                code="invalid_operation_state",
+                message="A clean provider Operation requires exactly one target.",
+                details={"operation_ref": operation.ref_id, "target_count": len(targets)},
+            )
+        return targets[0]
 
     @staticmethod
     def _resolved_parameters(
         session: Session,
         operation: Operation,
-        revision: ActionRevision,
+        target: OperationTarget,
     ) -> dict[str, Any]:
-        parameters = dict(revision.parameters)
+        parameters = dict(target.parameters)
         lane_ref = parameters.get("lane_ref")
         if (
-            operation.originating_changeset_ref is not None
-            and isinstance(lane_ref, str)
-            and not parameters.get("calendar_id")
-            and operation.operation_type
+            operation.operation_type
             in {
                 "calendar_create_event",
                 "calendar_update_event",
                 "calendar_update_reminders",
                 "calendar_cancel_event",
             }
+            and isinstance(lane_ref, str)
+            and not parameters.get("calendar_id")
         ):
             lane = session.scalar(
                 select(CalendarLane).where(CalendarLane.ref_id == lane_ref)
@@ -196,7 +150,7 @@ class OperationRunner:
             if lane is None or lane.status != "active" or lane.calendar_id is None:
                 raise DocketError(
                     code="calendar_lane_provider_binding_unresolved",
-                    message="Provider event operation is waiting for its lane binding.",
+                    message="Provider operation is waiting for its lane binding.",
                     details={"lane_ref": lane_ref},
                 )
             parameters["calendar_id"] = lane.calendar_id
@@ -204,33 +158,17 @@ class OperationRunner:
 
     def _claim(self, session: Session, *, reconcile: bool) -> ClaimedOperation | None:
         now = utc_now()
-        desired_status = (
+        desired = (
             OperationStatus.RECONCILIATION_REQUIRED.value
             if reconcile
             else OperationStatus.PENDING.value
         )
-        eligible_types: set[str] = set()
-        if self.execution_enabled:
-            eligible_types.update(
-                {
-                    "calendar_create_event",
-                    "calendar_update_event",
-                    "calendar_update_reminders",
-                    "calendar_cancel_event",
-                    "calendar_configure_lane",
-                    "calendar_delete_lane",
-                }
-            )
-        if self.gmail_execution_enabled and self.gmail_provider is not None:
-            eligible_types.update(GMAIL_MUTATION_ACTION_TYPES)
-        if not eligible_types:
-            return None
         operation = session.scalar(
             select(Operation)
             .where(
-                Operation.status == desired_status,
-                Operation.operation_type.in_(eligible_types),
-                Operation.operation_type.not_in(BATCH_CALENDAR_ACTION_TYPES),
+                Operation.status == desired,
+                or_(Operation.next_attempt_at.is_(None), Operation.next_attempt_at <= now),
+                or_(Operation.leased_until.is_(None), Operation.leased_until < now),
                 or_(
                     Operation.predecessor_operation_id.is_(None),
                     Operation.predecessor_operation_id.in_(
@@ -239,8 +177,6 @@ class OperationRunner:
                         )
                     ),
                 ),
-                or_(Operation.next_attempt_at.is_(None), Operation.next_attempt_at <= now),
-                or_(Operation.leased_until.is_(None), Operation.leased_until < now),
             )
             .order_by(Operation.created_at)
             .with_for_update(skip_locked=True)
@@ -248,24 +184,30 @@ class OperationRunner:
         )
         if operation is None:
             return None
-        revision, action, queue_item = self._bound_entities(session, operation)
-        parameters = self._resolved_parameters(session, operation, revision)
+        target = self._target(session, operation)
+        parameters = self._resolved_parameters(session, operation, target)
+        if parameters != target.parameters:
+            target.parameters = parameters
+            target.parameters_sha256 = sha256_json(parameters)
         lease_token = uuid.uuid4()
         operation.lease_token = lease_token
         operation.leased_until = now + timedelta(seconds=self.lease_seconds)
-        if not reconcile:
-            operation.status = OperationStatus.RUNNING.value
-            action.status = ActionStatus.EXECUTING.value
-            queue_item.status = QueueItemStatus.EXECUTING.value
+        operation.status = OperationStatus.RUNNING.value
+        target.lease_token = lease_token
+        target.leased_until = operation.leased_until
+        target.status = "running"
         operation.attempt_count += 1
+        target.attempt_count += 1
         attempt = ExecutionAttempt(
             operation_id=operation.id,
-            attempt_number=operation.attempt_count,
+            operation_target_id=target.id,
+            attempt_number=target.attempt_count,
             kind=(AttemptKind.RECONCILE.value if reconcile else AttemptKind.EXECUTE.value),
             request_summary={
                 "operation_type": operation.operation_type,
-                "parameters_sha256": revision.parameters_sha256,
+                "parameters_sha256": target.parameters_sha256,
                 "provider_correlation": operation.provider_correlation,
+                "target_ref": target.canonical_target_ref,
             },
             status=AttemptStatus.STARTED.value,
             started_at=now,
@@ -274,6 +216,7 @@ class OperationRunner:
         session.flush()
         return ClaimedOperation(
             operation_id=operation.id,
+            operation_target_id=target.id,
             attempt_id=attempt.id,
             lease_token=lease_token,
             operation_type=operation.operation_type,
@@ -282,198 +225,116 @@ class OperationRunner:
             attempt_number=attempt.attempt_number,
         )
 
-    def _claim_batch_item(self, session: Session, *, reconcile: bool) -> ClaimedOperation | None:
-        now = utc_now()
-        desired_status = "reconciliation_required" if reconcile else "pending"
-        item = session.scalar(
-            select(OperationItem)
-            .join(Operation, Operation.id == OperationItem.operation_id)
-            .where(
-                Operation.operation_type.in_(BATCH_CALENDAR_ACTION_TYPES),
-                OperationItem.status == desired_status,
-                or_(
-                    OperationItem.next_attempt_at.is_(None),
-                    OperationItem.next_attempt_at <= now,
-                ),
-                or_(
-                    OperationItem.leased_until.is_(None),
-                    OperationItem.leased_until < now,
-                ),
-            )
-            .order_by(OperationItem.created_at, OperationItem.item_key)
-            .with_for_update(skip_locked=True)
-            .limit(1)
-        )
-        if item is None:
-            return None
-        operation = session.get(Operation, item.operation_id)
-        assert operation is not None
-        _revision, action, queue_item = self._bound_entities(session, operation)
-        lease_token = uuid.uuid4()
-        item.lease_token = lease_token
-        item.leased_until = now + timedelta(seconds=self.lease_seconds)
-        if not reconcile:
-            item.status = "running"
-            operation.status = OperationStatus.RUNNING.value
-            action.status = ActionStatus.EXECUTING.value
-            queue_item.status = QueueItemStatus.EXECUTING.value
-        item.attempt_count += 1
-        attempt = ExecutionAttempt(
-            operation_id=operation.id,
-            operation_item_id=item.id,
-            attempt_number=item.attempt_count,
-            kind=(AttemptKind.RECONCILE.value if reconcile else AttemptKind.EXECUTE.value),
-            request_summary={
-                "operation_type": item.item_type,
-                "parameters_sha256": item.parameters_sha256,
-                "item_key": item.item_key,
-            },
-            status=AttemptStatus.STARTED.value,
-            started_at=now,
-        )
-        session.add(attempt)
-        session.flush()
-        return ClaimedOperation(
-            operation_id=operation.id,
-            operation_item_id=item.id,
-            attempt_id=attempt.id,
-            lease_token=lease_token,
-            operation_type=item.item_type,
-            provider_correlation=str(item.id),
-            parameters=dict(item.parameters),
-            attempt_number=attempt.attempt_number,
-        )
-
     def claim_due(self) -> ClaimedOperation | None:
-        if not self.execution_enabled and not self.gmail_execution_enabled:
+        if not self.execution_enabled:
             return None
         with self.session_factory.begin() as session:
-            batch = (
-                self._claim_batch_item(session, reconcile=False) if self.execution_enabled else None
-            )
-            return batch or self._claim(session, reconcile=False)
+            return self._claim(session, reconcile=False)
 
     def claim_reconciliation(self) -> ClaimedOperation | None:
-        if not self.execution_enabled and not self.gmail_execution_enabled:
+        if not self.execution_enabled:
             return None
         with self.session_factory.begin() as session:
-            batch = (
-                self._claim_batch_item(session, reconcile=True) if self.execution_enabled else None
-            )
-            return batch or self._claim(session, reconcile=True)
+            return self._claim(session, reconcile=True)
 
     def mark_provider_call_started(self, claim: ClaimedOperation) -> None:
         with self.session_factory.begin() as session:
             operation = session.get(Operation, claim.operation_id)
+            target = session.get(OperationTarget, claim.operation_target_id)
             attempt = session.get(ExecutionAttempt, claim.attempt_id)
             if (
                 operation is None
+                or target is None
                 or attempt is None
-                or (
-                    claim.operation_item_id is None
-                    and (
-                        operation.lease_token != claim.lease_token
-                        or operation.status != OperationStatus.RUNNING.value
-                    )
-                )
-                or (
-                    claim.operation_item_id is not None
-                    and (
-                        (item := session.get(OperationItem, claim.operation_item_id)) is None
-                        or item.lease_token != claim.lease_token
-                        or item.status != "running"
-                    )
-                )
+                or operation.lease_token != claim.lease_token
+                or target.lease_token != claim.lease_token
+                or operation.status != OperationStatus.RUNNING.value
+                or target.status != "running"
             ):
                 raise DocketError(
-                    code="operation_lease_lost", message="Operation execution lease was lost."
+                    code="operation_lease_lost",
+                    message="Provider Operation execution lease was lost.",
                 )
             attempt.provider_request_id = f"call-started:{claim.lease_token}"
 
     @staticmethod
-    def _upsert_calendar_cache(
+    def _clear_lease(operation: Operation, target: OperationTarget) -> None:
+        operation.lease_token = None
+        operation.leased_until = None
+        target.lease_token = None
+        target.leased_until = None
+
+    @staticmethod
+    def _audit(
         session: Session,
         operation: Operation,
-        result: CalendarEventResult,
-        *,
-        parameters_override: dict[str, Any] | None = None,
-        classification_override: dict[str, Any] | None = None,
+        target: OperationTarget,
+        event_type: str,
     ) -> None:
-        revision, _action, _queue_item = OperationRunner._bound_entities(session, operation)
-        parameters = parameters_override or revision.parameters
-        calendar_id = str(parameters["calendar_id"])
-        state = session.scalar(
-            select(CalendarSyncState).where(
-                CalendarSyncState.account_id == operation.account_id,
-                CalendarSyncState.calendar_id == calendar_id,
+        session.add(
+            AuditEvent(
+                event_type=event_type,
+                entity_type="operation",
+                entity_id=operation.id,
+                actor_type="docket_worker",
+                actor_id=None,
+                primary_ref=operation.ref_id,
+                affected_refs=[operation.ref_id, target.canonical_target_ref],
+                basis_refs=list(operation.basis_refs),
+                data={
+                    "operation_type": operation.operation_type,
+                    "target_ref": target.canonical_target_ref,
+                    "attempt_count": operation.attempt_count,
+                },
             )
         )
-        generation = (
-            state.snapshot_generation
-            if state is not None and state.snapshot_generation is not None
-            else uuid.uuid5(uuid.NAMESPACE_URL, f"calendar-write:{operation.id}")
-        )
-        snapshot = result.snapshot
-        start = snapshot.get("start")
-        end = snapshot.get("end")
-        if not isinstance(start, dict) or not isinstance(end, dict):
-            raise DocketError(
-                code="calendar_cache_invalid_write_result",
-                message="Calendar write result could not be normalized into the local cache.",
-            )
-        is_all_day = isinstance(start.get("date"), str)
-        start_at: datetime | None = None
-        end_at: datetime | None = None
-        start_date: Any = None
-        end_date: Any = None
-        timezone: str | None = None
-        try:
-            if is_all_day:
-                if not isinstance(end.get("date"), str):
-                    raise ValueError
-                from datetime import date as calendar_date
 
-                start_date = calendar_date.fromisoformat(str(start["date"]))
-                end_date = calendar_date.fromisoformat(str(end["date"]))
-                event = parameters.get("event")
-                timing = event.get("timing") if isinstance(event, dict) else None
-                timezone = (
-                    str(timing.get("timezone"))
-                    if isinstance(timing, dict) and timing.get("timezone")
-                    else get_settings().timezone
-                )
-                if end_date <= start_date:
-                    raise ValueError
-            else:
-                if (
-                    not isinstance(start.get("dateTime"), str)
-                    or not isinstance(end.get("dateTime"), str)
-                    or not isinstance(start.get("timeZone"), str)
-                ):
-                    raise ValueError
-                timezone = str(start["timeZone"])
-                zone = ZoneInfo(timezone)
-                start_at = (
-                    datetime.fromisoformat(str(start["dateTime"]))
-                    .replace(tzinfo=zone)
-                    .astimezone(UTC)
-                )
-                end_timezone_value = end.get("timeZone")
-                end_timezone = (
-                    end_timezone_value if isinstance(end_timezone_value, str) else timezone
-                )
-                end_at = (
-                    datetime.fromisoformat(str(end["dateTime"]))
-                    .replace(tzinfo=ZoneInfo(end_timezone))
-                    .astimezone(UTC)
-                )
-                if end_at <= start_at:
-                    raise ValueError
-        except (ValueError, TypeError) as exc:
-            raise DocketError(
-                code="calendar_cache_invalid_write_result",
-                message="Calendar write result contained invalid local time data.",
-            ) from exc
+    @staticmethod
+    def _upsert_binding(
+        session: Session,
+        operation: Operation,
+        target: OperationTarget,
+        result: CalendarEventResult,
+    ) -> None:
+        calendar_id = str(target.parameters["calendar_id"])
+        binding = session.scalar(
+            select(ProviderEventBinding).where(
+                ProviderEventBinding.canonical_target_ref
+                == target.canonical_target_ref,
+                ProviderEventBinding.account_id == operation.account_id,
+                ProviderEventBinding.calendar_id == calendar_id,
+            )
+        )
+        if binding is None:
+            binding = ProviderEventBinding(
+                canonical_target_ref=target.canonical_target_ref,
+                target_kind=target.target_kind,
+                account_id=operation.account_id,
+                calendar_id=calendar_id,
+                provider_event_id=result.external_event_id,
+                status="active",
+                version=1,
+            )
+            session.add(binding)
+        else:
+            binding.version += 1
+        binding.provider_event_id = result.external_event_id
+        binding.provider_etag = result.provider_etag
+        binding.provider_snapshot = dict(result.snapshot)
+        binding.status = (
+            "cancelled"
+            if operation.operation_type == "calendar_cancel_event"
+            else "active"
+        )
+
+    @staticmethod
+    def _upsert_cache(
+        session: Session,
+        operation: Operation,
+        target: OperationTarget,
+        result: CalendarEventResult,
+    ) -> None:
+        calendar_id = str(target.parameters["calendar_id"])
         row = session.scalar(
             select(CalendarEventCache).where(
                 CalendarEventCache.account_id == operation.account_id,
@@ -481,2304 +342,405 @@ class OperationRunner:
                 CalendarEventCache.provider_event_id == result.external_event_id,
             )
         )
-        now = utc_now()
         if row is None:
             row = CalendarEventCache(
                 account_id=operation.account_id,
                 calendar_id=calendar_id,
                 provider_event_id=result.external_event_id,
-                snapshot_generation=generation,
+                snapshot_generation=uuid.uuid5(
+                    uuid.NAMESPACE_URL, f"calendar-write:{operation.id}"
+                ),
                 status="confirmed",
                 is_all_day=False,
-                synced_at=now,
+                synced_at=utc_now(),
             )
             session.add(row)
-        row.snapshot_generation = generation
-        row.status = "confirmed"
+        snapshot = result.snapshot
+        start = snapshot.get("start")
+        end = snapshot.get("end")
         row.event_type = str(snapshot.get("event_type") or "default")
-        summary = snapshot.get("summary")
-        location = snapshot.get("location")
-        row.summary = summary[:512] if isinstance(summary, str) and summary else None
-        row.location = location[:1000] if isinstance(location, str) and location else None
-        row.is_all_day = is_all_day
-        row.start_at = start_at
-        row.end_at = end_at
-        row.start_date = start_date
-        row.end_date = end_date
-        row.timezone = timezone
-        event = parameters.get("event")
-        classification = (
-            classification_override
-            if classification_override is not None
-            else revision.preview.get("classification", {})
-        )
-        if isinstance(classification, dict):
-            row.recurrence_kind = str(classification.get("recurrence_kind", "one_time"))
-            row.system_tags = list(classification.get("system_tags", []))
-            row.operator_tags = list(classification.get("operator_tags", []))
-            row.priority = str(classification.get("priority", "normal"))
-            row.priority_basis = str(classification.get("priority_basis", "default"))
-        elif isinstance(event, dict):
-            row.recurrence_kind = "recurring" if event.get("recurrence") else "one_time"
-        row.has_attendees = False
-        row.organizer_is_self = True
-        reminders = snapshot.get("reminders")
-        row.provider_reminders = dict(reminders) if isinstance(reminders, dict) else {}
-        row.provider_etag = result.provider_etag
-        row.synced_at = now
-        session.flush()
-
-    @staticmethod
-    def _activate_reminder_plan(
-        session: Session,
-        operation: Operation,
-        result: CalendarEventResult,
-        *,
-        parameters_override: dict[str, Any] | None = None,
-        manifest_item_key: str | None = None,
-    ) -> None:
-        revision, _action, _queue_item = OperationRunner._bound_entities(session, operation)
-        parameters = parameters_override or revision.parameters
-        plan = parameters.get("reminder_plan")
-        if not isinstance(plan, dict):
-            return
-        from docket.services.calendar_profile import CalendarProfileService
-
-        configured_channels = set(
-            CalendarProfileService(session).get().default_reminder_delivery_channels
-        )
-        requested_channels = set(plan.get("delivery_channels", []))
-        docket_delivery_enabled = (
-            "docket_queue" in configured_channels and "docket_queue" in requested_channels
-        )
-        desired_leads = (
-            {int(value) for value in plan.get("lead_seconds", [])}
-            if docket_delivery_enabled
-            else set()
-        )
-        rules = list(
-            session.scalars(
-                select(ReminderRule).where(
-                    ReminderRule.account_id == operation.account_id,
-                    ReminderRule.calendar_id == parameters["calendar_id"],
-                    ReminderRule.scope == "event",
-                    ReminderRule.provider_event_id == result.external_event_id,
-                )
-            )
-        )
-        selected: dict[int, ReminderRule] = {}
-        for rule in rules:
-            if rule.lead_seconds in desired_leads and rule.lead_seconds not in selected:
-                selected[rule.lead_seconds] = rule
-                if not rule.enabled:
-                    rule.enabled = True
-                    rule.version += 1
-            elif rule.enabled:
-                rule.enabled = False
-                rule.version += 1
-        for lead_seconds in sorted(desired_leads):
-            if lead_seconds not in selected:
-                rule = ReminderRule(
-                    account_id=operation.account_id,
-                    calendar_id=str(parameters["calendar_id"]),
-                    scope="event",
-                    provider_event_id=result.external_event_id,
-                    lead_seconds=lead_seconds,
-                    queue_channel_id=get_settings().queue_channel_id,
-                    enabled=True,
-                    created_by_actor_id=(
-                        revision.created_by_actor_id or get_settings().operator_discord_user_id
-                    ),
-                )
-                session.add(rule)
-                session.flush()
-                selected[lead_seconds] = rule
-        now = utc_now()
-        plan_statement = select(CalendarReminderPlan).where(
-            CalendarReminderPlan.action_revision_id == revision.id
-        )
-        if manifest_item_key is None:
-            plan_statement = plan_statement.where(CalendarReminderPlan.manifest_item_key.is_(None))
-        else:
-            plan_statement = plan_statement.where(
-                CalendarReminderPlan.manifest_item_key == manifest_item_key
-            )
-        plans = session.scalars(plan_statement).all()
-        for planned in plans:
-            matched_rule = selected.get(planned.lead_seconds)
-            if matched_rule is None:
-                planned.status = "cancelled"
-                continue
-            planned.reminder_rule_id = matched_rule.id
-            planned.status = "activated"
-            planned.provider_applied_at = now
-        from docket.services.reminders import materialize_reminders
-
-        materialize_reminders(
-            session,
-            now=now,
-            rule_ids={rule.id for rule in rules} | {rule.id for rule in selected.values()},
-        )
-
-    @staticmethod
-    def _apply_cancelled_cache(
-        session: Session,
-        operation: Operation,
-        result: CalendarEventResult,
-    ) -> None:
-        revision, _action, _queue_item = OperationRunner._bound_entities(session, operation)
-        rows = list(
-            session.scalars(
-                select(CalendarEventCache).where(
-                    CalendarEventCache.account_id == operation.account_id,
-                    CalendarEventCache.calendar_id == revision.parameters["calendar_id"],
-                    or_(
-                        CalendarEventCache.provider_event_id == result.external_event_id,
-                        CalendarEventCache.recurring_event_id == result.external_event_id,
-                    ),
-                )
-            )
-        )
-        for row in rows:
-            row.status = "cancelled"
-            row.provider_etag = None
-            row.provider_reminders = {
-                "useDefault": False,
-                "overrides": [],
-            }
-            row.synced_at = utc_now()
-
-    @staticmethod
-    def _activate_bundled_entities(
-        session: Session,
-        operation: Operation,
-        refs: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        """Activate provisional identities only with a successful event write."""
-
-        approval = (
-            session.get(Approval, operation.approval_id)
-            if operation.approval_id is not None
-            else None
-        )
-        activated: list[dict[str, Any]] = []
-        for raw in refs:
-            ref = dict(raw)
-            if ref.get("registration_disposition") != "register_with_event":
-                activated.append(ref)
-                continue
-            try:
-                entity_id = uuid.UUID(str(ref["entity_id"]))
-            except (KeyError, TypeError, ValueError) as exc:
-                raise DocketError(
-                    code="event_entity_registration_invalid",
-                    message="The event proposal contains an invalid entity registration.",
-                ) from exc
-            entity = session.get(Entity, entity_id)
-            if entity is None or entity.status not in {"provisional", "active"}:
-                raise DocketError(
-                    code="event_entity_registration_changed",
-                    message="A bundled event entity is no longer available for registration.",
-                )
-            if entity.status == "provisional":
-                entity.status = "active"
-                entity.authority = "explicit_user"
-                entity.version += 1
-                session.add(
-                    AuditEvent(
-                        event_type="entity.registered_with_event",
-                        entity_type="entity",
-                        entity_id=entity.id,
-                        actor_type="plugin",
-                        actor_id=(approval.response_user_id if approval is not None else None),
-                        data={
-                            "operation_id": str(operation.id),
-                            "entity_class": entity.entity_class,
-                        },
-                    )
-                )
-            resolution_id = ref.get("resolution_id")
-            try:
-                resolution = (
-                    session.get(EntityResolution, uuid.UUID(str(resolution_id)))
-                    if resolution_id is not None
-                    else None
-                )
-            except ValueError:
-                resolution = None
-            if resolution is not None and resolution.resolved_entity_id == entity.id:
-                resolution.state = "resolved"
-            ref["registration_disposition"] = "existing"
-            activated.append(ref)
-        return activated
-
-    @staticmethod
-    def _apply_success(
-        session: Session,
-        operation: Operation,
-        attempt: ExecutionAttempt,
-        result: CalendarEventResult,
-        *,
-        parameters_override: dict[str, Any] | None = None,
-    ) -> None:
-        revision, action, queue_item = OperationRunner._bound_entities(session, operation)
-        parameters = parameters_override or revision.parameters
-        link = session.scalar(
-            select(CalendarLink).where(
-                CalendarLink.account_id == operation.account_id,
-                CalendarLink.calendar_id == parameters["calendar_id"],
-                CalendarLink.logical_key == parameters["logical_key"],
-            )
-        )
-        if operation.operation_type == "calendar_cancel_event":
-            if link is not None:
-                link.provider_etag = None
-                link.provider_correlation = operation.provider_correlation
-                link.reminder_plan_sha256 = parameters.get("reminder_plan_sha256")
-                before = parameters.get("provider_before")
-                link.synced_snapshot = {
-                    **(dict(before) if isinstance(before, dict) else result.snapshot),
-                    "status": "cancelled",
-                }
-            OperationRunner._apply_cancelled_cache(session, operation, result)
-            OperationRunner._activate_reminder_plan(
-                session,
-                operation,
-                result,
-                parameters_override=parameters,
-            )
-        else:
-            if link is None:
-                classification = revision.preview.get("classification", {})
-                if not isinstance(classification, dict):
-                    classification = {}
-                link = CalendarLink(
-                    canonical_event_id=(
-                        uuid.UUID(str(parameters["canonical_event_id"]))
-                        if parameters.get("canonical_event_id") is not None
-                        else None
-                    ),
-                    record_id=None,
-                    meeting_id=None,
-                    origin_kind=(
-                        "standalone"
-                        if operation.operation_type == "calendar_create_event"
-                        else "adopted_provider_event"
-                    ),
-                    logical_key=str(parameters["logical_key"]),
-                    account_id=operation.account_id,
-                    calendar_id=str(parameters["calendar_id"]),
-                    external_event_id=result.external_event_id,
-                    provider_etag=result.provider_etag,
-                    provider_correlation=operation.provider_correlation,
-                    last_synced_version=revision.revision,
-                    recurrence_kind=str(classification.get("recurrence_kind", "one_time")),
-                    system_tags=list(classification.get("system_tags", [])),
-                    operator_tags=list(classification.get("operator_tags", [])),
-                    priority=str(parameters.get("priority", "normal")),
-                    priority_basis=str(parameters.get("priority_basis", "default")),
-                    reminder_plan_sha256=parameters.get("reminder_plan_sha256"),
-                    synced_snapshot=result.snapshot,
-                )
-                session.add(link)
-                session.flush()
-            else:
-                if (
-                    operation.operation_type
-                    in {
-                        "calendar_update_event",
-                        "calendar_update_reminders",
-                    }
-                    and link.external_event_id != result.external_event_id
-                ):
-                    raise DocketError(
-                        code="calendar_link_conflict",
-                        message="Calendar update returned a different external event ID.",
-                    )
-                link.external_event_id = result.external_event_id
-                link.provider_etag = result.provider_etag
-                link.provider_correlation = operation.provider_correlation
-                link.last_synced_version = revision.revision
-                link.synced_snapshot = result.snapshot
-                if parameters.get("reminder_plan_sha256") is not None:
-                    link.reminder_plan_sha256 = parameters["reminder_plan_sha256"]
-                if (
-                    link.canonical_event_id is None
-                    and parameters.get("canonical_event_id") is not None
-                ):
-                    link.canonical_event_id = uuid.UUID(str(parameters["canonical_event_id"]))
-            OperationRunner._upsert_calendar_cache(
-                session,
-                operation,
-                result,
-                parameters_override=parameters,
-            )
-            OperationRunner._activate_reminder_plan(
-                session,
-                operation,
-                result,
-                parameters_override=parameters,
-            )
-        canonical_event_id = parameters.get("canonical_event_id")
-        if canonical_event_id is not None:
-            canonical_event = session.get(CanonicalEvent, uuid.UUID(str(canonical_event_id)))
-            if canonical_event is None:
-                raise DocketError(
-                    code="canonical_event_not_found",
-                    message="The operation lost its canonical event binding.",
-                )
-            event_spec = parameters.get("event")
-            if isinstance(event_spec, dict):
-                canonical_event.event_spec = dict(event_spec)
-                canonical_event.title = str(event_spec.get("title") or canonical_event.title)
-            calendar_lane = parameters.get("calendar_lane")
-            if isinstance(calendar_lane, str):
-                canonical_event.calendar_lane = calendar_lane
-            reminder_plan = parameters.get("reminder_plan")
-            if isinstance(reminder_plan, dict):
-                canonical_event.reminder_plan = dict(reminder_plan)
-            entity_refs = parameters.get("entity_refs")
-            if isinstance(entity_refs, list):
-                canonical_event.entity_refs = OperationRunner._activate_bundled_entities(
-                    session,
-                    operation,
-                    [dict(value) for value in entity_refs if isinstance(value, dict)],
-                )
-            context_labels = parameters.get("context_labels")
-            if isinstance(context_labels, list):
-                canonical_event.context_labels = [str(value) for value in context_labels]
-            canonical_event.status = (
-                "cancelled" if operation.operation_type == "calendar_cancel_event" else "active"
-            )
-            canonical_event.version += 1
-            binding = session.scalar(
-                select(ProviderEventBinding).where(
-                    ProviderEventBinding.account_id == operation.account_id,
-                    ProviderEventBinding.calendar_id == parameters["calendar_id"],
-                    ProviderEventBinding.provider_event_id == result.external_event_id,
-                )
-            )
-            if binding is None:
-                binding = ProviderEventBinding(
-                    canonical_event_id=canonical_event.id,
-                    account_id=operation.account_id,
-                    calendar_id=str(parameters["calendar_id"]),
-                    provider_event_id=result.external_event_id,
-                    provider_etag=result.provider_etag,
-                    status=(
-                        "cancelled"
-                        if operation.operation_type == "calendar_cancel_event"
-                        else "active"
-                    ),
-                    provider_snapshot=dict(result.snapshot),
-                )
-                session.add(binding)
-            else:
-                binding.canonical_event_id = canonical_event.id
-                binding.provider_etag = result.provider_etag
-                binding.status = (
-                    "cancelled" if operation.operation_type == "calendar_cancel_event" else "active"
-                )
-                binding.provider_snapshot = dict(result.snapshot)
-                binding.independently_modified_at = None
-                binding.version += 1
-        attempt.status = AttemptStatus.SUCCEEDED.value
-        attempt.provider_request_id = result.provider_request_id or attempt.provider_request_id
-        attempt.response_summary = {
-            "external_event_id": result.external_event_id,
-            "provider_etag": result.provider_etag,
-        }
-        attempt.completed_at = utc_now()
-        operation.status = OperationStatus.SUCCEEDED.value
-        operation.lease_token = None
-        operation.leased_until = None
-        operation.next_attempt_at = None
-        operation.result = {
-            "calendar_link_id": str(link.id) if link is not None else None,
-            "external_event_id": result.external_event_id,
-            "record_version": None,
-        }
-        operation.last_error_code = None
-        operation.last_error_message = None
-        action.status = ActionStatus.SUCCEEDED.value
-        queue_item.status = QueueItemStatus.COMPLETED.value
-        queue_item.resolved_at = utc_now()
-        queue_item.resolution_code = (
-            "calendar_cancelled"
+        row.status = (
+            "cancelled"
             if operation.operation_type == "calendar_cancel_event"
-            else "calendar_synchronized"
+            else "confirmed"
         )
-        queue_item.version += 1
-        session.add(
-            AuditEvent(
-                event_type="operation.succeeded",
-                entity_type="operation",
-                entity_id=operation.id,
-                actor_type="docket",
-                actor_id=None,
-                request_id=None,
-                data={
-                    "action_revision_id": str(revision.id),
-                    "attempt_id": str(attempt.id),
-                    "external_event_id": result.external_event_id,
-                    "parameters_sha256": revision.parameters_sha256,
-                },
-            )
+        row.summary = (
+            str(snapshot["summary"])[:512] if snapshot.get("summary") else None
         )
-        if operation.bundle_id is None and queue_item.presentation != "suppressed":
-            refresh_target = operation_projection_target(
-                session,
-                child_queue_item_id=queue_item.id,
-                approval_id=operation.approval_id,
+        row.location = (
+            str(snapshot["location"])[:1000] if snapshot.get("location") else None
+        )
+        row.is_all_day = isinstance(start, dict) and isinstance(start.get("date"), str)
+        row.start_at = row.end_at = None
+        row.start_date = row.end_date = None
+        if row.is_all_day and isinstance(start, dict) and isinstance(end, dict):
+            row.start_date = date.fromisoformat(str(start["date"]))
+            row.end_date = date.fromisoformat(str(end["date"]))
+        elif isinstance(start, dict) and isinstance(end, dict):
+            start_at = datetime.fromisoformat(
+                str(start["dateTime"]).replace("Z", "+00:00")
             )
-            session.add(
-                OutboxEvent(
-                    event_type="discord.projection.refresh_requested",
-                    aggregate_type="queue_item",
-                    aggregate_id=refresh_target.queue_item_id,
-                    deduplication_key=(
-                        f"discord_projection:{refresh_target.queue_item_id}:operation:"
-                        f"{operation.id}:ok"
-                    ),
-                    payload={
-                        **refresh_target.payload(),
-                        "action_id": str(action.id),
-                        "operation_id": str(operation.id),
-                        "status": "succeeded",
-                    },
-                    status=OutboxStatus.PENDING.value,
+            end_at = datetime.fromisoformat(
+                str(end["dateTime"]).replace("Z", "+00:00")
+            )
+            if start_at.tzinfo is None:
+                start_at = start_at.replace(
+                    tzinfo=ZoneInfo(str(start.get("timeZone") or "UTC"))
                 )
-            )
-        if operation.bundle_id is None:
-            enqueue_action_system_log(
-                session,
-                action=action,
-                revision=revision,
-                state="succeeded",
-                result=operation.result,
-            )
-        else:
-            OperationRunner._update_operation_bundle(session, operation)
-
-    @staticmethod
-    def _update_operation_bundle(session: Session, changed: Operation) -> None:
-        if changed.bundle_id is None:
-            return
-        bundle = session.get(OperationBundle, changed.bundle_id)
-        if bundle is None:
-            raise DocketError(
-                code="invalid_operation_state",
-                message="A bundled operation lost its durable bundle.",
-            )
-        operations = list(
-            session.scalars(
-                select(Operation)
-                .where(Operation.bundle_id == bundle.id)
-                .order_by(Operation.created_at, Operation.id)
-            )
-        )
-        if not operations:
-            raise DocketError(
-                code="invalid_operation_state",
-                message="An operation bundle has no durable operations.",
-            )
-        by_id = {operation.id: operation for operation in operations}
-        for operation in operations:
-            if operation.status != OperationStatus.PENDING.value:
-                continue
-            predecessor = (
-                by_id.get(operation.predecessor_operation_id)
-                if operation.predecessor_operation_id is not None
-                else None
-            )
-            if predecessor is None or predecessor.status not in {
-                OperationStatus.FAILED.value,
-                OperationStatus.PARTIAL_FAILED.value,
-            }:
-                continue
-            operation.status = OperationStatus.FAILED.value
-            operation.next_attempt_at = None
-            operation.last_error_code = "bundle_dependency_failed"
-            operation.last_error_message = (
-                "A required earlier operation failed; this operation was not attempted."
-            )
-            _revision, child_action, child_queue = OperationRunner._bound_entities(
-                session, operation
-            )
-            child_action.status = ActionStatus.FAILED.value
-            child_queue.status = QueueItemStatus.FAILED.value
-            child_queue.resolved_at = utc_now()
-            child_queue.resolution_code = "bundle_dependency_failed"
-            child_queue.version += 1
-
-        counts = {
-            state: sum(operation.status == state for operation in operations)
-            for state in (
-                OperationStatus.PENDING.value,
-                OperationStatus.RUNNING.value,
-                OperationStatus.SUCCEEDED.value,
-                OperationStatus.PARTIAL_FAILED.value,
-                OperationStatus.FAILED.value,
-                OperationStatus.RECONCILIATION_REQUIRED.value,
-            )
-        }
-        previous_status = bundle.status
-        if counts[OperationStatus.RECONCILIATION_REQUIRED.value]:
-            bundle.status = OperationStatus.RECONCILIATION_REQUIRED.value
-        elif counts[OperationStatus.PENDING.value] or counts[OperationStatus.RUNNING.value]:
-            bundle.status = "running"
-        elif counts[OperationStatus.FAILED.value] or counts[OperationStatus.PARTIAL_FAILED.value]:
-            bundle.status = (
-                OperationStatus.PARTIAL_FAILED.value
-                if counts[OperationStatus.SUCCEEDED.value]
-                or counts[OperationStatus.PARTIAL_FAILED.value]
-                else OperationStatus.FAILED.value
-            )
-        else:
-            bundle.status = OperationStatus.SUCCEEDED.value
-        bundle.result = {
-            "operation_count": len(operations),
-            "counts": counts,
-            "operations": [
-                {
-                    "operation_id": str(operation.id),
-                    "operation_type": operation.operation_type,
-                    "status": operation.status,
-                    "error_code": operation.last_error_code,
-                }
-                for operation in operations
-            ],
-        }
-        if bundle.status != previous_status:
-            bundle.version += 1
-
-        parent_revision = session.get(ActionRevision, bundle.action_revision_id)
-        if parent_revision is None:
-            raise DocketError(
-                code="invalid_operation_state",
-                message="An operation bundle lost its decision revision.",
-            )
-        parent_action = session.get(Action, parent_revision.action_id)
-        parent_queue = (
-            session.get(QueueItem, parent_action.queue_item_id)
-            if parent_action is not None and parent_action.queue_item_id is not None
+            if end_at.tzinfo is None:
+                end_at = end_at.replace(
+                    tzinfo=ZoneInfo(str(end.get("timeZone") or "UTC"))
+                )
+            row.start_at = start_at.astimezone(UTC)
+            row.end_at = end_at.astimezone(UTC)
+        row.timezone = (
+            str(start.get("timeZone"))
+            if isinstance(start, dict) and start.get("timeZone")
             else None
         )
-        if parent_action is None or parent_queue is None:
-            raise DocketError(
-                code="invalid_operation_state",
-                message="An operation bundle lost its decision surface.",
-            )
-        if bundle.status == "running":
-            parent_action.status = ActionStatus.EXECUTING.value
-            parent_queue.status = QueueItemStatus.EXECUTING.value
-            parent_queue.resolved_at = None
-            parent_queue.resolution_code = None
-        elif bundle.status == OperationStatus.SUCCEEDED.value:
-            parent_action.status = ActionStatus.SUCCEEDED.value
-            parent_queue.status = QueueItemStatus.COMPLETED.value
-            parent_queue.resolved_at = utc_now()
-            parent_queue.resolution_code = f"calendar_conflict_{bundle.resolution}"
-        elif bundle.status == OperationStatus.RECONCILIATION_REQUIRED.value:
-            parent_action.status = ActionStatus.RECONCILIATION_REQUIRED.value
-            parent_queue.status = QueueItemStatus.RECONCILIATION_REQUIRED.value
-            parent_queue.resolved_at = None
-            parent_queue.resolution_code = None
-        else:
-            parent_action.status = (
-                ActionStatus.PARTIAL_FAILED.value
-                if bundle.status == OperationStatus.PARTIAL_FAILED.value
-                else ActionStatus.FAILED.value
-            )
-            parent_queue.status = QueueItemStatus.FAILED.value
-            parent_queue.resolved_at = utc_now()
-            parent_queue.resolution_code = (
-                "calendar_conflict_partial"
-                if bundle.status == OperationStatus.PARTIAL_FAILED.value
-                else "calendar_conflict_failed"
-            )
-        parent_queue.version += 1
-        if bundle.status == previous_status:
-            return
-        refresh_target = operation_projection_target(
-            session,
-            child_queue_item_id=parent_queue.id,
-            approval_id=bundle.approval_id,
+        row.provider_reminders = (
+            dict(snapshot["reminders"])
+            if isinstance(snapshot.get("reminders"), dict)
+            else {}
         )
-        session.add(
-            AuditEvent(
-                event_type="operation_bundle.state_changed",
-                entity_type="operation_bundle",
-                entity_id=bundle.id,
-                actor_type="docket",
-                actor_id=None,
-                request_id=None,
-                data={
-                    "status": bundle.status,
-                    "resolution": bundle.resolution,
-                    "result": bundle.result,
-                },
-            )
-        )
-        session.add(
-            OutboxEvent(
-                event_type="discord.projection.refresh_requested",
-                aggregate_type="queue_item",
-                aggregate_id=refresh_target.queue_item_id,
-                deduplication_key=(
-                    f"discord_projection:{refresh_target.queue_item_id}:bundle:"
-                    f"{bundle.id}:v{bundle.version}"
-                ),
-                payload={
-                    **refresh_target.payload(),
-                    "action_id": str(parent_action.id),
-                    "operation_bundle_id": str(bundle.id),
-                    "status": bundle.status,
-                },
-                status=OutboxStatus.PENDING.value,
-            )
-        )
-        if bundle.status in {
-            OperationStatus.SUCCEEDED.value,
-            OperationStatus.PARTIAL_FAILED.value,
-            OperationStatus.FAILED.value,
-            OperationStatus.RECONCILIATION_REQUIRED.value,
-        }:
-            enqueue_action_system_log(
-                session,
-                action=parent_action,
-                revision=parent_revision,
-                state=bundle.status,
-                result=bundle.result,
-            )
+        row.provider_etag = result.provider_etag
+        row.synced_at = utc_now()
 
-    @staticmethod
-    def _update_batch_parent(session: Session, operation: Operation) -> None:
-        """Derive the aggregate state exclusively from its durable item ledger."""
-        revision, action, queue_item = OperationRunner._bound_entities(session, operation)
-        previous_status = operation.status
-        items = list(
-            session.scalars(
-                select(OperationItem)
-                .where(OperationItem.operation_id == operation.id)
-                .order_by(OperationItem.item_key)
-            )
-        )
-        if not items:
-            raise DocketError(
-                code="invalid_operation_state",
-                message="A schedule operation has no durable items.",
-            )
-        counts = {
-            state: sum(item.status == state for item in items)
-            for state in (
-                "pending",
-                "running",
-                "succeeded",
-                "failed",
-                "reconciliation_required",
-            )
-        }
-        failures = [
-            {
-                "item_key": item.item_key,
-                "status": item.status,
-                "error_code": item.last_error_code,
-            }
-            for item in items
-            if item.status in {"failed", "reconciliation_required"}
-        ]
-        operation.result = {
-            "item_count": len(items),
-            "counts": counts,
-            "failures": failures,
-        }
-        operation.last_error_code = failures[0]["error_code"] if failures else None
-        operation.last_error_message = None
-        operation.lease_token = None
-        operation.leased_until = None
-        operation.next_attempt_at = None
-
-        if counts["reconciliation_required"]:
-            operation.status = OperationStatus.RECONCILIATION_REQUIRED.value
-            action.status = ActionStatus.RECONCILIATION_REQUIRED.value
-            queue_item.status = QueueItemStatus.RECONCILIATION_REQUIRED.value
-            queue_item.resolved_at = None
-            queue_item.resolution_code = None
-        elif counts["pending"] or counts["running"]:
-            operation.status = OperationStatus.RUNNING.value
-            action.status = ActionStatus.EXECUTING.value
-            queue_item.status = QueueItemStatus.EXECUTING.value
-            queue_item.resolved_at = None
-            queue_item.resolution_code = None
-        elif counts["failed"]:
-            partially_succeeded = counts["succeeded"] > 0
-            operation.status = (
-                OperationStatus.PARTIAL_FAILED.value
-                if partially_succeeded
-                else OperationStatus.FAILED.value
-            )
-            action.status = (
-                ActionStatus.PARTIAL_FAILED.value
-                if partially_succeeded
-                else ActionStatus.FAILED.value
-            )
-            queue_item.status = QueueItemStatus.FAILED.value
-            queue_item.resolved_at = utc_now()
-            queue_item.resolution_code = (
-                "calendar_schedule_partial" if partially_succeeded else "calendar_schedule_failed"
-            )
-        else:
-            if not OperationRunner._apply_course_transition(
-                session,
-                operation,
-                revision,
-                action,
-                queue_item,
-            ):
-                queue_item.version += 1
-                if operation.bundle_id is not None:
-                    OperationRunner._update_operation_bundle(session, operation)
-                elif operation.status != previous_status:
-                    enqueue_action_system_log(
-                        session,
-                        action=action,
-                        revision=revision,
-                        state=operation.status,
-                        result=operation.result,
-                    )
-                return
-            operation.status = OperationStatus.SUCCEEDED.value
-            action.status = ActionStatus.SUCCEEDED.value
-            queue_item.status = QueueItemStatus.COMPLETED.value
-            queue_item.resolved_at = utc_now()
-            queue_item.resolution_code = (
-                "calendar_course_dropped"
-                if revision.action_type == "calendar_drop_course"
-                else "calendar_course_synchronized"
-                if revision.action_type == "calendar_reconcile_course"
-                else "calendar_events_migrated"
-                if revision.action_type == "calendar_move_events"
-                else "calendar_schedule_synchronized"
-            )
-        queue_item.version += 1
-        if operation.bundle_id is not None:
-            OperationRunner._update_operation_bundle(session, operation)
-        elif operation.status != previous_status and operation.status in {
-            OperationStatus.SUCCEEDED.value,
-            OperationStatus.PARTIAL_FAILED.value,
-            OperationStatus.FAILED.value,
-            OperationStatus.RECONCILIATION_REQUIRED.value,
-        }:
-            enqueue_action_system_log(
-                session,
-                action=action,
-                revision=revision,
-                state=operation.status,
-                result=operation.result,
-            )
-
-    @staticmethod
-    def _apply_course_transition(
-        session: Session,
-        operation: Operation,
-        revision: ActionRevision,
-        action: Action,
-        queue_item: QueueItem,
-    ) -> bool:
-        if revision.action_type != "calendar_drop_course":
-            return True
-        try:
-            record_id = uuid.UUID(str(revision.parameters["record_id"]))
-            expected_version = int(revision.parameters["record_version"])
-        except (KeyError, TypeError, ValueError):
-            record_id = uuid.UUID(int=0)
-            expected_version = -1
-        record = session.get(Record, record_id)
-        if record is not None and record.status == "active" and record.version == expected_version:
-            active_links = list(
-                session.scalars(select(CalendarLink).where(CalendarLink.record_id == record.id))
-            )
-            if any(link.synced_snapshot.get("status") != "cancelled" for link in active_links):
-                operation.status = OperationStatus.RECONCILIATION_REQUIRED.value
-                operation.last_error_code = "course_archive_links_active"
-                action.status = ActionStatus.RECONCILIATION_REQUIRED.value
-                queue_item.status = QueueItemStatus.RECONCILIATION_REQUIRED.value
-                queue_item.resolved_at = None
-                queue_item.resolution_code = None
-                result = dict(operation.result or {})
-                failures = list(result.get("failures") or [])
-                failures.append(
-                    {
-                        "item_key": f"course:{record_id}:archive",
-                        "status": "reconciliation_required",
-                        "error_code": "course_archive_links_active",
-                    }
-                )
-                result["failures"] = failures
-                operation.result = result
-                return False
-            record.status = "archived"
-            record.version += 1
-            session.add(
-                AuditEvent(
-                    event_type="record.archived",
-                    entity_type="record",
-                    entity_id=record.id,
-                    actor_type="docket",
-                    actor_id=None,
-                    request_id=None,
-                    data={
-                        "version": record.version,
-                        "reason": revision.parameters.get("reason"),
-                        "operation_id": str(operation.id),
-                    },
-                )
-            )
-            result = dict(operation.result or {})
-            result["record_transition"] = {
-                "record_id": str(record.id),
-                "status": "archived",
-                "version": record.version,
-            }
-            operation.result = result
-            return True
-        if (
-            record is not None
-            and record.status == "archived"
-            and record.version == expected_version + 1
-        ):
-            return True
-        operation.status = OperationStatus.RECONCILIATION_REQUIRED.value
-        operation.last_error_code = "course_archive_transition_conflict"
-        action.status = ActionStatus.RECONCILIATION_REQUIRED.value
-        queue_item.status = QueueItemStatus.RECONCILIATION_REQUIRED.value
-        queue_item.resolved_at = None
-        queue_item.resolution_code = None
-        result = dict(operation.result or {})
-        failures = list(result.get("failures") or [])
-        failures.append(
-            {
-                "item_key": f"course:{record_id}:archive",
-                "status": "reconciliation_required",
-                "error_code": "course_archive_transition_conflict",
-            }
-        )
-        result["failures"] = failures
-        operation.result = result
-        return False
-
-    @staticmethod
-    def _apply_batch_item_success(
-        session: Session,
-        operation: Operation,
-        item: OperationItem,
-        attempt: ExecutionAttempt,
-        result: CalendarEventResult,
-    ) -> None:
-        revision, action, queue_item = OperationRunner._bound_entities(session, operation)
-        parameters = dict(item.parameters)
-        if sha256_json(parameters) != item.parameters_sha256:
-            raise DocketError(
-                code="operation_item_binding_mismatch",
-                message="The immutable schedule item hash no longer matches.",
-            )
-        if item.item_type == "calendar_move_event":
-            OperationRunner._apply_move_item_success(
-                session, operation, item, attempt, result, revision, action, queue_item
-            )
-            return
-        logical_key = str(parameters["logical_key"])
-        link = session.scalar(
-            select(CalendarLink).where(
-                CalendarLink.account_id == operation.account_id,
-                CalendarLink.calendar_id == parameters["calendar_id"],
-                CalendarLink.logical_key == logical_key,
-            )
-        )
-        if link is None:
-            if item.item_type != "calendar_create_event":
-                raise DocketError(
-                    code="calendar_link_conflict",
-                    message="The schedule update no longer has a linked event.",
-                )
-            classification = parameters.get("classification", {})
-            if not isinstance(classification, dict):
-                classification = {}
-            link = CalendarLink(
-                record_id=uuid.UUID(str(parameters["record_id"])),
-                meeting_id=str(parameters["meeting_id"]),
-                origin_kind="course_meeting",
-                logical_key=logical_key,
-                account_id=operation.account_id,
-                calendar_id=str(parameters["calendar_id"]),
-                external_event_id=result.external_event_id,
-                provider_etag=result.provider_etag,
-                provider_correlation=str(item.id),
-                last_synced_version=int(parameters["record_version"]),
-                recurrence_kind=str(classification.get("recurrence_kind", "recurring")),
-                system_tags=list(classification.get("system_tags", [])),
-                operator_tags=list(classification.get("operator_tags", [])),
-                priority=str(parameters.get("priority", "normal")),
-                priority_basis=str(parameters.get("priority_basis", "default")),
-                reminder_plan_sha256=parameters.get("reminder_plan_sha256"),
-                synced_snapshot=result.snapshot,
-            )
-            session.add(link)
-            session.flush()
-        elif item.item_type == "calendar_cancel_event":
-            link.provider_etag = None
-            link.provider_correlation = str(item.id)
-            link.last_synced_version = int(parameters["record_version"])
-            link.reminder_plan_sha256 = parameters.get("reminder_plan_sha256")
-            before = parameters.get("provider_before")
-            link.synced_snapshot = {
-                **(dict(before) if isinstance(before, dict) else result.snapshot),
-                "status": "cancelled",
-            }
-        else:
-            if (
-                item.item_type == "calendar_update_event"
-                and link.external_event_id != result.external_event_id
-            ):
-                raise DocketError(
-                    code="calendar_link_conflict",
-                    message="The schedule update returned a different event identity.",
-                )
-            link.external_event_id = result.external_event_id
-            link.provider_etag = result.provider_etag
-            link.provider_correlation = str(item.id)
-            link.last_synced_version = int(parameters["record_version"])
-            link.reminder_plan_sha256 = parameters.get("reminder_plan_sha256")
-            link.synced_snapshot = result.snapshot
-
-        classification_value = parameters.get("classification")
-        classification = (
-            dict(classification_value) if isinstance(classification_value, dict) else {}
-        )
-        if item.item_type == "calendar_cancel_event":
-            OperationRunner._apply_cancelled_cache(session, operation, result)
-        else:
-            OperationRunner._upsert_calendar_cache(
-                session,
-                operation,
-                result,
-                parameters_override=parameters,
-                classification_override=classification,
-            )
-        OperationRunner._activate_reminder_plan(
-            session,
-            operation,
-            result,
-            parameters_override=parameters,
-            manifest_item_key=item.item_key,
-        )
-        now = utc_now()
-        attempt.status = AttemptStatus.SUCCEEDED.value
-        attempt.provider_request_id = result.provider_request_id or attempt.provider_request_id
-        attempt.response_summary = {
-            "item_key": item.item_key,
-            "external_event_id": result.external_event_id,
-            "provider_etag": result.provider_etag,
-        }
-        attempt.completed_at = now
-        item.status = "succeeded"
-        item.lease_token = None
-        item.leased_until = None
-        item.next_attempt_at = None
-        item.result = {
-            "calendar_link_id": str(link.id),
-            "external_event_id": result.external_event_id,
-            "record_version": int(parameters["record_version"]),
-        }
-        item.last_error_code = None
-        OperationRunner._update_batch_parent(session, operation)
-        session.add(
-            AuditEvent(
-                event_type="operation_item.succeeded",
-                entity_type="operation_item",
-                entity_id=item.id,
-                actor_type="docket",
-                actor_id=None,
-                request_id=None,
-                data={
-                    "operation_id": str(operation.id),
-                    "action_revision_id": str(revision.id),
-                    "attempt_id": str(attempt.id),
-                    "item_key": item.item_key,
-                    "external_event_id": result.external_event_id,
-                    "parameters_sha256": item.parameters_sha256,
-                },
-            )
-        )
-        session.add(
-            OutboxEvent(
-                event_type="discord.projection.refresh_requested",
-                aggregate_type="queue_item",
-                aggregate_id=queue_item.id,
-                deduplication_key=(
-                    f"discord_projection:{queue_item.id}:operation-item:"
-                    f"{item.id}:attempt:{item.attempt_count}:ok"
-                ),
-                payload={
-                    "queue_item_id": str(queue_item.id),
-                    "action_id": str(action.id),
-                    "operation_id": str(operation.id),
-                    "operation_item_id": str(item.id),
-                    "status": item.status,
-                    "parent_status": operation.status,
-                },
-                status=OutboxStatus.PENDING.value,
-            )
-        )
-
-    @staticmethod
-    def _apply_move_item_success(
-        session: Session,
-        operation: Operation,
-        item: OperationItem,
-        attempt: ExecutionAttempt,
-        result: CalendarEventResult,
-        revision: ActionRevision,
-        action: Action,
-        queue_item: QueueItem,
-    ) -> None:
-        parameters = dict(item.parameters)
-        source_calendar_id = str(parameters["source_calendar_id"])
-        destination_calendar_id = str(parameters["destination_calendar_id"])
-        external_event_id = str(parameters["external_event_id"])
-        destination_lane = str(parameters["destination_lane"])
-
-        links = list(
-            session.scalars(
-                select(CalendarLink).where(
-                    CalendarLink.account_id == operation.account_id,
-                    CalendarLink.calendar_id == source_calendar_id,
-                    CalendarLink.external_event_id == external_event_id,
-                )
-            )
-        )
-        for link in links:
-            link.calendar_id = destination_calendar_id
-            link.external_event_id = result.external_event_id
-            link.provider_etag = result.provider_etag
-            link.synced_snapshot = dict(result.snapshot)
-
-        bindings = list(
-            session.scalars(
-                select(ProviderEventBinding).where(
-                    ProviderEventBinding.account_id == operation.account_id,
-                    ProviderEventBinding.calendar_id == source_calendar_id,
-                    ProviderEventBinding.provider_event_id == external_event_id,
-                )
-            )
-        )
-        for binding in bindings:
-            binding.calendar_id = destination_calendar_id
-            binding.provider_event_id = result.external_event_id
-            binding.provider_etag = result.provider_etag
-            binding.provider_snapshot = dict(result.snapshot)
-            binding.independently_modified_at = None
-            binding.version += 1
-
-        cache_rows = list(
-            session.scalars(
-                select(CalendarEventCache).where(
-                    CalendarEventCache.account_id == operation.account_id,
-                    CalendarEventCache.calendar_id == source_calendar_id,
-                    or_(
-                        CalendarEventCache.provider_event_id == external_event_id,
-                        CalendarEventCache.recurring_event_id == external_event_id,
-                    ),
-                )
-            )
-        )
-        for row in cache_rows:
-            row.calendar_id = destination_calendar_id
-            if row.provider_event_id == external_event_id:
-                row.provider_etag = result.provider_etag
-            row.synced_at = utc_now()
-
-        for rule in session.scalars(
-            select(ReminderRule).where(
-                ReminderRule.account_id == operation.account_id,
-                ReminderRule.calendar_id == source_calendar_id,
-                ReminderRule.provider_event_id == external_event_id,
-            )
-        ):
-            rule.calendar_id = destination_calendar_id
-            rule.version += 1
-
-        canonical_ids = {
-            value
-            for value in [
-                *(link.canonical_event_id for link in links),
-                *(binding.canonical_event_id for binding in bindings),
-            ]
-            if value is not None
-        }
-        for canonical_id in canonical_ids:
-            canonical = session.get(CanonicalEvent, canonical_id)
-            if canonical is not None:
-                canonical.calendar_lane = destination_lane
-                canonical.version += 1
-
-        now = utc_now()
-        attempt.status = AttemptStatus.SUCCEEDED.value
-        attempt.provider_request_id = result.provider_request_id or attempt.provider_request_id
-        attempt.response_summary = {
-            "item_key": item.item_key,
-            "external_event_id": result.external_event_id,
-            "source_calendar_id": source_calendar_id,
-            "destination_calendar_id": destination_calendar_id,
-        }
-        attempt.completed_at = now
-        item.status = "succeeded"
-        item.lease_token = None
-        item.leased_until = None
-        item.next_attempt_at = None
-        item.result = {
-            "external_event_id": result.external_event_id,
-            "source_lane": parameters["source_lane"],
-            "destination_lane": destination_lane,
-            "calendar_link_ids": [str(link.id) for link in links],
-        }
-        item.last_error_code = None
-        OperationRunner._update_batch_parent(session, operation)
-        session.add(
-            AuditEvent(
-                event_type="calendar_event.lane_migrated",
-                entity_type="operation_item",
-                entity_id=item.id,
-                actor_type="docket",
-                actor_id=None,
-                request_id=None,
-                data={
-                    "operation_id": str(operation.id),
-                    "action_revision_id": str(revision.id),
-                    "external_event_id": result.external_event_id,
-                    "source_lane": parameters["source_lane"],
-                    "destination_lane": destination_lane,
-                },
-            )
-        )
-        session.add(
-            OutboxEvent(
-                event_type="discord.projection.refresh_requested",
-                aggregate_type="queue_item",
-                aggregate_id=queue_item.id,
-                deduplication_key=(
-                    f"discord_projection:{queue_item.id}:operation-item:"
-                    f"{item.id}:attempt:{item.attempt_count}:ok"
-                ),
-                payload={
-                    "queue_item_id": str(queue_item.id),
-                    "action_id": str(action.id),
-                    "operation_id": str(operation.id),
-                    "operation_item_id": str(item.id),
-                    "status": item.status,
-                    "parent_status": operation.status,
-                },
-                status=OutboxStatus.PENDING.value,
-            )
-        )
-
-    @staticmethod
-    def _apply_gmail_success(
-        session: Session,
-        operation: Operation,
-        attempt: ExecutionAttempt,
-        result: GmailMutationResult,
-    ) -> None:
-        revision, action, queue_item = OperationRunner._bound_entities(session, operation)
-        parameters = revision.parameters
-        if result.message_id != parameters.get("message_id"):
-            raise DocketError(
-                code="gmail_result_binding_mismatch",
-                message="Gmail returned a result for a different message.",
-            )
-        try:
-            source_id = uuid.UUID(str(parameters["source_item_id"]))
-        except ValueError as exc:
-            raise DocketError(
-                code="invalid_operation_state",
-                message="The Gmail operation has an invalid source binding.",
-            ) from exc
-        source = session.get(SourceItem, source_id)
-        if (
-            source is None
-            or source.account_id != operation.account_id
-            or source.external_object_id != result.message_id
-            or source.source_version != parameters.get("source_version")
-        ):
-            raise DocketError(
-                code="gmail_source_binding_mismatch",
-                message="The Gmail operation source binding is no longer valid.",
-            )
-        headers = dict(source.minimal_headers)
-        headers["label_ids"] = list(result.label_ids)
-        headers["provider_observed_version"] = result.source_version
-        source.minimal_headers = headers
-        now = utc_now()
-        attempt.status = AttemptStatus.SUCCEEDED.value
-        attempt.provider_request_id = result.provider_request_id or attempt.provider_request_id
-        attempt.response_summary = {
-            "disposition": result.disposition,
-            "removed_label_id": parameters["remove_label_id"],
-            "source_version": result.source_version,
-        }
-        attempt.completed_at = now
-        operation.status = OperationStatus.SUCCEEDED.value
-        operation.lease_token = None
-        operation.leased_until = None
-        operation.next_attempt_at = None
-        operation.result = {
-            "message_id": result.message_id,
-            "source_version": result.source_version,
-            "removed_label_id": parameters["remove_label_id"],
-            "disposition": result.disposition,
-        }
-        operation.last_error_code = None
-        operation.last_error_message = None
-        action.status = ActionStatus.SUCCEEDED.value
-        pending_sibling = session.scalar(
-            select(Action.id).where(
-                Action.queue_item_id == queue_item.id,
-                Action.id != action.id,
-                Action.status == ActionStatus.APPROVAL_PENDING.value,
-            )
-        )
-        if pending_sibling is not None:
-            queue_item.status = QueueItemStatus.AWAITING_APPROVAL.value
-            queue_item.resolved_at = None
-            queue_item.resolution_code = None
-        else:
-            queue_item.status = QueueItemStatus.COMPLETED.value
-            queue_item.resolved_at = now
-            queue_item.resolution_code = (
-                "gmail_archived"
-                if operation.operation_type == "gmail_archive_message"
-                else "gmail_marked_read"
-            )
-        queue_item.version += 1
-        session.add(
-            AuditEvent(
-                event_type="operation.succeeded",
-                entity_type="operation",
-                entity_id=operation.id,
-                actor_type="docket",
-                actor_id=None,
-                request_id=None,
-                data={
-                    "action_revision_id": str(revision.id),
-                    "attempt_id": str(attempt.id),
-                    "message_id": result.message_id,
-                    "source_version": result.source_version,
-                    "parameters_sha256": revision.parameters_sha256,
-                    "disposition": result.disposition,
-                },
-            )
-        )
-        session.add(
-            OutboxEvent(
-                event_type="discord.projection.refresh_requested",
-                aggregate_type="queue_item",
-                aggregate_id=queue_item.id,
-                deduplication_key=(
-                    f"discord_projection:{queue_item.id}:operation:{operation.id}:ok"
-                ),
-                payload={
-                    "queue_item_id": str(queue_item.id),
-                    "action_id": str(action.id),
-                    "operation_id": str(operation.id),
-                    "status": "succeeded",
-                },
-                status=OutboxStatus.PENDING.value,
-            )
-        )
-        enqueue_action_system_log(
-            session,
-            action=action,
-            revision=revision,
-            state="succeeded",
-            result=operation.result,
-        )
-
-    def finish_success(self, claim: ClaimedOperation, result: CalendarEventResult) -> None:
-        with self.session_factory.begin() as session:
-            operation = session.get(Operation, claim.operation_id)
-            attempt = session.get(ExecutionAttempt, claim.attempt_id)
-            if operation is None or attempt is None:
-                raise DocketError(code="operation_lease_lost", message="Operation lease was lost.")
-            if claim.operation_item_id is not None:
-                item = session.get(OperationItem, claim.operation_item_id)
-                if (
-                    item is None
-                    or item.lease_token != claim.lease_token
-                    or item.status not in {"running", "reconciliation_required"}
-                ):
-                    raise DocketError(
-                        code="operation_lease_lost",
-                        message="Operation item lease was lost.",
-                    )
-                self._apply_batch_item_success(session, operation, item, attempt, result)
-                return
-            if operation.lease_token != claim.lease_token:
-                raise DocketError(
-                    code="operation_lease_lost",
-                    message="Operation lease was lost.",
-                )
-            self._apply_success(
-                session,
-                operation,
-                attempt,
-                result,
-                parameters_override=claim.parameters,
-            )
-
-    def finish_gmail_success(
+    def _finish_event_success(
         self,
         claim: ClaimedOperation,
-        result: GmailMutationResult,
+        result: CalendarEventResult,
     ) -> None:
         with self.session_factory.begin() as session:
             operation = session.get(Operation, claim.operation_id)
+            target = session.get(OperationTarget, claim.operation_target_id)
             attempt = session.get(ExecutionAttempt, claim.attempt_id)
-            if operation is None or attempt is None:
-                raise DocketError(
-                    code="operation_lease_lost",
-                    message="Operation lease was lost.",
-                )
-            if claim.operation_item_id is not None or operation.lease_token != claim.lease_token:
-                raise DocketError(
-                    code="operation_lease_lost",
-                    message="Operation lease was lost.",
-                )
-            self._apply_gmail_success(session, operation, attempt, result)
-
-    def finish_calendar_lane_success(
-        self,
-        claim: ClaimedOperation,
-        result: CalendarLaneProviderResult,
-    ) -> None:
-        with self.session_factory.begin() as session:
-            operation = session.get(Operation, claim.operation_id)
-            attempt = session.get(ExecutionAttempt, claim.attempt_id)
-            if operation is None or attempt is None:
-                raise DocketError(code="operation_lease_lost", message="Operation lease was lost.")
-            if claim.operation_item_id is not None or operation.lease_token != claim.lease_token:
-                raise DocketError(code="operation_lease_lost", message="Operation lease was lost.")
-            revision, action, queue_item = self._bound_entities(session, operation)
-            parameters = revision.parameters
-            try:
-                lane_id = uuid.UUID(str(parameters["lane_id"]))
-            except (KeyError, ValueError) as exc:
+            if operation is None or target is None or attempt is None:
                 raise DocketError(
                     code="invalid_operation_state",
-                    message="The Calendar lane operation has an invalid lane binding.",
-                ) from exc
-            lane = session.get(CalendarLane, lane_id)
-            if (
-                lane is None
-                or lane.account_id != operation.account_id
-                or lane.lane != parameters.get("lane")
-                or lane.version != parameters.get("lane_version")
-                or lane.display_name != parameters.get("display_name")
-                or lane.color_hex != parameters.get("color_hex")
-            ):
-                raise DocketError(
-                    code="calendar_lane_binding_changed",
-                    message="The Calendar lane changed before configuration completed.",
+                    message="Provider Operation state disappeared during execution.",
                 )
-            lane.calendar_id = result.calendar_id
-            lane.status = "active"
-            lane.last_error_code = None
-            now = utc_now()
-            attempt.status = AttemptStatus.SUCCEEDED.value
-            attempt.provider_request_id = result.provider_request_id or attempt.provider_request_id
-            attempt.response_summary = {
-                "lane": lane.lane,
-                "calendar_id": result.calendar_id,
-            }
-            attempt.completed_at = now
+            self._upsert_binding(session, operation, target, result)
+            self._upsert_cache(session, operation, target, result)
             operation.status = OperationStatus.SUCCEEDED.value
-            operation.lease_token = None
-            operation.leased_until = None
-            operation.next_attempt_at = None
             operation.result = {
-                "lane": lane.lane,
-                "calendar_id": result.calendar_id,
-                "display_name": lane.display_name,
-                "color_hex": lane.color_hex,
+                "provider_event_id": result.external_event_id,
+                "provider_request_id": result.provider_request_id,
             }
-            operation.last_error_code = None
-            operation.last_error_message = None
-            action.status = ActionStatus.SUCCEEDED.value
-            queue_item.status = QueueItemStatus.COMPLETED.value
-            queue_item.resolved_at = now
-            queue_item.resolution_code = "calendar_lane_configured"
-            queue_item.version += 1
-            session.add(
-                AuditEvent(
-                    event_type="calendar_lane.configured",
-                    entity_type="calendar_lane",
-                    entity_id=lane.id,
-                    actor_type="docket",
-                    actor_id=None,
-                    request_id=None,
-                    data={
-                        "operation_id": str(operation.id),
-                        "attempt_id": str(attempt.id),
-                        "calendar_id": result.calendar_id,
-                        "provider_request_id": result.provider_request_id,
-                    },
-                )
-            )
-            enqueue_action_system_log(
-                session,
-                action=action,
-                revision=revision,
-                state="succeeded",
-                result=operation.result,
-            )
+            target.status = "succeeded"
+            target.result = dict(operation.result)
+            attempt.status = AttemptStatus.SUCCEEDED.value
+            attempt.provider_request_id = result.provider_request_id
+            attempt.response_summary = {
+                "provider_event_id": result.external_event_id,
+                "provider_etag_present": result.provider_etag is not None,
+            }
+            attempt.completed_at = utc_now()
+            self._clear_lease(operation, target)
+            self._audit(session, operation, target, "operation.succeeded")
 
-    def finish_calendar_lane_delete_success(
+    def _finish_lane_success(
         self,
         claim: ClaimedOperation,
-        result: CalendarLaneDeleteResult,
+        result: CalendarLaneProviderResult | CalendarLaneDeleteResult,
     ) -> None:
         with self.session_factory.begin() as session:
             operation = session.get(Operation, claim.operation_id)
+            target = session.get(OperationTarget, claim.operation_target_id)
             attempt = session.get(ExecutionAttempt, claim.attempt_id)
-            if operation is None or attempt is None:
-                raise DocketError(code="operation_lease_lost", message="Operation lease was lost.")
-            if claim.operation_item_id is not None or operation.lease_token != claim.lease_token:
-                raise DocketError(code="operation_lease_lost", message="Operation lease was lost.")
-            revision, action, queue_item = self._bound_entities(session, operation)
-            lane = session.get(CalendarLane, uuid.UUID(str(revision.parameters["lane_id"])))
-            if (
-                lane is None
-                or lane.account_id != operation.account_id
-                or lane.version != revision.parameters.get("lane_version")
-                or lane.calendar_id != result.calendar_id
-                or lane.status != "active"
-            ):
+            if operation is None or target is None or attempt is None:
                 raise DocketError(
-                    code="calendar_lane_binding_changed",
-                    message="The Calendar lane changed before deletion completed.",
+                    code="invalid_operation_state",
+                    message="Provider Operation state disappeared during execution.",
                 )
-            for row in session.scalars(
-                select(CalendarEventCache).where(
-                    CalendarEventCache.account_id == operation.account_id,
-                    CalendarEventCache.calendar_id == result.calendar_id,
+            lane = session.scalar(
+                select(CalendarLane).where(
+                    CalendarLane.ref_id == target.canonical_target_ref
                 )
-            ):
-                session.delete(row)
-            for state in session.scalars(
-                select(CalendarSyncState).where(
-                    CalendarSyncState.account_id == operation.account_id,
-                    CalendarSyncState.calendar_id == result.calendar_id,
+            )
+            if lane is None:
+                raise DocketError(
+                    code="calendar_lane_unresolved",
+                    message="Provider Operation lost its CalendarLane target.",
                 )
-            ):
-                session.delete(state)
-            lane.calendar_id = None
-            lane.status = "deleted"
+            if operation.operation_type == "calendar_delete_lane":
+                lane.status = "deleted"
+                lane.enabled = False
+            else:
+                lane.calendar_id = result.calendar_id
+                lane.status = "active"
+                lane.enabled = True
             lane.last_error_code = None
             lane.version += 1
-            now = utc_now()
-            attempt.status = AttemptStatus.SUCCEEDED.value
-            attempt.provider_request_id = result.provider_request_id or attempt.provider_request_id
-            attempt.response_summary = {"lane": lane.lane, "calendar_id": result.calendar_id}
-            attempt.completed_at = now
             operation.status = OperationStatus.SUCCEEDED.value
-            operation.lease_token = None
-            operation.leased_until = None
-            operation.next_attempt_at = None
-            operation.result = {"lane": lane.lane, "deleted_calendar_id": result.calendar_id}
-            operation.last_error_code = None
-            operation.last_error_message = None
-            action.status = ActionStatus.SUCCEEDED.value
-            queue_item.status = QueueItemStatus.COMPLETED.value
-            queue_item.resolved_at = now
-            queue_item.resolution_code = "calendar_lane_deleted"
-            queue_item.version += 1
-            session.add(
-                AuditEvent(
-                    event_type="calendar_lane.deleted",
-                    entity_type="calendar_lane",
-                    entity_id=lane.id,
-                    actor_type="docket",
-                    actor_id=None,
-                    request_id=None,
-                    data={
-                        "operation_id": str(operation.id),
-                        "calendar_id": result.calendar_id,
-                    },
-                )
-            )
-            session.add(
-                OutboxEvent(
-                    event_type="discord.projection.refresh_requested",
-                    aggregate_type="queue_item",
-                    aggregate_id=queue_item.id,
-                    deduplication_key=f"discord_projection:{queue_item.id}:lane-delete:ok",
-                    payload={
-                        "queue_item_id": str(queue_item.id),
-                        "action_id": str(action.id),
-                        "operation_id": str(operation.id),
-                        "status": "succeeded",
-                    },
-                    status=OutboxStatus.PENDING.value,
-                )
-            )
-            enqueue_action_system_log(
-                session,
-                action=action,
-                revision=revision,
-                state="succeeded",
-                result=operation.result,
-            )
+            operation.result = {
+                "calendar_id": result.calendar_id,
+                "provider_request_id": result.provider_request_id,
+            }
+            target.status = "succeeded"
+            target.result = dict(operation.result)
+            attempt.status = AttemptStatus.SUCCEEDED.value
+            attempt.provider_request_id = result.provider_request_id
+            attempt.response_summary = {"calendar_id": result.calendar_id}
+            attempt.completed_at = utc_now()
+            self._clear_lease(operation, target)
+            self._audit(session, operation, target, "operation.succeeded")
 
-    def finish_error(
+    def _finish_error(
         self,
         claim: ClaimedOperation,
-        error: CalendarProviderError | GmailProviderError,
+        error: CalendarProviderError,
     ) -> None:
         with self.session_factory.begin() as session:
             operation = session.get(Operation, claim.operation_id)
+            target = session.get(OperationTarget, claim.operation_target_id)
             attempt = session.get(ExecutionAttempt, claim.attempt_id)
-            if operation is None or attempt is None:
-                raise DocketError(code="operation_lease_lost", message="Operation lease was lost.")
-            if claim.operation_item_id is not None:
-                item = session.get(OperationItem, claim.operation_item_id)
-                if (
-                    item is None
-                    or item.lease_token != claim.lease_token
-                    or item.status != "running"
-                ):
-                    raise DocketError(
-                        code="operation_lease_lost",
-                        message="Operation item lease was lost.",
-                    )
-                revision, action, queue_item = self._bound_entities(session, operation)
-                now = utc_now()
-                attempt.status = (
-                    AttemptStatus.UNKNOWN.value
-                    if isinstance(error, (CalendarUnknownOutcome, GmailUnknownOutcome))
-                    else AttemptStatus.FAILED.value
-                )
-                attempt.error_code = error.code
-                attempt.error_message = error.safe_message
-                attempt.completed_at = now
-                item.lease_token = None
-                item.leased_until = None
-                item.last_error_code = error.code
-                if isinstance(error, (CalendarUnknownOutcome, GmailUnknownOutcome)):
-                    item.status = "reconciliation_required"
-                    item.next_attempt_at = now
-                elif error.transient and item.attempt_count < self.max_attempts:
-                    item.status = "pending"
-                    item.next_attempt_at = now + timedelta(seconds=min(300, 2**item.attempt_count))
-                else:
-                    item.status = "failed"
-                    item.next_attempt_at = None
-                if item.status in {"failed", "reconciliation_required"}:
-                    plan_status = (
-                        "reconciliation_required"
-                        if item.status == "reconciliation_required"
-                        else "cancelled"
-                    )
-                    for plan in session.scalars(
-                        select(CalendarReminderPlan).where(
-                            CalendarReminderPlan.action_revision_id == revision.id,
-                            CalendarReminderPlan.manifest_item_key == item.item_key,
-                            CalendarReminderPlan.status.in_(("planned", "reconciliation_required")),
-                        )
-                    ):
-                        plan.status = plan_status
-                self._update_batch_parent(session, operation)
-                session.add(
-                    AuditEvent(
-                        event_type="operation_item.failed",
-                        entity_type="operation_item",
-                        entity_id=item.id,
-                        actor_type="docket",
-                        actor_id=None,
-                        request_id=None,
-                        data={
-                            "operation_id": str(operation.id),
-                            "attempt_id": str(attempt.id),
-                            "item_key": item.item_key,
-                            "error_code": error.code,
-                            "unknown_outcome": isinstance(
-                                error, (CalendarUnknownOutcome, GmailUnknownOutcome)
-                            ),
-                            "will_retry": item.status in {"pending", "reconciliation_required"},
-                        },
-                    )
-                )
-                session.add(
-                    OutboxEvent(
-                        event_type="discord.projection.refresh_requested",
-                        aggregate_type="queue_item",
-                        aggregate_id=queue_item.id,
-                        deduplication_key=(
-                            f"discord_projection:{queue_item.id}:operation-item:"
-                            f"{item.id}:attempt:{item.attempt_count}:error"
-                        ),
-                        payload={
-                            "queue_item_id": str(queue_item.id),
-                            "action_id": str(action.id),
-                            "operation_id": str(operation.id),
-                            "operation_item_id": str(item.id),
-                            "status": item.status,
-                            "parent_status": operation.status,
-                        },
-                        status=OutboxStatus.PENDING.value,
-                    )
-                )
+            if operation is None or target is None or attempt is None:
                 return
-            if operation.lease_token != claim.lease_token:
-                raise DocketError(
-                    code="operation_lease_lost",
-                    message="Operation lease was lost.",
-                )
-            revision, action, queue_item = self._bound_entities(session, operation)
-            now = utc_now()
-            attempt.status = (
-                AttemptStatus.UNKNOWN.value
-                if isinstance(error, (CalendarUnknownOutcome, GmailUnknownOutcome))
-                else AttemptStatus.FAILED.value
+            retry = error.transient and operation.attempt_count < self.max_attempts
+            operation.status = (
+                OperationStatus.PENDING.value
+                if retry
+                else OperationStatus.FAILED.value
             )
-            attempt.error_code = error.code
-            attempt.error_message = error.safe_message
-            attempt.completed_at = now
-            operation.lease_token = None
-            operation.leased_until = None
+            target.status = "pending" if retry else "failed"
             operation.last_error_code = error.code
             operation.last_error_message = error.safe_message
-            if isinstance(error, (CalendarUnknownOutcome, GmailUnknownOutcome)):
-                operation.status = OperationStatus.RECONCILIATION_REQUIRED.value
-                operation.next_attempt_at = now
-                action.status = ActionStatus.RECONCILIATION_REQUIRED.value
-                queue_item.status = QueueItemStatus.RECONCILIATION_REQUIRED.value
-            elif error.transient and operation.attempt_count < self.max_attempts:
-                operation.status = OperationStatus.PENDING.value
-                operation.next_attempt_at = now + timedelta(
-                    seconds=min(300, 2**operation.attempt_count)
-                )
-                action.status = ActionStatus.READY.value
-            else:
-                operation.status = OperationStatus.FAILED.value
-                operation.next_attempt_at = None
-                action.status = ActionStatus.FAILED.value
-                queue_item.status = QueueItemStatus.FAILED.value
-                if (
-                    revision.action_type in GMAIL_MUTATION_ACTION_TYPES
-                    and session.scalar(
-                        select(Action.id).where(
-                            Action.queue_item_id == queue_item.id,
-                            Action.id != action.id,
-                            Action.status == ActionStatus.APPROVAL_PENDING.value,
-                        )
-                    )
-                    is not None
-                ):
-                    queue_item.status = QueueItemStatus.AWAITING_APPROVAL.value
-            if operation.status in {
-                OperationStatus.FAILED.value,
-                OperationStatus.RECONCILIATION_REQUIRED.value,
-            }:
-                plan_status = (
-                    "reconciliation_required"
-                    if operation.status == OperationStatus.RECONCILIATION_REQUIRED.value
-                    else "cancelled"
-                )
-                for plan in session.scalars(
-                    select(CalendarReminderPlan).where(
-                        CalendarReminderPlan.action_revision_id == revision.id,
-                        CalendarReminderPlan.status.in_(("planned", "reconciliation_required")),
-                    )
-                ):
-                    plan.status = plan_status
-            if revision.action_type == "calendar_configure_lane":
-                try:
-                    lane_id = uuid.UUID(str(revision.parameters["lane_id"]))
-                except (KeyError, ValueError):
-                    lane_id = None
-                lane = session.get(CalendarLane, lane_id) if lane_id is not None else None
-                if lane is not None and lane.version == revision.parameters.get("lane_version"):
-                    lane.last_error_code = error.code
-                    if operation.status == OperationStatus.FAILED.value:
-                        lane.status = "failed"
-            queue_item.version += 1
-            if operation.bundle_id is not None:
-                self._update_operation_bundle(session, operation)
-                return
-            session.add(
-                AuditEvent(
-                    event_type="operation.failed",
-                    entity_type="operation",
-                    entity_id=operation.id,
-                    actor_type="docket",
-                    actor_id=None,
-                    request_id=None,
-                    data={
-                        "action_revision_id": str(revision.id),
-                        "attempt_id": str(attempt.id),
-                        "error_code": error.code,
-                        "unknown_outcome": isinstance(
-                            error,
-                            (CalendarUnknownOutcome, GmailUnknownOutcome),
-                        ),
-                        "will_retry": operation.status
-                        in {
-                            OperationStatus.PENDING.value,
-                            OperationStatus.RECONCILIATION_REQUIRED.value,
-                        },
-                    },
-                )
+            target.last_error_code = error.code
+            delay = min(300, 2 ** max(0, operation.attempt_count - 1))
+            operation.next_attempt_at = (
+                utc_now() + timedelta(seconds=delay) if retry else None
             )
-            refresh_target = operation_projection_target(
+            target.next_attempt_at = operation.next_attempt_at
+            attempt.status = AttemptStatus.FAILED.value
+            attempt.error_code = error.code
+            attempt.error_message = error.safe_message
+            attempt.completed_at = utc_now()
+            self._clear_lease(operation, target)
+            self._audit(
                 session,
-                child_queue_item_id=queue_item.id,
-                approval_id=operation.approval_id,
+                operation,
+                target,
+                "operation.retry_scheduled" if retry else "operation.failed",
             )
-            session.add(
-                OutboxEvent(
-                    event_type="discord.projection.refresh_requested",
-                    aggregate_type="queue_item",
-                    aggregate_id=refresh_target.queue_item_id,
-                    deduplication_key=(
-                        f"discord_projection:{refresh_target.queue_item_id}:operation:"
-                        f"{operation.id}:attempt:{operation.attempt_count}:error"
-                    ),
-                    payload={
-                        **refresh_target.payload(),
-                        "action_id": str(action.id),
-                        "operation_id": str(operation.id),
-                        "status": operation.status,
-                    },
-                    status=OutboxStatus.PENDING.value,
-                )
+
+    def _finish_unknown(self, claim: ClaimedOperation, message: str) -> None:
+        with self.session_factory.begin() as session:
+            operation = session.get(Operation, claim.operation_id)
+            target = session.get(OperationTarget, claim.operation_target_id)
+            attempt = session.get(ExecutionAttempt, claim.attempt_id)
+            if operation is None or target is None or attempt is None:
+                return
+            operation.status = OperationStatus.RECONCILIATION_REQUIRED.value
+            target.status = "reconciliation_required"
+            operation.last_error_code = "calendar_unknown_outcome"
+            operation.last_error_message = message
+            target.last_error_code = "calendar_unknown_outcome"
+            operation.next_attempt_at = utc_now()
+            target.next_attempt_at = operation.next_attempt_at
+            attempt.status = AttemptStatus.UNKNOWN.value
+            attempt.error_code = "calendar_unknown_outcome"
+            attempt.error_message = message
+            attempt.completed_at = utc_now()
+            self._clear_lease(operation, target)
+            self._audit(session, operation, target, "operation.reconciliation_required")
+
+    def _execute(self, claim: ClaimedOperation) -> None:
+        self.mark_provider_call_started(claim)
+        if claim.operation_type == "calendar_configure_lane":
+            result = self.provider.ensure_calendar_lane(
+                claim.lane_request(create_if_missing=True)
             )
-            if operation.status in {
-                OperationStatus.FAILED.value,
-                OperationStatus.RECONCILIATION_REQUIRED.value,
-            }:
-                enqueue_action_system_log(
-                    session,
-                    action=action,
-                    revision=revision,
-                    state=operation.status,
-                    result=operation.result,
-                )
+            self._finish_lane_success(claim, result)
+            return
+        if claim.operation_type == "calendar_delete_lane":
+            result = self.provider.delete_calendar_lane(
+                claim.lane_request(create_if_missing=False)
+            )
+            self._finish_lane_success(claim, result)
+            return
+        request = claim.calendar_request()
+        if claim.operation_type == "calendar_create_event":
+            result = self.provider.create_event(request)
+        elif claim.operation_type in {
+            "calendar_update_event",
+            "calendar_update_reminders",
+        }:
+            result = self.provider.update_event(request)
+        elif claim.operation_type == "calendar_cancel_event":
+            result = self.provider.cancel_event(request)
+        else:  # model constraint prevents this branch
+            raise DocketError(
+                code="provider_operation_not_supported",
+                message="Provider Operation type is unsupported.",
+            )
+        self._finish_event_success(claim, result)
 
     def run_due_once(self) -> bool:
         claim = self.claim_due()
         if claim is None:
             return False
-        self.mark_provider_call_started(claim)
-        if claim.operation_type == "calendar_configure_lane":
-            try:
-                lane_result = self.provider.ensure_calendar_lane(
-                    claim.calendar_lane_request()
-                )
-            except CalendarProviderError as exc:
-                self.finish_error(claim, exc)
-            else:
-                self.finish_calendar_lane_success(claim, lane_result)
-            return True
-        if claim.operation_type == "calendar_delete_lane":
-            try:
-                lane_delete_result = self.provider.delete_calendar_lane(
-                    claim.calendar_lane_request(create_if_missing=False)
-                )
-            except CalendarProviderError as exc:
-                self.finish_error(claim, exc)
-            else:
-                self.finish_calendar_lane_delete_success(claim, lane_delete_result)
-            return True
-        if claim.operation_type in GMAIL_MUTATION_ACTION_TYPES:
-            if self.gmail_provider is None:
-                self.finish_error(
-                    claim,
-                    GmailProviderError(
-                        "gmail_provider_disabled",
-                        "The Gmail mutation provider is disabled.",
-                        transient=False,
-                    ),
-                )
-                return True
-            try:
-                gmail_result = self.gmail_provider.mutate_message(claim.gmail_request())
-            except GmailProviderError as exc:
-                self.finish_error(claim, exc)
-            else:
-                self.finish_gmail_success(claim, gmail_result)
-            return True
-        request = claim.calendar_request()
         try:
-            if claim.operation_type == "calendar_create_event":
-                calendar_result = self.provider.create_event(request)
-            elif claim.operation_type in {
-                "calendar_update_event",
-                "calendar_update_reminders",
-            }:
-                calendar_result = self.provider.update_event(request)
-            elif claim.operation_type == "calendar_cancel_event":
-                calendar_result = self.provider.cancel_event(request)
-            elif claim.operation_type == "calendar_move_event":
-                calendar_result = self.provider.move_event(request)
-            else:
-                raise CalendarProviderError(
-                    "unsupported_operation",
-                    "No provider handler exists for this operation.",
-                    transient=False,
-                )
+            self._execute(claim)
+        except CalendarUnknownOutcome as exc:
+            self._finish_unknown(claim, exc.safe_message)
         except CalendarProviderError as exc:
-            self.finish_error(claim, exc)
-        else:
-            self.finish_success(claim, calendar_result)
+            self._finish_error(claim, exc)
+        return True
+
+    def _finish_no_reconciliation_match(self, claim: ClaimedOperation) -> None:
+        with self.session_factory.begin() as session:
+            operation = session.get(Operation, claim.operation_id)
+            target = session.get(OperationTarget, claim.operation_target_id)
+            attempt = session.get(ExecutionAttempt, claim.attempt_id)
+            if operation is None or target is None or attempt is None:
+                return
+            operation.status = OperationStatus.PENDING.value
+            target.status = "pending"
+            operation.next_attempt_at = utc_now()
+            target.next_attempt_at = operation.next_attempt_at
+            attempt.status = AttemptStatus.FAILED.value
+            attempt.error_code = "reconciliation_no_match"
+            attempt.completed_at = utc_now()
+            self._clear_lease(operation, target)
+            self._audit(session, operation, target, "operation.reconciliation_no_match")
+
+    def _finish_reconciliation_conflict(
+        self,
+        claim: ClaimedOperation,
+        match_count: int,
+    ) -> None:
+        with self.session_factory.begin() as session:
+            operation = session.get(Operation, claim.operation_id)
+            target = session.get(OperationTarget, claim.operation_target_id)
+            attempt = session.get(ExecutionAttempt, claim.attempt_id)
+            if operation is None or target is None or attempt is None:
+                return
+            operation.status = OperationStatus.RECONCILIATION_REQUIRED.value
+            target.status = "reconciliation_required"
+            operation.last_error_code = "reconciliation_ambiguous"
+            target.last_error_code = "reconciliation_ambiguous"
+            operation.next_attempt_at = utc_now() + timedelta(minutes=5)
+            target.next_attempt_at = operation.next_attempt_at
+            attempt.status = AttemptStatus.UNKNOWN.value
+            attempt.error_code = "reconciliation_ambiguous"
+            attempt.response_summary = {"match_count": match_count}
+            attempt.completed_at = utc_now()
+            self._clear_lease(operation, target)
+            self._audit(session, operation, target, "operation.reconciliation_ambiguous")
+
+    def reconcile_once(self) -> bool:
+        claim = self.claim_reconciliation()
+        if claim is None:
+            return False
+        try:
+            if claim.operation_type in {
+                "calendar_configure_lane",
+                "calendar_delete_lane",
+            }:
+                self._execute(claim)
+                return True
+            self.mark_provider_call_started(claim)
+            request = claim.calendar_request()
+            if claim.operation_type == "calendar_create_event":
+                matches = [
+                    item
+                    for item in self.provider.find_by_correlation(request)
+                    if event_matches_request(item, request)
+                ]
+                if len(matches) == 1:
+                    self._finish_event_success(claim, matches[0])
+                elif not matches:
+                    self._finish_no_reconciliation_match(claim)
+                else:
+                    self._finish_reconciliation_conflict(claim, len(matches))
+                return True
+            result = self.provider.get_event(request)
+            if claim.operation_type == "calendar_cancel_event" and result is None:
+                result = CalendarEventResult(
+                    external_event_id=str(request.external_event_id),
+                    provider_etag=None,
+                    provider_request_id=None,
+                    snapshot={**request.snapshot(), "status": "cancelled"},
+                )
+            if result is not None and event_matches_request(result, request):
+                self._finish_event_success(claim, result)
+            elif result is None:
+                self._finish_no_reconciliation_match(claim)
+            else:
+                self._finish_reconciliation_conflict(claim, 1)
+        except CalendarUnknownOutcome as exc:
+            self._finish_unknown(claim, exc.safe_message)
+        except CalendarProviderError as exc:
+            self._finish_error(claim, exc)
         return True
 
     def recover_expired_leases(self) -> int:
-        recovered = 0
         now = utc_now()
+        recovered = 0
         with self.session_factory.begin() as session:
             operations = list(
                 session.scalars(
                     select(Operation)
                     .where(
                         Operation.status == OperationStatus.RUNNING.value,
-                        Operation.operation_type.not_in(BATCH_CALENDAR_ACTION_TYPES),
+                        Operation.leased_until.is_not(None),
                         Operation.leased_until < now,
                     )
                     .with_for_update(skip_locked=True)
                 )
             )
             for operation in operations:
-                _, action, queue_item = self._bound_entities(session, operation)
+                target = self._target(session, operation)
                 attempt = session.scalar(
                     select(ExecutionAttempt)
-                    .where(ExecutionAttempt.operation_id == operation.id)
+                    .where(
+                        ExecutionAttempt.operation_id == operation.id,
+                        ExecutionAttempt.status == AttemptStatus.STARTED.value,
+                    )
                     .order_by(ExecutionAttempt.attempt_number.desc())
                     .limit(1)
                 )
-                if attempt is None:
-                    operation.status = OperationStatus.PENDING.value
-                    action.status = ActionStatus.READY.value
-                elif attempt.provider_request_id is None:
-                    attempt.status = AttemptStatus.FAILED.value
-                    attempt.error_code = "worker_crash_before_provider_call"
-                    attempt.completed_at = now
-                    operation.status = OperationStatus.PENDING.value
-                    action.status = ActionStatus.READY.value
-                else:
-                    attempt.status = AttemptStatus.UNKNOWN.value
-                    attempt.error_code = "worker_crash_after_provider_call_started"
-                    attempt.completed_at = now
+                provider_started = bool(
+                    attempt is not None
+                    and attempt.provider_request_id
+                    and attempt.provider_request_id.startswith("call-started:")
+                )
+                if provider_started:
                     operation.status = OperationStatus.RECONCILIATION_REQUIRED.value
-                    action.status = ActionStatus.RECONCILIATION_REQUIRED.value
-                    queue_item.status = QueueItemStatus.RECONCILIATION_REQUIRED.value
-                operation.lease_token = None
-                operation.leased_until = None
-                operation.next_attempt_at = now
-                recovered += 1
-            items = list(
-                session.scalars(
-                    select(OperationItem)
-                    .join(Operation, Operation.id == OperationItem.operation_id)
-                    .where(
-                        Operation.operation_type.in_(BATCH_CALENDAR_ACTION_TYPES),
-                        OperationItem.status == "running",
-                        OperationItem.leased_until < now,
-                    )
-                    .with_for_update(skip_locked=True)
-                )
-            )
-            for item in items:
-                parent_operation = session.get(Operation, item.operation_id)
-                assert parent_operation is not None
-                attempt = session.scalar(
-                    select(ExecutionAttempt)
-                    .where(
-                        ExecutionAttempt.operation_id == parent_operation.id,
-                        ExecutionAttempt.operation_item_id == item.id,
-                    )
-                    .order_by(ExecutionAttempt.attempt_number.desc())
-                    .limit(1)
-                )
-                if attempt is None:
-                    item.status = "pending"
-                    item.last_error_code = "worker_crash_before_attempt_persisted"
-                elif attempt.provider_request_id is None:
-                    attempt.status = AttemptStatus.FAILED.value
-                    attempt.error_code = "worker_crash_before_provider_call"
-                    attempt.completed_at = now
-                    item.status = "pending"
-                    item.last_error_code = attempt.error_code
+                    target.status = "reconciliation_required"
+                    if attempt is not None:
+                        attempt.status = AttemptStatus.UNKNOWN.value
+                        attempt.error_code = "execution_interrupted"
+                        attempt.completed_at = now
                 else:
-                    attempt.status = AttemptStatus.UNKNOWN.value
-                    attempt.error_code = "worker_crash_after_provider_call_started"
-                    attempt.completed_at = now
-                    item.status = "reconciliation_required"
-                    item.last_error_code = attempt.error_code
-                item.lease_token = None
-                item.leased_until = None
-                item.next_attempt_at = now
-                self._update_batch_parent(session, parent_operation)
+                    operation.status = OperationStatus.PENDING.value
+                    target.status = "pending"
+                    if attempt is not None:
+                        attempt.status = AttemptStatus.FAILED.value
+                        attempt.error_code = "lease_expired_before_provider_call"
+                        attempt.completed_at = now
+                operation.next_attempt_at = now
+                target.next_attempt_at = now
+                self._clear_lease(operation, target)
+                self._audit(session, operation, target, "operation.lease_recovered")
                 recovered += 1
         return recovered
 
-    def _defer_reconciliation(
-        self, claim: ClaimedOperation, *, error_code: str, delay_seconds: int
-    ) -> None:
-        with self.session_factory.begin() as session:
-            operation = session.get(Operation, claim.operation_id)
-            attempt = session.get(ExecutionAttempt, claim.attempt_id)
-            if operation is None or attempt is None:
-                raise DocketError(code="operation_lease_lost", message="Operation lease was lost.")
-            attempt.status = AttemptStatus.FAILED.value
-            attempt.error_code = error_code
-            attempt.completed_at = utc_now()
-            if claim.operation_item_id is not None:
-                item = session.get(OperationItem, claim.operation_item_id)
-                if (
-                    item is None
-                    or item.lease_token != claim.lease_token
-                    or item.status != "reconciliation_required"
-                ):
-                    raise DocketError(
-                        code="operation_lease_lost",
-                        message="Operation item lease was lost.",
+    def pending_count(self) -> int:
+        with self.session_factory() as session:
+            return len(
+                list(
+                    session.scalars(
+                        select(Operation.id).where(
+                            Operation.status.in_(
+                                {
+                                    OperationStatus.PENDING.value,
+                                    OperationStatus.RUNNING.value,
+                                    OperationStatus.RECONCILIATION_REQUIRED.value,
+                                }
+                            )
+                        )
                     )
-                item.lease_token = None
-                item.leased_until = None
-                item.next_attempt_at = utc_now() + timedelta(seconds=delay_seconds)
-                item.last_error_code = error_code
-                self._update_batch_parent(session, operation)
-                return
-            if operation.lease_token != claim.lease_token:
-                raise DocketError(
-                    code="operation_lease_lost",
-                    message="Operation lease was lost.",
-                )
-            operation.lease_token = None
-            operation.leased_until = None
-            operation.next_attempt_at = utc_now() + timedelta(seconds=delay_seconds)
-
-    def _finish_reconciliation_no_match(self, claim: ClaimedOperation) -> None:
-        with self.session_factory.begin() as session:
-            operation = session.get(Operation, claim.operation_id)
-            attempt = session.get(ExecutionAttempt, claim.attempt_id)
-            if operation is None or attempt is None:
-                raise DocketError(code="operation_lease_lost", message="Operation lease was lost.")
-            now = utc_now()
-            attempt.status = AttemptStatus.SUCCEEDED.value
-            attempt.response_summary = {"matches": 0}
-            attempt.completed_at = now
-            if claim.operation_item_id is not None:
-                item = session.get(OperationItem, claim.operation_item_id)
-                if (
-                    item is None
-                    or item.lease_token != claim.lease_token
-                    or item.status != "reconciliation_required"
-                ):
-                    raise DocketError(
-                        code="operation_lease_lost",
-                        message="Operation item lease was lost.",
-                    )
-                item.status = "pending"
-                item.lease_token = None
-                item.leased_until = None
-                item.next_attempt_at = now
-                item.last_error_code = None
-                self._update_batch_parent(session, operation)
-                return
-            if operation.lease_token != claim.lease_token:
-                raise DocketError(
-                    code="operation_lease_lost",
-                    message="Operation lease was lost.",
-                )
-            _, action, queue_item = self._bound_entities(session, operation)
-            operation.status = OperationStatus.PENDING.value
-            operation.lease_token = None
-            operation.leased_until = None
-            operation.next_attempt_at = now
-            action.status = ActionStatus.READY.value
-            queue_item.status = QueueItemStatus.EXECUTING.value
-            queue_item.version += 1
-
-    def _finish_reconciliation_conflict(self, claim: ClaimedOperation, *, match_count: int) -> None:
-        with self.session_factory.begin() as session:
-            operation = session.get(Operation, claim.operation_id)
-            attempt = session.get(ExecutionAttempt, claim.attempt_id)
-            if operation is None or attempt is None:
-                raise DocketError(code="operation_lease_lost", message="Operation lease was lost.")
-            _, _, queue_item = self._bound_entities(session, operation)
-            attempt.status = AttemptStatus.FAILED.value
-            attempt.error_code = "calendar_reconciliation_conflict"
-            attempt.response_summary = {"matches": match_count}
-            attempt.completed_at = utc_now()
-            aggregate_type = "operation"
-            aggregate_id = operation.id
-            attempt_number = operation.attempt_count
-            if claim.operation_item_id is not None:
-                item = session.get(OperationItem, claim.operation_item_id)
-                if (
-                    item is None
-                    or item.lease_token != claim.lease_token
-                    or item.status != "reconciliation_required"
-                ):
-                    raise DocketError(
-                        code="operation_lease_lost",
-                        message="Operation item lease was lost.",
-                    )
-                item.lease_token = None
-                item.leased_until = None
-                item.next_attempt_at = utc_now() + timedelta(minutes=5)
-                item.last_error_code = "calendar_reconciliation_conflict"
-                self._update_batch_parent(session, operation)
-                aggregate_type = "operation_item"
-                aggregate_id = item.id
-                attempt_number = item.attempt_count
-            else:
-                if operation.lease_token != claim.lease_token:
-                    raise DocketError(
-                        code="operation_lease_lost",
-                        message="Operation lease was lost.",
-                    )
-                operation.lease_token = None
-                operation.leased_until = None
-                operation.next_attempt_at = utc_now() + timedelta(minutes=5)
-            session.add(
-                OutboxEvent(
-                    event_type="system.alert.requested",
-                    aggregate_type=aggregate_type,
-                    aggregate_id=aggregate_id,
-                    deduplication_key=(
-                        f"system_alert:{aggregate_type}:{aggregate_id}:reconcile:{attempt_number}"
-                    ),
-                    payload={
-                        "operation_id": str(operation.id),
-                        "operation_item_id": (
-                            str(claim.operation_item_id)
-                            if claim.operation_item_id is not None
-                            else None
-                        ),
-                        "queue_item_id": str(queue_item.id),
-                        "error_code": "calendar_reconciliation_conflict",
-                        "match_count": match_count,
-                    },
-                    status=OutboxStatus.PENDING.value,
                 )
             )
-
-    def _claim_age(self, claim: ClaimedOperation) -> timedelta:
-        with self.session_factory() as session:
-            if claim.operation_item_id is not None:
-                item = session.get(OperationItem, claim.operation_item_id)
-                if item is None:
-                    raise DocketError(
-                        code="invalid_operation_state",
-                        message="Operation item disappeared during reconciliation.",
-                    )
-                return utc_now() - _as_utc(item.updated_at)
-            operation = session.get(Operation, claim.operation_id)
-            if operation is None:
-                raise DocketError(
-                    code="invalid_operation_state",
-                    message="Operation disappeared during reconciliation.",
-                )
-            return utc_now() - _as_utc(operation.updated_at)
-
-    def reconcile_once(self) -> bool:
-        claim = self.claim_reconciliation()
-        if claim is None:
-            return False
-        if claim.operation_type == "calendar_configure_lane":
-            try:
-                lane_result = self.provider.ensure_calendar_lane(
-                    claim.calendar_lane_request(create_if_missing=False)
-                )
-            except CalendarProviderError as exc:
-                if exc.code == "google_calendar_lane_not_found":
-                    if claim.attempt_number < 4:
-                        self._defer_reconciliation(
-                            claim,
-                            error_code=exc.code,
-                            delay_seconds=8,
-                        )
-                    else:
-                        self._finish_reconciliation_no_match(claim)
-                elif exc.transient:
-                    self._defer_reconciliation(
-                        claim,
-                        error_code=exc.code,
-                        delay_seconds=8,
-                    )
-                else:
-                    self.finish_error(claim, exc)
-            else:
-                self.finish_calendar_lane_success(claim, lane_result)
-            return True
-        if claim.operation_type == "calendar_delete_lane":
-            try:
-                self.provider.ensure_calendar_lane(
-                    claim.calendar_lane_request(create_if_missing=False)
-                )
-            except CalendarProviderError as exc:
-                if exc.code == "google_calendar_lane_not_found":
-                    self.finish_calendar_lane_delete_success(
-                        claim,
-                        CalendarLaneDeleteResult(
-                            calendar_id=str(claim.parameters["calendar_id"]),
-                            provider_request_id=None,
-                        ),
-                    )
-                elif exc.transient:
-                    self._defer_reconciliation(claim, error_code=exc.code, delay_seconds=8)
-                else:
-                    self.finish_error(claim, exc)
-            else:
-                self._finish_reconciliation_no_match(claim)
-            return True
-        if claim.operation_type in GMAIL_MUTATION_ACTION_TYPES:
-            if self.gmail_provider is None:
-                self.finish_error(
-                    claim,
-                    GmailProviderError(
-                        "gmail_provider_disabled",
-                        "The Gmail mutation provider is disabled.",
-                        transient=False,
-                    ),
-                )
-                return True
-            gmail_request = claim.gmail_request()
-            try:
-                gmail_current = self.gmail_provider.get_label_state(gmail_request)
-            except GmailProviderError as exc:
-                if exc.transient:
-                    self._defer_reconciliation(
-                        claim,
-                        error_code=exc.code,
-                        delay_seconds=8,
-                    )
-                else:
-                    self.finish_error(claim, exc)
-                return True
-            if gmail_request.remove_label_id not in gmail_current.label_ids:
-                self.finish_gmail_success(
-                    claim,
-                    GmailMutationResult(
-                        message_id=gmail_current.message_id,
-                        source_version=gmail_current.source_version,
-                        label_ids=gmail_current.label_ids,
-                        provider_request_id=gmail_current.provider_request_id,
-                        disposition="reconciled",
-                    ),
-                )
-                return True
-            age = self._claim_age(claim)
-            if age.total_seconds() >= self.consistency_window_seconds:
-                self._finish_reconciliation_no_match(claim)
-            else:
-                remaining = max(
-                    1,
-                    self.consistency_window_seconds - int(age.total_seconds()),
-                )
-                self._defer_reconciliation(
-                    claim,
-                    error_code="gmail_consistency_window",
-                    delay_seconds=remaining,
-                )
-            return True
-        calendar_request = claim.calendar_request()
-        if claim.operation_type == "calendar_move_event":
-            destination_id = calendar_request.destination_calendar_id
-            if destination_id is None:
-                self._finish_reconciliation_conflict(claim, match_count=-1)
-                return True
-            try:
-                moved = self.provider.get_event(
-                    replace(calendar_request, calendar_id=destination_id)
-                )
-            except CalendarProviderError as exc:
-                if exc.transient:
-                    self._defer_reconciliation(claim, error_code=exc.code, delay_seconds=8)
-                else:
-                    self._finish_reconciliation_conflict(claim, match_count=-1)
-                return True
-            if moved is not None:
-                self.finish_success(claim, moved)
-            else:
-                self._finish_reconciliation_no_match(claim)
-            return True
-        try:
-            if claim.operation_type == "calendar_create_event":
-                matches = self.provider.find_by_correlation(calendar_request)
-            else:
-                calendar_current = self.provider.get_event(calendar_request)
-                matches = [calendar_current] if calendar_current is not None else []
-        except CalendarProviderError as exc:
-            if exc.transient:
-                self._defer_reconciliation(claim, error_code=exc.code, delay_seconds=8)
-            else:
-                self._finish_reconciliation_conflict(claim, match_count=-1)
-            return True
-        if claim.operation_type == "calendar_cancel_event":
-            if not matches or matches[0].snapshot.get("status") == "cancelled":
-                cancelled = (
-                    matches[0]
-                    if matches
-                    else CalendarEventResult(
-                        external_event_id=str(calendar_request.external_event_id),
-                        provider_etag=None,
-                        provider_request_id=None,
-                        snapshot={**calendar_request.snapshot(), "status": "cancelled"},
-                    )
-                )
-                self.finish_success(claim, cancelled)
-                return True
-            calendar_current = matches[0]
-            if calendar_current.provider_etag != calendar_request.provider_etag:
-                self._finish_reconciliation_conflict(claim, match_count=1)
-                return True
-            age = self._claim_age(claim)
-            if age.total_seconds() >= self.consistency_window_seconds:
-                self._finish_reconciliation_no_match(claim)
-            else:
-                remaining = max(
-                    1,
-                    self.consistency_window_seconds - int(age.total_seconds()),
-                )
-                self._defer_reconciliation(
-                    claim,
-                    error_code="calendar_consistency_window",
-                    delay_seconds=remaining,
-                )
-            return True
-        exact = [match for match in matches if event_matches_request(match, calendar_request)]
-        if len(matches) == 1 and len(exact) == 1:
-            self.finish_success(claim, exact[0])
-        elif len(matches) == 0:
-            if claim.operation_type in {
-                "calendar_update_event",
-                "calendar_update_reminders",
-            }:
-                self._finish_reconciliation_conflict(claim, match_count=0)
-                return True
-            age = self._claim_age(claim)
-            if age.total_seconds() >= self.consistency_window_seconds:
-                self._finish_reconciliation_no_match(claim)
-            else:
-                remaining = max(1, self.consistency_window_seconds - int(age.total_seconds()))
-                self._defer_reconciliation(
-                    claim,
-                    error_code="calendar_consistency_window",
-                    delay_seconds=remaining,
-                )
-        else:
-            self._finish_reconciliation_conflict(claim, match_count=len(matches))
-        return True

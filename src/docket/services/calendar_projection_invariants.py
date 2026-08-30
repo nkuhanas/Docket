@@ -6,13 +6,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from docket.models import (
-    CalendarLink,
-    CanonicalEvent,
-    ChangeSet,
-    Operation,
-    ProviderEventBinding,
-)
+from docket.models import CanonicalEvent, ChangeSet, Operation, ProviderEventBinding
 
 
 @dataclass(frozen=True)
@@ -59,8 +53,6 @@ class CalendarProjectionInvariantService:
                 select(CanonicalEvent)
                 .where(
                     CanonicalEvent.status == "active",
-                    CanonicalEvent.provenance_status == "complete",
-                    CanonicalEvent.created_by_changeset_ref.is_not(None),
                 )
                 .order_by(CanonicalEvent.created_at, CanonicalEvent.ref_id)
             )
@@ -71,10 +63,9 @@ class CalendarProjectionInvariantService:
                 continue
             if self.session.scalar(
                 select(ProviderEventBinding.id).where(
-                    ProviderEventBinding.canonical_event_id == event.id
+                    ProviderEventBinding.canonical_target_ref == event.ref_id,
+                    ProviderEventBinding.target_kind == "event",
                 )
-            ) is not None or self.session.scalar(
-                select(CalendarLink.id).where(CalendarLink.canonical_event_id == event.id)
             ) is not None:
                 continue
             origin = self.session.scalar(

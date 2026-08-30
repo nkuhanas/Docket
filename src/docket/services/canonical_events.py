@@ -9,7 +9,16 @@ from sqlalchemy.orm import Session
 from docket.config import get_settings
 from docket.domain.errors import DocketError
 from docket.domain.public_refs import parse_public_ref
-from docket.models import AuditEvent, CalendarLane, CanonicalEvent, ChangeSet
+from docket.models import (
+    AuditEvent,
+    CalendarLane,
+    CanonicalEvent,
+    ChangeSet,
+    EventItemLink,
+    Item,
+    Task,
+    TemporalBinding,
+)
 from docket.schemas.events import CanonicalEventCreateSpec, CanonicalEventPatchSpec
 
 EventHandler = Callable[[Session, ChangeSet, Any], list[str]]
@@ -35,7 +44,6 @@ class CanonicalEventAuthorityService:
                 ref for ref in change.basis_refs if parse_public_ref(ref)[0] == "src"
             ],
             "created_by_changeset_ref": changeset.ref_id,
-            "provenance_status": "complete",
         }
 
     def _lane(self, lane_ref: str) -> CalendarLane:
@@ -49,6 +57,70 @@ class CanonicalEventAuthorityService:
                 details={"lane_ref": lane_ref},
             )
         return lane
+
+    def _replace_item_links(
+        self,
+        event: CanonicalEvent,
+        *,
+        item_refs: list[str],
+        temporal_binding_refs: list[str],
+        basis_refs: list[str],
+    ) -> None:
+        links_by_item = {item_ref: None for item_ref in item_refs}
+        for item_ref in item_refs:
+            item = self.session.scalar(select(Item).where(Item.ref_id == item_ref))
+            if item is None or item.canonical_status != "active":
+                raise DocketError(
+                    code="event_item_unavailable",
+                    message="CanonicalEvent Item link requires an active Item.",
+                    details={"item_ref": item_ref},
+                )
+        for temporal_ref in temporal_binding_refs:
+            binding = self.session.scalar(
+                select(TemporalBinding).where(TemporalBinding.ref_id == temporal_ref)
+            )
+            if binding is None or binding.canonical_status != "active":
+                raise DocketError(
+                    code="event_temporal_binding_unavailable",
+                    message="Realized TemporalBinding must be active.",
+                    details={"temporal_binding_ref": temporal_ref},
+                )
+            prefix, _payload = parse_public_ref(binding.subject_ref)
+            if prefix == "item":
+                item_ref = binding.subject_ref
+            else:
+                task = self.session.scalar(
+                    select(Task).where(Task.ref_id == binding.subject_ref)
+                )
+                if task is None:
+                    raise DocketError(
+                        code="event_temporal_subject_unavailable",
+                        message="Realized Task temporal subject was not found.",
+                    )
+                item_ref = task.item_ref
+            if item_ref in links_by_item and links_by_item[item_ref] is not None:
+                raise DocketError(
+                    code="event_temporal_binding_ambiguous",
+                    message="One Event may realize at most one Time per linked Item.",
+                    details={"item_ref": item_ref},
+                )
+            links_by_item[item_ref] = temporal_ref
+        existing = list(
+            self.session.scalars(
+                select(EventItemLink).where(EventItemLink.event_ref == event.ref_id)
+            )
+        )
+        for link in existing:
+            self.session.delete(link)
+        for item_ref, temporal_ref in links_by_item.items():
+            self.session.add(
+                EventItemLink(
+                    event_ref=event.ref_id,
+                    item_ref=item_ref,
+                    realizes_temporal_binding_ref=temporal_ref,
+                    basis_refs=basis_refs,
+                )
+            )
 
     def apply_event(
         self,
@@ -85,23 +157,23 @@ class CanonicalEventAuthorityService:
                 title=spec.title,
                 status=spec.status,
                 event_spec=spec.event_spec.model_dump(mode="json"),
-                reminder_plan=(
-                    spec.event_spec.reminder_plan.model_dump(mode="json")
-                    if spec.event_spec.reminder_plan is not None
-                    else None
-                ),
-                calendar_lane=lane.lane,
                 lane_id=lane.id,
                 lane_ref=lane.ref_id,
                 routing_decision_ref=spec.routing_decision_ref,
-                entity_refs=[{"ref": ref} for ref in spec.entity_refs],
+                entity_refs=list(spec.entity_refs),
                 context_labels=spec.context_labels,
                 operator_policy_text=spec.operator_policy_text,
-                authority="explicit_user",
+                authority="explicit_operator",
                 **self._provenance(changeset, change),
             )
             self.session.add(event)
             self.session.flush()
+            self._replace_item_links(
+                event,
+                item_refs=list(spec.item_refs),
+                temporal_binding_refs=list(spec.realizes_temporal_binding_refs),
+                basis_refs=list(change.basis_refs),
+            )
         else:
             if change.object_ref is None:
                 raise DocketError(
@@ -125,7 +197,6 @@ class CanonicalEventAuthorityService:
                     lane = self._lane(values.pop("lane_ref"))
                     event.lane_id = lane.id
                     event.lane_ref = lane.ref_id
-                    event.calendar_lane = lane.lane
                 if "event_spec" in values:
                     event_spec = patch.event_spec
                     assert event_spec is not None
@@ -140,16 +211,37 @@ class CanonicalEventAuthorityService:
                                 ),
                             )
                     event.event_spec = event_spec.model_dump(mode="json")
-                    event.reminder_plan = (
-                        event_spec.reminder_plan.model_dump(mode="json")
-                        if event_spec.reminder_plan is not None
-                        else None
-                    )
                     values.pop("event_spec")
                 if "entity_refs" in values:
-                    event.entity_refs = [
-                        {"ref": ref} for ref in (values.pop("entity_refs") or [])
-                    ]
+                    event.entity_refs = list(values.pop("entity_refs") or [])
+                if (
+                    "item_refs" in values
+                    or "realizes_temporal_binding_refs" in values
+                ):
+                    current_links = list(
+                        self.session.scalars(
+                            select(EventItemLink).where(
+                                EventItemLink.event_ref == event.ref_id
+                            )
+                        )
+                    )
+                    item_refs = values.pop(
+                        "item_refs", [link.item_ref for link in current_links]
+                    )
+                    temporal_refs = values.pop(
+                        "realizes_temporal_binding_refs",
+                        [
+                            link.realizes_temporal_binding_ref
+                            for link in current_links
+                            if link.realizes_temporal_binding_ref is not None
+                        ],
+                    )
+                    self._replace_item_links(
+                        event,
+                        item_refs=list(item_refs or []),
+                        temporal_binding_refs=list(temporal_refs or []),
+                        basis_refs=list(change.basis_refs),
+                    )
                 for key, value in values.items():
                     setattr(event, key, value)
             else:

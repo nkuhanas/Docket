@@ -8,9 +8,7 @@ from docket.config import get_settings
 from docket.domain.public_refs import new_public_ref
 from docket.internal_api.schemas import AgentResponseCapture, OperatorUtteranceCapture
 from docket.models import (
-    Account,
     AgentResponse,
-    Approval,
     AttentionCase,
     AttentionCaseRevision,
     CalendarLane,
@@ -21,6 +19,7 @@ from docket.models import (
     Interaction,
     LaneRoutingDecision,
     Operation,
+    ProviderAccount,
     ProviderEventBinding,
     SemanticRequestAttempt,
     ToolInvocation,
@@ -32,7 +31,6 @@ from docket.services.calendar_projection_invariants import (
 )
 from docket.services.intent_sessions import IntentSessionService
 from docket.services.interactive_authority import InteractiveAuthorityService
-from docket.services.mcp_traces import trace_id_for_source
 from docket.services.operations import OperationRunner
 from docket.services.provenance import ProvenanceService
 from docket.services.statements import StatementService
@@ -59,7 +57,7 @@ def _capture(session, *, message_id: str, text: str) -> tuple[str, str]:
 
 
 def _commit_rich_event(session, *, message_id: str) -> tuple[str, str, str]:
-    account = Account(
+    account = ProviderAccount(
         provider="google",
         external_account_id=f"event-changeset-{message_id}",
         capabilities=["google_calendar"],
@@ -90,6 +88,7 @@ def _commit_rich_event(session, *, message_id: str) -> tuple[str, str, str]:
             "basis_refs": basis,
             "lane_changes": [
                 {
+                    "mutation_type": "calendar_lane_create",
                     "change_id": "clubs-lane",
                     "action": "create",
                     "object_type": "calendar_lane",
@@ -105,6 +104,7 @@ def _commit_rich_event(session, *, message_id: str) -> tuple[str, str, str]:
                     "basis_refs": basis,
                 },
                 {
+                    "mutation_type": "lane_routing_decision_create",
                     "change_id": "polyuas-route",
                     "action": "create",
                     "object_type": "lane_routing_decision",
@@ -122,6 +122,7 @@ def _commit_rich_event(session, *, message_id: str) -> tuple[str, str, str]:
             ],
             "event_changes": [
                 {
+                    "mutation_type": "canonical_event_create",
                     "change_id": "polyuas-event",
                     "action": "create",
                     "object_type": "canonical_event",
@@ -231,7 +232,7 @@ def test_rich_event_changeset_commits_event_route_and_provider_intents_without_a
         event = session.scalar(select(CanonicalEvent).where(CanonicalEvent.ref_id == event_ref))
         route = session.scalar(select(LaneRoutingDecision))
         operations = list(session.scalars(select(Operation).order_by(Operation.created_at)))
-        assert event is not None and event.provenance_status == "complete"
+        assert event is not None
         assert event.lane_ref == lane_ref
         assert route is not None and route.event_ref == event.ref_id
         assert event.routing_decision_ref == route.ref_id
@@ -242,7 +243,6 @@ def test_rich_event_changeset_commits_event_route_and_provider_intents_without_a
         assert all(item.originating_changeset_ref == changeset_ref for item in operations)
         assert all(item.basis_refs for item in operations)
         assert all(item.canonical_target_refs for item in operations)
-        assert all(item.provenance_status == "complete" for item in operations)
         assert operations[1].predecessor_operation_id == operations[0].id
         changeset = session.scalar(
             select(ChangeSet).where(ChangeSet.ref_id == changeset_ref)
@@ -256,7 +256,6 @@ def test_rich_event_changeset_commits_event_route_and_provider_intents_without_a
             for intent in changeset.provider_intents
         )
         assert CalendarProjectionInvariantService(session).find_violations() == []
-        assert session.scalar(select(func.count(Approval.id))) == 0
 
     provider = FakeCalendarProvider()
     runner = OperationRunner(session_factory, provider)
@@ -272,7 +271,7 @@ def test_rich_event_changeset_commits_event_route_and_provider_intents_without_a
         assert event is not None and event.status == "active"
         assert lane is not None and lane.calendar_id == "fake-clubs"
         assert event_operation is not None and event_operation.status == "succeeded"
-        assert binding is not None and binding.canonical_event_id == event.id
+        assert binding is not None and binding.canonical_target_ref == event.ref_id
         assert session.scalar(select(func.count(Interaction.id))) == 0
 
 
@@ -281,7 +280,7 @@ def test_projection_invariant_detector_reports_precompiler_orphan(
     session_factory,
 ) -> None:
     with session_factory.begin() as session:
-        account = Account(
+        account = ProviderAccount(
             provider="google",
             external_account_id="projection-invariant-account",
             capabilities=["google_calendar"],
@@ -305,7 +304,7 @@ def test_projection_invariant_detector_reports_precompiler_orphan(
             calendar_id="personal@example.com",
             status="active",
             basis_refs=[utterance_ref],
-            provenance_status="complete",
+            created_by_changeset_ref="chg_01M1A100000000000000000000",
         )
         session.add(lane)
         session.flush()
@@ -354,13 +353,11 @@ def test_projection_invariant_detector_reports_precompiler_orphan(
                     "timezone": "America/Los_Angeles",
                 },
             },
-            calendar_lane="personal",
-            authority="explicit_user",
+            authority="explicit_operator",
             lane_id=lane.id,
             lane_ref=lane.ref_id,
             basis_refs=[utterance_ref],
             created_by_changeset_ref=origin.ref_id,
-            provenance_status="complete",
         )
         session.add(event)
         session.flush()
@@ -389,13 +386,9 @@ def test_package_pickup_case_reply_commits_event_route_and_resolution_first_try(
 ) -> None:
     settings = get_settings()
     message_id = "1542802000000000003"
-    trace_id = trace_id_for_source(
-        settings.discord_guild_id,
-        settings.chat_channel_id,
-        message_id,
-    )
+    trace_ref = new_public_ref("trace")
     with session_factory.begin() as session:
-        account = Account(
+        account = ProviderAccount(
             provider="google",
             external_account_id="package-pickup-account",
             capabilities=["google_calendar"],
@@ -416,7 +409,7 @@ def test_package_pickup_case_reply_commits_event_route_and_resolution_first_try(
             calendar_id="personal@example.com",
             status="active",
             basis_refs=[utterance_ref],
-            provenance_status="complete",
+            created_by_changeset_ref="chg_01M1A100000000000000000000",
         )
         case = AttentionCase(
             situation_key="package-pickup-pacheco-post",
@@ -444,8 +437,13 @@ def test_package_pickup_case_reply_commits_event_route_and_resolution_first_try(
             title=case.title,
             summary=case.summary,
             semantic_classes=list(case.semantic_classes),
-            item_refs=[item.ref_id],
+            case_item_refs=[item.ref_id],
             source_refs=[],
+            admission_rule_ref="interactive.operator_request.v1",
+            admission_basis_refs=[utterance_ref],
+            required_case_item_refs=[item.ref_id],
+            canonical_consequence_classes=["event_disposition"],
+            dependency_summary={"supporting_case_item_refs": []},
             content_hash="4" * 64,
         )
         session.add(revision)
@@ -532,7 +530,7 @@ def test_package_pickup_case_reply_commits_event_route_and_resolution_first_try(
                         "case_revision_ref": revision.ref_id,
                         "case_outcome": "resolved",
                         "item_dispositions": [
-                            {"item_ref": item.ref_id, "disposition": "resolved"}
+                            {"case_item_ref": item.ref_id, "disposition": "resolved"}
                         ],
                         "basis_refs": [utterance_ref],
                     }
@@ -579,7 +577,6 @@ def test_package_pickup_case_reply_commits_event_route_and_resolution_first_try(
             tool_name="docket_commit_changeset",
             tool_contract_version="test",
             caller_profile="interactive",
-            status="succeeded",
             transport_state="completed",
             domain_state="succeeded",
             result_disposition="committed",
@@ -592,7 +589,7 @@ def test_package_pickup_case_reply_commits_event_route_and_resolution_first_try(
                 operation.ref_id,
             ],
             completed_at=datetime.now(UTC),
-            trace_id=trace_id,
+            trace_ref=trace_ref,
             trace_call_id="package-pickup-commit",
             trace_ordinal=1,
             utterance_refs=[utterance_ref],
@@ -616,7 +613,7 @@ def test_package_pickup_case_reply_commits_event_route_and_resolution_first_try(
             "model_identifier": "test-model",
             "verbatim_text": "The event is on your calendar.",
             "generated_at": datetime.now(UTC).isoformat(),
-            "trace_id": str(trace_id),
+            "trace_ref": trace_ref,
         }
     )
     with session_factory.begin() as session:

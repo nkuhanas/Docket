@@ -8,69 +8,45 @@ from sqlalchemy.orm import Session
 
 from docket.config import get_settings
 from docket.domain.canonical import sha256_json
-from docket.domain.enums import ActionStatus, OperationStatus, QueueItemStatus
+from docket.domain.enums import OperationStatus
 from docket.domain.errors import DocketError, IdempotencyConflict
 from docket.models import (
-    Account,
-    Action,
-    ActionRevision,
     AuditEvent,
     CalendarLane,
     CanonicalEvent,
     ChangeSet,
     Operation,
+    OperationTarget,
+    ProviderAccount,
     ProviderEventBinding,
-    QueueItem,
 )
 from docket.models.base import utc_now
-from docket.policy.actions import get_action_definition
 from docket.schemas.authority import ProviderIntentInput
 
-_SUPPORTED_OPERATION_TYPES = frozenset(
+_LANE_OPERATION_TYPES = frozenset(
+    {"calendar_configure_lane", "calendar_delete_lane"}
+)
+_EVENT_OPERATION_TYPES = frozenset(
     {
-        "calendar_configure_lane",
-        "calendar_delete_lane",
         "calendar_create_event",
         "calendar_update_event",
         "calendar_update_reminders",
         "calendar_cancel_event",
     }
 )
+_SUPPORTED_OPERATION_TYPES = _LANE_OPERATION_TYPES | _EVENT_OPERATION_TYPES
 
 
 class ProviderIntentService:
-    """Materialize provider effects after canonical state commits in the same DB tx."""
+    """Compile provider effects directly from committed canonical targets."""
 
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def _account(self, binding: str) -> Account:
-        value = binding
-        account: Account | None = None
-        if binding.startswith("account:"):
-            try:
-                account = self.session.get(Account, uuid.UUID(binding.removeprefix("account:")))
-            except ValueError:
-                account = None
-        elif binding.startswith("google:"):
-            value = binding.removeprefix("google:")
-            account = self.session.scalar(
-                select(Account).where(
-                    Account.provider == "google",
-                    Account.external_account_id == value,
-                )
-            )
-        else:
-            matches = list(
-                self.session.scalars(
-                    select(Account).where(
-                        Account.provider == "google",
-                        (Account.external_account_id == value)
-                        | (Account.email_address == value),
-                    )
-                )
-            )
-            account = matches[0] if len(matches) == 1 else None
+    def _account(self, account_ref: str) -> ProviderAccount:
+        account = self.session.scalar(
+            select(ProviderAccount).where(ProviderAccount.ref_id == account_ref)
+        )
         if (
             account is None
             or not account.enabled
@@ -78,13 +54,13 @@ class ProviderIntentService:
         ):
             raise DocketError(
                 code="provider_target_unresolved",
-                message="Provider intent does not resolve to one enabled Calendar account.",
-                details={"provider_binding": binding},
+                message="Provider intent requires one enabled Calendar account.",
+                details={"account_ref": account_ref},
             )
         return account
 
+    @staticmethod
     def _target_refs(
-        self,
         intent: ProviderIntentInput,
         refs_by_change_id: dict[str, list[str]],
     ) -> list[str]:
@@ -102,7 +78,8 @@ class ProviderIntentService:
         return refs
 
     def _targets(
-        self, refs: list[str]
+        self,
+        refs: list[str],
     ) -> tuple[CanonicalEvent | None, CalendarLane | None]:
         event = self.session.scalar(
             select(CanonicalEvent).where(CanonicalEvent.ref_id.in_(refs))
@@ -123,19 +100,24 @@ class ProviderIntentService:
         return event, lane
 
     def _event_binding(
-        self, event: CanonicalEvent, account: Account, lane: CalendarLane
+        self,
+        event: CanonicalEvent,
+        account: ProviderAccount,
+        lane: CalendarLane,
     ) -> ProviderEventBinding:
         binding = self.session.scalar(
             select(ProviderEventBinding).where(
-                ProviderEventBinding.canonical_event_id == event.id,
+                ProviderEventBinding.canonical_target_ref == event.ref_id,
+                ProviderEventBinding.target_kind == "event",
                 ProviderEventBinding.account_id == account.id,
                 ProviderEventBinding.calendar_id == lane.calendar_id,
+                ProviderEventBinding.status == "active",
             )
         )
         if binding is None:
             raise DocketError(
                 code="provider_event_binding_required",
-                message="Provider event update requires an exact existing provider binding.",
+                message="Provider event update requires an exact active binding.",
             )
         return binding
 
@@ -145,66 +127,53 @@ class ProviderIntentService:
         *,
         event: CanonicalEvent | None,
         lane: CalendarLane | None,
-        account: Account,
+        account: ProviderAccount,
         hints: dict[str, Any],
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
-        if operation_type in {"calendar_configure_lane", "calendar_delete_lane"}:
+    ) -> tuple[dict[str, Any], str, str]:
+        if operation_type in _LANE_OPERATION_TYPES:
             if lane is None or lane.account_id != account.id:
                 raise DocketError(
                     code="calendar_lane_unresolved",
                     message="Lane provider intent requires one matching CalendarLane.",
                 )
-            lane_parameters: dict[str, Any] = {
-                "lane_id": str(lane.id),
-                "lane_ref": lane.ref_id,
-                "lane": lane.lane,
-                "display_name": lane.display_name,
-                "color_hex": lane.color_hex,
-                "timezone": get_settings().timezone,
-                "calendar_id": lane.calendar_id,
-                "lane_version": lane.version,
-            }
-            lane_preview: dict[str, Any] = {
-                "action_type": operation_type,
-                "lane": {
-                    "ref": lane.ref_id,
-                    "name": lane.lane,
+            return (
+                {
+                    "lane_ref": lane.ref_id,
+                    "lane": lane.lane,
                     "display_name": lane.display_name,
+                    "color_hex": lane.color_hex,
+                    "timezone": get_settings().timezone,
                     "calendar_id": lane.calendar_id,
+                    "lane_version": lane.version,
                 },
-            }
-            return lane_parameters, lane_preview
+                lane.ref_id,
+                "calendar_lane",
+            )
         if event is None or lane is None or lane.account_id != account.id:
             raise DocketError(
                 code="canonical_event_target_required",
-                message="Calendar event provider intent requires matching event and lane targets.",
+                message="Calendar event provider intent requires one event and matching lane.",
             )
         event_payload = dict(event.event_spec)
         event_payload["title"] = event.title
-        reminder_plan = event.reminder_plan
-        event_payload["reminder_plan"] = None
-        event_parameters: dict[str, Any] = {
+        reminder_plan = event_payload.pop("reminder_plan", None)
+        parameters: dict[str, Any] = {
             "calendar_id": lane.calendar_id,
             "lane_ref": lane.ref_id,
-            "calendar_lane": lane.lane,
             "logical_key": f"canonical:{event.ref_id}",
             "event": event_payload,
             "reminder_plan": reminder_plan,
             "reminder_plan_sha256": (
-                sha256_json(reminder_plan) if reminder_plan is not None else None
+                sha256_json(reminder_plan) if isinstance(reminder_plan, dict) else None
             ),
             "priority": event_payload.get("priority", "normal"),
             "priority_basis": "explicit_operator",
-            "target_scope": "event",
-            "canonical_event_id": str(event.id),
-            "canonical_event_ref": event.ref_id,
-            "entity_refs": list(event.entity_refs),
-            "context_labels": list(event.context_labels),
-            "conflict_resolution": "not_applicable",
+            "canonical_target_ref": event.ref_id,
+            "target_kind": "event",
         }
         if operation_type != "calendar_create_event":
             binding = self._event_binding(event, account, lane)
-            event_parameters.update(
+            parameters.update(
                 {
                     "external_event_id": binding.provider_event_id,
                     "provider_etag": binding.provider_etag,
@@ -212,34 +181,14 @@ class ProviderIntentService:
                 }
             )
         if operation_type == "calendar_cancel_event" and hints.get("reason") is not None:
-            event_parameters["reason"] = str(hints["reason"])
-        classification = {
-            "recurrence_kind": "recurring" if event_payload.get("recurrence") else "one_time",
-            "system_tags": [
-                "recurring" if event_payload.get("recurrence") else "one_time",
-                "all_day"
-                if isinstance(event_payload.get("timing"), dict)
-                and event_payload["timing"].get("kind") == "all_day"
-                else "timed",
-                "standalone",
-            ],
-            "operator_tags": list(event_payload.get("operator_tags", [])),
-            "priority": event_parameters["priority"],
-            "priority_basis": "explicit_operator",
-        }
-        event_preview: dict[str, Any] = {
-            "action_type": operation_type,
-            "target": {
-                "event_ref": event.ref_id,
-                "lane_ref": lane.ref_id,
-                "calendar_id": lane.calendar_id,
-            },
-            "event": event_payload,
-            "classification": classification,
-        }
-        return event_parameters, event_preview
+            parameters["reason"] = str(hints["reason"])
+        return parameters, event.ref_id, "event"
 
-    def _predecessor(self, changeset: ChangeSet, lane: CalendarLane | None) -> Operation | None:
+    def _predecessor(
+        self,
+        changeset: ChangeSet,
+        lane: CalendarLane | None,
+    ) -> Operation | None:
         if lane is None or lane.calendar_id is not None:
             return None
         candidates = list(
@@ -265,13 +214,8 @@ class ProviderIntentService:
         if intent.operation_type not in _SUPPORTED_OPERATION_TYPES:
             raise DocketError(
                 code="provider_operation_not_supported",
-                message="Provider operation is outside the ChangeSet authority profile.",
+                message="Provider operation is outside the ChangeSet profile.",
                 details={"operation_type": intent.operation_type},
-            )
-        if intent.account_ref is not None or intent.provider_binding is None:
-            raise DocketError(
-                code="provider_target_unresolved",
-                message="Current provider identities require an exact provider_binding.",
             )
         existing = self.session.scalar(
             select(Operation).where(Operation.idempotency_key == intent.idempotency_key)
@@ -280,96 +224,42 @@ class ProviderIntentService:
             if existing.originating_changeset_ref != changeset.ref_id:
                 raise IdempotencyConflict(intent.idempotency_key)
             return [existing.ref_id]
+
         target_refs = self._target_refs(intent, refs_by_change_id)
         event, lane = self._targets(target_refs)
-        account = self._account(intent.provider_binding)
+        account = self._account(intent.account_ref)
         if lane is not None and lane.account_id != account.id:
             raise DocketError(
                 code="provider_target_mismatch",
-                message="Provider binding does not match the canonical lane account.",
+                message="Provider account does not match the canonical lane account.",
             )
-        parameters, preview = self._parameters(
+        parameters, primary_ref, target_kind = self._parameters(
             intent.operation_type,
             event=event,
             lane=lane,
             account=account,
             hints=intent.parameters,
         )
-        definition = get_action_definition(intent.operation_type)
-        queue_item = QueueItem(
-            deduplication_key=f"changeset-provider:{changeset.ref_id}:{intent.intent_id}",
-            material_fingerprint=sha256_json(
-                {"operation_type": intent.operation_type, "parameters": parameters}
-            ),
-            category="provider_operation",
-            title=f"Provider operation · {intent.operation_type}"[:512],
-            summary="Project committed canonical Docket state to its provider.",
-            status=QueueItemStatus.EXECUTING.value,
-            priority="normal",
-            presentation="suppressed",
-            received_at=utc_now(),
-        )
-        self.session.add(queue_item)
-        self.session.flush()
-        action = Action(
-            queue_item_id=queue_item.id,
-            action_type=intent.operation_type,
-            status=ActionStatus.READY.value,
-            current_revision=1,
-        )
-        self.session.add(action)
-        self.session.flush()
-        revision = ActionRevision(
-            action_id=action.id,
-            revision=1,
-            action_type=intent.operation_type,
-            account_id=account.id,
-            parameters=parameters,
-            parameters_sha256=sha256_json(parameters),
-            preview=preview,
-            preview_sha256=sha256_json(preview),
-            risk_class=definition.risk_class.value,
-            authority="explicit_user",
-            target_versions={
-                "queue_item": {"id": str(queue_item.id), "version": queue_item.version},
-                "canonical_refs": target_refs,
-            },
-            created_by_actor_type="operator",
-            created_by_actor_id=get_settings().operator_discord_user_id,
-        )
-        self.session.add(revision)
-        self.session.flush()
         predecessor = self._predecessor(changeset, lane)
         if (
-            intent.operation_type
-            in {
-                "calendar_create_event",
-                "calendar_update_event",
-                "calendar_update_reminders",
-                "calendar_cancel_event",
-            }
+            intent.operation_type in _EVENT_OPERATION_TYPES
             and lane is not None
             and lane.calendar_id is None
             and predecessor is None
         ):
             raise DocketError(
                 code="calendar_lane_provider_binding_unresolved",
-                message=(
-                    "An unprovisioned event lane requires a configure-lane provider "
-                    "intent in the same ChangeSet."
-                ),
+                message="An unprovisioned event lane requires same-ChangeSet provisioning.",
                 details={"lane_ref": lane.ref_id},
             )
+
         operation_id = uuid.uuid4()
         operation = Operation(
             id=operation_id,
             originating_changeset_ref=changeset.ref_id,
             basis_refs=list(intent.basis_refs),
             canonical_target_refs=target_refs,
-            provenance_status="complete",
-            action_revision_id=revision.id,
-            approval_id=None,
-            predecessor_operation_id=predecessor.id if predecessor is not None else None,
+            predecessor_operation_id=(predecessor.id if predecessor is not None else None),
             idempotency_key=intent.idempotency_key,
             operation_type=intent.operation_type,
             account_id=account.id,
@@ -379,6 +269,21 @@ class ProviderIntentService:
         )
         self.session.add(operation)
         self.session.flush()
+        target = OperationTarget(
+            operation_id=operation.id,
+            target_key=primary_ref,
+            canonical_target_ref=primary_ref,
+            target_kind=target_kind,
+            idempotency_key=f"{intent.idempotency_key}:target:{primary_ref}",
+            parameters=parameters,
+            parameters_sha256=sha256_json(parameters),
+            status="pending",
+            next_attempt_at=utc_now(),
+        )
+        self.session.add(target)
+        if intent.operation_type == "calendar_configure_lane" and lane is not None:
+            lane.status = "provisioning"
+            lane.version += 1
         self.session.add(
             AuditEvent(
                 event_type="operation.created",
@@ -393,6 +298,7 @@ class ProviderIntentService:
                     "changeset_ref": changeset.ref_id,
                     "intent_id": intent.intent_id,
                     "operation_type": intent.operation_type,
+                    "target_ref": primary_ref,
                 },
             )
         )

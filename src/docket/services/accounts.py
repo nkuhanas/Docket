@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from docket.config import Settings
 from docket.domain.errors import DocketError
-from docket.models import Account
+from docket.models import ProviderAccount
 
 _GOOGLE_CAPABILITIES = ["gmail", "google_calendar"]
 
@@ -12,15 +12,15 @@ class AccountService:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def ensure_configured_google(self, settings: Settings) -> Account:
+    def ensure_configured_google(self, settings: Settings) -> ProviderAccount:
         account = self.session.scalar(
-            select(Account).where(
-                Account.provider == "google",
-                Account.external_account_id == settings.google_account_external_id,
+            select(ProviderAccount).where(
+                ProviderAccount.provider == "google",
+                ProviderAccount.external_account_id == settings.google_account_external_id,
             )
         )
         if account is None:
-            account = Account(
+            account = ProviderAccount(
                 provider="google",
                 external_account_id=settings.google_account_external_id,
                 display_name="Configured Google account",
@@ -35,21 +35,21 @@ class AccountService:
             account.credential_ref = str(settings.google_oauth_token_file)
         return account
 
-    def list_enabled_google(self) -> list[Account]:
+    def list_enabled_google(self) -> list[ProviderAccount]:
         return list(
             self.session.scalars(
-                select(Account)
-                .where(Account.provider == "google", Account.enabled.is_(True))
-                .order_by(Account.created_at)
+                select(ProviderAccount)
+                .where(ProviderAccount.provider == "google", ProviderAccount.enabled.is_(True))
+                .order_by(ProviderAccount.created_at)
             )
         )
 
-    def require_google_ref(self, account_ref: str) -> Account:
+    def require_google_ref(self, account_ref: str) -> ProviderAccount:
         account = self.session.scalar(
-            select(Account).where(
-                Account.ref_id == account_ref,
-                Account.provider == "google",
-                Account.enabled.is_(True),
+            select(ProviderAccount).where(
+                ProviderAccount.ref_id == account_ref,
+                ProviderAccount.provider == "google",
+                ProviderAccount.enabled.is_(True),
             )
         )
         if account is None:
