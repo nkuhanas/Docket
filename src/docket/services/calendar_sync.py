@@ -1,46 +1,34 @@
 from __future__ import annotations
 
-import time as monotonic_time
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
-from datetime import time as datetime_time
-from threading import Thread
+from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-import structlog
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from docket.config import Settings, get_settings
-from docket.domain.canonical import sha256_json
-from docket.domain.enums import OutboxStatus
 from docket.domain.errors import DocketError
 from docket.models import (
-    Account,
     AuditEvent,
     CalendarEventCache,
-    CalendarLink,
+    CalendarLane,
     CalendarSyncState,
     CanonicalEvent,
-    OutboxEvent,
+    ProviderAccount,
     ProviderEventBinding,
-    ReminderRule,
-    ScheduledNotification,
+    ReminderPlan,
+    TemporalCalendarProjection,
 )
 from docket.models.base import utc_now
 from docket.providers.google.calendar import (
-    CalendarEventRequest,
-    CalendarEventResult,
     CalendarProviderError,
     CalendarReadProvider,
     CalendarSnapshotEvent,
 )
 from docket.services.calendar_lanes import CalendarLaneService
-
-logger = structlog.get_logger(__name__)
 
 
 def _aware(value: datetime) -> datetime:
@@ -51,83 +39,9 @@ def _iso(value: datetime | None) -> str | None:
     return _aware(value).astimezone(UTC).isoformat() if value is not None else None
 
 
-def _provider_popup_leads(reminders: dict[str, Any]) -> tuple[bool, list[int]]:
-    use_default = bool(reminders.get("useDefault"))
-    overrides = reminders.get("overrides", [])
-    if not isinstance(overrides, list):
-        overrides = []
-    leads = sorted(
-        {
-            int(item["minutes"]) * 60
-            for item in overrides
-            if isinstance(item, dict)
-            and item.get("method") == "popup"
-            and isinstance(item.get("minutes"), int)
-            and 0 <= int(item["minutes"]) <= 40_320
-        }
-    )
-    return use_default, leads
-
-
-def _normalized_reminder_state(
-    row: CalendarEventCache,
-    link: CalendarLink | None,
-    rules: list[ReminderRule],
-) -> dict[str, Any]:
-    use_default, provider_leads = _provider_popup_leads(row.provider_reminders)
-    enabled = [rule for rule in rules if rule.enabled]
-    canonical_leads = sorted({rule.lead_seconds for rule in enabled})
-    synchronized_channels: list[str] = []
-    if link is not None and link.reminder_plan_sha256 is not None:
-        dual_plan = {
-            "delivery_channels": ["google_popup", "docket_queue"],
-            "lead_seconds": canonical_leads,
-        }
-        google_only_plan = {
-            "delivery_channels": ["google_popup"],
-            "lead_seconds": provider_leads,
-        }
-        if (
-            not use_default
-            and provider_leads == canonical_leads
-            and sha256_json(dual_plan) == link.reminder_plan_sha256
-        ):
-            synchronized = True
-            synchronized_channels = ["google_popup", "docket_queue"]
-        elif not use_default and sha256_json(google_only_plan) == link.reminder_plan_sha256:
-            synchronized = True
-            synchronized_channels = ["google_popup"]
-            canonical_leads = provider_leads
-        else:
-            synchronized = False
-        state = "synchronized" if synchronized else "drifted"
-    elif enabled:
-        state = "drifted"
-    elif use_default or provider_leads:
-        state = "external_unmanaged"
-    else:
-        state = "none"
-    return {
-        "state": state,
-        "canonical_lead_seconds": (
-            canonical_leads if link is not None and link.reminder_plan_sha256 is not None else []
-        ),
-        "delivery_channels": synchronized_channels,
-        "provider_use_default": use_default,
-        "provider_popup_lead_seconds": provider_leads,
-    }
-
-
-@dataclass(frozen=True, slots=True)
-class _LinkedSeriesSnapshot:
-    link_id: uuid.UUID
-    expected_provider_etag: str | None
-    expected_provider_correlation: str
-    external_event_id: str
-    result: CalendarEventResult | None
-
-
 class CalendarSyncService:
+    """Bounded provider snapshot ingestion into Docket's non-canonical read cache."""
+
     def __init__(
         self,
         session_factory: sessionmaker[Session],
@@ -146,31 +60,25 @@ class CalendarSyncService:
         today = _aware(now).astimezone(zone).date()
         start = datetime.combine(
             today - timedelta(days=self.settings.calendar_sync_past_days),
-            datetime_time.min,
+            time.min,
             tzinfo=zone,
         )
         end = datetime.combine(
             today + timedelta(days=self.settings.calendar_sync_future_days + 1),
-            datetime_time.min,
+            time.min,
             tzinfo=zone,
         )
         return start.astimezone(UTC), end.astimezone(UTC)
 
-    def _configured_account(self, session: Session, account_id: uuid.UUID) -> Account:
-        account = session.get(Account, account_id)
-        if account is None or not account.enabled or account.provider != "google":
+    def _validate_target(self, session: Session, account_id: uuid.UUID, calendar_id: str) -> None:
+        account = session.get(ProviderAccount, account_id)
+        if account is None or account.provider != "google" or not account.enabled:
             raise DocketError(
                 code="calendar_account_not_available",
                 message="The selected Google account is not enabled.",
-                details={"account_id": str(account_id)},
             )
-        return account
-
-    def _validate_target(self, session: Session, account_id: uuid.UUID, calendar_id: str) -> None:
-        self._configured_account(session, account_id)
         CalendarLaneService(session, self.settings).require_active(
-            account_id,
-            calendar_id=calendar_id,
+            account_id, calendar_id=calendar_id
         )
 
     def ensure_state(self, account_id: uuid.UUID, calendar_id: str) -> uuid.UUID:
@@ -235,7 +143,7 @@ class CalendarSyncService:
         if not event.provider_event_id or len(event.provider_event_id) > 1024:
             raise CalendarProviderError(
                 "calendar_snapshot_invalid_event",
-                "Calendar snapshot contained an invalid event identity.",
+                "Calendar snapshot contained an invalid event identifier.",
                 transient=False,
             )
         if event.status not in {"confirmed", "tentative", "cancelled"}:
@@ -270,7 +178,7 @@ class CalendarSyncService:
         if not valid:
             raise CalendarProviderError(
                 "calendar_snapshot_invalid_event",
-                "Calendar snapshot contained invalid event time bounds.",
+                "Calendar snapshot event timing was incomplete.",
                 transient=False,
             )
 
@@ -279,9 +187,9 @@ class CalendarSyncService:
     ) -> list[CalendarSnapshotEvent]:
         events: list[CalendarSnapshotEvent] = []
         identities: set[str] = set()
-        seen_tokens: set[str] = set()
         page_token: str | None = None
-        for _page_number in range(self.settings.calendar_snapshot_max_pages):
+        seen_tokens: set[str] = set()
+        for _ in range(self.settings.calendar_snapshot_max_pages):
             page = self.provider.list_events_page(
                 calendar_id=calendar_id,
                 time_min=window_start,
@@ -293,7 +201,7 @@ class CalendarSyncService:
                 if event.provider_event_id in identities:
                     raise CalendarProviderError(
                         "calendar_snapshot_duplicate_event",
-                        "Calendar snapshot repeated an event identity.",
+                        "Calendar snapshot repeated an event identifier.",
                         transient=False,
                     )
                 identities.add(event.provider_event_id)
@@ -301,7 +209,7 @@ class CalendarSyncService:
                 if len(events) > self.settings.calendar_snapshot_max_events:
                     raise CalendarProviderError(
                         "calendar_snapshot_too_large",
-                        "Calendar snapshot exceeded its configured event bound.",
+                        "Calendar snapshot exceeded its event bound.",
                         transient=False,
                     )
             page_token = page.next_page_token
@@ -316,89 +224,9 @@ class CalendarSyncService:
             seen_tokens.add(page_token)
         raise CalendarProviderError(
             "calendar_snapshot_too_many_pages",
-            "Calendar snapshot exceeded its configured page bound.",
+            "Calendar snapshot exceeded its page bound.",
             transient=False,
         )
-
-    def _linked_series_targets(
-        self,
-        account_id: uuid.UUID,
-        calendar_id: str,
-    ) -> list[tuple[uuid.UUID, str | None, str, str]]:
-        with self.session_factory() as session:
-            links = list(
-                session.scalars(
-                    select(CalendarLink).where(
-                        CalendarLink.account_id == account_id,
-                        CalendarLink.calendar_id == calendar_id,
-                        CalendarLink.recurrence_kind == "recurring",
-                    )
-                )
-            )
-        active = [
-            (
-                link.id,
-                link.provider_etag,
-                link.provider_correlation,
-                link.external_event_id,
-            )
-            for link in links
-            if link.synced_snapshot.get("status") != "cancelled"
-        ]
-        if len(active) > self.settings.calendar_linked_series_max_reads:
-            raise CalendarProviderError(
-                "calendar_linked_series_too_large",
-                "Linked recurring Calendar targets exceeded the configured exact-read bound.",
-                transient=False,
-            )
-        return active
-
-    def _fetch_linked_series(
-        self,
-        account_id: uuid.UUID,
-        calendar_id: str,
-    ) -> list[_LinkedSeriesSnapshot]:
-        results: list[_LinkedSeriesSnapshot] = []
-        for (
-            link_id,
-            expected_etag,
-            expected_correlation,
-            external_event_id,
-        ) in self._linked_series_targets(account_id, calendar_id):
-            result = self.provider.get_event(
-                CalendarEventRequest(
-                    calendar_id=calendar_id,
-                    provider_correlation=f"calendar-sync-series:{link_id}",
-                    summary="",
-                    external_event_id=external_event_id,
-                )
-            )
-            if result is not None and result.external_event_id != external_event_id:
-                raise CalendarProviderError(
-                    "calendar_snapshot_series_identity_mismatch",
-                    "A linked recurring Calendar lookup returned a different identity.",
-                    transient=False,
-                )
-            results.append(
-                _LinkedSeriesSnapshot(
-                    link_id=link_id,
-                    expected_provider_etag=expected_etag,
-                    expected_provider_correlation=expected_correlation,
-                    external_event_id=external_event_id,
-                    result=result,
-                )
-            )
-        return results
-
-    @staticmethod
-    def _cancel_notification(session: Session, notification: ScheduledNotification) -> None:
-        notification.status = "cancelled"
-        notification.last_error_code = "calendar_event_removed"
-        if notification.outbox_event_id is not None:
-            event = session.get(OutboxEvent, notification.outbox_event_id)
-            if event is not None and event.status == OutboxStatus.PENDING.value:
-                event.status = OutboxStatus.FAILED.value
-                event.last_error_code = "notification_cancelled"
 
     def _promote(
         self,
@@ -407,7 +235,6 @@ class CalendarSyncService:
         window_start: datetime,
         window_end: datetime,
         events: list[CalendarSnapshotEvent],
-        linked_series: list[_LinkedSeriesSnapshot],
     ) -> None:
         now = _aware(self.clock()).astimezone(UTC)
         generation = uuid.uuid4()
@@ -433,16 +260,7 @@ class CalendarSyncService:
                         CalendarEventCache.account_id == state.account_id,
                         CalendarEventCache.calendar_id == state.calendar_id,
                     )
-                ).all()
-            }
-            links = {
-                row.external_event_id: row
-                for row in session.scalars(
-                    select(CalendarLink).where(
-                        CalendarLink.account_id == state.account_id,
-                        CalendarLink.calendar_id == state.calendar_id,
-                    )
-                ).all()
+                )
             }
             bindings = {
                 row.provider_event_id: row
@@ -451,44 +269,8 @@ class CalendarSyncService:
                         ProviderEventBinding.account_id == state.account_id,
                         ProviderEventBinding.calendar_id == state.calendar_id,
                     )
-                ).all()
-            }
-            for series in linked_series:
-                link = session.get(CalendarLink, series.link_id)
-                if (
-                    link is None
-                    or link.account_id != state.account_id
-                    or link.calendar_id != state.calendar_id
-                    or link.external_event_id != series.external_event_id
-                    or link.provider_etag != series.expected_provider_etag
-                    or link.provider_correlation != series.expected_provider_correlation
-                ):
-                    continue
-                cancelled = (
-                    series.result is None or series.result.snapshot.get("status") == "cancelled"
                 )
-                if cancelled:
-                    link.provider_etag = None
-                    link.synced_snapshot = {
-                        **link.synced_snapshot,
-                        "status": "cancelled",
-                    }
-                    rules = session.scalars(
-                        select(ReminderRule).where(
-                            ReminderRule.account_id == state.account_id,
-                            ReminderRule.calendar_id == state.calendar_id,
-                            ReminderRule.scope == "event",
-                            ReminderRule.provider_event_id == series.external_event_id,
-                            ReminderRule.enabled.is_(True),
-                        )
-                    ).all()
-                    for rule in rules:
-                        rule.enabled = False
-                        rule.version += 1
-                else:
-                    assert series.result is not None
-                    link.provider_etag = series.result.provider_etag
-                    link.synced_snapshot = dict(series.result.snapshot)
+            }
             seen: set[str] = set()
             for event in events:
                 seen.add(event.provider_event_id)
@@ -505,8 +287,8 @@ class CalendarSyncService:
                     )
                     session.add(row)
                 row.snapshot_generation = generation
-                row.recurring_event_id = event.recurring_event_id
                 row.event_type = event.event_type
+                row.recurring_event_id = event.recurring_event_id
                 row.original_start_at = event.original_start_at
                 row.status = event.status
                 row.summary = event.summary
@@ -519,25 +301,15 @@ class CalendarSyncService:
                 row.timezone = event.timezone
                 row.has_attendees = event.has_attendees
                 row.organizer_is_self = event.organizer_is_self
-                link = links.get(event.provider_event_id)
-                if link is None and event.recurring_event_id is not None:
-                    link = links.get(event.recurring_event_id)
-                if link is None:
-                    row.recurrence_kind = event.recurrence_kind
-                    row.system_tags = list(event.system_tags) or [
-                        event.recurrence_kind,
-                        "all_day" if event.is_all_day else "timed",
-                        "external",
-                    ]
-                    row.operator_tags = []
-                    row.priority = "normal"
-                    row.priority_basis = "default"
-                else:
-                    row.recurrence_kind = link.recurrence_kind
-                    row.system_tags = list(link.system_tags)
-                    row.operator_tags = list(link.operator_tags)
-                    row.priority = link.priority
-                    row.priority_basis = link.priority_basis
+                row.recurrence_kind = event.recurrence_kind
+                row.system_tags = list(event.system_tags) or [
+                    event.recurrence_kind,
+                    "all_day" if event.is_all_day else "timed",
+                    "external",
+                ]
+                row.operator_tags = []
+                row.priority = "normal"
+                row.priority_basis = "default"
                 row.provider_reminders = dict(event.provider_reminders or {})
                 row.provider_etag = event.provider_etag
                 row.provider_updated_at = event.provider_updated_at
@@ -559,7 +331,7 @@ class CalendarSyncService:
                         "location": event.location,
                         "start_at": _iso(event.start_at),
                         "end_at": _iso(event.end_at),
-                        "start_date": (event.start_date.isoformat() if event.start_date else None),
+                        "start_date": event.start_date.isoformat() if event.start_date else None,
                         "end_date": event.end_date.isoformat() if event.end_date else None,
                         "timezone": event.timezone,
                         "reminders": dict(event.provider_reminders or {}),
@@ -573,32 +345,16 @@ class CalendarSyncService:
                             entity_id=binding.id,
                             actor_type="provider",
                             actor_id="google_calendar",
-                            data={
-                                "canonical_event_id": str(binding.canonical_event_id),
-                                "previous_provider_etag": previous_etag,
-                                "current_provider_etag": event.provider_etag,
-                            },
+                            primary_ref=binding.canonical_target_ref,
+                            affected_refs=[binding.canonical_target_ref],
+                            data={"previous_provider_etag": previous_etag},
                         )
                     )
-            removed = [row for event_id, row in existing.items() if event_id not in seen]
-            if removed:
-                removed_ids = [row.id for row in removed]
-                notifications = session.scalars(
-                    select(ScheduledNotification).where(
-                        ScheduledNotification.calendar_event_id.in_(removed_ids)
-                    )
-                ).all()
-                for notification in notifications:
-                    if notification.status in {"pending", "delivering"}:
-                        self._cancel_notification(session, notification)
-                    notification.calendar_event_id = None
+            removed_ids = [row.id for event_id, row in existing.items() if event_id not in seen]
+            if removed_ids:
                 session.execute(
                     delete(CalendarEventCache).where(CalendarEventCache.id.in_(removed_ids))
                 )
-            session.flush()
-            from docket.services.reminders import materialize_reminders
-
-            materialize_reminders(session, now=now)
             state.snapshot_generation = generation
             state.window_start = window_start
             state.window_end = window_end
@@ -609,7 +365,6 @@ class CalendarSyncService:
             state.leased_until = None
 
     def _mark_failed(self, state_id: uuid.UUID, lease_token: uuid.UUID, code: str) -> None:
-        now = _aware(self.clock()).astimezone(UTC)
         with self.session_factory.begin() as session:
             state = session.get(CalendarSyncState, state_id)
             if state is None or state.lease_token != lease_token:
@@ -618,172 +373,77 @@ class CalendarSyncService:
             state.last_error_code = code[:128]
             state.lease_token = None
             state.leased_until = None
-            self._ensure_stale_alert(session, state, now)
-
-    def _ensure_stale_alert(
-        self, session: Session, state: CalendarSyncState, now: datetime
-    ) -> bool:
-        stale = (
-            state.last_success_at is None
-            or (now - _aware(state.last_success_at)).total_seconds()
-            > self.settings.calendar_stale_seconds
-        )
-        if not stale:
-            return False
-        episode = (
-            _aware(state.last_success_at).astimezone(UTC).isoformat()
-            if state.last_success_at is not None
-            else "never"
-        )
-        key = f"discord_system_alert:calendar_stale:{state.id}:{episode}"
-        if session.scalar(select(OutboxEvent).where(OutboxEvent.deduplication_key == key)) is None:
-            alert_id = uuid.uuid5(uuid.NAMESPACE_URL, key)
-            session.add(
-                OutboxEvent(
-                    id=alert_id,
-                    event_type="discord.system_alert.requested",
-                    aggregate_type="calendar_sync_state",
-                    aggregate_id=state.id,
-                    deduplication_key=key,
-                    payload={
-                        "title": "Docket Calendar synchronization is stale",
-                        "summary": (
-                            "Calendar lookups may be outdated. Docket retained the last complete "
-                            "snapshot and did not promote partial provider data."
-                        ),
-                        "error_code": state.last_error_code or "calendar_sync_stale",
-                        "occurred_at": now.isoformat(),
-                    },
-                    status=OutboxStatus.PENDING.value,
-                )
-            )
-        return True
-
-    def evaluate_staleness(self) -> int:
-        now = _aware(self.clock()).astimezone(UTC)
-        count = 0
-        with self.session_factory.begin() as session:
-            states = session.scalars(select(CalendarSyncState)).all()
-            for state in states:
-                if self._ensure_stale_alert(session, state, now):
-                    if state.status == "current":
-                        state.status = "stale"
-                    count += 1
-        return count
 
     def sync_target(self, account_id: uuid.UUID, calendar_id: str, *, force: bool = False) -> bool:
-        claimed = self._claim(account_id, calendar_id, force=force)
-        if claimed is None:
+        claim = self._claim(account_id, calendar_id, force=force)
+        if claim is None:
             return False
-        state_id, lease_token, window_start, window_end = claimed
+        state_id, lease_token, window_start, window_end = claim
         try:
             events = self._fetch(calendar_id, window_start, window_end)
-            linked_series = self._fetch_linked_series(account_id, calendar_id)
-            self._promote(
-                state_id,
-                lease_token,
-                window_start,
-                window_end,
-                events,
-                linked_series,
-            )
+            self._promote(state_id, lease_token, window_start, window_end, events)
         except CalendarProviderError as exc:
             self._mark_failed(state_id, lease_token, exc.code)
         except Exception:
-            self._mark_failed(state_id, lease_token, "calendar_sync_unexpected")
+            self._mark_failed(state_id, lease_token, "calendar_sync_internal_error")
             raise
         return True
 
     def run_due_once(self) -> bool:
-        with self.session_factory.begin() as session:
-            targets: list[tuple[uuid.UUID, str, datetime | None]] = []
-            accounts = session.scalars(
-                select(Account).where(Account.provider == "google", Account.enabled.is_(True))
-            )
-            for account in accounts:
-                for calendar_id in CalendarLaneService(session, self.settings).calendar_ids(
-                    account.id
-                ):
-                    state = session.scalar(
-                        select(CalendarSyncState).where(
-                            CalendarSyncState.account_id == account.id,
-                            CalendarSyncState.calendar_id == calendar_id,
-                        )
-                    )
-                    targets.append(
-                        (
-                            account.id,
-                            calendar_id,
-                            state.last_attempt_at if state is not None else None,
-                        )
-                    )
-        targets.sort(
-            key=lambda item: (
-                item[2] is not None,
-                _aware(item[2]) if item[2] is not None else datetime.min.replace(tzinfo=UTC),
-                str(item[0]),
-                item[1],
-            )
-        )
-        for account_id, calendar_id, _last_attempt_at in targets:
-            if self.sync_target(account_id, calendar_id):
-                return True
-        return False
+        if not self.settings.calendar_reads_enabled:
+            return False
+        with self.session_factory() as session:
+            target = session.execute(
+                select(CalendarLane.account_id, CalendarLane.calendar_id)
+                .join(ProviderAccount, ProviderAccount.id == CalendarLane.account_id)
+                .where(
+                    ProviderAccount.provider == "google",
+                    ProviderAccount.enabled.is_(True),
+                    CalendarLane.status == "active",
+                    CalendarLane.enabled.is_(True),
+                    CalendarLane.calendar_id.is_not(None),
+                )
+                .order_by(CalendarLane.updated_at)
+                .limit(1)
+            ).first()
+        if target is None or target.calendar_id is None:
+            return False
+        return self.sync_target(target.account_id, target.calendar_id)
 
     def require_fresh(self, account_id: uuid.UUID, calendar_id: str) -> None:
-        started = _aware(self.clock()).astimezone(UTC)
+        if self.settings.calendar_reads_enabled:
+            self.sync_target(account_id, calendar_id, force=True)
 
-        def refresh() -> None:
-            try:
-                self.sync_target(account_id, calendar_id, force=True)
-            except Exception:
-                logger.exception(
-                    "calendar_require_fresh_refresh_failed",
-                    account_id=str(account_id),
-                    calendar_id=calendar_id,
-                )
-
-        Thread(target=refresh, name="docket-calendar-refresh", daemon=True).start()
-        deadline = monotonic_time.monotonic() + self.settings.calendar_require_fresh_wait_seconds
-        while monotonic_time.monotonic() < deadline:
-            with self.session_factory() as session:
-                state = session.scalar(
-                    select(CalendarSyncState).where(
-                        CalendarSyncState.account_id == account_id,
-                        CalendarSyncState.calendar_id == calendar_id,
-                    )
-                )
+    def evaluate_staleness(self) -> int:
+        now = _aware(self.clock()).astimezone(UTC)
+        changed = 0
+        with self.session_factory.begin() as session:
+            for state in session.scalars(select(CalendarSyncState)):
                 if (
-                    state is not None
-                    and state.status == "current"
-                    and state.last_success_at is not None
-                    and _aware(state.last_success_at) >= started
-                ):
-                    return
-                if (
-                    state is not None
-                    and state.status in {"failed", "stale"}
-                    and state.last_attempt_at is not None
-                    and _aware(state.last_attempt_at) >= started
-                ):
-                    return
-            monotonic_time.sleep(0.05)
+                    state.last_success_at is None
+                    or (now - _aware(state.last_success_at)).total_seconds()
+                    > self.settings.calendar_stale_seconds
+                ) and state.status == "current":
+                    state.status = "stale"
+                    changed += 1
+        return changed
 
     def recover_expired_leases(self) -> int:
         now = _aware(self.clock()).astimezone(UTC)
+        recovered = 0
         with self.session_factory.begin() as session:
-            states = session.scalars(
+            for state in session.scalars(
                 select(CalendarSyncState).where(
                     CalendarSyncState.status == "syncing",
                     CalendarSyncState.leased_until < now,
                 )
-            ).all()
-            for state in states:
-                state.status = "stale" if state.last_success_at is not None else "failed"
+            ):
+                state.status = "stale" if state.last_success_at else "failed"
                 state.last_error_code = "calendar_sync_lease_expired"
                 state.lease_token = None
                 state.leased_until = None
-            return len(states)
+                recovered += 1
+        return recovered
 
 
 class CalendarReadService:
@@ -799,9 +459,6 @@ class CalendarReadService:
         self.sync_service = sync_service
         self.settings = settings or get_settings()
         self.clock = clock
-
-    def _status(self, state: CalendarSyncState | None) -> dict[str, Any]:
-        return self._status_at(state, _aware(self.clock()).astimezone(UTC))
 
     def _status_at(self, state: CalendarSyncState | None, now: datetime) -> dict[str, Any]:
         stale = (
@@ -824,27 +481,75 @@ class CalendarReadService:
     def get_sync_status(self, account_id: uuid.UUID, calendar_id: str) -> dict[str, Any]:
         self.sync_service.ensure_state(account_id, calendar_id)
         with self.session_factory() as session:
-            account = session.get(Account, account_id)
-            if account is None or account.provider != "google" or not account.enabled:
-                raise DocketError(
-                    code="calendar_account_not_available",
-                    message="The selected Google account is not enabled.",
-                )
+            account = session.get(ProviderAccount, account_id)
             state = session.scalar(
                 select(CalendarSyncState).where(
                     CalendarSyncState.account_id == account_id,
                     CalendarSyncState.calendar_id == calendar_id,
                 )
             )
+            if account is None or not account.enabled:
+                raise DocketError(
+                    code="calendar_account_not_available",
+                    message="The selected Google account is not enabled.",
+                )
             return {
-                "account_id": str(account_id),
                 "account_ref": account.ref_id,
-                "account_label": account.display_name
-                or account.email_address
-                or account.external_account_id,
                 "calendar_id": calendar_id,
-                **self._status(state),
+                **self._status_at(state, _aware(self.clock()).astimezone(UTC)),
             }
+
+    def _range(
+        self,
+        start: datetime | None,
+        end: datetime | None,
+        relative_day: str | None,
+    ) -> tuple[datetime, datetime, dict[str, Any]]:
+        now = _aware(self.clock()).astimezone(UTC)
+        zone = ZoneInfo(self.settings.timezone)
+        local_date: date | None = None
+        if relative_day is not None:
+            if relative_day not in {"today", "tomorrow"} or start is not None or end is not None:
+                raise DocketError(
+                    code="invalid_calendar_range",
+                    message="Relative day must stand alone and be today or tomorrow.",
+                )
+            local_date = now.astimezone(zone).date()
+            if relative_day == "tomorrow":
+                local_date += timedelta(days=1)
+            start = datetime.combine(local_date, time.min, tzinfo=zone)
+            end = datetime.combine(local_date + timedelta(days=1), time.min, tzinfo=zone)
+            mode = "relative_day"
+        elif start is None and end is None:
+            start, end, mode = now, now + timedelta(days=7), "default"
+        elif start is None or end is None:
+            raise DocketError(
+                code="invalid_calendar_range",
+                message="Calendar start and end must be supplied together.",
+            )
+        else:
+            mode = "explicit"
+        if start.tzinfo is None or end.tzinfo is None or end <= start:
+            raise DocketError(
+                code="invalid_calendar_range",
+                message="Calendar bounds must be ordered timezone-aware instants.",
+            )
+        if end - start > timedelta(days=31):
+            raise DocketError(
+                code="calendar_range_too_large",
+                message="Calendar lookups are limited to 31 days.",
+            )
+        return (
+            start.astimezone(UTC),
+            end.astimezone(UTC),
+            {
+                "mode": mode,
+                "relative_day": relative_day,
+                "local_date": local_date.isoformat() if local_date else None,
+                "timezone": self.settings.timezone,
+                "as_of": now.isoformat(),
+            },
+        )
 
     def list_events(
         self,
@@ -860,110 +565,45 @@ class CalendarReadService:
         result_view: str = "occurrences",
         offset: int = 0,
     ) -> dict[str, Any]:
-        as_of = _aware(self.clock()).astimezone(UTC)
-        zone = ZoneInfo(self.settings.timezone)
-        if relative_day is not None:
-            if relative_day not in {"today", "tomorrow"}:
-                raise DocketError(
-                    code="invalid_relative_day",
-                    message="Calendar relative day must be today or tomorrow.",
-                )
-            if start is not None or end is not None:
-                raise DocketError(
-                    code="invalid_calendar_range",
-                    message="Calendar relative day cannot be combined with explicit bounds.",
-                )
-            local_date = as_of.astimezone(zone).date()
-            if relative_day == "tomorrow":
-                local_date += timedelta(days=1)
-            start = datetime.combine(local_date, datetime_time.min, tzinfo=zone)
-            end = datetime.combine(local_date + timedelta(days=1), datetime_time.min, tzinfo=zone)
-            range_mode = "relative_day"
-        elif start is None and end is None:
-            start = as_of
-            end = as_of + timedelta(days=7)
-            local_date = None
-            range_mode = "default"
-        elif start is None or end is None:
-            raise DocketError(
-                code="invalid_calendar_range",
-                message="Calendar lookup start and end must be supplied together.",
-            )
-        else:
-            local_date = None
-            range_mode = "explicit"
-
-        if start.tzinfo is None or end.tzinfo is None or end <= start:
-            raise DocketError(
-                code="invalid_calendar_range",
-                message="Calendar lookup bounds must be ordered timezone-aware instants.",
-            )
-        if end - start > timedelta(days=31):
-            raise DocketError(
-                code="calendar_range_too_large",
-                message="Calendar lookups are limited to 31 days.",
-            )
-        if not 1 <= limit <= 100:
-            raise DocketError(code="invalid_limit", message="Calendar limit must be from 1 to 100.")
-        if text_filter is not None and len(text_filter) > 200:
-            raise DocketError(
-                code="calendar_filter_too_large",
-                message="Calendar text filters are limited to 200 characters.",
-            )
-        if result_view not in {"occurrences", "series"}:
-            raise DocketError(
-                code="invalid_calendar_result_view",
-                message="Calendar result view must be occurrences or series.",
-            )
-        self.sync_service.ensure_state(account_id, calendar_id)
+        start_utc, end_utc, resolution = self._range(start, end, relative_day)
         if freshness == "require_fresh":
-            if self.settings.calendar_reads_enabled:
-                self.sync_service.require_fresh(account_id, calendar_id)
+            self.sync_service.require_fresh(account_id, calendar_id)
         elif freshness != "prefer_cache":
             raise DocketError(
                 code="invalid_freshness",
                 message="Calendar freshness must be prefer_cache or require_fresh.",
             )
-
-        start_utc = start.astimezone(UTC)
-        end_utc = end.astimezone(UTC)
-        start_date = start.astimezone(zone).date()
-        end_local = end.astimezone(zone)
-        end_date = end_local.date()
-        if any((end_local.hour, end_local.minute, end_local.second, end_local.microsecond)):
-            end_date += timedelta(days=1)
+        zone = ZoneInfo(self.settings.timezone)
+        start_date = start_utc.astimezone(zone).date()
+        end_date = end_utc.astimezone(zone).date() + timedelta(days=1)
         with self.session_factory() as session:
-            account = session.get(Account, account_id)
-            if account is None or account.provider != "google" or not account.enabled:
-                raise DocketError(
-                    code="calendar_account_not_available",
-                    message="The selected Google account is not enabled.",
-                )
+            account = session.get(ProviderAccount, account_id)
             state = session.scalar(
                 select(CalendarSyncState).where(
                     CalendarSyncState.account_id == account_id,
                     CalendarSyncState.calendar_id == calendar_id,
                 )
             )
-            statement = select(CalendarEventCache).where(
+            if account is None or not account.enabled:
+                raise DocketError(
+                    code="calendar_account_not_available",
+                    message="The selected Google account is not enabled.",
+                )
+            query = select(CalendarEventCache).where(
                 CalendarEventCache.account_id == account_id,
                 CalendarEventCache.calendar_id == calendar_id,
                 CalendarEventCache.status != "cancelled",
                 or_(
-                    (
-                        CalendarEventCache.is_all_day.is_(False)
-                        & (CalendarEventCache.start_at < end_utc)
-                        & (CalendarEventCache.end_at > start_utc)
-                    ),
-                    (
-                        CalendarEventCache.is_all_day.is_(True)
-                        & (CalendarEventCache.start_date < end_date)
-                        & (CalendarEventCache.end_date > start_date)
-                    ),
+                    CalendarEventCache.is_all_day.is_(False)
+                    & (CalendarEventCache.start_at < end_utc)
+                    & (CalendarEventCache.end_at > start_utc),
+                    CalendarEventCache.is_all_day.is_(True)
+                    & (CalendarEventCache.start_date < end_date)
+                    & (CalendarEventCache.end_date > start_date),
                 ),
             )
             if text_filter:
-                statement = statement.where(
+                query = query.where(
                     or_(
                         func.lower(CalendarEventCache.summary).contains(
                             text_filter.casefold(), autoescape=True
@@ -973,116 +613,119 @@ class CalendarReadService:
                         ),
                     )
                 )
-            rows = list(session.scalars(statement).all())
+            rows = list(session.scalars(query))
             rows.sort(
                 key=lambda row: (
                     _aware(row.start_at).astimezone(UTC)
-                    if row.start_at is not None
-                    else datetime.combine(
-                        row.start_date or date.max, datetime_time.min, tzinfo=zone
-                    ).astimezone(UTC),
+                    if row.start_at
+                    else datetime.combine(row.start_date or date.max, time.min, tzinfo=zone),
                     row.provider_event_id,
                 )
             )
-            occurrence_counts: dict[str, int] = {}
-            result: list[dict[str, Any]]
+            counts: dict[str, int] = {}
             if result_view == "series":
-                collapsed_rows: list[CalendarEventCache] = []
+                unique: dict[str, CalendarEventCache] = {}
                 for row in rows:
-                    identity = row.recurring_event_id or row.provider_event_id
-                    occurrence_counts[identity] = occurrence_counts.get(identity, 0) + 1
-                    if occurrence_counts[identity] == 1:
-                        collapsed_rows.append(row)
-                total_rows = len(collapsed_rows)
-                selected_rows = collapsed_rows[offset : offset + limit]
-            else:
-                total_rows = len(rows)
-                selected_rows = rows[offset : offset + limit]
-            event_ids = {
-                value
-                for row in selected_rows
-                for value in (row.provider_event_id, row.recurring_event_id)
-                if value is not None
-            }
-            links = list(
-                session.scalars(
-                    select(CalendarLink).where(
-                        CalendarLink.account_id == account_id,
-                        CalendarLink.calendar_id == calendar_id,
-                        CalendarLink.external_event_id.in_(event_ids),
-                    )
+                    key = row.recurring_event_id or row.provider_event_id
+                    counts[key] = counts.get(key, 0) + 1
+                    unique.setdefault(key, row)
+                rows = list(unique.values())
+            elif result_view != "occurrences":
+                raise DocketError(
+                    code="invalid_calendar_result_view",
+                    message="Calendar result view must be occurrences or series.",
                 )
-            )
-            links_by_event = {link.external_event_id: link for link in links}
-            bindings = list(
-                session.scalars(
+            total = len(rows)
+            selected = rows[offset : offset + limit]
+            ids = {
+                identity
+                for row in selected
+                for identity in (row.provider_event_id, row.recurring_event_id)
+                if identity is not None
+            }
+            bindings = {
+                row.provider_event_id: row
+                for row in session.scalars(
                     select(ProviderEventBinding).where(
                         ProviderEventBinding.account_id == account_id,
                         ProviderEventBinding.calendar_id == calendar_id,
-                        ProviderEventBinding.provider_event_id.in_(event_ids),
+                        ProviderEventBinding.provider_event_id.in_(ids),
                     )
                 )
-            )
-            bindings_by_event = {binding.provider_event_id: binding for binding in bindings}
-            canonical_ids = {
-                candidate_id
-                for candidate_id in [
-                    *(link.canonical_event_id for link in links),
-                    *(binding.canonical_event_id for binding in bindings),
-                ]
-                if candidate_id is not None
             }
-            canonical_by_id = {
-                event.id: event
+            canonical_refs = {row.canonical_target_ref for row in bindings.values()}
+            canonicals = {
+                event.ref_id: event
                 for event in session.scalars(
-                    select(CanonicalEvent).where(CanonicalEvent.id.in_(canonical_ids))
+                    select(CanonicalEvent).where(CanonicalEvent.ref_id.in_(canonical_refs))
+                )
+            }
+            temporal_projections = {
+                projection.ref_id: projection
+                for projection in session.scalars(
+                    select(TemporalCalendarProjection).where(
+                        TemporalCalendarProjection.ref_id.in_(canonical_refs)
+                    )
+                )
+            }
+            reminder_subject_refs = {
+                *canonicals,
+                *(
+                    projection.temporal_binding_ref
+                    for projection in temporal_projections.values()
+                ),
+            }
+            plans = {
+                plan.subject_ref: plan
+                for plan in session.scalars(
+                    select(ReminderPlan).where(
+                        ReminderPlan.subject_ref.in_(reminder_subject_refs),
+                        ReminderPlan.canonical_status == "active",
+                    )
                 )
             }
 
-            def canonical_projection(row: CalendarEventCache) -> dict[str, Any]:
-                identities = (row.provider_event_id, row.recurring_event_id)
-                canonical_id = next(
-                    (
-                        link.canonical_event_id
-                        for identity in identities
-                        if identity is not None
-                        and (link := links_by_event.get(identity)) is not None
-                        and link.canonical_event_id is not None
+            def projection(row: CalendarEventCache) -> dict[str, Any]:
+                series_identity = row.recurring_event_id or row.provider_event_id
+                binding = bindings.get(row.provider_event_id) or bindings.get(series_identity)
+                canonical = (
+                    canonicals.get(binding.canonical_target_ref) if binding is not None else None
+                )
+                temporal_projection = (
+                    temporal_projections.get(binding.canonical_target_ref)
+                    if binding is not None
+                    else None
+                )
+                plan_subject_ref = (
+                    canonical.ref_id
+                    if canonical is not None
+                    else temporal_projection.temporal_binding_ref
+                    if temporal_projection is not None
+                    else None
+                )
+                plan = plans.get(plan_subject_ref) if plan_subject_ref is not None else None
+                canonical_ref = binding.canonical_target_ref if binding is not None else None
+                target_kind = binding.target_kind if binding is not None else None
+                lane_ref = (
+                    canonical.lane_ref
+                    if canonical is not None
+                    else temporal_projection.lane_ref
+                    if temporal_projection is not None
+                    else None
+                )
+                return {
+                    "provider_event_id": (
+                        series_identity if result_view == "series" else row.provider_event_id
                     ),
-                    None,
-                )
-                if canonical_id is None:
-                    canonical_id = next(
-                        (
-                            binding.canonical_event_id
-                            for identity in identities
-                            if identity is not None
-                            and (binding := bindings_by_event.get(identity)) is not None
-                        ),
-                        None,
-                    )
-                canonical = canonical_by_id.get(canonical_id) if canonical_id is not None else None
-                if canonical is None:
-                    return {}
-                return {"ref": canonical.ref_id, "lane_ref": canonical.lane_ref}
-
-            rules = list(
-                session.scalars(
-                    select(ReminderRule).where(
-                        ReminderRule.account_id == account_id,
-                        ReminderRule.calendar_id == calendar_id,
-                        ReminderRule.provider_event_id.in_(event_ids),
-                    )
-                )
-            )
-            rules_by_event: dict[str, list[ReminderRule]] = {}
-            for rule in rules:
-                if rule.provider_event_id is not None:
-                    rules_by_event.setdefault(rule.provider_event_id, []).append(rule)
-            occurrence_results = [
-                {
-                    "provider_event_id": row.provider_event_id,
-                    **canonical_projection(row),
+                    **(
+                        {
+                            "ref": canonical_ref,
+                            "lane_ref": lane_ref,
+                            "target_kind": target_kind,
+                        }
+                        if canonical_ref is not None
+                        else {}
+                    ),
                     "recurring_event_id": row.recurring_event_id,
                     "status": row.status,
                     "summary": row.summary,
@@ -1091,14 +734,10 @@ class CalendarReadService:
                     "start_at": _iso(row.start_at),
                     "end_at": _iso(row.end_at),
                     "start_local": (
-                        _aware(row.start_at).astimezone(zone).isoformat()
-                        if row.start_at is not None
-                        else None
+                        _aware(row.start_at).astimezone(zone).isoformat() if row.start_at else None
                     ),
                     "end_local": (
-                        _aware(row.end_at).astimezone(zone).isoformat()
-                        if row.end_at is not None
-                        else None
+                        _aware(row.end_at).astimezone(zone).isoformat() if row.end_at else None
                     ),
                     "local_timezone": self.settings.timezone,
                     "start_date": row.start_date.isoformat() if row.start_date else None,
@@ -1106,104 +745,50 @@ class CalendarReadService:
                     "timezone": row.timezone,
                     "event_type": row.event_type,
                     "recurrence_kind": row.recurrence_kind,
-                    "system_tags": list(row.system_tags),
-                    "operator_tags": list(row.operator_tags),
-                    "priority": row.priority,
-                    "priority_basis": row.priority_basis,
-                    "reminder_plan": _normalized_reminder_state(
-                        row,
-                        links_by_event.get(row.provider_event_id)
-                        or (
-                            links_by_event.get(row.recurring_event_id)
-                            if row.recurring_event_id is not None
-                            else None
-                        ),
-                        [
-                            *rules_by_event.get(row.provider_event_id, []),
-                            *(
-                                rules_by_event.get(row.recurring_event_id, [])
-                                if row.recurring_event_id is not None
-                                else []
-                            ),
-                        ],
+                    **(
+                        {
+                            "scope": "series" if row.recurring_event_id else "event",
+                            "occurrences_in_range": counts[series_identity],
+                        }
+                        if result_view == "series"
+                        else {}
+                    ),
+                    "reminder_plan": (
+                        {
+                            "state": "canonical",
+                            "ref": plan.ref_id,
+                            "delivery_channels": plan.delivery_channels,
+                            "lead_seconds": plan.lead_seconds,
+                        }
+                        if plan is not None
+                        else {"state": "external_unmanaged"}
                     ),
                 }
-                for row in selected_rows
-            ]
-            if result_view == "series":
-                result = [
-                    {
-                        "provider_event_id": row.recurring_event_id or row.provider_event_id,
-                        **canonical_projection(row),
-                        "scope": "series" if row.recurring_event_id else "event",
-                        "summary": row.summary,
-                        "location": row.location,
-                        "first_start_local": (
-                            _aware(row.start_at).astimezone(zone).isoformat()
-                            if row.start_at is not None
-                            else None
-                        ),
-                        "first_end_local": (
-                            _aware(row.end_at).astimezone(zone).isoformat()
-                            if row.end_at is not None
-                            else None
-                        ),
-                        "first_start_date": (
-                            row.start_date.isoformat() if row.start_date else None
-                        ),
-                        "first_end_date": row.end_date.isoformat() if row.end_date else None,
-                        "local_timezone": self.settings.timezone,
-                        "event_type": row.event_type,
-                        "recurrence_kind": row.recurrence_kind,
-                        "system_tags": list(row.system_tags),
-                        "operator_tags": list(row.operator_tags),
-                        "priority": row.priority,
-                        "occurrences_in_range": occurrence_counts[
-                            row.recurring_event_id or row.provider_event_id
-                        ],
-                    }
-                    for row in selected_rows
-                ]
-            else:
-                result = occurrence_results
-            status = self._status_at(state, as_of)
+
+            events = [projection(row) for row in selected]
+            status = self._status_at(state, _aware(self.clock()).astimezone(UTC))
             covered = bool(
                 state is not None
                 and state.snapshot_generation is not None
-                and state.last_success_at is not None
                 and _aware(state.window_start) <= start_utc
                 and _aware(state.window_end) >= end_utc
             )
             return {
-                "account_id": str(account_id),
                 "account_ref": account.ref_id,
                 "calendar_id": calendar_id,
                 "range_start": start_utc.isoformat(),
                 "range_end": end_utc.isoformat(),
-                "range_resolution": {
-                    "mode": range_mode,
-                    "relative_day": relative_day,
-                    "local_date": local_date.isoformat() if local_date is not None else None,
-                    "timezone": self.settings.timezone,
-                    "as_of": as_of.isoformat(),
-                },
+                "range_resolution": resolution,
                 "result_view": result_view,
-                "events": result,
-                "count": len(result),
-                "total_if_known": total_rows,
-                "truncated": offset + len(result) < total_rows,
-                "cursor": (
-                    str(offset + len(result)) if offset + len(result) < total_rows else None
-                ),
+                "events": events,
+                "count": len(events),
+                "total_if_known": total,
+                "truncated": offset + len(events) < total,
+                "cursor": str(offset + len(events)) if offset + len(events) < total else None,
                 "freshness": {**status, "covered": covered},
-                "refresh_pending": bool(
-                    freshness == "require_fresh"
-                    and self.settings.calendar_reads_enabled
-                    and (status["stale"] or not covered)
-                ),
-                "refresh_disabled": bool(
-                    freshness == "require_fresh" and not self.settings.calendar_reads_enabled
-                ),
+                "refresh_pending": False,
+                "refresh_disabled": freshness == "require_fresh"
+                and not self.settings.calendar_reads_enabled,
             }
 
     def list_events_across_calendars(
@@ -1220,7 +805,6 @@ class CalendarReadService:
         result_view: str = "occurrences",
         offset: int = 0,
     ) -> dict[str, Any]:
-        """Return one globally ordered page across the account's active lanes."""
         ordered_calendar_ids = list(dict.fromkeys(calendar_ids))
         if not ordered_calendar_ids:
             raise DocketError(
@@ -1237,21 +821,13 @@ class CalendarReadService:
                 code="calendar_aggregate_cursor_too_large",
                 message="Aggregate Calendar pagination is limited to 10,000 events.",
             )
-
         needed = offset + limit
-        all_events: list[dict[str, Any]] = []
-        totals = 0
-        freshness_by_calendar: dict[str, dict[str, Any]] = {}
-        refresh_pending = False
-        refresh_disabled = False
-        first_page: dict[str, Any] | None = None
-        account_ref: str | None = None
-
+        pages: list[dict[str, Any]] = []
+        events: list[dict[str, Any]] = []
         for calendar_id in ordered_calendar_ids:
-            calendar_events: list[dict[str, Any]] = []
             calendar_offset = 0
-            page: dict[str, Any] | None = None
-            while len(calendar_events) < needed:
+            collected = 0
+            while collected < needed:
                 page = self.list_events(
                     account_id=account_id,
                     calendar_id=calendar_id,
@@ -1259,57 +835,44 @@ class CalendarReadService:
                     end=end,
                     relative_day=relative_day,
                     text_filter=text_filter,
-                    limit=min(100, needed - len(calendar_events)),
+                    limit=min(100, needed - calendar_offset),
                     freshness=freshness if calendar_offset == 0 else "prefer_cache",
                     result_view=result_view,
                     offset=calendar_offset,
                 )
-                if first_page is None:
-                    first_page = page
-                    account_ref = str(page["account_ref"])
                 if calendar_offset == 0:
-                    totals += int(page["total_if_known"])
-                    freshness_by_calendar[calendar_id] = dict(page["freshness"])
-                    refresh_pending = refresh_pending or bool(page["refresh_pending"])
-                    refresh_disabled = refresh_disabled or bool(page["refresh_disabled"])
-                page_events = [{"calendar_id": calendar_id, **event} for event in page["events"]]
-                calendar_events.extend(page_events)
+                    pages.append(page)
+                page_events = [
+                    {"calendar_id": calendar_id, **event} for event in page["events"]
+                ]
+                events.extend(page_events)
+                collected += len(page_events)
                 next_cursor = page.get("cursor")
                 if next_cursor is None or not page_events:
                     break
                 calendar_offset = int(next_cursor)
-            all_events.extend(calendar_events)
-
-        assert first_page is not None
-
-        def event_order(event: dict[str, Any]) -> tuple[str, str, str, str]:
-            local_instant = str(event.get("start_local") or event.get("first_start_local") or "")
-            local_date = str(event.get("start_date") or event.get("first_start_date") or "")
-            day = local_instant[:10] if local_instant else local_date
-            instant = local_instant or f"{local_date}T00:00:00"
-            return (
-                day,
-                instant,
+        events.sort(
+            key=lambda event: (
+                str(event.get("start_local") or event.get("start_date") or ""),
                 str(event["calendar_id"]),
-                str(event.get("provider_event_id") or ""),
+                str(event["provider_event_id"]),
             )
-
-        all_events.sort(key=event_order)
-        selected = all_events[offset : offset + limit]
+        )
+        total = sum(int(page["total_if_known"]) for page in pages)
+        selected = events[offset : offset + limit]
         return {
-            "account_id": str(account_id),
-            "account_ref": account_ref,
+            "account_ref": pages[0]["account_ref"],
             "calendar_ids": ordered_calendar_ids,
-            "range_start": first_page["range_start"],
-            "range_end": first_page["range_end"],
-            "range_resolution": first_page["range_resolution"],
+            "range_start": pages[0]["range_start"],
+            "range_end": pages[0]["range_end"],
+            "range_resolution": pages[0]["range_resolution"],
             "result_view": result_view,
             "events": selected,
             "count": len(selected),
-            "total_if_known": totals,
-            "truncated": offset + len(selected) < totals,
-            "cursor": str(offset + len(selected)) if offset + len(selected) < totals else None,
-            "freshness_by_calendar": freshness_by_calendar,
-            "refresh_pending": refresh_pending,
-            "refresh_disabled": refresh_disabled,
+            "total_if_known": total,
+            "truncated": offset + len(selected) < total,
+            "cursor": str(offset + len(selected)) if offset + len(selected) < total else None,
+            "freshness_by_calendar": {page["calendar_id"]: page["freshness"] for page in pages},
+            "refresh_pending": any(page["refresh_pending"] for page in pages),
+            "refresh_disabled": any(page["refresh_disabled"] for page in pages),
         }
