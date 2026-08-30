@@ -1128,6 +1128,60 @@ def test_amendment_signoff_forwards_exact_binding_only(plugin_module, monkeypatc
     )
 
 
+@pytest.mark.adversarial
+def test_production_reset_authority_forwards_every_exact_binding(
+    plugin_module, monkeypatch
+) -> None:
+    document_ref = "ONT-DELTA-2026-08-29-TRACKED-CONTEXT"
+    frozen_hash = "830c33c9d78485a6a6a8f872b6dfad996869f8a7eaea9a5f7d39d52e9357cf48"
+    manifest_hash = "a" * 64
+    backup_ref = "tracked-context-pre-reset-20260830.dump"
+    backup_hash = "b" * 64
+    revision = "c" * 40
+    exact_text = (
+        f"I authorize execution of the production reset for `{document_ref}` frozen at "
+        f"SHA-256 `{frozen_hash}`, bound to reset manifest SHA-256 `{manifest_hash}`, "
+        f"verified backup artifact `{backup_ref}` at SHA-256 `{backup_hash}`, and "
+        f"deployment revision `{revision}`."
+    )
+    requests = []
+
+    def capture(path, payload, **_kwargs):
+        requests.append((path, payload))
+        return {"ok": True, "ref": f"dec_{'3' * 26}"}
+
+    monkeypatch.setattr(plugin_module, "_docket_internal_request", capture)
+
+    result = plugin_module._record_production_reset_authorization_if_explicit(
+        SimpleNamespace(text=exact_text),
+        f"utt_{'2' * 26}",
+    )
+
+    assert result == {"ok": True, "ref": f"dec_{'3' * 26}"}
+    assert requests == [
+        (
+            "/internal/v1/discord/production-reset-authorizations",
+            {
+                "request_id": requests[0][1]["request_id"],
+                "utterance_ref": f"utt_{'2' * 26}",
+                "document_ref": document_ref,
+                "frozen_artifact_hash": frozen_hash,
+                "reset_manifest_sha256": manifest_hash,
+                "verified_backup_ref": backup_ref,
+                "verified_backup_sha256": backup_hash,
+                "deployment_revision": revision,
+            },
+        )
+    ]
+    assert (
+        plugin_module._record_production_reset_authorization_if_explicit(
+            SimpleNamespace(text=f"{exact_text} now"),
+            f"utt_{'4' * 26}",
+        )
+        is None
+    )
+
+
 @pytest.mark.asyncio
 @pytest.mark.adversarial
 async def test_agent_response_persistence_failure_blocks_discord_delivery(
