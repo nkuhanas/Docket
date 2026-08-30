@@ -4,11 +4,10 @@ import uuid
 
 import pytest
 
-from docket.config import get_settings
+from docket.domain.public_refs import new_public_ref
 from docket.mcp.instrumented import ProvenanceFastMCP
 from docket.mcp.server import mcp
-from docket.models import Account
-from docket.services.calendar_lanes import CalendarLaneService
+from docket.models import CalendarLane, ProviderAccount
 
 
 @pytest.mark.integration
@@ -99,7 +98,7 @@ def test_retained_provider_reads_chain_through_public_refs_without_uuid_leak(
     session_factory,
 ) -> None:
     with session_factory.begin() as session:
-        account = Account(
+        account = ProviderAccount(
             provider="google",
             external_account_id="mcp-provider-ref-test",
             display_name="MCP provider ref",
@@ -109,18 +108,25 @@ def test_retained_provider_reads_chain_through_public_refs_without_uuid_leak(
         session.add(account)
         session.flush()
         account_ref = account.ref_id
-        CalendarLaneService(session, get_settings()).ensure_for_account(account)
+        session.add(
+            CalendarLane(
+                account_id=account.id,
+                lane="personal",
+                display_name="Personal",
+                color_hex="#8E24AA",
+                calendar_id="personal@example.com",
+                status="active",
+                basis_refs=[new_public_ref("dec")],
+                created_by_changeset_ref=new_public_ref("chg"),
+            )
+        )
 
-    accounts_result = asyncio.run(mcp.call_tool("docket_list_accounts", {}))
+    accounts_result = asyncio.run(mcp.call_tool("docket_list_provider_accounts", {}))
     assert isinstance(accounts_result, tuple)
     accounts = accounts_result[1]
     assert accounts["items"][0]["ref"] == account_ref
     assert "account_id" not in accounts["items"][0]
-    assert accounts["items"][0]["calendar_lanes"]
-    assert all(
-        lane["ref"].startswith("lane_") and "lane_id" not in lane and "account_id" not in lane
-        for lane in accounts["items"][0]["calendar_lanes"]
-    )
+    assert "calendar_lanes" not in accounts["items"][0]
 
     lanes_result = asyncio.run(
         mcp.call_tool("docket_list_calendar_lanes", {"account_ref": account_ref})
