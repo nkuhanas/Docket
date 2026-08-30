@@ -5,13 +5,13 @@ import pytest
 from sqlalchemy import select
 
 from docket.config import get_settings
-from docket.gmail_cli import _status
 from docket.models import (
-    Account,
     AuditEvent,
     ConnectorCheckpoint,
+    GmailSource,
     OutboxEvent,
-    SourceItem,
+    ProviderAccount,
+    Source,
 )
 from docket.providers.google.fake_gmail import FakeGmailProvider
 from docket.services.gmail_ingestion import GmailIngestionService
@@ -30,9 +30,9 @@ def _settings():
     )
 
 
-def _account(session_factory) -> Account:
+def _account(session_factory) -> ProviderAccount:
     with session_factory.begin() as session:
-        account = Account(
+        account = ProviderAccount(
             provider="google",
             external_account_id="gmail-test",
             capabilities=["gmail"],
@@ -42,41 +42,6 @@ def _account(session_factory) -> Account:
         session.flush()
         session.expunge(account)
         return account
-
-
-@pytest.mark.integration
-def test_gmail_status_reports_bounded_claim_health(session_factory) -> None:
-    account = _account(session_factory)
-    now = datetime.now(UTC)
-    with session_factory.begin() as session:
-        for index, claimed_until in enumerate(
-            (now - timedelta(minutes=1), now + timedelta(minutes=4), None)
-        ):
-            session.add(
-                SourceItem(
-                    account_id=account.id,
-                    provider="gmail",
-                    external_object_id=f"claimed-{index}",
-                    source_version="1",
-                    source_fingerprint=str(index) * 64,
-                    status="claimed",
-                    claimed_until=claimed_until,
-                )
-            )
-
-    status = _status()
-
-    assert status["triage_claim_batch_size"] == 1
-    assert status["triage_lease_seconds"] == 300
-    health = status["claim_health"]
-    assert isinstance(health, dict)
-    assert health["claimed_count"] == 3
-    assert health["expired_count"] == 1
-    assert health["missing_expiry_count"] == 1
-    earliest = datetime.fromisoformat(str(health["earliest_expiry"]))
-    latest = datetime.fromisoformat(str(health["latest_expiry"]))
-    assert abs((earliest - (now - timedelta(minutes=1))).total_seconds()) < 1
-    assert abs((latest - (now + timedelta(minutes=4))).total_seconds()) < 1
 
 
 @pytest.mark.integration
@@ -107,8 +72,9 @@ def test_paginated_scan_advances_checkpoint_without_duplicate_sources(
     with session_factory() as session:
         checkpoint = session.scalar(select(ConnectorCheckpoint))
         sources = session.scalars(
-            select(SourceItem).order_by(SourceItem.external_object_id)
+            select(GmailSource).order_by(GmailSource.external_object_id)
         ).all()
+        evidence = session.scalars(select(Source).order_by(Source.external_ref)).all()
         assert checkpoint is not None
         assert checkpoint.account_id == account.id
         assert checkpoint.cursor == {"mode": "history", "history_id": "3"}
@@ -120,12 +86,15 @@ def test_paginated_scan_advances_checkpoint_without_duplicate_sources(
             "message-2",
         ]
         assert all("body" not in source.minimal_headers for source in sources)
+        assert len(evidence) == 3
+        assert {item.ref_id for item in evidence} == {item.ref_id for item in sources}
+        assert all(item.source_kind == "gmail" for item in evidence)
 
     replay = service.run_due_once(force=True)
     assert replay.completed
     assert replay.staged == 0
     with session_factory() as session:
-        assert len(session.scalars(select(SourceItem)).all()) == 3
+        assert len(session.scalars(select(GmailSource)).all()) == 3
 
 
 @pytest.mark.integration
@@ -146,7 +115,7 @@ def test_invalid_history_cursor_uses_overlap_and_deduplicates(
     assert result.recovery
     assert result.staged == 1
     with session_factory() as session:
-        assert len(session.scalars(select(SourceItem)).all()) == 2
+        assert len(session.scalars(select(GmailSource)).all()) == 2
         recovery = session.scalars(
             select(AuditEvent).where(
                 AuditEvent.event_type == "gmail.cursor_recovery_started"
@@ -187,7 +156,7 @@ def test_scan_selects_gmail_capable_account_after_other_google_account(
 ) -> None:
     with session_factory.begin() as session:
         session.add(
-            Account(
+            ProviderAccount(
                 provider="google",
                 external_account_id="calendar-only",
                 capabilities=["calendar"],

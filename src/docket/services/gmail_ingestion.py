@@ -12,11 +12,12 @@ from docket.config import Settings, get_settings
 from docket.domain.canonical import sha256_json
 from docket.domain.enums import OutboxStatus
 from docket.models import (
-    Account,
     AuditEvent,
     ConnectorCheckpoint,
+    GmailSource,
     OutboxEvent,
-    SourceItem,
+    ProviderAccount,
+    Source,
 )
 from docket.models.base import utc_now
 from docket.providers.google.gmail import (
@@ -98,12 +99,12 @@ class GmailIngestionService:
         now = utc_now()
         with self.session_factory.begin() as session:
             accounts = session.scalars(
-                select(Account)
+                select(ProviderAccount)
                 .where(
-                    Account.provider == "google",
-                    Account.enabled.is_(True),
+                    ProviderAccount.provider == "google",
+                    ProviderAccount.enabled.is_(True),
                 )
-                .order_by(Account.created_at)
+                .order_by(ProviderAccount.created_at)
                 .with_for_update(skip_locked=True)
             ).all()
             account = next(
@@ -181,25 +182,49 @@ class GmailIngestionService:
                     "The Gmail scan lease was lost.",
                     transient=True,
                 )
+            account = session.get(ProviderAccount, claim.account_id)
+            if account is None:
+                raise GmailProviderError(
+                    "gmail_account_missing",
+                    "The claimed Gmail account no longer exists.",
+                    transient=False,
+                )
             for message in messages:
                 existing = session.scalar(
-                    select(SourceItem.id).where(
-                        SourceItem.account_id == claim.account_id,
-                        SourceItem.provider == "gmail",
-                        SourceItem.external_object_id == message.message_id,
-                        SourceItem.source_version == message.source_version,
+                    select(GmailSource.id).where(
+                        GmailSource.account_id == claim.account_id,
+                        GmailSource.provider == "gmail",
+                        GmailSource.external_object_id == message.message_id,
+                        GmailSource.source_version == message.source_version,
                     )
                 )
                 if existing is not None:
                     continue
+                fingerprint = _source_fingerprint(claim.account_id, message)
+                evidence = Source(
+                    source_kind="gmail",
+                    external_ref=(
+                        f"gmail:{claim.account_id}:{message.message_id}:"
+                        f"{message.source_version}"
+                    ),
+                    observed_at=_aware(message.received_at),
+                    content_hash=fingerprint,
+                    metadata_json={
+                        "account_ref": account.ref_id,
+                        "provider": "gmail",
+                    },
+                )
+                session.add(evidence)
+                session.flush()
                 session.add(
-                    SourceItem(
+                    GmailSource(
+                        ref_id=evidence.ref_id,
                         account_id=claim.account_id,
                         provider="gmail",
                         external_object_id=message.message_id,
                         external_parent_id=message.thread_id,
                         source_version=message.source_version,
-                        source_fingerprint=_source_fingerprint(claim.account_id, message),
+                        source_fingerprint=fingerprint,
                         received_at=message.received_at,
                         minimal_headers=_minimal_headers(message),
                         status="staged",
