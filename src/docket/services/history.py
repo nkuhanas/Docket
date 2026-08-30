@@ -286,6 +286,36 @@ class HistoryService:
                 "response_disposition": item.response_disposition,
                 "created_at": _iso(item.created_at),
             }
+        if isinstance(item, SemanticRequest):
+            return {
+                **base,
+                "intent_session_ref": item.intent_session_ref,
+                "authority_scope_hash": item.authority_scope_hash,
+                "current_precondition_hash": item.current_precondition_hash,
+                "origin_utterance_refs": item.origin_utterance_refs,
+                "authority_availability": item.authority_availability,
+                "commit_state": item.commit_state,
+                "current_case_revision_ref": item.current_case_revision_ref,
+                "committed_changeset_ref": item.committed_changeset_ref,
+                "created_at": _iso(item.created_at),
+                "updated_at": _iso(item.updated_at),
+            }
+        if isinstance(item, SemanticRequestAttempt):
+            return {
+                **base,
+                "semantic_request_ref": item.semantic_request_ref,
+                "attempt_number": item.attempt_number,
+                "authority_scope_hash": item.authority_scope_hash,
+                "precondition_hash": item.precondition_hash,
+                "case_revision_ref": item.case_revision_ref,
+                "change_set_ref": item.change_set_ref,
+                "tool_call_ref": item.tool_call_ref,
+                "gateway_instance_ref": item.gateway_instance_ref,
+                "state": item.state,
+                "error_code": item.error_code,
+                "started_at": _iso(item.started_at),
+                "completed_at": _iso(item.completed_at),
+            }
         if isinstance(item, ChangeSet):
             return {
                 **base,
@@ -459,13 +489,11 @@ class HistoryService:
         if isinstance(item, Entity):
             return {
                 **base,
-                "entity_class": item.entity_class,
-                "display_name": item.canonical_name,
-                "status": item.status,
-                "authority": item.authority,
-                "registration_state": item.registration_state,
-                "provenance_status": item.provenance_status,
+                "entity_kind": item.entity_kind,
+                "display_name": item.display_name,
+                "canonical_status": item.canonical_status,
                 "basis_refs": item.basis_refs,
+                "decision_refs": item.decision_refs,
                 "source_refs": item.source_refs,
                 "created_by_changeset_ref": item.created_by_changeset_ref,
                 "version": item.version,
@@ -538,12 +566,9 @@ class HistoryService:
                 "created_at": _iso(item.created_at),
             }
         if isinstance(item, Fact):
-            subject_ref = self.session.scalar(
-                select(Entity.ref_id).where(Entity.id == item.subject_entity_id)
-            )
             return {
                 **base,
-                "subject_ref": subject_ref,
+                "subject_ref": item.subject_ref,
                 "predicate": item.predicate,
                 "valid_from": item.valid_from.isoformat() if item.valid_from else None,
                 "valid_to": item.valid_to.isoformat() if item.valid_to else None,

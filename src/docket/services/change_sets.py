@@ -61,6 +61,7 @@ _GROUP_TYPES: dict[str, frozenset[str]] = {
     "registry_changes": frozenset(
         {
             "entity",
+            "identity_handle",
             "identity_binding",
             "affiliation",
             "relationship",
@@ -85,6 +86,7 @@ _GROUP_TYPES: dict[str, frozenset[str]] = {
 
 _OBJECT_PREFIXES: dict[str, str] = {
     "entity": "ent",
+    "identity_handle": "idn",
     "identity_binding": "idn",
     "affiliation": "aff",
     "relationship": "rel",
@@ -254,17 +256,17 @@ def _dependency_expected_types(change: ChangeInput, field_path: str) -> set[str]
         "associated_email_change_id",
         "associated_email_change_ids",
     }:
-        return {"identity_binding"}
+        return {"identity_handle"}
     if (
         field == "object_change_id"
         and field_path == "object_change_id"
         and getattr(change, "mutation_type", "") == "identity_binding_bind"
     ):
-        return {"identity_binding"}
+        return {"identity_handle"}
     if field == "target_change_id":
         target_type = _change_payload(change).get("target_type")
         if target_type == "identity":
-            return {"identity_binding"}
+            return {"identity_handle"}
         if target_type == "entity":
             return {"entity"}
         return set()
@@ -508,7 +510,7 @@ class ChangeSetService:
         def compiled_intent(
             *,
             operation_type: ProviderOperationType,
-            provider_binding: str,
+            account_ref: str,
             target_change_ids: list[str],
             target_refs: list[str],
             basis_refs: list[str],
@@ -524,7 +526,7 @@ class ChangeSetService:
             return ProviderIntentInput(
                 intent_id=f"auto-{operation_type.removeprefix('calendar_')}-{token}",
                 operation_type=operation_type,
-                provider_binding=provider_binding,
+                account_ref=account_ref,
                 canonical_target_refs=target_refs,
                 canonical_target_change_ids=target_change_ids,
                 basis_refs=basis_refs,
@@ -622,8 +624,6 @@ class ChangeSetService:
                 or "google_calendar" not in account.capabilities
             ):
                 continue
-            provider_binding = f"account:{account_id}"
-
             if lane_needs_configuration:
                 lane_already_compiled = any(
                     intent.operation_type == "calendar_configure_lane"
@@ -638,7 +638,7 @@ class ChangeSetService:
                     provider_intents.append(
                         compiled_intent(
                             operation_type="calendar_configure_lane",
-                            provider_binding=provider_binding,
+                            account_ref=account.ref_id,
                             target_change_ids=(
                                 [lane_change_id] if lane_change_id is not None else []
                             ),
@@ -651,7 +651,7 @@ class ChangeSetService:
             provider_intents.append(
                 compiled_intent(
                     operation_type=operation_type,
-                    provider_binding=provider_binding,
+                    account_ref=account.ref_id,
                     target_change_ids=target_change_ids,
                     target_refs=target_refs,
                     basis_refs=list(event_change.basis_refs),
@@ -1420,11 +1420,7 @@ class ChangeSetService:
                     except DocketError:
                         target = None
                 if isinstance(target, Fact):
-                    target_entity = self.session.scalar(
-                        select(Entity).where(Entity.ref_id == target.subject_ref)
-                    )
-                    if target_entity is not None:
-                        target_refs.add(target_entity.ref_id)
+                    target_refs.add(target.subject_ref)
                 elif isinstance(target, Affiliation):
                     target_entity = self.session.get(Entity, target.subject_entity_id)
                     if target_entity is not None:

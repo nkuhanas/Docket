@@ -6,7 +6,7 @@ from typing import Annotated, Any, Literal
 from pydantic import Field, field_validator, model_validator
 
 from docket.domain.public_refs import is_public_ref
-from docket.schemas.common import PublicRef, StrictModel, validate_refs
+from docket.schemas.common import ProviderAccountRef, PublicRef, StrictModel, validate_refs
 from docket.schemas.events import CanonicalEventCreateSpec, CanonicalEventPatchSpec
 from docket.schemas.policy import (
     CalendarLaneCreateSpec,
@@ -356,7 +356,7 @@ class EntityRetract(MutationBase):
 class IdentityHandleCreate(MutationBase):
     mutation_type: Literal["identity_handle_create"] = "identity_handle_create"
     action: Literal["create"]
-    object_type: Literal["identity_binding"]
+    object_type: Literal["identity_handle"]
     object_ref: None = None
     create_spec: IdentityHandleOnlyCreateSpec
     payload: None = None
@@ -365,7 +365,7 @@ class IdentityHandleCreate(MutationBase):
 class IdentityHandleModify(MutationBase):
     mutation_type: Literal["identity_handle_modify"] = "identity_handle_modify"
     action: Literal["update", "supersede"]
-    object_type: Literal["identity_binding"]
+    object_type: Literal["identity_handle"]
     object_ref: Annotated[str, Field(pattern=r"^idn_[0-9A-HJKMNP-TV-Z]{26}$")]
     create_spec: None = None
     payload: IdentityAssociationPatchSpec
@@ -403,7 +403,7 @@ class IdentityBindingUnbind(MutationBase):
 class IdentityHandleRetract(MutationBase):
     mutation_type: Literal["identity_handle_retract"] = "identity_handle_retract"
     action: Literal["retract"]
-    object_type: Literal["identity_binding"]
+    object_type: Literal["identity_handle"]
     object_ref: Annotated[str, Field(pattern=r"^idn_[0-9A-HJKMNP-TV-Z]{26}$")]
     create_spec: None = None
     payload: EmptyMutationSpec = Field(default_factory=EmptyMutationSpec)
@@ -806,8 +806,7 @@ type ProviderOperationType = Literal[
 class ProviderIntentInput(StrictModel):
     intent_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     operation_type: ProviderOperationType
-    account_ref: PublicRef | None = None
-    provider_binding: str | None = Field(default=None, min_length=1, max_length=512)
+    account_ref: ProviderAccountRef
     canonical_target_refs: list[PublicRef] = Field(default_factory=list, max_length=100)
     canonical_target_change_ids: list[str] = Field(default_factory=list, max_length=100)
     basis_refs: list[PublicRef] = Field(min_length=1, max_length=100)
@@ -826,8 +825,6 @@ class ProviderIntentInput(StrictModel):
 
     @model_validator(mode="after")
     def targets_are_resolved(self) -> ProviderIntentInput:
-        if (self.account_ref is None) == (self.provider_binding is None):
-            raise ValueError("provider intent requires exactly one provider target binding")
         if not self.canonical_target_refs and not self.canonical_target_change_ids:
             raise ValueError("provider intent requires at least one canonical target")
         if len(self.canonical_target_change_ids) != len(

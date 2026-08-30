@@ -9,9 +9,7 @@ TriageRunRef = Annotated[str, Field(pattern=r"^tri_[0-9A-HJKMNP-TV-Z]{26}$")]
 ContextRef = Annotated[str, Field(pattern=r"^ctx_[0-9A-HJKMNP-TV-Z]{26}$")]
 SourceRef = Annotated[str, Field(pattern=r"^src_[0-9A-HJKMNP-TV-Z]{26}$")]
 CaseRef = Annotated[str, Field(pattern=r"^case_[0-9A-HJKMNP-TV-Z]{26}$")]
-CaseRevisionRef = Annotated[
-    str, Field(pattern=r"^caserev_[0-9A-HJKMNP-TV-Z]{26}$")
-]
+CaseRevisionRef = Annotated[str, Field(pattern=r"^caserev_[0-9A-HJKMNP-TV-Z]{26}$")]
 
 SemanticClass = Literal[
     "noise",
@@ -30,9 +28,23 @@ CaseItemType = Literal[
     "relationship_candidate",
     "fact_candidate",
     "event_candidate",
+    "item_candidate",
+    "task_candidate",
+    "temporal_binding_candidate",
     "lane_resolution",
     "preference_match",
     "decision_required",
+    "canonical_transition",
+    "canonical_conflict",
+]
+CanonicalConsequenceClass = Literal[
+    "tracked_item_disposition",
+    "task_disposition",
+    "temporal_disposition",
+    "event_disposition",
+    "canonical_transition",
+    "canonical_conflict",
+    "preference_resolution",
 ]
 
 
@@ -40,6 +52,7 @@ class CaseItemInput(StrictModel):
     item_key: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]{0,127}$")
     item_type: CaseItemType
     resolution_role: Literal["required", "supporting"]
+    canonical_consequence_class: CanonicalConsequenceClass | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
     candidate_refs: list[PublicRef] = Field(default_factory=list, max_length=25)
 

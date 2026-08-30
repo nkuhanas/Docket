@@ -18,7 +18,7 @@ from docket.models import (
     IdentityHandle,
     Interaction,
     InteractionParticipant,
-    OrganizationProfile,
+    OrganizationInstitutionProfile,
     PersonProfile,
     Relationship,
 )
@@ -102,6 +102,7 @@ def test_rich_registry_graph_commits_atomically_with_create_references(
                 "basis_refs": basis,
                 "registry_changes": [
                     {
+                        "mutation_type": "entity_create",
                         "change_id": "operator",
                         "action": "create",
                         "object_type": "entity",
@@ -115,6 +116,7 @@ def test_rich_registry_graph_commits_atomically_with_create_references(
                         "basis_refs": basis,
                     },
                     {
+                        "mutation_type": "entity_create",
                         "change_id": "cal-poly",
                         "action": "create",
                         "object_type": "entity",
@@ -127,6 +129,7 @@ def test_rich_registry_graph_commits_atomically_with_create_references(
                         "basis_refs": basis,
                     },
                     {
+                        "mutation_type": "entity_create",
                         "change_id": "engineering-college",
                         "action": "create",
                         "object_type": "entity",
@@ -140,6 +143,7 @@ def test_rich_registry_graph_commits_atomically_with_create_references(
                         "basis_refs": basis,
                     },
                     {
+                        "mutation_type": "entity_create",
                         "change_id": "cs-department",
                         "action": "create",
                         "object_type": "entity",
@@ -153,6 +157,7 @@ def test_rich_registry_graph_commits_atomically_with_create_references(
                         "basis_refs": basis,
                     },
                     {
+                        "mutation_type": "entity_create",
                         "change_id": "isaac",
                         "action": "create",
                         "object_type": "entity",
@@ -165,9 +170,10 @@ def test_rich_registry_graph_commits_atomically_with_create_references(
                         "basis_refs": basis,
                     },
                     {
+                        "mutation_type": "identity_handle_create",
                         "change_id": "isaac-email",
                         "action": "create",
-                        "object_type": "identity_binding",
+                        "object_type": "identity_handle",
                         "create_spec": {
                             "handle_type": "email",
                             "value": "isaac@example.com",
@@ -176,6 +182,7 @@ def test_rich_registry_graph_commits_atomically_with_create_references(
                         "basis_refs": basis,
                     },
                     {
+                        "mutation_type": "identity_binding_bind",
                         "change_id": "bind-isaac-email",
                         "action": "bind",
                         "object_type": "identity_binding",
@@ -191,6 +198,7 @@ def test_rich_registry_graph_commits_atomically_with_create_references(
                         "basis_refs": [utterance_ref],
                     },
                     {
+                        "mutation_type": "affiliation_create",
                         "change_id": "isaac-affiliation",
                         "action": "create",
                         "object_type": "affiliation",
@@ -204,6 +212,7 @@ def test_rich_registry_graph_commits_atomically_with_create_references(
                         "basis_refs": basis,
                     },
                     {
+                        "mutation_type": "relationship_create",
                         "change_id": "operator-isaac-relationship",
                         "action": "create",
                         "object_type": "relationship",
@@ -217,6 +226,7 @@ def test_rich_registry_graph_commits_atomically_with_create_references(
                         "basis_refs": basis,
                     },
                     {
+                        "mutation_type": "fact_create",
                         "change_id": "isaac-area",
                         "action": "create",
                         "object_type": "fact",
@@ -229,6 +239,7 @@ def test_rich_registry_graph_commits_atomically_with_create_references(
                         "basis_refs": basis,
                     },
                     {
+                        "mutation_type": "interaction_create",
                         "change_id": "meeting",
                         "action": "create",
                         "object_type": "interaction",
@@ -264,9 +275,9 @@ def test_rich_registry_graph_commits_atomically_with_create_references(
         )
         assert result["state"] == "committed"
         assert len(result["affected_refs"]) == 10
-        isaac = session.scalar(select(Entity).where(Entity.canonical_name == "Isaac"))
+        isaac = session.scalar(select(Entity).where(Entity.display_name == "Isaac"))
         cs_department = session.scalar(
-            select(Entity).where(Entity.canonical_name == "Computer Science Department")
+            select(Entity).where(Entity.display_name == "Computer Science Department")
         )
         operator = session.scalar(select(PersonProfile).where(PersonProfile.is_operator))
         assert isaac is not None and cs_department is not None and operator is not None
@@ -304,7 +315,7 @@ def test_rich_registry_graph_commits_atomically_with_create_references(
     with session_factory() as session:
         assert session.scalar(select(func.count()).select_from(Entity)) == 5
         assert session.scalar(select(func.count()).select_from(PersonProfile)) == 2
-        assert session.scalar(select(func.count()).select_from(OrganizationProfile)) == 3
+        assert session.scalar(select(func.count()).select_from(OrganizationInstitutionProfile)) == 3
         assert session.scalar(select(func.count()).select_from(IdentityHandle)) == 1
         assert session.scalar(select(func.count()).select_from(IdentityBinding)) == 1
         assert session.scalar(select(func.count()).select_from(Affiliation)) == 1
@@ -324,7 +335,7 @@ def test_rich_registry_graph_commits_atomically_with_create_references(
         assert fact_history["entry"]["subject_ref"] in {
             entity.ref_id
             for entity in session.scalars(
-                select(Entity).where(Entity.canonical_name == "Isaac")
+                select(Entity).where(Entity.display_name == "Isaac")
             )
         }
         assert fact_history["entry"]["value_json"] == "drone software"
@@ -336,7 +347,7 @@ def test_rich_registry_graph_commits_atomically_with_create_references(
         )
         hierarchy = list(
             session.scalars(
-                select(OrganizationProfile).order_by(OrganizationProfile.created_at)
+                select(OrganizationInstitutionProfile).order_by(OrganizationInstitutionProfile.created_at)
             )
         )
         assert hierarchy[0].parent_entity_id is None
@@ -355,17 +366,15 @@ def test_unknown_identity_is_not_a_person_and_similarity_is_advisory(
             text="I know Isaac Newton.",
         )
         known = Entity(
-            entity_class="person",
-            canonical_name="Isaac Newton",
+            entity_kind="person",
+            display_name="Isaac Newton",
             normalized_name="isaac newton",
-            status="active",
-            attributes={},
-            authority="operator_utterance",
-            registration_state="registered",
+            canonical_status="active",
+            attributes_json={},
             basis_refs=[utterance_ref],
             decision_refs=[],
             source_refs=[],
-            provenance_status="complete",
+            created_by_changeset_ref=new_public_ref("chg"),
         )
         session.add(known)
         session.flush()
@@ -390,17 +399,15 @@ def test_unknown_identity_is_not_a_person_and_similarity_is_advisory(
             {"ref": known.ref_id, "display_name": "Isaac Newton"}
         ]
         other = Entity(
-            entity_class="person",
-            canonical_name="Isaac Chen",
+            entity_kind="person",
+            display_name="Isaac Chen",
             normalized_name="isaac chen",
-            status="active",
-            attributes={},
-            authority="operator_utterance",
-            registration_state="registered",
+            canonical_status="active",
+            attributes_json={},
             basis_refs=[utterance_ref],
             decision_refs=[],
             source_refs=[],
-            provenance_status="complete",
+            created_by_changeset_ref=new_public_ref("chg"),
         )
         session.add(other)
         session.flush()
@@ -477,6 +484,7 @@ def test_fact_supersession_preserves_historical_assertion(session_factory) -> No
                 "basis_refs": first_basis,
                 "registry_changes": [
                     {
+                        "mutation_type": "entity_create",
                         "change_id": "professor-lupo",
                         "action": "create",
                         "object_type": "entity",
@@ -488,6 +496,7 @@ def test_fact_supersession_preserves_historical_assertion(session_factory) -> No
                         "basis_refs": first_basis,
                     },
                     {
+                        "mutation_type": "fact_create",
                         "change_id": "monday-hours",
                         "action": "create",
                         "object_type": "fact",
@@ -517,7 +526,7 @@ def test_fact_supersession_preserves_historical_assertion(session_factory) -> No
             expected_changeset_version=None,
         )
         assert first["state"] == "committed"
-        person = session.scalar(select(Entity).where(Entity.canonical_name == "Professor Lupo"))
+        person = session.scalar(select(Entity).where(Entity.display_name == "Professor Lupo"))
         prior = session.scalar(select(Fact))
         assert person is not None and prior is not None
 
@@ -552,6 +561,7 @@ def test_fact_supersession_preserves_historical_assertion(session_factory) -> No
                 "expected_versions": {prior.ref_id: prior.version},
                 "registry_changes": [
                     {
+                        "mutation_type": "fact_supersede",
                         "change_id": "replace-office-hours",
                         "action": "supersede",
                         "object_type": "fact",
@@ -603,17 +613,15 @@ def test_ambiguous_fact_contradiction_opens_conflict_and_preserves_canonical_val
             text="Register Chris.",
         )
         person = Entity(
-            entity_class="person",
-            canonical_name="Chris",
+            entity_kind="person",
+            display_name="Chris",
             normalized_name="chris",
-            status="active",
-            attributes={},
-            authority="operator_utterance",
-            registration_state="registered",
+            canonical_status="active",
+            attributes_json={},
             basis_refs=[registration_ref],
             decision_refs=[],
             source_refs=[],
-            provenance_status="complete",
+            created_by_changeset_ref=new_public_ref("chg"),
         )
         session.add(person)
         session.flush()
@@ -640,6 +648,7 @@ def test_ambiguous_fact_contradiction_opens_conflict_and_preserves_canonical_val
                 "basis_refs": prior_basis,
                 "registry_changes": [
                     {
+                        "mutation_type": "fact_create",
                         "change_id": "monday-hours",
                         "action": "create",
                         "object_type": "fact",
@@ -687,6 +696,7 @@ def test_ambiguous_fact_contradiction_opens_conflict_and_preserves_canonical_val
                 "basis_refs": incoming_basis,
                 "registry_changes": [
                     {
+                        "mutation_type": "fact_create",
                         "change_id": "wednesday-hours",
                         "action": "create",
                         "object_type": "fact",

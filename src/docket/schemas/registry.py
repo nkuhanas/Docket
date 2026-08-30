@@ -54,7 +54,7 @@ class EntityCreateSpec(StrictModel):
 
 class EntityPatchSpec(StrictModel):
     display_name: str | None = Field(default=None, min_length=1, max_length=512)
-    registration_state: Literal["registered", "historical"] | None = None
+    canonical_status: Literal["active", "historical"] | None = None
 
     @model_validator(mode="after")
     def has_change(self) -> EntityPatchSpec:

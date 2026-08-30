@@ -83,11 +83,11 @@ class DeterministicIdentityResolutionService:
             "resolution_rule": rule,
             "basis_refs": basis_refs,
             "candidates": [
-                {"ref": candidate.ref_id, "display_name": candidate.canonical_name}
+                {"ref": candidate.ref_id, "display_name": candidate.display_name}
                 for candidate in candidates or []
             ],
             "suggestions": [
-                {"ref": candidate.ref_id, "display_name": candidate.canonical_name}
+                {"ref": candidate.ref_id, "display_name": candidate.display_name}
                 for candidate in suggestions or []
             ],
         }
@@ -96,8 +96,7 @@ class DeterministicIdentityResolutionService:
         entity = self.session.scalar(
             select(Entity).where(
                 Entity.ref_id == ref_id,
-                Entity.registration_state == "registered",
-                Entity.status == "active",
+                Entity.canonical_status == "active",
             )
         )
         if entity is None:
@@ -135,11 +134,10 @@ class DeterministicIdentityResolutionService:
         if not query:
             return []
         statement = select(Entity).where(
-            Entity.registration_state == "registered",
-            Entity.status == "active",
+            Entity.canonical_status == "active",
         )
         if request.entity_kind is not None:
-            statement = statement.where(Entity.entity_class == request.entity_kind)
+            statement = statement.where(Entity.entity_kind == request.entity_kind)
         ranked = sorted(
             self.session.scalars(statement),
             key=lambda item: SequenceMatcher(
@@ -179,8 +177,7 @@ class DeterministicIdentityResolutionService:
                 entity
                 for entity in entities.values()
                 if entity is not None
-                and entity.registration_state == "registered"
-                and entity.status == "active"
+                and entity.canonical_status == "active"
             ]
             if len(candidates) > 1:
                 return self._projection(
@@ -223,8 +220,7 @@ class DeterministicIdentityResolutionService:
                 alias_entity = self.session.get(Entity, alias.entity_id)
                 if (
                     alias_entity is not None
-                    and alias_entity.registration_state == "registered"
-                    and alias_entity.status == "active"
+                    and alias_entity.canonical_status == "active"
                 ):
                     candidates.append(alias_entity)
             candidates = list({candidate.id: candidate for candidate in candidates}.values())
