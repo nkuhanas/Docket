@@ -1067,6 +1067,29 @@ class TrackedContextService:
                 )
             if spec.reminder_plan_ref is not None:
                 self._reminder_plan(spec.reminder_plan_ref)
+            active_projection = self.session.scalar(
+                select(TemporalCalendarProjection).where(
+                    TemporalCalendarProjection.temporal_binding_ref
+                    == spec.temporal_binding_ref,
+                    TemporalCalendarProjection.enabled.is_(True),
+                )
+            )
+            if spec.enabled and active_projection is not None:
+                if (
+                    active_projection.lane_ref == spec.lane_ref
+                    and active_projection.display_policy == display_policy
+                    and active_projection.reminder_plan_ref
+                    == spec.reminder_plan_ref
+                ):
+                    return [active_projection.ref_id]
+                raise DocketError(
+                    code="temporal_projection_exists",
+                    message="A Time may have only one active Calendar projection.",
+                    details={
+                        "temporal_binding_ref": spec.temporal_binding_ref,
+                        "projection_ref": active_projection.ref_id,
+                    },
+                )
             projection = TemporalCalendarProjection(
                 temporal_binding_ref=spec.temporal_binding_ref,
                 lane_ref=spec.lane_ref,
@@ -1119,6 +1142,26 @@ class TrackedContextService:
                         )
                 if values.get("reminder_plan_ref") is not None:
                     self._reminder_plan(values["reminder_plan_ref"])
+                if values.get("enabled") is True and not projection.enabled:
+                    other_projection = self.session.scalar(
+                        select(TemporalCalendarProjection).where(
+                            TemporalCalendarProjection.temporal_binding_ref
+                            == projection.temporal_binding_ref,
+                            TemporalCalendarProjection.enabled.is_(True),
+                            TemporalCalendarProjection.id != projection.id,
+                        )
+                    )
+                    if other_projection is not None:
+                        raise DocketError(
+                            code="temporal_projection_exists",
+                            message=(
+                                "A Time may have only one active Calendar projection."
+                            ),
+                            details={
+                                "temporal_binding_ref": projection.temporal_binding_ref,
+                                "projection_ref": other_projection.ref_id,
+                            },
+                        )
                 for key, value in values.items():
                     setattr(projection, key, value)
             else:

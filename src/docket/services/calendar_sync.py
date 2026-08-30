@@ -20,6 +20,7 @@ from docket.models import (
     ProviderAccount,
     ProviderEventBinding,
     ReminderPlan,
+    TemporalBinding,
     TemporalCalendarProjection,
 )
 from docket.models.base import utc_now
@@ -668,6 +669,17 @@ class CalendarReadService:
                     )
                 )
             }
+            temporal_bindings = {
+                temporal.ref_id: temporal
+                for temporal in session.scalars(
+                    select(TemporalBinding).where(
+                        TemporalBinding.ref_id.in_(
+                            projection.temporal_binding_ref
+                            for projection in temporal_projections.values()
+                        )
+                    )
+                )
+            }
             reminder_subject_refs = {
                 *canonicals,
                 *(
@@ -696,6 +708,11 @@ class CalendarReadService:
                     if binding is not None
                     else None
                 )
+                temporal_binding = (
+                    temporal_bindings.get(temporal_projection.temporal_binding_ref)
+                    if temporal_projection is not None
+                    else None
+                )
                 plan_subject_ref = (
                     canonical.ref_id
                     if canonical is not None
@@ -719,9 +736,28 @@ class CalendarReadService:
                     ),
                     **(
                         {
-                            "ref": canonical_ref,
+                            "ref": (
+                                temporal_binding.ref_id
+                                if temporal_binding is not None
+                                else canonical_ref
+                            ),
                             "lane_ref": lane_ref,
                             "target_kind": target_kind,
+                            "object_type": (
+                                "temporal_binding"
+                                if temporal_binding is not None
+                                else "event"
+                            ),
+                            "semantic_role": (
+                                temporal_binding.role
+                                if temporal_binding is not None
+                                else "occurrence"
+                            ),
+                            **(
+                                {"projection_ref": temporal_projection.ref_id}
+                                if temporal_projection is not None
+                                else {}
+                            ),
                         }
                         if canonical_ref is not None
                         else {}

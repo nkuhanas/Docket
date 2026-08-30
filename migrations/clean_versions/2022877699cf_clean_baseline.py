@@ -1476,9 +1476,9 @@ def upgrade() -> None:
     sa.CheckConstraint('version >= 1', name='ck_temporal_calendar_projections_version'),
     sa.ForeignKeyConstraint(['temporal_binding_ref'], ['temporal_bindings.ref_id'], ondelete='RESTRICT'),
     sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('ref_id'),
-    sa.UniqueConstraint('temporal_binding_ref', 'lane_ref', name='uq_temporal_calendar_projections_binding_lane')
+    sa.UniqueConstraint('ref_id')
     )
+    op.create_index('uq_temporal_calendar_projections_active_binding', 'temporal_calendar_projections', ['temporal_binding_ref'], unique=True, postgresql_where=sa.text('enabled'), sqlite_where=sa.text('enabled = 1'))
     op.create_table('canonical_events',
     sa.Column('id', sa.Uuid(), nullable=False),
     sa.Column('ref_id', sa.String(length=40), nullable=False),

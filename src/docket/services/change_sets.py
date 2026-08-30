@@ -29,8 +29,10 @@ from docket.models import (
     ProviderAccount,
     ProviderEventBinding,
     Relationship,
+    ReminderPlan,
     SemanticRequest,
     Source,
+    TemporalCalendarProjection,
 )
 from docket.models.base import utc_now
 from docket.schemas.authority import (
@@ -44,7 +46,6 @@ from docket.schemas.authority import (
     ProviderIntentInput,
     ProviderOperationType,
 )
-from docket.schemas.calendar import StandaloneCalendarEventInput
 from docket.services.case_resolutions import AttentionCaseResolutionService
 from docket.services.conflicts import ConflictService
 from docket.services.intent_sessions import IntentSessionService
@@ -134,12 +135,6 @@ def _as_json(value: Any) -> Any:
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
     return value
-
-
-def _normalized_event_spec(value: Any) -> dict[str, Any]:
-    return StandaloneCalendarEventInput.model_validate(value).model_dump(
-        mode="json", exclude_none=True, exclude_defaults=True
-    )
 
 
 def _change_payload(change: ChangeInput) -> dict[str, Any]:
@@ -247,6 +242,8 @@ def _dependency_expected_types(change: ChangeInput, field_path: str) -> set[str]
         "subject_change_id",
     } and getattr(change, "object_type", "") == "temporal_binding":
         return {"item", "task"}
+    if field == "subject_change_id" and getattr(change, "object_type", "") == "reminder_plan":
+        return {"canonical_event", "temporal_binding"}
     if field in {
         "temporal_binding_change_id",
         "realizes_temporal_binding_change_id",
@@ -582,19 +579,9 @@ class ChangeSetService:
                         operation_type = "calendar_cancel_event"
                     elif patch.status == "active" and event.status == "cancelled":
                         continue
-                    elif "event_spec" in patch_values:
-                        before = _normalized_event_spec(event.event_spec)
-                        after = _normalized_event_spec(patch.event_spec)
-                        before_reminders = before.pop("reminder_plan", None)
-                        after_reminders = after.pop("reminder_plan", None)
-                        operation_type = (
-                            "calendar_update_reminders"
-                            if before == after
-                            and before_reminders != after_reminders
-                            and set(patch_values) == {"event_spec"}
-                            else "calendar_update_event"
-                        )
-                    elif set(patch_values).intersection({"title", "status"}):
+                    elif "event_spec" in patch_values or set(
+                        patch_values
+                    ).intersection({"title", "status"}):
                         operation_type = "calendar_update_event"
             if operation_type is None:
                 continue
@@ -659,6 +646,282 @@ class ChangeSetService:
                     target_refs=target_refs,
                     basis_refs=list(event_change.basis_refs),
                     source_change_id=event_change.change_id,
+                )
+            )
+
+        for projection_change in content.tracked_context_changes:
+            if projection_change.object_type != "temporal_calendar_projection":
+                continue
+            projection_lane_change_id: str | None = None
+            projection_lane_ref: str | None = None
+            projection_operation_type: ProviderOperationType | None = None
+            projection_target_change_ids: list[str] = []
+            projection_target_refs: list[str] = []
+            if (
+                projection_change.action == "create"
+                and projection_change.create_spec is not None
+            ):
+                spec = projection_change.create_spec
+                if not spec.enabled:
+                    continue
+                projection_operation_type = "calendar_create_event"
+                projection_lane_change_id = spec.lane_change_id
+                projection_lane_ref = spec.lane_ref
+                projection_target_change_ids = [projection_change.change_id]
+            elif projection_change.object_ref is not None:
+                projection = self.session.scalar(
+                    select(TemporalCalendarProjection).where(
+                        TemporalCalendarProjection.ref_id
+                        == projection_change.object_ref
+                    )
+                )
+                if projection is None:
+                    continue
+                projection_lane_ref = projection.lane_ref
+                projection_target_refs = [projection.ref_id]
+                if projection_change.action == "retract":
+                    if projection.enabled:
+                        projection_operation_type = "calendar_cancel_event"
+                elif projection_change.action == "update":
+                    projection_patch = projection_change.payload
+                    if projection_patch is None:
+                        continue
+                    if projection_patch.lane_change_id is not None or (
+                        projection_patch.lane_ref is not None
+                        and projection_patch.lane_ref != projection.lane_ref
+                    ):
+                        # A provider-calendar move is intentionally not inferred from
+                        # a Time projection patch. Retract and create an exact new
+                        # projection instead.
+                        continue
+                    if projection_patch.enabled is False and projection.enabled:
+                        projection_operation_type = "calendar_cancel_event"
+                    elif projection_patch.enabled is True and not projection.enabled:
+                        projection_operation_type = "calendar_create_event"
+                    elif projection.enabled:
+                        projection_operation_type = "calendar_update_event"
+            if projection_operation_type is None:
+                continue
+
+            projection_account_id: object | None = None
+            projection_lane_needs_configuration = False
+            projection_lane_basis_refs = list(projection_change.basis_refs)
+            if projection_lane_change_id is not None:
+                projection_lane_change = lane_creates.get(projection_lane_change_id)
+                if (
+                    projection_lane_change is None
+                    or projection_lane_change.create_spec is None
+                ):
+                    continue
+                projection_lane_spec = projection_lane_change.create_spec
+                projection_account_id = projection_lane_spec.account_id
+                projection_lane_needs_configuration = (
+                    projection_lane_spec.provider_calendar_binding is None
+                )
+                projection_lane_basis_refs = list(projection_lane_change.basis_refs)
+            elif projection_lane_ref is not None:
+                projection_lane = self.session.scalar(
+                    select(CalendarLane).where(
+                        CalendarLane.ref_id == projection_lane_ref
+                    )
+                )
+                if projection_lane is None:
+                    continue
+                projection_account_id = projection_lane.account_id
+                projection_lane_needs_configuration = (
+                    projection_lane.calendar_id is None
+                )
+            if projection_account_id is None:
+                continue
+            projection_account = self.session.get(
+                ProviderAccount, projection_account_id
+            )
+            if (
+                projection_account is None
+                or not projection_account.enabled
+                or "google_calendar" not in projection_account.capabilities
+            ):
+                continue
+            if projection_lane_needs_configuration:
+                projection_lane_already_compiled = any(
+                    intent.operation_type == "calendar_configure_lane"
+                    and (
+                        projection_lane_change_id
+                        in intent.canonical_target_change_ids
+                        if projection_lane_change_id is not None
+                        else projection_lane_ref in intent.canonical_target_refs
+                    )
+                    for intent in provider_intents
+                )
+                if not projection_lane_already_compiled:
+                    provider_intents.append(
+                        compiled_intent(
+                            operation_type="calendar_configure_lane",
+                            account_ref=projection_account.ref_id,
+                            target_change_ids=(
+                                [projection_lane_change_id]
+                                if projection_lane_change_id is not None
+                                else []
+                            ),
+                            target_refs=(
+                                [projection_lane_ref]
+                                if projection_lane_ref is not None
+                                else []
+                            ),
+                            basis_refs=projection_lane_basis_refs,
+                            source_change_id=(
+                                projection_lane_change_id
+                                or projection_change.change_id
+                            ),
+                        )
+                    )
+            provider_intents.append(
+                compiled_intent(
+                    operation_type=projection_operation_type,
+                    account_ref=projection_account.ref_id,
+                    target_change_ids=projection_target_change_ids,
+                    target_refs=projection_target_refs,
+                    basis_refs=list(projection_change.basis_refs),
+                    source_change_id=projection_change.change_id,
+                )
+            )
+
+        changes_by_id = {change.change_id: change for change in _all_changes(content)}
+        for reminder_change in content.tracked_context_changes:
+            if reminder_change.object_type != "reminder_plan":
+                continue
+            subject_ref: str | None = None
+            subject_change_id: str | None = None
+            prior_google_popup = False
+            next_google_popup = False
+            if (
+                reminder_change.action == "create"
+                and reminder_change.create_spec is not None
+            ):
+                reminder_spec = reminder_change.create_spec
+                subject_ref = reminder_spec.subject_ref
+                subject_change_id = reminder_spec.subject_change_id
+                next_google_popup = (
+                    "google_popup" in reminder_spec.delivery_channels
+                    and reminder_spec.canonical_status == "active"
+                )
+            elif reminder_change.object_ref is not None:
+                stored_reminder = self.session.scalar(
+                    select(ReminderPlan).where(
+                        ReminderPlan.ref_id == reminder_change.object_ref
+                    )
+                )
+                if stored_reminder is None:
+                    continue
+                subject_ref = stored_reminder.subject_ref
+                prior_google_popup = (
+                    "google_popup" in stored_reminder.delivery_channels
+                    and stored_reminder.canonical_status == "active"
+                )
+                if reminder_change.action == "update":
+                    reminder_patch = reminder_change.payload
+                    if reminder_patch is None:
+                        continue
+                    subject_ref = reminder_patch.subject_ref or subject_ref
+                    subject_change_id = reminder_patch.subject_change_id
+                    channels = (
+                        reminder_patch.delivery_channels
+                        if reminder_patch.delivery_channels is not None
+                        else stored_reminder.delivery_channels
+                    )
+                    status = (
+                        reminder_patch.canonical_status
+                        if reminder_patch.canonical_status is not None
+                        else stored_reminder.canonical_status
+                    )
+                    next_google_popup = (
+                        "google_popup" in channels and status == "active"
+                    )
+            if not prior_google_popup and not next_google_popup:
+                continue
+
+            if subject_change_id is not None:
+                subject_change = changes_by_id.get(subject_change_id)
+                if subject_change is None:
+                    continue
+                if subject_change.object_type == "canonical_event":
+                    # The event create Operation reads canonical ReminderPlans after
+                    # every canonical change in this ChangeSet has committed.
+                    continue
+                # A new Time with Google popup authority must also have a provider
+                # projection create in this ChangeSet. Validation proves that exact
+                # dependency; its create Operation carries the ReminderPlan.
+                continue
+            if subject_ref is None:
+                continue
+
+            reminder_target_ref: str | None = None
+            reminder_lane_ref: str | None = None
+            reminder_target_kind: str | None = None
+            if subject_ref.startswith("evt_"):
+                reminder_event = self.session.scalar(
+                    select(CanonicalEvent).where(CanonicalEvent.ref_id == subject_ref)
+                )
+                if reminder_event is not None:
+                    reminder_target_ref = reminder_event.ref_id
+                    reminder_lane_ref = reminder_event.lane_ref
+                    reminder_target_kind = "event"
+            elif subject_ref.startswith("time_"):
+                reminder_projection = self.session.scalar(
+                    select(TemporalCalendarProjection).where(
+                        TemporalCalendarProjection.temporal_binding_ref == subject_ref,
+                        TemporalCalendarProjection.enabled.is_(True),
+                    )
+                )
+                if reminder_projection is not None:
+                    reminder_target_ref = reminder_projection.ref_id
+                    reminder_lane_ref = reminder_projection.lane_ref
+                    reminder_target_kind = "temporal_projection"
+            if (
+                reminder_target_ref is None
+                or reminder_lane_ref is None
+                or reminder_target_kind is None
+            ):
+                continue
+            reminder_provider_binding = self.session.scalar(
+                select(ProviderEventBinding).where(
+                    ProviderEventBinding.canonical_target_ref
+                    == reminder_target_ref,
+                    ProviderEventBinding.target_kind == reminder_target_kind,
+                    ProviderEventBinding.status == "active",
+                )
+            )
+            if reminder_provider_binding is None:
+                continue
+            reminder_lane = self.session.scalar(
+                select(CalendarLane).where(CalendarLane.ref_id == reminder_lane_ref)
+            )
+            if reminder_lane is None:
+                continue
+            reminder_account = self.session.get(
+                ProviderAccount, reminder_lane.account_id
+            )
+            if (
+                reminder_account is None
+                or not reminder_account.enabled
+                or "google_calendar" not in reminder_account.capabilities
+            ):
+                continue
+            already_compiled = any(
+                intent.operation_type == "calendar_update_reminders"
+                and reminder_target_ref in intent.canonical_target_refs
+                for intent in provider_intents
+            )
+            if already_compiled:
+                continue
+            provider_intents.append(
+                compiled_intent(
+                    operation_type="calendar_update_reminders",
+                    account_ref=reminder_account.ref_id,
+                    target_change_ids=[],
+                    target_refs=[reminder_target_ref],
+                    basis_refs=list(reminder_change.basis_refs),
+                    source_change_id=reminder_change.change_id,
                 )
             )
 
@@ -1490,23 +1753,9 @@ class ChangeSetService:
                                 }
                             )
                             continue
-                        elif "event_spec" in patch_values:
-                            before = (
-                                _normalized_event_spec(event.event_spec)
-                                if event is not None
-                                else {}
-                            )
-                            after = _normalized_event_spec(patch.event_spec)
-                            before_reminders = before.pop("reminder_plan", None)
-                            after_reminders = after.pop("reminder_plan", None)
-                            expected_operation = (
-                                "calendar_update_reminders"
-                                if before == after
-                                and before_reminders != after_reminders
-                                and set(patch_values) == {"event_spec"}
-                                else "calendar_update_event"
-                            )
-                        elif set(patch_values).intersection({"title", "status"}):
+                        elif "event_spec" in patch_values or set(
+                            patch_values
+                        ).intersection({"title", "status"}):
                             expected_operation = "calendar_update_event"
             if expected_operation is None:
                 continue
@@ -1553,6 +1802,239 @@ class ChangeSetService:
                             "details": {"change_id": event_change.change_id},
                         }
                     )
+
+        for projection_change in content.tracked_context_changes:
+            if projection_change.object_type != "temporal_calendar_projection":
+                continue
+            projection_operation: ProviderOperationType | None = None
+            projection_target_ref = projection_change.object_ref
+            existing_projection = None
+            if projection_change.action == "create":
+                if (
+                    projection_change.create_spec is not None
+                    and projection_change.create_spec.enabled
+                ):
+                    projection_operation = "calendar_create_event"
+            elif projection_target_ref is not None:
+                existing_projection = self.session.scalar(
+                    select(TemporalCalendarProjection).where(
+                        TemporalCalendarProjection.ref_id
+                        == projection_target_ref
+                    )
+                )
+                if projection_change.action == "retract":
+                    if existing_projection is not None and existing_projection.enabled:
+                        projection_operation = "calendar_cancel_event"
+                elif projection_change.action == "update":
+                    projection_patch = projection_change.payload
+                    if projection_patch is not None:
+                        if projection_patch.lane_change_id is not None or (
+                            projection_patch.lane_ref is not None
+                            and existing_projection is not None
+                            and projection_patch.lane_ref
+                            != existing_projection.lane_ref
+                        ):
+                            errors.append(
+                                {
+                                    "code": "temporal_projection_lane_move_requires_recreate",
+                                    "details": {
+                                        "change_id": projection_change.change_id
+                                    },
+                                }
+                            )
+                            continue
+                        if (
+                            projection_patch.enabled is False
+                            and existing_projection is not None
+                            and existing_projection.enabled
+                        ):
+                            projection_operation = "calendar_cancel_event"
+                        elif (
+                            projection_patch.enabled is True
+                            and existing_projection is not None
+                            and not existing_projection.enabled
+                        ):
+                            projection_operation = "calendar_create_event"
+                        elif (
+                            existing_projection is not None
+                            and existing_projection.enabled
+                        ):
+                            projection_operation = "calendar_update_event"
+            if projection_operation is None:
+                continue
+            matching_projection_intents = [
+                intent
+                for intent in content.provider_intents
+                if intent.operation_type == projection_operation
+                and (
+                    projection_change.change_id
+                    in intent.canonical_target_change_ids
+                    if projection_change.action == "create"
+                    else projection_target_ref in intent.canonical_target_refs
+                )
+            ]
+            if len(matching_projection_intents) != 1:
+                errors.append(
+                    {
+                        "code": "temporal_provider_projection_required",
+                        "details": {
+                            "change_id": projection_change.change_id,
+                            "operation_type": projection_operation,
+                            "matching_intents": len(matching_projection_intents),
+                        },
+                    }
+                )
+            if (
+                projection_change.action != "create"
+                and projection_target_ref is not None
+            ):
+                projection_binding = self.session.scalar(
+                    select(ProviderEventBinding).where(
+                        ProviderEventBinding.canonical_target_ref
+                        == projection_target_ref,
+                        ProviderEventBinding.target_kind == "temporal_projection",
+                        ProviderEventBinding.status == "active",
+                    )
+                )
+                if projection_binding is None:
+                    errors.append(
+                        {
+                            "code": "provider_temporal_binding_required",
+                            "details": {"change_id": projection_change.change_id},
+                        }
+                    )
+
+        for reminder_change in content.tracked_context_changes:
+            if reminder_change.object_type != "reminder_plan":
+                continue
+            reminder_values = _change_payload(reminder_change)
+            reminder_subject_ref = reminder_values.get("subject_ref")
+            reminder_subject_change_id = reminder_values.get("subject_change_id")
+            reminder_channels = reminder_values.get("delivery_channels")
+            reminder_status = reminder_values.get("canonical_status")
+            if reminder_change.action == "update" and reminder_change.object_ref:
+                existing_reminder = self.session.scalar(
+                    select(ReminderPlan).where(
+                        ReminderPlan.ref_id == reminder_change.object_ref
+                    )
+                )
+                if existing_reminder is not None:
+                    reminder_subject_ref = (
+                        reminder_subject_ref or existing_reminder.subject_ref
+                    )
+                    reminder_channels = (
+                        reminder_channels
+                        if reminder_channels is not None
+                        else existing_reminder.delivery_channels
+                    )
+                    reminder_status = (
+                        reminder_status
+                        if reminder_status is not None
+                        else existing_reminder.canonical_status
+                    )
+            if (
+                reminder_change.action == "retract"
+                or reminder_status == "retracted"
+                or not isinstance(reminder_channels, list)
+                or "google_popup" not in reminder_channels
+            ):
+                continue
+
+            if reminder_subject_change_id is not None:
+                planned_subject = change_by_id.get(str(reminder_subject_change_id))
+                planned_projection_change_id: str | None = None
+                if (
+                    planned_subject is not None
+                    and planned_subject.object_type == "temporal_binding"
+                ):
+                    planned_projection = next(
+                        (
+                            candidate
+                            for candidate in content.tracked_context_changes
+                            if candidate.object_type
+                            == "temporal_calendar_projection"
+                            and candidate.action == "create"
+                            and candidate.create_spec is not None
+                            and candidate.create_spec.temporal_binding_change_id
+                            == reminder_subject_change_id
+                            and candidate.create_spec.enabled
+                        ),
+                        None,
+                    )
+                    planned_projection_change_id = (
+                        planned_projection.change_id
+                        if planned_projection is not None
+                        else None
+                    )
+                planned_target_change_id = (
+                    reminder_subject_change_id
+                    if planned_subject is not None
+                    and planned_subject.object_type == "canonical_event"
+                    else planned_projection_change_id
+                )
+                matching_creates = [
+                    intent
+                    for intent in content.provider_intents
+                    if intent.operation_type == "calendar_create_event"
+                    and planned_target_change_id
+                    in intent.canonical_target_change_ids
+                ]
+                if planned_target_change_id is None or len(matching_creates) != 1:
+                    errors.append(
+                        {
+                            "code": "google_popup_projection_required",
+                            "details": {"change_id": reminder_change.change_id},
+                        }
+                    )
+                continue
+
+            reminder_provider_target_ref: str | None = None
+            reminder_provider_target_kind: str | None = None
+            if isinstance(reminder_subject_ref, str) and reminder_subject_ref.startswith(
+                "evt_"
+            ):
+                reminder_provider_target_ref = reminder_subject_ref
+                reminder_provider_target_kind = "event"
+            elif isinstance(
+                reminder_subject_ref, str
+            ) and reminder_subject_ref.startswith("time_"):
+                active_projection = self.session.scalar(
+                    select(TemporalCalendarProjection).where(
+                        TemporalCalendarProjection.temporal_binding_ref
+                        == reminder_subject_ref,
+                        TemporalCalendarProjection.enabled.is_(True),
+                    )
+                )
+                if active_projection is not None:
+                    reminder_provider_target_ref = active_projection.ref_id
+                    reminder_provider_target_kind = "temporal_projection"
+            active_provider_binding = (
+                self.session.scalar(
+                    select(ProviderEventBinding).where(
+                        ProviderEventBinding.canonical_target_ref
+                        == reminder_provider_target_ref,
+                        ProviderEventBinding.target_kind
+                        == reminder_provider_target_kind,
+                        ProviderEventBinding.status == "active",
+                    )
+                )
+                if reminder_provider_target_ref is not None
+                and reminder_provider_target_kind is not None
+                else None
+            )
+            matching_reminder_intents = [
+                intent
+                for intent in content.provider_intents
+                if intent.operation_type == "calendar_update_reminders"
+                and reminder_provider_target_ref in intent.canonical_target_refs
+            ]
+            if active_provider_binding is None or len(matching_reminder_intents) != 1:
+                errors.append(
+                    {
+                        "code": "google_popup_projection_required",
+                        "details": {"change_id": reminder_change.change_id},
+                    }
+                )
 
         for conflict in self.session.scalars(select(Conflict).where(Conflict.status == "open")):
             if conflict.ref_id == resolving_conflict_ref:

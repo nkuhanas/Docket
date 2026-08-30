@@ -510,13 +510,24 @@ def test_package_pickup_case_reply_commits_event_route_and_resolution_first_try(
                                     "timezone": "America/Los_Angeles",
                                 },
                                 "location": "Pacheco Post",
-                                "reminder_plan": {
-                                    "delivery_channels": ["google_popup"],
-                                    "lead_seconds": [600],
-                                },
                             },
                         },
                         "affected_fields": ["event", "lane", "time", "reminder"],
+                        "basis_refs": [utterance_ref],
+                    }
+                ],
+                "tracked_context_changes": [
+                    {
+                        "mutation_type": "reminder_plan_create",
+                        "change_id": "package-pickup-reminder",
+                        "action": "create",
+                        "object_type": "reminder_plan",
+                        "create_spec": {
+                            "subject_change_id": "create-package-pickup-event",
+                            "delivery_channels": ["google_popup"],
+                            "lead_seconds": [600],
+                        },
+                        "affected_fields": ["delivery_channels", "lead_seconds"],
                         "basis_refs": [utterance_ref],
                     }
                 ],
@@ -736,26 +747,44 @@ def test_reminder_change_compiles_reminder_provider_operation(session_factory) -
     assert runner.run_due_once() is True
 
     with session_factory.begin() as session:
-        event = session.scalar(
-            select(CanonicalEvent).where(CanonicalEvent.ref_id == event_ref)
-        )
-        assert event is not None
-        event_spec = dict(event.event_spec)
-        event_spec["reminder_plan"] = {
-            "delivery_channels": ["google_popup"],
-            "lead_seconds": [900],
-        }
-        result = _commit_event_change(
+        utterance_ref, request_key = _capture(
             session,
-            event_ref=event_ref,
             message_id="1542802000000000131",
             text="Remind me 15 minutes before that meeting.",
-            mutation={
-                "mutation_type": "canonical_event_modify",
-                "action": "update",
-                "payload": {"event_spec": event_spec},
-                "affected_fields": ["reminder"],
-            },
+        )
+        content = ChangeSetContent.model_validate(
+            {
+                "basis_refs": [utterance_ref],
+                "tracked_context_changes": [
+                    {
+                        "mutation_type": "reminder_plan_create",
+                        "change_id": "meeting-reminder",
+                        "action": "create",
+                        "object_type": "reminder_plan",
+                        "create_spec": {
+                            "subject_ref": event_ref,
+                            "delivery_channels": ["google_popup"],
+                            "lead_seconds": [900],
+                        },
+                        "affected_fields": ["delivery_channels", "lead_seconds"],
+                        "basis_refs": [utterance_ref],
+                    }
+                ],
+            }
+        )
+        result = InteractiveAuthorityService(session).process_turn(
+            utterance_ref=utterance_ref,
+            request_key=request_key,
+            actor_id=get_settings().operator_discord_user_id,
+            intent_session_ref=None,
+            expected_session_version=None,
+            statements=[],
+            relations=[],
+            resolved_intent_json={"kind": "reminder_plan"},
+            blocking_clarifications=[],
+            content=content,
+            changeset_ref=None,
+            expected_changeset_version=None,
         )
         assert result["state"] == "committed"
         operation = session.scalar(

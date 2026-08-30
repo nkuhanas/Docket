@@ -15,9 +15,12 @@ from docket.models import (
     CalendarLane,
     CalendarSyncState,
     CanonicalEvent,
+    Item,
     ProviderAccount,
     ProviderEventBinding,
     ReminderPlan,
+    TemporalBinding,
+    TemporalCalendarProjection,
 )
 from docket.providers.google.calendar import CalendarSnapshotEvent
 from docket.providers.google.fake_calendar import FakeCalendarProvider
@@ -227,6 +230,111 @@ def test_calendar_series_read_resolves_clean_binding_and_reminder(
         "docket_queue",
     ]
     assert projected["reminder_plan"]["lead_seconds"] == [600]
+
+
+@pytest.mark.integration
+def test_calendar_read_exposes_time_marker_type_and_role(
+    session_factory: sessionmaker[Session],
+) -> None:
+    base = datetime(2026, 8, 30, 16, tzinfo=UTC)
+    settings = get_settings().model_copy(update={"calendar_reads_enabled": False})
+    calendar_id = "academics@example.com"
+    account_id, _account_ref, lane_ref = _account_and_lane(
+        session_factory, calendar_id=calendar_id, lane="academics"
+    )
+    with session_factory.begin() as session:
+        item = Item(
+            title="MATH 1263 Midterm",
+            kind="academic.exam",
+            basis_refs=[new_public_ref("utt")],
+            decision_refs=[],
+            source_refs=[],
+            created_by_changeset_ref=new_public_ref("chg"),
+        )
+        session.add(item)
+        session.flush()
+        temporal = TemporalBinding(
+            subject_ref=item.ref_id,
+            role="scheduled_on",
+            temporal_value={
+                "kind": "date",
+                "date": "2026-09-18",
+                "timezone": settings.timezone,
+            },
+            basis_refs=list(item.basis_refs),
+            decision_refs=[],
+            source_refs=[],
+            created_by_changeset_ref=new_public_ref("chg"),
+        )
+        session.add(temporal)
+        session.flush()
+        projection = TemporalCalendarProjection(
+            temporal_binding_ref=temporal.ref_id,
+            lane_ref=lane_ref,
+            display_policy={
+                "kind": "all_day_marker",
+                "transparency": "transparent",
+            },
+            basis_refs=list(item.basis_refs),
+            created_by_changeset_ref=new_public_ref("chg"),
+        )
+        session.add(projection)
+        session.flush()
+        session.add_all(
+            [
+                ProviderEventBinding(
+                    canonical_target_ref=projection.ref_id,
+                    target_kind="temporal_projection",
+                    account_id=account_id,
+                    calendar_id=calendar_id,
+                    provider_event_id="midterm-marker",
+                    status="active",
+                ),
+                CalendarEventCache(
+                    account_id=account_id,
+                    calendar_id=calendar_id,
+                    provider_event_id="midterm-marker",
+                    snapshot_generation=uuid.uuid4(),
+                    status="confirmed",
+                    summary=item.title,
+                    is_all_day=True,
+                    start_date=datetime(2026, 9, 18).date(),
+                    end_date=datetime(2026, 9, 19).date(),
+                    timezone=settings.timezone,
+                    synced_at=base,
+                ),
+            ]
+        )
+        temporal_ref = temporal.ref_id
+        projection_ref = projection.ref_id
+
+    read = CalendarReadService(
+        session_factory,
+        CalendarSyncService(
+            session_factory,
+            FakeCalendarProvider(),
+            settings,
+            clock=lambda: base,
+        ),
+        settings,
+        clock=lambda: base,
+    )
+    result = read.list_events(
+        account_id=account_id,
+        calendar_id=calendar_id,
+        start=datetime(2026, 9, 17, tzinfo=UTC),
+        end=datetime(2026, 9, 20, tzinfo=UTC),
+        text_filter=None,
+        limit=25,
+        freshness="prefer_cache",
+    )
+
+    assert result["count"] == 1
+    marker = result["events"][0]
+    assert marker["ref"] == temporal_ref
+    assert marker["projection_ref"] == projection_ref
+    assert marker["object_type"] == "temporal_binding"
+    assert marker["semantic_role"] == "scheduled_on"
 
 
 @pytest.mark.integration
