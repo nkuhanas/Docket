@@ -1,3 +1,7 @@
-from docket.services.records import RecordService, serialize_record
+"""Docket domain services.
 
-__all__ = ["RecordService", "serialize_record"]
+Services are imported from their owning modules so obsolete clean-break nouns
+cannot remain available through a compatibility export.
+"""
+
+__all__: list[str] = []
