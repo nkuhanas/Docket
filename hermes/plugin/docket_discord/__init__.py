@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import base64
+import binascii
 import errno
 import hashlib
 import hmac
@@ -65,7 +66,13 @@ _PRODUCTION_RESET_AUTHORIZATION = re.compile(
     r"revision `(?P<deployment_revision>[0-9a-f]{40})`\."
 )
 _CONTROL_ID = re.compile(r"^dkt:(s):([A-Za-z0-9_-]{40,100})$")
-_MAX_REQUEST_BYTES = 65536
+_MAX_REQUEST_BYTES = max(
+    65536,
+    int(os.environ.get("DOCKET_ATTACHMENT_TOTAL_MAX_BYTES", str(16 * 1024 * 1024)))
+    * 4
+    // 3
+    + 1024 * 1024,
+)
 _SERVER: ThreadingHTTPServer | None = None
 _SERVER_STARTING = False
 _LISTENER_CLIENT_ID: int | None = None
@@ -396,6 +403,7 @@ def _capture_operator_utterance(
         "verbatim_text": str(getattr(event, "text", "")),
         "request_key": f"discord:{guild}:{channel}:{message_id}:0",
         "gateway_instance_ref": _GATEWAY_INSTANCE_REF,
+        "attachments": _attachment_manifests(event),
     }
     result = _docket_internal_request(
         "/internal/v1/discord/operator-utterances",
@@ -410,11 +418,62 @@ def _capture_operator_utterance(
         )
     reply_binding = result.get("reply_binding")
     deferred_ingress = result.get("deferred_ingress")
+    ingress_binding = (
+        dict(deferred_ingress) if isinstance(deferred_ingress, dict) else {"state": "ready"}
+    )
+    ingress_binding["attachments"] = result.get("attachments", [])
     return (
         utterance_ref,
         reply_binding if isinstance(reply_binding, dict) else None,
-        deferred_ingress if isinstance(deferred_ingress, dict) else None,
+        ingress_binding,
     )
+
+
+def _attachment_manifests(event: object) -> list[dict[str, Any]]:
+    raw_message = getattr(event, "raw_message", None)
+    raw_attachments = list(getattr(raw_message, "attachments", []) or [])[:10]
+    media_paths = list(getattr(event, "media_urls", []) or [])
+    max_bytes = int(os.environ.get("DOCKET_ATTACHMENT_MAX_BYTES", str(8 * 1024 * 1024)))
+    total_max_bytes = int(
+        os.environ.get("DOCKET_ATTACHMENT_TOTAL_MAX_BYTES", str(16 * 1024 * 1024))
+    )
+    retained_total = 0
+    timestamp = getattr(event, "timestamp", None) or getattr(raw_message, "created_at", None)
+    if not isinstance(timestamp, datetime):
+        timestamp = datetime.now(UTC)
+    manifests: list[dict[str, Any]] = []
+    for ordinal, attachment in enumerate(raw_attachments):
+        declared_size = getattr(attachment, "size", None)
+        byte_size = int(declared_size) if declared_size is not None else None
+        manifest: dict[str, Any] = {
+            "transport_attachment_ref": str(getattr(attachment, "id", "")),
+            "filename": getattr(attachment, "filename", None),
+            "media_type": getattr(attachment, "content_type", None),
+            "byte_size": byte_size,
+            "received_at": timestamp.astimezone(UTC).isoformat(),
+        }
+        if (
+            byte_size is not None
+            and (byte_size > max_bytes or retained_total + byte_size > total_max_bytes)
+        ):
+            manifest["ingest_error_code"] = "attachment_too_large"
+            manifests.append(manifest)
+            continue
+        path = Path(str(media_paths[ordinal])) if ordinal < len(media_paths) else None
+        if path is not None and path.is_file():
+            try:
+                plaintext = path.read_bytes()
+            except OSError:
+                plaintext = None
+            if plaintext is not None:
+                retained_total += len(plaintext)
+                if len(plaintext) > max_bytes or retained_total > total_max_bytes:
+                    manifest["ingest_error_code"] = "attachment_too_large"
+                else:
+                    manifest["byte_size"] = len(plaintext)
+                    manifest["plaintext_base64"] = base64.b64encode(plaintext).decode("ascii")
+        manifests.append(manifest)
+    return manifests
 
 
 def _record_final_signoff_if_explicit(
@@ -1423,6 +1482,7 @@ def _rewrite_with_source_context(
     utterance_ref: str,
     reply_binding: dict[str, Any] | None = None,
     signoff_result: dict[str, Any] | None = None,
+    attachment_evidence: list[dict[str, Any]] | None = None,
     reset_authorization_result: dict[str, Any] | None = None,
 ) -> dict[str, str] | None:
     source = getattr(event, "source", None)
@@ -1459,6 +1519,9 @@ def _rewrite_with_source_context(
     }
     if reply_binding is not None:
         context["reply_binding"] = reply_binding
+    if attachment_evidence:
+        context["attachment_evidence"] = attachment_evidence
+        context["attachment_content_trust"] = "untrusted_evidence"
     signoff_context = ""
     if signoff_result is not None:
         signoff_context = (
@@ -1592,6 +1655,9 @@ def _pre_gateway_dispatch(
             logger.exception("Docket OperatorUtterance persistence failed; turn rejected")
             return {"action": "skip", "reason": "docket-utterance-persistence-failed"}
         if ingress_binding is not None and ingress_binding.get("state") == "pending":
+            if ingress_binding.get("attachment_state") == "pending":
+                logger.info("Deferred Docket turn until attachment evidence is available")
+                return {"action": "skip", "reason": "docket-attachment-evidence-pending"}
             logger.info(
                 "Deferred Docket turn behind deployment drain %s",
                 ingress_binding.get("drain_ref"),
@@ -1777,6 +1843,11 @@ def _pre_gateway_dispatch(
         utterance_ref,
         reply_binding,
         signoff_result,
+        (
+            list(ingress_binding.get("attachments", []))
+            if isinstance(ingress_binding, dict)
+            else None
+        ),
         reset_authorization_result,
     )
 
@@ -3176,12 +3247,22 @@ async def _run_deferred_typed_message(payload: dict[str, Any]) -> None:
         parent_chat_id=str(parent_id) if parent_id is not None else None,
         message_id=str(message.id),
     )
+    media_urls, media_types = _materialize_deferred_attachments(payload)
+    message_type = MessageType.TEXT
+    if any(media_type.startswith("image/") for media_type in media_types):
+        message_type = MessageType.PHOTO
+    elif any(media_type.startswith("audio/") for media_type in media_types):
+        message_type = MessageType.AUDIO
+    elif media_types:
+        message_type = MessageType.DOCUMENT
     event = MessageEvent(
         text=message.content,
-        message_type=MessageType.TEXT,
+        message_type=message_type,
         source=source,
         raw_message=message,
         message_id=str(message.id),
+        media_urls=media_urls,
+        media_types=media_types,
         reply_to_message_id=(str(reply_to_message_id) if reply_to_message_id else None),
         reply_to_text=(reply_message.content if reply_message is not None else None),
         reply_to_author_id=(str(reply_message.author.id) if reply_message is not None else None),
@@ -3203,6 +3284,55 @@ async def _run_deferred_typed_message(payload: dict[str, Any]) -> None:
             response,
             metadata={"reply_to": str(message.id)},
         )
+
+
+def _materialize_deferred_attachments(payload: dict[str, Any]) -> tuple[list[str], list[str]]:
+    cache_dir = Path("/opt/data/cache/docket-attachments")
+    media_urls: list[str] = []
+    media_types: list[str] = []
+    for attachment in list(payload.get("attachment_evidence", []))[:10]:
+        if not isinstance(attachment, dict) or attachment.get("ingest_state") != "available":
+            continue
+        source_ref = str(attachment.get("ref", ""))
+        encoded = attachment.get("plaintext_base64")
+        expected_hash = str(attachment.get("content_hash", ""))
+        if _PUBLIC_REF.fullmatch(source_ref) is None or not isinstance(encoded, str):
+            raise PluginAPIError(
+                "invalid_attachment_evidence",
+                "Deferred attachment evidence is incomplete",
+                422,
+            )
+        try:
+            plaintext = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise PluginAPIError(
+                "invalid_attachment_evidence",
+                "Deferred attachment evidence is not valid base64",
+                422,
+            ) from exc
+        if not hmac.compare_digest(hashlib.sha256(plaintext).hexdigest(), expected_hash):
+            raise PluginAPIError(
+                "attachment_integrity_failed",
+                "Deferred attachment evidence failed its plaintext hash check",
+                409,
+            )
+        suffix = Path(str(attachment.get("filename") or "")).suffix[:16]
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        path = cache_dir / f"{source_ref}{suffix}"
+        if path.exists():
+            if hashlib.sha256(path.read_bytes()).hexdigest() != expected_hash:
+                raise PluginAPIError(
+                    "attachment_cache_conflict",
+                    "Deferred attachment cache contains different bytes",
+                    409,
+                )
+        else:
+            temporary = path.with_suffix(f"{path.suffix}.tmp")
+            temporary.write_bytes(plaintext)
+            temporary.replace(path)
+        media_urls.append(str(path))
+        media_types.append(str(attachment.get("media_type") or "application/octet-stream"))
+    return media_urls, media_types
 
 
 async def _run_deferred_semantic_selection(payload: dict[str, Any]) -> None:

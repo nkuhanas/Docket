@@ -70,6 +70,18 @@ class AttachmentManifest(InternalModel):
     media_type: str | None = Field(default=None, max_length=255)
     byte_size: int | None = Field(default=None, ge=0)
     received_at: datetime
+    plaintext_base64: str | None = None
+    ingest_error_code: Literal[
+        "attachment_bytes_unavailable",
+        "attachment_download_failed",
+        "attachment_too_large",
+    ] | None = None
+
+    @model_validator(mode="after")
+    def content_and_failure_are_exclusive(self) -> "AttachmentManifest":
+        if self.plaintext_base64 is not None and self.ingest_error_code is not None:
+            raise ValueError("attachment plaintext and ingest_error_code are mutually exclusive")
+        return self
 
 
 class OperatorUtteranceCapture(InternalModel):

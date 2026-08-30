@@ -195,6 +195,10 @@ def test_stable_ingress_captures_typed_message_without_domain_authority(
                 queue_channel_id=settings.queue_channel_id,
             ),
             signing_key=settings.read_secret(settings.interaction_signing_key_file).encode(),
+            attachment_encryption_key=settings.attachment_encryption_key(),
+            attachment_encryption_key_ref=settings.attachment_encryption_key_ref,
+            attachment_max_bytes=settings.attachment_max_bytes,
+            attachment_total_max_bytes=settings.attachment_total_max_bytes,
         ).capture_message(
             actor_id=settings.operator_discord_user_id,
             guild_id=settings.discord_guild_id,

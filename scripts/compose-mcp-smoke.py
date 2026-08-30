@@ -13,7 +13,7 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from docket.domain.canonical import sha256_json
-from docket.services.mcp_traces import trace_id_for_source
+from docket.domain.public_refs import new_public_ref
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash
 
 EXPECTED_TOOLS = {
@@ -177,11 +177,7 @@ async def smoke() -> None:
                 )
                 assert not clarification.isError, clarification
 
-        trace_id = trace_id_for_source(
-            "000000000000000002",
-            "000000000000000003",
-            "999999999999999999",
-        )
+        trace_ref = new_public_ref("trace")
         argument_hash = sha256_json(changeset_arguments)
         trace_context = {
             "guild_id": "000000000000000002",
@@ -219,7 +215,7 @@ async def smoke() -> None:
                 (None, "completed"),
             ):
                 trace = await service_client.put(
-                    f"{base_url}/internal/v1/discord/mcp-traces/{trace_id}",
+                    f"{base_url}/internal/v1/discord/mcp-traces/{trace_ref}",
                     json={
                         **trace_context,
                         "request_id": str(uuid.uuid4()),
@@ -243,7 +239,7 @@ async def smoke() -> None:
                     "model_identifier": "compose-smoke-model",
                     "verbatim_text": "Which dummy term did you mean?",
                     "generated_at": datetime.now(UTC).isoformat(),
-                    "trace_id": str(trace_id),
+                    "trace_ref": trace_ref,
                 },
             )
             response.raise_for_status()

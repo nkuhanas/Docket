@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from typing import Annotated, Any, Literal
 
@@ -52,9 +53,38 @@ AttentionCaseRevisionRef = Annotated[
     str, Field(pattern=r"^caserev_[0-9A-HJKMNP-TV-Z]{26}$")
 ]
 CaseItemRef = Annotated[str, Field(pattern=r"^citem_[0-9A-HJKMNP-TV-Z]{26}$")]
+SourceRef = Annotated[str, Field(pattern=r"^src_[0-9A-HJKMNP-TV-Z]{26}$")]
+
 
 def _validate_refs(values: list[str], *, provenance_only: bool = False) -> list[str]:
     return validate_refs(values, provenance_only=provenance_only)
+
+
+def _validate_structural_locator(value: Any, *, depth: int = 0) -> int:
+    if depth > 8:
+        raise ValueError("source_fragment_locator exceeds maximum nesting depth")
+    if isinstance(value, dict):
+        forbidden = {
+            "body",
+            "content",
+            "excerpt",
+            "quote",
+            "raw",
+            "text",
+            "transcript",
+        }
+        if any(str(key).casefold() in forbidden for key in value):
+            raise ValueError("source_fragment_locator must contain structural coordinates only")
+        return 1 + sum(
+            _validate_structural_locator(item, depth=depth + 1) for item in value.values()
+        )
+    if isinstance(value, list):
+        return 1 + sum(
+            _validate_structural_locator(item, depth=depth + 1) for item in value
+        )
+    if isinstance(value, str) and len(value.encode("utf-8")) > 256:
+        raise ValueError("source_fragment_locator string coordinate is too large")
+    return 1
 
 
 class StatementInput(StrictModel):
@@ -67,6 +97,16 @@ class StatementInput(StrictModel):
     effective_to: date | None = None
     interpretation_json: dict[str, Any] = Field(default_factory=dict)
     interpreter_version: str = Field(min_length=1, max_length=255)
+    source_ref: SourceRef | None = None
+    source_fragment_locator: dict[str, Any] | None = None
+    source_fragment_hash: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    extractor_identifier: str | None = Field(default=None, min_length=1, max_length=255)
+    extractor_version: str | None = Field(default=None, min_length=1, max_length=128)
 
     @field_validator("subject_refs")
     @classmethod
@@ -90,6 +130,29 @@ class StatementInput(StrictModel):
             and self.effective_to < self.effective_from
         ):
             raise ValueError("effective_to must not precede effective_from")
+        source_fields = (
+            self.source_fragment_locator,
+            self.extractor_identifier,
+            self.extractor_version,
+        )
+        if self.source_ref is None and any(value is not None for value in source_fields):
+            raise ValueError("source extraction metadata requires source_ref")
+        if self.source_ref is not None and any(value is None for value in source_fields):
+            raise ValueError(
+                "source_ref requires a fragment locator, extractor identifier, "
+                "and extractor version"
+            )
+        if self.source_fragment_locator is not None:
+            if _validate_structural_locator(self.source_fragment_locator) > 100:
+                raise ValueError("source_fragment_locator contains too many coordinates")
+            encoded = json.dumps(
+                self.source_fragment_locator,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            if len(encoded) > 2048:
+                raise ValueError("source_fragment_locator exceeds 2048 UTF-8 bytes")
         return self
 
 

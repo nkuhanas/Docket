@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError, IdempotencyConflict
+from docket.domain.public_refs import new_public_ref
 from docket.models import (
     DeferredIngress,
     DiscordDailyThread,
@@ -21,6 +22,7 @@ from docket.models import (
     ProjectionDelivery,
 )
 from docket.security import decode_semantic_option_token, verify_semantic_option_token
+from docket.services.attachment_evidence import AttachmentCapture, AttachmentEvidenceService
 
 
 @dataclass(frozen=True)
@@ -44,10 +46,21 @@ class IngressLedgerService:
         *,
         identity: IngressIdentity,
         signing_key: bytes,
+        attachment_encryption_key: bytes,
+        attachment_encryption_key_ref: str,
+        attachment_max_bytes: int,
+        attachment_total_max_bytes: int,
     ) -> None:
         self.session = session
         self.identity = identity
         self.signing_key = signing_key
+        self.attachments = AttachmentEvidenceService(
+            session,
+            encryption_key=attachment_encryption_key,
+            encryption_key_ref=attachment_encryption_key_ref,
+            max_attachment_bytes=attachment_max_bytes,
+            max_total_bytes=attachment_total_max_bytes,
+        )
 
     def _validate_surface(
         self,
@@ -96,6 +109,7 @@ class IngressLedgerService:
         reply_to_message_id: str | None,
         verbatim_text: str,
         said_at: datetime,
+        attachments: list[AttachmentCapture] | None = None,
     ) -> dict[str, Any]:
         self._validate_surface(
             actor_id=actor_id,
@@ -104,6 +118,7 @@ class IngressLedgerService:
             parent_channel_id=parent_channel_id,
         )
         source_key = f"discord:{guild_id}:{channel_id}:{message_id}:0"
+        attachment_captures = attachments or []
         existing = self.session.scalar(
             select(OperatorUtterance).where(OperatorUtterance.request_key == source_key)
         )
@@ -113,15 +128,22 @@ class IngressLedgerService:
                 or existing.actor_ref != f"discord_user:{actor_id}"
             ):
                 raise IdempotencyConflict(source_key)
+            self.attachments.reconcile_existing(existing, attachment_captures)
             ingress = self._existing_or_append_ingress(
                 source_key=source_key,
                 ingress_kind="typed_message",
                 utterance=existing,
                 selected_option_binding=None,
             )
-            return self._result(existing, ingress, replay=True)
+            return self._result(
+                existing,
+                ingress,
+                replay=True,
+                attachments=self.attachments.summaries(existing),
+            )
 
         utterance = OperatorUtterance(
+            ref_id=new_public_ref("utt"),
             actor_ref=f"discord_user:{actor_id}",
             transport="discord",
             source_message_ref=_message_ref(guild_id, channel_id, message_id),
@@ -139,6 +161,7 @@ class IngressLedgerService:
         )
         try:
             with self.session.begin_nested():
+                self.attachments.plan_new(utterance, attachment_captures)
                 self.session.add(utterance)
                 self.session.flush()
         except IntegrityError:
@@ -148,13 +171,19 @@ class IngressLedgerService:
             if existing is None or existing.verbatim_text != verbatim_text:
                 raise IdempotencyConflict(source_key) from None
             utterance = existing
+            self.attachments.reconcile_existing(utterance, attachment_captures)
         ingress = self._existing_or_append_ingress(
             source_key=source_key,
             ingress_kind="typed_message",
             utterance=utterance,
             selected_option_binding=None,
         )
-        return self._result(utterance, ingress, replay=False)
+        return self._result(
+            utterance,
+            ingress,
+            replay=False,
+            attachments=self.attachments.summaries(utterance),
+        )
 
     def capture_semantic_selection(
         self,
@@ -365,12 +394,19 @@ class IngressLedgerService:
 
     @staticmethod
     def _result(
-        utterance: OperatorUtterance, ingress: DeferredIngress, *, replay: bool
+        utterance: OperatorUtterance,
+        ingress: DeferredIngress,
+        *,
+        replay: bool,
+        attachments: list[dict[str, object]] | None = None,
     ) -> dict[str, Any]:
-        return {
+        result = {
             "ok": True,
             "utterance_ref": utterance.ref_id,
             "deferred_ingress_ref": ingress.ref_id,
             "state": ingress.status,
             "disposition": "replayed_request" if replay else "stored",
         }
+        if attachments is not None:
+            result["attachments"] = attachments
+        return result

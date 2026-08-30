@@ -255,6 +255,28 @@ class Settings(BaseSettings):
         default=Path("secrets/smoke/interaction_signing_key"),
         alias="DOCKET_INTERACTION_SIGNING_KEY_FILE",
     )
+    attachment_encryption_key_file: Path = Field(
+        default=Path("secrets/smoke/attachment_encryption_key"),
+        alias="DOCKET_ATTACHMENT_ENCRYPTION_KEY_FILE",
+    )
+    attachment_encryption_key_ref: str = Field(
+        default="attachment-v1",
+        min_length=1,
+        max_length=128,
+        alias="DOCKET_ATTACHMENT_ENCRYPTION_KEY_REF",
+    )
+    attachment_max_bytes: int = Field(
+        default=8 * 1024 * 1024,
+        ge=1,
+        le=128 * 1024 * 1024,
+        alias="DOCKET_ATTACHMENT_MAX_BYTES",
+    )
+    attachment_total_max_bytes: int = Field(
+        default=16 * 1024 * 1024,
+        ge=1,
+        le=256 * 1024 * 1024,
+        alias="DOCKET_ATTACHMENT_TOTAL_MAX_BYTES",
+    )
     google_oauth_client_file: Path = Field(
         default=Path("secrets/smoke/google_oauth_client.json"),
         alias="GOOGLE_OAUTH_CLIENT_FILE",
@@ -305,6 +327,11 @@ class Settings(BaseSettings):
             not self.gmail_ingestion_enabled or not self.external_writes_enabled
         ):
             raise ValueError("Gmail writes require both Gmail ingestion and external writes")
+        if self.attachment_total_max_bytes < self.attachment_max_bytes:
+            raise ValueError(
+                "DOCKET_ATTACHMENT_TOTAL_MAX_BYTES must be at least "
+                "DOCKET_ATTACHMENT_MAX_BYTES"
+            )
         return self
 
     @staticmethod
@@ -319,6 +346,16 @@ class Settings(BaseSettings):
 
     def docket_to_hermes_token(self) -> str:
         return self.read_secret(self.docket_to_hermes_token_file)
+
+    def attachment_encryption_key(self) -> bytes:
+        encoded = self.read_secret(self.attachment_encryption_key_file)
+        try:
+            key = bytes.fromhex(encoded)
+        except ValueError as exc:
+            raise ValueError("Attachment encryption key must be hexadecimal") from exc
+        if len(key) != 32:
+            raise ValueError("Attachment encryption key must contain exactly 32 bytes")
+        return key
 
     def credential_mode(self) -> Literal["dummy", "configured"]:
         token = self.hermes_to_docket_token()

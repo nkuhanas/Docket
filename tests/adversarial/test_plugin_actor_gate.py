@@ -1,6 +1,9 @@
+import base64
+import hashlib
 import importlib.util
 import sys
 import uuid
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -68,10 +71,8 @@ def test_only_default_gateway_runtime_owns_gateway_lifetime(
     monkeypatch.setattr(plugin_module.sys, "argv", argv)
 
     assert (
-        plugin_module._owns_discord_gateway_lifetime(
-            SimpleNamespace(profile_name=profile_name)
-    )
-    is expected
+        plugin_module._owns_discord_gateway_lifetime(SimpleNamespace(profile_name=profile_name))
+        is expected
     )
 
 
@@ -82,12 +83,6 @@ def test_legacy_component_namespaces_are_not_routable(plugin_module, prefix: str
 
 def test_semantic_option_component_namespace_is_routable(plugin_module) -> None:
     assert plugin_module._CONTROL_ID.fullmatch(f"dkt:s:{'A' * 48}") is not None
-
-
-
-
-
-
 
 
 @pytest.mark.adversarial
@@ -769,6 +764,127 @@ def test_authorized_chat_receives_verified_source_context(plugin_module, monkeyp
     assert "do not split one request across legacy mutations" in result["text"]
 
 
+def test_operator_attachment_manifest_preserves_exact_cached_bytes(
+    plugin_module, monkeypatch, tmp_path
+) -> None:
+    plaintext = b"untrusted schedule image bytes"
+    cached = tmp_path / "schedule.png"
+    cached.write_bytes(plaintext)
+    monkeypatch.setenv("DOCKET_ATTACHMENT_MAX_BYTES", "1024")
+    monkeypatch.setenv("DOCKET_ATTACHMENT_TOTAL_MAX_BYTES", "2048")
+    attachment = SimpleNamespace(
+        id="444444444444444445",
+        filename="schedule.png",
+        content_type="image/png",
+        size=len(plaintext),
+    )
+    event = SimpleNamespace(
+        raw_message=SimpleNamespace(attachments=[attachment]),
+        media_urls=[str(cached)],
+        timestamp=datetime.now(UTC),
+    )
+
+    manifests = plugin_module._attachment_manifests(event)
+
+    assert manifests == [
+        {
+            "transport_attachment_ref": attachment.id,
+            "filename": attachment.filename,
+            "media_type": attachment.content_type,
+            "byte_size": len(plaintext),
+            "received_at": event.timestamp.isoformat(),
+            "plaintext_base64": base64.b64encode(plaintext).decode("ascii"),
+        }
+    ]
+
+
+def test_attachment_binding_is_trusted_but_content_is_explicitly_untrusted(
+    plugin_module, monkeypatch
+) -> None:
+    actor = "111111111111111111"
+    guild = "222222222222222222"
+    channel = "333333333333333333"
+    message = "444444444444444444"
+    source_ref = f"src_{'5' * 26}"
+    content_hash = hashlib.sha256(b"schedule").hexdigest()
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", channel)
+    monkeypatch.setattr(
+        plugin_module,
+        "_capture_operator_utterance",
+        lambda _event: (
+            f"utt_{'0' * 26}",
+            None,
+            {
+                "state": "claimed",
+                "attachments": [
+                    {
+                        "ref": source_ref,
+                        "ingest_state": "available",
+                        "retention_disposition": "retained_encrypted",
+                        "content_hash": content_hash,
+                        "source_revision": 1,
+                        "untrusted_content": True,
+                    }
+                ],
+            },
+        ),
+    )
+    event = SimpleNamespace(
+        text="Import the attached schedule as tracked context.",
+        message_id=message,
+        source=SimpleNamespace(
+            platform="discord",
+            user_id=actor,
+            guild_id=guild,
+            chat_id=channel,
+        ),
+    )
+
+    result = plugin_module._pre_gateway_dispatch(event)
+
+    assert result is not None and result["action"] == "rewrite"
+    assert source_ref in result["text"]
+    assert content_hash in result["text"]
+    assert '"source_revision": 1' in result["text"]
+    assert '"attachment_content_trust": "untrusted_evidence"' in result["text"]
+    assert "plaintext_base64" not in result["text"]
+
+
+def test_pending_attachment_never_reaches_model(plugin_module, monkeypatch) -> None:
+    actor = "111111111111111111"
+    guild = "222222222222222222"
+    channel = "333333333333333333"
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", channel)
+    monkeypatch.setattr(
+        plugin_module,
+        "_capture_operator_utterance",
+        lambda _event: (
+            f"utt_{'0' * 26}",
+            None,
+            {"state": "pending", "attachment_state": "pending"},
+        ),
+    )
+    event = SimpleNamespace(
+        text="Import the attachment.",
+        message_id="444444444444444444",
+        source=SimpleNamespace(
+            platform="discord",
+            user_id=actor,
+            guild_id=guild,
+            chat_id=channel,
+        ),
+    )
+
+    assert plugin_module._pre_gateway_dispatch(event) == {
+        "action": "skip",
+        "reason": "docket-attachment-evidence-pending",
+    }
+
+
 def test_projection_reply_binding_is_injected_as_trusted_context(
     plugin_module, monkeypatch
 ) -> None:
@@ -1418,10 +1534,6 @@ async def test_thread_ensure_joins_only_configured_operator_idempotently(
     with pytest.raises(plugin_module.PluginAPIError) as rejected:
         plugin_module._validate_operator_target("666666666666666666")
     assert rejected.value.code == "discord_operator_not_allowed"
-
-
-
-
 
 
 @pytest.mark.adversarial

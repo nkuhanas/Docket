@@ -29,6 +29,9 @@ os.environ.update(
         "DOCKET_TO_HERMES_TOKEN_FILE": str(SMOKE_SECRETS / "docket_to_hermes_token"),
         "HERMES_TO_DOCKET_TOKEN_FILE": str(SMOKE_SECRETS / "hermes_to_docket_token"),
         "DOCKET_INTERACTION_SIGNING_KEY_FILE": str(SMOKE_SECRETS / "interaction_signing_key"),
+        "DOCKET_ATTACHMENT_ENCRYPTION_KEY_FILE": str(
+            SMOKE_SECRETS / "attachment_encryption_key"
+        ),
         "GOOGLE_OAUTH_CLIENT_FILE": str(SMOKE_SECRETS / "google_oauth_client.json"),
         "GOOGLE_OAUTH_TOKEN_FILE": str(SMOKE_SECRETS / "google_oauth_token.json"),
     }

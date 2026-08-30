@@ -60,6 +60,7 @@ safe_test_environment() {
     export DOCKET_TO_HERMES_TOKEN_FILE="$ROOT/secrets/smoke/docket_to_hermes_token"
     export HERMES_TO_DOCKET_TOKEN_FILE="$ROOT/secrets/smoke/hermes_to_docket_token"
     export DOCKET_INTERACTION_SIGNING_KEY_FILE="$ROOT/secrets/smoke/interaction_signing_key"
+    export DOCKET_ATTACHMENT_ENCRYPTION_KEY_FILE="$ROOT/secrets/smoke/attachment_encryption_key"
     export GOOGLE_OAUTH_CLIENT_FILE="$ROOT/secrets/smoke/google_oauth_client.json"
     export GOOGLE_OAUTH_TOKEN_FILE="$ROOT/secrets/smoke/google_oauth_token.json"
 }
@@ -250,6 +251,37 @@ ensure_ingress_credential() {
     printf 'Created the restricted Discord ingress database credential.\n'
 }
 
+ensure_attachment_encryption_key() {
+    local configured_credentials_dir
+    local credential_path
+    local retained_blob_count=0
+    configured_credentials_dir=$(env_value DOCKET_CREDENTIALS_DIR)
+    case "$configured_credentials_dir" in
+        /*) credential_path="$configured_credentials_dir/attachment_encryption_key" ;;
+        *) credential_path="$ROOT/${configured_credentials_dir#./}/attachment_encryption_key" ;;
+    esac
+    if [[ -s "$credential_path" ]]; then
+        [[ "$(tr -d '\r\n' <"$credential_path")" =~ ^[0-9a-fA-F]{64}$ ]] ||
+            die "attachment encryption key must contain exactly 32 hexadecimal bytes"
+        return
+    fi
+    if [[ -n "$(compose ps -q postgres)" ]]; then
+        if [[ "$(compose exec -T postgres psql -U docket -d docket -Atc \
+            "select to_regclass('public.encrypted_attachment_blobs') is not null;")" == "t" ]]; then
+            retained_blob_count=$(compose exec -T postgres psql -U docket -d docket -Atc \
+                "select count(*) from encrypted_attachment_blobs;")
+        fi
+    fi
+    [[ "$retained_blob_count" == "0" ]] ||
+        die "attachment encryption key is missing while encrypted evidence exists"
+    mkdir -p "$(dirname "$credential_path")"
+    umask 077
+    require_command openssl
+    openssl rand -hex 32 >"$credential_path"
+    chmod 600 "$credential_path"
+    printf 'Created the attachment evidence encryption key; retain it with credential backups.\n'
+}
+
 request_hermes_drain() {
     local principal=${1:-scripts/docket deploy}
     compose exec -T --user hermes hermes python -c \
@@ -434,6 +466,7 @@ deploy() {
     revision=$(git rev-parse --short=12 HEAD)
     timestamp=$(date -u +%Y%m%dT%H%M%SZ)
     ensure_ingress_credential
+    ensure_attachment_encryption_key
     old_container=$(compose ps -q docket)
     if [[ -n "$old_container" ]]; then
         old_image=$(docker_engine inspect --format '{{.Image}}' "$old_container")
@@ -507,6 +540,7 @@ deploy_ingress() {
     }
 
     ensure_ingress_credential
+    ensure_attachment_encryption_key
     [[ -n "$(compose ps -q discord-ingress)" ]] ||
         die "ingress-only deployment requires the stable ingress to be running"
     compose exec -T docket ./.venv/bin/alembic current | rg -q '\(head\)' ||

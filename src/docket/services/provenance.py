@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import uuid
@@ -7,6 +9,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from docket.config import get_settings
@@ -42,6 +45,7 @@ from docket.models import (
 )
 from docket.models.base import utc_now
 from docket.schemas.authority import IntentTurnFinalize
+from docket.services.attachment_evidence import AttachmentCapture, AttachmentEvidenceService
 from docket.services.continuity import ContinuityService
 from docket.services.gateway_lifetimes import GatewayLifetimeService
 from docket.services.intent_sessions import IntentSessionService
@@ -170,6 +174,84 @@ class ProvenanceService:
             and existing.content_hash == _sha256_text(request.verbatim_text)
         )
 
+    @staticmethod
+    def _attachment_captures(request: OperatorUtteranceCapture) -> list[AttachmentCapture]:
+        captures: list[AttachmentCapture] = []
+        for manifest in request.attachments:
+            plaintext: bytes | None = None
+            if manifest.plaintext_base64 is not None:
+                try:
+                    plaintext = base64.b64decode(manifest.plaintext_base64, validate=True)
+                except (binascii.Error, ValueError) as exc:
+                    raise DocketError(
+                        code="invalid_attachment_encoding",
+                        message="Attachment plaintext is not valid canonical base64.",
+                    ) from exc
+                if manifest.byte_size is not None and manifest.byte_size != len(plaintext):
+                    raise DocketError(
+                        code="attachment_size_mismatch",
+                        message="Attachment manifest size does not match its received bytes.",
+                    )
+            captures.append(
+                AttachmentCapture(
+                    transport_attachment_ref=manifest.transport_attachment_ref,
+                    filename=manifest.filename,
+                    media_type=manifest.media_type,
+                    byte_size=manifest.byte_size,
+                    received_at=manifest.received_at,
+                    plaintext=plaintext,
+                    ingest_error_code=manifest.ingest_error_code,
+                )
+            )
+        return captures
+
+    def _attachment_service(self) -> AttachmentEvidenceService:
+        settings = get_settings()
+        return AttachmentEvidenceService(
+            self.session,
+            encryption_key=settings.attachment_encryption_key(),
+            encryption_key_ref=settings.attachment_encryption_key_ref,
+            max_attachment_bytes=settings.attachment_max_bytes,
+            max_total_bytes=settings.attachment_total_max_bytes,
+        )
+
+    def _ensure_utterance_audit(
+        self,
+        utterance: OperatorUtterance,
+        request: OperatorUtteranceCapture,
+    ) -> None:
+        audit_ref = f"aud_{utterance.ref_id.removeprefix('utt_')}"
+        if self.session.scalar(
+            select(AuditEvent.id).where(
+                (AuditEvent.ref_id == audit_ref)
+                | (
+                    (AuditEvent.event_type == "operator_utterance.recorded")
+                    & (AuditEvent.primary_ref == utterance.ref_id)
+                )
+            )
+        ) is not None:
+            return
+        self.session.add(
+            AuditEvent(
+                ref_id=audit_ref,
+                event_type="operator_utterance.recorded",
+                entity_type="operator_utterance",
+                entity_id=utterance.id,
+                actor_type="operator",
+                actor_id=request.actor_id,
+                request_id=request.request_id,
+                primary_ref=utterance.ref_id,
+                affected_refs=[utterance.ref_id],
+                basis_refs=[utterance.ref_id],
+                data={
+                    "transport": "discord",
+                    "conversation_ref": utterance.conversation_ref,
+                    "content_hash": utterance.content_hash,
+                    "attachment_source_refs": list(utterance.attachment_source_refs),
+                },
+            )
+        )
+
     def capture_operator_utterance(
         self,
         request: OperatorUtteranceCapture,
@@ -186,24 +268,38 @@ class ProvenanceService:
         existing = self.session.scalar(
             select(OperatorUtterance).where(OperatorUtterance.request_key == request.request_key)
         )
+        captures = self._attachment_captures(request)
+        attachment_service = self._attachment_service()
         if existing is not None:
             if not self._same_utterance(existing, request):
                 raise IdempotencyConflict(request.request_key)
-            result = {
+            attachment_service.reconcile_existing(existing, captures)
+            self._ensure_utterance_audit(existing, request)
+            attachment_summaries = attachment_service.summaries(existing)
+            replay_result: dict[str, Any] = {
                 "ok": True,
                 "ref": existing.ref_id,
                 "state": "recorded",
                 "content_hash": existing.content_hash,
                 "disposition": "replayed_request",
                 "reply_binding": ReplyBindingService(self.session).resolve(existing),
+                "attachments": attachment_summaries,
             }
-            ingress = self._capture_or_claim_typed_ingress(existing, request)
+            ingress = self._capture_or_claim_typed_ingress(
+                existing,
+                request,
+                attachments_ready=all(
+                    attachment["ingest_state"] != "pending"
+                    for attachment in attachment_summaries
+                ),
+            )
             if ingress is not None:
-                result["deferred_ingress"] = ingress
-            return result
+                replay_result["deferred_ingress"] = ingress
+            return replay_result
 
         message_ref = _message_ref(request.guild_id, request.channel_id, request.message_id)
         utterance = OperatorUtterance(
+            ref_id=new_public_ref("utt"),
             actor_ref=_actor_ref(request.actor_id),
             transport="discord",
             source_message_ref=message_ref,
@@ -222,35 +318,42 @@ class ProvenanceService:
             content_hash=_sha256_text(request.verbatim_text),
             request_key=request.request_key,
         )
-        self.session.add(utterance)
-        self.session.flush()
-        self.session.add(
-            AuditEvent(
-                event_type="operator_utterance.recorded",
-                entity_type="operator_utterance",
-                entity_id=utterance.id,
-                actor_type="operator",
-                actor_id=request.actor_id,
-                request_id=request.request_id,
-                primary_ref=utterance.ref_id,
-                affected_refs=[utterance.ref_id],
-                basis_refs=[utterance.ref_id],
-                data={
-                    "transport": "discord",
-                    "conversation_ref": utterance.conversation_ref,
-                    "content_hash": utterance.content_hash,
-                },
+        created = True
+        try:
+            with self.session.begin_nested():
+                attachment_service.plan_new(utterance, captures)
+                self.session.add(utterance)
+                self.session.flush()
+        except IntegrityError:
+            created = False
+            existing = self.session.scalar(
+                select(OperatorUtterance).where(
+                    OperatorUtterance.request_key == request.request_key
+                )
             )
-        )
-        result = {
+            if existing is None or not self._same_utterance(existing, request):
+                raise IdempotencyConflict(request.request_key) from None
+            utterance = existing
+            attachment_service.reconcile_existing(utterance, captures)
+        self._ensure_utterance_audit(utterance, request)
+        attachment_summaries = attachment_service.summaries(utterance)
+        result: dict[str, Any] = {
             "ok": True,
             "ref": utterance.ref_id,
             "state": "recorded",
             "content_hash": utterance.content_hash,
-            "disposition": "created",
+            "disposition": "created" if created else "replayed_request",
             "reply_binding": ReplyBindingService(self.session).resolve(utterance),
+            "attachments": attachment_summaries,
         }
-        ingress = self._capture_or_claim_typed_ingress(utterance, request)
+        ingress = self._capture_or_claim_typed_ingress(
+            utterance,
+            request,
+            attachments_ready=all(
+                attachment["ingest_state"] != "pending"
+                for attachment in attachment_summaries
+            ),
+        )
         if ingress is not None:
             result["deferred_ingress"] = ingress
         return result
@@ -259,6 +362,8 @@ class ProvenanceService:
         self,
         utterance: OperatorUtterance,
         request: OperatorUtteranceCapture,
+        *,
+        attachments_ready: bool,
     ) -> dict[str, Any] | None:
         if request.gateway_instance_ref is None:
             return None
@@ -274,6 +379,27 @@ class ProvenanceService:
                 "drain_ref": existing.drain_ref,
                 "execution_completion_token": None,
                 "claim_token": str(existing.claim_token) if existing.claim_token else None,
+            }
+
+        if not attachments_ready:
+            ingress = existing or DeferredIngress(
+                source_key=request.request_key,
+                ingress_kind="typed_message",
+                utterance_ref=utterance.ref_id,
+            )
+            ingress.status = "pending"
+            ingress.claimed_by_gateway_ref = None
+            ingress.claim_token = None
+            ingress.claimed_at = None
+            if existing is None:
+                self.session.add(ingress)
+            self.session.flush()
+            return {
+                "ref": ingress.ref_id,
+                "state": "pending",
+                "drain_ref": ingress.drain_ref,
+                "execution_completion_token": None,
+                "attachment_state": "pending",
             }
 
         continuity = ContinuityService(self.session)

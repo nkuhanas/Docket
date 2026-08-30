@@ -15,6 +15,10 @@ x-discord-ingress: &discord-ingress
     DOCKET_INGRESS_DB_PASSWORD_FILE: /run/secrets/discord_ingress_db_password
     DOCKET_DISCORD_BOT_TOKEN_FILE: /run/secrets/discord_bot_token
     DOCKET_INTERACTION_SIGNING_KEY_FILE: /run/secrets/interaction_signing_key
+    DOCKET_ATTACHMENT_ENCRYPTION_KEY_FILE: /run/secrets/attachment_encryption_key
+    DOCKET_ATTACHMENT_ENCRYPTION_KEY_REF: ${DOCKET_ATTACHMENT_ENCRYPTION_KEY_REF:-attachment-v1}
+    DOCKET_ATTACHMENT_MAX_BYTES: ${DOCKET_ATTACHMENT_MAX_BYTES:-8388608}
+    DOCKET_ATTACHMENT_TOTAL_MAX_BYTES: ${DOCKET_ATTACHMENT_TOTAL_MAX_BYTES:-16777216}
     DOCKET_OPERATOR_DISCORD_USER_ID: ${DOCKET_OPERATOR_DISCORD_USER_ID:-000000000000000001}
     DOCKET_DISCORD_GUILD_ID: ${DOCKET_DISCORD_GUILD_ID:-000000000000000002}
     DOCKET_CHAT_CHANNEL_ID: ${DOCKET_CHAT_CHANNEL_ID:-000000000000000003}
@@ -27,6 +31,7 @@ x-discord-ingress: &discord-ingress
     - discord_ingress_db_password
     - discord_bot_token
     - interaction_signing_key
+    - attachment_encryption_key
   healthcheck:
     test: ["CMD", "test", "-f", "/tmp/docket-ingress-ready"]
     interval: 5s
@@ -74,6 +79,10 @@ services:
       DOCKET_TO_HERMES_TOKEN_FILE: /run/docket-secrets/docket_to_hermes_token
       HERMES_TO_DOCKET_TOKEN_FILE: /run/docket-secrets/hermes_to_docket_token
       DOCKET_INTERACTION_SIGNING_KEY_FILE: /run/docket-secrets/interaction_signing_key
+      DOCKET_ATTACHMENT_ENCRYPTION_KEY_FILE: /run/docket-secrets/attachment_encryption_key
+      DOCKET_ATTACHMENT_ENCRYPTION_KEY_REF: ${DOCKET_ATTACHMENT_ENCRYPTION_KEY_REF:-attachment-v1}
+      DOCKET_ATTACHMENT_MAX_BYTES: ${DOCKET_ATTACHMENT_MAX_BYTES:-8388608}
+      DOCKET_ATTACHMENT_TOTAL_MAX_BYTES: ${DOCKET_ATTACHMENT_TOTAL_MAX_BYTES:-16777216}
       DOCKET_INGRESS_DB_PASSWORD_FILE: /run/docket-secrets/discord_ingress_db_password
       GOOGLE_OAUTH_CLIENT_FILE: /run/docket-secrets/google_oauth_client.json
       GOOGLE_OAUTH_TOKEN_FILE: /run/docket-secrets/google_oauth_token.json
@@ -154,6 +163,8 @@ services:
       HERMES_PLUGINS_DEBUG: ${HERMES_PLUGINS_DEBUG:-0}
       DOCKET_GATEWAY_HEARTBEAT_SECONDS: ${DOCKET_GATEWAY_HEARTBEAT_SECONDS:-10}
       DOCKET_STABLE_INGRESS_ENABLED: ${DOCKET_STABLE_INGRESS_ENABLED:-true}
+      DOCKET_ATTACHMENT_MAX_BYTES: ${DOCKET_ATTACHMENT_MAX_BYTES:-8388608}
+      DOCKET_ATTACHMENT_TOTAL_MAX_BYTES: ${DOCKET_ATTACHMENT_TOTAL_MAX_BYTES:-16777216}
       DOCKET_PLUGIN_BIND: 0.0.0.0
       DOCKET_PLUGIN_PORT: 8787
     depends_on:
@@ -181,6 +192,8 @@ secrets:
     file: ${DOCKET_CREDENTIALS_DIR:-./secrets/smoke}/discord_bot_token
   interaction_signing_key:
     file: ${DOCKET_CREDENTIALS_DIR:-./secrets/smoke}/interaction_signing_key
+  attachment_encryption_key:
+    file: ${DOCKET_CREDENTIALS_DIR:-./secrets/smoke}/attachment_encryption_key
 
 networks:
   docket-internal:
