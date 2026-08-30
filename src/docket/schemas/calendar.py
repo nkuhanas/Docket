@@ -358,8 +358,7 @@ class CalendarLaneResult(StrictModel):
     basis_refs: list[str] = Field(default_factory=list)
     decision_refs: list[str] = Field(default_factory=list)
     source_refs: list[str] = Field(default_factory=list)
-    created_by_changeset_ref: str | None = None
-    provenance_status: Literal["complete", "legacy_preledger"]
+    created_by_changeset_ref: str
     version: int = Field(ge=1)
 
 

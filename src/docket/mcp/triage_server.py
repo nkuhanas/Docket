@@ -102,7 +102,7 @@ def docket_submit_triage_analysis(
 
 
 @triage_mcp.tool()
-def docket_get_triage_case(case_ref: CaseRef) -> dict[str, Any]:
+def docket_get_attention_case(case_ref: CaseRef) -> dict[str, Any]:
     """Read one bounded durable AttentionCase without mutation authority."""
     try:
         return _service().get_case(case_ref)

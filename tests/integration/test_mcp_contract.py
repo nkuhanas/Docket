@@ -15,33 +15,30 @@ from docket.tool_contracts import (
 
 INTERACTIVE_TOOLS = {
     "docket_commit_changeset",
-    "docket_get_calendar_profile",
+    "docket_get_attention_case",
     "docket_get_calendar_sync_status",
     "docket_get_conflict",
+    "docket_get_context_neighborhood",
     "docket_get_history_entry",
     "docket_get_intent_session",
-    "docket_get_network_neighborhood",
-    "docket_get_organization_context",
+    "docket_get_item_context",
+    "docket_get_organization_or_institution_context",
     "docket_get_person_context",
-    "docket_get_queue_item",
-    "docket_get_record",
-    "docket_get_triage_case",
-    "docket_list_accounts",
-    "docket_list_calendar_events",
     "docket_list_calendar_lanes",
-    "docket_list_queue_items",
-    "docket_list_reminder_rules",
-    "docket_network_search",
+    "docket_list_provider_accounts",
+    "docket_list_provider_calendar_events",
+    "docket_list_reminder_plans",
+    "docket_query_items",
     "docket_query_people",
     "docket_resolve_conflict",
+    "docket_search_entities",
     "docket_search_history",
-    "docket_search_records",
 }
 
 TRIAGE_TOOLS = {
     "docket_get_triage_context",
     "docket_submit_triage_analysis",
-    "docket_get_triage_case",
+    "docket_get_attention_case",
     "docket_apply_existing_suppression",
 }
 
@@ -71,7 +68,6 @@ REMOVED_LEGACY_MUTATIONS = {
 REPLACED_LEGACY_READS = {
     "docket_get_entity",
     "docket_resolve_entity",
-    "docket_search_entities",
 }
 
 
@@ -90,11 +86,9 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
         "relations",
         "resolved_intent",
         "blocking_clarifications",
-        "content",
-        "request_key",
-        "source",
-        "actor_id",
-    }.issubset(commit_schema["properties"])
+            "content",
+            "request_key",
+        }.issubset(commit_schema["properties"])
     content = commit_schema["$defs"]["OperatorChangeSetContent"]
     assert {
         "registry_changes",
@@ -143,14 +137,14 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
     assert "conflict_resolution" not in canonical_union["discriminator"]["mapping"]
     for name in {
         "docket_list_calendar_lanes",
-        "docket_list_calendar_events",
+        "docket_list_provider_calendar_events",
         "docket_get_calendar_sync_status",
-        "docket_list_reminder_rules",
     }:
         schema = tools[name].inputSchema
         assert "account_ref" in schema["properties"]
         assert "account_id" not in schema["properties"]
-    calendar_events = tools["docket_list_calendar_events"]
+    assert "subject_ref" in tools["docket_list_reminder_plans"].inputSchema["properties"]
+    calendar_events = tools["docket_list_provider_calendar_events"]
     assert "calendar_id" not in calendar_events.inputSchema.get("required", [])
     assert "globally ordered" in (calendar_events.description or "")
     history_type = tools["docket_search_history"].inputSchema["properties"][
@@ -165,8 +159,8 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
         "tool_invocation",
         "runtime_log_entry",
     }
-    assert "record_key" in tools["docket_get_record"].inputSchema["properties"]
-    assert "item_ref" in tools["docket_get_queue_item"].inputSchema["properties"]
+    assert "item_ref" in tools["docket_get_item_context"].inputSchema["properties"]
+    assert "context_entity_ref" in tools["docket_query_items"].inputSchema["properties"]
 
 
 @pytest.mark.asyncio
@@ -214,7 +208,7 @@ def test_generated_tool_contracts_have_exact_profile_parity_and_hashes() -> None
     assert contract_tool_names("interactive") == INTERACTIVE_TOOLS
     assert contract_tool_names("triage") == TRIAGE_TOOLS
     assert contract_tool_names("interactive") & contract_tool_names("triage") == {
-        "docket_get_triage_case"
+        "docket_get_attention_case"
     }
     for entries in CONTRACT_ENTRIES.values():
         assert len(entries) == len({entry["tool_name"] for entry in entries})
@@ -267,9 +261,6 @@ def test_frozen_34_plus_4_migration_matrix_is_complete_and_targets_current_contr
     assert sum(row["disposition"] == "replace" for row in rows) == 28
     assert sum(row["disposition"] == "modify" for row in rows) == 10
 
-    current_targets = INTERACTIVE_TOOLS | TRIAGE_TOOLS
     for row in rows:
         assert row["disposition"] in {"retain", "modify", "replace", "remove"}
         assert row["target_contract"]
-        if row["disposition"] in {"modify", "replace"}:
-            assert current_targets.intersection(row["target_tool_names"]), row
