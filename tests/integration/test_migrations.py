@@ -119,6 +119,12 @@ def test_clean_namespace_columns_are_unambiguous(
         "result_disposition",
     }.issubset(invocation_columns)
     assert "status" not in invocation_columns
+    assert "import_scope_json" in {
+        column["name"] for column in inspector.get_columns("change_sets")
+    }
+    assert "import_scope_json" in {
+        column["name"] for column in inspector.get_columns("change_set_revisions")
+    }
     assert "lease_key" in {column["name"] for column in inspector.get_columns("execution_leases")}
     assert "ref_id" not in {column["name"] for column in inspector.get_columns("execution_leases")}
 

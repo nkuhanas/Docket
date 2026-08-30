@@ -1,6 +1,6 @@
 # Docket Restricted triage Tool Contract
 
-contract_version: docket-tools-2026-08-30-v15
+contract_version: docket-tools-2026-08-30-v16
 contract_hash: 827b40746b52f150a1e62ad7149bfe722ca1d1c8463c5bc429a29b0fd98b3a06
 profile: triage
 

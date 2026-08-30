@@ -154,6 +154,7 @@ class ChangeSet(Base):
     )
     idempotency_key: Mapped[str] = mapped_column(String(512), unique=True, nullable=False)
     basis_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    import_scope_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     expected_versions: Mapped[dict[str, int]] = mapped_column(JSON, default=dict, nullable=False)
     registry_changes: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, default=list, nullable=False
@@ -212,6 +213,7 @@ class ChangeSetRevision(Base):
         JSON, default=dict, nullable=False
     )
     basis_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    import_scope_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     expected_versions: Mapped[dict[str, int]] = mapped_column(JSON, default=dict, nullable=False)
     registry_changes: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, default=list, nullable=False

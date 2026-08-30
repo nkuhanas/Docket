@@ -19,17 +19,21 @@ from docket.internal_api.schemas import AttachmentManifest, OperatorUtteranceCap
 from docket.mcp.instrumented import ProvenanceFastMCP
 from docket.models import (
     AttachmentEvidence,
+    ChangeSet,
     EncryptedAttachmentBlob,
     IntentSession,
+    InterpretedStatement,
     Item,
     ItemSourceBinding,
     OperatorUtterance,
     Source,
+    Task,
     TemporalBinding,
     ToolInvocation,
 )
 from docket.providers.discord import FakeDiscordProjectionAdapter
 from docket.schemas.authority import (
+    CURRENT_IMPORT_AUTHORITY_STATEMENT,
     ChangeSetCommit,
     ChangeSetContent,
     ChangeSetPrepare,
@@ -40,6 +44,7 @@ from docket.services.change_sets import ChangeSetService
 from docket.services.deferred_ingress import DeferredIngressRunner
 from docket.services.history import HistoryService
 from docket.services.ingress_ledger import IngressIdentity, IngressLedgerService
+from docket.services.interactive_authority import InteractiveAuthorityService
 from docket.services.provenance import ProvenanceService
 from docket.services.statements import StatementService
 from docket.services.tracked_context import TrackedContextService
@@ -231,6 +236,176 @@ def test_attachment_statement_preserves_bounded_fragment_lineage(session_factory
 
 
 @pytest.mark.integration
+def test_one_interactive_call_completes_import_statement_provenance(session_factory) -> None:
+    request = _request(message_id="1542999000000000023", content=b"lecture row")
+    with session_factory.begin() as session:
+        captured = ProvenanceService(session).capture_operator_utterance(request)
+        source_ref = captured["attachments"][0]["ref"]
+        content = ChangeSetContent.model_validate(
+            {
+                "basis_refs": [captured["ref"]],
+                "import_scope": {
+                    "mode": "context_only",
+                    "source_refs": [source_ref],
+                },
+                "tracked_context_changes": [
+                    {
+                        "mutation_type": "item_create",
+                        "change_id": "lecture-11-9",
+                        "action": "create",
+                        "object_type": "item",
+                        "affected_fields": ["title", "kind", "source_refs"],
+                        "basis_refs": [captured["ref"]],
+                        "create_spec": {
+                            "title": "Lecture 11.9",
+                            "kind": "academic.lecture_topic",
+                            "source_refs": [source_ref],
+                        },
+                    }
+                ],
+            }
+        )
+        result = InteractiveAuthorityService(session).process_turn(
+            utterance_ref=captured["ref"],
+            request_key=request.request_key,
+            actor_id=get_settings().operator_discord_user_id,
+            intent_session_ref=None,
+            expected_session_version=None,
+            statements=[
+                StatementInput(
+                    statement_kind="item_candidate",
+                    subject_refs=[source_ref],
+                    predicate="schedule_entry",
+                    value_json={"title": "Lecture 11.9"},
+                    affected_fields=["title"],
+                    interpreter_version="fixture-v1",
+                    source_ref=source_ref,
+                    source_fragment_locator={"page": 1, "row": 3},
+                    source_fragment_hash=hashlib.sha256(b"lecture row").hexdigest(),
+                    extractor_identifier="fixture.schedule-table",
+                    extractor_version="1.0.0",
+                )
+            ],
+            relations=[],
+            resolved_intent_json={"kind": "context_import"},
+            blocking_clarifications=[],
+            content=content,
+            changeset_ref=None,
+            expected_changeset_version=None,
+        )
+        assert result["disposition"] == "committed"
+        item = session.scalar(select(Item))
+        binding = session.scalar(select(ItemSourceBinding))
+        statement = session.scalar(select(InterpretedStatement))
+        assert item is not None and binding is not None and statement is not None
+        assert statement.ref_id in item.basis_refs
+        assert statement.ref_id in binding.basis_refs
+
+
+@pytest.mark.integration
+def test_one_interactive_call_resolves_explicit_import_authority_symbol(
+    session_factory,
+) -> None:
+    request = _request(
+        message_id="1542999000000000024",
+        content=b"assignment row",
+    ).model_copy(
+        update={
+            "verbatim_text": (
+                "Import this assignment and create the task I need to complete."
+            )
+        }
+    )
+    with session_factory.begin() as session:
+        captured = ProvenanceService(session).capture_operator_utterance(request)
+        source_ref = captured["attachments"][0]["ref"]
+        content = ChangeSetContent.model_validate(
+            {
+                "basis_refs": [captured["ref"]],
+                "import_scope": {
+                    "mode": "operator_explicit",
+                    "source_refs": [source_ref],
+                    "authorized_effects": ["item", "task"],
+                    "authority_statement_refs": [
+                        CURRENT_IMPORT_AUTHORITY_STATEMENT
+                    ],
+                },
+                "tracked_context_changes": [
+                    {
+                        "mutation_type": "item_create",
+                        "change_id": "assignment",
+                        "action": "create",
+                        "object_type": "item",
+                        "affected_fields": ["title", "source_refs"],
+                        "basis_refs": [captured["ref"]],
+                        "create_spec": {
+                            "title": "Assignment",
+                            "source_refs": [source_ref],
+                        },
+                    },
+                    {
+                        "mutation_type": "task_create",
+                        "change_id": "complete-assignment",
+                        "action": "create",
+                        "object_type": "task",
+                        "affected_fields": ["item_ref", "task_state"],
+                        "basis_refs": [captured["ref"]],
+                        "create_spec": {
+                            "item_change_id": "assignment",
+                            "title": "Complete Assignment",
+                            "source_refs": [source_ref],
+                        },
+                    },
+                ],
+            }
+        )
+        result = InteractiveAuthorityService(session).process_turn(
+            utterance_ref=captured["ref"],
+            request_key=request.request_key,
+            actor_id=get_settings().operator_discord_user_id,
+            intent_session_ref=None,
+            expected_session_version=None,
+            statements=[
+                StatementInput(
+                    statement_kind="item_candidate",
+                    subject_refs=[source_ref],
+                    predicate="schedule_entry",
+                    value_json={"title": "Assignment"},
+                    affected_fields=["title"],
+                    interpreter_version="fixture-v1",
+                    source_ref=source_ref,
+                    source_fragment_locator={"page": 1, "row": 6},
+                    source_fragment_hash=hashlib.sha256(b"assignment row").hexdigest(),
+                    extractor_identifier="fixture.schedule-table",
+                    extractor_version="1.0.0",
+                ),
+                StatementInput(
+                    statement_kind="operator_intent",
+                    subject_refs=[source_ref],
+                    predicate="import_effect_authority",
+                    value_json={"authorized_effects": ["item", "task"]},
+                    affected_fields=["import_scope"],
+                    interpreter_version="fixture-v1",
+                ),
+            ],
+            relations=[],
+            resolved_intent_json={"kind": "explicit_context_import"},
+            blocking_clarifications=[],
+            content=content,
+            changeset_ref=None,
+            expected_changeset_version=None,
+        )
+        assert result["disposition"] == "committed"
+        changeset = session.scalar(select(ChangeSet))
+        assert changeset is not None
+        assert changeset.import_scope_json is not None
+        authority_refs = changeset.import_scope_json["authority_statement_refs"]
+        assert len(authority_refs) == 1
+        assert authority_refs[0].startswith("stm_")
+        assert CURRENT_IMPORT_AUTHORITY_STATEMENT not in str(changeset.import_scope_json)
+
+
+@pytest.mark.integration
 def test_source_fragment_binding_replays_import_without_duplicate_context(
     session_factory,
 ) -> None:
@@ -261,6 +436,10 @@ def test_source_fragment_binding_replays_import_without_duplicate_context(
         content = ChangeSetContent.model_validate(
             {
                 "basis_refs": [captured["ref"], statement.ref_id],
+                "import_scope": {
+                    "mode": "context_only",
+                    "source_refs": [source_ref],
+                },
                 "tracked_context_changes": [
                     {
                         "mutation_type": "item_create",
@@ -365,6 +544,10 @@ def test_identical_bytes_in_distinct_uploads_do_not_merge_items(session_factory)
             content = ChangeSetContent.model_validate(
                 {
                     "basis_refs": [captured["ref"], statement.ref_id],
+                    "import_scope": {
+                        "mode": "context_only",
+                        "source_refs": [source_ref],
+                    },
                     "tracked_context_changes": [
                         {
                             "mutation_type": "item_create",
@@ -399,6 +582,173 @@ def test_identical_bytes_in_distinct_uploads_do_not_merge_items(session_factory)
 
 
 @pytest.mark.integration
+def test_attachment_import_scope_blocks_source_broadening_without_operator_statement(
+    session_factory,
+) -> None:
+    request = _request(message_id="1542999000000000031", content=b"assignment row")
+    with session_factory.begin() as session:
+        captured = ProvenanceService(session).capture_operator_utterance(request)
+        source_ref = captured["attachments"][0]["ref"]
+        statements = StatementService(session).derive(
+            captured["ref"],
+            [
+                StatementInput(
+                    statement_kind="item_candidate",
+                    subject_refs=[source_ref],
+                    predicate="schedule_entry",
+                    value_json={"title": "Problem Set 4"},
+                    affected_fields=["title"],
+                    interpreter_version="fixture-v1",
+                    source_ref=source_ref,
+                    source_fragment_locator={"page": 1, "row": 5},
+                    source_fragment_hash=hashlib.sha256(b"assignment row").hexdigest(),
+                    extractor_identifier="fixture.schedule-table",
+                    extractor_version="1.0.0",
+                ),
+                StatementInput(
+                    statement_kind="operator_intent",
+                    subject_refs=[source_ref],
+                    predicate="import_effect_authority",
+                    value_json={"authorized_effects": ["item", "task"]},
+                    affected_fields=["import_scope"],
+                    interpreter_version="fixture-v1",
+                ),
+            ],
+        )
+        source_statement_ref = statements[0].ref_id
+        authority_statement_ref = statements[1].ref_id
+
+    item_change = {
+        "mutation_type": "item_create",
+        "change_id": "problem-set-4",
+        "action": "create",
+        "object_type": "item",
+        "affected_fields": ["title", "kind", "source_refs"],
+        "basis_refs": [captured["ref"], source_statement_ref],
+        "create_spec": {
+            "title": "Problem Set 4",
+            "kind": "academic.assignment",
+            "source_refs": [source_ref],
+        },
+    }
+    task_change = {
+        "mutation_type": "task_create",
+        "change_id": "complete-problem-set-4",
+        "action": "create",
+        "object_type": "task",
+        "affected_fields": ["item_ref", "task_state"],
+        "basis_refs": [captured["ref"], source_statement_ref],
+        "create_spec": {
+            "item_change_id": "problem-set-4",
+            "title": "Complete Problem Set 4",
+            "source_refs": [source_ref],
+        },
+    }
+
+    with session_factory.begin() as session:
+        no_scope = ChangeSetContent.model_validate(
+            {
+                "basis_refs": [captured["ref"], source_statement_ref],
+                "tracked_context_changes": [item_change],
+            }
+        )
+        intent = IntentSession(
+            conversation_ref="discord:import:no-scope",
+            source_utterance_ref=captured["ref"],
+            semantic_state="ready",
+            commit_state="not_attempted",
+        )
+        session.add(intent)
+        session.flush()
+        service = ChangeSetService(
+            session,
+            handlers=TrackedContextService(session).handlers(),
+        )
+        changeset, _created = service.prepare(
+            ChangeSetPrepare(
+                intent_session_ref=intent.ref_id,
+                expected_session_version=intent.version,
+                idempotency_key="attachment-import:no-scope",
+                content=no_scope,
+            )
+        )
+        assert {error["code"] for error in changeset.validation_errors} == {
+            "import_scope_required"
+        }
+
+    with session_factory.begin() as session:
+        context_only = ChangeSetContent.model_validate(
+            {
+                "basis_refs": [captured["ref"], source_statement_ref],
+                "import_scope": {
+                    "mode": "context_only",
+                    "source_refs": [source_ref],
+                },
+                "tracked_context_changes": [item_change, task_change],
+            }
+        )
+        intent = IntentSession(
+            conversation_ref="discord:import:context-only",
+            source_utterance_ref=captured["ref"],
+            semantic_state="ready",
+            commit_state="not_attempted",
+        )
+        session.add(intent)
+        session.flush()
+        changeset, _created = ChangeSetService(
+            session,
+            handlers=TrackedContextService(session).handlers(),
+        ).prepare(
+            ChangeSetPrepare(
+                intent_session_ref=intent.ref_id,
+                expected_session_version=intent.version,
+                idempotency_key="attachment-import:context-only",
+                content=context_only,
+            )
+        )
+        assert {error["code"] for error in changeset.validation_errors} == {
+            "import_effect_outside_scope"
+        }
+
+    with session_factory.begin() as session:
+        explicit = ChangeSetContent.model_validate(
+            {
+                "basis_refs": [
+                    captured["ref"],
+                    source_statement_ref,
+                    authority_statement_ref,
+                ],
+                "import_scope": {
+                    "mode": "operator_explicit",
+                    "source_refs": [source_ref],
+                    "authorized_effects": ["item", "task"],
+                    "authority_statement_refs": [authority_statement_ref],
+                },
+                "tracked_context_changes": [
+                    item_change,
+                    {
+                        **task_change,
+                        "basis_refs": [
+                            captured["ref"],
+                            source_statement_ref,
+                            authority_statement_ref,
+                        ],
+                    },
+                ],
+            }
+        )
+        affected = _commit_tracked_content(
+            session,
+            utterance_ref=captured["ref"],
+            idempotency_key="attachment-import:operator-explicit",
+            content=explicit,
+        )
+        assert len(affected) == 2
+        assert session.scalar(select(func.count(Item.id))) == 1
+        assert session.scalar(select(func.count(Task.id))) == 1
+
+
+@pytest.mark.integration
 def test_attachment_item_requires_exact_fragment_statement(session_factory) -> None:
     request = _request(message_id="1542999000000000026", content=b"orphan row")
     with session_factory.begin() as session:
@@ -408,6 +758,10 @@ def test_attachment_item_requires_exact_fragment_statement(session_factory) -> N
         content = ChangeSetContent.model_validate(
             {
                 "basis_refs": [captured["ref"]],
+                "import_scope": {
+                    "mode": "context_only",
+                    "source_refs": [source_ref],
+                },
                 "tracked_context_changes": [
                     {
                         "mutation_type": "item_create",
@@ -424,14 +778,33 @@ def test_attachment_item_requires_exact_fragment_statement(session_factory) -> N
                 ],
             }
         )
-        with pytest.raises(DocketError) as error:
-            _commit_tracked_content(
-                session,
-                utterance_ref=captured["ref"],
+        intent = IntentSession(
+            conversation_ref="discord:attachment-import:missing-fragment",
+            source_utterance_ref=captured["ref"],
+            semantic_state="ready",
+            commit_state="not_attempted",
+        )
+        session.add(intent)
+        session.flush()
+        service = ChangeSetService(
+            session,
+            handlers=TrackedContextService(session).handlers(),
+        )
+        changeset, _created = service.prepare(
+            ChangeSetPrepare(
+                intent_session_ref=intent.ref_id,
+                expected_session_version=intent.version,
                 idempotency_key="attachment-import:missing-fragment",
                 content=content,
             )
-        assert error.value.code == "item_source_fragment_required"
+        )
+        assert changeset.state == "draft"
+        assert changeset.validation_errors == [
+            {
+                "code": "import_effect_source_fragment_required",
+                "details": {"change_id": "orphan"},
+            }
+        ]
 
 
 @pytest.mark.integration

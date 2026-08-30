@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-08-30-v15"
+CONTRACT_VERSION = "docket-tools-2026-08-30-v16"
 
 
 class ToolContractEntry(TypedDict):
@@ -229,6 +229,12 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
                 (
                     "Items are bounded tracked context; Tasks are work; TemporalBindings attach "
                     "time roles; Events are occurrences. Never launder a dated Item into an Event."
+                ),
+                (
+                    "Attachment imports require import_scope. context_only permits only source-"
+                    "fragment-backed Item, TemporalBinding, and Fact effects. Any broader effect "
+                    "requires an operator_explicit scope and a source-less operator_intent "
+                    "statement whose import_effect_authority exactly names those effect types."
                 ),
                 (
                     "AttentionCase resolution uses exact case_ and caserev_; explicitly dispose "

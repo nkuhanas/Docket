@@ -14,6 +14,7 @@ from docket.models import (
     CaseItem,
     ChangeSet,
     IntentSession,
+    InterpretedStatement,
     OperatorUtterance,
     PersistedSemanticOption,
     SemanticRequest,
@@ -21,6 +22,7 @@ from docket.models import (
 )
 from docket.models.base import utc_now
 from docket.schemas.authority import (
+    CURRENT_IMPORT_AUTHORITY_STATEMENT,
     ChangeSetCommit,
     ChangeSetContent,
     ChangeSetPrepare,
@@ -28,6 +30,7 @@ from docket.schemas.authority import (
     ConflictResolve,
     IntentSessionOpen,
     IntentTurnAppend,
+    OperatorChangeSetContent,
     SemanticOptionDraft,
     StatementInput,
     StatementRelationInput,
@@ -264,6 +267,69 @@ class InteractiveAuthorityService:
         self.session.add(attempt)
         semantic_request.commit_state = "pending"
         return attempt
+
+    def _complete_import_statement_basis(
+        self,
+        *,
+        content: ChangeSetContent,
+        turn_statement_refs: list[str],
+    ) -> ChangeSetContent:
+        scope = content.import_scope
+        if scope is None:
+            return content
+        statements = list(
+            self.session.scalars(
+                select(InterpretedStatement).where(
+                    InterpretedStatement.ref_id.in_(turn_statement_refs)
+                )
+            )
+        )
+        source_statement_refs = [
+            statement.ref_id
+            for statement in statements
+            if statement.source_ref in set(scope.source_refs)
+        ]
+        authority_statement_refs = list(scope.authority_statement_refs)
+        if CURRENT_IMPORT_AUTHORITY_STATEMENT in authority_statement_refs:
+            expected_effects = sorted(scope.authorized_effects)
+            candidates = [
+                statement.ref_id
+                for statement in statements
+                if statement.source_ref is None
+                and statement.statement_kind == "operator_intent"
+                and statement.predicate == "import_effect_authority"
+                and statement.value_json
+                == {"authorized_effects": expected_effects}
+            ]
+            if len(candidates) == 1:
+                authority_statement_refs = [
+                    candidates[0]
+                    if ref == CURRENT_IMPORT_AUTHORITY_STATEMENT
+                    else ref
+                    for ref in authority_statement_refs
+                ]
+
+        completed_statement_refs = list(
+            dict.fromkeys([*source_statement_refs, *authority_statement_refs])
+        )
+        payload = content.model_dump(mode="json")
+        payload["basis_refs"] = list(
+            dict.fromkeys([*content.basis_refs, *completed_statement_refs])
+        )
+        payload["import_scope"]["authority_statement_refs"] = authority_statement_refs
+        for group_name in (
+            "registry_changes",
+            "preference_changes",
+            "lane_changes",
+            "event_changes",
+            "tracked_context_changes",
+            "resolution_changes",
+        ):
+            for change in payload[group_name]:
+                change["basis_refs"] = list(
+                    dict.fromkeys([*change["basis_refs"], *completed_statement_refs])
+                )
+        return ChangeSetContent.model_validate(payload)
 
     def process_turn(
         self,
@@ -587,6 +653,31 @@ class InteractiveAuthorityService:
                 gateway_instance_ref=gateway_instance_ref,
             )
         )
+        if content is not None:
+            content = self._complete_import_statement_basis(
+                content=content,
+                turn_statement_refs=list(turn.statement_refs),
+            )
+        if semantic_options:
+            completed_options: list[SemanticOptionDraft] = []
+            for draft in semantic_options:
+                completed_content = self._complete_import_statement_basis(
+                    content=draft.content.to_internal(),
+                    turn_statement_refs=list(turn.statement_refs),
+                )
+                completed_options.append(
+                    draft.model_copy(
+                        update={
+                            "content": OperatorChangeSetContent.model_validate(
+                                completed_content.model_dump(
+                                    mode="json",
+                                    exclude={"provider_intents"},
+                                )
+                            )
+                        }
+                    )
+                )
+            semantic_options = completed_options
         conflict_refs = list(
             dict.fromkeys(
                 [

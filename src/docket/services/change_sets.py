@@ -23,12 +23,14 @@ from docket.models import (
     Fact,
     IntentSession,
     IntentTurn,
+    InterpretedStatement,
     LaneRoutingDecision,
     OperatorUtterance,
     ProviderAccount,
     ProviderEventBinding,
     Relationship,
     SemanticRequest,
+    Source,
 )
 from docket.models.base import utc_now
 from docket.schemas.authority import (
@@ -111,6 +113,7 @@ def _content_payload(content: ChangeSetContent) -> dict[str, Any]:
     # ChangeSet snapshot and later attempt to infer them from object/action.
     payload = content.model_dump(mode="json", exclude_none=True)
     payload.setdefault("expected_versions", {})
+    payload.setdefault("import_scope", None)
     for key in (
         "registry_changes",
         "preference_changes",
@@ -763,6 +766,7 @@ class ChangeSetService:
                 change_set_id=changeset.id,
                 revision=1,
                 basis_refs=list(changeset.basis_refs),
+                import_scope_json=changeset.import_scope_json,
                 expected_versions=dict(changeset.expected_versions),
                 registry_changes=list(changeset.registry_changes),
                 preference_changes=list(changeset.preference_changes),
@@ -819,6 +823,7 @@ class ChangeSetService:
         return ChangeSetContent.model_validate(
             {
                 "basis_refs": changeset.basis_refs,
+                "import_scope": changeset.import_scope_json,
                 "expected_versions": changeset.expected_versions,
                 "registry_changes": changeset.registry_changes,
                 "preference_changes": changeset.preference_changes,
@@ -834,6 +839,7 @@ class ChangeSetService:
     def _sync_snapshot(changeset: ChangeSet, content: ChangeSetContent) -> None:
         payload = _content_payload(content)
         changeset.basis_refs = payload["basis_refs"]
+        changeset.import_scope_json = payload.get("import_scope")
         changeset.expected_versions = payload["expected_versions"]
         changeset.registry_changes = payload["registry_changes"]
         changeset.preference_changes = payload["preference_changes"]
@@ -855,6 +861,7 @@ class ChangeSetService:
             {
                 key: payload[key]
                 for key in (
+                    "import_scope",
                     "registry_changes",
                     "preference_changes",
                     "lane_changes",
@@ -869,6 +876,7 @@ class ChangeSetService:
             change_set_id=changeset.id,
             revision=revision,
             basis_refs=payload["basis_refs"],
+            import_scope_json=payload.get("import_scope"),
             expected_versions=payload["expected_versions"],
             registry_changes=payload["registry_changes"],
             preference_changes=payload["preference_changes"],
@@ -897,6 +905,138 @@ class ChangeSetService:
             )
         )
         return refs
+
+    def _import_scope_errors(
+        self,
+        *,
+        content: ChangeSetContent,
+        changes: list[ChangeInput],
+        session_utterance_refs: set[str],
+    ) -> list[dict[str, Any]]:
+        errors: list[dict[str, Any]] = []
+        nested_refs = _nested_public_refs(_content_payload(content))
+        statement_refs = {ref for ref in nested_refs if ref.startswith("stm_")}
+        statements = {
+            statement.ref_id: statement
+            for statement in self.session.scalars(
+                select(InterpretedStatement).where(
+                    InterpretedStatement.ref_id.in_(statement_refs)
+                )
+            )
+        }
+        referenced_source_refs = {
+            ref for ref in nested_refs if ref.startswith("src_")
+        }
+        referenced_source_refs.update(
+            statement.source_ref
+            for statement in statements.values()
+            if statement.source_ref is not None
+        )
+        sources = {
+            source.ref_id: source
+            for source in self.session.scalars(
+                select(Source).where(Source.ref_id.in_(referenced_source_refs))
+            )
+        }
+        attachment_source_refs = {
+            ref
+            for ref, source in sources.items()
+            if source.source_kind == "attachment"
+        }
+        scope = content.import_scope
+        if attachment_source_refs and scope is None:
+            return [
+                {
+                    "code": "import_scope_required",
+                    "details": {"source_refs": sorted(attachment_source_refs)},
+                }
+            ]
+        if scope is None:
+            return []
+
+        scope_source_refs = set(scope.source_refs)
+        unknown_sources = sorted(scope_source_refs - set(sources))
+        if unknown_sources:
+            errors.append(
+                {
+                    "code": "import_source_not_found",
+                    "details": {"source_refs": unknown_sources},
+                }
+            )
+        unscoped_sources = sorted(referenced_source_refs - scope_source_refs)
+        if unscoped_sources:
+            errors.append(
+                {
+                    "code": "import_source_outside_scope",
+                    "details": {"source_refs": unscoped_sources},
+                }
+            )
+
+        effect_types = {change.object_type for change in changes}
+        unauthorized_effects = sorted(effect_types - set(scope.authorized_effects))
+        if unauthorized_effects:
+            errors.append(
+                {
+                    "code": "import_effect_outside_scope",
+                    "details": {
+                        "effect_types": unauthorized_effects,
+                        "mode": scope.mode,
+                    },
+                }
+            )
+
+        if scope.mode == "context_only":
+            for change in changes:
+                source_statement_refs = {
+                    ref
+                    for ref in change.basis_refs
+                    if ref in statements
+                    and statements[ref].source_ref in scope_source_refs
+                }
+                if not source_statement_refs:
+                    errors.append(
+                        {
+                            "code": "import_effect_source_fragment_required",
+                            "details": {"change_id": change.change_id},
+                        }
+                    )
+            return errors
+
+        authority_refs = set(scope.authority_statement_refs)
+        missing_basis_refs = sorted(authority_refs - set(content.basis_refs))
+        if missing_basis_refs:
+            errors.append(
+                {
+                    "code": "import_authority_statement_not_in_basis",
+                    "details": {"statement_refs": missing_basis_refs},
+                }
+            )
+        utterance_ids = set(
+            self.session.scalars(
+                select(OperatorUtterance.id).where(
+                    OperatorUtterance.ref_id.in_(session_utterance_refs)
+                )
+            )
+        )
+        expected_effects = sorted(scope.authorized_effects)
+        for statement_ref in sorted(authority_refs):
+            statement = statements.get(statement_ref)
+            valid = (
+                statement is not None
+                and statement.utterance_id in utterance_ids
+                and statement.source_ref is None
+                and statement.statement_kind == "operator_intent"
+                and statement.predicate == "import_effect_authority"
+                and statement.value_json == {"authorized_effects": expected_effects}
+            )
+            if not valid:
+                errors.append(
+                    {
+                        "code": "import_authority_statement_invalid",
+                        "details": {"statement_ref": statement_ref},
+                    }
+                )
+        return errors
 
     def _validate(
         self,
@@ -934,6 +1074,13 @@ class ChangeSetService:
             )
 
         changes = _all_changes(content)
+        errors.extend(
+            self._import_scope_errors(
+                content=content,
+                changes=changes,
+                session_utterance_refs=session_utterance_refs,
+            )
+        )
         case_resolutions = AttentionCaseResolutionService(self.session)
         change_ids = {change.change_id for change in changes}
         change_by_id = {change.change_id: change for change in changes}
