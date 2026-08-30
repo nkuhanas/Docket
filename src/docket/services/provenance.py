@@ -869,22 +869,37 @@ class ProvenanceService:
                 message="OperatorUtterance is not the exact manifest-bound sign-off command.",
             )
 
-        prerequisite = self.session.scalar(
-            select(Decision).where(
-                Decision.decision_kind == artifact.prerequisite.decision_kind,
-                Decision.document_ref == artifact.prerequisite.document_ref,
-                Decision.frozen_artifact_hash == artifact.prerequisite.frozen_artifact_hash,
+        prerequisite_decisions: list[Decision] = []
+        for binding in artifact.prerequisites:
+            prerequisite_clauses = [
+                Decision.decision_kind == binding.decision_kind,
+                Decision.document_ref == binding.document_ref,
+                Decision.frozen_artifact_hash == binding.frozen_artifact_hash,
+                Decision.architecture_authority == binding.architecture_authority,
+            ]
+            if binding.decision_ref is not None:
+                prerequisite_clauses.append(Decision.ref_id == binding.decision_ref)
+            prerequisite = self.session.scalar(
+                select(Decision).where(*prerequisite_clauses)
             )
-        )
-        if prerequisite is None:
-            raise DocketError(
-                code=(
-                    "provenance_bootstrap_not_verified"
-                    if artifact.document_ref == FROZEN_DOCUMENT_REF
-                    else "specification_signoff_prerequisite_missing"
-                ),
-                message="Specification sign-off prerequisite provenance is unavailable.",
-            )
+            if prerequisite is None:
+                details = {
+                    "document_ref": binding.document_ref,
+                    "frozen_artifact_hash": binding.frozen_artifact_hash,
+                }
+                if binding.decision_ref is not None:
+                    details["decision_ref"] = binding.decision_ref
+                raise DocketError(
+                    code=(
+                        "provenance_bootstrap_not_verified"
+                        if artifact.document_ref == FROZEN_DOCUMENT_REF
+                        else "specification_signoff_prerequisite_missing"
+                    ),
+                    message="Specification sign-off prerequisite provenance is unavailable.",
+                    details=details,
+                )
+            prerequisite_decisions.append(prerequisite)
+        prerequisite_decision_refs = [item.ref_id for item in prerequisite_decisions]
 
         bootstrap_utterance: OperatorUtterance | None = None
         if artifact.bootstrap_authority is not None:
@@ -914,16 +929,27 @@ class ProvenanceService:
             )
         )
         if existing is not None:
-            if existing.basis_refs != [utterance.ref_id]:
+            if (
+                existing.basis_refs != [utterance.ref_id]
+                or existing.authorized_scope != artifact.authorized_scope
+                or existing.architecture_authority != artifact.architecture_authority
+                or existing.implementation_authority != artifact.implementation_authority
+            ):
                 raise DocketError(
                     code="specification_signoff_conflict",
-                    message="Frozen architecture already has a different final sign-off basis.",
+                    message="Frozen architecture already has conflicting sign-off authority.",
                 )
             return {
                 "ok": True,
                 "ref": existing.ref_id,
                 "state": "signed",
                 "disposition": "replayed_request",
+                "document_ref": artifact.document_ref,
+                "frozen_artifact_hash": artifact.frozen_artifact_hash,
+                "authorized_scope": artifact.authorized_scope,
+                "implementation_authority": artifact.implementation_authority,
+                "production_reset_authority": artifact.production_reset_authority,
+                "prerequisite_decision_refs": prerequisite_decision_refs,
             }
         decision = Decision(
             decision_kind="specification_signoff",
@@ -935,11 +961,12 @@ class ProvenanceService:
             architecture_authority=artifact.architecture_authority,
             implementation_authority=artifact.implementation_authority,
             payload_json={
-                "prerequisite_decision_ref": prerequisite.ref_id,
+                "prerequisite_decision_refs": prerequisite_decision_refs,
                 "bootstrap_utterance_ref": (
                     bootstrap_utterance.ref_id if bootstrap_utterance is not None else None
                 ),
                 "implementation_authority": artifact.implementation_authority,
+                "production_reset_authority": artifact.production_reset_authority,
             },
         )
         self.session.add(decision)
@@ -953,7 +980,11 @@ class ProvenanceService:
                 actor_id=settings.operator_discord_user_id,
                 request_id=request.request_id,
                 primary_ref=decision.ref_id,
-                affected_refs=[decision.ref_id, utterance.ref_id],
+                affected_refs=[
+                    decision.ref_id,
+                    utterance.ref_id,
+                    *prerequisite_decision_refs,
+                ],
                 basis_refs=[utterance.ref_id],
                 data={
                     "document_ref": artifact.document_ref,
@@ -961,7 +992,8 @@ class ProvenanceService:
                     "architecture_authority": artifact.architecture_authority,
                     "implementation_authority": artifact.implementation_authority,
                     "authorized_scope": artifact.authorized_scope,
-                    "prerequisite_decision_ref": prerequisite.ref_id,
+                    "production_reset_authority": artifact.production_reset_authority,
+                    "prerequisite_decision_refs": prerequisite_decision_refs,
                     "bootstrap_utterance_ref": (
                         bootstrap_utterance.ref_id if bootstrap_utterance is not None else None
                     ),
@@ -973,6 +1005,12 @@ class ProvenanceService:
             "ref": decision.ref_id,
             "state": "signed",
             "disposition": "created",
+            "document_ref": artifact.document_ref,
+            "frozen_artifact_hash": artifact.frozen_artifact_hash,
+            "authorized_scope": artifact.authorized_scope,
+            "implementation_authority": artifact.implementation_authority,
+            "production_reset_authority": artifact.production_reset_authority,
+            "prerequisite_decision_refs": prerequisite_decision_refs,
         }
 
 

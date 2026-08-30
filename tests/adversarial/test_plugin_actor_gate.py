@@ -379,7 +379,12 @@ def test_empty_signoff_turn_persists_deterministic_response(plugin_module, monke
     monkeypatch.setattr(
         plugin_module,
         "_record_final_signoff_if_explicit",
-        lambda _event, _ref: decision_ref,
+        lambda _event, _ref: {
+            "ok": True,
+            "ref": decision_ref,
+            "authorized_scope": "tracked_context_test_scope",
+            "production_reset_authority": False,
+        },
     )
     monkeypatch.setattr(plugin_module, "_enqueue_trace_update", lambda *_args, **_kwargs: None)
     event = SimpleNamespace(
@@ -441,7 +446,12 @@ def test_exact_signoff_persists_and_schedules_confirmation_without_model_turn(
     monkeypatch.setattr(
         plugin_module,
         "_record_final_signoff_if_explicit",
-        lambda _event, _ref: decision_ref,
+        lambda _event, _ref: {
+            "ok": True,
+            "ref": decision_ref,
+            "authorized_scope": "tracked_context_test_scope",
+            "production_reset_authority": False,
+        },
     )
     monkeypatch.setattr(
         plugin_module,
@@ -472,6 +482,10 @@ def test_exact_signoff_persists_and_schedules_confirmation_without_model_turn(
     assert requests[-1][1]["model_identifier"] == "docket-deterministic-signoff-v1"
     assert scheduled[0]["response_ref"] == response_ref
     assert decision_ref in str(scheduled[0]["deterministic_response_text"])
+    assert "tracked_context_test_scope" in str(scheduled[0]["deterministic_response_text"])
+    assert "does not authorize production deployment" in str(
+        scheduled[0]["deterministic_response_text"]
+    )
 
 
 @pytest.mark.asyncio
@@ -480,6 +494,9 @@ async def test_processing_completion_delivers_persisted_signoff_fallback(
     plugin_module, monkeypatch
 ) -> None:
     deliveries: list[tuple[dict[str, object], bool]] = []
+
+    async def fake_to_thread(function, *args, **kwargs):
+        return function(*args, **kwargs)
 
     class FakeAdapter:
         async def on_processing_complete(self, _event, _outcome) -> None:
@@ -508,6 +525,7 @@ async def test_processing_completion_delivers_persisted_signoff_fallback(
         "_post_agent_response_delivery",
         lambda payload, *, delivered: deliveries.append((payload, delivered)),
     )
+    monkeypatch.setattr(plugin_module.asyncio, "to_thread", fake_to_thread)
     plugin_module._install_processing_outcome_listener(adapter)
 
     await adapter.on_processing_complete(SimpleNamespace(), "success")
@@ -924,7 +942,12 @@ def test_exact_final_signoff_is_recorded_before_model_dispatch(plugin_module, mo
 
     def record_signoff(event, ref):
         captured.append((event.text, ref))
-        return f"dec_{'3' * 26}"
+        return {
+            "ok": True,
+            "ref": f"dec_{'3' * 26}",
+            "authorized_scope": None,
+            "production_reset_authority": False,
+        }
 
     monkeypatch.setattr(
         plugin_module,
@@ -1061,12 +1084,12 @@ def test_amendment_signoff_forwards_exact_binding_only(plugin_module, monkeypatc
 
     monkeypatch.setattr(plugin_module, "_docket_internal_request", capture)
 
-    decision_ref = plugin_module._record_final_signoff_if_explicit(
+    signoff_result = plugin_module._record_final_signoff_if_explicit(
         SimpleNamespace(text=exact_text),
         f"utt_{'2' * 26}",
     )
 
-    assert decision_ref == f"dec_{'3' * 26}"
+    assert signoff_result == {"ok": True, "ref": f"dec_{'3' * 26}"}
     assert requests[0][0] == "/internal/v1/discord/specification-signoffs"
     assert requests[0][1]["document_ref"] == document_ref
     assert requests[0][1]["frozen_artifact_hash"] == frozen_hash

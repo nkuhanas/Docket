@@ -121,6 +121,33 @@ latest deployment barrier is `released`; bounded Docket/Hermes logs contain no
 gateway fencing, uniqueness, traceback, or error entry after the successful
 deployment.
 
+## Frozen tracked-context sign-off enablement
+
+`ONT-DELTA-2026-08-29-TRACKED-CONTEXT` is frozen at SHA-256
+`830c33c9d78485a6a6a8f872b6dfad996869f8a7eaea9a5f7d39d52e9357cf48`.
+This repository revision packages only the manifest-bound recognition needed
+for the Operator to sign that exact artifact through the existing ledger.
+
+Manifest schema version 2 binds the candidate to all three exact prerequisite
+Decisions:
+
+```text
+dec_01M13MANM19BX22EW8QC8AH9DT  August 27 ontology
+dec_01M1587SE1JX3BVQ1QZBQKX6T7  August 28 case resolution
+dec_01M15EHKNXVKRBM7MZ3FN39X3E  August 28 interactive continuity
+```
+
+The validator requires each public Decision ref together with its decision
+kind, document ref, artifact hash, and architecture-authority value. The new
+sign-off Decision will record the complete prerequisite list, the exact bounded
+implementation scope, and `production_reset_authority=false`. Plugin `0.22.3`
+will project that production reset and deployment remain unauthorized.
+
+This enablement introduces no migration, clean public-ref prefix, Item/Task/
+TemporalBinding schema, triage change, provider behavior, reset implementation,
+or model-facing mutation. Amendment sign-off and all substantive readiness/
+implementation work remain pending.
+
 ## Implemented persistence sequence
 
 The migration sequence is additive through `0041`:
