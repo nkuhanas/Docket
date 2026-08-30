@@ -49,7 +49,6 @@ _AUTHORITY_REF_FIELDS = frozenset(
         "prerequisite_decision_refs",
         "related_refs",
         "responds_to_utterance_refs",
-        "semantic_request_ref",
         "statement_refs",
         "tool_call_refs",
         "utterance_ref",
@@ -179,14 +178,6 @@ class ClosureRow:
             candidates = _refs(value)
             if field_name in _AUTHORITY_REF_FIELDS:
                 refs.update(candidates)
-            elif field_name in {
-                "affected_refs",
-                "result_refs",
-                "resulting_semantic_refs",
-            }:
-                refs.update(
-                    ref for ref in candidates if ref.partition("_")[0] in _GOVERNANCE_PREFIXES
-                )
         return refs
 
     @property
@@ -199,8 +190,6 @@ class ClosureRow:
             "interpreted_statements": {"utterance_ref"},
             "runtime_log_entries": {"related_refs"},
             "tool_invocations": {
-                "gateway_instance_ref",
-                "semantic_request_ref",
                 "utterance_refs",
             },
         }
