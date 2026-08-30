@@ -50,7 +50,6 @@ class ReviewNavigationReference:
 @dataclass(frozen=True)
 class SemanticOptionReference:
     option_row_id: UUID
-    projection_version: int
     actor_id: str
     expires_at: datetime
 
@@ -58,12 +57,9 @@ class SemanticOptionReference:
 def _semantic_option_payload(
     *,
     option_row_id: UUID,
-    projection_version: int,
     actor_id: str,
     expires_at: datetime,
 ) -> bytes:
-    if projection_version < 1 or projection_version >= 2**32:
-        raise ValueError("projection_version is outside the signed token range")
     try:
         actor = int(actor_id)
     except ValueError as exc:
@@ -74,7 +70,6 @@ def _semantic_option_payload(
     return (
         bytes([_SEMANTIC_OPTION_TOKEN_VERSION])
         + option_row_id.bytes
-        + projection_version.to_bytes(4, "big")
         + actor.to_bytes(8, "big")
         + expiry.to_bytes(4, "big")
     )
@@ -83,14 +78,12 @@ def _semantic_option_payload(
 def issue_semantic_option_token(
     *,
     option_row_id: UUID,
-    projection_version: int,
     actor_id: str,
     expires_at: datetime,
     signing_key: bytes,
 ) -> str:
     payload = _semantic_option_payload(
         option_row_id=option_row_id,
-        projection_version=projection_version,
         actor_id=actor_id,
         expires_at=expires_at,
     )
@@ -110,7 +103,7 @@ def decode_semantic_option_token(token: str) -> SemanticOptionReference | None:
     except (ValueError, UnicodeEncodeError):
         return None
     canonical = base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
-    payload_length = 1 + 16 + 4 + 8 + 4
+    payload_length = 1 + 16 + 8 + 4
     if (
         not hmac.compare_digest(token, canonical)
         or len(raw) != payload_length + _NAVIGATION_MAC_BYTES
@@ -119,9 +112,8 @@ def decode_semantic_option_token(token: str) -> SemanticOptionReference | None:
         return None
     return SemanticOptionReference(
         option_row_id=UUID(bytes=raw[1:17]),
-        projection_version=int.from_bytes(raw[17:21], "big"),
-        actor_id=str(int.from_bytes(raw[21:29], "big")),
-        expires_at=datetime.fromtimestamp(int.from_bytes(raw[29:33], "big"), tz=UTC),
+        actor_id=str(int.from_bytes(raw[17:25], "big")),
+        expires_at=datetime.fromtimestamp(int.from_bytes(raw[25:29], "big"), tz=UTC),
     )
 
 
@@ -137,7 +129,6 @@ def verify_semantic_option_token(
     raw = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
     payload = _semantic_option_payload(
         option_row_id=reference.option_row_id,
-        projection_version=reference.projection_version,
         actor_id=reference.actor_id,
         expires_at=reference.expires_at,
     )

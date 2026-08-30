@@ -31,6 +31,26 @@ _SUPPORTED_EVENTS = {
 }
 
 
+def _discord_message_id(message_ref: str | None) -> str | None:
+    if message_ref is None:
+        return None
+    parts = message_ref.split(":")
+    if len(parts) != 4 or parts[0] != "discord_message" or not parts[3].isdigit():
+        raise DiscordProjectionError(
+            "discord_message_ref_invalid", "Discord message reference is invalid"
+        )
+    return parts[3]
+
+
+def _discord_message_ref(destination_ref: str, message_id: str) -> str:
+    parts = destination_ref.split(":")
+    if len(parts) != 3 or parts[0] != "discord_conversation":
+        raise DiscordProjectionError(
+            "discord_destination_ref_invalid", "Discord destination reference is invalid"
+        )
+    return f"discord_message:{parts[1]}:{parts[2]}:{message_id}"
+
+
 class DiscordProjectionRunner:
     """Deliver clean immutable OperatorProjections and operational projections."""
 
@@ -167,7 +187,11 @@ class DiscordProjectionRunner:
                 )
                 if delivery is not None:
                     delivery.status = "delivered"
-                    delivery.external_message_ref = message_id
+                    delivery.external_message_ref = (
+                        _discord_message_ref(delivery.destination_ref, message_id)
+                        if message_id is not None
+                        else None
+                    )
                     delivery.delivered_at = utc_now()
                     delivery.claim_token = None
                     delivery.claimed_until = None
@@ -193,7 +217,9 @@ class DiscordProjectionRunner:
                 "request_id": str(event.id),
                 "projection_id": str(projection.id),
                 "known_message_id": (
-                    delivery.external_message_ref if delivery is not None else None
+                    _discord_message_id(delivery.external_message_ref)
+                    if delivery is not None
+                    else None
                 ),
                 "guild_id": self.settings.discord_guild_id,
                 "parent_channel_id": self.settings.queue_channel_id,
@@ -303,10 +329,14 @@ class DiscordProjectionRunner:
                     else None
                 ),
                 "source_message_id": (
-                    delivery.source_message_ref if delivery is not None else None
+                    _discord_message_id(delivery.source_message_ref)
+                    if delivery is not None
+                    else None
                 ),
                 "known_message_id": (
-                    delivery.external_message_ref if delivery is not None else None
+                    _discord_message_id(delivery.external_message_ref)
+                    if delivery is not None
+                    else None
                 ),
                 "operator_user_id": self.settings.operator_discord_user_id,
                 "render_sha256": projection.render_sha256,

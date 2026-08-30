@@ -15,9 +15,10 @@ from docket.models import (
     DeferredIngress,
     DiscordDailyThread,
     DrainBarrier,
+    OperatorProjection,
     OperatorUtterance,
     PersistedSemanticOption,
-    SemanticPromptProjection,
+    ProjectionDelivery,
 )
 from docket.security import decode_semantic_option_token, verify_semantic_option_token
 
@@ -187,15 +188,20 @@ class IngressLedgerService:
         option = self.session.get(PersistedSemanticOption, decoded.option_row_id)
         if option is None:
             raise DocketError(code="semantic_option_not_found", message="Option was not found.")
-        projection = self.session.get(SemanticPromptProjection, option.prompt_projection_id)
+        projection = self.session.get(OperatorProjection, option.projection_id)
+        delivery = self.session.scalar(
+            select(ProjectionDelivery).where(
+                ProjectionDelivery.projection_ref == option.projection_ref,
+                ProjectionDelivery.transport == "discord",
+                ProjectionDelivery.status == "delivered",
+                ProjectionDelivery.external_message_ref
+                == _message_ref(guild_id, channel_id, message_id),
+            )
+        )
         if (
             projection is None
-            or projection.ref_id != option.prompt_projection_ref
-            or projection.projection_version != decoded.projection_version
-            or projection.guild_id != guild_id
-            or projection.channel_id != channel_id
-            or projection.parent_channel_id != parent_channel_id
-            or projection.message_id != message_id
+            or projection.ref_id != option.projection_ref
+            or delivery is None
             or sha256_json(option.authority_scope_json) != option.authority_scope_hash
             or sha256_json(option.execution_preconditions_json) != option.precondition_hash
         ):
@@ -211,7 +217,7 @@ class IngressLedgerService:
         )
         if existing is not None:
             if (
-                existing.selected_option_id != option.option_id
+                existing.selected_option_ref != option.ref_id
                 or existing.authority_scope_hash != option.authority_scope_hash
                 or existing.selected_precondition_hash != option.precondition_hash
             ):
@@ -245,12 +251,11 @@ class IngressLedgerService:
             content_hash=hashlib.sha256(option.visible_text.encode("utf-8")).hexdigest(),
             request_key=source_key,
             utterance_kind="button_selection",
-            selected_option_id=option.option_id,
+            selected_option_ref=option.ref_id,
             visible_choice_text=option.visible_text,
             authority_scope_hash=option.authority_scope_hash,
             selected_precondition_hash=option.precondition_hash,
-            prompt_projection_ref=option.prompt_projection_ref,
-            prompt_projection_version=option.prompt_projection_version,
+            projection_ref=option.projection_ref,
             case_ref=option.case_ref,
             case_revision_ref=option.case_revision_ref,
             intent_session_ref=option.intent_session_ref,
@@ -351,8 +356,8 @@ class IngressLedgerService:
             "discord_interaction_id": interaction_id,
             "message_id": message_id,
             "responded_at": responded_at.astimezone(UTC).isoformat(),
-            "prompt_projection_ref": option.prompt_projection_ref,
-            "prompt_projection_version": option.prompt_projection_version,
+            "selected_option_ref": option.ref_id,
+            "projection_ref": option.projection_ref,
             "option_id": option.option_id,
             "authority_scope_hash": option.authority_scope_hash,
             "precondition_hash": option.precondition_hash,

@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 
 from docket.config import get_settings
 from docket.domain.errors import DocketError
+from docket.domain.public_refs import new_public_ref
 from docket.internal_api.schemas import OperatorUtteranceCapture
 from docket.models import (
     AuditEvent,
@@ -77,6 +78,18 @@ def _statement(
     )
 
 
+def _seed_entity(*, entity_kind: str, display_name: str) -> Entity:
+    return Entity(
+        entity_kind=entity_kind,
+        display_name=display_name,
+        normalized_name=display_name.casefold(),
+        canonical_status="active",
+        attributes_json={},
+        basis_refs=[new_public_ref("utt")],
+        created_by_changeset_ref=new_public_ref("chg"),
+    )
+
+
 def test_model_facing_mutations_reject_loose_or_unsupported_shapes() -> None:
     with pytest.raises(ValidationError):
         ChangeSetContent.model_validate(
@@ -141,7 +154,7 @@ def test_model_facing_mutations_reject_loose_or_unsupported_shapes() -> None:
                         "change_id": "resolve-conflict",
                         "action": "update",
                         "object_type": "conflict_resolution",
-                        "object_ref": "cnf_01M15GZZZZZZZZZZZZZZZZZZZZ",
+                        "object_ref": "conf_01M15GZZZZZZZZZZZZZZZZZZZZ",
                     }
                 ],
             }
@@ -243,14 +256,8 @@ def test_freeform_failed_draft_replay_stays_failed_and_rebases_same_request(
 ) -> None:
     settings = get_settings()
     with session_factory.begin() as session:
-        entity = Entity(
-            entity_class="organization",
-            canonical_name="Pacheco Post",
-            normalized_name="pacheco post",
-            registration_state="registered",
-            status="active",
-            attributes={},
-            authority="operator",
+        entity = _seed_entity(
+            entity_kind="organization", display_name="Pacheco Post"
         )
         session.add(entity)
         session.flush()
@@ -343,7 +350,7 @@ def test_freeform_failed_draft_replay_stays_failed_and_rebases_same_request(
         assert retry["state"] == "committed"
         assert retry["semantic_request_ref"] == semantic_request_ref
         assert retry["precondition_hash"] != first["precondition_hash"]
-        assert entity.canonical_name == "Pacheco Post Mail Center"
+        assert entity.display_name == "Pacheco Post Mail Center"
 
         semantic_request = session.scalar(
             select(SemanticRequest).where(
@@ -409,12 +416,12 @@ def test_intent_session_and_turn_survive_as_durable_exact_state(session_factory)
             )
         )
         turn_ref = turn.ref_id
-        assert intent_session.state == "needs_clarification"
+        assert intent_session.semantic_state == "needs_clarification"
         assert len(turn.statement_refs) == 2
 
     with session_factory() as session:
         restored = IntentSessionService(session).get(session_ref)
-        assert restored.state == "needs_clarification"
+        assert restored.semantic_state == "needs_clarification"
         assert restored.version == 2
         restored_turn = session.scalar(
             select(IntentTurn).where(IntentTurn.ref_id == turn_ref)
@@ -623,9 +630,10 @@ def test_conflict_resolution_commits_through_one_immutable_changeset(
         assert decision.basis_refs == [resolution_utterance, conflict.ref_id]
         assert changeset.state == "committed"
         assert session.scalar(
-            select(Entity).where(Entity.canonical_name == "Office 14-201")
+            select(Entity).where(Entity.display_name == "Office 14-201")
         ) is not None
-        assert intent_session.state == "committed"
+        assert intent_session.semantic_state == "ready"
+        assert intent_session.commit_state == "committed"
         assert intent_session.committed_changeset_ref == changeset.ref_id
         assert session.scalar(select(func.count()).select_from(ChangeSetRevision)) == 1
         assert session.scalar(select(func.count()).select_from(AuditEvent)) >= 1
@@ -641,14 +649,7 @@ def test_conflict_resolution_commits_through_one_immutable_changeset(
 @pytest.mark.integration
 def test_interactive_clarification_resumes_commits_and_replays(session_factory) -> None:
     with session_factory.begin() as session:
-        subject = Entity(
-            entity_class="person",
-            canonical_name="Chris",
-            normalized_name="chris",
-            status="active",
-            attributes={},
-            authority="operator",
-        )
+        subject = _seed_entity(entity_kind="person", display_name="Chris")
         session.add(subject)
         session.flush()
         prior_utterance = _capture_utterance(
@@ -786,21 +787,11 @@ def test_open_conflict_blocks_whole_changeset_until_blocked_effect_removed(
         return []
 
     with session_factory.begin() as session:
-        blocked_subject = Entity(
-            entity_class="person",
-            canonical_name="Blocked Chris",
-            normalized_name="blocked chris",
-            status="active",
-            attributes={},
-            authority="operator",
+        blocked_subject = _seed_entity(
+            entity_kind="person", display_name="Blocked Chris"
         )
-        clean_subject = Entity(
-            entity_class="person",
-            canonical_name="Clean Alice",
-            normalized_name="clean alice",
-            status="active",
-            attributes={},
-            authority="operator",
+        clean_subject = _seed_entity(
+            entity_kind="person", display_name="Clean Alice"
         )
         session.add_all([blocked_subject, clean_subject])
         session.flush()
@@ -856,13 +847,14 @@ def test_open_conflict_blocks_whole_changeset_until_blocked_effect_removed(
 
         def fact_change(change_id: str, subject_ref: str, basis_ref: str) -> dict:
             return {
+                "mutation_type": "fact_create",
                 "change_id": change_id,
                 "action": "create",
-                    "object_type": "fact",
-                    "create_spec": {
-                        "subject_ref": subject_ref,
-                        "predicate": "test_fact",
-                        "value_json": change_id,
+                "object_type": "fact",
+                "create_spec": {
+                    "subject_ref": subject_ref,
+                    "predicate": "test_fact",
+                    "value_json": change_id,
                 },
                 "affected_fields": ["office_hours"],
                 "basis_refs": [basis_ref],

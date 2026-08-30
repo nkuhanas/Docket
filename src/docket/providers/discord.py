@@ -30,7 +30,7 @@ class DiscordProjectionAdapter(Protocol):
 
     def post_system_log(self, payload: dict[str, Any]) -> dict[str, Any]: ...
 
-    def put_mcp_trace(self, trace_id: uuid.UUID, payload: dict[str, Any]) -> dict[str, Any]: ...
+    def put_mcp_trace(self, trace_ref: str, payload: dict[str, Any]) -> dict[str, Any]: ...
 
     def post_calendar_reminder(self, payload: dict[str, Any]) -> dict[str, Any]: ...
 
@@ -107,10 +107,10 @@ class HttpDiscordProjectionAdapter:
     def post_system_log(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/internal/docket/discord/system-logs", payload)
 
-    def put_mcp_trace(self, trace_id: uuid.UUID, payload: dict[str, Any]) -> dict[str, Any]:
+    def put_mcp_trace(self, trace_ref: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request(
             "PUT",
-            f"/internal/docket/discord/mcp-traces/{trace_id}",
+            f"/internal/docket/discord/mcp-traces/{trace_ref}",
             payload,
         )
 
@@ -342,10 +342,10 @@ class FakeDiscordProjectionAdapter:
             "created": created,
         }
 
-    def put_mcp_trace(self, trace_id: uuid.UUID, payload: dict[str, Any]) -> dict[str, Any]:
+    def put_mcp_trace(self, trace_ref: str, payload: dict[str, Any]) -> dict[str, Any]:
         self._check_request(payload)
-        key = str(trace_id)
-        if payload["trace_id"] != key:
+        key = trace_ref
+        if payload["trace_ref"] != key:
             raise DiscordProjectionError("invalid_mcp_trace", "Trace path and body differ")
         created = key not in self.backend.mcp_traces
         if created:
@@ -357,7 +357,7 @@ class FakeDiscordProjectionAdapter:
         message["render"] = copy.deepcopy(payload["render"])
         return {
             "request_id": payload["request_id"],
-            "trace_id": key,
+            "trace_ref": key,
             "guild_id": payload["guild_id"],
             "channel_id": payload["channel_id"],
             "message_id": message["message_id"],

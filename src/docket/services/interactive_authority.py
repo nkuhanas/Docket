@@ -664,7 +664,6 @@ class InteractiveAuthorityService:
                     **(
                         {
                             "semantic_prompt_ref": option_projection.ref_id,
-                            "projection_version": option_projection.projection_version,
                             "delivery": "queued",
                         }
                         if option_projection is not None

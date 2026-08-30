@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -27,16 +28,15 @@ from docket.internal_api.schemas import (
 )
 from docket.models import (
     AgentResponse,
-    AgentResponseProjection,
     AuditEvent,
     Decision,
     DeferredIngress,
     DiscordDailyThread,
     IntentSession,
     IntentTurn,
+    OperatorProjection,
     OperatorUtterance,
-    Record,
-    RecordSource,
+    ProjectionDelivery,
     SemanticRequest,
     ToolInvocation,
 )
@@ -45,28 +45,11 @@ from docket.schemas.authority import IntentTurnFinalize
 from docket.services.continuity import ContinuityService
 from docket.services.gateway_lifetimes import GatewayLifetimeService
 from docket.services.intent_sessions import IntentSessionService
-from docket.services.mcp_traces import trace_id_for_source
 from docket.services.reply_bindings import ReplyBindingService
 from docket.specification_artifacts import specification_artifact
 
 FROZEN_DOCUMENT_REF = "ONT-DELTA-2026-08-27"
 FROZEN_ARTIFACT_HASH = "3d744f4d021f8a605086152eb76743a7ec5a7ed2c8754694e38c1a891a14b5e1"
-BOOTSTRAP_CANONICAL_KEY = f"generic:provenance-bootstrap-authorization-{FROZEN_ARTIFACT_HASH}"
-BOOTSTRAP_AUTHORIZATION_TEXT = (
-    "I authorize the provenance-bootstrap phase defined by the frozen Docket ontology "
-    f"architecture at SHA-256 `{FROZEN_ARTIFACT_HASH}`.\n\n"
-    "This authorization is limited to the minimum phase-1 implementation required to "
-    "establish the specified provenance and authority foundation, including immutable "
-    "operator utterance capture, agent-response provenance, public references, decisions, "
-    "tool-invocation logging, audit/provenance plumbing, and the migrations and runtime "
-    "wiring required for those capabilities.\n\n"
-    "This does not authorize the remaining ontology rollout, registry redesign, "
-    "AttentionCase migration, new interactive authority behavior, approval removal, "
-    "calendar-lane changes, triage capability changes, or other later-phase behavior.\n\n"
-    "After provenance bootstrap is implemented and operational through the trusted "
-    "Docket/Discord path, I will issue a separate ledger-backed sign-off before the "
-    "remaining architecture may be implemented."
-)
 FINAL_ARCHITECTURE_SIGNOFF_TEXT = (
     "I explicitly sign off on Docket architecture "
     f"{FROZEN_DOCUMENT_REF} at SHA-256 `{FROZEN_ARTIFACT_HASH}`."
@@ -75,6 +58,11 @@ FINAL_ARCHITECTURE_SIGNOFF_TEXT = (
 
 def _sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _sha256_json(value: Any) -> str:
+    serialized = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return _sha256_text(serialized)
 
 
 def _discord_said_at(message_id: str) -> datetime:
@@ -284,13 +272,13 @@ class ProvenanceService:
                 "ref": existing.ref_id,
                 "state": existing.status,
                 "drain_ref": existing.drain_ref,
-                "lease_ref": None,
+                "execution_completion_token": None,
                 "claim_token": str(existing.claim_token) if existing.claim_token else None,
             }
 
         continuity = ContinuityService(self.session)
         claim_token = uuid.uuid4()
-        lease_ref: str | None = None
+        completion_token: str | None = None
         drain_ref: str | None = None
         state = "claimed"
         try:
@@ -300,7 +288,7 @@ class ProvenanceService:
                 subject_ref=utterance.ref_id,
                 gateway_instance_ref=request.gateway_instance_ref,
             )
-            lease_ref = lease.ref_id
+            completion_token = lease.completion_token
         except DocketError as exc:
             if exc.code != "deployment_drain_active":
                 raise
@@ -326,7 +314,7 @@ class ProvenanceService:
             "ref": ingress.ref_id,
             "state": ingress.status,
             "drain_ref": ingress.drain_ref,
-            "lease_ref": lease_ref,
+            "execution_completion_token": completion_token,
             "claim_token": str(ingress.claim_token) if ingress.claim_token else None,
         }
 
@@ -378,7 +366,7 @@ class ProvenanceService:
             if request.finalize_intent_turn:
                 self._finalize_intent_turn(
                     utterance=utterance,
-                    trace_id=request.trace_id,
+                    trace_ref=request.trace_ref,
                     response=existing,
                     response_disposition="final_response",
                 )
@@ -393,7 +381,7 @@ class ProvenanceService:
         tool_call_refs = list(
             self.session.scalars(
                 select(ToolInvocation.ref_id)
-                .where(ToolInvocation.trace_id == request.trace_id)
+                .where(ToolInvocation.trace_ref == request.trace_ref)
                 .order_by(ToolInvocation.trace_ordinal, ToolInvocation.started_at)
             )
         )
@@ -413,7 +401,37 @@ class ProvenanceService:
             else []
         )
         response_ref = new_public_ref("rsp")
-        projection_ref = f"discord_response:{response_ref}"
+        projection_ref = new_public_ref("proj")
+        semantic_content = {
+            "response_ref": response_ref,
+            "verbatim_text": request.verbatim_text,
+        }
+        projection = OperatorProjection(
+            ref_id=projection_ref,
+            projection_kind="agent_response",
+            operator_ref=utterance.actor_ref,
+            primary_public_ref=response_ref,
+            intent_session_ref=(intent_session.ref_id if intent_session is not None else None),
+            case_ref=(
+                intent_session.case_refs[0]
+                if intent_session is not None and len(intent_session.case_refs) == 1
+                else None
+            ),
+            case_revision_ref=(
+                intent_session.case_revision_refs[0]
+                if intent_session is not None and len(intent_session.case_revision_refs) == 1
+                else None
+            ),
+            brief_ref=(intent_session.brief_ref if intent_session is not None else None),
+            semantic_content=semantic_content,
+            visible_text=request.verbatim_text,
+            render_schema_version=1,
+            render_sha256=_sha256_json(semantic_content),
+            component_sha256=_sha256_json([]),
+            basis_refs=[utterance.ref_id, *tool_call_refs],
+        )
+        self.session.add(projection)
+        self.session.flush()
         response = AgentResponse(
             ref_id=response_ref,
             response_key=response_key,
@@ -434,16 +452,9 @@ class ProvenanceService:
         self.session.add(response)
         self.session.flush()
         self.session.add(
-            AgentResponseProjection(
-                response_id=response.id,
+            ProjectionDelivery(
+                projection_id=projection.id,
                 projection_ref=projection_ref,
-                operator_ref=utterance.actor_ref,
-                primary_public_ref=response.ref_id,
-                projection_version=1,
-                case_revision_refs=(
-                    list(intent_session.case_revision_refs) if intent_session is not None else []
-                ),
-                brief_ref=(intent_session.brief_ref if intent_session is not None else None),
                 transport="discord",
                 destination_ref=utterance.conversation_ref,
                 source_message_ref=expected_message_ref,
@@ -470,7 +481,7 @@ class ProvenanceService:
         if request.finalize_intent_turn:
             self._finalize_intent_turn(
                 utterance=utterance,
-                trace_id=request.trace_id,
+                trace_ref=request.trace_ref,
                 response=response,
                 response_disposition="final_response",
             )
@@ -518,7 +529,7 @@ class ProvenanceService:
             )
         turn = self._finalize_intent_turn(
             utterance=utterance,
-            trace_id=request.trace_id,
+            trace_ref=request.trace_ref,
             response=None,
             response_disposition="no_response",
         )
@@ -562,7 +573,7 @@ class ProvenanceService:
         self,
         *,
         utterance: OperatorUtterance,
-        trace_id: uuid.UUID,
+        trace_ref: str,
         response: AgentResponse | None,
         response_disposition: str,
     ) -> IntentTurn | None:
@@ -572,7 +583,7 @@ class ProvenanceService:
         invocations = list(
             self.session.scalars(
                 select(ToolInvocation)
-                .where(ToolInvocation.trace_id == trace_id)
+                .where(ToolInvocation.trace_ref == trace_ref)
                 .order_by(ToolInvocation.trace_ordinal, ToolInvocation.started_at)
             )
         )
@@ -581,7 +592,7 @@ class ProvenanceService:
         for invocation in invocations:
             if invocation.intent_session_ref is None:
                 invocation.intent_session_ref = intent_session.ref_id
-            if invocation.status != "succeeded" or invocation.tool_name not in {
+            if invocation.domain_state != "succeeded" or invocation.tool_name not in {
                 "docket_commit_changeset",
                 "docket_resolve_conflict",
             }:
@@ -633,9 +644,9 @@ class ProvenanceService:
                 code="agent_response_not_found",
                 message="Agent response reference does not exist.",
             )
-        projection = self.session.scalar(
-            select(AgentResponseProjection)
-            .where(AgentResponseProjection.response_id == response.id)
+        delivery = self.session.scalar(
+            select(ProjectionDelivery)
+            .where(ProjectionDelivery.projection_ref == response.projection_ref)
             .with_for_update()
         )
         utterance_ref = response.responds_to_utterance_refs[0]
@@ -653,7 +664,7 @@ class ProvenanceService:
             channel_id=request.channel_id,
             source_message_id=request.source_message_id,
         )
-        if projection is None or projection.source_message_ref != expected_message_ref:
+        if delivery is None or delivery.source_message_ref != expected_message_ref:
             raise DocketError(
                 code="agent_response_projection_binding_invalid",
                 message="Agent response delivery does not match its source projection.",
@@ -685,10 +696,10 @@ class ProvenanceService:
         response.delivery_state = request.outcome
         response.delivered_at = request.completed_at if request.outcome == "delivered" else None
         response.delivery_error_code = request.error_code
-        projection.status = request.outcome
-        projection.attempt_count += 1
-        projection.completed_at = request.completed_at
-        projection.last_error_code = request.error_code
+        delivery.status = request.outcome
+        delivery.attempt_count += 1
+        delivery.delivered_at = request.completed_at if request.outcome == "delivered" else None
+        delivery.last_error_code = request.error_code
         self.session.add(
             AuditEvent(
                 event_type=f"agent_response.{request.outcome}",
@@ -712,137 +723,6 @@ class ProvenanceService:
             "state": response.delivery_state,
             "disposition": "updated",
         }
-
-    def backfill_bootstrap_authorization(self) -> dict[str, str] | None:
-        record = self.session.scalar(
-            select(Record).where(
-                Record.record_type == "generic",
-                Record.canonical_key == BOOTSTRAP_CANONICAL_KEY,
-            )
-        )
-        if record is None:
-            return None
-        data = record.data
-        if (
-            data.get("utterance") != BOOTSTRAP_AUTHORIZATION_TEXT
-            or data.get("architecture_sha256") != FROZEN_ARTIFACT_HASH
-            or data.get("authorized_phase") != "provenance-bootstrap phase 1"
-            or data.get("authorization_status") != "authorized"
-        ):
-            raise DocketError(
-                code="bootstrap_authorization_evidence_invalid",
-                message="Stored bootstrap authorization does not match the frozen artifact.",
-            )
-        sources = list(
-            self.session.scalars(select(RecordSource).where(RecordSource.record_id == record.id))
-        )
-        if len(sources) != 1:
-            raise DocketError(
-                code="bootstrap_authorization_evidence_invalid",
-                message="Bootstrap authorization must have exactly one trusted Discord source.",
-            )
-        source = sources[0]
-        metadata = source.source_metadata
-        message_id = str(source.source_object_id or "")
-        guild_id = str(metadata.get("guild_id") or "")
-        channel_id = str(metadata.get("channel_id") or "")
-        actor_id = str(metadata.get("user_id") or "")
-        parent_channel_id = metadata.get("parent_channel_id")
-        self._validate_discord_surface(
-            guild_id=guild_id,
-            channel_id=channel_id,
-            parent_channel_id=str(parent_channel_id) if parent_channel_id else None,
-            actor_id=actor_id,
-        )
-        if (
-            source.source_type != "discord_message"
-            or not message_id.isascii()
-            or not message_id.isdecimal()
-            or metadata.get("message_id") != message_id
-        ):
-            raise DocketError(
-                code="bootstrap_authorization_evidence_invalid",
-                message="Bootstrap authorization source binding is malformed.",
-            )
-
-        request_key = source.source_request_key
-        utterance = self.session.scalar(
-            select(OperatorUtterance).where(OperatorUtterance.request_key == request_key)
-        )
-        if utterance is None:
-            utterance = OperatorUtterance(
-                actor_ref=_actor_ref(actor_id),
-                transport="discord",
-                source_message_ref=_message_ref(guild_id, channel_id, message_id),
-                conversation_ref=_conversation_ref(guild_id, channel_id),
-                said_at=_discord_said_at(message_id),
-                recorded_at=record.created_at,
-                verbatim_text=BOOTSTRAP_AUTHORIZATION_TEXT,
-                content_hash=_sha256_text(BOOTSTRAP_AUTHORIZATION_TEXT),
-                request_key=request_key,
-                source_record_id=record.id,
-            )
-            self.session.add(utterance)
-            self.session.flush()
-        elif (
-            utterance.verbatim_text != BOOTSTRAP_AUTHORIZATION_TEXT
-            or utterance.source_record_id not in {None, record.id}
-        ):
-            raise DocketError(
-                code="bootstrap_authorization_evidence_conflict",
-                message="Bootstrap authorization collides with a different utterance.",
-            )
-
-        decision = self.session.scalar(
-            select(Decision).where(
-                Decision.decision_kind == "provenance_bootstrap_signoff",
-                Decision.document_ref == FROZEN_DOCUMENT_REF,
-                Decision.frozen_artifact_hash == FROZEN_ARTIFACT_HASH,
-            )
-        )
-        if decision is None:
-            decision = Decision(
-                decision_kind="provenance_bootstrap_signoff",
-                actor_ref=utterance.actor_ref,
-                basis_refs=[utterance.ref_id],
-                document_ref=FROZEN_DOCUMENT_REF,
-                frozen_artifact_hash=FROZEN_ARTIFACT_HASH,
-                authorized_scope="provenance_bootstrap_only",
-                architecture_authority=False,
-                implementation_authority="provenance_bootstrap_only",
-                payload_json={
-                    "source_record_id": str(record.id),
-                    "source_request_key": source.source_request_key,
-                    "authorization_content_hash": utterance.content_hash,
-                },
-            )
-            self.session.add(decision)
-            self.session.flush()
-            self.session.add(
-                AuditEvent(
-                    event_type="decision.provenance_bootstrap_signoff_recorded",
-                    entity_type="decision",
-                    entity_id=decision.id,
-                    actor_type="operator",
-                    actor_id=actor_id,
-                    request_id=None,
-                    primary_ref=decision.ref_id,
-                    affected_refs=[decision.ref_id, utterance.ref_id],
-                    basis_refs=[utterance.ref_id],
-                    data={
-                        "document_ref": FROZEN_DOCUMENT_REF,
-                        "frozen_artifact_hash": FROZEN_ARTIFACT_HASH,
-                        "authorized_scope": "provenance_bootstrap_only",
-                        "architecture_authority": False,
-                    },
-                )
-            )
-        elif decision.basis_refs != [utterance.ref_id]:
-            raise DocketError(
-                code="bootstrap_authorization_decision_conflict",
-                message="Bootstrap Decision is not based on the exact authorization utterance.",
-            )
-        return {"utterance_ref": utterance.ref_id, "decision_ref": decision.ref_id}
 
     def record_final_architecture_signoff(
         self,
@@ -1147,10 +1027,6 @@ class ProvenanceService:
             **payload,
             "production_reset_executed": False,
         }
-
-
-def bootstrap_trace_id(guild_id: str, channel_id: str, message_id: str) -> uuid.UUID:
-    return trace_id_for_source(guild_id, channel_id, message_id)
 
 
 def provenance_health_snapshot(session: Session) -> dict[str, Any]:
