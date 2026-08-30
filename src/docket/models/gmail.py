@@ -6,7 +6,6 @@ from sqlalchemy import (
     JSON,
     CheckConstraint,
     DateTime,
-    Float,
     ForeignKey,
     Integer,
     String,
@@ -15,8 +14,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from docket.domain.public_refs import new_public_ref
-from docket.models.base import Base, TimestampMixin, utc_now
+from docket.models.base import Base, TimestampMixin
 
 
 class ConnectorCheckpoint(TimestampMixin, Base):
@@ -32,7 +30,7 @@ class ConnectorCheckpoint(TimestampMixin, Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     account_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("accounts.id", ondelete="RESTRICT"), nullable=False
+        ForeignKey("provider_accounts.id", ondelete="RESTRICT"), nullable=False
     )
     stream: Mapped[str] = mapped_column(String(128), nullable=False)
     cursor: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
@@ -45,36 +43,36 @@ class ConnectorCheckpoint(TimestampMixin, Base):
     leased_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
-class SourceItem(TimestampMixin, Base):
-    __tablename__ = "source_items"
+class GmailSource(TimestampMixin, Base):
+    __tablename__ = "gmail_sources"
     __table_args__ = (
-        CheckConstraint("provider = 'gmail'", name="ck_source_items_provider"),
+        CheckConstraint("provider = 'gmail'", name="ck_gmail_sources_provider"),
         CheckConstraint(
             "status IN ('staged', 'claimed', 'classified', 'ignored', 'failed')",
-            name="ck_source_items_status",
+            name="ck_gmail_sources_status",
         ),
-        CheckConstraint("failure_count >= 0", name="ck_source_items_failure_count"),
+        CheckConstraint("failure_count >= 0", name="ck_gmail_sources_failure_count"),
         UniqueConstraint(
             "account_id",
             "provider",
             "external_object_id",
             "source_version",
-            name="uq_source_items_external_version",
+            name="uq_gmail_sources_external_version",
         ),
         UniqueConstraint(
             "account_id",
             "provider",
             "source_fingerprint",
-            name="uq_source_items_fingerprint",
+            name="uq_gmail_sources_fingerprint",
         ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     ref_id: Mapped[str] = mapped_column(
-        String(40), unique=True, nullable=False, default=lambda: new_public_ref("src")
+        ForeignKey("sources.ref_id", ondelete="RESTRICT"), unique=True, nullable=False
     )
     account_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("accounts.id", ondelete="RESTRICT"), nullable=False
+        ForeignKey("provider_accounts.id", ondelete="RESTRICT"), nullable=False
     )
     provider: Mapped[str] = mapped_column(String(32), nullable=False)
     external_object_id: Mapped[str] = mapped_column(String(1024), nullable=False)
@@ -88,78 +86,5 @@ class SourceItem(TimestampMixin, Base):
     claimed_by: Mapped[str | None] = mapped_column(String(255))
     claimed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     classification: Mapped[dict[str, Any] | None] = mapped_column(JSON)
-    failure_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-
-class QueueItemSource(Base):
-    __tablename__ = "queue_item_sources"
-    __table_args__ = (
-        CheckConstraint(
-            "relationship IN ('primary', 'supporting', 'update')",
-            name="ck_queue_item_sources_relationship",
-        ),
-    )
-
-    queue_item_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("queue_items.id", ondelete="CASCADE"), primary_key=True
-    )
-    source_item_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("source_items.id", ondelete="RESTRICT"), primary_key=True
-    )
-    relationship: Mapped[str] = mapped_column(String(16), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=utc_now, nullable=False
-    )
-
-
-class SemanticCandidate(TimestampMixin, Base):
-    __tablename__ = "semantic_candidates"
-    __table_args__ = (
-        CheckConstraint(
-            "kind IN ('event', 'deadline', 'response', 'task', 'information', 'noise')",
-            name="ck_semantic_candidates_kind",
-        ),
-        CheckConstraint(
-            "mutation IN ('create', 'update', 'cancel', 'none')",
-            name="ck_semantic_candidates_mutation",
-        ),
-        CheckConstraint(
-            "status IN ('pending', 'resolving', 'needs_clarification', 'proposed', "
-            "'executing', 'resolved', 'suppressed', 'failed')",
-            name="ck_semantic_candidates_status",
-        ),
-        CheckConstraint(
-            "confidence >= 0 AND confidence <= 1",
-            name="ck_semantic_candidates_confidence",
-        ),
-        CheckConstraint("failure_count >= 0", name="ck_semantic_candidates_failure_count"),
-        UniqueConstraint(
-            "source_item_id",
-            "candidate_index",
-            name="uq_semantic_candidates_source_index",
-        ),
-        UniqueConstraint("semantic_key", name="uq_semantic_candidates_semantic_key"),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    source_item_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("source_items.id", ondelete="RESTRICT"), nullable=False
-    )
-    candidate_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    candidate_key: Mapped[str] = mapped_column(String(128), nullable=False)
-    semantic_key: Mapped[str] = mapped_column(String(64), nullable=False)
-    kind: Mapped[str] = mapped_column(String(32), nullable=False)
-    mutation: Mapped[str] = mapped_column(String(16), nullable=False)
-    title: Mapped[str] = mapped_column(String(512), nullable=False)
-    summary: Mapped[str] = mapped_column(String(2000), nullable=False)
-    fields: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
-    confidence: Mapped[float] = mapped_column(Float, nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
-    resolution: Mapped[dict[str, Any] | None] = mapped_column(JSON)
-    queue_item_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("queue_items.id", ondelete="SET NULL")
-    )
-    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     failure_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -34,12 +34,12 @@ StatementRef = Annotated[str, Field(pattern=r"^stm_[0-9A-HJKMNP-TV-Z]{26}$")]
 SessionRef = Annotated[str, Field(pattern=r"^ses_[0-9A-HJKMNP-TV-Z]{26}$")]
 ChangeSetRef = Annotated[str, Field(pattern=r"^chg_[0-9A-HJKMNP-TV-Z]{26}$")]
 SemanticRequestRef = Annotated[str, Field(pattern=r"^sreq_[0-9A-HJKMNP-TV-Z]{26}$")]
-ConflictRef = Annotated[str, Field(pattern=r"^cnf_[0-9A-HJKMNP-TV-Z]{26}$")]
+ConflictRef = Annotated[str, Field(pattern=r"^conf_[0-9A-HJKMNP-TV-Z]{26}$")]
 AttentionCaseRef = Annotated[str, Field(pattern=r"^case_[0-9A-HJKMNP-TV-Z]{26}$")]
 AttentionCaseRevisionRef = Annotated[
     str, Field(pattern=r"^caserev_[0-9A-HJKMNP-TV-Z]{26}$")
 ]
-CaseItemRef = Annotated[str, Field(pattern=r"^item_[0-9A-HJKMNP-TV-Z]{26}$")]
+CaseItemRef = Annotated[str, Field(pattern=r"^citem_[0-9A-HJKMNP-TV-Z]{26}$")]
 
 def _validate_refs(values: list[str], *, provenance_only: bool = False) -> list[str]:
     return validate_refs(values, provenance_only=provenance_only)
@@ -560,7 +560,7 @@ type CanonicalChangeInput = Annotated[
 
 
 class AttentionCaseItemDisposition(StrictModel):
-    item_ref: CaseItemRef
+    case_item_ref: CaseItemRef
     disposition: Literal["resolved", "rejected"]
 
 
@@ -585,7 +585,7 @@ class AttentionCaseResolutionInput(StrictModel):
     def unique_item_dispositions(
         cls, values: list[AttentionCaseItemDisposition]
     ) -> list[AttentionCaseItemDisposition]:
-        refs = [item.item_ref for item in values]
+        refs = [item.case_item_ref for item in values]
         if len(refs) != len(set(refs)):
             raise ValueError("item_dispositions must not contain duplicate CaseItems")
         return values

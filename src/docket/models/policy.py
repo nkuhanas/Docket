@@ -29,7 +29,7 @@ class Preference(TimestampMixin, Base):
         ),
         CheckConstraint(
             "target_type IN ('global', 'entity', 'identity', 'source', "
-            "'semantic_class')",
+            "'item', 'task', 'item_kind', 'import_policy', 'semantic_class')",
             name="ck_preferences_target_type",
         ),
         CheckConstraint(

@@ -315,7 +315,7 @@ class SemanticRequestAttempt(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     ref_id: Mapped[str] = mapped_column(
-        String(40), unique=True, nullable=False, default=lambda: new_public_ref("satt")
+        String(40), unique=True, nullable=False, default=lambda: new_public_ref("sattempt")
     )
     semantic_request_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("semantic_requests.id", ondelete="RESTRICT"), nullable=False
@@ -354,7 +354,7 @@ class Conflict(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     ref_id: Mapped[str] = mapped_column(
-        String(40), unique=True, nullable=False, default=lambda: new_public_ref("cnf")
+        String(40), unique=True, nullable=False, default=lambda: new_public_ref("conf")
     )
     subject_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     affected_fields: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)

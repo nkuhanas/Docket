@@ -19,6 +19,11 @@ PublicRef = Annotated[
     AfterValidator(_validate_public_ref),
 ]
 
+ProviderAccountRef = Annotated[
+    str,
+    Field(pattern=r"^acct_[0-9A-HJKMNP-TV-Z]{26}$"),
+]
+
 HistoryObjectType = Literal[
     "operator_utterance",
     "agent_response",
@@ -59,7 +64,7 @@ _PROVENANCE_PREFIXES = frozenset(
         "src",
         "stm",
         "dec",
-        "cnf",
+        "conf",
         "chg",
         "ent",
         "idn",
@@ -76,6 +81,8 @@ _PROVENANCE_PREFIXES = frozenset(
         "case",
         "caserev",
         "item",
+        "citem",
+        "bentry",
         "brief",
         "ctx",
         "ses",

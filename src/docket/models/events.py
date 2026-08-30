@@ -6,7 +6,6 @@ from sqlalchemy import (
     JSON,
     CheckConstraint,
     DateTime,
-    Float,
     ForeignKey,
     Integer,
     String,
@@ -28,7 +27,7 @@ class CanonicalEvent(TimestampMixin, Base):
             name="ck_canonical_events_status",
         ),
         CheckConstraint(
-            "authority IN ('explicit_user', 'canonical', 'inferred')",
+            "authority IN ('explicit_operator', 'deterministic_rule')",
             name="ck_canonical_events_authority",
         ),
         UniqueConstraint("canonical_key", name="uq_canonical_events_key"),
@@ -42,8 +41,6 @@ class CanonicalEvent(TimestampMixin, Base):
     title: Mapped[str] = mapped_column(String(512), nullable=False)
     status: Mapped[str] = mapped_column(String(16), default="proposed", nullable=False)
     event_spec: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
-    reminder_plan: Mapped[dict[str, Any] | None] = mapped_column(JSON)
-    calendar_lane: Mapped[str] = mapped_column(String(32), default="unsorted", nullable=False)
     entity_refs: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
     context_labels: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     authority: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -57,42 +54,7 @@ class CanonicalEvent(TimestampMixin, Base):
     basis_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     decision_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     source_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
-    created_by_changeset_ref: Mapped[str | None] = mapped_column(String(40))
-    provenance_status: Mapped[str] = mapped_column(
-        String(32), default="legacy_preledger", nullable=False
-    )
-
-
-class EventObservation(TimestampMixin, Base):
-    __tablename__ = "event_observations"
-    __table_args__ = (
-        CheckConstraint(
-            "mutation IN ('create', 'update', 'cancel', 'none')",
-            name="ck_event_observations_mutation",
-        ),
-        CheckConstraint(
-            "correlation_state IN ('new', 'matched', 'ambiguous', 'unresolved')",
-            name="ck_event_observations_correlation",
-        ),
-        UniqueConstraint("semantic_candidate_id", name="uq_event_observations_semantic_candidate"),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    canonical_event_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("canonical_events.id", ondelete="SET NULL")
-    )
-    source_item_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("source_items.id", ondelete="SET NULL")
-    )
-    semantic_candidate_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("semantic_candidates.id", ondelete="SET NULL")
-    )
-    mutation: Mapped[str] = mapped_column(String(16), nullable=False)
-    observed_fields: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
-    confidence: Mapped[float] = mapped_column(Float, nullable=False)
-    correlation_state: Mapped[str] = mapped_column(String(16), nullable=False)
-    candidate_event_ids: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
-    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_by_changeset_ref: Mapped[str] = mapped_column(String(40), nullable=False)
 
 
 class ProviderEventBinding(TimestampMixin, Base):
@@ -102,6 +64,10 @@ class ProviderEventBinding(TimestampMixin, Base):
             "status IN ('active', 'cancelled', 'diverged')",
             name="ck_provider_event_bindings_status",
         ),
+        CheckConstraint(
+            "target_kind IN ('event', 'temporal_projection')",
+            name="ck_provider_event_bindings_target_kind",
+        ),
         UniqueConstraint(
             "account_id",
             "calendar_id",
@@ -109,7 +75,7 @@ class ProviderEventBinding(TimestampMixin, Base):
             name="uq_provider_event_bindings_target",
         ),
         UniqueConstraint(
-            "canonical_event_id",
+            "canonical_target_ref",
             "account_id",
             "calendar_id",
             name="uq_provider_event_bindings_canonical_target",
@@ -117,11 +83,10 @@ class ProviderEventBinding(TimestampMixin, Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    canonical_event_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("canonical_events.id", ondelete="RESTRICT"), nullable=False
-    )
+    canonical_target_ref: Mapped[str] = mapped_column(String(40), nullable=False)
+    target_kind: Mapped[str] = mapped_column(String(16), nullable=False)
     account_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("accounts.id", ondelete="RESTRICT"), nullable=False
+        ForeignKey("provider_accounts.id", ondelete="RESTRICT"), nullable=False
     )
     calendar_id: Mapped[str] = mapped_column(String(1024), nullable=False)
     provider_event_id: Mapped[str] = mapped_column(String(1024), nullable=False)
