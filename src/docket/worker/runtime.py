@@ -16,6 +16,7 @@ from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.gateway_lifetimes import GatewayLifetimeReconciler
 from docket.services.gmail_ingestion import GmailIngestionService
 from docket.services.operations import OperationRunner
+from docket.services.reminders import ReminderService
 
 logger = structlog.get_logger(__name__)
 
@@ -40,6 +41,8 @@ class WorkerRuntime:
         gmail_scan_poll_seconds: float = 60.0,
         daily_brief_service: DailyBriefService | None = None,
         daily_brief_poll_seconds: float = 30.0,
+        reminder_service: ReminderService | None = None,
+        reminder_poll_seconds: float = 30.0,
         gateway_lifetime_reconciler: GatewayLifetimeReconciler | None = None,
         execution_lease_coordinator: ExecutionLeaseCoordinator | None = None,
         deferred_ingress_runner: DeferredIngressRunner | None = None,
@@ -60,6 +63,8 @@ class WorkerRuntime:
         self.gmail_scan_poll_seconds = gmail_scan_poll_seconds
         self.daily_brief_service = daily_brief_service
         self.daily_brief_poll_seconds = daily_brief_poll_seconds
+        self.reminder_service = reminder_service
+        self.reminder_poll_seconds = reminder_poll_seconds
         self.gateway_lifetime_reconciler = gateway_lifetime_reconciler
         self.execution_lease_coordinator = execution_lease_coordinator
         self.deferred_ingress_runner = deferred_ingress_runner
@@ -158,6 +163,7 @@ class WorkerRuntime:
         next_backup = 0.0
         next_gmail_scan = 0.0
         next_daily_brief = 0.0
+        next_reminder = 0.0
         next_projection_repair = 0.0
         next_deferred_ingress = 0.0
         while not self._stop.is_set():
@@ -237,6 +243,13 @@ class WorkerRuntime:
                         self.daily_brief_service.run_due_once,
                     )
                     next_daily_brief = now + self.daily_brief_poll_seconds
+                if self.reminder_service is not None and now >= next_reminder:
+                    await self._run_leased(
+                        "outbox_delivery",
+                        "reminder",
+                        self.reminder_service.run_due_once,
+                    )
+                    next_reminder = now + self.reminder_poll_seconds
             except Exception:
                 logger.exception("worker_iteration_failed")
             try:

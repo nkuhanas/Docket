@@ -45,6 +45,7 @@ from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.gateway_lifetimes import GatewayLifetimeReconciler
 from docket.services.gmail_ingestion import GmailIngestionService
 from docket.services.operations import OperationRunner
+from docket.services.reminders import ReminderService
 from docket.services.runtime_logs import RuntimeLogService
 from docket.worker import WorkerRuntime
 
@@ -123,6 +124,8 @@ worker = WorkerRuntime(
     gmail_scan_poll_seconds=settings.gmail_scan_poll_seconds,
     daily_brief_service=DailyBriefService(get_session_factory(), settings),
     daily_brief_poll_seconds=settings.daily_brief_poll_seconds,
+    reminder_service=ReminderService(get_session_factory(), settings),
+    reminder_poll_seconds=settings.reminder_dispatch_interval_seconds,
     gateway_lifetime_reconciler=GatewayLifetimeReconciler(get_session_factory()),
     execution_lease_coordinator=ExecutionLeaseCoordinator(get_session_factory()),
     deferred_ingress_runner=deferred_ingress_runner,

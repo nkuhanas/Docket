@@ -360,7 +360,7 @@ class TrackedContextService:
             if binding_refs
             else []
         )
-        result = {
+        result: dict[str, Any] = {
             "ok": True,
             "ref": item.ref_id,
             "title": item.title,
@@ -497,6 +497,36 @@ class TrackedContextService:
             raise DocketError(
                 code="reminder_subject_not_found",
                 message="ReminderPlan subject was not found.",
+                details={"subject_ref": subject_ref},
+            )
+
+    def _require_date_reminder_policy(
+        self,
+        subject_ref: str,
+        *,
+        date_trigger_local_time: object | None,
+        timezone: str | None,
+    ) -> None:
+        if subject_ref.startswith("time_"):
+            binding = self.session.scalar(
+                select(TemporalBinding).where(TemporalBinding.ref_id == subject_ref)
+            )
+            assert binding is not None
+            date_only = binding.temporal_value.get("kind") in {"date", "date_interval"}
+        else:
+            event = self.session.scalar(
+                select(CanonicalEvent).where(CanonicalEvent.ref_id == subject_ref)
+            )
+            assert event is not None
+            timing = event.event_spec.get("timing", {})
+            date_only = isinstance(timing, dict) and timing.get("kind") == "all_day"
+        if date_only and (date_trigger_local_time is None or timezone is None):
+            raise DocketError(
+                code="date_reminder_policy_required",
+                message=(
+                    "A date-only reminder requires an explicit local trigger time "
+                    "and IANA timezone."
+                ),
                 details={"subject_ref": subject_ref},
             )
 
@@ -801,6 +831,11 @@ class TrackedContextService:
             spec = ReminderPlanInput.model_validate(change.create_spec)
             assert spec.subject_ref is not None
             self._require_reminder_subject(spec.subject_ref)
+            self._require_date_reminder_policy(
+                spec.subject_ref,
+                date_trigger_local_time=spec.date_trigger_local_time,
+                timezone=spec.timezone,
+            )
             reminder = ReminderPlan(
                 subject_ref=spec.subject_ref,
                 delivery_channels=list(spec.delivery_channels),
@@ -826,6 +861,14 @@ class TrackedContextService:
                 values = patch.model_dump(exclude_unset=True)
                 if values.get("subject_ref") is not None:
                     self._require_reminder_subject(values["subject_ref"])
+                next_subject_ref = values.get("subject_ref", reminder.subject_ref)
+                self._require_date_reminder_policy(
+                    next_subject_ref,
+                    date_trigger_local_time=values.get(
+                        "date_trigger_local_time", reminder.date_trigger_local_time
+                    ),
+                    timezone=values.get("timezone", reminder.timezone),
+                )
                 if "date_trigger_local_time" in values:
                     local_time = patch.date_trigger_local_time
                     values["date_trigger_local_time"] = (
