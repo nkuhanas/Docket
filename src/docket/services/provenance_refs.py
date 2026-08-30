@@ -9,12 +9,12 @@ from sqlalchemy.orm import Session
 from docket.domain.errors import DocketError
 from docket.domain.public_refs import parse_public_ref
 from docket.models import (
-    Account,
     Affiliation,
     AgentResponse,
     AttentionCase,
     AttentionCaseRevision,
     AuditEvent,
+    BriefEntry,
     CalendarLane,
     CanonicalEvent,
     CaseItem,
@@ -30,18 +30,22 @@ from docket.models import (
     IntentTurn,
     Interaction,
     InterpretedStatement,
+    Item,
     LaneRoutingDecision,
     Operation,
+    OperatorProjection,
     OperatorUtterance,
+    PersistedSemanticOption,
     Preference,
-    ProvenanceSource,
     Relationship,
-    SemanticPromptProjection,
+    ReminderPlan,
     SemanticRequest,
     SemanticRequestAttempt,
-    SourceItem,
+    Source,
+    Task,
+    TemporalBinding,
+    TemporalCalendarProjection,
     ToolInvocation,
-    TriageBriefEntry,
     TriageRun,
 )
 
@@ -51,7 +55,7 @@ PROVENANCE_PREFIXES = frozenset(
         "src",
         "stm",
         "dec",
-        "cnf",
+        "conf",
         "chg",
         "ent",
         "idn",
@@ -68,6 +72,10 @@ PROVENANCE_PREFIXES = frozenset(
         "case",
         "caserev",
         "item",
+        "task",
+        "time",
+        "tproj",
+        "rem",
         "brief",
         "ctx",
         "ses",
@@ -76,17 +84,20 @@ PROVENANCE_PREFIXES = frozenset(
         "aud",
         "op",
         "proj",
-        "satt",
+        "opt",
+        "citem",
+        "bentry",
+        "sattempt",
         "sreq",
     }
 )
 
 _PHASE_TWO_MODELS: dict[str, type[Any]] = {
     "utt": OperatorUtterance,
-    "src": SourceItem,
+    "src": Source,
     "stm": InterpretedStatement,
     "dec": Decision,
-    "cnf": Conflict,
+    "conf": Conflict,
     "chg": ChangeSet,
     "ent": Entity,
     "idn": IdentityHandle,
@@ -104,14 +115,21 @@ _PHASE_TWO_MODELS: dict[str, type[Any]] = {
     "ctx": ContextPacket,
     "case": AttentionCase,
     "caserev": AttentionCaseRevision,
-    "item": CaseItem,
+    "item": Item,
+    "task": Task,
+    "time": TemporalBinding,
+    "tproj": TemporalCalendarProjection,
+    "rem": ReminderPlan,
+    "citem": CaseItem,
+    "bentry": BriefEntry,
     "ses": IntentSession,
     "turn": IntentTurn,
     "call": ToolInvocation,
     "aud": AuditEvent,
     "op": Operation,
-    "proj": SemanticPromptProjection,
-    "satt": SemanticRequestAttempt,
+    "proj": OperatorProjection,
+    "opt": PersistedSemanticOption,
+    "sattempt": SemanticRequestAttempt,
     "sreq": SemanticRequest,
 }
 
@@ -142,21 +160,6 @@ class ProvenanceRefService:
 
     def get(self, ref_id: str) -> Any:
         prefix = self.prefix(ref_id)
-        if prefix == "src":
-            source: ProvenanceSource | SourceItem | Account | None = self.session.scalar(
-                select(ProvenanceSource).where(ProvenanceSource.ref_id == ref_id)
-            )
-            if source is None:
-                source = self.session.scalar(select(SourceItem).where(SourceItem.ref_id == ref_id))
-            if source is None:
-                source = self.session.scalar(select(Account).where(Account.ref_id == ref_id))
-            if source is None:
-                raise DocketError(
-                    code="provenance_ref_not_found",
-                    message="A referenced provenance object does not exist.",
-                    details={"ref": ref_id},
-                )
-            return source
         model = _PHASE_TWO_MODELS.get(prefix)
         if model is None:
             raise DocketError(
@@ -165,16 +168,6 @@ class ProvenanceRefService:
                 details={"ref": ref_id, "prefix": prefix},
             )
         item = self.session.scalar(select(model).where(model.ref_id == ref_id))
-        if item is None and prefix == "case":
-            item = self.session.scalar(
-                select(AttentionCaseRevision).where(
-                    AttentionCaseRevision.legacy_ref_id == ref_id
-                )
-            )
-        if item is None and prefix == "item":
-            item = self.session.scalar(
-                select(TriageBriefEntry).where(TriageBriefEntry.ref_id == ref_id)
-            )
         if item is None:
             raise DocketError(
                 code="provenance_ref_not_found",
@@ -241,7 +234,12 @@ class ProvenanceRefService:
                 | Preference
                 | CalendarLane
                 | LaneRoutingDecision
-                | CanonicalEvent,
+                | CanonicalEvent
+                | Item
+                | Task
+                | TemporalBinding
+                | TemporalCalendarProjection
+                | ReminderPlan,
             ):
                 stack.extend(item.basis_refs)
         return utterance_refs
