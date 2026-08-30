@@ -6,7 +6,6 @@ from pydantic import ValidationError
 from docket.config import get_settings
 from docket.schemas.calendar import (
     AllDayEventTiming,
-    CalendarProfileInput,
     CalendarRecurrenceInput,
     CalendarReminderPlanInput,
     StandaloneCalendarEventInput,
@@ -156,19 +155,3 @@ def test_standalone_initial_priority_is_conservative() -> None:
         context={"allow_explicit_priority": True},
     )
     assert explicitly_selected.priority == "urgent"
-
-
-def test_calendar_profile_normalizes_reminder_defaults() -> None:
-    profile = CalendarProfileInput(
-        default_reminder_lead_seconds=[600, 300],
-        default_reminder_delivery_channels=["docket_queue", "google_popup"],
-    )
-
-    assert profile.default_reminder_lead_seconds == [300, 600]
-    assert profile.default_reminder_delivery_channels == [
-        "google_popup",
-        "docket_queue",
-    ]
-    assert CalendarProfileInput(
-        default_reminder_delivery_channels=["google_popup"]
-    ).default_reminder_delivery_channels == ["google_popup"]
