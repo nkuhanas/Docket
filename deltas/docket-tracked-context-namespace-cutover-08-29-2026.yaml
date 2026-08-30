@@ -1,0 +1,90 @@
+namespace_ref: ONT-TRACK-NAMESPACE-2026-08-29
+document_ref: ONT-DELTA-2026-08-29-TRACKED-CONTEXT
+policy: clean_break_no_compatibility
+status: collision_scan_complete
+
+prefixes:
+  utt: OperatorUtterance
+  rsp: AgentResponse
+  stm: InterpretedStatement
+  src: Source
+  acct: ProviderAccount
+  ent: Entity
+  item: Item
+  task: Task
+  time: TemporalBinding
+  evt: CanonicalEvent
+  idn: IdentityHandle
+  aff: Affiliation
+  rel: Relationship
+  fact: Fact
+  int: Interaction
+  pref: Preference
+  lane: CalendarLane
+  route: LaneRoutingDecision
+  tproj: TemporalCalendarProjection
+  rem: ReminderPlan
+  tri: TriageRun
+  ctx: ContextPacket
+  case: AttentionCase
+  caserev: AttentionCaseRevision
+  citem: CaseItem
+  bentry: BriefEntry
+  brief: DailyBrief
+  ses: IntentSession
+  turn: IntentTurn
+  sreq: SemanticRequest
+  sattempt: SemanticRequestAttempt
+  chg: ChangeSet
+  dec: Decision
+  conf: Conflict
+  proj: OperatorProjection
+  opt: PersistedSemanticOption
+  op: Operation
+  call: ToolInvocation
+  trace: ConversationalToolTrace
+  aud: AuditEvent
+  log: RuntimeLogEntry
+  gwy: GatewayLifetime
+  drain: DrainBarrier
+  ing: DeferredIngress
+
+retired_prefixes:
+  itm: candidate_only_item_workaround
+  dproj: candidate_only_delivery_projection
+  prompt: candidate_only_prompt_projection
+  cnf: pre_reset_conflict
+  satt: pre_reset_semantic_request_attempt
+  lease: pre_reset_execution_lease
+
+reassigned_prefixes:
+  item:
+    old_meanings:
+      - CaseItem
+      - TriageBriefEntry
+    clean_meaning: Item
+    subordinate_replacements:
+      CaseItem: citem
+      TriageBriefEntry: bentry
+  src:
+    old_meanings:
+      - Source
+      - ProviderAccount
+    clean_meaning: Source
+    replacement:
+      ProviderAccount: acct
+  proj:
+    old_meanings:
+      - DiscordProjection
+      - SemanticPromptProjection
+      - AgentResponseProjection
+    clean_meaning: OperatorProjection
+    delivery_identity: internal_only
+
+validation:
+  prefix_count: 44
+  unique_prefixes: true
+  unique_types: true
+  runtime_aliases_permitted: false
+  old_bare_ulid_fallback_permitted: false
+  internal_execution_lease_public_ref: false

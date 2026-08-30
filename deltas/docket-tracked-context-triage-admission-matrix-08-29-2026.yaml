@@ -1,0 +1,116 @@
+matrix_ref: ONT-TRACK-TRIAGE-ADMISSION-2026-08-29
+document_ref: ONT-DELTA-2026-08-29-TRACKED-CONTEXT
+status: complete
+rule: >-
+  AttentionCase admission requires at least one concrete unresolved canonical
+  consequence and at least one required CaseItem. Unknown identity and registry
+  context alone never admit a case.
+
+fixtures:
+  - fixture: optional_outreach_without_consequence
+    disposition: brief
+    consequence_classes: []
+    required_case_items: []
+    supporting_context:
+      - identity_resolution
+    acceptance_ref: ONT-TRACK-ACC-0020
+  - fixture: unknown_identity_only
+    disposition: brief
+    consequence_classes: []
+    required_case_items: []
+    supporting_context:
+      - identity_resolution
+    acceptance_ref: ONT-TRACK-ACC-0026
+  - fixture: promotional_noise_without_preference
+    disposition: suppress
+    suppression_basis: typed_noise_rule
+    consequence_classes: []
+    required_case_items: []
+    acceptance_ref: ONT-TRACK-ACC-0020
+  - fixture: existing_exact_suppression_preference
+    disposition: suppress
+    suppression_basis: exact_preference_ref
+    consequence_classes: []
+    required_case_items: []
+    acceptance_ref: ONT-TRACK-ACC-0026
+  - fixture: unknown_sender_specific_meeting
+    disposition: attention_case
+    consequence_classes:
+      - event_disposition
+    required_case_items:
+      - event_candidate
+    supporting_case_items:
+      - identity_resolution
+    acceptance_ref: ONT-TRACK-ACC-0021
+  - fixture: required_financial_aid_response_tomorrow
+    disposition: attention_case
+    consequence_classes:
+      - task_disposition
+      - temporal_disposition
+    required_case_items:
+      - task_candidate
+      - temporal_binding_candidate
+    supporting_case_items:
+      - identity_resolution
+    acceptance_ref: ONT-TRACK-ACC-0022
+  - fixture: canonical_value_conflict
+    disposition: attention_case
+    consequence_classes:
+      - conflict_resolution
+    required_case_items:
+      - decision_required
+    supporting_case_items: []
+    acceptance_ref: ONT-TRACK-ACC-0010
+  - fixture: explicit_policy_conflict
+    disposition: attention_case
+    consequence_classes:
+      - preference_disposition
+    required_case_items:
+      - decision_required
+    supporting_case_items: []
+    acceptance_ref: ONT-TRACK-ACC-0022
+  - fixture: registry_candidate_without_consequence
+    disposition: brief
+    consequence_classes: []
+    required_case_items: []
+    supporting_context:
+      - registry_candidate
+    acceptance_ref: ONT-TRACK-ACC-0020
+  - fixture: declined_event_with_supporting_identity
+    disposition: attention_case
+    operator_resolution:
+      event_candidate: rejected
+      identity_resolution: not_pursued
+      attention_case: resolved
+    acceptance_ref: ONT-TRACK-ACC-0023
+  - fixture: voluntary_reply_to_brief
+    disposition: brief
+    interactive_followup:
+      creates_attention_case: false
+      bootstraps_intent_session: true
+      authority: new_operator_utterance
+    acceptance_ref: ONT-TRACK-ACC-0024
+  - fixture: already_completed_candidate_action
+    disposition: attention_case
+    operator_resolution:
+      existing_task: transition_if_exactly_bound
+      missing_task: do_not_create
+      attention_case: resolved
+    acceptance_ref: ONT-TRACK-ACC-0025
+  - fixture: invalid_identity_only_attention_submission
+    submitted_disposition: attention_case
+    service_result: rejected_validation
+    persisted_case_items: 0
+    fallback_dispositions:
+      - brief
+      - suppress
+    acceptance_ref: ONT-TRACK-ACC-0026
+
+coverage:
+  suppress: true
+  brief: true
+  attention_case: true
+  invalid_admission_rejection: true
+  required_supporting_closure: true
+  voluntary_brief_reply: true
+  triage_canonical_mutation: false

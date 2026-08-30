@@ -21,3 +21,7 @@ secrets/restore/*
 /deltas/*
 !/deltas/docket-ontology-readiness-status-08-27-2026.yaml
 !/deltas/docket-ontology-traceability-08-27-2026.csv
+!/deltas/docket-tracked-context-readiness-status-08-29-2026.yaml
+!/deltas/docket-tracked-context-namespace-cutover-08-29-2026.yaml
+!/deltas/docket-tracked-context-tool-cutover-matrix-08-29-2026.yaml
+!/deltas/docket-tracked-context-triage-admission-matrix-08-29-2026.yaml

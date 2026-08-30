@@ -1,0 +1,124 @@
+readiness_ref: ONT-TRACK-READINESS-2026-08-29
+document_ref: ONT-DELTA-2026-08-29-TRACKED-CONTEXT
+frozen_artifact_hash: 830c33c9d78485a6a6a8f872b6dfad996869f8a7eaea9a5f7d39d52e9357cf48
+recorded_at: 2026-08-29
+status: readiness_in_progress
+
+authority:
+  architecture_authority: true
+  implementation_authority: amendment_scope
+  production_reset_authority: false
+  signoff_evidence:
+    operator_utterance_ref: utt_01M18D6GT2MXB80229HAEPZ2KB
+    decision_ref: dec_01M18DYEYJVVJ7TW5VQQBCA6NC
+    audit_ref: aud_01M18DYEYK9Y353AK546980XBK
+    agent_response_ref: rsp_01M18DYEZ3DR3JVMJMH47CJQ0J
+  prerequisite_decision_refs:
+    - dec_01M13MANM19BX22EW8QC8AH9DT
+    - dec_01M1587SE1JX3BVQ1QZBQKX6T7
+    - dec_01M15EHKNXVKRBM7MZ3FN39X3E
+
+implementation_gate:
+  total: 8
+  resolved: 3
+  in_progress: 3
+  blocked_pending_implementation: 2
+  implementation_start_permitted: false
+
+implementation_start_blockers:
+  - blocker_ref: governance_provenance_closure_export_and_restore_rehearsal
+    status: in_progress
+    finding: >-
+      The frozen G.3 seed boundary is exact, but the repository has no computed
+      transitive-closure exporter or isolated clean-schema restore verifier yet.
+    next_evidence:
+      - governance closure exporter with row hashes and reference edges
+      - isolated PostgreSQL clean-schema restore rehearsal
+      - sign-off query parity report
+
+  - blocker_ref: provider_effect_and_binding_disposition_inventory
+    status: in_progress
+    observed_at: 2026-08-29
+    read_only_inventory:
+      operations:
+        succeeded: 73
+        reset_blocking: 0
+      operation_items:
+        succeeded: 43
+      execution_attempts:
+        succeeded: 76
+        failed: 1
+        started_or_unknown: 0
+      provider_event_bindings:
+        active: 3
+        cancelled: 5
+      calendar_links:
+        course_meeting: 16
+        standalone: 12
+      canonical_events:
+        total: 13
+        active: 4
+      calendar_lanes:
+        total: 6
+        provider_bound: 6
+    finding: >-
+      No running or uncertain provider execution blocks inventory work. The
+      object-level reset manifest still needs one exact Operator-visible
+      disposition for every external Google object.
+
+  - blocker_ref: namespace_cutover_collision_scan
+    status: resolved
+    evidence:
+      path: deltas/docket-tracked-context-namespace-cutover-08-29-2026.yaml
+    resolution: >-
+      All 44 post-reset prefixes have one canonical meaning; every current
+      collision and retired prefix has one clean-cutover disposition with no
+      alias or decoder retained.
+
+  - blocker_ref: tracked_context_requirement_traceability
+    status: in_progress
+    finding: >-
+      The frozen amendment contains 68 normative clauses and 29 Acceptance
+      scenarios. The machine-readable requirement rows are being mapped before
+      any substantive implementation begins.
+    next_evidence:
+      - deltas/docket-tracked-context-traceability-08-29-2026.csv
+
+  - blocker_ref: clean_tool_contract_cutover_mapping
+    status: resolved
+    evidence:
+      path: deltas/docket-tracked-context-tool-cutover-matrix-08-29-2026.yaml
+    resolution: >-
+      Every current interactive and triage tool has exactly one cutover
+      disposition. The target profiles contain 19 interactive and four triage
+      tools, with no old-name aliases.
+
+  - blocker_ref: clean_reset_cutover_rehearsal
+    status: blocked_pending_implementation
+    finding: >-
+      Rehearsal requires the clean baseline, computed governance closure,
+      provider disposition manifest, and reset tooling. Production execution
+      remains separately unauthorized.
+
+  - blocker_ref: attachment_retention_and_restore_verification
+    status: blocked_pending_implementation
+    finding: >-
+      Current ingestion persists bounded attachment metadata but not the new
+      AttachmentEvidence manifest or encrypted PostgreSQL blob. Verification
+      requires the clean attachment schema, retention tombstone behavior, and
+      PostgreSQL backup/restore fixture.
+
+  - blocker_ref: triage_admission_rule_and_fixture_matrix
+    status: resolved
+    evidence:
+      path: deltas/docket-tracked-context-triage-admission-matrix-08-29-2026.yaml
+    resolution: >-
+      The fixture matrix covers suppress, brief, valid attention admission,
+      invalid admission, required/supporting closure, and voluntary brief
+      replies without granting triage mutation authority.
+
+production_actions:
+  reset_executed: false
+  production_data_deleted: false
+  provider_mutation_performed: false
+  deployment_performed: false

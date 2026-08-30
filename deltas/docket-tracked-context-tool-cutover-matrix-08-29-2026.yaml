@@ -1,0 +1,165 @@
+matrix_ref: ONT-TRACK-TOOLS-2026-08-29
+document_ref: ONT-DELTA-2026-08-29-TRACKED-CONTEXT
+policy: atomic_clean_cutover_without_aliases
+status: complete
+
+interactive:
+  current_count: 22
+  added_count: 2
+  removed_count: 5
+  target_count: 19
+  entries:
+    - current: docket_commit_changeset
+      disposition: modify
+      target: docket_commit_changeset
+      authority: interactive_mutation
+      requirement: ONT-TRACK-REQ-0030
+    - current: docket_get_calendar_profile
+      disposition: remove
+      target: null
+      authority: interactive_read
+      requirement: ONT-TRACK-REQ-0035
+    - current: docket_get_calendar_sync_status
+      disposition: retain
+      target: docket_get_calendar_sync_status
+      authority: interactive_read
+      requirement: ONT-TRACK-REQ-0032
+    - current: docket_get_conflict
+      disposition: modify
+      target: docket_get_conflict
+      authority: interactive_read
+      requirement: ONT-TRACK-REQ-0042
+    - current: docket_get_history_entry
+      disposition: modify
+      target: docket_get_history_entry
+      authority: interactive_read
+      requirement: ONT-TRACK-REQ-0042
+    - current: docket_get_intent_session
+      disposition: modify
+      target: docket_get_intent_session
+      authority: interactive_read
+      requirement: ONT-TRACK-REQ-0042
+    - current: docket_get_network_neighborhood
+      disposition: replace
+      target: docket_get_context_neighborhood
+      authority: interactive_read
+      requirement: ONT-TRACK-REQ-0032
+    - current: docket_get_organization_context
+      disposition: replace
+      target: docket_get_organization_or_institution_context
+      authority: interactive_read
+      requirement: ONT-TRACK-REQ-0032
+    - current: docket_get_person_context
+      disposition: modify
+      target: docket_get_person_context
+      authority: interactive_read
+      requirement: ONT-TRACK-REQ-0032
+    - current: docket_get_queue_item
+      disposition: remove
+      target: null
+      authority: interactive_read
+      requirement: ONT-TRACK-REQ-0035
+    - current: docket_get_record
+      disposition: remove
+      target: null
+      authority: interactive_read
+      requirement: ONT-TRACK-REQ-0035
+    - current: docket_get_triage_case
+      disposition: replace
+      target: docket_get_attention_case
+      authority: shared_read
+      requirement: ONT-TRACK-REQ-0049
+    - current: docket_list_accounts
+      disposition: replace
+      target: docket_list_provider_accounts
+      authority: interactive_read
+      requirement: ONT-TRACK-REQ-0042
+    - current: docket_list_calendar_lanes
+      disposition: modify
+      target: docket_list_calendar_lanes
+      authority: interactive_read
+      requirement: ONT-TRACK-REQ-0042
+    - current: docket_list_calendar_events
+      disposition: replace
+      target: docket_list_provider_calendar_events
+      authority: interactive_read
+      requirement: ONT-TRACK-REQ-0032
+    - current: docket_list_queue_items
+      disposition: remove
+      target: null
+      authority: interactive_read
+      requirement: ONT-TRACK-REQ-0035
+    - current: docket_list_reminder_rules
+      disposition: replace
+      target: docket_list_reminder_plans
+      authority: interactive_read
+      requirement: ONT-TRACK-REQ-0040
+    - current: docket_resolve_conflict
+      disposition: modify
+      target: docket_resolve_conflict
+      authority: interactive_mutation
+      requirement: ONT-TRACK-REQ-0042
+    - current: docket_network_search
+      disposition: replace
+      target: docket_search_entities
+      authority: interactive_read
+      requirement: ONT-TRACK-REQ-0032
+    - current: docket_query_people
+      disposition: retain
+      target: docket_query_people
+      authority: interactive_read
+      requirement: ONT-TRACK-REQ-0032
+    - current: docket_search_history
+      disposition: modify
+      target: docket_search_history
+      authority: interactive_read
+      requirement: ONT-TRACK-REQ-0042
+    - current: docket_search_records
+      disposition: remove
+      target: null
+      authority: interactive_read
+      requirement: ONT-TRACK-REQ-0035
+    - current: null
+      disposition: add
+      target: docket_query_items
+      authority: interactive_read
+      requirement: ONT-TRACK-TOOL-0001
+    - current: null
+      disposition: add
+      target: docket_get_item_context
+      authority: interactive_read
+      requirement: ONT-TRACK-TOOL-0002
+
+triage:
+  current_count: 4
+  target_count: 4
+  entries:
+    - current: docket_get_triage_context
+      disposition: modify
+      target: docket_get_triage_context
+      authority: triage_read
+      requirement: ONT-TRACK-REQ-0044
+    - current: docket_submit_triage_analysis
+      disposition: modify
+      target: docket_submit_triage_analysis
+      authority: triage_intelligence_only
+      requirement: ONT-TRACK-REQ-0049
+    - current: docket_get_triage_case
+      disposition: replace
+      target: docket_get_attention_case
+      authority: shared_read
+      requirement: ONT-TRACK-REQ-0049
+    - current: docket_apply_existing_suppression
+      disposition: modify
+      target: docket_apply_existing_suppression
+      authority: existing_preference_only
+      requirement: ONT-TRACK-INV-0008
+
+constraints:
+  old_name_aliases_permitted: false
+  raw_provider_intent_tool_permitted: false
+  repair_or_push_tool_permitted: false
+  interactive_mutation_tools:
+    - docket_commit_changeset
+    - docket_resolve_conflict
+  triage_mutation_tools: []
