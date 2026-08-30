@@ -41,7 +41,7 @@ class CanonicalEvent(TimestampMixin, Base):
     title: Mapped[str] = mapped_column(String(512), nullable=False)
     status: Mapped[str] = mapped_column(String(16), default="proposed", nullable=False)
     event_spec: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
-    entity_refs: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    entity_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     context_labels: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     authority: Mapped[str] = mapped_column(String(32), nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)

@@ -11,18 +11,18 @@ from docket.config import get_settings
 from docket.domain.errors import DocketError
 from docket.domain.public_refs import parse_public_ref
 from docket.models import (
-    Account,
     AuditEvent,
     CalendarLane,
     CanonicalEvent,
     ChangeSet,
     Entity,
+    GmailSource,
     IdentityHandle,
     LaneRoutingDecision,
     Preference,
-    ProvenanceSource,
+    ProviderAccount,
     SenderIdentityEmail,
-    SourceItem,
+    Source,
 )
 from docket.models.base import utc_now
 from docket.schemas.policy import (
@@ -99,9 +99,9 @@ class ContextPolicyService:
             )
         elif spec.target_type == "source":
             target = self.session.scalar(
-                select(SourceItem).where(SourceItem.ref_id == spec.target_ref)
+                select(GmailSource).where(GmailSource.ref_id == spec.target_ref)
             ) or self.session.scalar(
-                select(ProvenanceSource).where(ProvenanceSource.ref_id == spec.target_ref)
+                select(Source).where(Source.ref_id == spec.target_ref)
             )
         if spec.target_type in {"entity", "identity", "source"} and target is None:
             raise DocketError(
@@ -285,7 +285,7 @@ class ContextPolicyService:
     ) -> list[str]:
         if change.action == "create":
             spec = CalendarLaneCreateSpec.model_validate(change.create_spec)
-            account = self.session.get(Account, spec.account_id)
+            account = self.session.get(ProviderAccount, spec.account_id)
             if (
                 account is None
                 or not account.enabled
@@ -315,7 +315,6 @@ class ContextPolicyService:
                     metadata_json=spec.metadata_json,
                     enabled=spec.enabled,
                     priority=spec.priority,
-                    provenance_status="complete",
                     status=(
                         "active" if spec.provider_calendar_binding is not None else "unprovisioned"
                     ),
@@ -324,24 +323,6 @@ class ContextPolicyService:
                 )
                 self.session.add(lane)
                 self.session.flush()
-            elif lane.provenance_status == "legacy_preledger":
-                if spec.ref_id is not None and lane.ref_id != spec.ref_id:
-                    raise DocketError(
-                        code="planned_ref_identity_conflict",
-                        message="Planned lane ref conflicts with an existing exact lane.",
-                    )
-                lane.display_name = spec.display_name
-                lane.color_hex = spec.color_hex
-                lane.operator_policy_text = spec.operator_policy_text
-                lane.metadata_json = spec.metadata_json
-                lane.enabled = spec.enabled
-                lane.priority = spec.priority
-                lane.basis_refs = list(change.basis_refs)
-                lane.decision_refs = self._provenance(changeset, change)["decision_refs"]
-                lane.source_refs = self._provenance(changeset, change)["source_refs"]
-                lane.created_by_changeset_ref = changeset.ref_id
-                lane.provenance_status = "complete"
-                lane.version += 1
             else:
                 raise DocketError(
                     code="calendar_lane_exists",

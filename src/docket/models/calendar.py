@@ -26,23 +26,6 @@ from docket.domain.public_refs import new_public_ref
 from docket.models.base import Base, TimestampMixin, utc_now
 
 
-class OperationBundle(TimestampMixin, Base):
-    __tablename__ = "operation_bundles"
-    __table_args__ = (
-        CheckConstraint(
-            "status IN ('pending', 'running', 'succeeded', 'partial_failed', 'failed', "
-            "'reconciliation_required')",
-            name="ck_operation_bundles_status",
-        ),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    originating_changeset_ref: Mapped[str] = mapped_column(String(40), nullable=False)
-    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
-    result: Mapped[dict[str, Any] | None] = mapped_column(JSON)
-    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
-
-
 class Operation(TimestampMixin, Base):
     __tablename__ = "operations"
     __table_args__ = (
@@ -53,7 +36,8 @@ class Operation(TimestampMixin, Base):
         ),
         CheckConstraint(
             "operation_type IN ('calendar_create_event', 'calendar_update_event', "
-            "'calendar_delete_event', 'gmail_archive_message', 'gmail_trash_message')",
+            "'calendar_update_reminders', 'calendar_cancel_event', "
+            "'calendar_configure_lane', 'calendar_delete_lane')",
             name="ck_operations_type",
         ),
         Index("ix_operations_due", "status", "next_attempt_at"),
@@ -66,9 +50,6 @@ class Operation(TimestampMixin, Base):
     originating_changeset_ref: Mapped[str] = mapped_column(String(40), nullable=False)
     basis_refs: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     canonical_target_refs: Mapped[list[str]] = mapped_column(JSON, nullable=False)
-    bundle_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("operation_bundles.id", ondelete="RESTRICT")
-    )
     predecessor_operation_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("operations.id", ondelete="RESTRICT")
     )

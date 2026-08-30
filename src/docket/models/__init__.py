@@ -20,7 +20,6 @@ from docket.models.calendar import (
     CalendarSyncState,
     ExecutionAttempt,
     Operation,
-    OperationBundle,
     OperationTarget,
     ScheduledNotification,
 )
@@ -137,7 +136,6 @@ __all__ = [
     "ItemSourceBinding",
     "LaneRoutingDecision",
     "Operation",
-    "OperationBundle",
     "OperationTarget",
     "OperatorProjection",
     "OperatorUtterance",
