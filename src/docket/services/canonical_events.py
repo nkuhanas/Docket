@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -108,6 +109,10 @@ class CanonicalEventAuthorityService:
                     message="One Event may realize at most one Time per linked Item.",
                     details={"item_ref": item_ref},
                 )
+            self._require_temporal_compatibility(
+                event=event,
+                binding=binding,
+            )
             links_by_item[item_ref] = temporal_binding_ref
         existing = list(
             self.session.scalars(
@@ -124,6 +129,69 @@ class CanonicalEventAuthorityService:
                     realizes_temporal_binding_ref=realized_temporal_ref,
                     basis_refs=basis_refs,
                 )
+            )
+
+    @staticmethod
+    def _require_temporal_compatibility(
+        *,
+        event: CanonicalEvent,
+        binding: TemporalBinding,
+    ) -> None:
+        timing = event.event_spec.get("timing")
+        if not isinstance(timing, dict):
+            raise DocketError(
+                code="event_temporal_bounds_incompatible",
+                message="CanonicalEvent timing is unavailable for Time realization.",
+            )
+        value = binding.temporal_value
+        value_kind = value.get("kind")
+        timing_kind = timing.get("kind")
+        compatible = False
+        if value_kind == "date":
+            expected = date.fromisoformat(str(value["date"]))
+            actual = (
+                date.fromisoformat(str(timing["start_date"]))
+                if timing_kind == "all_day"
+                else datetime.fromisoformat(str(timing["start_local"])).date()
+                if timing_kind == "timed"
+                else None
+            )
+            compatible = actual == expected
+        elif value_kind == "datetime" and timing_kind == "timed":
+            compatible = (
+                datetime.fromisoformat(str(timing["start_local"]))
+                == datetime.fromisoformat(str(value["local_datetime"]))
+                and timing.get("timezone") == value.get("timezone")
+            )
+        elif value_kind == "date_interval" and timing_kind == "all_day":
+            start = date.fromisoformat(str(value["start_date"]))
+            end = date.fromisoformat(str(value["end_date"]))
+            if bool(value.get("end_inclusive")):
+                end += timedelta(days=1)
+            compatible = (
+                date.fromisoformat(str(timing["start_date"])) == start
+                and date.fromisoformat(str(timing["end_date"])) == end
+                and timing.get("timezone") == value.get("timezone")
+            )
+        elif value_kind == "datetime_interval" and timing_kind == "timed":
+            compatible = (
+                datetime.fromisoformat(str(timing["start_local"]))
+                == datetime.fromisoformat(str(value["start_local"]))
+                and datetime.fromisoformat(str(timing["end_local"]))
+                == datetime.fromisoformat(str(value["end_local"]))
+                and timing.get("timezone") == value.get("timezone")
+            )
+        if not compatible:
+            raise DocketError(
+                code="event_temporal_bounds_incompatible",
+                message=(
+                    "CanonicalEvent occurrence bounds do not realize the linked "
+                    "TemporalBinding."
+                ),
+                details={
+                    "event_ref": event.ref_id,
+                    "temporal_binding_ref": binding.ref_id,
+                },
             )
 
     def apply_event(

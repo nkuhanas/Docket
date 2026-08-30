@@ -620,6 +620,23 @@ class TrackedContextService:
                 details={"entity_refs": missing},
             )
 
+    def _require_acyclic_parent(self, *, item_ref: str, parent_item_ref: str) -> None:
+        current_ref: str | None = parent_item_ref
+        visited: set[str] = set()
+        while current_ref is not None:
+            if current_ref == item_ref or current_ref in visited:
+                raise DocketError(
+                    code="item_parent_cycle",
+                    message="Item parent links must remain acyclic.",
+                    details={
+                        "item_ref": item_ref,
+                        "parent_item_ref": parent_item_ref,
+                    },
+                )
+            visited.add(current_ref)
+            parent = self._item(current_ref)
+            current_ref = parent.parent_item_ref
+
     def _require_temporal_subject(self, subject_ref: str) -> None:
         prefix, _payload = parse_public_ref(subject_ref)
         if prefix == "item":
@@ -679,6 +696,57 @@ class TrackedContextService:
                     "and IANA timezone."
                 ),
                 details={"subject_ref": subject_ref},
+            )
+
+    def _require_projection_policy(
+        self,
+        *,
+        binding: TemporalBinding,
+        display_policy: dict[str, Any],
+        basis_refs: list[str],
+    ) -> None:
+        value_kind = str(binding.temporal_value.get("kind", ""))
+        policy_kind = str(display_policy.get("kind", ""))
+        compatible = {
+            "date": "all_day_marker",
+            "datetime": "timed_marker",
+            "date_interval": "interval_span",
+            "datetime_interval": "interval_span",
+        }
+        if compatible.get(value_kind) != policy_kind:
+            raise DocketError(
+                code="calendar_display_policy_incompatible",
+                message="Calendar display policy does not match Time precision.",
+                details={
+                    "temporal_binding_ref": binding.ref_id,
+                    "temporal_value_kind": value_kind,
+                    "display_policy_kind": policy_kind,
+                },
+            )
+        if display_policy.get("transparency", "transparent") != "opaque":
+            return
+        statement_refs = [ref for ref in basis_refs if ref.startswith("stm_")]
+        preference_refs = [ref for ref in basis_refs if ref.startswith("pref_")]
+        explicit = self.session.scalar(
+            select(InterpretedStatement.id).where(
+                InterpretedStatement.ref_id.in_(statement_refs),
+                InterpretedStatement.source_ref.is_(None),
+                InterpretedStatement.predicate == "calendar_transparency",
+                InterpretedStatement.value_json
+                == {
+                    "temporal_binding_ref": binding.ref_id,
+                    "transparency": "opaque",
+                },
+            )
+        )
+        if explicit is None and not preference_refs:
+            raise DocketError(
+                code="opaque_projection_authority_required",
+                message=(
+                    "An opaque Time projection requires exact current Operator "
+                    "intent or an active Preference basis."
+                ),
+                details={"temporal_binding_ref": binding.ref_id},
             )
 
     def apply_item(self, _session: Session, changeset: ChangeSet, change: Any) -> list[str]:
@@ -769,12 +837,10 @@ class TrackedContextService:
                 if "context_entity_refs" in values:
                     self._require_context_entities(values["context_entity_refs"] or [])
                 if values.get("parent_item_ref") is not None:
-                    parent = self._item(values["parent_item_ref"])
-                    if parent.ref_id == item.ref_id:
-                        raise DocketError(
-                            code="item_parent_cycle",
-                            message="Item cannot be its own parent.",
-                        )
+                    self._require_acyclic_parent(
+                        item_ref=item.ref_id,
+                        parent_item_ref=values["parent_item_ref"],
+                    )
                 for key, value in values.items():
                     setattr(item, key, value)
             else:
@@ -823,15 +889,7 @@ class TrackedContextService:
                 )
                 if active is not None:
                     expected_value = spec.temporal_value.model_dump(mode="json")
-                    statement_refs = {
-                        ref for ref in change.basis_refs if ref.startswith("stm_")
-                    }
-                    if (
-                        statement_refs
-                        and statement_refs.issubset(set(active.basis_refs))
-                        and set(spec.source_refs).issubset(set(active.source_refs))
-                        and active.temporal_value == expected_value
-                    ):
+                    if active.temporal_value == expected_value:
                         return [active.ref_id]
                     raise DocketError(
                         code="temporal_binding_exists",
@@ -989,7 +1047,13 @@ class TrackedContextService:
             spec = TemporalCalendarProjectionInput.model_validate(change.create_spec)
             assert spec.temporal_binding_ref is not None
             assert spec.lane_ref is not None
-            self._temporal_binding(spec.temporal_binding_ref)
+            binding = self._temporal_binding(spec.temporal_binding_ref)
+            display_policy = spec.display_policy.model_dump(mode="json")
+            self._require_projection_policy(
+                binding=binding,
+                display_policy=display_policy,
+                basis_refs=list(change.basis_refs),
+            )
             lane = self.session.scalar(
                 select(CalendarLane).where(
                     CalendarLane.ref_id == spec.lane_ref,
@@ -1006,7 +1070,7 @@ class TrackedContextService:
             projection = TemporalCalendarProjection(
                 temporal_binding_ref=spec.temporal_binding_ref,
                 lane_ref=spec.lane_ref,
-                display_policy=spec.display_policy.model_dump(mode="json"),
+                display_policy=display_policy,
                 reminder_plan_ref=spec.reminder_plan_ref,
                 enabled=spec.enabled,
                 basis_refs=list(change.basis_refs),
@@ -1033,6 +1097,14 @@ class TrackedContextService:
                 values = patch.model_dump(exclude_unset=True)
                 if "display_policy" in values and patch.display_policy is not None:
                     values["display_policy"] = patch.display_policy.model_dump(mode="json")
+                    binding = self._temporal_binding(
+                        stored_projection.temporal_binding_ref
+                    )
+                    self._require_projection_policy(
+                        binding=binding,
+                        display_policy=values["display_policy"],
+                        basis_refs=list(change.basis_refs),
+                    )
                 if values.get("lane_ref") is not None:
                     lane_id = self.session.scalar(
                         select(CalendarLane.id).where(

@@ -18,9 +18,11 @@ from docket.models import (
     IntentSession,
     IntentTurn,
     InterpretedStatement,
+    Item,
     OperatorUtterance,
     SemanticRequest,
     SemanticRequestAttempt,
+    TemporalBinding,
 )
 from docket.schemas.authority import (
     ChangeSetContent,
@@ -524,6 +526,98 @@ def test_nonoverlap_and_explicit_supersession_do_not_open_conflict(
 
     with session_factory() as session:
         assert session.scalar(select(func.count()).select_from(Conflict)) == 0
+
+
+@pytest.mark.integration
+def test_ambiguous_temporal_replacement_opens_conflict_and_preserves_time(
+    session_factory,
+) -> None:
+    with session_factory.begin() as session:
+        prior_utterance = _capture_utterance(
+            session,
+            message_id="1542799000000000030",
+            text="The midterm is September 18.",
+        )
+        item = Item(
+            title="Midterm",
+            basis_refs=[prior_utterance],
+            decision_refs=[],
+            source_refs=[],
+            created_by_changeset_ref=new_public_ref("chg"),
+        )
+        session.add(item)
+        session.flush()
+        prior = TemporalBinding(
+            subject_ref=item.ref_id,
+            role="scheduled_on",
+            binding_key="default",
+            temporal_value={
+                "kind": "date",
+                "date": "2026-09-18",
+                "timezone": "America/Los_Angeles",
+            },
+            basis_refs=[prior_utterance],
+            decision_refs=[],
+            source_refs=[],
+            created_by_changeset_ref=new_public_ref("chg"),
+        )
+        session.add(prior)
+        session.flush()
+        incoming_utterance = _capture_utterance(
+            session,
+            message_id="1542799000000000031",
+            text="The midterm is September 19.",
+        )
+        settings = get_settings()
+        request_key = (
+            f"discord:{settings.discord_guild_id}:{settings.chat_channel_id}:"
+            "1542799000000000031:0"
+        )
+        content = ChangeSetContent.model_validate(
+            {
+                "basis_refs": [incoming_utterance],
+                "tracked_context_changes": [
+                    {
+                        "mutation_type": "temporal_binding_create",
+                        "change_id": "ambiguous-midterm-date",
+                        "action": "create",
+                        "object_type": "temporal_binding",
+                        "affected_fields": ["temporal_value"],
+                        "basis_refs": [incoming_utterance],
+                        "create_spec": {
+                            "subject_ref": item.ref_id,
+                            "role": "scheduled_on",
+                            "binding_key": "default",
+                            "temporal_value": {
+                                "kind": "date",
+                                "date": "2026-09-19",
+                                "timezone": "America/Los_Angeles",
+                            },
+                        },
+                    }
+                ],
+            }
+        )
+        result = InteractiveAuthorityService(session).process_turn(
+            utterance_ref=incoming_utterance,
+            request_key=request_key,
+            actor_id=settings.operator_discord_user_id,
+            intent_session_ref=None,
+            expected_session_version=None,
+            statements=[],
+            relations=[],
+            resolved_intent_json={"kind": "temporal_binding_assertion"},
+            blocking_clarifications=[],
+            content=content,
+            changeset_ref=None,
+            expected_changeset_version=None,
+        )
+        assert result["disposition"] == "needs_clarification"
+        conflict = session.scalar(select(Conflict))
+        assert conflict is not None and conflict.status == "open"
+        assert prior.canonical_status == "active"
+        assert prior.temporal_value["date"] == "2026-09-18"
+        assert session.scalar(select(func.count()).select_from(TemporalBinding)) == 1
 
 
 @pytest.mark.integration

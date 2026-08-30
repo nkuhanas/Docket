@@ -50,6 +50,7 @@ from docket.services.registry import RegistryService
 from docket.services.registry_conflicts import (
     IdentityBindingConflictCompiler,
     RegistryConflictCompiler,
+    TemporalBindingConflictCompiler,
 )
 from docket.services.reply_bindings import ReplyBindingService
 from docket.services.semantic_options import (
@@ -617,6 +618,9 @@ class InteractiveAuthorityService:
             selected_binding_statements = IdentityBindingConflictCompiler(
                 self.session
             ).selected_statements(content)
+            selected_temporal_statements = TemporalBindingConflictCompiler(
+                self.session
+            ).selected_statements(content)
             known_binding_subjects = {
                 subject_ref
                 for statement in statements
@@ -630,6 +634,7 @@ class InteractiveAuthorityService:
                     for statement in selected_binding_statements
                     if not known_binding_subjects.intersection(statement.subject_refs)
                 ],
+                *selected_temporal_statements,
             ]
         intent_session, turn = intent_service.append_turn(
             IntentTurnAppend(
@@ -685,6 +690,9 @@ class InteractiveAuthorityService:
                         list(turn.statement_refs)
                     ),
                     *IdentityBindingConflictCompiler(self.session).compile(
+                        list(turn.statement_refs)
+                    ),
+                    *TemporalBindingConflictCompiler(self.session).compile(
                         list(turn.statement_refs)
                     ),
                 ]
