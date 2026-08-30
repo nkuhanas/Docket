@@ -10,6 +10,7 @@ import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from docket.config import get_settings
 from docket.domain.errors import DocketError, IdempotencyConflict
@@ -19,18 +20,29 @@ from docket.mcp.instrumented import ProvenanceFastMCP
 from docket.models import (
     AttachmentEvidence,
     EncryptedAttachmentBlob,
+    IntentSession,
+    Item,
+    ItemSourceBinding,
     OperatorUtterance,
     Source,
+    TemporalBinding,
     ToolInvocation,
 )
 from docket.providers.discord import FakeDiscordProjectionAdapter
-from docket.schemas.authority import StatementInput
+from docket.schemas.authority import (
+    ChangeSetCommit,
+    ChangeSetContent,
+    ChangeSetPrepare,
+    StatementInput,
+)
 from docket.services.attachment_evidence import AttachmentCapture, AttachmentEvidenceService
+from docket.services.change_sets import ChangeSetService
 from docket.services.deferred_ingress import DeferredIngressRunner
 from docket.services.history import HistoryService
 from docket.services.ingress_ledger import IngressIdentity, IngressLedgerService
 from docket.services.provenance import ProvenanceService
 from docket.services.statements import StatementService
+from docket.services.tracked_context import TrackedContextService
 
 
 def _request(
@@ -67,6 +79,44 @@ def _request(
         ),
         attachments=[manifest],
     )
+
+
+def _commit_tracked_content(
+    session: Session,
+    *,
+    utterance_ref: str,
+    idempotency_key: str,
+    content: ChangeSetContent,
+) -> list[str]:
+    intent = IntentSession(
+        conversation_ref=f"discord:{idempotency_key}",
+        source_utterance_ref=utterance_ref,
+        semantic_state="ready",
+        commit_state="not_attempted",
+    )
+    session.add(intent)
+    session.flush()
+    service = ChangeSetService(
+        session,
+        handlers=TrackedContextService(session).handlers(),
+    )
+    changeset, _created = service.prepare(
+        ChangeSetPrepare(
+            intent_session_ref=intent.ref_id,
+            expected_session_version=intent.version,
+            idempotency_key=idempotency_key,
+            content=content,
+        )
+    )
+    _committed, affected = service.commit(
+        ChangeSetCommit(
+            changeset_ref=changeset.ref_id,
+            expected_version=changeset.version,
+            idempotency_key=changeset.idempotency_key,
+            authority_utterance_ref=utterance_ref,
+        )
+    )
+    return affected
 
 
 @pytest.mark.integration
@@ -178,6 +228,210 @@ def test_attachment_statement_preserves_bounded_fragment_lineage(session_factory
                 "extractor_version": "1.0.0",
             }
         )
+
+
+@pytest.mark.integration
+def test_source_fragment_binding_replays_import_without_duplicate_context(
+    session_factory,
+) -> None:
+    request = _request(message_id="1542999000000000025", content=b"midterm row")
+    with session_factory.begin() as session:
+        captured = ProvenanceService(session).capture_operator_utterance(request)
+        source_ref = captured["attachments"][0]["ref"]
+        statement = StatementService(session).derive(
+            captured["ref"],
+            [
+                StatementInput(
+                    statement_kind="item_candidate",
+                    subject_refs=[source_ref],
+                    predicate="schedule_entry",
+                    value_json={"title": "Midterm", "date": "2026-09-18"},
+                    affected_fields=["title", "scheduled_on"],
+                    interpretation_json={"interpretation_version": "fixture-v1"},
+                    interpreter_version="fixture-v1",
+                    source_ref=source_ref,
+                    source_fragment_locator={"page": 1, "table": 1, "row": 4},
+                    source_fragment_hash=hashlib.sha256(b"midterm row").hexdigest(),
+                    extractor_identifier="fixture.schedule-table",
+                    extractor_version="1.0.0",
+                )
+            ],
+        )[0]
+
+        content = ChangeSetContent.model_validate(
+            {
+                "basis_refs": [captured["ref"], statement.ref_id],
+                "tracked_context_changes": [
+                    {
+                        "mutation_type": "item_create",
+                        "change_id": "midterm",
+                        "action": "create",
+                        "object_type": "item",
+                        "affected_fields": ["title", "kind", "source_refs"],
+                        "basis_refs": [captured["ref"], statement.ref_id],
+                        "create_spec": {
+                            "title": "Midterm",
+                            "kind": "academic.exam",
+                            "source_refs": [source_ref],
+                        },
+                    },
+                    {
+                        "mutation_type": "temporal_binding_create",
+                        "change_id": "midterm-date",
+                        "action": "create",
+                        "object_type": "temporal_binding",
+                        "affected_fields": ["subject_ref", "role", "temporal_value"],
+                        "basis_refs": [captured["ref"], statement.ref_id],
+                        "create_spec": {
+                            "subject_change_id": "midterm",
+                            "role": "scheduled_on",
+                            "temporal_value": {
+                                "kind": "date",
+                                "date": "2026-09-18",
+                                "timezone": "America/Los_Angeles",
+                            },
+                            "source_refs": [source_ref],
+                        },
+                    },
+                ],
+            }
+        )
+
+        affected_runs: list[list[str]] = []
+        for index in (1, 2):
+            affected_runs.append(
+                _commit_tracked_content(
+                    session,
+                    utterance_ref=captured["ref"],
+                    idempotency_key=f"attachment-import:{index}",
+                    content=content,
+                )
+            )
+
+    with session_factory() as session:
+        items = list(session.scalars(select(Item)))
+        bindings = list(session.scalars(select(ItemSourceBinding)))
+        times = list(session.scalars(select(TemporalBinding)))
+        assert len(items) == len(bindings) == len(times) == 1
+        assert bindings[0].item_ref == items[0].ref_id
+        assert bindings[0].source_ref == source_ref
+        assert bindings[0].semantic_role == "schedule_entry"
+        assert affected_runs[0] == affected_runs[1]
+        context = TrackedContextService(session).item_context(items[0].ref_id)
+        assert context["source_bindings"] == [
+            {
+                "source_ref": source_ref,
+                "source_revision_key": bindings[0].source_revision_key,
+                "source_fragment_locator": {"page": 1, "table": 1, "row": 4},
+                "semantic_role": "schedule_entry",
+            }
+        ]
+
+
+@pytest.mark.integration
+def test_identical_bytes_in_distinct_uploads_do_not_merge_items(session_factory) -> None:
+    plaintext = b"same schedule row"
+    item_refs: list[str] = []
+    source_refs: list[str] = []
+
+    for index in (1, 2):
+        request = _request(
+            message_id=f"154299900000000002{6 + index}",
+            attachment_id=f"154299900000000010{index}",
+            content=plaintext,
+        )
+        with session_factory.begin() as session:
+            captured = ProvenanceService(session).capture_operator_utterance(request)
+            source_ref = captured["attachments"][0]["ref"]
+            source_refs.append(source_ref)
+            statement = StatementService(session).derive(
+                captured["ref"],
+                [
+                    StatementInput(
+                        statement_kind="item_candidate",
+                        subject_refs=[source_ref],
+                        predicate="schedule_entry",
+                        value_json={"title": "Quiz"},
+                        affected_fields=["title"],
+                        interpreter_version="fixture-v1",
+                        source_ref=source_ref,
+                        source_fragment_locator={"page": 1, "table": 1, "row": 2},
+                        source_fragment_hash=hashlib.sha256(plaintext).hexdigest(),
+                        extractor_identifier="fixture.schedule-table",
+                        extractor_version="1.0.0",
+                    )
+                ],
+            )[0]
+            content = ChangeSetContent.model_validate(
+                {
+                    "basis_refs": [captured["ref"], statement.ref_id],
+                    "tracked_context_changes": [
+                        {
+                            "mutation_type": "item_create",
+                            "change_id": f"quiz-{index}",
+                            "action": "create",
+                            "object_type": "item",
+                            "affected_fields": ["title", "kind", "source_refs"],
+                            "basis_refs": [captured["ref"], statement.ref_id],
+                            "create_spec": {
+                                "title": "Quiz",
+                                "kind": "academic.quiz",
+                                "source_refs": [source_ref],
+                            },
+                        }
+                    ],
+                }
+            )
+            item_refs.append(
+                _commit_tracked_content(
+                    session,
+                    utterance_ref=captured["ref"],
+                    idempotency_key=f"distinct-upload:{index}",
+                    content=content,
+                )[0]
+            )
+
+    with session_factory() as session:
+        assert len(set(source_refs)) == 2
+        assert len(set(item_refs)) == 2
+        assert session.scalar(select(func.count(Item.id))) == 2
+        assert session.scalar(select(func.count(ItemSourceBinding.id))) == 2
+
+
+@pytest.mark.integration
+def test_attachment_item_requires_exact_fragment_statement(session_factory) -> None:
+    request = _request(message_id="1542999000000000026", content=b"orphan row")
+    with session_factory.begin() as session:
+        captured = ProvenanceService(session).capture_operator_utterance(request)
+        source_ref = captured["attachments"][0]["ref"]
+    with session_factory.begin() as session:
+        content = ChangeSetContent.model_validate(
+            {
+                "basis_refs": [captured["ref"]],
+                "tracked_context_changes": [
+                    {
+                        "mutation_type": "item_create",
+                        "change_id": "orphan",
+                        "action": "create",
+                        "object_type": "item",
+                        "affected_fields": ["title", "source_refs"],
+                        "basis_refs": [captured["ref"]],
+                        "create_spec": {
+                            "title": "Orphan import",
+                            "source_refs": [source_ref],
+                        },
+                    }
+                ],
+            }
+        )
+        with pytest.raises(DocketError) as error:
+            _commit_tracked_content(
+                session,
+                utterance_ref=captured["ref"],
+                idempotency_key="attachment-import:missing-fragment",
+                content=content,
+            )
+        assert error.value.code == "item_source_fragment_required"
 
 
 @pytest.mark.integration
