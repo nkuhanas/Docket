@@ -1851,7 +1851,6 @@ def _pre_gateway_dispatch(
         reset_authorization_result,
     )
 
-
 def _read_outbound_token() -> str:
     path = Path(os.environ["DOCKET_TO_HERMES_TOKEN_FILE"])
     token = path.read_text(encoding="utf-8").strip()
