@@ -187,18 +187,19 @@ def test_every_normative_tracked_context_clause_is_mapped() -> None:
     assert len(rows) == len(NORMATIVE_REFS) == 68
     assert {row["requirement_ref"] for row in rows} == NORMATIVE_REFS
     assert len({row["requirement_ref"] for row in rows}) == len(rows)
-    assert all(row["status"] in {"planned", "implemented_verified"} for row in rows)
+    assert all(row["status"] == "implemented_verified" for row in rows)
     assert all(row["test_refs"] or row["operational_verification_refs"] for row in rows)
     assert all(row["acceptance_refs"] for row in rows)
 
     for row in rows:
-        if row["status"] != "implemented_verified":
-            continue
         for test_ref in row["test_refs"].split("|"):
             path_value, separator, function_name = test_ref.partition("::")
             assert separator and function_name.startswith("test_")
             source = Path(path_value).read_text(encoding="utf-8")
             assert f"def {function_name}(" in source
+        for service_ref in row["service_refs"].split("|"):
+            if service_ref.startswith(("src/", "migrations/")):
+                assert Path(service_ref).is_file()
 
 
 @pytest.mark.integration

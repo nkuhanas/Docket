@@ -92,8 +92,9 @@ implementation_start_blockers:
       normative_clauses: 68
       acceptance_scenarios: 29
     resolution: >-
-      Every normative clause has one planned or verified test/operational
-      procedure and Acceptance coverage before substantive implementation.
+      Every normative clause now has implemented-and-verified code or an exact
+      operational procedure, a repository-resolvable automated test, and
+      Acceptance coverage. Planned-only rows are rejected by CI.
 
   - blocker_ref: clean_tool_contract_cutover_mapping
     status: resolved
