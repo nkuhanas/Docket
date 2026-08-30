@@ -19,7 +19,6 @@ CalendarFreshness = Literal["prefer_cache", "require_fresh"]
 CalendarEventResultView = Literal["occurrences", "series"]
 CalendarRelativeDay = Literal["today", "tomorrow"]
 CalendarPriority = Literal["low", "normal", "high", "urgent"]
-CalendarReminderChannel = Literal["google_popup", "docket_queue"]
 CalendarLane = Annotated[
     str,
     StringConstraints(
@@ -49,41 +48,8 @@ OperatorTag = Annotated[
 ]
 
 
-def _default_reminder_channels() -> list[CalendarReminderChannel]:
-    return ["google_popup", "docket_queue"]
-
-
 def _configured_timezone() -> str:
     return get_settings().timezone
-
-
-class CalendarReminderPlanInput(StrictModel):
-    delivery_channels: list[CalendarReminderChannel] = Field(
-        default_factory=_default_reminder_channels,
-        min_length=1,
-        max_length=2,
-    )
-    lead_seconds: list[int] = Field(default_factory=lambda: [600], max_length=5)
-
-    @field_validator("delivery_channels")
-    @classmethod
-    def channels_are_canonical(
-        cls, value: list[CalendarReminderChannel]
-    ) -> list[CalendarReminderChannel]:
-        if "google_popup" not in value or len(value) != len(set(value)):
-            raise ValueError(
-                "reminder delivery must include google_popup; docket_queue is optional"
-            )
-        return [channel for channel in ("google_popup", "docket_queue") if channel in value]
-
-    @field_validator("lead_seconds")
-    @classmethod
-    def leads_are_provider_compatible(cls, value: list[int]) -> list[int]:
-        if len(value) != len(set(value)):
-            raise ValueError("reminder leads must be unique")
-        if any(lead < 0 or lead > 2_419_200 or lead % 60 != 0 for lead in value):
-            raise ValueError("reminder leads must be whole minutes from zero through 28 days")
-        return sorted(value)
 
 
 class TimedEventTiming(StrictModel):
@@ -243,7 +209,6 @@ class StandaloneCalendarEventInput(StrictModel):
     operator_tags: list[OperatorTag] = Field(default_factory=list, max_length=8)
     priority: CalendarPriority = "normal"
     recurrence: CalendarRecurrenceInput | None = None
-    reminder_plan: CalendarReminderPlanInput | None = None
 
     @field_validator("operator_tags")
     @classmethod

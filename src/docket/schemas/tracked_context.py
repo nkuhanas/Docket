@@ -432,6 +432,12 @@ class ReminderPlanInput(StrictModel):
             raise ValueError("date trigger local time and timezone are supplied together")
         if self.timezone is not None:
             _zone(self.timezone)
+        if "google_popup" in self.delivery_channels and any(
+            lead > 2_419_200 or lead % 60 != 0 for lead in self.lead_seconds
+        ):
+            raise ValueError(
+                "Google popup leads must be whole minutes through 28 days"
+            )
         return self
 
 

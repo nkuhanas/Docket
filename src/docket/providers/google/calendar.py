@@ -201,6 +201,9 @@ def _standalone_event_body(event: dict[str, Any]) -> dict[str, Any]:
         "start": start,
         "end": end,
     }
+    transparency = event.get("transparency")
+    if transparency is not None:
+        body["transparency"] = str(transparency)
     location = event.get("location")
     notes = event.get("notes")
     body["location"] = str(location) if location is not None else None
@@ -401,6 +404,7 @@ def normalize_event_body(body: dict[str, Any]) -> dict[str, Any]:
         "event_type": body.get("eventType", "default"),
         "summary": body.get("summary"),
         "location": body.get("location"),
+        "transparency": body.get("transparency"),
         "start": endpoint(body.get("start")),
         "end": endpoint(body.get("end")),
         "recurrence": normalize_recurrence_lines(body.get("recurrence")),
@@ -425,6 +429,7 @@ def event_matches_request(event: CalendarEventResult, request: CalendarEventRequ
         keys = (
             "summary",
             "location",
+            "transparency",
             "start",
             "end",
             "recurrence",

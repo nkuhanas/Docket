@@ -7,35 +7,40 @@ from docket.config import get_settings
 from docket.schemas.calendar import (
     AllDayEventTiming,
     CalendarRecurrenceInput,
-    CalendarReminderPlanInput,
     StandaloneCalendarEventInput,
     TimedEventTiming,
 )
+from docket.schemas.tracked_context import ReminderPlanInput
 
 
-def test_reminder_plan_is_canonical_and_accepts_explicit_disable() -> None:
-    plan = CalendarReminderPlanInput(
+def test_reminder_plan_is_a_separate_canonical_primitive() -> None:
+    plan = ReminderPlanInput(
+        subject_ref="evt_01M1A8P3BN3QBTVNS5JNXJARH3",
         delivery_channels=["docket_queue", "google_popup"],
         lead_seconds=[600, 0, 300],
     )
 
-    assert plan.delivery_channels == ["google_popup", "docket_queue"]
-    assert plan.lead_seconds == [0, 300, 600]
-    assert CalendarReminderPlanInput(lead_seconds=[]).lead_seconds == []
+    assert plan.delivery_channels == ["docket_queue", "google_popup"]
+    assert plan.lead_seconds == [600, 300, 0]
+    assert "reminder_plan" not in StandaloneCalendarEventInput.model_fields
 
 
 @pytest.mark.parametrize("lead_seconds", [[30], [2_419_260], [60, 60]])
 def test_reminder_plan_rejects_non_provider_leads(lead_seconds: list[int]) -> None:
-    with pytest.raises(ValidationError, match="reminder leads"):
-        CalendarReminderPlanInput(lead_seconds=lead_seconds)
+    with pytest.raises(ValidationError, match=r"lead|Google popup"):
+        ReminderPlanInput(
+            subject_ref="evt_01M1A8P3BN3QBTVNS5JNXJARH3",
+            delivery_channels=["google_popup"],
+            lead_seconds=lead_seconds,
+        )
 
 
-def test_reminder_plan_allows_google_only_and_rejects_docket_only() -> None:
-    assert CalendarReminderPlanInput(
-        delivery_channels=["google_popup"]
-    ).delivery_channels == ["google_popup"]
-    with pytest.raises(ValidationError, match="must include google_popup"):
-        CalendarReminderPlanInput(delivery_channels=["docket_queue"])
+def test_docket_queue_reminder_does_not_require_provider_compatible_leads() -> None:
+    assert ReminderPlanInput(
+        subject_ref="evt_01M1A8P3BN3QBTVNS5JNXJARH3",
+        delivery_channels=["docket_queue"],
+        lead_seconds=[30],
+    ).lead_seconds == [30]
 
 
 def test_timed_event_rejects_dst_gap() -> None:

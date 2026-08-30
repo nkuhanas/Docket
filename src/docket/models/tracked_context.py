@@ -18,6 +18,7 @@ from sqlalchemy import (
     Uuid,
     event,
     inspect,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -216,10 +217,12 @@ class TemporalCalendarProjection(Base):
     __tablename__ = "temporal_calendar_projections"
     __table_args__ = (
         CheckConstraint("version >= 1", name="ck_temporal_calendar_projections_version"),
-        UniqueConstraint(
+        Index(
+            "uq_temporal_calendar_projections_active_binding",
             "temporal_binding_ref",
-            "lane_ref",
-            name="uq_temporal_calendar_projections_binding_lane",
+            unique=True,
+            postgresql_where=text("enabled"),
+            sqlite_where=text("enabled = 1"),
         ),
     )
 
