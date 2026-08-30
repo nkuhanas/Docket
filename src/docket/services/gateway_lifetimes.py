@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from docket.config import get_settings
 from docket.domain.errors import DocketError
 from docket.models import (
+    ConversationalToolTrace,
     DeferredIngress,
-    DiscordMcpTrace,
     DrainBarrier,
     ExecutionLease,
     GatewayLifetime,
@@ -195,16 +195,16 @@ class GatewayLifetimeService:
         lifetime.status = "clean_shutdown"
         return self._projection(lifetime, disposition="updated")
 
-    def _reconcile_trace(self, trace: DiscordMcpTrace, now: datetime) -> None:
+    def _reconcile_trace(self, trace: ConversationalToolTrace, now: datetime) -> None:
         calls = [dict(item) for item in trace.calls]
         for call in calls:
             invocation = self.session.scalar(
                 select(ToolInvocation).where(
-                    ToolInvocation.trace_id == trace.id,
+                    ToolInvocation.trace_ref == trace.ref_id,
                     ToolInvocation.trace_call_id == str(call.get("call_id", "")),
                 )
             )
-            if invocation is not None and invocation.status == "received":
+            if invocation is not None and invocation.transport_state == "running":
                 semantic_request = (
                     self.session.scalar(
                         select(SemanticRequest).where(
@@ -219,7 +219,6 @@ class GatewayLifetimeService:
                     and semantic_request.commit_state == "committed"
                     and semantic_request.committed_changeset_ref is not None
                 ):
-                    invocation.status = "succeeded"
                     invocation.transport_state = "completed"
                     invocation.domain_state = "succeeded"
                     invocation.result_disposition = "committed"
@@ -229,7 +228,6 @@ class GatewayLifetimeService:
                     ]
                     invocation.completed_at = now
                 else:
-                    invocation.status = "failed"
                     invocation.transport_state = "timed_out"
                     invocation.domain_state = "unknown"
                     invocation.result_disposition = "unknown"
@@ -306,10 +304,10 @@ class GatewayLifetimeService:
                 ingress.last_error_code = "gateway_interrupted"
             traces = list(
                 self.session.scalars(
-                    select(DiscordMcpTrace)
+                    select(ConversationalToolTrace)
                     .where(
-                        DiscordMcpTrace.gateway_instance_ref == lifetime.ref_id,
-                        DiscordMcpTrace.status == "running",
+                        ConversationalToolTrace.gateway_instance_ref == lifetime.ref_id,
+                        ConversationalToolTrace.status == "running",
                     )
                     .with_for_update()
                 )

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import uuid
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -12,8 +11,8 @@ from docket.domain.enums import OutboxStatus
 from docket.domain.errors import DocketError
 from docket.internal_api.schemas import McpTraceCallUpdate, McpTraceUpdate
 from docket.models import (
+    ConversationalToolTrace,
     DiscordDailyThread,
-    DiscordMcpTrace,
     OperatorUtterance,
     OutboxEvent,
     ToolInvocation,
@@ -22,7 +21,6 @@ from docket.models.base import utc_now
 from docket.services.gateway_lifetimes import GatewayLifetimeService
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash, contract_tool_names
 
-MCP_TRACE_NAMESPACE = uuid.UUID("326f8ee5-f0d5-4d08-b777-31dbac1f8265")
 MAX_TRACE_CALLS = 100
 VISIBLE_TRACE_CALLS = 20
 
@@ -59,15 +57,11 @@ TRACE_ERROR_CODES = frozenset(
 )
 
 
-def trace_id_for_source(guild_id: str, channel_id: str, message_id: str) -> uuid.UUID:
-    return uuid.uuid5(MCP_TRACE_NAMESPACE, f"{guild_id}:{channel_id}:{message_id}")
-
-
 class McpTraceService:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def _validate_context(self, trace_id: uuid.UUID, request: McpTraceUpdate) -> None:
+    def _validate_context(self, trace_ref: str, request: McpTraceUpdate) -> None:
         settings = get_settings()
         trusted_channel = request.source_channel_id == settings.chat_channel_id
         if not trusted_channel:
@@ -88,12 +82,7 @@ class McpTraceService:
             request.guild_id != settings.discord_guild_id
             or not trusted_channel
             or request.actor_id != settings.operator_discord_user_id
-            or trace_id
-            != trace_id_for_source(
-                request.guild_id,
-                request.source_channel_id,
-                request.source_message_id,
-            )
+            or not trace_ref.startswith("trace_")
         ):
             raise DocketError(
                 code="invalid_mcp_trace_context",
@@ -117,9 +106,7 @@ class McpTraceService:
                 message="The MCP trace is not bound to the repository interactive contract.",
             )
         if request.gateway_instance_ref is not None:
-            GatewayLifetimeService(self.session).require_live(
-                request.gateway_instance_ref
-            )
+            GatewayLifetimeService(self.session).require_live(request.gateway_instance_ref)
 
     @staticmethod
     def _validate_call(call: McpTraceCallUpdate) -> None:
@@ -174,7 +161,7 @@ class McpTraceService:
 
     def _apply_call(
         self,
-        trace: DiscordMcpTrace,
+        trace: ConversationalToolTrace,
         call: McpTraceCallUpdate,
     ) -> bool:
         self._validate_call(call)
@@ -194,10 +181,7 @@ class McpTraceService:
                     code="mcp_trace_terminal",
                     message="A terminal MCP trace cannot accept another call.",
                 )
-            if (
-                call.ordinal != trace.last_ordinal + 1
-                or call.transport_state != "running"
-            ):
+            if call.ordinal != trace.last_ordinal + 1 or call.transport_state != "running":
                 raise DocketError(
                     code="nonmonotonic_mcp_trace",
                     message="MCP trace calls must begin in monotonic ordinal order.",
@@ -224,10 +208,7 @@ class McpTraceService:
             )
         current_state = str(match.get("transport_state", match.get("state")))
         if current_state == call.transport_state:
-            if any(
-                match.get(key) != value
-                for key, value in self._incoming_call(call).items()
-            ):
+            if any(match.get(key) != value for key, value in self._incoming_call(call).items()):
                 raise DocketError(
                     code="mcp_trace_call_conflict",
                     message="A replayed MCP trace call changed terminal details.",
@@ -244,13 +225,13 @@ class McpTraceService:
 
     def _link_tool_invocation(
         self,
-        trace: DiscordMcpTrace,
+        trace: ConversationalToolTrace,
         call: McpTraceCallUpdate,
         now: datetime,
     ) -> ToolInvocation | None:
         existing = self.session.scalar(
             select(ToolInvocation).where(
-                ToolInvocation.trace_id == trace.id,
+                ToolInvocation.trace_ref == trace.ref_id,
                 ToolInvocation.trace_call_id == call.call_id,
             )
         )
@@ -264,7 +245,7 @@ class McpTraceService:
                 ToolInvocation.caller_profile == "interactive",
                 ToolInvocation.tool_name == call.tool_name,
                 ToolInvocation.received_argument_hash == call.received_argument_hash,
-                ToolInvocation.trace_id.is_(None),
+                ToolInvocation.trace_ref.is_(None),
                 ToolInvocation.started_at >= now - timedelta(minutes=10),
             )
             .order_by(ToolInvocation.started_at.desc())
@@ -274,15 +255,14 @@ class McpTraceService:
         if invocation is None:
             return None
         source_message_ref = (
-            f"discord_message:{trace.guild_id}:{trace.source_channel_id}:"
-            f"{trace.source_message_id}"
+            f"discord_message:{trace.guild_id}:{trace.source_channel_id}:{trace.source_message_id}"
         )
         utterance = self.session.scalar(
             select(OperatorUtterance).where(
                 OperatorUtterance.source_message_ref == source_message_ref
             )
         )
-        invocation.trace_id = trace.id
+        invocation.trace_ref = trace.ref_id
         invocation.trace_call_id = call.call_id
         invocation.trace_ordinal = call.ordinal
         invocation.gateway_instance_ref = trace.gateway_instance_ref
@@ -294,25 +274,16 @@ class McpTraceService:
     def _domain_state(invocation: ToolInvocation | None) -> str:
         if invocation is None:
             return "unknown"
-        if invocation.domain_state == "unknown":
-            if invocation.status in {
-                "rejected_validation",
-                "rejected_authority",
-                "rejected_conflict",
-            }:
-                return "rejected"
-            if invocation.status == "failed":
-                return "failed"
         return invocation.domain_state
 
-    def _reconcile_calls(self, trace: DiscordMcpTrace, now: datetime) -> bool:
+    def _reconcile_calls(self, trace: ConversationalToolTrace, now: datetime) -> bool:
         changed = False
         calls = [dict(item) for item in trace.calls]
         for call in calls:
             call_id = str(call.get("call_id", ""))
             invocation = self.session.scalar(
                 select(ToolInvocation).where(
-                    ToolInvocation.trace_id == trace.id,
+                    ToolInvocation.trace_ref == trace.ref_id,
                     ToolInvocation.trace_call_id == call_id,
                 )
             )
@@ -324,7 +295,7 @@ class McpTraceService:
                         ToolInvocation.caller_profile == "interactive",
                         ToolInvocation.tool_name == call.get("tool_name"),
                         ToolInvocation.received_argument_hash == received_hash,
-                        ToolInvocation.trace_id.is_(None),
+                        ToolInvocation.trace_ref.is_(None),
                         ToolInvocation.started_at >= now - timedelta(minutes=10),
                     )
                     .order_by(ToolInvocation.started_at.desc())
@@ -332,7 +303,7 @@ class McpTraceService:
                     .with_for_update()
                 )
                 if invocation is not None:
-                    invocation.trace_id = trace.id
+                    invocation.trace_ref = trace.ref_id
                     invocation.trace_call_id = call_id
                     invocation.trace_ordinal = int(call.get("ordinal", 0))
                     invocation.gateway_instance_ref = trace.gateway_instance_ref
@@ -346,9 +317,7 @@ class McpTraceService:
                             OperatorUtterance.source_message_ref == source_message_ref
                         )
                     )
-                    invocation.utterance_refs = (
-                        [utterance.ref_id] if utterance is not None else []
-                    )
+                    invocation.utterance_refs = [utterance.ref_id] if utterance is not None else []
             domain_state = self._domain_state(invocation)
             authoritative = {
                 "domain_state": domain_state,
@@ -360,8 +329,7 @@ class McpTraceService:
                 ),
                 "domain_error_code": (
                     invocation.error_code
-                    if invocation is not None
-                    and domain_state in {"rejected", "failed"}
+                    if invocation is not None and domain_state in {"rejected", "failed"}
                     else None
                 ),
             }
@@ -373,7 +341,7 @@ class McpTraceService:
         return changed
 
     @staticmethod
-    def _finish_running_calls(trace: DiscordMcpTrace) -> bool:
+    def _finish_running_calls(trace: ConversationalToolTrace) -> bool:
         changed = False
         calls = [dict(item) for item in trace.calls]
         for call in calls:
@@ -392,15 +360,17 @@ class McpTraceService:
             trace.calls = calls
         return changed
 
-    def update(self, trace_id: uuid.UUID, request: McpTraceUpdate) -> dict[str, Any]:
-        self._validate_context(trace_id, request)
+    def update(self, trace_ref: str, request: McpTraceUpdate) -> dict[str, Any]:
+        self._validate_context(trace_ref, request)
         trace = self.session.scalar(
-            select(DiscordMcpTrace).where(DiscordMcpTrace.id == trace_id).with_for_update()
+            select(ConversationalToolTrace)
+            .where(ConversationalToolTrace.ref_id == trace_ref)
+            .with_for_update()
         )
         now = utc_now()
         if trace is None:
-            trace = DiscordMcpTrace(
-                id=trace_id,
+            trace = ConversationalToolTrace(
+                ref_id=trace_ref,
                 guild_id=request.guild_id,
                 source_channel_id=request.source_channel_id,
                 source_message_id=request.source_message_id,
@@ -455,7 +425,7 @@ class McpTraceService:
         if not changed:
             return {
                 "ok": True,
-                "trace_id": str(trace.id),
+                "trace_ref": trace.ref_id,
                 "trace_status": trace.status,
                 "trace_version": trace.version,
                 "disposition": "replayed_request",
@@ -465,11 +435,11 @@ class McpTraceService:
         self.session.add(
             OutboxEvent(
                 event_type="discord.mcp_trace.requested",
-                aggregate_type="discord_mcp_trace",
+                aggregate_type="conversational_tool_trace",
                 aggregate_id=trace.id,
-                deduplication_key=f"discord_mcp_trace:{trace.id}:v{trace.version}",
+                deduplication_key=f"conversational_tool_trace:{trace.ref_id}:v{trace.version}",
                 payload={
-                    "trace_id": str(trace.id),
+                    "trace_ref": trace.ref_id,
                     "trace_version": trace.version,
                 },
                 status=OutboxStatus.PENDING.value,
@@ -477,7 +447,7 @@ class McpTraceService:
         )
         return {
             "ok": True,
-            "trace_id": str(trace.id),
+            "trace_ref": trace.ref_id,
             "trace_status": trace.status,
             "trace_version": trace.version,
             "disposition": "updated",

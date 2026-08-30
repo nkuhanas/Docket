@@ -279,13 +279,12 @@ class ProvenanceFastMCP(FastMCP[Any]):
         invocation = session.get(ToolInvocation, invocation_id)
         if invocation is None:
             raise RuntimeError("ToolInvocation disappeared before completion")
-        if invocation.status != "received":
+        if invocation.transport_state != "running":
             return
-        invocation.status = status
         invocation.normalized_argument_hash = normalized_argument_hash
         invocation.result_refs = result_refs
         invocation.result_disposition = result_disposition
-        invocation.transport_state = "completed"
+        invocation.transport_state = "failed" if status == "failed" else "completed"
         invocation.domain_state = domain_state or _domain_state(status)
         invocation.error_code = error_code
         invocation.completed_at = utc_now()
@@ -316,7 +315,7 @@ class ProvenanceFastMCP(FastMCP[Any]):
         except ValueError:
             mcp_request_id = None
 
-        execution_lease_ref: str | None = None
+        execution_completion_token: str | None = None
         drain_error: DocketError | None = None
         with session_scope() as session:
             invocation = ToolInvocation(
@@ -324,7 +323,6 @@ class ProvenanceFastMCP(FastMCP[Any]):
                 tool_contract_version=CONTRACT_VERSION,
                 tool_contract_hash=contract_hash(self.caller_profile),
                 caller_profile=self.caller_profile,
-                status="received",
                 received_argument_hash=received_hash,
                 mcp_request_id=mcp_request_id,
             )
@@ -332,14 +330,14 @@ class ProvenanceFastMCP(FastMCP[Any]):
             session.flush()
             invocation_id = invocation.id
             try:
-                execution_lease_ref = (
+                execution_completion_token = (
                     ContinuityService(session)
                     .acquire_execution_lease(
                         lease_key=f"tool:{invocation.ref_id}",
                         lease_kind="tool_invocation",
                         subject_ref=invocation.ref_id,
                     )
-                    .ref_id
+                    .completion_token
                 )
             except DocketError as exc:
                 if exc.code != "deployment_drain_active":
@@ -387,9 +385,9 @@ class ProvenanceFastMCP(FastMCP[Any]):
                         result_disposition="rejected_authority",
                         error_code="operator_utterance_authority_required",
                     )
-                    if execution_lease_ref is not None:
+                    if execution_completion_token is not None:
                         ContinuityService(session).complete_execution_lease(
-                            execution_lease_ref,
+                            execution_completion_token,
                             metadata={"disposition": "rejected_authority"},
                         )
                 else:
@@ -421,9 +419,9 @@ class ProvenanceFastMCP(FastMCP[Any]):
                     result_disposition=_terminal_status(error_code),
                     error_code=error_code[:128],
                 )
-                if execution_lease_ref is not None:
+                if execution_completion_token is not None:
                     ContinuityService(session).complete_execution_lease(
-                        execution_lease_ref,
+                        execution_completion_token,
                         metadata={"disposition": _terminal_status(error_code)},
                     )
             raise
@@ -487,9 +485,9 @@ class ProvenanceFastMCP(FastMCP[Any]):
                 domain_state=domain_state,
                 semantic_request_ref=result_semantic_request_ref,
             )
-            if execution_lease_ref is not None:
+            if execution_completion_token is not None:
                 ContinuityService(session).complete_execution_lease(
-                    execution_lease_ref,
+                    execution_completion_token,
                     metadata={"disposition": result_disposition or status},
                 )
         return result

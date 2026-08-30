@@ -91,7 +91,7 @@ class ContinuityService:
             raise DocketError(
                 code="execution_lease_terminal",
                 message="This execution lineage already has a terminal lease.",
-                details={"lease_ref": existing.ref_id, "status": existing.status},
+                details={"status": existing.status},
             )
         lease = ExecutionLease(
             lease_key=lease_key,
@@ -109,13 +109,15 @@ class ContinuityService:
 
     def complete_execution_lease(
         self,
-        lease_ref: str,
+        completion_token: str,
         *,
         retain: bool = True,
         metadata: dict[str, Any] | None = None,
     ) -> None:
         lease = self.session.scalar(
-            select(ExecutionLease).where(ExecutionLease.ref_id == lease_ref).with_for_update()
+            select(ExecutionLease)
+            .where(ExecutionLease.completion_token == completion_token)
+            .with_for_update()
         )
         if lease is None:
             raise DocketError(
@@ -132,9 +134,13 @@ class ContinuityService:
         if metadata:
             lease.metadata_json = {**lease.metadata_json, **metadata}
 
-    def heartbeat_execution_lease(self, lease_ref: str, *, lease_seconds: int = 1800) -> None:
+    def heartbeat_execution_lease(
+        self, completion_token: str, *, lease_seconds: int = 1800
+    ) -> None:
         lease = self.session.scalar(
-            select(ExecutionLease).where(ExecutionLease.ref_id == lease_ref).with_for_update()
+            select(ExecutionLease)
+            .where(ExecutionLease.completion_token == completion_token)
+            .with_for_update()
         )
         if lease is None or lease.status != "active":
             raise DocketError(
@@ -170,13 +176,12 @@ class ContinuityService:
                     ExecutionLease.status == "active",
                     ExecutionLease.claimed_at <= barrier.cutoff_at,
                 )
-                .order_by(ExecutionLease.claimed_at, ExecutionLease.ref_id)
+                .order_by(ExecutionLease.claimed_at, ExecutionLease.id)
             )
         )
         return {
             **self._barrier_result(barrier, disposition="inspected"),
             "drained": not active,
-            "active_lease_refs": [lease.ref_id for lease in active],
             "active_lease_kinds": [lease.lease_kind for lease in active],
             "timed_out": now >= _aware(barrier.timeout_at) and bool(active),
         }
@@ -196,7 +201,7 @@ class ContinuityService:
                 raise DocketError(
                     code="drain_not_complete",
                     message="Pre-barrier execution leases are still active.",
-                    details={"active_lease_refs": status["active_lease_refs"]},
+                    details={"active_lease_count": len(status["active_lease_kinds"])},
                 )
         barrier.status = "aborted" if aborted else "released"
         barrier.released_at = _database_now(self.session)
@@ -277,18 +282,18 @@ class ExecutionLeaseCoordinator:
                 if exc.code == "deployment_drain_active":
                     return None
                 raise
-            return lease.ref_id
+            return lease.completion_token
 
     def complete(
         self,
-        lease_ref: str,
+        completion_token: str,
         *,
         retain: bool = True,
         metadata: dict[str, Any] | None = None,
     ) -> None:
         with self.session_factory.begin() as session:
             ContinuityService(session).complete_execution_lease(
-                lease_ref,
+                completion_token,
                 retain=retain,
                 metadata=metadata,
             )

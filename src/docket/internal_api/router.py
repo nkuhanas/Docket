@@ -1,4 +1,3 @@
-import uuid
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -6,20 +5,18 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 from starlette.requests import Request
 
-from docket.config import get_settings
-from docket.database import get_session_factory, session_scope
+from docket.database import session_scope
 from docket.domain.errors import DocketError
+from docket.domain.public_refs import new_public_ref
 from docket.internal_api.auth import require_hermes_service
 from docket.internal_api.schemas import (
     AgentResponseCapture,
     AgentResponseDeliveryUpdate,
     AgentTurnNoResponse,
-    ApprovalResponse,
     ExecutionLeaseComplete,
     GatewayLifetimeHeartbeat,
     GatewayLifetimeRegister,
     GatewayLifetimeShutdown,
-    LocalActionResponse,
     McpTraceUpdate,
     OperatorUtteranceCapture,
     ProductionResetAuthorizationCapture,
@@ -34,16 +31,11 @@ from docket.models import (
     SemanticRequestAttempt,
 )
 from docket.models.base import utc_now
-from docket.providers.google.runtime import get_calendar_read_provider
 from docket.schemas.authority import ChangeSetContent
-from docket.services.approvals import ApprovalService
-from docket.services.calendar_sync import CalendarSyncService
 from docket.services.continuity import ContinuityService
 from docket.services.gateway_lifetimes import GatewayLifetimeService
 from docket.services.interactive_authority import InteractiveAuthorityService
-from docket.services.local_actions import LocalActionService
 from docket.services.mcp_traces import McpTraceService
-from docket.services.proposal_controls import ProposalControlService
 from docket.services.provenance import ProvenanceService
 from docket.services.semantic_options import SemanticOptionService
 from docket.services.tool_invocations import ToolInvocationService
@@ -132,91 +124,22 @@ def _wake_projection_worker(request: Request) -> None:
         logger.exception("discord_projection_wake_failed")
 
 
-@router.post("/approval-responses")
-def approval_response(request: Request, payload: ApprovalResponse) -> dict[str, object]:
-    failure: DocketError | None = None
-    result: dict[str, object] | None = None
-    with session_scope() as session:
-        try:
-            result = ApprovalService(session).respond(payload)
-        except DocketError as exc:
-            failure = exc
-    if failure is not None:
-        if failure.code == "target_version_changed":
-            _wake_projection_worker(request)
-        error_status = (
-            status.HTTP_404_NOT_FOUND
-            if failure.code == "approval_not_found"
-            else status.HTTP_409_CONFLICT
-        )
-        raise HTTPException(status_code=error_status, detail=failure.as_dict()["error"])
-    assert result is not None
-    _wake_projection_worker(request)
-    return result
-
-
-@router.post("/local-action-responses")
-def local_action_response(request: Request, payload: LocalActionResponse) -> dict[str, object]:
-    failure: DocketError | None = None
-    result: dict[str, object] | None = None
-    try:
-        refresh_started_at = None
-        if payload.transition == "proposal_refresh":
-            settings = get_settings()
-            if not settings.calendar_reads_enabled:
-                raise DocketError(
-                    code="proposal_refresh_unavailable",
-                    message="Calendar reads are disabled, so this proposal cannot refresh.",
-                )
-            with session_scope() as session:
-                account_id, calendar_id = ProposalControlService(session).prepare_refresh(payload)
-            refresh_started_at = utc_now()
-            CalendarSyncService(
-                get_session_factory(),
-                get_calendar_read_provider(),
-                settings,
-            ).require_fresh(account_id, calendar_id)
-        with session_scope() as session:
-            result = (
-                LocalActionService(session).respond(payload)
-                if payload.transition == "local_action"
-                else ProposalControlService(session).respond(
-                    payload,
-                    refresh_started_at=refresh_started_at,
-                )
-            )
-    except DocketError as exc:
-        failure = exc
-    if failure is not None:
-        error_status = (
-            status.HTTP_404_NOT_FOUND
-            if failure.code in {"queue_item_not_found", "local_action_not_found"}
-            else status.HTTP_409_CONFLICT
-        )
-        raise HTTPException(status_code=error_status, detail=failure.as_dict()["error"])
-    assert result is not None
-    _wake_projection_worker(request)
-    return result
-
-
-@router.put("/mcp-traces/{trace_id}")
+@router.put("/mcp-traces/{trace_ref}")
 def mcp_trace_update(
     request: Request,
-    trace_id: str,
+    trace_ref: str,
     payload: McpTraceUpdate,
 ) -> dict[str, object]:
-    try:
-        parsed_trace_id = uuid.UUID(trace_id)
-    except ValueError as exc:
+    if not trace_ref.startswith("trace_"):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"code": "invalid_mcp_trace_id", "message": "trace_id must be a UUID"},
-        ) from exc
+            detail={"code": "invalid_trace_ref", "message": "trace_ref must be trace_..."},
+        )
     failure: DocketError | None = None
     result: dict[str, object] | None = None
     with session_scope() as session:
         try:
-            result = McpTraceService(session).update(parsed_trace_id, payload)
+            result = McpTraceService(session).update(trace_ref, payload)
         except DocketError as exc:
             failure = exc
     if failure is not None:
@@ -241,12 +164,12 @@ def operator_utterance_capture(payload: OperatorUtteranceCapture) -> dict[str, o
         ) from exc
 
 
-@router.put("/execution-leases/{lease_ref}/complete")
+@router.put("/execution-leases/{completion_token}/complete")
 def execution_lease_complete(
-    lease_ref: str,
+    completion_token: str,
     payload: ExecutionLeaseComplete,
 ) -> dict[str, object]:
-    if lease_ref != payload.lease_ref:
+    if completion_token != payload.completion_token:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={
@@ -286,7 +209,7 @@ def execution_lease_complete(
                     ingress.claimed_at = None
                     ingress.last_error_code = payload.error_code or "interactive_turn_failed"
             ContinuityService(session).complete_execution_lease(
-                payload.lease_ref,
+                payload.completion_token,
                 metadata={
                     "outcome": payload.outcome,
                     **(
@@ -296,7 +219,6 @@ def execution_lease_complete(
             )
             return {
                 "ok": True,
-                "ref": payload.lease_ref,
                 "state": "completed",
                 "disposition": payload.outcome,
             }
@@ -327,10 +249,7 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
     retry_turn_id = (
         f"semantic-option:{payload.discord_interaction_id}:retry:{payload.request_id}"
     )
-    trace_id = uuid.uuid5(
-        uuid.NAMESPACE_URL,
-        f"docket:semantic-option-selection:{payload.discord_interaction_id}",
-    )
+    trace_ref = new_public_ref("trace")
     if payload.resume_authorized_execution and not selection.get("execution_ready"):
         response_key = (
             f"discord:{payload.guild_id}:{payload.channel_id}:"
@@ -442,7 +361,7 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
         with session_scope() as session:
             invocation = ToolInvocationService(session).start_changeset_execution(
                 request_id=payload.request_id,
-                trace_id=trace_id,
+                trace_ref=trace_ref,
                 utterance_ref=str(selection["utterance_ref"]),
                 actor_ref=f"discord_user:{payload.discord_user_id}",
                 intent_session_ref=str(selection["intent_session_ref"]),
@@ -502,10 +421,10 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
                         ingress.last_error_code = str(
                             execution.get("disposition", "unknown")
                         )[:128]
-                lease_ref = selection.get("execution_lease_ref")
-                if isinstance(lease_ref, str):
+                completion_token = selection.get("execution_completion_token")
+                if isinstance(completion_token, str):
                     ContinuityService(session).complete_execution_lease(
-                        lease_ref,
+                        completion_token,
                         metadata={"disposition": str(execution.get("disposition", "unknown"))},
                     )
         except (DocketError, ValidationError) as exc:
@@ -524,8 +443,8 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
                 "disposition": "rejected_validation",
                 "error": error,
             }
-            lease_ref = selection.get("execution_lease_ref")
-            if isinstance(lease_ref, str):
+            completion_token = selection.get("execution_completion_token")
+            if isinstance(completion_token, str):
                 with session_scope() as session:
                     ingress = session.scalar(
                         select(DeferredIngress)
@@ -557,7 +476,6 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
                             )
                         )
                         if intent_session is not None:
-                            intent_session.state = "ready"
                             intent_session.semantic_state = "ready"
                             intent_session.commit_state = "blocked_validation"
                         attempt_number = int(
@@ -592,7 +510,7 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
                             )
                         )
                     ContinuityService(session).complete_execution_lease(
-                        lease_ref,
+                        completion_token,
                         metadata={"disposition": "rejected_validation"},
                     )
         if invocation_ref is not None:
@@ -654,7 +572,7 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
                 model_identifier="docket-deterministic-selection-v1",
                 verbatim_text=response_text,
                 generated_at=utc_now(),
-                trace_id=trace_id,
+                trace_ref=trace_ref,
                 gateway_instance_ref=payload.gateway_instance_ref,
                 finalize_intent_turn=not payload.resume_authorized_execution,
             )

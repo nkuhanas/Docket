@@ -19,7 +19,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from docket.domain.public_refs import new_public_ref
+from docket.domain.public_refs import new_internal_key, new_public_ref
 from docket.models.base import Base, utc_now
 
 
@@ -132,11 +132,15 @@ class ExecutionLease(Base):
             name="ck_execution_leases_status",
         ),
         UniqueConstraint("lease_key", name="uq_execution_leases_key"),
+        UniqueConstraint("completion_token", name="uq_execution_leases_completion_token"),
         Index("ix_execution_leases_status_expiry", "status", "lease_expires_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     lease_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    completion_token: Mapped[str] = mapped_column(
+        String(64), nullable=False, default=new_internal_key
+    )
     lease_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     subject_ref: Mapped[str | None] = mapped_column(String(40))
     gateway_instance_ref: Mapped[str | None] = mapped_column(String(40))

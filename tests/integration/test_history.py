@@ -10,17 +10,17 @@ from docket.domain.errors import DocketError
 from docket.domain.public_refs import new_public_ref
 from docket.internal_api.schemas import AgentResponseCapture, OperatorUtteranceCapture
 from docket.models import (
-    Account,
     AttentionCase,
     AttentionCaseRevision,
+    GmailSource,
     InterpretedStatement,
     OperatorUtterance,
+    ProviderAccount,
     RuntimeLogEntry,
-    SourceItem,
+    Source,
     ToolInvocation,
 )
 from docket.services.history import DEFAULT_OUTPUT_BYTES, HistoryService
-from docket.services.mcp_traces import trace_id_for_source
 from docket.services.provenance import ProvenanceService
 from docket.services.runtime_logs import RuntimeLogService
 
@@ -49,7 +49,7 @@ def test_source_history_exposes_exact_sender_identity_without_body(
     session_factory,
 ) -> None:
     with session_factory.begin() as session:
-        account = Account(
+        account = ProviderAccount(
             provider="google",
             external_account_id="history-gmail",
             capabilities=["gmail"],
@@ -57,7 +57,17 @@ def test_source_history_exposes_exact_sender_identity_without_body(
         )
         session.add(account)
         session.flush()
-        source = SourceItem(
+        evidence = Source(
+            source_kind="gmail",
+            external_ref="gmail:history-sender-message:1",
+            observed_at=datetime.now(UTC),
+            content_hash="f" * 64,
+            metadata_json={},
+        )
+        session.add(evidence)
+        session.flush()
+        source = GmailSource(
+            ref_id=evidence.ref_id,
             account_id=account.id,
             provider="gmail",
             external_object_id="history-sender-message",
@@ -91,11 +101,10 @@ def test_source_history_exposes_exact_sender_identity_without_body(
 
 
 @pytest.mark.integration
-def test_legacy_case_revision_alias_resolves_to_canonical_typed_ref(
+def test_case_revision_history_uses_only_its_canonical_typed_ref(
     session_factory,
 ) -> None:
     now = datetime.now(UTC)
-    legacy_ref = new_public_ref("case")
     with session_factory.begin() as session:
         case = AttentionCase(
             situation_key="d" * 64,
@@ -112,27 +121,31 @@ def test_legacy_case_revision_alias_resolves_to_canonical_typed_ref(
         session.add(case)
         session.flush()
         revision = AttentionCaseRevision(
-            legacy_ref_id=legacy_ref,
             attention_case_id=case.id,
             case_ref=case.ref_id,
             revision=1,
             title=case.title,
             summary=case.summary,
             semantic_classes=case.semantic_classes,
-            item_refs=[],
+            case_item_refs=[],
             source_refs=[],
+            admission_rule_ref="attention.explicit_operator_decision",
+            admission_basis_refs=[case.ref_id],
+            required_case_item_refs=[],
+            canonical_consequence_classes=["canonical_transition"],
+            dependency_summary={},
             content_hash="e" * 64,
         )
         session.add(revision)
         session.flush()
         canonical_ref = revision.ref_id
 
-        entry = HistoryService(session).get_entry(legacy_ref)["entry"]
+        entry = HistoryService(session).get_entry(canonical_ref)["entry"]
 
     assert canonical_ref.startswith("caserev_")
     assert entry["type"] == "attention_case_revision"
     assert entry["ref"] == canonical_ref
-    assert entry["legacy_ref_id"] == legacy_ref
+    assert entry["case_ref"] == case.ref_id
 
 
 @pytest.mark.integration
@@ -162,11 +175,7 @@ def test_exact_history_lookup_and_conversation_reconstruction_are_public_and_bou
         session.add(statement)
         session.flush()
         statement_ref = statement.ref_id
-        trace_id = trace_id_for_source(
-            settings.discord_guild_id,
-            settings.chat_channel_id,
-            MESSAGE_ID,
-        )
+        trace_ref = new_public_ref("trace")
         response = ProvenanceService(session).capture_agent_response(
             AgentResponseCapture.model_validate(
                 {
@@ -181,7 +190,7 @@ def test_exact_history_lookup_and_conversation_reconstruction_are_public_and_bou
                     "model_identifier": "test-model",
                     "verbatim_text": "I preserved it.",
                     "generated_at": datetime.now(UTC).isoformat(),
-                    "trace_id": str(trace_id),
+                    "trace_ref": trace_ref,
                 }
             )
         )
@@ -232,14 +241,17 @@ def test_history_search_filters_paginates_and_stays_under_utf8_budget(session_fa
             _utterance_request("search provenance")
         )["ref"]
         invocation = ToolInvocation(
-            tool_name="docket_search_records",
+            tool_name="docket_search_history",
             tool_contract_version="test",
+            tool_contract_hash="a" * 64,
             caller_profile="interactive",
             actor_ref="discord_user:test",
             utterance_refs=[utterance_ref],
             started_at=now,
             completed_at=now,
-            status="succeeded",
+            transport_state="completed",
+            domain_state="succeeded",
+            result_disposition="succeeded",
             received_argument_hash="a" * 64,
             normalized_argument_hash="a" * 64,
             result_refs=[],
@@ -277,7 +289,7 @@ def test_history_search_filters_paginates_and_stays_under_utf8_budget(session_fa
         assert any(item["type"] == "tool_invocation" for item in related["items"])
         assert any(item["type"] == "runtime_log_entry" for item in related["items"])
 
-        tool = history.search(tool_name="docket_search_records")
+        tool = history.search(tool_name="docket_search_history")
         assert [item["type"] for item in tool["items"]] == ["tool_invocation"]
         assert tool["items"][0]["utterance_refs"] == [utterance_ref]
 
@@ -322,7 +334,7 @@ def test_provider_identity_source_ref_is_searchable_without_internal_uuid(
     session_factory,
 ) -> None:
     with session_factory.begin() as session:
-        account = Account(
+        account = ProviderAccount(
             provider="google",
             external_account_id="history-provider-test",
             display_name="History provider",
@@ -338,8 +350,7 @@ def test_provider_identity_source_ref_is_searchable_without_internal_uuid(
         entry = history.get_entry(account_ref)["entry"]
         assert entry == {
             "ref": account_ref,
-            "type": "source",
-            "source_kind": "provider_identity",
+            "type": "provider_account",
             "provider": "google",
             "external_account_id": "history-provider-test",
             "display_name": "History provider",

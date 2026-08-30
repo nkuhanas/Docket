@@ -294,7 +294,7 @@ def test_changeset_argument_preview_is_semantic_and_never_raw(plugin_module) -> 
                         "case_outcome": "resolved",
                         "item_dispositions": [
                             {
-                                "item_ref": "item_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                                "case_item_ref": "citem_01ARZ3NDEKTSV4RRFFQ69G5FAV",
                                 "disposition": "resolved",
                             }
                         ],
@@ -573,7 +573,7 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
 ) -> None:
     guild_id = "222222222222222222"
     channel_id = "333333333333333333"
-    trace_id = uuid.uuid4()
+    trace_ref = plugin_module._new_trace_ref()
     monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild_id)
     monkeypatch.setenv("DOCKET_SYSTEM_CHANNEL_ID", channel_id)
 
@@ -648,7 +648,7 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
         "calls": [
             {
                 "ordinal": 1,
-                "tool_name": "docket_search_records",
+                "tool_name": "docket_search_history",
                 "transport_state": "completed",
                 "domain_state": "succeeded",
                 "elapsed_ms": 42,
@@ -671,16 +671,16 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
     ).hexdigest()
     payload = {
         "request_id": str(uuid.uuid4()),
-        "trace_id": str(trace_id),
+        "trace_ref": trace_ref,
         "guild_id": guild_id,
         "channel_id": channel_id,
         "render": render,
         "render_sha256": digest,
     }
 
-    first = await plugin_module._put_mcp_trace(trace_id, payload)
+    first = await plugin_module._put_mcp_trace(trace_ref, payload)
     second = await plugin_module._put_mcp_trace(
-        trace_id,
+        trace_ref,
         {**payload, "request_id": str(uuid.uuid4())},
     )
 
@@ -688,7 +688,7 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
     assert second["created"] is False
     assert len(channel.messages) == 1
     assert channel.messages[0].edit_count == 1
-    assert channel.messages[0].embeds[0].fields[1]["name"] == ("1. docket_search_records")
+    assert channel.messages[0].embeds[0].fields[1]["name"] == ("1. docket_search_history")
     value = channel.messages[0].embeds[0].fields[1]["value"]
     assert value.startswith("Outcome: Succeeded")
     assert "Transport: Completed" in value

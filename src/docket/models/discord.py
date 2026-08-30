@@ -64,7 +64,7 @@ class ConversationalToolTrace(TimestampMixin, Base):
         ),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     ref_id: Mapped[str] = mapped_column(
         String(40), unique=True, nullable=False, default=lambda: new_public_ref("trace")
     )

@@ -1,18 +1,21 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
 
 from docket.config import get_settings
 from docket.domain.errors import DocketError
+from docket.domain.public_refs import new_public_ref
 from docket.internal_api.schemas import OperatorUtteranceCapture
 from docket.models import (
+    ConversationalToolTrace,
     DeferredIngress,
     ExecutionLease,
     GatewayLifetime,
     IntentSession,
     OperatorUtterance,
+    ToolInvocation,
 )
 from docket.providers.discord import FakeDiscordProjectionAdapter
 from docket.services.continuity import ContinuityService
@@ -20,6 +23,7 @@ from docket.services.deferred_ingress import DeferredIngressRunner
 from docket.services.gateway_lifetimes import GatewayLifetimeService
 from docket.services.ingress_ledger import IngressIdentity, IngressLedgerService
 from docket.services.provenance import ProvenanceService
+from docket.tool_contracts import CONTRACT_VERSION, contract_hash
 
 
 @pytest.mark.integration
@@ -30,7 +34,7 @@ def test_drain_waits_only_for_prebarrier_execution_leases(session_factory) -> No
             lease_kind="interactive_turn",
             subject_ref=f"utt_{'1' * 26}",
         )
-        lease_ref = lease.ref_id
+        completion_token = lease.completion_token
 
     with session_factory.begin() as session:
         barrier = ContinuityService(session).request_drain(
@@ -42,7 +46,8 @@ def test_drain_waits_only_for_prebarrier_execution_leases(session_factory) -> No
     with session_factory.begin() as session:
         status = ContinuityService(session).drain_status(drain_ref)
         assert status["drained"] is False
-        assert status["active_lease_refs"] == [lease_ref]
+        assert status["active_lease_kinds"] == ["interactive_turn"]
+        assert "active_lease_refs" not in status
         with pytest.raises(DocketError) as exc_info:
             ContinuityService(session).acquire_execution_lease(
                 lease_key="test:new-turn",
@@ -52,7 +57,7 @@ def test_drain_waits_only_for_prebarrier_execution_leases(session_factory) -> No
 
     with session_factory.begin() as session:
         service = ContinuityService(session)
-        service.complete_execution_lease(lease_ref)
+        service.complete_execution_lease(completion_token)
         assert service.drain_status(drain_ref)["drained"] is True
         released = service.release_drain(drain_ref)
         assert released["state"] == "released"
@@ -74,7 +79,9 @@ def test_drain_timeout_aborts_without_cancelling_active_work(session_factory) ->
             aborted=True,
         )
         assert result["state"] == "aborted"
-        stored = session.scalar(select(ExecutionLease).where(ExecutionLease.ref_id == lease.ref_id))
+        stored = session.scalar(
+            select(ExecutionLease).where(ExecutionLease.completion_token == lease.completion_token)
+        )
         assert stored is not None and stored.status == "active"
 
 
@@ -99,9 +106,7 @@ def test_drained_deployment_fences_prior_gateway_during_replacement(
         assert replacement["replaced_gateway_ref"] == prior["ref"]
         assert replacement["lease_generation"] == 2
         lifetimes = list(
-            session.scalars(
-                select(GatewayLifetime).order_by(GatewayLifetime.lease_generation)
-            )
+            session.scalars(select(GatewayLifetime).order_by(GatewayLifetime.lease_generation))
         )
         assert [lifetime.status for lifetime in lifetimes] == ["clean_shutdown", "active"]
 
@@ -165,7 +170,7 @@ def test_authenticated_message_is_captured_and_deferred_during_drain(
         result = ProvenanceService(session).capture_operator_utterance(capture)
         binding = result["deferred_ingress"]
         assert binding["state"] == "pending"
-        assert binding["lease_ref"] is None
+        assert binding["execution_completion_token"] is None
         row = session.scalar(
             select(DeferredIngress).where(DeferredIngress.ref_id == binding["ref"])
         )
@@ -208,3 +213,111 @@ def test_stable_ingress_captures_typed_message_without_domain_authority(
     adapter = FakeDiscordProjectionAdapter()
     assert DeferredIngressRunner(session_factory, adapter).run_once() is True
     assert adapter.deferred_ingress[0]["utterance_ref"] == captured["utterance_ref"]
+
+
+@pytest.mark.integration
+def test_dead_gateway_preserves_terminal_domain_outcomes_and_marks_unknowns(
+    session_factory,
+) -> None:
+    now = datetime.now(UTC)
+    trace_ref = new_public_ref("trace")
+    with session_factory.begin() as session:
+        gateway = GatewayLifetime(
+            registration_key=uuid.uuid4(),
+            instance_kind="hermes_discord_gateway",
+            lease_generation=1,
+            started_at=now - timedelta(minutes=10),
+            heartbeat_at=now - timedelta(minutes=5),
+            lease_expires_at=now - timedelta(minutes=1),
+            status="active",
+        )
+        session.add(gateway)
+        session.flush()
+        trace = ConversationalToolTrace(
+            ref_id=trace_ref,
+            guild_id=get_settings().discord_guild_id,
+            source_channel_id=get_settings().chat_channel_id,
+            source_message_id="1542799000000000411",
+            actor_id=get_settings().operator_discord_user_id,
+            tool_contract_version=CONTRACT_VERSION,
+            tool_contract_hash=contract_hash("interactive"),
+            caller_profile="interactive",
+            gateway_instance_ref=gateway.ref_id,
+            status="running",
+            calls=[
+                {
+                    "call_id": "committed-call",
+                    "ordinal": 1,
+                    "tool_name": "docket_commit_changeset",
+                    "transport_state": "running",
+                    "domain_state": "unknown",
+                },
+                {
+                    "call_id": "orphaned-call",
+                    "ordinal": 2,
+                    "tool_name": "docket_commit_changeset",
+                    "transport_state": "running",
+                    "domain_state": "unknown",
+                },
+            ],
+            last_ordinal=2,
+            version=1,
+            started_at=now - timedelta(minutes=5),
+        )
+        session.add(trace)
+        session.add_all(
+            [
+                ToolInvocation(
+                    tool_name="docket_commit_changeset",
+                    tool_contract_version=CONTRACT_VERSION,
+                    tool_contract_hash=contract_hash("interactive"),
+                    caller_profile="interactive",
+                    received_argument_hash="a" * 64,
+                    result_refs=[new_public_ref("chg")],
+                    transport_state="completed",
+                    domain_state="succeeded",
+                    result_disposition="committed",
+                    completed_at=now - timedelta(minutes=4),
+                    trace_ref=trace_ref,
+                    trace_call_id="committed-call",
+                    trace_ordinal=1,
+                    gateway_instance_ref=gateway.ref_id,
+                ),
+                ToolInvocation(
+                    tool_name="docket_commit_changeset",
+                    tool_contract_version=CONTRACT_VERSION,
+                    tool_contract_hash=contract_hash("interactive"),
+                    caller_profile="interactive",
+                    received_argument_hash="b" * 64,
+                    result_refs=[],
+                    transport_state="running",
+                    domain_state="unknown",
+                    trace_ref=trace_ref,
+                    trace_call_id="orphaned-call",
+                    trace_ordinal=2,
+                    gateway_instance_ref=gateway.ref_id,
+                ),
+            ]
+        )
+
+    with session_factory.begin() as session:
+        assert GatewayLifetimeService(session).expire_and_reconcile()
+
+    with session_factory() as session:
+        trace = session.scalar(
+            select(ConversationalToolTrace).where(ConversationalToolTrace.ref_id == trace_ref)
+        )
+        assert trace is not None and trace.status == "interrupted"
+        assert trace.calls[0]["transport_state"] == "timed_out"
+        assert trace.calls[0]["domain_state"] == "succeeded"
+        assert trace.calls[0]["disposition"] == "committed"
+        assert trace.calls[1]["transport_state"] == "timed_out"
+        assert trace.calls[1]["domain_state"] == "unknown"
+        assert trace.calls[1]["disposition"] == "unknown"
+        orphaned = session.scalar(
+            select(ToolInvocation).where(ToolInvocation.trace_call_id == "orphaned-call")
+        )
+        assert orphaned is not None
+        assert orphaned.transport_state == "timed_out"
+        assert orphaned.domain_state == "unknown"
+        assert orphaned.result_disposition == "unknown"

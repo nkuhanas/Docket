@@ -24,6 +24,7 @@ import logging
 import os
 import queue
 import re
+import secrets
 import sys
 import threading
 import time
@@ -44,7 +45,9 @@ _PROJECTION_PATH = re.compile(r"^/internal/docket/discord/projections/([0-9a-fA-
 _THREAD_LIFECYCLE_PATH = re.compile(
     r"^/internal/docket/discord/threads/([0-9a-fA-F-]{36})/lifecycle$"
 )
-_MCP_TRACE_PATH = re.compile(r"^/internal/docket/discord/mcp-traces/([0-9a-fA-F-]{36})$")
+_MCP_TRACE_PATH = re.compile(
+    r"^/internal/docket/discord/mcp-traces/(trace_[0-9A-HJKMNP-TV-Z]{26})$"
+)
 _SEMANTIC_PROMPT_PATH = re.compile(
     r"^/internal/docket/discord/semantic-prompts/([0-9a-fA-F-]{36})$"
 )
@@ -489,22 +492,24 @@ def _source_value(source: object, *names: str) -> str:
     return ""
 
 
-def _trace_id(guild_id: str, channel_id: str, message_id: str) -> str:
-    return str(
-        uuid.uuid5(
-            _MCP_TRACE_NAMESPACE,
-            f"{guild_id}:{channel_id}:{message_id}",
-        )
-    )
+def _new_trace_ref() -> str:
+    timestamp_ms = int(time.time_ns() // 1_000_000)
+    value = (timestamp_ms << 80) | secrets.randbits(80)
+    alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+    encoded = ["0"] * 26
+    for index in range(25, -1, -1):
+        encoded[index] = alphabet[value & 31]
+        value >>= 5
+    return f"trace_{''.join(encoded)}"
 
 
 def _deliver_trace_update(payload: dict[str, Any]) -> None:
-    trace_id = str(payload["trace_id"])
-    body = {key: value for key, value in payload.items() if key != "trace_id"}
+    trace_ref = str(payload["trace_ref"])
+    body = {key: value for key, value in payload.items() if key != "trace_ref"}
     request = urllib.request.Request(
         (
             f"{os.environ['DOCKET_INTERNAL_URL'].rstrip('/')}"
-            f"/internal/v1/discord/mcp-traces/{trace_id}"
+            f"/internal/v1/discord/mcp-traces/{trace_ref}"
         ),
         data=json.dumps(body, separators=(",", ":")).encode(),
         headers={
@@ -555,7 +560,7 @@ def _enqueue_trace_update(
     turn_status: str = "running",
 ) -> None:
     payload = {
-        "trace_id": context["trace_id"],
+        "trace_ref": context["trace_ref"],
         "request_id": str(uuid.uuid4()),
         "guild_id": context["guild_id"],
         "source_channel_id": context["source_channel_id"],
@@ -609,7 +614,7 @@ def _register_trace_context(
             existing["terminal"] = True
             prior = dict(existing)
         context = {
-            "trace_id": _trace_id(guild, channel, message_id),
+            "trace_ref": _new_trace_ref(),
             "guild_id": guild,
             "source_channel_id": channel,
             "source_message_id": message_id,
@@ -627,8 +632,10 @@ def _register_trace_context(
             "started": False,
             "terminal": False,
             "deterministic_response_text": deterministic_response_text,
-            "execution_lease_ref": (
-                ingress_binding.get("lease_ref") if ingress_binding is not None else None
+            "execution_completion_token": (
+                ingress_binding.get("execution_completion_token")
+                if ingress_binding is not None
+                else None
             ),
             "deferred_ingress_ref": (
                 ingress_binding.get("ref") if ingress_binding is not None else None
@@ -754,8 +761,8 @@ def _on_pre_tool_call(
         if not stable_call_id:
             stable_call_id = str(
                 uuid.uuid5(
-                    uuid.UUID(context["trace_id"]),
-                    f"{turn_id}:{context['next_ordinal']}",
+                    _MCP_TRACE_NAMESPACE,
+                    f"{context['trace_ref']}:{turn_id}:{context['next_ordinal']}",
                 )
             )
         if stable_call_id in context["calls"]:
@@ -928,7 +935,7 @@ def _on_post_llm_call(
             "utterance_ref": payload_context["utterance_ref"],
             "turn_id": turn_id or f"turn-{payload_context['source_message_id']}",
             "session_id": session_id or task_id,
-            "trace_id": payload_context["trace_id"],
+            "trace_ref": payload_context["trace_ref"],
             "gateway_instance_ref": payload_context.get("gateway_instance_ref"),
         }
         try:
@@ -952,7 +959,7 @@ def _on_post_llm_call(
         "model_identifier": model or "unknown",
         "verbatim_text": assistant_response,
         "generated_at": datetime.now(UTC).isoformat(),
-        "trace_id": payload_context["trace_id"],
+        "trace_ref": payload_context["trace_ref"],
         "gateway_instance_ref": payload_context.get("gateway_instance_ref"),
     }
     try:
@@ -992,11 +999,11 @@ def _persist_deterministic_response(context: dict[str, Any]) -> str:
             "actor_id": context["actor_id"],
             "utterance_ref": context["utterance_ref"],
             "turn_id": f"deterministic:{context['source_message_id']}",
-            "session_id": context.get("session_key") or context["trace_id"],
+            "session_id": context.get("session_key") or context["trace_ref"],
             "model_identifier": "docket-deterministic-signoff-v1",
             "verbatim_text": response_text,
             "generated_at": datetime.now(UTC).isoformat(),
-            "trace_id": context["trace_id"],
+            "trace_ref": context["trace_ref"],
             "gateway_instance_ref": context.get("gateway_instance_ref"),
         },
     )
@@ -1226,14 +1233,14 @@ def _complete_interactive_ingress(
     outcome: str,
     error_code: str | None = None,
 ) -> None:
-    lease_ref = str(context.get("execution_lease_ref") or "")
-    if not lease_ref.startswith("lease_"):
+    completion_token = str(context.get("execution_completion_token") or "")
+    if re.fullmatch(r"[0-9a-f]{32}", completion_token) is None:
         return
     _docket_internal_request(
-        f"/internal/v1/discord/execution-leases/{lease_ref}/complete",
+        f"/internal/v1/discord/execution-leases/{completion_token}/complete",
         {
             "request_id": str(uuid.uuid4()),
-            "lease_ref": lease_ref,
+            "completion_token": completion_token,
             "deferred_ingress_ref": context.get("deferred_ingress_ref"),
             "gateway_instance_ref": context.get("gateway_instance_ref") or _GATEWAY_INSTANCE_REF,
             "outcome": outcome,
@@ -1253,7 +1260,7 @@ def _complete_captured_ingress(
         return
     _complete_interactive_ingress(
         {
-            "execution_lease_ref": ingress_binding.get("lease_ref"),
+            "execution_completion_token": ingress_binding.get("execution_completion_token"),
             "deferred_ingress_ref": ingress_binding.get("ref"),
             "gateway_instance_ref": _GATEWAY_INSTANCE_REF,
         },
@@ -1766,8 +1773,7 @@ def _pre_gateway_dispatch(
                 scope = str(signoff_result.get("authorized_scope") or "").strip()
                 scope_text = f" Implementation scope: `{scope}`." if scope else ""
                 reset_text = (
-                    " This does not authorize production deployment or the production "
-                    "reset."
+                    " This does not authorize production deployment or the production reset."
                     if signoff_result.get("production_reset_authority") is False
                     else ""
                 )
@@ -3048,11 +3054,11 @@ async def _post_system_log(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def _put_mcp_trace(trace_id: uuid.UUID, payload: dict[str, Any]) -> dict[str, Any]:
+async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, Any]:
     import discord
 
     request_id = _require_request_id(payload)
-    if str(payload.get("trace_id", "")) != str(trace_id):
+    if str(payload.get("trace_ref", "")) != trace_ref:
         raise PluginAPIError("invalid_mcp_trace", "Trace path and body differ", 422)
     guild_id, channel_id = _validate_system_target(
         payload.get("guild_id"), payload.get("channel_id")
@@ -3150,7 +3156,6 @@ async def _put_mcp_trace(trace_id: uuid.UUID, payload: dict[str, Any]) -> dict[s
         raise PluginAPIError("system_channel_not_found", "System channel was not found") from exc
     if not isinstance(channel, discord.TextChannel) or str(channel.guild.id) != guild_id:
         raise PluginAPIError("invalid_system_channel", "Configured system channel is invalid")
-    trace_ref = base64.urlsafe_b64encode(trace_id.bytes).decode().rstrip("=")
     marker = f"Docket tool trace · ref {trace_ref}"
     footer = marker
     colors = {
@@ -3229,7 +3234,7 @@ async def _put_mcp_trace(trace_id: uuid.UUID, payload: dict[str, Any]) -> dict[s
         )
     return {
         "request_id": request_id,
-        "trace_id": str(trace_id),
+        "trace_ref": trace_ref,
         "guild_id": guild_id,
         "channel_id": channel_id,
         "message_id": str(message.id),
@@ -3444,12 +3449,13 @@ async def _put_semantic_prompt(projection_id: uuid.UUID, payload: dict[str, Any]
         )
     question = str(render.get("question", "")).strip()
     options = render.get("options")
-    if (
-        not question
-        or len(question) > 4000
-        or not isinstance(options, list)
-        or len(options) != len(controls)
-        or any(not isinstance(value, str) or not value.strip() for value in options)
+    if not question or len(question) > 4000 or not isinstance(options, list):
+        raise PluginAPIError("invalid_semantic_prompt", "Semantic prompt options are invalid", 422)
+    visible_options = [
+        value.get("visible_text") if isinstance(value, dict) else value for value in options
+    ]
+    if len(visible_options) != len(controls) or any(
+        not isinstance(value, str) or not value.strip() for value in visible_options
     ):
         raise PluginAPIError("invalid_semantic_prompt", "Semantic prompt options are invalid", 422)
     normalized_controls: list[tuple[str, str]] = []
@@ -3490,7 +3496,7 @@ async def _put_semantic_prompt(projection_id: uuid.UUID, payload: dict[str, Any]
             )
         )
     option_lines = "\n".join(
-        f"**{index}.** {value}" for index, value in enumerate(options, start=1)
+        f"**{index}.** {value}" for index, value in enumerate(visible_options, start=1)
     )
     content = f"❓ **Docket needs your decision**\n\n{question}\n\n{option_lines}"
     embed = discord.Embed(
@@ -4178,9 +4184,7 @@ async def _run_deferred_typed_message(payload: dict[str, Any]) -> None:
         message_id=str(message.id),
         reply_to_message_id=(str(reply_to_message_id) if reply_to_message_id else None),
         reply_to_text=(reply_message.content if reply_message is not None else None),
-        reply_to_author_id=(
-            str(reply_message.author.id) if reply_message is not None else None
-        ),
+        reply_to_author_id=(str(reply_message.author.id) if reply_message is not None else None),
         reply_to_author_name=(str(reply_message.author) if reply_message is not None else None),
         reply_to_is_own_message=(
             bool(client.user is not None and reply_message.author.id == client.user.id)
@@ -4211,7 +4215,7 @@ async def _run_deferred_semantic_selection(payload: dict[str, Any]) -> None:
             "Deferred selection has no persisted option binding",
             409,
         )
-    channel = (await _discord_runtime()[2].fetch_channel(int(str(payload["channel_id"]))))
+    channel = await _discord_runtime()[2].fetch_channel(int(str(payload["channel_id"])))
     message = await channel.fetch_message(int(str(binding["message_id"])))
     request_payload = {
         "request_id": str(uuid.uuid4()),
@@ -4385,21 +4389,17 @@ class _PluginRequestHandler(BaseHTTPRequestHandler):
             elif method == "POST" and self.path == "/internal/docket/discord/deferred-ingress":
                 result = _run_on_discord(_schedule_deferred_ingress(payload))
             elif method == "PUT" and (match := _MCP_TRACE_PATH.fullmatch(self.path)):
-                trace_id = uuid.UUID(match.group(1))
-                with _operation_lock(f"mcp-trace:{trace_id}"):
-                    result = _run_on_discord(_put_mcp_trace(trace_id, payload))
+                trace_ref = match.group(1)
+                with _operation_lock(f"mcp-trace:{trace_ref}"):
+                    result = _run_on_discord(_put_mcp_trace(trace_ref, payload))
             elif method == "PUT" and (match := _SEMANTIC_PROMPT_PATH.fullmatch(self.path)):
                 projection_id = uuid.UUID(match.group(1))
                 with _operation_lock(f"semantic-prompt:{projection_id}"):
                     result = _run_on_discord(_put_semantic_prompt(projection_id, payload))
-            elif method == "POST" and (
-                match := _SEMANTIC_PROMPT_QUIESCE_PATH.fullmatch(self.path)
-            ):
+            elif method == "POST" and (match := _SEMANTIC_PROMPT_QUIESCE_PATH.fullmatch(self.path)):
                 projection_id = uuid.UUID(match.group(1))
                 with _operation_lock(f"semantic-prompt:{projection_id}"):
-                    result = _run_on_discord(
-                        _quiesce_semantic_prompt(projection_id, payload)
-                    )
+                    result = _run_on_discord(_quiesce_semantic_prompt(projection_id, payload))
             elif method == "PUT" and (match := _THREAD_LIFECYCLE_PATH.fullmatch(self.path)):
                 daily_thread_id = uuid.UUID(match.group(1))
                 result = _run_on_discord(_set_thread_lifecycle(daily_thread_id, payload))
