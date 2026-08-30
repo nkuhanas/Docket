@@ -9,6 +9,9 @@ NAMESPACE = Path("deltas/docket-tracked-context-namespace-cutover-08-29-2026.yam
 TOOLS = Path("deltas/docket-tracked-context-tool-cutover-matrix-08-29-2026.yaml")
 TRIAGE = Path("deltas/docket-tracked-context-triage-admission-matrix-08-29-2026.yaml")
 TRACEABILITY = Path("deltas/docket-tracked-context-traceability-08-29-2026.csv")
+REHEARSAL_EVIDENCE = Path(
+    "deltas/docket-tracked-context-rehearsal-evidence-08-29-2026.yaml"
+)
 
 NORMATIVE_REFS = {
     "ONT-TRACK-INV-0010",
@@ -199,7 +202,7 @@ def test_every_normative_tracked_context_clause_is_mapped() -> None:
 
 
 @pytest.mark.integration
-def test_readiness_status_is_honest_about_remaining_start_blockers() -> None:
+def test_readiness_status_closes_every_start_blocker_without_reset_authority() -> None:
     readiness = _load(READINESS)
     assert readiness["frozen_artifact_hash"] == (
         "830c33c9d78485a6a6a8f872b6dfad996869f8a7eaea9a5f7d39d52e9357cf48"
@@ -207,10 +210,13 @@ def test_readiness_status_is_honest_about_remaining_start_blockers() -> None:
     assert readiness["authority"]["production_reset_authority"] is False
     gate = readiness["implementation_gate"]
     assert gate["total"] == 8
-    assert gate["resolved"] == 4
-    assert gate["implementation_start_permitted"] is False
+    assert gate["resolved"] == 8
+    assert gate["in_progress"] == 0
+    assert gate["blocked_pending_implementation"] == 0
+    assert gate["implementation_start_permitted"] is True
     blockers = readiness["implementation_start_blockers"]
     assert len(blockers) == 8
+    assert all(blocker["status"] == "resolved" for blocker in blockers)
     assert {blocker["blocker_ref"] for blocker in blockers} == {
         "governance_provenance_closure_export_and_restore_rehearsal",
         "provider_effect_and_binding_disposition_inventory",
@@ -224,6 +230,48 @@ def test_readiness_status_is_honest_about_remaining_start_blockers() -> None:
     assert readiness["production_actions"] == {
         "reset_executed": False,
         "production_data_deleted": False,
+        "provider_mutation_performed": False,
+        "deployment_performed": False,
+    }
+
+
+@pytest.mark.integration
+def test_rehearsal_evidence_is_hash_bound_and_nonmutating() -> None:
+    evidence = _load(REHEARSAL_EVIDENCE)
+    assert evidence["rehearsal_revision"] == (
+        "18356da68dd76a14cedf675a71a35704d6121d00"
+    )
+    assert evidence["governance_closure"] == {
+        "file": "governance-closure.json",
+        "closure_sha256": (
+            "2d59186e1cdeca00e1f8a338e15fa01e35647fd95c32c44fc79a1043b167d6bf"
+        ),
+        "rows": 72,
+        "unresolved_authority_refs": 0,
+        "unresolved_non_authority_refs": 0,
+        "verified_specification_signoffs": 4,
+        "exact_public_refs_and_row_hashes_exported": True,
+        "isolated_clean_schema_restore_verified": True,
+    }
+    provider = evidence["provider_disposition"]
+    assert provider["targets"] == {
+        "google_calendars": 6,
+        "google_calendar_events": 30,
+        "total": 36,
+    }
+    assert provider["dispositions"] == {
+        "leave_external_unmanaged": 36,
+        "adopt_into_clean_model": 0,
+        "delete_by_separately_authorized_provider_operation": 0,
+    }
+    assert provider["running_or_uncertain_blockers"] == 0
+    assert evidence["attachment_restore"]["post_restore_decryption_verified"] is True
+    assert evidence["authority_boundary"] == {
+        "implementation_readiness_only": True,
+        "production_reset_authority": False,
+        "production_reset_executed": False,
+        "production_data_deleted": False,
+        "provider_mutation_authorized": False,
         "provider_mutation_performed": False,
         "deployment_performed": False,
     }

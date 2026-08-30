@@ -26,3 +26,4 @@ secrets/restore/*
 !/deltas/docket-tracked-context-tool-cutover-matrix-08-29-2026.yaml
 !/deltas/docket-tracked-context-triage-admission-matrix-08-29-2026.yaml
 !/deltas/docket-tracked-context-traceability-08-29-2026.csv
+!/deltas/docket-tracked-context-rehearsal-evidence-08-29-2026.yaml

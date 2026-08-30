@@ -1,0 +1,86 @@
+evidence_ref: ONT-TRACK-READINESS-EVIDENCE-2026-08-29
+document_ref: ONT-DELTA-2026-08-29-TRACKED-CONTEXT
+recorded_at: 2026-08-29T22:04:49-07:00
+rehearsal_revision: 18356da68dd76a14cedf675a71a35704d6121d00
+
+private_artifacts:
+  directory: backups/tracked-context-readiness-20260830T050449Z
+  directory_mode: "0700"
+  file_mode: "0600"
+  committed: false
+  contains_sensitive_operator_or_provider_data: true
+
+pre_reset_recovery:
+  source_snapshot:
+    file: pre-reset-source.dump
+    format: postgresql_custom
+    bytes: 3692589
+    sha256: d2d8818b3ae52b3fc2aaec17d92c0c78234b6cfbd5525bbcb82281a10977fbb7
+  matching_live_image:
+    content_id: sha256:33fad1631e66d4e9410385cac19c6e9710c4fa850ff873f7a623ecba4999b35d
+    revision: e0575ad3f9395c6f4ef12471c81e4704602fa565
+    restored_schema_revision: "0042"
+    head_verified: true
+    bounded_integrity_queries_verified: true
+
+governance_closure:
+  file: governance-closure.json
+  closure_sha256: 2d59186e1cdeca00e1f8a338e15fa01e35647fd95c32c44fc79a1043b167d6bf
+  rows: 72
+  unresolved_authority_refs: 0
+  unresolved_non_authority_refs: 0
+  verified_specification_signoffs: 4
+  exact_public_refs_and_row_hashes_exported: true
+  isolated_clean_schema_restore_verified: true
+
+provider_disposition:
+  file: provider-disposition-manifest.json
+  manifest_sha256: 0cea19afb3bc883a4265a2f191c21497a9645e741436449c0b72129e5388c22b
+  provider_accounts: 1
+  operations: 73
+  operation_items: 43
+  execution_attempts: 77
+  provider_event_bindings: 8
+  calendar_links: 28
+  canonical_events_with_external_effects: 8
+  calendar_lanes: 6
+  targets:
+    google_calendars: 6
+    google_calendar_events: 30
+    total: 36
+  dispositions:
+    leave_external_unmanaged: 36
+    adopt_into_clean_model: 0
+    delete_by_separately_authorized_provider_operation: 0
+  running_or_uncertain_blockers: 0
+  provider_mutation_performed: false
+
+clean_reset_rehearsal:
+  file: clean-rehearsal-evidence.json
+  evidence_sha256: 8743606e5d0f3cec50b20c24ffbbe2e82688f66662ebdc38ccf4393866909651
+  clean_backup:
+    file: clean-rehearsal.dump
+    bytes: 50462
+    sha256: 36af1e69a73a64488b38576a6d8945d4e166eadc8f195d2334b6e83f04755b38
+  rehearsal_tables: 16
+  obsolete_tables_present: []
+  restored_provider_accounts: 1
+  restored_governance_rows: 72
+  public_ref_prefix_constraints_verified: true
+  production_state_changed: false
+
+attachment_restore:
+  metadata_and_encrypted_blob_schema_verified: true
+  plaintext_bytes: 60
+  plaintext_sha256: 35e0d0a76afafadad66fdfc3471e1ce7dc01cb352517314ccef59d6f595075d6
+  ciphertext_sha256: e1a369ed67bf2d31475a22595baf14014dd9a60c19169295848a433c57236e62
+  post_restore_decryption_verified: true
+
+authority_boundary:
+  implementation_readiness_only: true
+  production_reset_authority: false
+  production_reset_executed: false
+  production_data_deleted: false
+  provider_mutation_authorized: false
+  provider_mutation_performed: false
+  deployment_performed: false

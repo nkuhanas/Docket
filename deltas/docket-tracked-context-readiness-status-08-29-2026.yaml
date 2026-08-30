@@ -2,7 +2,7 @@ readiness_ref: ONT-TRACK-READINESS-2026-08-29
 document_ref: ONT-DELTA-2026-08-29-TRACKED-CONTEXT
 frozen_artifact_hash: 830c33c9d78485a6a6a8f872b6dfad996869f8a7eaea9a5f7d39d52e9357cf48
 recorded_at: 2026-08-29
-status: readiness_in_progress
+status: readiness_complete
 
 authority:
   architecture_authority: true
@@ -20,24 +20,27 @@ authority:
 
 implementation_gate:
   total: 8
-  resolved: 4
-  in_progress: 2
-  blocked_pending_implementation: 2
-  implementation_start_permitted: false
+  resolved: 8
+  in_progress: 0
+  blocked_pending_implementation: 0
+  implementation_start_permitted: true
 
 implementation_start_blockers:
   - blocker_ref: governance_provenance_closure_export_and_restore_rehearsal
-    status: in_progress
-    finding: >-
-      The frozen G.3 seed boundary is exact, but the repository has no computed
-      transitive-closure exporter or isolated clean-schema restore verifier yet.
-    next_evidence:
-      - governance closure exporter with row hashes and reference edges
-      - isolated PostgreSQL clean-schema restore rehearsal
-      - sign-off query parity report
+    status: resolved
+    evidence:
+      path: deltas/docket-tracked-context-rehearsal-evidence-08-29-2026.yaml
+      closure_sha256: 2d59186e1cdeca00e1f8a338e15fa01e35647fd95c32c44fc79a1043b167d6bf
+      closure_rows: 72
+      verified_specification_signoffs: 4
+    resolution: >-
+      The exact G.3 categories seed a computed, hash-bound authority graph. It
+      restored into an isolated clean PostgreSQL schema with zero unresolved
+      authority or opaque typed refs, and the original four artifact sign-off
+      queries passed without ref, basis, utterance, or artifact-hash changes.
 
   - blocker_ref: provider_effect_and_binding_disposition_inventory
-    status: in_progress
+    status: resolved
     observed_at: 2026-08-29
     read_only_inventory:
       operations:
@@ -61,10 +64,17 @@ implementation_start_blockers:
       calendar_lanes:
         total: 6
         provider_bound: 6
-    finding: >-
-      No running or uncertain provider execution blocks inventory work. The
-      object-level reset manifest still needs one exact Operator-visible
-      disposition for every external Google object.
+    evidence:
+      path: deltas/docket-tracked-context-rehearsal-evidence-08-29-2026.yaml
+      manifest_sha256: 0cea19afb3bc883a4265a2f191c21497a9645e741436449c0b72129e5388c22b
+      exact_external_targets: 36
+      disposition: leave_external_unmanaged
+    resolution: >-
+      The private manifest inventories every Operation, OperationItem,
+      ExecutionAttempt, provider binding, CalendarLink, externally affected
+      CanonicalEvent, lane, account, Google Calendar, and Calendar event. All
+      36 external targets have exactly one nonmutating disposition and no
+      running or uncertain execution blocks a later exact reset manifest.
 
   - blocker_ref: namespace_cutover_collision_scan
     status: resolved
@@ -95,19 +105,30 @@ implementation_start_blockers:
       tools, with no old-name aliases.
 
   - blocker_ref: clean_reset_cutover_rehearsal
-    status: blocked_pending_implementation
-    finding: >-
-      Rehearsal requires the clean baseline, computed governance closure,
-      provider disposition manifest, and reset tooling. Production execution
-      remains separately unauthorized.
+    status: resolved
+    evidence:
+      path: deltas/docket-tracked-context-rehearsal-evidence-08-29-2026.yaml
+      evidence_sha256: 8743606e5d0f3cec50b20c24ffbbe2e82688f66662ebdc38ccf4393866909651
+      pre_reset_snapshot_sha256: d2d8818b3ae52b3fc2aaec17d92c0c78234b6cfbd5525bbcb82281a10977fbb7
+    resolution: >-
+      A read-only production snapshot restored with its exact live image and
+      schema head, then the clean rehearsal restored only governance closure,
+      clean ProviderAccount configuration, and clean primitive/attachment
+      support. All enumerated obsolete tables were absent. No production row,
+      deployment, or provider object changed.
 
   - blocker_ref: attachment_retention_and_restore_verification
-    status: blocked_pending_implementation
-    finding: >-
-      Current ingestion persists bounded attachment metadata but not the new
-      AttachmentEvidence manifest or encrypted PostgreSQL blob. Verification
-      requires the clean attachment schema, retention tombstone behavior, and
-      PostgreSQL backup/restore fixture.
+    status: resolved
+    evidence:
+      path: deltas/docket-tracked-context-rehearsal-evidence-08-29-2026.yaml
+      plaintext_sha256: 35e0d0a76afafadad66fdfc3471e1ce7dc01cb352517314ccef59d6f595075d6
+      ciphertext_sha256: e1a369ed67bf2d31475a22595baf14014dd9a60c19169295848a433c57236e62
+    resolution: >-
+      The clean rehearsal persisted bounded AttachmentEvidence metadata and an
+      AES-GCM encrypted blob, took a PostgreSQL custom-format backup, restored
+      it into a separate database, reverified both hashes, and decrypted the
+      original bytes. Runtime retention/tombstone behavior remains substantive
+      implementation work covered by the traceability plan, not a start gate.
 
   - blocker_ref: triage_admission_rule_and_fixture_matrix
     status: resolved

@@ -148,6 +148,38 @@ TemporalBinding schema, triage change, provider behavior, reset implementation,
 or model-facing mutation. Amendment sign-off and all substantive readiness/
 implementation work remain pending.
 
+## Tracked-context readiness closure
+
+The Operator subsequently signed the tracked-context artifact through the
+trusted ledger as `utt_01M18D6GT2MXB80229HAEPZ2KB`, producing Decision
+`dec_01M18DYEYJVVJ7TW5VQQBCA6NC`, AuditEvent
+`aud_01M18DYEYK9Y353AK546980XBK`, and final response
+`rsp_01M18DYEZ3DR3JVMJMH47CJQ0J`. All eight implementation-start gates are now
+resolved in
+[`docket-tracked-context-readiness-status-08-29-2026.yaml`](../deltas/docket-tracked-context-readiness-status-08-29-2026.yaml).
+
+Revision `18356da68dd76a14cedf675a71a35704d6121d00` added the bounded offline
+rehearsal. A read-only production snapshot restored at schema `0042` with the
+exact live image, then produced a 72-row governance closure with all four
+artifact sign-offs intact and zero unresolved refs. The private provider
+manifest covers 73 Operations, 43 OperationItems, 77 ExecutionAttempts, eight
+bindings, 28 links, eight affected events, six lanes, and 36 exact external
+targets. Every target disposition is `leave_external_unmanaged`; no running or
+uncertain execution remains.
+
+The clean rehearsal restored the governance closure and one hashed `acct_`
+ProviderAccount into a schema containing no enumerated obsolete table. An
+encrypted attachment fixture survived custom-format backup/restore and
+decrypted to its original SHA-256. Exact dumps, utterances, labels, account
+addresses, and provider IDs remain mode-`0600` in ignored backup storage. The
+tracked, non-sensitive hashes and counts are in
+[`docket-tracked-context-rehearsal-evidence-08-29-2026.yaml`](../deltas/docket-tracked-context-rehearsal-evidence-08-29-2026.yaml).
+
+This closes implementation readiness only. No clean-model migration, production
+deployment, destructive reset, production row deletion, or provider mutation
+occurred. Production reset remains blocked on the later manifest-, backup-, and
+deployment-revision-bound authenticated authorization required by G.3.
+
 ## Implemented persistence sequence
 
 The migration sequence is additive through `0041`:
