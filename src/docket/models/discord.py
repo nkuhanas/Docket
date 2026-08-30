@@ -7,7 +7,6 @@ from sqlalchemy import (
     CheckConstraint,
     Date,
     DateTime,
-    ForeignKey,
     Integer,
     String,
     UniqueConstraint,
@@ -46,82 +45,29 @@ class DiscordDailyThread(TimestampMixin, Base):
     last_error_code: Mapped[str | None] = mapped_column(String(128))
 
 
-class DiscordProjection(TimestampMixin, Base):
-    __tablename__ = "discord_projections"
-    __table_args__ = (
-        CheckConstraint(
-            "status IN ('pending', 'delivered', 'failed')",
-            name="ck_discord_projections_status",
-        ),
-        CheckConstraint(
-            "view_mode IN ('summary', 'schedule_review', 'decision', "
-            "'schedule_failures', 'brief_review')",
-            name="ck_discord_projections_view_mode",
-        ),
-        CheckConstraint(
-            "((view_mode IN ('schedule_review', 'schedule_failures') "
-            "AND view_page BETWEEN 1 AND 5) OR "
-            "(view_mode = 'brief_review' AND view_page BETWEEN 1 AND 65535) OR "
-            "(view_mode IN ('summary', 'decision') AND view_page IS NULL))",
-            name="ck_discord_projections_view_page",
-        ),
-        CheckConstraint(
-            "reviewed_through_page BETWEEN 0 AND 5",
-            name="ck_discord_projections_reviewed_through_page",
-        ),
-        UniqueConstraint(
-            "queue_item_id", "daily_thread_id", name="uq_discord_projection_item_thread"
-        ),
-        UniqueConstraint("message_id", name="uq_discord_projections_message_id"),
-    )
-
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    ref_id: Mapped[str] = mapped_column(
-        String(40), unique=True, nullable=False, default=lambda: new_public_ref("proj")
-    )
-    queue_item_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("queue_items.id", ondelete="RESTRICT"), nullable=False
-    )
-    daily_thread_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("discord_daily_threads.id", ondelete="RESTRICT"), nullable=False
-    )
-    projection_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
-    primary_public_ref: Mapped[str | None] = mapped_column(String(40))
-    primary_revision_ref: Mapped[str | None] = mapped_column(String(40))
-    message_id: Mapped[str | None] = mapped_column(String(64))
-    render_schema_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
-    render_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
-    component_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
-    view_action_revision_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("action_revisions.id", ondelete="SET NULL")
-    )
-    view_mode: Mapped[str] = mapped_column(String(32), default="summary", nullable=False)
-    view_page: Mapped[int | None] = mapped_column(Integer)
-    reviewed_through_page: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)
-    last_error_code: Mapped[str | None] = mapped_column(String(128))
-
-
-class DiscordMcpTrace(TimestampMixin, Base):
-    __tablename__ = "discord_mcp_traces"
+class ConversationalToolTrace(TimestampMixin, Base):
+    __tablename__ = "conversational_tool_traces"
     __table_args__ = (
         CheckConstraint(
             "status IN ('running', 'completed', 'failed', 'interrupted')",
-            name="ck_discord_mcp_traces_status",
+            name="ck_conversational_tool_traces_status",
         ),
         CheckConstraint(
             "last_ordinal BETWEEN 0 AND 100",
-            name="ck_discord_mcp_traces_last_ordinal",
+            name="ck_conversational_tool_traces_last_ordinal",
         ),
         UniqueConstraint(
             "guild_id",
             "source_channel_id",
             "source_message_id",
-            name="uq_discord_mcp_trace_source",
+            name="uq_conversational_tool_trace_source",
         ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    ref_id: Mapped[str] = mapped_column(
+        String(40), unique=True, nullable=False, default=lambda: new_public_ref("trace")
+    )
     guild_id: Mapped[str] = mapped_column(String(64), nullable=False)
     source_channel_id: Mapped[str] = mapped_column(String(64), nullable=False)
     source_message_id: Mapped[str] = mapped_column(String(64), nullable=False)

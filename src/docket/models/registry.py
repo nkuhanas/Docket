@@ -30,14 +30,14 @@ class CanonicalProvenanceMixin:
     created_by_changeset_ref: Mapped[str] = mapped_column(String(40), nullable=False)
 
 
-class ProvenanceSource(Base):
+class Source(Base):
     """External/imported evidence that has no richer typed Docket object."""
 
-    __tablename__ = "provenance_sources"
+    __tablename__ = "sources"
     __table_args__ = (
         CheckConstraint(
-            "source_kind IN ('legacy_canonical_object', 'imported', 'external')",
-            name="ck_provenance_sources_kind",
+            "source_kind IN ('imported', 'external', 'gmail', 'google_calendar', 'attachment')",
+            name="ck_sources_kind",
         ),
         UniqueConstraint("source_kind", "external_ref", name="uq_provenance_source_origin"),
     )
@@ -76,12 +76,12 @@ class PersonProfile(TimestampMixin, Base):
     is_operator: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
-class OrganizationProfile(TimestampMixin, Base):
-    __tablename__ = "organization_profiles"
+class OrganizationInstitutionProfile(TimestampMixin, Base):
+    __tablename__ = "organization_institution_profiles"
     __table_args__ = (
         CheckConstraint(
             "entity_kind IN ('organization', 'institution')",
-            name="ck_organization_profiles_kind",
+            name="ck_organization_institution_profiles_kind",
         ),
     )
 
@@ -269,16 +269,19 @@ class Fact(CanonicalProvenanceMixin, TimestampMixin, Base):
             "status IN ('active', 'historical', 'retracted')",
             name="ck_facts_status",
         ),
-        Index("ix_facts_subject_predicate_status", "subject_entity_id", "predicate", "status"),
+        CheckConstraint(
+            "subject_ref LIKE 'ent\\_%' ESCAPE '\\' OR "
+            "subject_ref LIKE 'item\\_%' ESCAPE '\\'",
+            name="ck_facts_subject_ref",
+        ),
+        Index("ix_facts_subject_predicate_status", "subject_ref", "predicate", "status"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     ref_id: Mapped[str] = mapped_column(
         String(40), unique=True, nullable=False, default=lambda: new_public_ref("fact")
     )
-    subject_entity_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("entities.id", ondelete="RESTRICT"), nullable=False
-    )
+    subject_ref: Mapped[str] = mapped_column(String(40), nullable=False)
     predicate: Mapped[str] = mapped_column(String(255), nullable=False)
     value_json: Mapped[Any] = mapped_column(JSON, nullable=False)
     valid_from: Mapped[date | None] = mapped_column(Date)
@@ -336,5 +339,5 @@ def _reject_immutable(_mapper: object, _connection: object, target: object) -> N
     raise ValueError(f"{type(target).__name__} is immutable")
 
 
-event.listen(ProvenanceSource, "before_update", _reject_immutable)
-event.listen(ProvenanceSource, "before_delete", _reject_immutable)
+event.listen(Source, "before_update", _reject_immutable)
+event.listen(Source, "before_delete", _reject_immutable)

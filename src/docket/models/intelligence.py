@@ -102,9 +102,6 @@ class AttentionCase(TimestampMixin, Base):
     entity_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     source_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     latest_revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
-    queue_item_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("queue_items.id", ondelete="SET NULL")
-    )
     resolution_decision_ref: Mapped[str | None] = mapped_column(String(40))
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     first_observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -124,7 +121,6 @@ class AttentionCaseRevision(Base):
     ref_id: Mapped[str] = mapped_column(
         String(40), unique=True, nullable=False, default=lambda: new_public_ref("caserev")
     )
-    legacy_ref_id: Mapped[str | None] = mapped_column(String(40), unique=True)
     attention_case_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("attention_cases.id", ondelete="RESTRICT"), nullable=False
     )
@@ -133,8 +129,13 @@ class AttentionCaseRevision(Base):
     title: Mapped[str] = mapped_column(String(512), nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
     semantic_classes: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
-    item_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    case_item_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     source_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    admission_rule_ref: Mapped[str] = mapped_column(String(128), nullable=False)
+    admission_basis_refs: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    required_case_item_refs: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    canonical_consequence_classes: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    dependency_summary: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
@@ -148,7 +149,9 @@ class CaseItem(TimestampMixin, Base):
             "item_type IN ('person_resolution', 'organization_resolution', "
             "'identity_resolution', 'affiliation_candidate', "
             "'relationship_candidate', 'fact_candidate', 'event_candidate', "
-            "'lane_resolution', 'preference_match', 'decision_required')",
+            "'item_candidate', 'task_candidate', 'temporal_candidate', "
+            "'lane_resolution', 'preference_match', 'decision_required', "
+            "'canonical_transition', 'canonical_conflict')",
             name="ck_case_items_type",
         ),
         CheckConstraint(
@@ -156,7 +159,7 @@ class CaseItem(TimestampMixin, Base):
             name="ck_case_items_status",
         ),
         CheckConstraint(
-            "resolution_role IN ('required', 'supporting', 'legacy_unspecified')",
+            "resolution_role IN ('required', 'supporting')",
             name="ck_case_items_resolution_role",
         ),
         UniqueConstraint(
@@ -166,7 +169,7 @@ class CaseItem(TimestampMixin, Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     ref_id: Mapped[str] = mapped_column(
-        String(40), unique=True, nullable=False, default=lambda: new_public_ref("item")
+        String(40), unique=True, nullable=False, default=lambda: new_public_ref("citem")
     )
     attention_case_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("attention_cases.id", ondelete="CASCADE"), nullable=False
@@ -194,18 +197,18 @@ class CaseSource(Base):
     )
 
 
-class TriageBriefEntry(Base):
-    __tablename__ = "triage_brief_entries"
+class BriefEntry(Base):
+    __tablename__ = "brief_entries"
     __table_args__ = (
         CheckConstraint(
             "disposition IN ('include', 'suppress')",
-            name="ck_triage_brief_entries_disposition",
+            name="ck_brief_entries_disposition",
         ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     ref_id: Mapped[str] = mapped_column(
-        String(40), unique=True, nullable=False, default=lambda: new_public_ref("item")
+        String(40), unique=True, nullable=False, default=lambda: new_public_ref("bentry")
     )
     triage_run_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("triage_runs.id", ondelete="RESTRICT"), nullable=False
@@ -222,11 +225,11 @@ class TriageBriefEntry(Base):
     )
 
 
-class DailyBriefCaseItem(Base):
-    __tablename__ = "daily_brief_case_items"
+class DailyBriefCaseMembership(Base):
+    __tablename__ = "daily_brief_case_memberships"
     __table_args__ = (
         UniqueConstraint(
-            "brief_id", "attention_case_id", name="uq_daily_brief_case_item"
+            "brief_id", "attention_case_id", name="uq_daily_brief_case_membership"
         ),
     )
 
