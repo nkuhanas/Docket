@@ -100,7 +100,7 @@ canonical state or provenance authority.
 - `src/docket/providers/`: external provider adapters. They project committed
   intent; they do not decide canonical truth.
 - `src/docket/worker/`: asynchronous polling and dispatch orchestration.
-- `migrations/versions/`: ordered Alembic history. Production upgrades to head
+- `migrations/clean_versions/`: ordered clean Alembic history. Production upgrades to head
   before the API starts.
 - `hermes/plugin/docket_discord/`: pinned Hermes plugin, skills, and generated
   session-loaded tool contracts.

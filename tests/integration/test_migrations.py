@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
 from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
@@ -37,7 +40,7 @@ RETIRED_TABLES = {
 }
 
 
-def _config(database_url: str, monkeypatch) -> Config:
+def _config(database_url: str, monkeypatch: pytest.MonkeyPatch) -> Config:
     monkeypatch.setenv("DOCKET_DATABASE_URL", database_url)
     clear_settings_cache()
     return Config("alembic.ini")
@@ -54,7 +57,9 @@ def test_active_migration_history_is_one_clean_baseline() -> None:
     assert script.get_current_head() == revisions[0].revision
 
 
-def test_clean_baseline_matches_current_metadata(tmp_path, monkeypatch) -> None:
+def test_clean_baseline_matches_current_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'clean-baseline.db'}"
     config = _config(database_url, monkeypatch)
 
@@ -89,7 +94,9 @@ def test_clean_baseline_matches_current_metadata(tmp_path, monkeypatch) -> None:
     clear_settings_cache()
 
 
-def test_clean_namespace_columns_are_unambiguous(tmp_path, monkeypatch) -> None:
+def test_clean_namespace_columns_are_unambiguous(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     database_url = f"sqlite+pysqlite:///{tmp_path / 'clean-namespace.db'}"
     config = _config(database_url, monkeypatch)
     command.upgrade(config, "head")
