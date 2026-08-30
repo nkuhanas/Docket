@@ -28,7 +28,6 @@ from docket.providers.google import FakeGoogleProvider
 from docket.providers.google.factory import (
     build_calendar_read_provider,
     build_calendar_write_provider,
-    build_gmail_mutation_provider,
     build_gmail_read_provider,
 )
 from docket.providers.google.gmail_runtime import configure_gmail_read_provider
@@ -43,14 +42,9 @@ from docket.services.calendar_sync import CalendarSyncService
 from docket.services.continuity import ExecutionLeaseCoordinator
 from docket.services.deferred_ingress import DeferredIngressRunner
 from docket.services.discord_projection import DiscordProjectionRunner
-from docket.services.events import SemanticCandidateCompiler
 from docket.services.gateway_lifetimes import GatewayLifetimeReconciler
 from docket.services.gmail_ingestion import GmailIngestionService
 from docket.services.operations import OperationRunner
-from docket.services.provenance import ProvenanceService
-from docket.services.reminders import ReminderDispatcher
-from docket.services.retention import RetentionService
-from docket.services.rollover import RolloverService
 from docket.services.runtime_logs import RuntimeLogService
 from docket.worker import WorkerRuntime
 
@@ -74,7 +68,6 @@ calendar_read_provider = build_calendar_read_provider(settings)
 configure_calendar_read_provider(calendar_read_provider)
 calendar_sync_service = CalendarSyncService(get_session_factory(), calendar_read_provider, settings)
 gmail_read_provider = build_gmail_read_provider(settings)
-gmail_mutation_provider = build_gmail_mutation_provider(settings)
 if gmail_read_provider is not None:
     configure_gmail_read_provider(gmail_read_provider)
 discord_projection_runner = (
@@ -104,9 +97,7 @@ worker = WorkerRuntime(
     OperationRunner(
         get_session_factory(),
         calendar_write_provider,
-        gmail_provider=gmail_mutation_provider,
         execution_enabled=settings.calendar_write_mode() != "disabled",
-        gmail_execution_enabled=settings.gmail_writes_enabled,
     ),
     operation_poll_seconds=settings.operation_poll_seconds,
     operation_drain_limit=settings.operation_drain_limit,
@@ -114,12 +105,8 @@ worker = WorkerRuntime(
     stale_lease_poll_seconds=settings.stale_lease_poll_seconds,
     discord_projection_runner=discord_projection_runner,
     discord_projection_poll_seconds=settings.discord_projection_poll_seconds,
-    rollover_service=RolloverService(get_session_factory(), settings),
-    rollover_poll_seconds=settings.daily_rollover_poll_seconds,
     calendar_sync_service=(calendar_sync_service if settings.calendar_reads_enabled else None),
     calendar_sync_poll_seconds=settings.calendar_sync_poll_seconds,
-    reminder_dispatcher=ReminderDispatcher(get_session_factory(), settings),
-    reminder_dispatch_poll_seconds=settings.reminder_dispatch_interval_seconds,
     backup_service=(
         BackupService(get_session_factory(), settings) if settings.backup_enabled else None
     ),
@@ -134,22 +121,8 @@ worker = WorkerRuntime(
         else None
     ),
     gmail_scan_poll_seconds=settings.gmail_scan_poll_seconds,
-    semantic_candidate_compiler=(
-        SemanticCandidateCompiler(get_session_factory(), settings)
-        if settings.gmail_ingestion_enabled
-        else None
-    ),
-    semantic_candidate_poll_seconds=settings.semantic_candidate_poll_seconds,
-    daily_brief_service=(
-        DailyBriefService(get_session_factory(), settings)
-        if settings.gmail_ingestion_enabled
-        else None
-    ),
+    daily_brief_service=DailyBriefService(get_session_factory(), settings),
     daily_brief_poll_seconds=settings.daily_brief_poll_seconds,
-    retention_service=(
-        RetentionService(get_session_factory(), settings) if settings.retention_enabled else None
-    ),
-    retention_poll_seconds=settings.retention_poll_seconds,
     gateway_lifetime_reconciler=GatewayLifetimeReconciler(get_session_factory()),
     execution_lease_coordinator=ExecutionLeaseCoordinator(get_session_factory()),
     deferred_ingress_runner=deferred_ingress_runner,
@@ -162,8 +135,6 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         create_schema_for_smoke()
     with session_scope() as session:
         AccountService(session).ensure_configured_google(settings)
-        bootstrap_refs = ProvenanceService(session).backfill_bootstrap_authorization()
-        _app.state.provenance_bootstrap_refs = bootstrap_refs
     GatewayLifetimeReconciler(get_session_factory()).run_once()
     await worker.start()
     async with mcp.session_manager.run(), triage_mcp.session_manager.run():

@@ -589,7 +589,10 @@ class IntelligenceService:
                 projection_id=projection.id,
                 projection_ref=projection.ref_id,
                 transport="discord",
-                destination_ref=f"discord_channel:{self.settings.queue_channel_id}",
+                destination_ref=(
+                    f"discord_conversation:{self.settings.discord_guild_id}:"
+                    f"{self.settings.queue_channel_id}"
+                ),
                 status="pending",
             )
         )

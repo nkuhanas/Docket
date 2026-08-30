@@ -13,13 +13,9 @@ from docket.services.calendar_sync import CalendarSyncService
 from docket.services.continuity import ExecutionLeaseCoordinator
 from docket.services.deferred_ingress import DeferredIngressRunner
 from docket.services.discord_projection import DiscordProjectionRunner
-from docket.services.events import SemanticCandidateCompiler
 from docket.services.gateway_lifetimes import GatewayLifetimeReconciler
 from docket.services.gmail_ingestion import GmailIngestionService
 from docket.services.operations import OperationRunner
-from docket.services.reminders import ReminderDispatcher
-from docket.services.retention import RetentionService
-from docket.services.rollover import RolloverService
 
 logger = structlog.get_logger(__name__)
 
@@ -36,22 +32,14 @@ class WorkerRuntime:
         stale_lease_poll_seconds: float,
         discord_projection_runner: DiscordProjectionRunner | None = None,
         discord_projection_poll_seconds: float = 5.0,
-        rollover_service: RolloverService | None = None,
-        rollover_poll_seconds: float = 60.0,
         calendar_sync_service: CalendarSyncService | None = None,
         calendar_sync_poll_seconds: float = 60.0,
-        reminder_dispatcher: ReminderDispatcher | None = None,
-        reminder_dispatch_poll_seconds: float = 30.0,
         backup_service: BackupService | None = None,
         backup_poll_seconds: float = 60.0,
         gmail_ingestion_service: GmailIngestionService | None = None,
         gmail_scan_poll_seconds: float = 60.0,
-        semantic_candidate_compiler: SemanticCandidateCompiler | None = None,
-        semantic_candidate_poll_seconds: float = 2.0,
         daily_brief_service: DailyBriefService | None = None,
         daily_brief_poll_seconds: float = 30.0,
-        retention_service: RetentionService | None = None,
-        retention_poll_seconds: float = 3600.0,
         gateway_lifetime_reconciler: GatewayLifetimeReconciler | None = None,
         execution_lease_coordinator: ExecutionLeaseCoordinator | None = None,
         deferred_ingress_runner: DeferredIngressRunner | None = None,
@@ -64,22 +52,14 @@ class WorkerRuntime:
         self.stale_lease_poll_seconds = stale_lease_poll_seconds
         self.discord_projection_runner = discord_projection_runner
         self.discord_projection_poll_seconds = discord_projection_poll_seconds
-        self.rollover_service = rollover_service
-        self.rollover_poll_seconds = rollover_poll_seconds
         self.calendar_sync_service = calendar_sync_service
         self.calendar_sync_poll_seconds = calendar_sync_poll_seconds
-        self.reminder_dispatcher = reminder_dispatcher
-        self.reminder_dispatch_poll_seconds = reminder_dispatch_poll_seconds
         self.backup_service = backup_service
         self.backup_poll_seconds = backup_poll_seconds
         self.gmail_ingestion_service = gmail_ingestion_service
         self.gmail_scan_poll_seconds = gmail_scan_poll_seconds
-        self.semantic_candidate_compiler = semantic_candidate_compiler
-        self.semantic_candidate_poll_seconds = semantic_candidate_poll_seconds
         self.daily_brief_service = daily_brief_service
         self.daily_brief_poll_seconds = daily_brief_poll_seconds
-        self.retention_service = retention_service
-        self.retention_poll_seconds = retention_poll_seconds
         self.gateway_lifetime_reconciler = gateway_lifetime_reconciler
         self.execution_lease_coordinator = execution_lease_coordinator
         self.deferred_ingress_runner = deferred_ingress_runner
@@ -174,14 +154,10 @@ class WorkerRuntime:
         next_operation = 0.0
         next_reconciliation = 0.0
         next_recovery = 0.0
-        next_rollover = 0.0
         next_calendar_sync = 0.0
-        next_reminder_dispatch = 0.0
         next_backup = 0.0
         next_gmail_scan = 0.0
-        next_semantic_candidate = 0.0
         next_daily_brief = 0.0
-        next_retention = 0.0
         next_projection_repair = 0.0
         next_deferred_ingress = 0.0
         while not self._stop.is_set():
@@ -223,23 +199,6 @@ class WorkerRuntime:
                         self.deferred_ingress_runner.run_once,
                     )
                     next_deferred_ingress = now + self.discord_projection_poll_seconds
-                if self.rollover_service is not None and now >= next_rollover:
-                    await self._run_leased(
-                        "cron_execution",
-                        "rollover-expire",
-                        self.rollover_service.expire_due_approvals,
-                    )
-                    await self._run_leased(
-                        "cron_execution",
-                        "rollover-due",
-                        self.rollover_service.run_due_once,
-                    )
-                    await self._run_leased(
-                        "cron_execution",
-                        "rollover-archive",
-                        self.rollover_service.maintain_archives,
-                    )
-                    next_rollover = now + self.rollover_poll_seconds
                 if self.calendar_sync_service is not None and now >= next_calendar_sync:
                     await self._run_leased(
                         "cron_execution",
@@ -252,13 +211,6 @@ class WorkerRuntime:
                         self.calendar_sync_service.evaluate_staleness,
                     )
                     next_calendar_sync = now + self.calendar_sync_poll_seconds
-                if self.reminder_dispatcher is not None and now >= next_reminder_dispatch:
-                    await self._run_leased(
-                        "cron_execution",
-                        "reminder-dispatch",
-                        self.reminder_dispatcher.run_due_once,
-                    )
-                    next_reminder_dispatch = now + self.reminder_dispatch_poll_seconds
                 if self.backup_service is not None and now >= next_backup:
                     await self._run_leased(
                         "cron_execution",
@@ -278,13 +230,6 @@ class WorkerRuntime:
                         self.gmail_ingestion_service.evaluate_staleness,
                     )
                     next_gmail_scan = now + self.gmail_scan_poll_seconds
-                if self.semantic_candidate_compiler is not None and now >= next_semantic_candidate:
-                    await self._run_leased(
-                        "triage_turn",
-                        "semantic-candidate",
-                        self.semantic_candidate_compiler.run_due_once,
-                    )
-                    next_semantic_candidate = now + self.semantic_candidate_poll_seconds
                 if self.daily_brief_service is not None and now >= next_daily_brief:
                     await self._run_leased(
                         "triage_turn",
@@ -292,13 +237,6 @@ class WorkerRuntime:
                         self.daily_brief_service.run_due_once,
                     )
                     next_daily_brief = now + self.daily_brief_poll_seconds
-                if self.retention_service is not None and now >= next_retention:
-                    await self._run_leased(
-                        "cron_execution",
-                        "retention",
-                        self.retention_service.run_due_once,
-                    )
-                    next_retention = now + self.retention_poll_seconds
             except Exception:
                 logger.exception("worker_iteration_failed")
             try:
@@ -329,26 +267,26 @@ class WorkerRuntime:
         coordinator = self.execution_lease_coordinator
         if coordinator is None:
             return await asyncio.to_thread(function)
-        lease_ref = await asyncio.to_thread(
+        completion_token = await asyncio.to_thread(
             coordinator.acquire,
             lease_key=f"worker:{label}:{uuid.uuid4()}",
             lease_kind=lease_kind,
         )
-        if lease_ref is None:
+        if completion_token is None:
             return None
         try:
             result = await asyncio.to_thread(function)
         except Exception as exc:
             await asyncio.to_thread(
                 coordinator.complete,
-                lease_ref,
+                completion_token,
                 retain=True,
                 metadata={"error_code": type(exc).__name__[:128]},
             )
             raise
         await asyncio.to_thread(
             coordinator.complete,
-            lease_ref,
+            completion_token,
             retain=bool(result),
         )
         return result

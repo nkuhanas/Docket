@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import or_, select
@@ -170,6 +171,7 @@ class DiscordProjectionRunner:
         *,
         message_id: str | None = None,
         projection_ref: str | None = None,
+        destination_ref: str | None = None,
     ) -> None:
         with self.session_factory.begin() as session:
             event = self._event(session, event_id, lease_token)
@@ -186,6 +188,8 @@ class DiscordProjectionRunner:
                     )
                 )
                 if delivery is not None:
+                    if destination_ref is not None:
+                        delivery.destination_ref = destination_ref
                     delivery.status = "delivered"
                     delivery.external_message_ref = (
                         _discord_message_ref(delivery.destination_ref, message_id)
@@ -213,7 +217,7 @@ class DiscordProjectionRunner:
                     ProjectionDelivery.transport == "discord",
                 )
             )
-            payload = {
+            payload: dict[str, Any] = {
                 "request_id": str(event.id),
                 "projection_id": str(projection.id),
                 "known_message_id": (
@@ -259,6 +263,9 @@ class DiscordProjectionRunner:
             lease_token,
             message_id=str(ack["message_id"]),
             projection_ref=projection_ref,
+            destination_ref=(
+                f"discord_conversation:{self.settings.discord_guild_id}:{thread_id}"
+            ),
         )
 
     def _deliver_semantic_prompt(self, event_id: uuid.UUID, lease_token: uuid.UUID) -> None:
