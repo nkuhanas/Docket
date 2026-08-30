@@ -56,6 +56,7 @@ def test_repeated_plugin_loads_share_one_process_registration_key() -> None:
     ("profile_name", "argv", "expected"),
     [
         ("default", ["hermes", "gateway", "run", "--replace"], True),
+        ("default", ["hermes", "gateway", "run"], False),
         ("docket-triage", ["hermes", "gateway", "run", "--replace"], False),
         ("default", ["hermes", "cron", "install"], False),
         ("default", ["hermes", "profiles", "reconcile"], False),

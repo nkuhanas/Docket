@@ -366,7 +366,11 @@ def _start_gateway_lifetime() -> None:
 def _owns_discord_gateway_lifetime(ctx: object) -> bool:
     """Return whether this plugin load is the supervised interactive gateway."""
     profile_name = str(getattr(ctx, "profile_name", "") or "")
-    return profile_name == "default" and sys.argv[1:3] == ["gateway", "run"]
+    return (
+        profile_name == "default"
+        and sys.argv[1:3] == ["gateway", "run"]
+        and "--replace" in sys.argv[3:]
+    )
 
 
 def _capture_operator_utterance(
