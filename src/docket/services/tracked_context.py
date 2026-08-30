@@ -9,6 +9,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from docket.config import get_settings
+from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
 from docket.domain.public_refs import parse_public_ref
 from docket.models import (
@@ -19,8 +20,11 @@ from docket.models import (
     Entity,
     EventItemLink,
     Fact,
+    InterpretedStatement,
     Item,
+    ItemSourceBinding,
     ReminderPlan,
+    Source,
     Task,
     TemporalBinding,
     TemporalCalendarProjection,
@@ -103,6 +107,135 @@ class TrackedContextService:
                 details={"item_ref": ref_id},
             )
         return item
+
+    def _source_fragments(
+        self,
+        change: Any,
+        *,
+        source_refs: list[str],
+    ) -> list[dict[str, Any]]:
+        allowed_source_refs = set(source_refs)
+        statement_refs = [
+            ref for ref in change.basis_refs if ref.startswith("stm_")
+        ]
+        if not statement_refs or not allowed_source_refs:
+            return []
+        statements = list(
+            self.session.scalars(
+                select(InterpretedStatement).where(
+                    InterpretedStatement.ref_id.in_(statement_refs)
+                )
+            )
+        )
+        sources = {
+            source.ref_id: source
+            for source in self.session.scalars(
+                select(Source).where(
+                    Source.ref_id.in_(
+                        [
+                            statement.source_ref
+                            for statement in statements
+                            if statement.source_ref is not None
+                        ]
+                    )
+                )
+            )
+        }
+        fragments: list[dict[str, Any]] = []
+        for statement in statements:
+            if (
+                statement.source_ref not in allowed_source_refs
+                or statement.source_fragment_locator is None
+            ):
+                continue
+            source = sources.get(statement.source_ref)
+            if source is None:
+                raise DocketError(
+                    code="item_source_not_found",
+                    message="An Item source-fragment statement references an unknown Source.",
+                    details={"source_ref": statement.source_ref},
+                )
+            fragments.append(
+                {
+                    "statement_ref": statement.ref_id,
+                    "source_ref": source.ref_id,
+                    "source_revision_key": (
+                        f"{source.ref_id}:{source.content_hash or 'unhashed'}"
+                    ),
+                    "source_fragment_locator": dict(statement.source_fragment_locator),
+                    "locator_hash": sha256_json(statement.source_fragment_locator),
+                    "semantic_role": statement.predicate,
+                }
+            )
+        return fragments
+
+    def _correlated_item(
+        self,
+        fragments: list[dict[str, Any]],
+    ) -> Item | None:
+        item_refs: set[str] = set()
+        for fragment in fragments:
+            binding = self.session.scalar(
+                select(ItemSourceBinding).where(
+                    ItemSourceBinding.source_ref == fragment["source_ref"],
+                    ItemSourceBinding.source_revision_key
+                    == fragment["source_revision_key"],
+                    ItemSourceBinding.locator_hash == fragment["locator_hash"],
+                    ItemSourceBinding.semantic_role == fragment["semantic_role"],
+                )
+            )
+            if binding is not None:
+                item_refs.add(binding.item_ref)
+        if len(item_refs) > 1:
+            raise DocketError(
+                code="item_source_correlation_conflict",
+                message="Exact source fragments resolve to more than one Item.",
+                details={"item_refs": sorted(item_refs)},
+            )
+        return self._item(next(iter(item_refs))) if item_refs else None
+
+    def _bind_item_fragments(
+        self,
+        item: Item,
+        fragments: list[dict[str, Any]],
+        change: Any,
+    ) -> None:
+        for fragment in fragments:
+            existing = self.session.scalar(
+                select(ItemSourceBinding).where(
+                    ItemSourceBinding.source_ref == fragment["source_ref"],
+                    ItemSourceBinding.source_revision_key
+                    == fragment["source_revision_key"],
+                    ItemSourceBinding.locator_hash == fragment["locator_hash"],
+                    ItemSourceBinding.semantic_role == fragment["semantic_role"],
+                )
+            )
+            if existing is not None:
+                if existing.item_ref != item.ref_id:
+                    raise DocketError(
+                        code="item_source_correlation_conflict",
+                        message="An exact source fragment is already bound to another Item.",
+                        details={
+                            "item_ref": item.ref_id,
+                            "bound_item_ref": existing.item_ref,
+                        },
+                    )
+                continue
+            self.session.add(
+                ItemSourceBinding(
+                    item_ref=item.ref_id,
+                    source_ref=fragment["source_ref"],
+                    source_revision_key=fragment["source_revision_key"],
+                    source_fragment_locator=fragment["source_fragment_locator"],
+                    locator_hash=fragment["locator_hash"],
+                    semantic_role=fragment["semantic_role"],
+                    basis_refs=list(
+                        dict.fromkeys(
+                            [*change.basis_refs, fragment["statement_ref"]]
+                        )
+                    ),
+                )
+            )
 
     @staticmethod
     def _page(items: list[dict[str, Any]], *, limit: int, cursor: str | None) -> dict[str, Any]:
@@ -360,6 +493,14 @@ class TrackedContextService:
             if binding_refs
             else []
         )
+        source_bindings = list(
+            self.session.scalars(
+                select(ItemSourceBinding)
+                .where(ItemSourceBinding.item_ref == item.ref_id)
+                .order_by(ItemSourceBinding.created_at)
+                .limit(50)
+            )
+        )
         result: dict[str, Any] = {
             "ok": True,
             "ref": item.ref_id,
@@ -416,6 +557,15 @@ class TrackedContextService:
                 }
                 for projection in projections
             ],
+            "source_bindings": [
+                {
+                    "source_ref": binding.source_ref,
+                    "source_revision_key": binding.source_revision_key,
+                    "source_fragment_locator": binding.source_fragment_locator,
+                    "semantic_role": binding.semantic_role,
+                }
+                for binding in source_bindings
+            ],
             "provenance_refs": list(
                 dict.fromkeys(
                     [
@@ -432,6 +582,7 @@ class TrackedContextService:
             result["facts"] = result["facts"][:20]
             result["linked_events"] = result["linked_events"][:10]
             result["calendar_projections"] = result["calendar_projections"][:10]
+            result["source_bindings"] = result["source_bindings"][:20]
             result["warnings"] = ["output_truncated"]
         return result
 
@@ -536,6 +687,61 @@ class TrackedContextService:
             self._require_context_entities(list(spec.context_entity_refs))
             if spec.parent_item_ref is not None:
                 self._item(spec.parent_item_ref)
+            fragments = self._source_fragments(
+                change,
+                source_refs=list(spec.source_refs),
+            )
+            attachment_sources = list(
+                self.session.scalars(
+                    select(Source.ref_id).where(
+                        Source.ref_id.in_(spec.source_refs),
+                        Source.source_kind == "attachment",
+                    )
+                )
+            )
+            fragment_source_refs = {
+                str(fragment["source_ref"]) for fragment in fragments
+            }
+            missing_fragment_sources = sorted(
+                set(attachment_sources) - fragment_source_refs
+            )
+            if missing_fragment_sources:
+                raise DocketError(
+                    code="item_source_fragment_required",
+                    message=(
+                        "An attachment-imported Item requires an exact derived "
+                        "source-fragment statement."
+                    ),
+                    details={"source_refs": missing_fragment_sources},
+                )
+            correlated = self._correlated_item(fragments)
+            if correlated is not None:
+                expected_identity = (
+                    spec.title,
+                    spec.kind,
+                    list(spec.context_entity_refs),
+                    spec.parent_item_ref,
+                )
+                existing_identity = (
+                    correlated.title,
+                    correlated.kind,
+                    list(correlated.context_entity_refs),
+                    correlated.parent_item_ref,
+                )
+                if (
+                    correlated.canonical_status != "active"
+                    or existing_identity != expected_identity
+                ):
+                    raise DocketError(
+                        code="item_source_correlation_conflict",
+                        message=(
+                            "The exact source fragment is already bound to an "
+                            "incompatible Item."
+                        ),
+                        details={"item_ref": correlated.ref_id},
+                    )
+                self._bind_item_fragments(correlated, fragments, change)
+                return [correlated.ref_id]
             provenance = self._provenance(changeset, change)
             item = Item(
                 title=spec.title,
@@ -552,6 +758,7 @@ class TrackedContextService:
             )
             self.session.add(item)
             self.session.flush()
+            self._bind_item_fragments(item, fragments, change)
         else:
             item = self._item(change.object_ref)
             if change.action == "retract":
@@ -615,6 +822,17 @@ class TrackedContextService:
                     )
                 )
                 if active is not None:
+                    expected_value = spec.temporal_value.model_dump(mode="json")
+                    statement_refs = {
+                        ref for ref in change.basis_refs if ref.startswith("stm_")
+                    }
+                    if (
+                        statement_refs
+                        and statement_refs.issubset(set(active.basis_refs))
+                        and set(spec.source_refs).issubset(set(active.source_refs))
+                        and active.temporal_value == expected_value
+                    ):
+                        return [active.ref_id]
                     raise DocketError(
                         code="temporal_binding_exists",
                         message=(
@@ -681,6 +899,39 @@ class TrackedContextService:
             spec = TaskInput.model_validate(change.create_spec)
             assert spec.item_ref is not None
             self._item(spec.item_ref)
+            statement_refs = {
+                ref for ref in change.basis_refs if ref.startswith("stm_")
+            }
+            exact_tasks = list(
+                self.session.scalars(
+                    select(Task).where(
+                        Task.item_ref == spec.item_ref,
+                        Task.title == spec.title,
+                        Task.task_state == spec.task_state,
+                        Task.priority == spec.priority,
+                        Task.canonical_status == spec.canonical_status,
+                    )
+                )
+            )
+            exact_source_replays = [
+                existing
+                for existing in exact_tasks
+                if statement_refs
+                and statement_refs.issubset(set(existing.basis_refs))
+                and set(spec.source_refs).issubset(set(existing.source_refs))
+                and existing.description == spec.description
+                and existing.completed_at == spec.completed_at
+            ]
+            if len(exact_source_replays) > 1:
+                raise DocketError(
+                    code="task_source_correlation_conflict",
+                    message="Exact source evidence resolves to more than one Task.",
+                    details={
+                        "task_refs": sorted(task.ref_id for task in exact_source_replays)
+                    },
+                )
+            if exact_source_replays:
+                return [exact_source_replays[0].ref_id]
             provenance = self._provenance(changeset, change)
             task = Task(
                 item_ref=spec.item_ref,
