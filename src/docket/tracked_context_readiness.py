@@ -141,6 +141,12 @@ def require_rehearsal_database(database_url: str, *, suffix: str) -> None:
         raise ValueError(f"rehearsal database must end with {suffix!r}")
 
 
+def require_cutover_database(database_url: str) -> None:
+    name = _database_name(database_url)
+    if re.fullmatch(r"docket_cutover_[a-z0-9_]+", name) is None:
+        raise ValueError("cutover database must use the docket_cutover_ namespace")
+
+
 def _refs(value: object) -> set[str]:
     refs: set[str] = set()
     if isinstance(value, str):
@@ -357,11 +363,13 @@ def export_governance_closure(
     *,
     database_url: str,
     seed_files: Iterable[Path],
+    extra_seed_refs: Iterable[str] = (),
 ) -> dict[str, Any]:
     with psycopg.connect(_psycopg_url(database_url), row_factory=dict_row) as connection:
         connection.execute("SET TRANSACTION READ ONLY")
         seeds = _seed_refs_from_files(seed_files)
         seeds.update(_artifact_seed_refs(connection))
+        seeds.update(extra_seed_refs)
         rows = _snapshot_rows(connection)
         closure, missing = compute_governance_closure(rows, seed_refs=seeds)
         available_refs = {row.ref_id for row in rows}
@@ -938,15 +946,104 @@ def _verify_governance(
     }
 
 
+def _insert_rehearsal_attachment(
+    connection: psycopg.Connection[dict[str, Any]],
+    *,
+    payload: Mapping[str, Any],
+    plaintext: bytes,
+    key: bytes,
+    now: datetime,
+) -> str:
+    attachment_ref = new_public_ref("src")
+    utterance_ref = next(
+        (
+            str(row["ref_id"])
+            for row in payload["rows"]
+            if row["table"] == "operator_utterances"
+        ),
+        "utt_00000000000000000000000000",
+    )
+    utterance_row = next(
+        (
+            dict(row["row"])
+            for row in payload["rows"]
+            if row["table"] == "operator_utterances"
+            and row["ref_id"] == utterance_ref
+        ),
+        {},
+    )
+    source_message_ref = str(
+        utterance_row.get("source_message_ref", "readiness:synthetic")
+    )
+    content_hash = hashlib.sha256(plaintext).hexdigest()
+    _insert_mapping(
+        connection,
+        "sources",
+        {
+            "id": uuid.uuid4(),
+            "ref_id": attachment_ref,
+            "source_kind": "attachment",
+            "external_ref": "readiness-fixture",
+            "observed_at": now,
+            "content_hash": content_hash,
+            "metadata_json": {"purpose": "clean_attachment_restore_rehearsal"},
+            "created_at": now,
+        },
+    )
+    _insert_mapping(
+        connection,
+        "attachment_evidence_metadata",
+        {
+            "id": uuid.uuid4(),
+            "ref_id": attachment_ref,
+            "transport": "discord",
+            "transport_attachment_ref": "readiness-fixture",
+            "source_message_ref": source_message_ref,
+            "operator_utterance_ref": utterance_ref,
+            "filename": "readiness-fixture.bin",
+            "media_type": "application/octet-stream",
+            "byte_size": len(plaintext),
+            "content_hash": content_hash,
+            "received_at": now,
+            "recorded_at": now,
+            "ingest_state": "available",
+            "retention_disposition": "retained_encrypted",
+            "derived_content_refs": [],
+        },
+    )
+    nonce = os.urandom(12)
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext, attachment_ref.encode())
+    _insert_mapping(
+        connection,
+        "encrypted_attachment_blobs",
+        {
+            "id": uuid.uuid4(),
+            "attachment_source_ref": attachment_ref,
+            "encryption_key_ref": "readiness-fixture",
+            "nonce": nonce,
+            "ciphertext": ciphertext,
+            "ciphertext_hash": hashlib.sha256(ciphertext).hexdigest(),
+            "created_at": now,
+        },
+    )
+    return attachment_ref
+
+
 def _create_clean_database(
     *,
     database_url: str,
     payload: Mapping[str, Any],
     provider_manifest: Mapping[str, Any] | None,
-    attachment_plaintext: bytes,
-    attachment_key: bytes,
+    attachment_plaintext: bytes | None,
+    attachment_key: bytes | None,
+    destination_kind: str = "rehearsal",
 ) -> dict[str, Any]:
-    require_rehearsal_database(database_url, suffix="_rehearsal")
+    if destination_kind == "rehearsal":
+        require_rehearsal_database(database_url, suffix="_rehearsal")
+    elif destination_kind == "cutover":
+        require_cutover_database(database_url)
+    else:
+        raise ValueError(f"unsupported clean destination kind: {destination_kind}")
     with psycopg.connect(_psycopg_url(database_url), row_factory=dict_row) as connection:
         existing = connection.execute(
             "SELECT count(*) AS total FROM information_schema.tables "
@@ -1006,82 +1103,17 @@ def _create_clean_database(
                 },
             )
 
-        attachment_ref = new_public_ref("src")
-        utterance_ref = next(
-            (
-                str(row["ref_id"])
-                for row in payload["rows"]
-                if row["table"] == "operator_utterances"
-            ),
-            "utt_00000000000000000000000000",
-        )
-        utterance_row = next(
-            (
-                dict(row["row"])
-                for row in payload["rows"]
-                if row["table"] == "operator_utterances"
-                and row["ref_id"] == utterance_ref
-            ),
-            {},
-        )
-        source_message_ref = str(
-            utterance_row.get("source_message_ref", "readiness:synthetic")
-        )
-        content_hash = hashlib.sha256(attachment_plaintext).hexdigest()
-        _insert_mapping(
-            connection,
-            "sources",
-            {
-                "id": uuid.uuid4(),
-                "ref_id": attachment_ref,
-                "source_kind": "attachment",
-                "external_ref": "readiness-fixture",
-                "observed_at": now,
-                "content_hash": content_hash,
-                "metadata_json": {"purpose": "clean_attachment_restore_rehearsal"},
-                "created_at": now,
-            },
-        )
-        _insert_mapping(
-            connection,
-            "attachment_evidence_metadata",
-            {
-                "id": uuid.uuid4(),
-                "ref_id": attachment_ref,
-                "transport": "discord",
-                "transport_attachment_ref": "readiness-fixture",
-                "source_message_ref": source_message_ref,
-                "operator_utterance_ref": utterance_ref,
-                "filename": "readiness-fixture.bin",
-                "media_type": "application/octet-stream",
-                "byte_size": len(attachment_plaintext),
-                "content_hash": content_hash,
-                "received_at": now,
-                "recorded_at": now,
-                "ingest_state": "available",
-                "retention_disposition": "retained_encrypted",
-                "derived_content_refs": [],
-            },
-        )
-        nonce = os.urandom(12)
-        ciphertext = AESGCM(attachment_key).encrypt(
-            nonce,
-            attachment_plaintext,
-            attachment_ref.encode(),
-        )
-        _insert_mapping(
-            connection,
-            "encrypted_attachment_blobs",
-            {
-                "id": uuid.uuid4(),
-                "attachment_source_ref": attachment_ref,
-                "encryption_key_ref": "readiness-fixture",
-                "nonce": nonce,
-                "ciphertext": ciphertext,
-                "ciphertext_hash": hashlib.sha256(ciphertext).hexdigest(),
-                "created_at": now,
-            },
-        )
+        attachment_ref: str | None = None
+        if attachment_plaintext is not None or attachment_key is not None:
+            if attachment_plaintext is None or attachment_key is None:
+                raise ValueError("attachment rehearsal requires plaintext and key together")
+            attachment_ref = _insert_rehearsal_attachment(
+                connection,
+                payload=payload,
+                plaintext=attachment_plaintext,
+                key=attachment_key,
+                now=now,
+            )
         verification = _verify_governance(connection, payload)
         restored_account_row = connection.execute(
             "SELECT count(*) FROM provider_accounts"
@@ -1096,6 +1128,27 @@ def _create_clean_database(
         "attachment_ref": attachment_ref,
         "restored_provider_accounts": restored_accounts,
     }
+
+
+def materialize_clean_cutover_database(
+    *,
+    database_url: str,
+    payload: Mapping[str, Any],
+    provider_manifest: Mapping[str, Any],
+) -> dict[str, Any]:
+    _validate_closure_payload(payload)
+    _validate_provider_manifest(provider_manifest)
+    result = _create_clean_database(
+        database_url=database_url,
+        payload=payload,
+        provider_manifest=provider_manifest,
+        attachment_plaintext=None,
+        attachment_key=None,
+        destination_kind="cutover",
+    )
+    if result.get("attachment_ref") is not None:
+        raise AssertionError("production clean materialization created rehearsal evidence")
+    return {key: value for key, value in result.items() if key != "attachment_ref"}
 
 
 def _verify_attachment_restore(
@@ -1257,6 +1310,22 @@ def _validate_closure_payload(payload: Mapping[str, Any]) -> None:
     rows = list(payload.get("rows", []))
     if payload.get("row_count") != len(rows):
         raise RuntimeError("governance closure row count does not match manifest")
+    identities: set[tuple[str, str]] = set()
+    for exported in rows:
+        identity = (str(exported.get("table")), str(exported.get("ref_id")))
+        if identity in identities:
+            raise RuntimeError(f"governance closure repeats row {identity[1]}")
+        identities.add(identity)
+        if exported.get("row_sha256") != _sha256(exported.get("row")):
+            raise RuntimeError(
+                f"governance closure row hash mismatch for {identity[1]}"
+            )
+        if "restore_hints" in exported and exported.get(
+            "restore_hints_sha256"
+        ) != _sha256(exported["restore_hints"]):
+            raise RuntimeError(
+                f"governance closure restore hint hash mismatch for {identity[1]}"
+            )
 
 
 def _validate_provider_manifest(payload: Mapping[str, Any]) -> None:
@@ -1352,6 +1421,7 @@ def _parser() -> argparse.ArgumentParser:
     export_parser = subparsers.add_parser("export-governance")
     export_parser.add_argument("--database-url", required=True)
     export_parser.add_argument("--seed-file", action="append", type=Path, default=[])
+    export_parser.add_argument("--seed-ref", action="append", default=[])
     export_parser.add_argument("--output", type=Path, required=True)
 
     provider_parser = subparsers.add_parser("provider-inventory")
@@ -1371,6 +1441,12 @@ def _parser() -> argparse.ArgumentParser:
     synthetic_parser.add_argument("--restore-url", required=True)
     synthetic_parser.add_argument("--backup", type=Path, required=True)
     synthetic_parser.add_argument("--output", type=Path, required=True)
+
+    materialize_parser = subparsers.add_parser("materialize-clean")
+    materialize_parser.add_argument("--closure", type=Path, required=True)
+    materialize_parser.add_argument("--provider-manifest", type=Path, required=True)
+    materialize_parser.add_argument("--database-url", required=True)
+    materialize_parser.add_argument("--output", type=Path, required=True)
     return parser
 
 
@@ -1380,6 +1456,7 @@ def main() -> None:
         payload = export_governance_closure(
             database_url=args.database_url,
             seed_files=args.seed_file,
+            extra_seed_refs=args.seed_ref,
         )
         _write_private_json(args.output, payload)
         print(
@@ -1428,6 +1505,16 @@ def main() -> None:
                 }
             )
         )
+    elif args.command == "materialize-clean":
+        verification = materialize_clean_cutover_database(
+            database_url=args.database_url,
+            payload=json.loads(args.closure.read_text(encoding="utf-8")),
+            provider_manifest=json.loads(
+                args.provider_manifest.read_text(encoding="utf-8")
+            ),
+        )
+        _write_private_json(args.output, verification)
+        print(json.dumps(verification, sort_keys=True))
 
 
 if __name__ == "__main__":

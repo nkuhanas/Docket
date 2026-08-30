@@ -1,19 +1,24 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
 from docket.domain.production_reset import production_reset_authorization_text
+from docket.domain.public_refs import new_public_ref
 from docket.production_cutover import (
     RESET_PRESERVED_FAMILIES,
     RESET_REMOVED_TABLES,
+    _provider_state_payload,
     authorization_binding,
     build_reset_manifest,
+    validate_governance_closure_extension,
     validate_reset_manifest,
     verify_manifest_artifacts,
+    verify_supporting_artifacts,
 )
-from docket.tracked_context_readiness import _sha256, _synthetic_payload
+from docket.tracked_context_readiness import ClosureRow, _sha256, _synthetic_payload
 
 
 def _provider_manifest() -> dict[str, object]:
@@ -71,7 +76,15 @@ def _rehearsal_evidence(
     return payload
 
 
-def _build(tmp_path: Path) -> tuple[dict[str, object], Path]:
+def _build(
+    tmp_path: Path,
+) -> tuple[
+    dict[str, object],
+    Path,
+    dict[str, object],
+    dict[str, object],
+    dict[str, object],
+]:
     backup = tmp_path / "tracked-context-pre-reset.dump"
     backup.write_bytes(b"PGDMP\x01verified-fixture")
     matching_restore = tmp_path / "matching-image-restore.txt"
@@ -90,13 +103,13 @@ def _build(tmp_path: Path) -> tuple[dict[str, object], Path]:
         provider_manifest=provider,
         rehearsal_evidence=rehearsal,
     )
-    return manifest, backup
+    return manifest, backup, closure, provider, rehearsal
 
 
 def test_reset_manifest_binds_exact_backup_revision_and_reset_boundary(
     tmp_path: Path,
 ) -> None:
-    manifest, backup = _build(tmp_path)
+    manifest, backup, *_artifacts = _build(tmp_path)
 
     validate_reset_manifest(manifest)
     verify_manifest_artifacts(
@@ -124,13 +137,13 @@ def test_reset_manifest_binds_exact_backup_revision_and_reset_boundary(
 def test_reset_manifest_tampering_and_wrong_artifacts_fail_closed(
     tmp_path: Path,
 ) -> None:
-    manifest, backup = _build(tmp_path)
+    manifest, backup, *_artifacts = _build(tmp_path)
     manifest["removed_tables"] = list(RESET_REMOVED_TABLES[:-1])
 
     with pytest.raises(RuntimeError, match="removal boundary"):
         validate_reset_manifest(manifest)
 
-    manifest, backup = _build(tmp_path)
+    manifest, backup, *_artifacts = _build(tmp_path)
     backup.write_bytes(b"PGDMP\x01changed")
     with pytest.raises(RuntimeError, match="hash does not match"):
         verify_manifest_artifacts(
@@ -138,7 +151,7 @@ def test_reset_manifest_tampering_and_wrong_artifacts_fail_closed(
             backup_path=backup,
             deployment_revision="a" * 40,
         )
-    manifest, backup = _build(tmp_path)
+    manifest, backup, *_artifacts = _build(tmp_path)
     with pytest.raises(RuntimeError, match="revision does not match"):
         verify_manifest_artifacts(
             manifest,
@@ -166,4 +179,123 @@ def test_reset_manifest_rejects_non_custom_backup(tmp_path: Path) -> None:
             closure_payload=closure,
             provider_manifest=provider,
             rehearsal_evidence=_rehearsal_evidence(closure, provider),
+        )
+
+
+def test_supporting_artifacts_are_bound_to_reset_manifest(tmp_path: Path) -> None:
+    manifest, _backup, closure, provider, rehearsal = _build(tmp_path)
+
+    verify_supporting_artifacts(
+        manifest,
+        closure_payload=closure,
+        provider_manifest=provider,
+        rehearsal_evidence=rehearsal,
+    )
+
+    rehearsal["evidence_sha256"] = "0" * 64
+    with pytest.raises(RuntimeError, match="evidence hash"):
+        verify_supporting_artifacts(
+            manifest,
+            closure_payload=closure,
+            provider_manifest=provider,
+            rehearsal_evidence=rehearsal,
+        )
+
+
+def test_provider_state_comparison_ignores_only_generated_clean_account_ref() -> None:
+    left = _provider_manifest()
+    left["accounts"] = [
+        {
+            "clean_account_ref": new_public_ref("acct"),
+            "pre_reset_account_ref": "src_pre_reset",
+            "provider": "google",
+            "external_account_id": "operator@example.com",
+        }
+    ]
+    right = deepcopy(left)
+    right["generated_at"] = "2026-08-30T02:00:00+00:00"
+    right["manifest_sha256"] = "f" * 64
+    right["accounts"][0]["clean_account_ref"] = new_public_ref("acct")
+
+    assert _provider_state_payload(left) == _provider_state_payload(right)
+
+    right["accounts"][0]["external_account_id"] = "changed@example.com"
+    assert _provider_state_payload(left) != _provider_state_payload(right)
+
+
+def test_final_governance_closure_extends_without_changing_sealed_rows() -> None:
+    sealed = _synthetic_payload()
+    final = deepcopy(sealed)
+    utterance_ref = new_public_ref("utt")
+    decision_ref = new_public_ref("dec")
+    audit_ref = new_public_ref("aud")
+    added = [
+        ClosureRow(
+            "operator_utterances",
+            utterance_ref,
+            {"ref_id": utterance_ref, "verbatim_text": "exact reset authority"},
+        ).export(),
+        ClosureRow(
+            "decisions",
+            decision_ref,
+            {
+                "ref_id": decision_ref,
+                "decision_kind": "production_reset_authorization",
+                "basis_refs": [utterance_ref],
+            },
+        ).export(),
+        ClosureRow(
+            "audit_events",
+            audit_ref,
+            {
+                "ref_id": audit_ref,
+                "event_type": "decision.production_reset_authorization_recorded",
+                "primary_ref": decision_ref,
+                "basis_refs": [utterance_ref],
+            },
+        ).export(),
+    ]
+    final["rows"].extend(added)
+    final["seed_refs"].append(decision_ref)
+    final["row_count"] = len(final["rows"])
+    final["closure_sha256"] = _sha256(
+        {
+            key: value
+            for key, value in final.items()
+            if key not in {"generated_at", "closure_sha256"}
+        }
+    )
+    authority = {
+        "decision_ref": decision_ref,
+        "utterance_ref": utterance_ref,
+        "audit_ref": audit_ref,
+    }
+
+    verification = validate_governance_closure_extension(
+        sealed_closure=sealed,
+        final_closure=final,
+        authority_evidence=authority,
+    )
+
+    assert verification["authority_decision_ref"] == decision_ref
+    assert set(verification["added_refs"]) == {
+        utterance_ref,
+        decision_ref,
+        audit_ref,
+    }
+
+    final["rows"][0]["row"]["verbatim_text"] = "changed after sealing"
+    final["rows"][0]["row_sha256"] = _sha256(final["rows"][0]["row"])
+    final["closure_sha256"] = _sha256(
+        {
+            key: value
+            for key, value in final.items()
+            if key not in {"generated_at", "closure_sha256"}
+        }
+    )
+    with pytest.raises(RuntimeError, match="sealed governance row changed"):
+        validate_governance_closure_extension(
+            sealed_closure=sealed,
+            final_closure=final,
+            authority_evidence=authority,
         )

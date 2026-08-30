@@ -15,6 +15,7 @@ from docket.tracked_context_readiness import (
     _validate_closure_payload,
     _validate_provider_manifest,
     compute_governance_closure,
+    require_cutover_database,
     require_rehearsal_database,
 )
 
@@ -147,6 +148,16 @@ def test_rehearsal_database_guard_rejects_non_rehearsal_targets() -> None:
         require_rehearsal_database(
             "postgresql+psycopg://docket:test@postgres/docket",
             suffix="_rehearsal",
+        )
+
+
+def test_cutover_database_guard_requires_disposable_namespace() -> None:
+    require_cutover_database(
+        "postgresql+psycopg://docket:test@postgres/docket_cutover_20260830"
+    )
+    with pytest.raises(ValueError, match="docket_cutover_"):
+        require_cutover_database(
+            "postgresql+psycopg://docket:test@postgres/docket"
         )
 
 
