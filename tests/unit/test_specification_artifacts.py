@@ -76,20 +76,19 @@ def test_tracked_context_candidate_requires_exact_specification_dag() -> None:
     assert all(item.architecture_authority is True for item in artifact.prerequisites)
 
 
-def test_signoff_enablement_does_not_activate_clean_namespace() -> None:
-    assert PUBLIC_REF_PREFIXES.isdisjoint(
-        {
-            "acct",
-            "bentry",
-            "citem",
-            "conf",
-            "opt",
-            "rem",
-            "sattempt",
-            "task",
-            "time",
-            "tproj",
-            "trace",
-        }
-    )
-    assert {"cnf", "item", "lease", "satt"} <= PUBLIC_REF_PREFIXES
+def test_signed_implementation_activates_only_the_clean_namespace() -> None:
+    assert {
+        "acct",
+        "bentry",
+        "citem",
+        "conf",
+        "item",
+        "opt",
+        "rem",
+        "sattempt",
+        "task",
+        "time",
+        "tproj",
+        "trace",
+    } <= PUBLIC_REF_PREFIXES
+    assert PUBLIC_REF_PREFIXES.isdisjoint({"cnf", "dproj", "itm", "lease", "prompt", "satt"})
