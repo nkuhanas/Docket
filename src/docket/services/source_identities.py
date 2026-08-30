@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from docket.models import Entity, IdentityHandle, SenderIdentityEmail, SourceItem
+from docket.models import Entity, GmailSource, IdentityHandle, SenderIdentityEmail
 from docket.services.entity_resolution import DeterministicIdentityResolutionService
 from docket.services.registry import normalize_identity_value
 
@@ -103,7 +103,7 @@ def associated_sender_emails(
 
 def gmail_sender_identity(
     session: Session,
-    source: SourceItem,
+    source: GmailSource,
     *,
     materialize: bool,
 ) -> dict[str, Any] | None:
