@@ -373,6 +373,10 @@ wait_for_discord_ingress() {
 }
 
 database_continuity() {
+    if [[ -n "$(compose ps -q docket)" ]]; then
+        compose exec -T docket ./.venv/bin/docket-continuity "$@"
+        return
+    fi
     compose run --rm --no-deps docket ./.venv/bin/docket-continuity "$@"
 }
 

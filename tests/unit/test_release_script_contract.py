@@ -24,6 +24,7 @@ def test_deploy_drains_execution_but_preserves_queued_durable_work() -> None:
     script = Path("scripts/docket").read_text(encoding="utf-8")
     deploy = script.split("\ndeploy() {", 1)[1].split("\n}\n", 1)[0]
     ingress_deploy = script.split("\ndeploy_ingress() {", 1)[1].split("\n}\n", 1)[0]
+    continuity = script.split("\ndatabase_continuity() {", 1)[1].split("\n}\n", 1)[0]
 
     assert "where status = 'running'" in script
     assert "where status = 'delivering'" in script
@@ -34,6 +35,11 @@ def test_deploy_drains_execution_but_preserves_queued_durable_work() -> None:
     assert "wait_for_database_drain" in deploy
     assert deploy.index("wait_for_database_drain") < deploy.index("wait_for_hermes_drain")
     assert "compose exec -T --user hermes hermes python" in script
+    assert "compose exec -T docket ./.venv/bin/docket-continuity" in continuity
+    assert "compose run --rm --no-deps docket ./.venv/bin/docket-continuity" in continuity
+    assert continuity.index("compose exec -T docket") < continuity.index(
+        "compose run --rm --no-deps docket"
+    )
     assert '"$state" == "draining 0"' in script
     assert '"$state" == "running 0"' not in script
     drained = deploy.index('wait_for_operational_idle')
