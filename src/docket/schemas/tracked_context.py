@@ -176,6 +176,48 @@ class ItemInput(StrictModel):
         return self
 
 
+class ItemPatchInput(StrictModel):
+    title: str | None = Field(default=None, min_length=1, max_length=512)
+    kind: str | None = Field(
+        default=None,
+        pattern=r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$",
+        max_length=128,
+    )
+    description: str | None = Field(default=None, max_length=16_000)
+    context_entity_refs: list[EntityRef] | None = Field(default=None, max_length=100)
+    parent_item_ref: ItemRef | None = None
+    parent_item_change_id: str | None = Field(default=None, min_length=1, max_length=128)
+    canonical_status: CanonicalStatus | None = None
+    metadata_json: dict[str, object] | None = None
+    source_refs: list[SourceRef] | None = Field(default=None, max_length=100)
+
+    @field_validator("context_entity_refs", "source_refs")
+    @classmethod
+    def refs_are_unique(cls, values: list[str] | None) -> list[str] | None:
+        return validate_refs(values) if values is not None else None
+
+    @field_validator("metadata_json")
+    @classmethod
+    def metadata_is_bounded(
+        cls, value: dict[str, object] | None
+    ) -> dict[str, object] | None:
+        if value is not None:
+            encoded = json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode(
+                "utf-8"
+            )
+            if len(encoded) > 16 * 1024:
+                raise ValueError("metadata_json exceeds 16 KiB UTF-8")
+        return value
+
+    @model_validator(mode="after")
+    def patch_is_exact(self) -> ItemPatchInput:
+        if self.parent_item_ref is not None and self.parent_item_change_id is not None:
+            raise ValueError("parent item uses a ref or same-ChangeSet change id, not both")
+        if not self.model_fields_set:
+            raise ValueError("item patch requires at least one field")
+        return self
+
+
 class TemporalBindingInput(StrictModel):
     subject_ref: ItemRef | TaskRef | None = None
     subject_change_id: str | None = Field(default=None, min_length=1, max_length=128)
@@ -204,6 +246,35 @@ class TemporalBindingInput(StrictModel):
         return self
 
 
+class TemporalBindingPatchInput(StrictModel):
+    role: TemporalRole | None = None
+    binding_key: str | None = Field(
+        default=None, pattern=r"^[a-z0-9][a-z0-9._-]{0,127}$"
+    )
+    temporal_value: TemporalValue | None = None
+    canonical_status: CanonicalStatus | None = None
+    source_refs: list[SourceRef] | None = Field(default=None, max_length=100)
+
+    @field_validator("source_refs")
+    @classmethod
+    def refs_are_unique(cls, values: list[str] | None) -> list[str] | None:
+        return validate_refs(values) if values is not None else None
+
+    @model_validator(mode="after")
+    def patch_is_exact(self) -> TemporalBindingPatchInput:
+        if not self.model_fields_set:
+            raise ValueError("temporal binding patch requires at least one field")
+        role = self.role
+        value = self.temporal_value
+        if role is not None and value is not None:
+            is_interval = value.kind in {"date_interval", "datetime_interval"}
+            if role == "window" and not is_interval:
+                raise ValueError("window requires an interval temporal value")
+            if role != "window" and is_interval:
+                raise ValueError("point temporal roles require date or datetime values")
+        return self
+
+
 class TaskInput(StrictModel):
     item_ref: ItemRef | None = None
     item_change_id: str | None = Field(default=None, min_length=1, max_length=128)
@@ -226,6 +297,40 @@ class TaskInput(StrictModel):
             raise ValueError("task requires one item ref or change id")
         if (self.task_state == "completed") != (self.completed_at is not None):
             raise ValueError("completed_at is present exactly when task_state is completed")
+        return self
+
+
+class TaskPatchInput(StrictModel):
+    item_ref: ItemRef | None = None
+    item_change_id: str | None = Field(default=None, min_length=1, max_length=128)
+    title: str | None = Field(default=None, min_length=1, max_length=512)
+    description: str | None = Field(default=None, max_length=16_000)
+    task_state: TaskState | None = None
+    priority: TaskPriority | None = None
+    canonical_status: CanonicalStatus | None = None
+    completed_at: datetime | None = None
+    source_refs: list[SourceRef] | None = Field(default=None, max_length=100)
+
+    @field_validator("source_refs")
+    @classmethod
+    def refs_are_unique(cls, values: list[str] | None) -> list[str] | None:
+        return validate_refs(values) if values is not None else None
+
+    @model_validator(mode="after")
+    def patch_is_exact(self) -> TaskPatchInput:
+        if self.item_ref is not None and self.item_change_id is not None:
+            raise ValueError("task item uses a ref or change id, not both")
+        if not self.model_fields_set:
+            raise ValueError("task patch requires at least one field")
+        if self.task_state == "completed" and self.completed_at is None:
+            raise ValueError("completed task patch requires completed_at")
+        if self.task_state in {
+            "not_started",
+            "in_progress",
+            "blocked",
+            "cancelled",
+        } and ("completed_at" not in self.model_fields_set or self.completed_at is not None):
+            raise ValueError("non-completed task patch explicitly clears completed_at")
         return self
 
 
@@ -275,6 +380,25 @@ class TemporalCalendarProjectionInput(StrictModel):
         return self
 
 
+class TemporalCalendarProjectionPatchInput(StrictModel):
+    lane_ref: LaneRef | None = None
+    lane_change_id: str | None = Field(default=None, min_length=1, max_length=128)
+    display_policy: CalendarDisplayPolicy | None = None
+    reminder_plan_ref: ReminderPlanRef | None = None
+    reminder_plan_change_id: str | None = Field(default=None, min_length=1, max_length=128)
+    enabled: bool | None = None
+
+    @model_validator(mode="after")
+    def patch_is_exact(self) -> TemporalCalendarProjectionPatchInput:
+        if self.lane_ref is not None and self.lane_change_id is not None:
+            raise ValueError("lane update uses a ref or change id, not both")
+        if self.reminder_plan_ref is not None and self.reminder_plan_change_id is not None:
+            raise ValueError("reminder plan update uses a ref or change id, not both")
+        if not self.model_fields_set:
+            raise ValueError("temporal projection patch requires at least one field")
+        return self
+
+
 class ReminderPlanInput(StrictModel):
     subject_ref: EventRef | TemporalBindingRef | None = None
     subject_change_id: str | None = Field(default=None, min_length=1, max_length=128)
@@ -308,4 +432,47 @@ class ReminderPlanInput(StrictModel):
             raise ValueError("date trigger local time and timezone are supplied together")
         if self.timezone is not None:
             _zone(self.timezone)
+        return self
+
+
+class ReminderPlanPatchInput(StrictModel):
+    subject_ref: EventRef | TemporalBindingRef | None = None
+    subject_change_id: str | None = Field(default=None, min_length=1, max_length=128)
+    delivery_channels: list[Literal["docket_queue", "google_popup"]] | None = Field(
+        default=None, min_length=1, max_length=2
+    )
+    lead_seconds: list[int] | None = Field(default=None, min_length=1, max_length=20)
+    date_trigger_local_time: time | None = None
+    timezone: str | None = None
+    canonical_status: CanonicalStatus | None = None
+
+    @field_validator("delivery_channels")
+    @classmethod
+    def channels_are_unique(cls, values: list[str] | None) -> list[str] | None:
+        if values is not None and len(values) != len(set(values)):
+            raise ValueError("delivery channels must not contain duplicates")
+        return values
+
+    @field_validator("lead_seconds")
+    @classmethod
+    def leads_are_positive_and_unique(cls, values: list[int] | None) -> list[int] | None:
+        if values is not None:
+            if any(value < 0 for value in values) or len(values) != len(set(values)):
+                raise ValueError("lead seconds must be nonnegative and unique")
+            return sorted(values, reverse=True)
+        return None
+
+    @model_validator(mode="after")
+    def patch_is_exact(self) -> ReminderPlanPatchInput:
+        if self.subject_ref is not None and self.subject_change_id is not None:
+            raise ValueError("reminder subject uses a ref or change id, not both")
+        date_fields = {"date_trigger_local_time", "timezone"}.intersection(
+            self.model_fields_set
+        )
+        if date_fields and date_fields != {"date_trigger_local_time", "timezone"}:
+            raise ValueError("date trigger local time and timezone are updated together")
+        if self.timezone is not None:
+            _zone(self.timezone)
+        if not self.model_fields_set:
+            raise ValueError("reminder plan patch requires at least one field")
         return self

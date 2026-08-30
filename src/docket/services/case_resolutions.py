@@ -10,18 +10,17 @@ from docket.config import get_settings
 from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
 from docket.models import (
-    Account,
     AttentionCase,
     AttentionCaseRevision,
     AuditEvent,
     CaseItem,
     ChangeSet,
     Decision,
+    GmailSource,
     IntentSession,
     IntentTurn,
     InterpretedStatement,
-    QueueItem,
-    SourceItem,
+    ProviderAccount,
 )
 from docket.models.base import utc_now
 from docket.schemas.authority import AttentionCaseResolutionInput
@@ -118,10 +117,10 @@ class AttentionCaseResolutionService:
             )
         )
         by_ref = {item.ref_id: item for item in items}
-        visible_refs = set(revision.item_refs)
+        visible_refs = set(revision.case_item_refs)
         errors: list[dict[str, Any]] = []
         explicit = {
-            disposition.item_ref: disposition.disposition
+            disposition.case_item_ref: disposition.disposition
             for disposition in change.item_dispositions
         }
         for item_ref in explicit:
@@ -130,7 +129,7 @@ class AttentionCaseResolutionService:
                 errors.append(
                     {
                         "code": "attention_case_item_revision_mismatch",
-                        "details": {"case_ref": case.ref_id, "item_ref": item_ref},
+                        "details": {"case_ref": case.ref_id, "case_item_ref": item_ref},
                     }
                 )
             elif item.status != "open":
@@ -139,7 +138,7 @@ class AttentionCaseResolutionService:
                         "code": "attention_case_item_not_open",
                         "details": {
                             "case_ref": case.ref_id,
-                            "item_ref": item_ref,
+                            "case_item_ref": item_ref,
                             "status": item.status,
                         },
                     }
@@ -157,7 +156,7 @@ class AttentionCaseResolutionService:
                 for item in items
                 if item.status == "open"
                 and item.ref_id not in explicit
-                and item.resolution_role in {"required", "legacy_unspecified"}
+                and item.resolution_role == "required"
             )
             if remaining_blockers:
                 errors.append(
@@ -165,7 +164,7 @@ class AttentionCaseResolutionService:
                         "code": "attention_case_items_unresolved",
                         "details": {
                             "case_ref": case.ref_id,
-                            "remaining_required_item_refs": remaining_blockers,
+                            "remaining_required_case_item_refs": remaining_blockers,
                             "next": "clarify_remaining_required_items_together",
                         },
                     }
@@ -189,8 +188,8 @@ class AttentionCaseResolutionService:
                 "case_ref": change.object_ref,
                 "case_revision_ref": change.case_revision_ref,
                 "case_outcome": change.case_outcome,
-                "operator_item_dispositions": dict(explicit),
-                "system_not_pursued_item_refs": not_pursued_refs,
+                "operator_case_item_dispositions": dict(explicit),
+                "system_not_pursued_case_item_refs": not_pursued_refs,
                 "created_by_changeset_ref": changeset.ref_id,
             },
         )
@@ -201,10 +200,10 @@ class AttentionCaseResolutionService:
     def _correlation_scope(self, case: AttentionCase) -> dict[str, Any]:
         exact_sources: list[dict[str, str]] = []
         for source in self.session.scalars(
-            select(SourceItem).where(SourceItem.ref_id.in_(case.source_refs))
+            select(GmailSource).where(GmailSource.ref_id.in_(case.source_refs))
         ):
             account_ref = self.session.scalar(
-                select(Account.ref_id).where(Account.id == source.account_id)
+                select(ProviderAccount.ref_id).where(ProviderAccount.id == source.account_id)
             )
             conversation = source.external_parent_id or source.external_object_id
             if account_ref is None or not conversation:
@@ -233,7 +232,7 @@ class AttentionCaseResolutionService:
             item.ref_id
             for item in items
             if explicit.get(item.ref_id) == "resolved"
-            and item.resolution_role in {"required", "legacy_unspecified"}
+            and item.resolution_role == "required"
         }
         if not resolved_required_refs:
             return []
@@ -336,7 +335,7 @@ class AttentionCaseResolutionService:
             )
         )
         explicit = {
-            disposition.item_ref: disposition.disposition
+            disposition.case_item_ref: disposition.disposition
             for disposition in change.item_dispositions
         }
         explicitly_changed: list[str] = []
@@ -354,12 +353,12 @@ class AttentionCaseResolutionService:
                     continue
                 if (
                     change.case_outcome == "resolved"
-                    and item.resolution_role in {"required", "legacy_unspecified"}
+                    and item.resolution_role == "required"
                 ):
                     raise DocketError(
                         code="attention_case_items_unresolved",
                         message="Required CaseItems remain open.",
-                        details={"remaining_required_item_refs": [item.ref_id]},
+                        details={"remaining_required_case_item_refs": [item.ref_id]},
                     )
                 item.status = "not_pursued"
                 item.version += 1
@@ -384,15 +383,6 @@ class AttentionCaseResolutionService:
             case.status = change.case_outcome
             case.resolved_at = now
             case.resolution_decision_ref = resolution_decision.ref_id
-            if case.queue_item_id is not None:
-                queue_item = self.session.get(QueueItem, case.queue_item_id)
-                if queue_item is not None:
-                    queue_item.status = "completed"
-                    queue_item.resolved_at = now
-                    queue_item.resolution_code = (
-                        f"attention_case_{change.case_outcome}"
-                    )
-                    queue_item.version += 1
 
         affected_refs = [
             case.ref_id,
@@ -428,13 +418,13 @@ class AttentionCaseResolutionService:
                     "changeset_ref": changeset.ref_id,
                     "case_revision_ref": change.case_revision_ref,
                     "case_outcome": change.case_outcome,
-                    "operator_item_dispositions": explicit,
+                    "operator_case_item_dispositions": explicit,
                     "system_closure_rule": (
                         "supporting_items_not_pursued_on_terminal_case_closure"
                         if not_pursued_refs
                         else None
                     ),
-                    "system_not_pursued_item_refs": not_pursued_refs,
+                    "system_not_pursued_case_item_refs": not_pursued_refs,
                     "resolution_decision_ref": resolution_decision.ref_id,
                     "semantic_decision_refs": [
                         decision.ref_id for decision in semantic_decisions
@@ -442,8 +432,8 @@ class AttentionCaseResolutionService:
                     "content_hash": sha256_json(
                         {
                             "case_outcome": change.case_outcome,
-                            "operator_item_dispositions": explicit,
-                            "system_not_pursued_item_refs": not_pursued_refs,
+                            "operator_case_item_dispositions": explicit,
+                            "system_not_pursued_case_item_refs": not_pursued_refs,
                         }
                     ),
                 },

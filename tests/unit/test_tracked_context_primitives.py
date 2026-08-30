@@ -15,6 +15,7 @@ from docket.domain.public_refs import (
     public_ref_type,
 )
 from docket.models import BriefEntry, CaseItem, Conflict, ProviderAccount, SemanticRequestAttempt
+from docket.schemas.authority import OperatorChangeSetContent
 from docket.schemas.tracked_context import (
     DateTemporalValue,
     ItemInput,
@@ -145,3 +146,92 @@ def test_task_requires_exactly_one_item_and_exact_completion_time() -> None:
         completed_at=datetime(2026, 9, 25, 18, 30),
     )
     assert task.item_change_id == "create-problem-set-4"
+
+
+def test_model_facing_changeset_uses_typed_tracked_context_variants() -> None:
+    utterance_ref = _ref("utt")
+    content = OperatorChangeSetContent.model_validate(
+        {
+            "basis_refs": [utterance_ref],
+            "tracked_context_changes": [
+                {
+                    "mutation_type": "item_create",
+                    "change_id": "problem-set-4",
+                    "action": "create",
+                    "object_type": "item",
+                    "affected_fields": ["title", "kind"],
+                    "basis_refs": [utterance_ref],
+                    "create_spec": {
+                        "title": "Problem Set 4",
+                        "kind": "academic.assignment",
+                    },
+                },
+                {
+                    "mutation_type": "task_create",
+                    "change_id": "complete-problem-set-4",
+                    "action": "create",
+                    "object_type": "task",
+                    "affected_fields": ["item_ref", "task_state"],
+                    "basis_refs": [utterance_ref],
+                    "create_spec": {
+                        "item_change_id": "problem-set-4",
+                        "title": "Complete Problem Set 4",
+                    },
+                },
+                {
+                    "mutation_type": "temporal_binding_create",
+                    "change_id": "problem-set-4-due",
+                    "action": "create",
+                    "object_type": "temporal_binding",
+                    "affected_fields": ["subject_ref", "role", "temporal_value"],
+                    "basis_refs": [utterance_ref],
+                    "create_spec": {
+                        "subject_change_id": "complete-problem-set-4",
+                        "role": "due_by",
+                        "temporal_value": {
+                            "kind": "date",
+                            "date": "2026-10-03",
+                            "timezone": "America/Los_Angeles",
+                        },
+                    },
+                },
+            ],
+        }
+    )
+
+    assert [
+        change.mutation_type for change in content.tracked_context_changes
+    ] == ["item_create", "task_create", "temporal_binding_create"]
+
+
+def test_model_facing_changeset_rejects_legacy_shapes_and_provider_intents() -> None:
+    utterance_ref = _ref("utt")
+    legacy = {
+        "basis_refs": [utterance_ref],
+        "tracked_context_changes": [
+            {
+                "change_id": "item",
+                "action": "create",
+                "object_type": "item",
+                "affected_fields": ["title"],
+                "basis_refs": [utterance_ref],
+                "create_spec": {"title": "Unqualified legacy payload"},
+            }
+        ],
+    }
+    with pytest.raises(ValidationError, match="mutation_type"):
+        OperatorChangeSetContent.model_validate(legacy)
+
+    with pytest.raises(ValidationError, match="provider_intents"):
+        OperatorChangeSetContent.model_validate(
+            {
+                **legacy,
+                "tracked_context_changes": [
+                    {
+                        **legacy["tracked_context_changes"][0],
+                        "mutation_type": "item_create",
+                    }
+                ],
+                "provider_intents": [],
+            }
+        )

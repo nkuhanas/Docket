@@ -12,7 +12,6 @@ from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError, IdempotencyConflict
 from docket.domain.public_refs import is_public_ref, parse_public_ref
 from docket.models import (
-    Account,
     Affiliation,
     AuditEvent,
     CalendarLane,
@@ -26,6 +25,7 @@ from docket.models import (
     IntentTurn,
     LaneRoutingDecision,
     OperatorUtterance,
+    ProviderAccount,
     ProviderEventBinding,
     Relationship,
     SemanticRequest,
@@ -71,6 +71,15 @@ _GROUP_TYPES: dict[str, frozenset[str]] = {
     "preference_changes": frozenset({"preference"}),
     "lane_changes": frozenset({"calendar_lane", "lane_routing_decision"}),
     "event_changes": frozenset({"canonical_event"}),
+    "tracked_context_changes": frozenset(
+        {
+            "item",
+            "temporal_binding",
+            "task",
+            "temporal_calendar_projection",
+            "reminder_plan",
+        }
+    ),
     "resolution_changes": frozenset({"attention_case_resolution"}),
 }
 
@@ -85,18 +94,27 @@ _OBJECT_PREFIXES: dict[str, str] = {
     "calendar_lane": "lane",
     "lane_routing_decision": "route",
     "canonical_event": "evt",
+    "item": "item",
+    "temporal_binding": "time",
+    "task": "task",
+    "temporal_calendar_projection": "tproj",
+    "reminder_plan": "rem",
     "attention_case_resolution": "case",
 }
 
 
 def _content_payload(content: ChangeSetContent) -> dict[str, Any]:
-    payload = content.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
+    # Mutation discriminators are defaulted literals in the Pydantic variants,
+    # but they are required durable structure. Never strip them from a stored
+    # ChangeSet snapshot and later attempt to infer them from object/action.
+    payload = content.model_dump(mode="json", exclude_none=True)
     payload.setdefault("expected_versions", {})
     for key in (
         "registry_changes",
         "preference_changes",
         "lane_changes",
         "event_changes",
+        "tracked_context_changes",
         "resolution_changes",
         "provider_intents",
     ):
@@ -218,6 +236,20 @@ def _dependency_expected_types(change: ChangeInput, field_path: str) -> set[str]
         return {"lane_routing_decision"}
     if field in {"event_change_id"}:
         return {"canonical_event"}
+    if field in {"parent_item_change_id", "item_change_id", "item_change_ids"}:
+        return {"item"}
+    if field in {
+        "subject_change_id",
+    } and getattr(change, "object_type", "") == "temporal_binding":
+        return {"item", "task"}
+    if field in {
+        "temporal_binding_change_id",
+        "realizes_temporal_binding_change_id",
+        "realizes_temporal_binding_change_ids",
+    }:
+        return {"temporal_binding"}
+    if field in {"reminder_plan_change_id"}:
+        return {"reminder_plan"}
     if field in {
         "associated_email_change_id",
         "associated_email_change_ids",
@@ -285,6 +317,7 @@ def _content_for_conflict_effects(request: ConflictResolve) -> ChangeSetContent 
         "preference_changes": [],
         "lane_changes": [],
         "event_changes": [],
+        "tracked_context_changes": [],
     }
     for effect in request.canonical_effects:
         if effect.object_type in _GROUP_TYPES["registry_changes"]:
@@ -295,6 +328,8 @@ def _content_for_conflict_effects(request: ConflictResolve) -> ChangeSetContent 
             groups["lane_changes"].append(effect)
         elif effect.object_type in _GROUP_TYPES["event_changes"]:
             groups["event_changes"].append(effect)
+        elif effect.object_type in _GROUP_TYPES["tracked_context_changes"]:
+            groups["tracked_context_changes"].append(effect)
         else:  # pragma: no cover - the discriminated schema prevents this branch
             raise DocketError(
                 code="unsupported_conflict_effect",
@@ -580,7 +615,7 @@ class ChangeSetService:
                 lane_needs_configuration = lane.calendar_id is None
             if account_id is None:
                 continue
-            account = self.session.get(Account, account_id)
+            account = self.session.get(ProviderAccount, account_id)
             if (
                 account is None
                 or not account.enabled
@@ -733,6 +768,7 @@ class ChangeSetService:
                 preference_changes=list(changeset.preference_changes),
                 lane_changes=list(changeset.lane_changes),
                 event_changes=list(changeset.event_changes),
+                tracked_context_changes=list(changeset.tracked_context_changes),
                 resolution_changes=list(changeset.resolution_changes),
                 provider_intents=list(changeset.provider_intents),
                 parameter_hash=parameter_hash,
@@ -744,7 +780,6 @@ class ChangeSetService:
                 ),
             )
         )
-        intent_session.state = "ready"
         intent_session.semantic_state = "ready"
         intent_session.commit_state = "pending"
         affected_refs = (
@@ -754,7 +789,6 @@ class ChangeSetService:
         changeset.state = "committed"
         changeset.committed_at = utc_now()
         changeset.version += 1
-        intent_session.state = "committed"
         intent_session.semantic_state = "ready"
         intent_session.commit_state = "committed"
         intent_session.committed_changeset_ref = changeset.ref_id
@@ -790,6 +824,7 @@ class ChangeSetService:
                 "preference_changes": changeset.preference_changes,
                 "lane_changes": changeset.lane_changes,
                 "event_changes": changeset.event_changes,
+                "tracked_context_changes": changeset.tracked_context_changes,
                 "resolution_changes": changeset.resolution_changes,
                 "provider_intents": changeset.provider_intents,
             }
@@ -804,6 +839,7 @@ class ChangeSetService:
         changeset.preference_changes = payload["preference_changes"]
         changeset.lane_changes = payload["lane_changes"]
         changeset.event_changes = payload["event_changes"]
+        changeset.tracked_context_changes = payload["tracked_context_changes"]
         changeset.resolution_changes = payload["resolution_changes"]
         changeset.provider_intents = payload["provider_intents"]
 
@@ -823,6 +859,7 @@ class ChangeSetService:
                     "preference_changes",
                     "lane_changes",
                     "event_changes",
+                    "tracked_context_changes",
                     "resolution_changes",
                     "provider_intents",
                 )
@@ -837,6 +874,7 @@ class ChangeSetService:
             preference_changes=payload["preference_changes"],
             lane_changes=payload["lane_changes"],
             event_changes=payload["event_changes"],
+            tracked_context_changes=payload["tracked_context_changes"],
             resolution_changes=payload["resolution_changes"],
             provider_intents=payload["provider_intents"],
             parameter_hash=parameter_hash,
@@ -1353,7 +1391,8 @@ class ChangeSetService:
                 binding = (
                     self.session.scalar(
                         select(ProviderEventBinding).where(
-                            ProviderEventBinding.canonical_event_id == event.id,
+                            ProviderEventBinding.canonical_target_ref == event.ref_id,
+                            ProviderEventBinding.target_kind == "event",
                             ProviderEventBinding.status == "active",
                         )
                     )
@@ -1380,7 +1419,13 @@ class ChangeSetService:
                         target = provenance.get(change.object_ref)
                     except DocketError:
                         target = None
-                if isinstance(target, Fact | Affiliation):
+                if isinstance(target, Fact):
+                    target_entity = self.session.scalar(
+                        select(Entity).where(Entity.ref_id == target.subject_ref)
+                    )
+                    if target_entity is not None:
+                        target_refs.add(target_entity.ref_id)
+                elif isinstance(target, Affiliation):
                     target_entity = self.session.get(Entity, target.subject_entity_id)
                     if target_entity is not None:
                         target_refs.add(target_entity.ref_id)
@@ -1506,7 +1551,6 @@ class ChangeSetService:
             }
             codes = {str(error["code"]) for error in errors}
             if codes & semantic_codes:
-                intent_session.state = "needs_clarification"
                 intent_session.semantic_state = "needs_clarification"
                 intent_session.commit_state = (
                     "blocked_conflict" if "open_conflict" in codes else "blocked_version"
@@ -1541,14 +1585,12 @@ class ChangeSetService:
                     ],
                 ]
             else:
-                intent_session.state = "ready"
                 intent_session.semantic_state = "ready"
                 intent_session.commit_state = (
                     "blocked_version" if "version_conflict" in codes else "blocked_validation"
                 )
         else:
             changeset.state = "validated"
-            intent_session.state = "ready"
             intent_session.semantic_state = "ready"
             intent_session.commit_state = "not_attempted"
             intent_session.blocking_clarifications = []
@@ -1573,7 +1615,10 @@ class ChangeSetService:
                     "current_version": intent_session.version,
                 },
             )
-        if intent_session.state in {"committed", "cancelled", "superseded"}:
+        if (
+            intent_session.semantic_state in {"cancelled", "superseded"}
+            or intent_session.commit_state == "committed"
+        ):
             raise DocketError(
                 code="intent_session_closed",
                 message="A closed IntentSession cannot compile another ChangeSet.",
@@ -1772,7 +1817,11 @@ class ChangeSetService:
                 },
             )
         intent_session = self.session.get(IntentSession, changeset.intent_session_id)
-        if intent_session is None or intent_session.state != "ready":
+        if (
+            intent_session is None
+            or intent_session.semantic_state != "ready"
+            or intent_session.blocking_clarifications
+        ):
             raise DocketError(
                 code="intent_not_resolved",
                 message="ChangeSet IntentSession does not satisfy Resolved Intent.",
@@ -1815,7 +1864,6 @@ class ChangeSetService:
         changeset.committed_at = utc_now()
         changeset.version += 1
         changeset.validation_errors = []
-        intent_session.state = "committed"
         intent_session.semantic_state = "ready"
         intent_session.commit_state = "committed"
         intent_session.committed_changeset_ref = changeset.ref_id
@@ -1856,6 +1904,7 @@ class ChangeSetService:
                 "preferences": len(changeset.preference_changes),
                 "lanes": len(changeset.lane_changes),
                 "events": len(changeset.event_changes),
+                "tracked_context": len(changeset.tracked_context_changes),
                 "resolutions": len(changeset.resolution_changes),
                 "provider_intents": len(changeset.provider_intents),
             },

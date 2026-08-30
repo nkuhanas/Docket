@@ -26,12 +26,11 @@ from docket.models.base import Base, utc_now
 class IntentSession(Base):
     __tablename__ = "intent_sessions"
     __table_args__ = (
-        CheckConstraint(
-            "state IN ('open', 'needs_clarification', 'ready', 'committed', "
-            "'cancelled', 'superseded')",
-            name="ck_intent_sessions_state",
+        Index(
+            "ix_intent_sessions_conversation_semantic_state",
+            "conversation_ref",
+            "semantic_state",
         ),
-        Index("ix_intent_sessions_conversation_state", "conversation_ref", "state"),
         Index("ix_intent_sessions_source_utterance", "source_utterance_ref"),
         CheckConstraint(
             "semantic_state IN ('open', 'needs_clarification', 'ready', "
@@ -63,7 +62,6 @@ class IntentSession(Base):
     blocking_clarifications: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, default=list, nullable=False
     )
-    state: Mapped[str] = mapped_column(String(32), default="open", nullable=False)
     semantic_state: Mapped[str] = mapped_column(String(32), default="open", nullable=False)
     commit_state: Mapped[str] = mapped_column(
         String(32), default="not_attempted", nullable=False
@@ -169,6 +167,9 @@ class ChangeSet(Base):
     event_changes: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, default=list, nullable=False
     )
+    tracked_context_changes: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
     resolution_changes: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, default=list, nullable=False
     )
@@ -222,6 +223,9 @@ class ChangeSetRevision(Base):
         JSON, default=list, nullable=False
     )
     event_changes: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    tracked_context_changes: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, default=list, nullable=False
     )
     resolution_changes: Mapped[list[dict[str, Any]]] = mapped_column(

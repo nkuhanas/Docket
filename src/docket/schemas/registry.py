@@ -6,6 +6,7 @@ from typing import Annotated, Any, Literal
 from pydantic import Field, field_validator, model_validator
 
 from docket.schemas.common import PublicRef, StrictModel
+from docket.schemas.tracked_context import ItemRef
 
 EntityRef = Annotated[str, Field(pattern=r"^ent_[0-9A-HJKMNP-TV-Z]{26}$")]
 EventRef = Annotated[str, Field(pattern=r"^evt_[0-9A-HJKMNP-TV-Z]{26}$")]
@@ -239,7 +240,7 @@ class RelationshipCreateSpec(StrictModel):
 
 
 class FactCreateSpec(StrictModel):
-    subject_ref: EntityRef | None = None
+    subject_ref: EntityRef | ItemRef | None = None
     subject_change_id: str | None = None
     predicate: str = Field(min_length=1, max_length=255)
     value_json: Any
