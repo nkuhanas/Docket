@@ -262,3 +262,35 @@ def test_import_scope_has_exact_safe_default_and_explicit_authority_shape() -> N
         authority_statement_refs=[_ref("stm")],
     )
     assert explicit.authorized_effects == ["item", "task"]
+
+
+def test_tracked_context_import_partition_is_bounded() -> None:
+    utterance_ref = _ref("utt")
+    base_change = {
+        "mutation_type": "item_create",
+        "action": "create",
+        "object_type": "item",
+        "affected_fields": ["title"],
+        "basis_refs": [utterance_ref],
+        "create_spec": {"title": "Imported row"},
+    }
+    accepted = OperatorChangeSetContent.model_validate(
+        {
+            "basis_refs": [utterance_ref],
+            "tracked_context_changes": [
+                {**base_change, "change_id": f"row-{index}"} for index in range(250)
+            ],
+        }
+    )
+    assert len(accepted.tracked_context_changes) == 250
+
+    with pytest.raises(ValidationError, match="at most 250"):
+        OperatorChangeSetContent.model_validate(
+            {
+                "basis_refs": [utterance_ref],
+                "tracked_context_changes": [
+                    {**base_change, "change_id": f"row-{index}"}
+                    for index in range(251)
+                ],
+            }
+        )
