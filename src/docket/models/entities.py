@@ -25,25 +25,21 @@ class Entity(TimestampMixin, Base):
     __tablename__ = "entities"
     __table_args__ = (
         CheckConstraint(
-            "entity_class IN ('institution', 'organization', 'course', 'person', "
-            "'course_section', 'place', 'location', 'project', 'service')",
-            name="ck_entities_class",
+            "entity_kind IN ('institution', 'organization', 'course', 'person', "
+            "'course_section', 'place', 'project')",
+            name="ck_entities_kind",
         ),
         CheckConstraint(
-            "status IN ('active', 'merged', 'historical', 'retracted')",
-            name="ck_entities_status",
-        ),
-        CheckConstraint(
-            "registration_state IN ('registered', 'historical')",
-            name="ck_entities_registration_state",
+            "canonical_status IN ('active', 'historical', 'retracted')",
+            name="ck_entities_canonical_status",
         ),
         Index(
             "uq_entities_active_identity",
-            "entity_class",
+            "entity_kind",
             "normalized_name",
             unique=True,
-            postgresql_where=text("status = 'active'"),
-            sqlite_where=text("status = 'active'"),
+            postgresql_where=text("canonical_status = 'active'"),
+            sqlite_where=text("canonical_status = 'active'"),
         ),
     )
 
@@ -51,22 +47,17 @@ class Entity(TimestampMixin, Base):
     ref_id: Mapped[str] = mapped_column(
         String(40), unique=True, nullable=False, default=lambda: new_public_ref("ent")
     )
-    entity_class: Mapped[str] = mapped_column(String(32), nullable=False)
-    canonical_name: Mapped[str] = mapped_column(String(512), nullable=False)
+    entity_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(512), nullable=False)
     normalized_name: Mapped[str] = mapped_column(String(512), nullable=False)
-    status: Mapped[str] = mapped_column(String(16), default="active", nullable=False)
-    attributes: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
-    authority: Mapped[str] = mapped_column(String(32), nullable=False)
-    registration_state: Mapped[str] = mapped_column(
-        String(32), default="registered", nullable=False
+    canonical_status: Mapped[str] = mapped_column(
+        String(16), default="active", nullable=False
     )
+    attributes_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     basis_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     decision_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     source_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     created_by_changeset_ref: Mapped[str] = mapped_column(String(40), nullable=False)
-    merged_into_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("entities.id", ondelete="RESTRICT")
-    )
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
 
@@ -97,7 +88,7 @@ class EntityResolution(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    entity_class: Mapped[str] = mapped_column(String(32), nullable=False)
+    entity_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     mention: Mapped[str] = mapped_column(String(512), nullable=False)
     normalized_mention: Mapped[str] = mapped_column(String(512), nullable=False)
     state: Mapped[str] = mapped_column(String(16), nullable=False)

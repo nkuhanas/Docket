@@ -21,7 +21,8 @@ from docket.models import (
     IdentityHandle,
     Interaction,
     InteractionParticipant,
-    OrganizationProfile,
+    Item,
+    OrganizationInstitutionProfile,
     PersonProfile,
     Relationship,
     SenderIdentityEmail,
@@ -30,8 +31,9 @@ from docket.models.base import utc_now
 from docket.schemas.registry import (
     AffiliationCreateSpec,
     EntityCreateSpec,
+    EntityPatchSpec,
     FactCreateSpec,
-    IdentityHandleCreateSpec,
+    IdentityHandleOnlyCreateSpec,
     InteractionCreateSpec,
     RelationshipCreateSpec,
 )
@@ -63,6 +65,7 @@ class RegistryService:
     def handlers(self) -> dict[str, RegistryHandler]:
         return {
             "entity": self.apply_entity,
+            "identity_handle": self.apply_identity_handle,
             "identity_binding": self.apply_identity_handle,
             "affiliation": self.apply_affiliation,
             "relationship": self.apply_relationship,
@@ -93,12 +96,12 @@ class RegistryService:
             "created_by_changeset_ref": changeset.ref_id,
         }
 
-    def _entity(self, ref_id: str, *, registered: bool = True) -> Entity:
+    def _entity(self, ref_id: str, *, active: bool = True) -> Entity:
         entity = self.session.scalar(select(Entity).where(Entity.ref_id == ref_id))
-        if entity is None or (registered and entity.registration_state != "registered"):
+        if entity is None or (active and entity.canonical_status != "active"):
             raise DocketError(
-                code="registered_entity_not_found",
-                message="A required registered Entity public reference was not found.",
+                code="active_entity_not_found",
+                message="A required active Entity public reference was not found.",
                 details={"entity_ref": ref_id},
             )
         return entity
@@ -262,7 +265,7 @@ class RegistryService:
             parent = (
                 self._entity(spec.parent_entity_ref) if spec.parent_entity_ref is not None else None
             )
-            if parent is not None and parent.entity_class not in {
+            if parent is not None and parent.entity_kind not in {
                 "organization",
                 "institution",
             }:
@@ -272,9 +275,9 @@ class RegistryService:
                         "Institutional hierarchy parents must be Organizations or Institutions."
                     ),
                 )
-            organization_profile = self.session.get(OrganizationProfile, entity.id)
+            organization_profile = self.session.get(OrganizationInstitutionProfile, entity.id)
             if organization_profile is None:
-                organization_profile = OrganizationProfile(
+                organization_profile = OrganizationInstitutionProfile(
                     entity_id=entity.id,
                     entity_kind=spec.entity_kind,
                 )
@@ -296,9 +299,9 @@ class RegistryService:
             candidates = list(
                 self.session.scalars(
                     select(Entity).where(
-                        Entity.entity_class == spec.entity_kind,
+                        Entity.entity_kind == spec.entity_kind,
                         Entity.normalized_name == normalized_name,
-                        Entity.status.in_(("active", "provisional")),
+                        Entity.canonical_status == "active",
                     )
                 )
             )
@@ -319,32 +322,19 @@ class RegistryService:
                         ),
                         details={"existing_ref": entity.ref_id, "planned_ref": spec.ref_id},
                     )
-                if entity.registration_state == "registered":
-                    self._upsert_profile(entity, spec)
-                    return [entity.ref_id]
-                entity.status = "active"
-                entity.registration_state = "registered"
-                entity.authority = "operator_utterance"
-                entity.basis_refs = list(change.basis_refs)
-                entity.decision_refs = self._provenance(changeset, change)["decision_refs"]
-                entity.source_refs = self._provenance(changeset, change)["source_refs"]
-                entity.created_by_changeset_ref = changeset.ref_id
-                entity.provenance_status = "complete"
-                entity.version += 1
+                self._upsert_profile(entity, spec)
+                return [entity.ref_id]
             else:
                 provenance = self._provenance(changeset, change)
                 entity_values: dict[str, Any] = {}
                 if spec.ref_id is not None:
                     entity_values["ref_id"] = spec.ref_id
                 entity = Entity(
-                    entity_class=spec.entity_kind,
-                    canonical_name=spec.display_name.strip(),
+                    entity_kind=spec.entity_kind,
+                    display_name=spec.display_name.strip(),
                     normalized_name=normalized_name,
-                    status="active",
-                    attributes={},
-                    authority="operator_utterance",
-                    registration_state="registered",
-                    provenance_status="complete",
+                    canonical_status="active",
+                    attributes_json={},
                     **provenance,
                     **entity_values,
                 )
@@ -364,29 +354,15 @@ class RegistryService:
             raise DocketError(code="entity_ref_required", message="Entity update requires a ref.")
         entity = self._entity(change.object_ref)
         if change.action == "retract":
-            entity.status = "archived"
-            entity.registration_state = "historical"
+            entity.canonical_status = "retracted"
         elif change.action in {"update", "supersede"}:
-            allowed = {"display_name", "registration_state"}
-            unknown = set(change.payload) - allowed
-            if unknown:
-                raise DocketError(
-                    code="invalid_entity_patch",
-                    message="Entity patch contains unsupported fields.",
-                    details={"fields": sorted(unknown)},
-                )
-            display_name = change.payload.get("display_name")
+            patch = EntityPatchSpec.model_validate(change.payload)
+            display_name = patch.display_name
             if display_name is not None:
-                entity.canonical_name = str(display_name).strip()
+                entity.display_name = display_name.strip()
                 entity.normalized_name = normalize_registry_text(str(display_name))
-            registration_state = change.payload.get("registration_state")
-            if registration_state is not None:
-                if registration_state not in {"registered", "historical"}:
-                    raise DocketError(
-                        code="invalid_registration_state",
-                        message="Canonical Entity state must be registered or historical.",
-                    )
-                entity.registration_state = str(registration_state)
+            if patch.canonical_status is not None:
+                entity.canonical_status = patch.canonical_status
         else:
             raise DocketError(code="unsupported_entity_action", message="Unsupported action.")
         entity.version += 1
@@ -407,7 +383,7 @@ class RegistryService:
     ) -> list[str]:
         handle: IdentityHandle
         if change.action == "create":
-            spec = IdentityHandleCreateSpec.model_validate(change.create_spec)
+            spec = IdentityHandleOnlyCreateSpec.model_validate(change.create_spec)
             normalized = normalize_identity_value(spec.handle_type, spec.value)
             existing = self.session.scalar(
                 select(IdentityHandle).where(
@@ -424,15 +400,6 @@ class RegistryService:
                             "existing_ref": existing.ref_id,
                             "planned_ref": spec.ref_id,
                         },
-                    )
-                if spec.entity_ref is not None and (
-                    existing.entity_id is None
-                    or self._entity(spec.entity_ref).id != existing.entity_id
-                ):
-                    raise DocketError(
-                        code="identity_binding_conflict",
-                        message="IdentityHandle already exists with another binding state.",
-                        details={"identity_ref": existing.ref_id},
                     )
                 if spec.associated_email_refs:
                     active_email_ids = set(
@@ -456,7 +423,6 @@ class RegistryService:
                             details={"identity_ref": existing.ref_id},
                         )
                 return [existing.ref_id]
-            entity = self._entity(spec.entity_ref) if spec.entity_ref is not None else None
             provenance = self._provenance(changeset, change, extra_sources=list(spec.source_refs))
             handle_values: dict[str, Any] = {}
             if spec.ref_id is not None:
@@ -465,25 +431,15 @@ class RegistryService:
                 handle_type=spec.handle_type.casefold(),
                 value=spec.value,
                 normalized_value=normalized,
-                entity_id=entity.id if entity is not None else None,
-                binding_rule=spec.binding_rule,
-                binding_basis_refs=list(change.basis_refs) if entity is not None else [],
-                status="bound" if entity is not None else "unbound",
+                entity_id=None,
+                binding_rule=None,
+                binding_basis_refs=[],
+                status="unbound",
                 **provenance,
                 **handle_values,
             )
             self.session.add(handle)
             self.session.flush()
-            if entity is not None and spec.binding_rule is not None:
-                self.session.add(
-                    IdentityBinding(
-                        identity_handle_id=handle.id,
-                        entity_id=entity.id,
-                        binding_rule=spec.binding_rule,
-                        status="active",
-                        **self._provenance(changeset, change),
-                    )
-                )
             affected_refs = [handle.ref_id]
             for email_ref in spec.associated_email_refs:
                 affected_refs.append(
@@ -721,7 +677,7 @@ class RegistryService:
                 )
             subject = self._entity(spec.subject_ref)
             organization = self._entity(spec.organization_ref)
-            if organization.entity_class not in {"organization", "institution"}:
+            if organization.entity_kind not in {"organization", "institution"}:
                 raise DocketError(
                     code="invalid_affiliation_target",
                     message="Affiliation target must be an Organization or Institution.",
@@ -782,8 +738,20 @@ class RegistryService:
                     code="create_reference_unresolved",
                     message="Fact dependency was not resolved before execution.",
                 )
+            subject_prefix, _payload = parse_public_ref(spec.subject_ref)
+            subject = (
+                self._entity(spec.subject_ref)
+                if subject_prefix == "ent"
+                else self.session.scalar(select(Item).where(Item.ref_id == spec.subject_ref))
+            )
+            if subject is None:
+                raise DocketError(
+                    code="fact_subject_not_found",
+                    message="Fact subject public reference was not found.",
+                    details={"subject_ref": spec.subject_ref},
+                )
             return Fact(
-                subject_entity_id=self._entity(spec.subject_ref).id,
+                subject_ref=spec.subject_ref,
                 predicate=spec.predicate,
                 value_json=spec.value_json,
                 valid_from=spec.valid_from,
@@ -815,7 +783,7 @@ class RegistryService:
         place = self._entity(spec.place_ref) if spec.place_ref is not None else None
         for organization_ref in spec.organization_refs:
             organization = self._entity(organization_ref)
-            if organization.entity_class not in {"organization", "institution"}:
+            if organization.entity_kind not in {"organization", "institution"}:
                 raise DocketError(
                     code="invalid_interaction_organization",
                     message="Interaction organization refs must identify institutions.",

@@ -49,12 +49,8 @@ class TriageRun(Base):
 class ContextPacket(Base):
     __tablename__ = "context_packets"
     __table_args__ = (
-        UniqueConstraint(
-            "triage_run_id", "source_ref", name="uq_context_packets_run_source"
-        ),
-        CheckConstraint(
-            "serialized_bytes <= 32768", name="ck_context_packets_byte_budget"
-        ),
+        UniqueConstraint("triage_run_id", "source_ref", name="uq_context_packets_run_source"),
+        CheckConstraint("serialized_bytes <= 32768", name="ck_context_packets_byte_budget"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -112,9 +108,7 @@ class AttentionCase(TimestampMixin, Base):
 class AttentionCaseRevision(Base):
     __tablename__ = "attention_case_revisions"
     __table_args__ = (
-        UniqueConstraint(
-            "attention_case_id", "revision", name="uq_attention_case_revision"
-        ),
+        UniqueConstraint("attention_case_id", "revision", name="uq_attention_case_revision"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -149,7 +143,7 @@ class CaseItem(TimestampMixin, Base):
             "item_type IN ('person_resolution', 'organization_resolution', "
             "'identity_resolution', 'affiliation_candidate', "
             "'relationship_candidate', 'fact_candidate', 'event_candidate', "
-            "'item_candidate', 'task_candidate', 'temporal_candidate', "
+            "'item_candidate', 'task_candidate', 'temporal_binding_candidate', "
             "'lane_resolution', 'preference_match', 'decision_required', "
             "'canonical_transition', 'canonical_conflict')",
             name="ck_case_items_type",
@@ -162,9 +156,7 @@ class CaseItem(TimestampMixin, Base):
             "resolution_role IN ('required', 'supporting')",
             name="ck_case_items_resolution_role",
         ),
-        UniqueConstraint(
-            "attention_case_id", "item_key", name="uq_case_items_case_key"
-        ),
+        UniqueConstraint("attention_case_id", "item_key", name="uq_case_items_case_key"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -177,6 +169,7 @@ class CaseItem(TimestampMixin, Base):
     item_key: Mapped[str] = mapped_column(String(128), nullable=False)
     item_type: Mapped[str] = mapped_column(String(64), nullable=False)
     resolution_role: Mapped[str] = mapped_column(String(32), nullable=False)
+    canonical_consequence_class: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(16), default="open", nullable=False)
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     candidate_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
@@ -228,9 +221,7 @@ class BriefEntry(Base):
 class DailyBriefCaseMembership(Base):
     __tablename__ = "daily_brief_case_memberships"
     __table_args__ = (
-        UniqueConstraint(
-            "brief_id", "attention_case_id", name="uq_daily_brief_case_membership"
-        ),
+        UniqueConstraint("brief_id", "attention_case_id", name="uq_daily_brief_case_membership"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)

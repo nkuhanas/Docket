@@ -9,17 +9,23 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from docket.domain.errors import DocketError
+from docket.domain.public_refs import parse_public_ref
 from docket.models import (
     Affiliation,
+    CanonicalEvent,
     Entity,
     EntityAlias,
+    EventItemLink,
     Fact,
     IdentityHandle,
     Interaction,
     InteractionParticipant,
-    OrganizationProfile,
+    Item,
+    OrganizationInstitutionProfile,
     PersonProfile,
     Relationship,
+    Task,
+    TemporalBinding,
 )
 from docket.models.base import utc_now
 from docket.services.registry import normalize_registry_text
@@ -35,11 +41,10 @@ class NetworkQueryService:
         entity = self.session.scalar(
             select(Entity).where(
                 Entity.ref_id == ref_id,
-                Entity.registration_state == "registered",
-                Entity.status == "active",
+                Entity.canonical_status == "active",
             )
         )
-        if entity is None or (kinds is not None and entity.entity_class not in kinds):
+        if entity is None or (kinds is not None and entity.entity_kind not in kinds):
             raise DocketError(
                 code="registered_entity_not_found",
                 message="A requested registered Entity was not found.",
@@ -49,18 +54,12 @@ class NetworkQueryService:
 
     def _entity_by_id(self, entity_id: Any) -> Entity | None:
         entity = self.session.get(Entity, entity_id)
-        if (
-            entity is None
-            or entity.registration_state != "registered"
-            or entity.status != "active"
-        ):
+        if entity is None or entity.canonical_status != "active":
             return None
         return entity
 
     @staticmethod
-    def _page(
-        items: list[dict[str, Any]], *, limit: int, cursor: str | None
-    ) -> dict[str, Any]:
+    def _page(items: list[dict[str, Any]], *, limit: int, cursor: str | None) -> dict[str, Any]:
         try:
             offset = int(cursor or "0")
         except ValueError as exc:
@@ -132,9 +131,7 @@ class NetworkQueryService:
             values.pop()
             trimmed.add(path)
         if trimmed:
-            bounded["warnings"] = [
-                f"output_truncated:{path}" for path in sorted(trimmed)
-            ]
+            bounded["warnings"] = [f"output_truncated:{path}" for path in sorted(trimmed)]
         return bounded
 
     def _handles(self, entity: Entity) -> list[IdentityHandle]:
@@ -177,15 +174,14 @@ class NetworkQueryService:
     ) -> dict[str, Any]:
         normalized = normalize_registry_text(query)
         statement = select(Entity).where(
-            Entity.registration_state == "registered",
-            Entity.status == "active",
+            Entity.canonical_status == "active",
         )
         if entity_kinds:
-            statement = statement.where(Entity.entity_class.in_(entity_kinds))
+            statement = statement.where(Entity.entity_kind.in_(entity_kinds))
         direct = list(
             self.session.scalars(
                 statement.where(Entity.normalized_name.contains(normalized)).order_by(
-                    Entity.canonical_name
+                    Entity.display_name
                 )
             )
         )
@@ -197,15 +193,13 @@ class NetworkQueryService:
         by_id = {entity.id: entity for entity in direct}
         for alias in aliases:
             entity = self._entity_by_id(alias.entity_id)
-            if entity is not None and (
-                not entity_kinds or entity.entity_class in entity_kinds
-            ):
+            if entity is not None and (not entity_kinds or entity.entity_kind in entity_kinds):
                 by_id[entity.id] = entity
         ranked = sorted(
             by_id.values(),
             key=lambda item: (
                 0 if item.normalized_name == normalized else 1,
-                item.canonical_name.casefold(),
+                item.display_name.casefold(),
             ),
         )
         projected = []
@@ -214,8 +208,8 @@ class NetworkQueryService:
             projected.append(
                 {
                     "ref": entity.ref_id,
-                    "type": entity.entity_class,
-                    "display_name": entity.canonical_name,
+                    "type": entity.entity_kind,
+                    "display_name": entity.display_name,
                     "identity_summary": ", ".join(
                         f"{item.handle_type}:{item.value}" for item in handles[:3]
                     )
@@ -227,24 +221,26 @@ class NetworkQueryService:
 
     def _affiliation_projection(self, item: Affiliation) -> dict[str, Any]:
         organization = self._entity_by_id(item.organization_entity_id)
-        return self._bounded_context({
-            "ref": item.ref_id,
-            "organization": (
-                {
-                    "ref": organization.ref_id,
-                    "name": organization.canonical_name,
-                    "type": organization.entity_class,
-                }
-                if organization is not None
-                else None
-            ),
-            "role": item.role,
-            "domain": item.domain,
-            "valid_from": item.valid_from.isoformat() if item.valid_from else None,
-            "valid_to": item.valid_to.isoformat() if item.valid_to else None,
-            "status": item.status,
-            "basis_refs": item.basis_refs,
-        })
+        return self._bounded_context(
+            {
+                "ref": item.ref_id,
+                "organization": (
+                    {
+                        "ref": organization.ref_id,
+                        "name": organization.display_name,
+                        "type": organization.entity_kind,
+                    }
+                    if organization is not None
+                    else None
+                ),
+                "role": item.role,
+                "domain": item.domain,
+                "valid_from": item.valid_from.isoformat() if item.valid_from else None,
+                "valid_to": item.valid_to.isoformat() if item.valid_to else None,
+                "status": item.status,
+                "basis_refs": item.basis_refs,
+            }
+        )
 
     def _relationship_projection(
         self, item: Relationship, *, perspective: Entity
@@ -255,27 +251,29 @@ class NetworkQueryService:
             else item.subject_entity_id
         )
         counterpart = self._entity_by_id(counterpart_id)
-        return self._bounded_context({
-            "ref": item.ref_id,
-            "counterpart": (
-                {
-                    "ref": counterpart.ref_id,
-                    "name": counterpart.canonical_name,
-                    "type": counterpart.entity_class,
-                }
-                if counterpart is not None
-                else None
-            ),
-            "direction": (
-                "outgoing" if item.subject_entity_id == perspective.id else "incoming"
-            ),
-            "relationship_type": item.relationship_type,
-            "context": item.context,
-            "valid_from": item.valid_from.isoformat() if item.valid_from else None,
-            "valid_to": item.valid_to.isoformat() if item.valid_to else None,
-            "status": item.status,
-            "basis_refs": item.basis_refs,
-        })
+        return self._bounded_context(
+            {
+                "ref": item.ref_id,
+                "counterpart": (
+                    {
+                        "ref": counterpart.ref_id,
+                        "name": counterpart.display_name,
+                        "type": counterpart.entity_kind,
+                    }
+                    if counterpart is not None
+                    else None
+                ),
+                "direction": (
+                    "outgoing" if item.subject_entity_id == perspective.id else "incoming"
+                ),
+                "relationship_type": item.relationship_type,
+                "context": item.context,
+                "valid_from": item.valid_from.isoformat() if item.valid_from else None,
+                "valid_to": item.valid_to.isoformat() if item.valid_to else None,
+                "status": item.status,
+                "basis_refs": item.basis_refs,
+            }
+        )
 
     def _recent_interactions(self, entity: Entity, *, limit: int = 10) -> list[dict[str, Any]]:
         ids = select(InteractionParticipant.interaction_id).where(
@@ -326,7 +324,7 @@ class NetworkQueryService:
         facts = list(
             self.session.scalars(
                 select(Fact)
-                .where(Fact.subject_entity_id == person.id)
+                .where(Fact.subject_ref == person.ref_id)
                 .order_by(Fact.status, Fact.predicate, Fact.created_at.desc())
             )
         )
@@ -334,7 +332,7 @@ class NetworkQueryService:
             "ok": True,
             "ref": person.ref_id,
             "type": "person",
-            "display_name": person.canonical_name,
+            "display_name": person.display_name,
             "preferred_name": profile.preferred_name if profile else None,
             "pronouns": profile.pronouns if profile else None,
             "is_operator": bool(profile and profile.is_operator),
@@ -358,8 +356,7 @@ class NetworkQueryService:
                 if item.status != "active"
             ],
             "relationships": [
-                self._relationship_projection(item, perspective=person)
-                for item in relationships
+                self._relationship_projection(item, perspective=person) for item in relationships
             ],
             "current_facts": [
                 {
@@ -398,10 +395,8 @@ class NetworkQueryService:
         }
 
     def organization_context(self, organization_ref: str) -> dict[str, Any]:
-        organization = self._entity(
-            organization_ref, kinds={"organization", "institution"}
-        )
-        profile = self.session.get(OrganizationProfile, organization.id)
+        organization = self._entity(organization_ref, kinds={"organization", "institution"})
+        profile = self.session.get(OrganizationInstitutionProfile, organization.id)
         parent = (
             self._entity_by_id(profile.parent_entity_id)
             if profile is not None and profile.parent_entity_id is not None
@@ -409,8 +404,8 @@ class NetworkQueryService:
         )
         children = list(
             self.session.scalars(
-                select(OrganizationProfile).where(
-                    OrganizationProfile.parent_entity_id == organization.id
+                select(OrganizationInstitutionProfile).where(
+                    OrganizationInstitutionProfile.parent_entity_id == organization.id
                 )
             )
         )
@@ -435,21 +430,21 @@ class NetworkQueryService:
         return {
             "ok": True,
             "ref": organization.ref_id,
-            "type": organization.entity_class,
-            "display_name": organization.canonical_name,
+            "type": organization.entity_kind,
+            "display_name": organization.display_name,
             "organization_type": profile.organization_type if profile else None,
             "description": profile.description if profile else None,
             "hierarchy": {
                 "parent": (
-                    {"ref": parent.ref_id, "name": parent.canonical_name}
+                    {"ref": parent.ref_id, "name": parent.display_name}
                     if parent is not None
                     else None
                 ),
                 "children": [
                     {
                         "ref": child_entity.ref_id,
-                        "name": child_entity.canonical_name,
-                        "type": child_entity.entity_class,
+                        "name": child_entity.display_name,
+                        "type": child_entity.entity_kind,
                     }
                     for child in children
                     if (child_entity := self._entity_by_id(child.entity_id)) is not None
@@ -458,7 +453,7 @@ class NetworkQueryService:
             "known_people": [
                 {
                     "ref": person.ref_id,
-                    "name": person.canonical_name,
+                    "name": person.display_name,
                     "affiliation_ref": item.ref_id,
                     "role": item.role,
                     "domain": item.domain,
@@ -502,9 +497,8 @@ class NetworkQueryService:
         people = list(
             self.session.scalars(
                 select(Entity).where(
-                    Entity.entity_class == "person",
-                    Entity.registration_state == "registered",
-                    Entity.status == "active",
+                    Entity.entity_kind == "person",
+                    Entity.canonical_status == "active",
                 )
             )
         )
@@ -528,9 +522,12 @@ class NetworkQueryService:
                     code="operator_entity_not_found",
                     message="Course-sharing queries require the canonical Operator Person.",
                 )
+            operator_entity_ref = self.session.scalar(
+                select(Entity.ref_id).where(Entity.id == operator_profile.entity_id)
+            )
             operator_course_facts = self.session.scalars(
                 select(Fact).where(
-                    Fact.subject_entity_id == operator_profile.entity_id,
+                    Fact.subject_ref == operator_entity_ref,
                     Fact.status == "active",
                     Fact.predicate.in_(("course", "course_ref", "course_section")),
                 )
@@ -551,8 +548,8 @@ class NetworkQueryService:
             ):
                 continue
             if current_role is not None and not any(
-                item.role and normalize_registry_text(current_role)
-                in normalize_registry_text(item.role)
+                item.role
+                and normalize_registry_text(current_role) in normalize_registry_text(item.role)
                 for item in affiliations
             ):
                 continue
@@ -572,15 +569,15 @@ class NetworkQueryService:
             ):
                 continue
             if known_through is not None and not any(
-                item.context and normalize_registry_text(known_through)
-                in normalize_registry_text(item.context)
+                item.context
+                and normalize_registry_text(known_through) in normalize_registry_text(item.context)
                 for item in relationships
             ):
                 continue
             facts = list(
                 self.session.scalars(
                     select(Fact).where(
-                        Fact.subject_entity_id == person.id,
+                        Fact.subject_ref == person.ref_id,
                         Fact.status == "active",
                     )
                 )
@@ -612,7 +609,7 @@ class NetworkQueryService:
             matches.append(
                 {
                     "ref": person.ref_id,
-                    "display_name": person.canonical_name,
+                    "display_name": person.display_name,
                     "affiliation_refs": [item.ref_id for item in affiliations],
                     "relationship_refs": [item.ref_id for item in relationships],
                     "matched_facts": {
@@ -641,8 +638,8 @@ class NetworkQueryService:
                 continue
             nodes[entity.ref_id] = {
                 "ref": entity.ref_id,
-                "type": entity.entity_class,
-                "display_name": entity.canonical_name,
+                "type": entity.entity_kind,
+                "display_name": entity.display_name,
                 "depth": current_depth,
             }
             if current_depth >= depth:
@@ -684,14 +681,14 @@ class NetworkQueryService:
                 other = self._entity_by_id(other_id)
                 if other is not None:
                     neighbors.append((other, "affiliated_with", affiliation.ref_id))
-            profile = self.session.get(OrganizationProfile, entity.id)
+            profile = self.session.get(OrganizationInstitutionProfile, entity.id)
             if profile is not None and profile.parent_entity_id is not None:
                 parent = self._entity_by_id(profile.parent_entity_id)
                 if parent is not None:
                     neighbors.append((parent, "part_of", entity.ref_id))
             for child in self.session.scalars(
-                select(OrganizationProfile).where(
-                    OrganizationProfile.parent_entity_id == entity.id
+                select(OrganizationInstitutionProfile).where(
+                    OrganizationInstitutionProfile.parent_entity_id == entity.id
                 )
             ):
                 child_entity = self._entity_by_id(child.entity_id)
@@ -712,12 +709,203 @@ class NetworkQueryService:
                     )
                 if other.ref_id not in nodes:
                     queue.append((other, current_depth + 1))
-        return self._bounded_context({
-            "ok": True,
-            "root_ref": root.ref_id,
-            "depth": depth,
-            "nodes": list(nodes.values()),
-            "edges": edges[: max_nodes * 3],
-            "count": len(nodes),
-            "truncated": bool(queue),
-        })
+        return self._bounded_context(
+            {
+                "ok": True,
+                "root_ref": root.ref_id,
+                "depth": depth,
+                "nodes": list(nodes.values()),
+                "edges": edges[: max_nodes * 3],
+                "count": len(nodes),
+                "truncated": bool(queue),
+            }
+        )
+
+    def context_neighborhood(
+        self,
+        *,
+        root_ref: str,
+        depth: int,
+        max_nodes: int,
+    ) -> dict[str, Any]:
+        """Traverse context primitives without conflating Items with Entities."""
+        prefix, _payload = parse_public_ref(root_ref)
+        nodes: dict[str, dict[str, Any]] = {}
+        edges: list[dict[str, Any]] = []
+        queued: deque[tuple[str, int]] = deque([(root_ref, 0)])
+        expanded: set[str] = set()
+
+        def add_edge(source: str, predicate: str, target: str, edge_ref: str | None = None) -> None:
+            edge = {"from": source, "predicate": predicate, "to": target}
+            if edge_ref is not None:
+                edge["ref"] = edge_ref
+            if edge not in edges:
+                edges.append(edge)
+
+        def queue_ref(ref_id: str, current_depth: int) -> None:
+            if ref_id not in expanded and current_depth <= depth:
+                queued.append((ref_id, current_depth))
+
+        if prefix == "ent":
+            base = self.neighborhood(root_ref=root_ref, depth=depth, max_nodes=max_nodes)
+            nodes.update({node["ref"]: node for node in base["nodes"]})
+            edges.extend(base["edges"])
+            for node in list(nodes.values()):
+                node_ref = str(node["ref"])
+                node_depth = int(node["depth"])
+                if node_depth >= depth:
+                    continue
+                for item in self.session.scalars(
+                    select(Item).where(Item.canonical_status == "active").limit(1000)
+                ):
+                    if node_ref in item.context_entity_refs:
+                        nodes.setdefault(
+                            item.ref_id,
+                            {
+                                "ref": item.ref_id,
+                                "type": "item",
+                                "display_name": item.title,
+                                "depth": node_depth + 1,
+                            },
+                        )
+                        add_edge(node_ref, "context_for", item.ref_id)
+                        queue_ref(item.ref_id, node_depth + 1)
+        elif prefix not in {"item", "task", "time", "evt"}:
+            raise DocketError(
+                code="unsupported_context_root",
+                message="Context neighborhoods start from an Entity, Item, Task, Time, or Event.",
+                details={"root_ref": root_ref},
+            )
+
+        while queued and len(nodes) < max_nodes:
+            ref_id, current_depth = queued.popleft()
+            if ref_id in expanded or current_depth > depth:
+                continue
+            expanded.add(ref_id)
+            current_prefix, _ = parse_public_ref(ref_id)
+            if current_prefix == "item":
+                item = self.session.scalar(select(Item).where(Item.ref_id == ref_id))
+                if item is None or item.canonical_status != "active":
+                    raise DocketError(code="item_not_found", message="Item was not found.")
+                nodes.setdefault(
+                    ref_id,
+                    {
+                        "ref": ref_id,
+                        "type": "item",
+                        "display_name": item.title,
+                        "depth": current_depth,
+                    },
+                )
+                if current_depth >= depth:
+                    continue
+                for entity_ref in item.context_entity_refs:
+                    entity = self.session.scalar(select(Entity).where(Entity.ref_id == entity_ref))
+                    if entity is not None:
+                        nodes.setdefault(
+                            entity_ref,
+                            {
+                                "ref": entity_ref,
+                                "type": entity.entity_kind,
+                                "display_name": entity.display_name,
+                                "depth": current_depth + 1,
+                            },
+                        )
+                        add_edge(ref_id, "has_context", entity_ref)
+                for task in self.session.scalars(
+                    select(Task).where(Task.item_ref == ref_id, Task.canonical_status == "active")
+                ):
+                    add_edge(ref_id, "has_task", task.ref_id)
+                    queue_ref(task.ref_id, current_depth + 1)
+                for binding in self.session.scalars(
+                    select(TemporalBinding).where(
+                        TemporalBinding.subject_ref == ref_id,
+                        TemporalBinding.canonical_status == "active",
+                    )
+                ):
+                    add_edge(ref_id, binding.role, binding.ref_id)
+                    queue_ref(binding.ref_id, current_depth + 1)
+                for link in self.session.scalars(
+                    select(EventItemLink).where(EventItemLink.item_ref == ref_id)
+                ):
+                    add_edge(ref_id, "realized_as_event", link.event_ref)
+                    queue_ref(link.event_ref, current_depth + 1)
+            elif current_prefix == "task":
+                task = self.session.scalar(select(Task).where(Task.ref_id == ref_id))
+                if task is None or task.canonical_status != "active":
+                    raise DocketError(code="task_not_found", message="Task was not found.")
+                nodes.setdefault(
+                    ref_id,
+                    {
+                        "ref": ref_id,
+                        "type": "task",
+                        "display_name": task.title,
+                        "state": task.task_state,
+                        "depth": current_depth,
+                    },
+                )
+                if current_depth < depth:
+                    add_edge(ref_id, "about_item", task.item_ref)
+                    queue_ref(task.item_ref, current_depth + 1)
+                    for binding in self.session.scalars(
+                        select(TemporalBinding).where(
+                            TemporalBinding.subject_ref == ref_id,
+                            TemporalBinding.canonical_status == "active",
+                        )
+                    ):
+                        add_edge(ref_id, binding.role, binding.ref_id)
+                        queue_ref(binding.ref_id, current_depth + 1)
+            elif current_prefix == "time":
+                binding = self.session.scalar(
+                    select(TemporalBinding).where(TemporalBinding.ref_id == ref_id)
+                )
+                if binding is None or binding.canonical_status != "active":
+                    raise DocketError(
+                        code="temporal_binding_not_found", message="Time was not found."
+                    )
+                nodes.setdefault(
+                    ref_id,
+                    {
+                        "ref": ref_id,
+                        "type": "temporal_binding",
+                        "display_name": binding.role,
+                        "temporal_value": binding.temporal_value,
+                        "depth": current_depth,
+                    },
+                )
+                if current_depth < depth:
+                    add_edge(ref_id, "describes", binding.subject_ref)
+                    queue_ref(binding.subject_ref, current_depth + 1)
+            elif current_prefix == "evt":
+                event = self.session.scalar(
+                    select(CanonicalEvent).where(CanonicalEvent.ref_id == ref_id)
+                )
+                if event is None or event.status in {"cancelled", "archived"}:
+                    raise DocketError(code="event_not_found", message="Event was not found.")
+                nodes.setdefault(
+                    ref_id,
+                    {
+                        "ref": ref_id,
+                        "type": "event",
+                        "display_name": event.title,
+                        "depth": current_depth,
+                    },
+                )
+                if current_depth < depth:
+                    for link in self.session.scalars(
+                        select(EventItemLink).where(EventItemLink.event_ref == ref_id)
+                    ):
+                        add_edge(ref_id, "realizes_item", link.item_ref)
+                        queue_ref(link.item_ref, current_depth + 1)
+
+        ordered_nodes = sorted(nodes.values(), key=lambda node: (node["depth"], node["ref"]))
+        return self._bounded_context(
+            {
+                "ok": True,
+                "root_ref": root_ref,
+                "depth": depth,
+                "nodes": ordered_nodes[:max_nodes],
+                "edges": edges[: max_nodes * 3],
+                "count": min(len(ordered_nodes), max_nodes),
+                "truncated": len(ordered_nodes) > max_nodes or bool(queued),
+            }
+        )

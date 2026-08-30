@@ -50,7 +50,7 @@ class RegistryConflictCompiler:
             for entity in subject_entities:
                 facts = self.session.scalars(
                     select(Fact).where(
-                        Fact.subject_entity_id == entity.id,
+                        Fact.subject_ref == entity.ref_id,
                         Fact.predicate == statement.predicate,
                         Fact.status == "active",
                     )
@@ -138,7 +138,7 @@ class IdentityBindingConflictCompiler:
         spec = statement.value_json.get("entity_spec")
         return bool(
             isinstance(spec, dict)
-            and spec.get("entity_kind") == entity.entity_class
+            and spec.get("entity_kind") == entity.entity_kind
             and normalize_registry_text(str(spec.get("display_name", "")))
             == entity.normalized_name
         )

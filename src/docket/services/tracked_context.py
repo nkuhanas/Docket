@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
+from datetime import date
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from docket.config import get_settings
@@ -15,6 +17,8 @@ from docket.models import (
     CanonicalEvent,
     ChangeSet,
     Entity,
+    EventItemLink,
+    Fact,
     Item,
     ReminderPlan,
     Task,
@@ -59,9 +63,7 @@ class TrackedContextService:
             "decision_refs": [
                 ref for ref in change.basis_refs if parse_public_ref(ref)[0] == "dec"
             ],
-            "source_refs": [
-                ref for ref in change.basis_refs if parse_public_ref(ref)[0] == "src"
-            ],
+            "source_refs": [ref for ref in change.basis_refs if parse_public_ref(ref)[0] == "src"],
             "created_by_changeset_ref": changeset.ref_id,
         }
 
@@ -102,6 +104,337 @@ class TrackedContextService:
             )
         return item
 
+    @staticmethod
+    def _page(items: list[dict[str, Any]], *, limit: int, cursor: str | None) -> dict[str, Any]:
+        try:
+            offset = int(cursor or "0")
+        except ValueError as exc:
+            raise DocketError(
+                code="invalid_cursor",
+                message="Cursor must be a non-negative offset.",
+            ) from exc
+        if offset < 0:
+            raise DocketError(
+                code="invalid_cursor",
+                message="Cursor must be a non-negative offset.",
+            )
+        page = items[offset : offset + limit]
+        next_offset = offset + len(page)
+        result: dict[str, Any] = {
+            "ok": True,
+            "items": page,
+            "count": len(page),
+            "total_if_known": len(items),
+            "truncated": next_offset < len(items),
+        }
+        if next_offset < len(items):
+            result["cursor"] = str(next_offset)
+        while page and len(json.dumps(result, separators=(",", ":")).encode()) > 16_384:
+            page.pop()
+            result["count"] = len(page)
+            result["truncated"] = True
+            result["cursor"] = str(offset + len(page))
+        return result
+
+    @staticmethod
+    def _temporal_dates(value: dict[str, Any]) -> tuple[date | None, date | None]:
+        kind = value.get("kind")
+        try:
+            if kind == "date":
+                parsed = date.fromisoformat(str(value["date"]))
+                return parsed, parsed
+            if kind == "datetime":
+                parsed = date.fromisoformat(str(value["local_datetime"])[:10])
+                return parsed, parsed
+            if kind == "date_interval":
+                return (
+                    date.fromisoformat(str(value["start_date"])),
+                    date.fromisoformat(str(value["end_date"])),
+                )
+            if kind == "datetime_interval":
+                return (
+                    date.fromisoformat(str(value["start_local"])[:10]),
+                    date.fromisoformat(str(value["end_local"])[:10]),
+                )
+        except (KeyError, TypeError, ValueError):
+            return None, None
+        return None, None
+
+    def _item_facets(
+        self, item_refs: list[str]
+    ) -> tuple[dict[str, list[TemporalBinding]], dict[str, list[Task]]]:
+        if not item_refs:
+            return {}, {}
+        temporal_by_item: dict[str, list[TemporalBinding]] = {ref: [] for ref in item_refs}
+        tasks_by_item: dict[str, list[Task]] = {ref: [] for ref in item_refs}
+        tasks = list(
+            self.session.scalars(
+                select(Task)
+                .where(Task.item_ref.in_(item_refs), Task.canonical_status == "active")
+                .order_by(Task.created_at, Task.ref_id)
+            )
+        )
+        for task in tasks:
+            tasks_by_item[task.item_ref].append(task)
+        task_to_item = {task.ref_id: task.item_ref for task in tasks}
+        subjects = [*item_refs, *task_to_item]
+        bindings = list(
+            self.session.scalars(
+                select(TemporalBinding)
+                .where(
+                    TemporalBinding.subject_ref.in_(subjects),
+                    TemporalBinding.canonical_status == "active",
+                )
+                .order_by(TemporalBinding.created_at, TemporalBinding.ref_id)
+            )
+        )
+        for binding in bindings:
+            item_ref = (
+                binding.subject_ref
+                if binding.subject_ref in temporal_by_item
+                else task_to_item.get(binding.subject_ref)
+            )
+            if item_ref is not None:
+                temporal_by_item[item_ref].append(binding)
+        return temporal_by_item, tasks_by_item
+
+    def query_items(
+        self,
+        *,
+        text: str | None,
+        kind: str | None,
+        context_entity_ref: str | None,
+        parent_item_ref: str | None,
+        temporal_role: str | None,
+        date_from: date | None,
+        date_to: date | None,
+        has_open_task: bool | None,
+        source_ref: str | None,
+        cursor: str | None,
+        limit: int,
+    ) -> dict[str, Any]:
+        statement = select(Item).where(Item.canonical_status == "active")
+        if text:
+            needle = f"%{text.casefold()}%"
+            statement = statement.where(
+                or_(Item.title.ilike(needle), Item.description.ilike(needle))
+            )
+        if kind is not None:
+            statement = statement.where(Item.kind == kind)
+        if parent_item_ref is not None:
+            statement = statement.where(Item.parent_item_ref == parent_item_ref)
+        candidates = list(
+            self.session.scalars(statement.order_by(Item.title, Item.ref_id).limit(1000))
+        )
+        if context_entity_ref is not None:
+            candidates = [
+                item for item in candidates if context_entity_ref in item.context_entity_refs
+            ]
+        if source_ref is not None:
+            candidates = [item for item in candidates if source_ref in item.source_refs]
+        refs = [item.ref_id for item in candidates]
+        temporal_by_item, tasks_by_item = self._item_facets(refs)
+
+        def included(item: Item) -> bool:
+            tasks = tasks_by_item[item.ref_id]
+            open_task = any(task.task_state not in {"completed", "cancelled"} for task in tasks)
+            if has_open_task is not None and open_task is not has_open_task:
+                return False
+            bindings = temporal_by_item[item.ref_id]
+            if temporal_role is not None:
+                bindings = [binding for binding in bindings if binding.role == temporal_role]
+                if not bindings:
+                    return False
+            if date_from is not None or date_to is not None:
+                matches = False
+                for binding in bindings:
+                    start, end = self._temporal_dates(binding.temporal_value)
+                    if start is None or end is None:
+                        continue
+                    if date_from is not None and end < date_from:
+                        continue
+                    if date_to is not None and start > date_to:
+                        continue
+                    matches = True
+                    break
+                if not matches:
+                    return False
+            return True
+
+        filtered = [item for item in candidates if included(item)]
+        context_refs = sorted({ref for item in filtered for ref in item.context_entity_refs})
+        entities = (
+            {
+                entity.ref_id: entity.display_name
+                for entity in self.session.scalars(
+                    select(Entity).where(Entity.ref_id.in_(context_refs))
+                )
+            }
+            if context_refs
+            else {}
+        )
+        projected = []
+        for item in filtered:
+            bindings = temporal_by_item[item.ref_id]
+            tasks = tasks_by_item[item.ref_id]
+            projected.append(
+                {
+                    "ref": item.ref_id,
+                    "title": item.title,
+                    **({"kind": item.kind} if item.kind is not None else {}),
+                    "context_summary": [
+                        {"ref": ref, "name": entities.get(ref, ref)}
+                        for ref in item.context_entity_refs[:5]
+                    ],
+                    "temporal_summary": [
+                        {
+                            "ref": binding.ref_id,
+                            "role": binding.role,
+                            "value": binding.temporal_value,
+                        }
+                        for binding in bindings[:5]
+                    ],
+                    "task_summary": [
+                        {
+                            "ref": task.ref_id,
+                            "title": task.title,
+                            "state": task.task_state,
+                        }
+                        for task in tasks[:5]
+                    ],
+                }
+            )
+        return self._page(projected, limit=limit, cursor=cursor)
+
+    def item_context(self, item_ref: str) -> dict[str, Any]:
+        item = self._item(item_ref)
+        temporal_by_item, tasks_by_item = self._item_facets([item.ref_id])
+        child_items = list(
+            self.session.scalars(
+                select(Item)
+                .where(
+                    Item.parent_item_ref == item.ref_id,
+                    Item.canonical_status == "active",
+                )
+                .order_by(Item.title, Item.ref_id)
+                .limit(25)
+            )
+        )
+        facts = list(
+            self.session.scalars(
+                select(Fact)
+                .where(Fact.subject_ref == item.ref_id, Fact.status == "active")
+                .order_by(Fact.predicate, Fact.ref_id)
+                .limit(50)
+            )
+        )
+        links = list(
+            self.session.scalars(
+                select(EventItemLink)
+                .where(EventItemLink.item_ref == item.ref_id)
+                .order_by(EventItemLink.created_at)
+                .limit(25)
+            )
+        )
+        event_refs = [link.event_ref for link in links]
+        events = (
+            {
+                event.ref_id: event
+                for event in self.session.scalars(
+                    select(CanonicalEvent).where(CanonicalEvent.ref_id.in_(event_refs))
+                )
+            }
+            if event_refs
+            else {}
+        )
+        binding_refs = [binding.ref_id for binding in temporal_by_item[item.ref_id]]
+        projections = (
+            list(
+                self.session.scalars(
+                    select(TemporalCalendarProjection)
+                    .where(TemporalCalendarProjection.temporal_binding_ref.in_(binding_refs))
+                    .order_by(TemporalCalendarProjection.created_at)
+                    .limit(25)
+                )
+            )
+            if binding_refs
+            else []
+        )
+        result = {
+            "ok": True,
+            "ref": item.ref_id,
+            "title": item.title,
+            "kind": item.kind,
+            "description": item.description,
+            "canonical_status": item.canonical_status,
+            "version": item.version,
+            "context_entity_refs": item.context_entity_refs,
+            "parent_item_ref": item.parent_item_ref,
+            "children": [
+                {"ref": child.ref_id, "title": child.title, "kind": child.kind}
+                for child in child_items
+            ],
+            "facts": [
+                {"ref": fact.ref_id, "predicate": fact.predicate, "value": fact.value_json}
+                for fact in facts
+            ],
+            "temporal_bindings": [
+                {
+                    "ref": binding.ref_id,
+                    "subject_ref": binding.subject_ref,
+                    "role": binding.role,
+                    "binding_key": binding.binding_key,
+                    "value": binding.temporal_value,
+                    "version": binding.version,
+                }
+                for binding in temporal_by_item[item.ref_id]
+            ],
+            "tasks": [
+                {
+                    "ref": task.ref_id,
+                    "title": task.title,
+                    "state": task.task_state,
+                    "priority": task.priority,
+                    "version": task.version,
+                }
+                for task in tasks_by_item[item.ref_id]
+            ],
+            "linked_events": [
+                {
+                    "ref": link.event_ref,
+                    "title": events[link.event_ref].title if link.event_ref in events else None,
+                    "realizes_temporal_binding_ref": link.realizes_temporal_binding_ref,
+                }
+                for link in links
+            ],
+            "calendar_projections": [
+                {
+                    "ref": projection.ref_id,
+                    "temporal_binding_ref": projection.temporal_binding_ref,
+                    "lane_ref": projection.lane_ref,
+                    "enabled": projection.enabled,
+                }
+                for projection in projections
+            ],
+            "provenance_refs": list(
+                dict.fromkeys(
+                    [
+                        *item.basis_refs,
+                        *item.decision_refs,
+                        *item.source_refs,
+                        item.created_by_changeset_ref,
+                    ]
+                )
+            ),
+        }
+        if len(json.dumps(result, separators=(",", ":")).encode()) > 16_384:
+            result["children"] = result["children"][:10]
+            result["facts"] = result["facts"][:20]
+            result["linked_events"] = result["linked_events"][:10]
+            result["calendar_projections"] = result["calendar_projections"][:10]
+            result["warnings"] = ["output_truncated"]
+        return result
+
     def _task(self, ref_id: str) -> Task:
         task = self.session.scalar(select(Task).where(Task.ref_id == ref_id))
         if task is None:
@@ -127,9 +460,7 @@ class TrackedContextService:
     def _require_context_entities(self, refs: list[str]) -> None:
         if not refs:
             return
-        found = set(
-            self.session.scalars(select(Entity.ref_id).where(Entity.ref_id.in_(refs)))
-        )
+        found = set(self.session.scalars(select(Entity.ref_id).where(Entity.ref_id.in_(refs))))
         missing = sorted(set(refs) - found)
         if missing:
             raise DocketError(
@@ -257,8 +588,7 @@ class TrackedContextService:
                     raise DocketError(
                         code="temporal_binding_exists",
                         message=(
-                            "An active TemporalBinding already owns this subject, "
-                            "role, and key."
+                            "An active TemporalBinding already owns this subject, role, and key."
                         ),
                         details={"temporal_binding_ref": active.ref_id},
                     )
@@ -455,9 +785,7 @@ class TrackedContextService:
         return [projection.ref_id]
 
     def _reminder_plan(self, ref_id: str) -> ReminderPlan:
-        reminder = self.session.scalar(
-            select(ReminderPlan).where(ReminderPlan.ref_id == ref_id)
-        )
+        reminder = self.session.scalar(select(ReminderPlan).where(ReminderPlan.ref_id == ref_id))
         if reminder is None:
             raise DocketError(
                 code="reminder_plan_not_found",
