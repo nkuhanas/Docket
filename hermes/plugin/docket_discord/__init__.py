@@ -24,6 +24,7 @@ import logging
 import os
 import queue
 import re
+import sys
 import threading
 import time
 import urllib.error
@@ -347,6 +348,12 @@ def _start_gateway_lifetime() -> None:
         ).start()
         _GATEWAY_HEARTBEAT_STARTED = True
         atexit.register(_clean_shutdown_gateway_lifetime)
+
+
+def _owns_discord_gateway_lifetime(ctx: object) -> bool:
+    """Return whether this plugin load is the supervised interactive gateway."""
+    profile_name = str(getattr(ctx, "profile_name", "") or "")
+    return profile_name == "default" and sys.argv[1:3] == ["gateway", "run"]
 
 
 def _capture_operator_utterance(
@@ -4382,7 +4389,8 @@ def _validate_channel_lanes() -> None:
 
 def register(ctx: object) -> None:
     _validate_channel_lanes()
-    _start_gateway_lifetime()
+    if _owns_discord_gateway_lifetime(ctx):
+        _start_gateway_lifetime()
     ctx.register_hook("pre_gateway_dispatch", _pre_gateway_dispatch)
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)
     ctx.register_hook("post_tool_call", _on_post_tool_call)

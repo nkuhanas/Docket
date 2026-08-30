@@ -58,6 +58,32 @@ def test_repeated_plugin_loads_share_one_process_registration_key() -> None:
     assert first._GATEWAY_REGISTRATION_KEY == second._GATEWAY_REGISTRATION_KEY
 
 
+@pytest.mark.parametrize(
+    ("profile_name", "argv", "expected"),
+    [
+        ("default", ["hermes", "gateway", "run", "--replace"], True),
+        ("docket-triage", ["hermes", "gateway", "run", "--replace"], False),
+        ("default", ["hermes", "cron", "install"], False),
+        ("default", ["hermes", "profiles", "reconcile"], False),
+    ],
+)
+def test_only_default_gateway_runtime_owns_gateway_lifetime(
+    plugin_module,
+    monkeypatch,
+    profile_name: str,
+    argv: list[str],
+    expected: bool,
+) -> None:
+    monkeypatch.setattr(plugin_module.sys, "argv", argv)
+
+    assert (
+        plugin_module._owns_discord_gateway_lifetime(
+            SimpleNamespace(profile_name=profile_name)
+        )
+        is expected
+    )
+
+
 def test_plugin_accepts_version_bound_schedule_decision_token(plugin_module) -> None:
     approval_id = uuid.uuid4()
     projection_id = uuid.uuid4()
