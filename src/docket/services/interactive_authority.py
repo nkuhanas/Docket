@@ -55,6 +55,7 @@ from docket.services.semantic_options import (
     complete_selection_provenance,
     semantic_authority_scope,
 )
+from docket.services.tracked_context import TrackedContextService
 
 
 class InteractiveAuthorityService:
@@ -71,6 +72,7 @@ class InteractiveAuthorityService:
         registry_handlers = RegistryService(session).handlers()
         policy_handlers = ContextPolicyService(session).handlers()
         event_handlers = CanonicalEventAuthorityService(session).handlers()
+        tracked_context_handlers = TrackedContextService(session).handlers()
         case_resolution_handlers = AttentionCaseResolutionService(session).handlers()
         provider_service = ProviderIntentService(session)
         self.changesets = ChangeSetService(
@@ -79,6 +81,7 @@ class InteractiveAuthorityService:
                 **registry_handlers,
                 **policy_handlers,
                 **event_handlers,
+                **tracked_context_handlers,
                 **case_resolution_handlers,
                 **(handlers or {}),
             },
@@ -362,15 +365,10 @@ class InteractiveAuthorityService:
                     )
                 option = self.session.scalar(
                     select(PersistedSemanticOption).where(
-                        PersistedSemanticOption.prompt_projection_ref
+                        PersistedSemanticOption.ref_id
                         == binding.get(
-                            "execution_prompt_projection_ref",
-                            binding.get("prompt_projection_ref"),
-                        ),
-                        PersistedSemanticOption.prompt_projection_version
-                        == binding.get(
-                            "execution_prompt_projection_version",
-                            binding.get("prompt_projection_version"),
+                            "execution_option_ref",
+                            binding.get("selected_option_ref"),
                         ),
                         PersistedSemanticOption.option_id == binding.get("option_id"),
                         PersistedSemanticOption.authority_scope_hash
@@ -626,7 +624,6 @@ class InteractiveAuthorityService:
                     if str(item["conflict_ref"]) not in existing_conflicts
                 ],
             ]
-            intent_session.state = "needs_clarification"
             intent_session.semantic_state = "needs_clarification"
             intent_session.commit_state = "blocked_conflict"
             intent_session.version += 1

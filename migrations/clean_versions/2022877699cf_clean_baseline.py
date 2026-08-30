@@ -6,9 +6,8 @@ Create Date: 2026-08-29 22:50:51.253933
 """
 from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
-
+from alembic import op
 
 revision: str = '2022877699cf'
 down_revision: str | None = None
@@ -346,7 +345,6 @@ def upgrade() -> None:
     sa.Column('trusted_context_refs', sa.JSON(), nullable=False),
     sa.Column('resolved_intent_json', sa.JSON(), nullable=False),
     sa.Column('blocking_clarifications', sa.JSON(), nullable=False),
-    sa.Column('state', sa.String(length=32), nullable=False),
     sa.Column('semantic_state', sa.String(length=32), nullable=False),
     sa.Column('commit_state', sa.String(length=32), nullable=False),
     sa.Column('semantic_request_ref', sa.String(length=40), nullable=True),
@@ -356,11 +354,10 @@ def upgrade() -> None:
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
     sa.CheckConstraint("commit_state IN ('not_attempted', 'pending', 'committed', 'blocked_validation', 'blocked_conflict', 'blocked_version', 'failed', 'unknown')", name='ck_intent_sessions_commit_state'),
     sa.CheckConstraint("semantic_state IN ('open', 'needs_clarification', 'ready', 'cancelled', 'superseded')", name='ck_intent_sessions_semantic_state'),
-    sa.CheckConstraint("state IN ('open', 'needs_clarification', 'ready', 'committed', 'cancelled', 'superseded')", name='ck_intent_sessions_state'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('ref_id')
     )
-    op.create_index('ix_intent_sessions_conversation_state', 'intent_sessions', ['conversation_ref', 'state'], unique=False)
+    op.create_index('ix_intent_sessions_conversation_semantic_state', 'intent_sessions', ['conversation_ref', 'semantic_state'], unique=False)
     op.create_index('ix_intent_sessions_semantic_commit', 'intent_sessions', ['semantic_state', 'commit_state'], unique=False)
     op.create_index('ix_intent_sessions_source_utterance', 'intent_sessions', ['source_utterance_ref'], unique=False)
     op.create_table('items',
@@ -918,6 +915,7 @@ def upgrade() -> None:
     sa.Column('preference_changes', sa.JSON(), nullable=False),
     sa.Column('lane_changes', sa.JSON(), nullable=False),
     sa.Column('event_changes', sa.JSON(), nullable=False),
+    sa.Column('tracked_context_changes', sa.JSON(), nullable=False),
     sa.Column('resolution_changes', sa.JSON(), nullable=False),
     sa.Column('provider_intents', sa.JSON(), nullable=False),
     sa.Column('validation_errors', sa.JSON(), nullable=False),
@@ -1489,6 +1487,7 @@ def upgrade() -> None:
     sa.Column('preference_changes', sa.JSON(), nullable=False),
     sa.Column('lane_changes', sa.JSON(), nullable=False),
     sa.Column('event_changes', sa.JSON(), nullable=False),
+    sa.Column('tracked_context_changes', sa.JSON(), nullable=False),
     sa.Column('resolution_changes', sa.JSON(), nullable=False),
     sa.Column('provider_intents', sa.JSON(), nullable=False),
     sa.Column('parameter_hash', sa.String(length=64), nullable=False),
@@ -1814,7 +1813,7 @@ def downgrade() -> None:
     op.drop_table('items')
     op.drop_index('ix_intent_sessions_source_utterance', table_name='intent_sessions')
     op.drop_index('ix_intent_sessions_semantic_commit', table_name='intent_sessions')
-    op.drop_index('ix_intent_sessions_conversation_state', table_name='intent_sessions')
+    op.drop_index('ix_intent_sessions_conversation_semantic_state', table_name='intent_sessions')
     op.drop_table('intent_sessions')
     op.drop_index('ix_gateway_lifetimes_status_expiry', table_name='gateway_lifetimes')
     op.drop_table('gateway_lifetimes')

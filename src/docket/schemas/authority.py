@@ -28,6 +28,18 @@ from docket.schemas.registry import (
     InteractionCreateSpec,
     RelationshipCreateSpec,
 )
+from docket.schemas.tracked_context import (
+    ItemInput,
+    ItemPatchInput,
+    ReminderPlanInput,
+    ReminderPlanPatchInput,
+    TaskInput,
+    TaskPatchInput,
+    TemporalBindingInput,
+    TemporalBindingPatchInput,
+    TemporalCalendarProjectionInput,
+    TemporalCalendarProjectionPatchInput,
+)
 
 UtteranceRef = Annotated[str, Field(pattern=r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")]
 StatementRef = Annotated[str, Field(pattern=r"^stm_[0-9A-HJKMNP-TV-Z]{26}$")]
@@ -161,6 +173,156 @@ class MutationBase(StrictModel):
     @classmethod
     def validate_basis_refs(cls, values: list[str]) -> list[str]:
         return _validate_refs(values, provenance_only=True)
+
+
+class ItemCreate(MutationBase):
+    mutation_type: Literal["item_create"] = "item_create"
+    action: Literal["create"]
+    object_type: Literal["item"]
+    object_ref: None = None
+    create_spec: ItemInput
+    payload: None = None
+
+
+class ItemModify(MutationBase):
+    mutation_type: Literal["item_modify"] = "item_modify"
+    action: Literal["update"]
+    object_type: Literal["item"]
+    object_ref: Annotated[str, Field(pattern=r"^item_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: ItemPatchInput
+
+
+class ItemRetract(MutationBase):
+    mutation_type: Literal["item_retract"] = "item_retract"
+    action: Literal["retract"]
+    object_type: Literal["item"]
+    object_ref: Annotated[str, Field(pattern=r"^item_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: EmptyMutationSpec = Field(default_factory=EmptyMutationSpec)
+
+
+class TemporalBindingCreate(MutationBase):
+    mutation_type: Literal["temporal_binding_create"] = "temporal_binding_create"
+    action: Literal["create"]
+    object_type: Literal["temporal_binding"]
+    object_ref: None = None
+    create_spec: TemporalBindingInput
+    payload: None = None
+
+
+class TemporalBindingModify(MutationBase):
+    mutation_type: Literal["temporal_binding_modify"] = "temporal_binding_modify"
+    action: Literal["update"]
+    object_type: Literal["temporal_binding"]
+    object_ref: Annotated[str, Field(pattern=r"^time_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: TemporalBindingPatchInput
+
+
+class TemporalBindingSupersede(MutationBase):
+    mutation_type: Literal["temporal_binding_supersede"] = "temporal_binding_supersede"
+    action: Literal["supersede"]
+    object_type: Literal["temporal_binding"]
+    object_ref: Annotated[str, Field(pattern=r"^time_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: TemporalBindingInput
+    payload: None = None
+
+
+class TemporalBindingRetract(MutationBase):
+    mutation_type: Literal["temporal_binding_retract"] = "temporal_binding_retract"
+    action: Literal["retract"]
+    object_type: Literal["temporal_binding"]
+    object_ref: Annotated[str, Field(pattern=r"^time_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: EmptyMutationSpec = Field(default_factory=EmptyMutationSpec)
+
+
+class TaskCreate(MutationBase):
+    mutation_type: Literal["task_create"] = "task_create"
+    action: Literal["create"]
+    object_type: Literal["task"]
+    object_ref: None = None
+    create_spec: TaskInput
+    payload: None = None
+
+
+class TaskModify(MutationBase):
+    mutation_type: Literal["task_modify"] = "task_modify"
+    action: Literal["update"]
+    object_type: Literal["task"]
+    object_ref: Annotated[str, Field(pattern=r"^task_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: TaskPatchInput
+
+
+class TaskRetract(MutationBase):
+    mutation_type: Literal["task_retract"] = "task_retract"
+    action: Literal["retract"]
+    object_type: Literal["task"]
+    object_ref: Annotated[str, Field(pattern=r"^task_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: EmptyMutationSpec = Field(default_factory=EmptyMutationSpec)
+
+
+class TemporalCalendarProjectionCreate(MutationBase):
+    mutation_type: Literal["temporal_calendar_projection_create"] = (
+        "temporal_calendar_projection_create"
+    )
+    action: Literal["create"]
+    object_type: Literal["temporal_calendar_projection"]
+    object_ref: None = None
+    create_spec: TemporalCalendarProjectionInput
+    payload: None = None
+
+
+class TemporalCalendarProjectionModify(MutationBase):
+    mutation_type: Literal["temporal_calendar_projection_modify"] = (
+        "temporal_calendar_projection_modify"
+    )
+    action: Literal["update"]
+    object_type: Literal["temporal_calendar_projection"]
+    object_ref: Annotated[str, Field(pattern=r"^tproj_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: TemporalCalendarProjectionPatchInput
+
+
+class TemporalCalendarProjectionRetract(MutationBase):
+    mutation_type: Literal["temporal_calendar_projection_retract"] = (
+        "temporal_calendar_projection_retract"
+    )
+    action: Literal["retract"]
+    object_type: Literal["temporal_calendar_projection"]
+    object_ref: Annotated[str, Field(pattern=r"^tproj_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: EmptyMutationSpec = Field(default_factory=EmptyMutationSpec)
+
+
+class ReminderPlanCreate(MutationBase):
+    mutation_type: Literal["reminder_plan_create"] = "reminder_plan_create"
+    action: Literal["create"]
+    object_type: Literal["reminder_plan"]
+    object_ref: None = None
+    create_spec: ReminderPlanInput
+    payload: None = None
+
+
+class ReminderPlanModify(MutationBase):
+    mutation_type: Literal["reminder_plan_modify"] = "reminder_plan_modify"
+    action: Literal["update"]
+    object_type: Literal["reminder_plan"]
+    object_ref: Annotated[str, Field(pattern=r"^rem_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: ReminderPlanPatchInput
+
+
+class ReminderPlanRetract(MutationBase):
+    mutation_type: Literal["reminder_plan_retract"] = "reminder_plan_retract"
+    action: Literal["retract"]
+    object_type: Literal["reminder_plan"]
+    object_ref: Annotated[str, Field(pattern=r"^rem_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: EmptyMutationSpec = Field(default_factory=EmptyMutationSpec)
 
 
 
@@ -514,6 +676,24 @@ type LaneMutation = (
     | LaneRoutingDecisionCreate
 )
 type EventMutation = CanonicalEventCreate | CanonicalEventModify | CanonicalEventCancel
+type TrackedContextMutation = (
+    ItemCreate
+    | ItemModify
+    | ItemRetract
+    | TemporalBindingCreate
+    | TemporalBindingModify
+    | TemporalBindingSupersede
+    | TemporalBindingRetract
+    | TaskCreate
+    | TaskModify
+    | TaskRetract
+    | TemporalCalendarProjectionCreate
+    | TemporalCalendarProjectionModify
+    | TemporalCalendarProjectionRetract
+    | ReminderPlanCreate
+    | ReminderPlanModify
+    | ReminderPlanRetract
+)
 type CanonicalMutation = (
     EntityCreate
     | EntityModify
@@ -546,6 +726,22 @@ type CanonicalMutation = (
     | CanonicalEventCreate
     | CanonicalEventModify
     | CanonicalEventCancel
+    | ItemCreate
+    | ItemModify
+    | ItemRetract
+    | TemporalBindingCreate
+    | TemporalBindingModify
+    | TemporalBindingSupersede
+    | TemporalBindingRetract
+    | TaskCreate
+    | TaskModify
+    | TaskRetract
+    | TemporalCalendarProjectionCreate
+    | TemporalCalendarProjectionModify
+    | TemporalCalendarProjectionRetract
+    | ReminderPlanCreate
+    | ReminderPlanModify
+    | ReminderPlanRetract
 )
 
 type RegistryChangeInput = Annotated[RegistryMutation, Field(discriminator="mutation_type")]
@@ -554,6 +750,9 @@ type PreferenceChangeInput = Annotated[
 ]
 type LaneChangeInput = Annotated[LaneMutation, Field(discriminator="mutation_type")]
 type EventChangeInput = Annotated[EventMutation, Field(discriminator="mutation_type")]
+type TrackedContextChangeInput = Annotated[
+    TrackedContextMutation, Field(discriminator="mutation_type")
+]
 type CanonicalChangeInput = Annotated[
     CanonicalMutation, Field(discriminator="mutation_type")
 ]
@@ -638,56 +837,6 @@ class ProviderIntentInput(StrictModel):
         return self
 
 
-def _infer_legacy_mutation_tags(value: Any) -> Any:
-    if not isinstance(value, dict):
-        return value
-    result = dict(value)
-    groups = (
-        "registry_changes",
-        "preference_changes",
-        "lane_changes",
-        "event_changes",
-        "resolution_changes",
-    )
-    aliases = {
-        ("entity", "update"): "entity_modify",
-        ("entity", "supersede"): "entity_modify",
-        ("identity_binding", "create"): "identity_handle_create",
-        ("identity_binding", "update"): "identity_handle_modify",
-        ("identity_binding", "supersede"): "identity_handle_modify",
-        ("identity_binding", "bind"): "identity_binding_bind",
-        ("identity_binding", "unbind"): "identity_binding_unbind",
-        ("identity_binding", "retract"): "identity_handle_retract",
-        ("preference", "update"): "preference_modify",
-        ("preference", "supersede"): "preference_modify",
-        ("calendar_lane", "update"): "calendar_lane_modify",
-        ("calendar_lane", "supersede"): "calendar_lane_modify",
-        ("canonical_event", "update"): "canonical_event_modify",
-        ("canonical_event", "supersede"): "canonical_event_modify",
-        ("canonical_event", "retract"): "canonical_event_cancel",
-        ("attention_case_resolution", "update"): "attention_case_resolution",
-    }
-    for group in groups:
-        changes = result.get(group)
-        if not isinstance(changes, list):
-            continue
-        tagged: list[Any] = []
-        for item in changes:
-            if not isinstance(item, dict) or "mutation_type" in item:
-                tagged.append(item)
-                continue
-            updated = dict(item)
-            object_type = str(updated.get("object_type", ""))
-            action = str(updated.get("action", ""))
-            updated["mutation_type"] = aliases.get(
-                (object_type, action),
-                f"{object_type}_{action}",
-            )
-            tagged.append(updated)
-        result[group] = tagged
-    return result
-
-
 class OperatorChangeSetContent(StrictModel):
     """Model-facing canonical effects; provider projection is compiler-owned."""
 
@@ -699,14 +848,12 @@ class OperatorChangeSetContent(StrictModel):
     )
     lane_changes: list[LaneChangeInput] = Field(default_factory=list, max_length=100)
     event_changes: list[EventChangeInput] = Field(default_factory=list, max_length=100)
+    tracked_context_changes: list[TrackedContextChangeInput] = Field(
+        default_factory=list, max_length=250
+    )
     resolution_changes: list[ResolutionChangeInput] = Field(
         default_factory=list, max_length=100
     )
-
-    @model_validator(mode="before")
-    @classmethod
-    def infer_legacy_mutation_tags(cls, value: Any) -> Any:
-        return _infer_legacy_mutation_tags(value)
 
     @field_validator("basis_refs")
     @classmethod
@@ -731,6 +878,7 @@ class OperatorChangeSetContent(StrictModel):
                 self.preference_changes,
                 self.lane_changes,
                 self.event_changes,
+                self.tracked_context_changes,
                 self.resolution_changes,
             )
         ):
@@ -742,6 +890,7 @@ class OperatorChangeSetContent(StrictModel):
                 self.preference_changes,
                 self.lane_changes,
                 self.event_changes,
+                self.tracked_context_changes,
                 self.resolution_changes,
             )
             for change in group
@@ -765,15 +914,13 @@ class ChangeSetContent(StrictModel):
     )
     lane_changes: list[LaneChangeInput] = Field(default_factory=list, max_length=100)
     event_changes: list[EventChangeInput] = Field(default_factory=list, max_length=100)
+    tracked_context_changes: list[TrackedContextChangeInput] = Field(
+        default_factory=list, max_length=250
+    )
     resolution_changes: list[ResolutionChangeInput] = Field(
         default_factory=list, max_length=100
     )
     provider_intents: list[ProviderIntentInput] = Field(default_factory=list, max_length=100)
-
-    @model_validator(mode="before")
-    @classmethod
-    def infer_legacy_mutation_tags(cls, value: Any) -> Any:
-        return _infer_legacy_mutation_tags(value)
 
     @field_validator("basis_refs")
     @classmethod
@@ -798,6 +945,7 @@ class ChangeSetContent(StrictModel):
                 self.preference_changes,
                 self.lane_changes,
                 self.event_changes,
+                self.tracked_context_changes,
                 self.resolution_changes,
                 self.provider_intents,
             )
@@ -810,6 +958,7 @@ class ChangeSetContent(StrictModel):
                 self.preference_changes,
                 self.lane_changes,
                 self.event_changes,
+                self.tracked_context_changes,
                 self.resolution_changes,
             )
             for change in group
