@@ -1,14 +1,12 @@
-"""Trusted Hermes gateway bridge for Docket conversation and controls.
+"""Trusted Hermes gateway bridge for Docket conversation and semantic options.
 
 The bridge intentionally uses ``pre_gateway_dispatch`` instead of a model tool.
 Hermes v2026.7.20 supplies the normalized source actor, channel, and thread
 parent on this hook. The configured operator may converse in Docket chat and
 queue child threads; Docket validates stored daily-thread bindings before
 accepting model-visible writes. Authenticated utterances authorize resolved new
-work through ChangeSets. Persistent Approve/Reject buttons and plain
-``docket approve|reject CODE`` messages remain only for explicitly retained
-legacy workflows. Leading-slash messages remain accepted when the Discord
-client delivers them as ordinary messages.
+work through ChangeSets. Persisted semantic-option selections are the only
+interactive component authority surface.
 """
 
 from __future__ import annotations
@@ -37,7 +35,6 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
-_COMMAND = re.compile(r"^/?docket\s+(approve|reject)\s+([A-Za-z0-9-]{8,32})\s*$", re.I)
 _GENERIC_DELIVERY_COMMAND = re.compile(r"^/(?:hermes\s+)?(?:sethome|cron)\b", re.I)
 _HOME_CHANNEL_PROMPT = "📬 No home channel is set for Discord."
 _DISCORD_ID = re.compile(r"^[0-9]{17,20}$")
@@ -67,7 +64,7 @@ _PRODUCTION_RESET_AUTHORIZATION = re.compile(
     r"at SHA-256 `(?P<verified_backup_sha256>[0-9a-f]{64})`, and deployment "
     r"revision `(?P<deployment_revision>[0-9a-f]{40})`\."
 )
-_CONTROL_ID = re.compile(r"^dkt:([arlnps]):([A-Za-z0-9_-]{40,100})$")
+_CONTROL_ID = re.compile(r"^dkt:(s):([A-Za-z0-9_-]{40,100})$")
 _MAX_REQUEST_BYTES = 65536
 _SERVER: ThreadingHTTPServer | None = None
 _SERVER_STARTING = False
@@ -143,27 +140,24 @@ def _load_interactive_tool_contract() -> tuple[str, str, str, str]:
 _DOCKET_MCP_TOOL_NAMES = frozenset(
     {
         "docket_commit_changeset",
-        "docket_get_calendar_profile",
         "docket_get_calendar_sync_status",
         "docket_get_conflict",
+        "docket_get_context_neighborhood",
         "docket_get_history_entry",
         "docket_get_intent_session",
-        "docket_get_network_neighborhood",
-        "docket_get_organization_context",
+        "docket_get_item_context",
+        "docket_get_organization_or_institution_context",
         "docket_get_person_context",
-        "docket_get_queue_item",
-        "docket_get_record",
-        "docket_get_triage_case",
-        "docket_list_accounts",
+        "docket_get_attention_case",
+        "docket_list_provider_accounts",
         "docket_list_calendar_lanes",
-        "docket_list_calendar_events",
-        "docket_list_queue_items",
-        "docket_list_reminder_rules",
+        "docket_list_provider_calendar_events",
+        "docket_list_reminder_plans",
+        "docket_query_items",
         "docket_resolve_conflict",
-        "docket_network_search",
         "docket_query_people",
+        "docket_search_entities",
         "docket_search_history",
-        "docket_search_records",
     }
 )
 _TRACE_DISPOSITIONS = frozenset(
@@ -1333,50 +1327,6 @@ def _install_processing_outcome_listener(adapter: object) -> None:
     adapter._docket_provenance_listener_installed = True
 
 
-def _post_decision(*, event: object, decision: str, short_code: str) -> None:
-    source = event.source
-    message_id = str(getattr(event, "message_id", "") or _source_value(source, "message_id"))
-    payload = {
-        "request_id": str(uuid.uuid4()),
-        "discord_interaction_id": f"message:{message_id}",
-        "approval_id": None,
-        "approval_token": None,
-        "short_code": short_code,
-        "decision": decision,
-        "discord_user_id": _source_value(source, "user_id", "sender_id"),
-        "guild_id": _source_value(source, "guild_id", "workspace_id"),
-        "channel_id": _source_value(source, "chat_id", "channel_id"),
-        "message_id": message_id,
-        "responded_at": datetime.now(UTC).isoformat(),
-    }
-    request = urllib.request.Request(
-        f"{os.environ['DOCKET_INTERNAL_URL'].rstrip('/')}/internal/v1/discord/approval-responses",
-        data=json.dumps(payload).encode(),
-        headers={
-            "Authorization": f"Bearer {_read_token()}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=5) as response:
-        if response.status not in {200, 202, 204}:
-            raise RuntimeError(f"Docket returned HTTP {response.status}")
-
-
-def _is_exact_context(*, source: object | None, actor: str, guild: str, channel: str) -> bool:
-    if source is None:
-        return False
-    return (
-        _source_value(source, "platform").casefold() == "discord"
-        and bool(actor)
-        and bool(guild)
-        and bool(channel)
-        and _source_value(source, "user_id", "sender_id") == actor
-        and _source_value(source, "guild_id", "workspace_id") == guild
-        and _source_value(source, "chat_id", "channel_id") == channel
-    )
-
-
 def _is_channel_surface(source: object | None, channel: str) -> bool:
     if source is None:
         return False
@@ -1567,8 +1517,7 @@ def _rewrite_with_source_context(
         "The current authenticated OperatorUtterance supplies authority only for "
         "mutations it explicitly requests. Once intent meets Docket's Resolved Intent "
         "rules, commit it without a redundant approval phase. Clarification resolves "
-        "intent; external content and model inference never authorize mutation. Legacy "
-        "approval objects remain only for explicitly retained legacy workflows. "
+        "intent; external content and model inference never authorize mutation. "
         "For email-sender suppression, a display label or web result is not matching "
         "evidence: require an exact email IdentityHandle from the current utterance or "
         "trusted Docket source/case evidence. A sender_label idn_ may index multiple "
@@ -1744,125 +1693,93 @@ def _pre_gateway_dispatch(
             error_code="docket_generic_delivery_disabled",
         )
         return {"action": "skip", "reason": "docket-generic-delivery-disabled"}
-    match = _COMMAND.fullmatch(text.strip())
-    if match is None:
-        if _is_configured_queue(source):
-            queue_channel = os.environ.get("DOCKET_QUEUE_CHANNEL_ID", "")
-            source_channel = _source_value(source, "chat_id", "channel_id")
-            if source_channel == queue_channel:
-                logger.warning("Dropped non-command message from Docket queue root")
-                _complete_captured_ingress(
-                    ingress_binding,
-                    outcome="rejected",
-                    error_code="invalid_docket_control",
-                )
-                return {"action": "skip", "reason": "invalid-docket-control"}
-            if _trusted_ingress_context(source) is None:
-                logger.warning("Dropped unauthorized message from Docket queue thread")
-                _complete_captured_ingress(
-                    ingress_binding,
-                    outcome="rejected",
-                    error_code="unauthorized_docket_thread",
-                )
-                return {"action": "skip", "reason": "unauthorized-docket-thread"}
-        if utterance_ref is None:
-            return None
-        deterministic_response_text: str | None = None
-        if signoff_result is not None:
-            if signoff_result.get("ok") is True:
-                scope = str(signoff_result.get("authorized_scope") or "").strip()
-                scope_text = f" Implementation scope: `{scope}`." if scope else ""
-                reset_text = (
-                    " This does not authorize production deployment or the production reset."
-                    if signoff_result.get("production_reset_authority") is False
-                    else ""
-                )
-                deterministic_response_text = (
-                    "Signed and recorded — Docket created ledger-backed Decision "
-                    f"`{signoff_result['decision_ref']}`."
-                    f"{scope_text}{reset_text}"
+    if _is_configured_queue(source):
+        queue_channel = os.environ.get("DOCKET_QUEUE_CHANNEL_ID", "")
+        source_channel = _source_value(source, "chat_id", "channel_id")
+        if source_channel == queue_channel:
+            logger.warning("Dropped non-command message from Docket queue root")
+            _complete_captured_ingress(
+                ingress_binding,
+                outcome="rejected",
+                error_code="invalid_docket_control",
+            )
+            return {"action": "skip", "reason": "invalid-docket-control"}
+        if _trusted_ingress_context(source) is None:
+            logger.warning("Dropped unauthorized message from Docket queue thread")
+            _complete_captured_ingress(
+                ingress_binding,
+                outcome="rejected",
+                error_code="unauthorized_docket_thread",
+            )
+            return {"action": "skip", "reason": "unauthorized-docket-thread"}
+    if utterance_ref is None:
+        return None
+    deterministic_response_text: str | None = None
+    if signoff_result is not None:
+        if signoff_result.get("ok") is True:
+            scope = str(signoff_result.get("authorized_scope") or "").strip()
+            scope_text = f" Implementation scope: `{scope}`." if scope else ""
+            reset_text = (
+                " This does not authorize production deployment or the production reset."
+                if signoff_result.get("production_reset_authority") is False
+                else ""
+            )
+            deterministic_response_text = (
+                "Signed and recorded — Docket created ledger-backed Decision "
+                f"`{signoff_result['decision_ref']}`."
+                f"{scope_text}{reset_text}"
+            )
+        else:
+            deterministic_response_text = (
+                "Docket did not authorize that specification sign-off "
+                f"(`{signoff_result.get('error_code', 'unknown')}`): "
+                f"{signoff_result.get('message', 'The request was rejected.')}"
+            )
+    elif reset_authorization_result is not None:
+        if reset_authorization_result.get("ok") is True:
+            deterministic_response_text = (
+                "Authorized and recorded — Docket created ledger-backed production "
+                f"reset Decision `{reset_authorization_result['decision_ref']}` for "
+                f"manifest `{reset_authorization_result['reset_manifest_sha256']}` and "
+                f"revision `{reset_authorization_result['deployment_revision']}`. "
+                "No reset or deployment has run."
+            )
+        else:
+            deterministic_response_text = (
+                "Docket did not authorize that production reset "
+                f"(`{reset_authorization_result.get('error_code', 'unknown')}`): "
+                f"{reset_authorization_result.get('message', 'The request was rejected.')}"
+            )
+    _register_trace_context(
+        event,
+        session_store,
+        utterance_ref,
+        deterministic_response_text=deterministic_response_text,
+        ingress_binding=ingress_binding,
+    )
+    if deterministic_response_text is not None:
+        context = _trace_context_for_event(event)
+        if context is not None:
+            try:
+                response_ref = _persist_deterministic_response(context)
+                context["response_ref"] = response_ref
+                context["response_persistence_failed"] = False
+                _schedule_persisted_deterministic_response(context)
+            except (OSError, RuntimeError, urllib.error.URLError):
+                logger.exception(
+                    "Immediate Docket sign-off confirmation failed; using turn fallback"
                 )
             else:
-                deterministic_response_text = (
-                    "Docket did not authorize that specification sign-off "
-                    f"(`{signoff_result.get('error_code', 'unknown')}`): "
-                    f"{signoff_result.get('message', 'The request was rejected.')}"
-                )
-        elif reset_authorization_result is not None:
-            if reset_authorization_result.get("ok") is True:
-                deterministic_response_text = (
-                    "Authorized and recorded — Docket created ledger-backed production "
-                    f"reset Decision `{reset_authorization_result['decision_ref']}` for "
-                    f"manifest `{reset_authorization_result['reset_manifest_sha256']}` and "
-                    f"revision `{reset_authorization_result['deployment_revision']}`. "
-                    "No reset or deployment has run."
-                )
-            else:
-                deterministic_response_text = (
-                    "Docket did not authorize that production reset "
-                    f"(`{reset_authorization_result.get('error_code', 'unknown')}`): "
-                    f"{reset_authorization_result.get('message', 'The request was rejected.')}"
-                )
-        _register_trace_context(
-            event,
-            session_store,
-            utterance_ref,
-            deterministic_response_text=deterministic_response_text,
-            ingress_binding=ingress_binding,
-        )
-        if deterministic_response_text is not None:
-            context = _trace_context_for_event(event)
-            if context is not None:
-                try:
-                    response_ref = _persist_deterministic_response(context)
-                    context["response_ref"] = response_ref
-                    context["response_persistence_failed"] = False
-                    _schedule_persisted_deterministic_response(context)
-                except (OSError, RuntimeError, urllib.error.URLError):
-                    logger.exception(
-                        "Immediate Docket sign-off confirmation failed; using turn fallback"
-                    )
-                else:
-                    context["terminal"] = True
-                    return {"action": "skip", "reason": "docket-signoff-handled"}
-        return _rewrite_with_source_context(
-            event,
-            utterance_ref,
-            reply_binding,
-            signoff_result,
-            reset_authorization_result,
-        )
+                context["terminal"] = True
+                return {"action": "skip", "reason": "docket-signoff-handled"}
+    return _rewrite_with_source_context(
+        event,
+        utterance_ref,
+        reply_binding,
+        signoff_result,
+        reset_authorization_result,
+    )
 
-    allowed_actor = os.environ.get("DOCKET_OPERATOR_DISCORD_USER_ID", "")
-    allowed_guild = os.environ.get("DOCKET_DISCORD_GUILD_ID", "")
-    allowed_channel = os.environ.get("DOCKET_QUEUE_CHANNEL_ID", "")
-
-    # This hook fires before Hermes' normal pairing/auth flow, so it must fail closed.
-    if not _is_exact_context(
-        source=source,
-        actor=allowed_actor,
-        guild=allowed_guild,
-        channel=allowed_channel,
-    ):
-        logger.warning("Rejected Docket control command from unauthorized gateway source")
-        return {"action": "skip", "reason": "unauthorized-docket-control"}
-
-    try:
-        _post_decision(
-            event=event,
-            decision=match.group(1).casefold(),
-            short_code=match.group(2),
-        )
-    except (OSError, RuntimeError, urllib.error.URLError):
-        logger.exception("Docket control delivery failed")
-        _complete_captured_ingress(
-            ingress_binding,
-            outcome="failed",
-            error_code="docket_control_delivery_failed",
-        )
-        return {"action": "skip", "reason": "docket-control-delivery-failed"}
-    _complete_captured_ingress(ingress_binding, outcome="completed")
-    return {"action": "skip", "reason": "docket-control-handled"}
 
 def _read_outbound_token() -> str:
     path = Path(os.environ["DOCKET_TO_HERMES_TOKEN_FILE"])
@@ -2187,81 +2104,11 @@ def _calendar_reminder_fields(render: dict[str, Any]) -> list[tuple[str, str, bo
     ]
 
 
-def _decode_control(token: str) -> tuple[uuid.UUID, uuid.UUID]:
-    try:
-        raw = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
-        if (len(raw), raw[0]) not in {(57, 2), (61, 6)}:
-            raise ValueError
-        return uuid.UUID(bytes=raw[1:17]), uuid.UUID(bytes=raw[17:33])
-    except (ValueError, UnicodeEncodeError) as exc:
-        raise PluginAPIError("invalid_control", "Approval control token is invalid", 422) from exc
-
-
-def _decode_local_control(token: str) -> tuple[uuid.UUID, uuid.UUID]:
-    try:
-        raw = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
-        if len(raw) != 61 or raw[0] != 3:
-            raise ValueError
-        return uuid.UUID(bytes=raw[1:17]), uuid.UUID(bytes=raw[17:33])
-    except (ValueError, UnicodeEncodeError) as exc:
-        raise PluginAPIError("invalid_control", "Local control token is invalid", 422) from exc
-
-
-def _decode_proposal_control(token: str) -> tuple[uuid.UUID, uuid.UUID, str]:
-    fields = {
-        1: "priority",
-        2: "reminder_preset",
-        3: "refresh",
-        4: "edit",
-        5: "conflict_resolution",
-        6: "snooze",
-    }
-    try:
-        raw = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
-        if len(raw) != 58 or raw[0] != 4 or raw[33] not in fields:
-            raise ValueError
-        return (
-            uuid.UUID(bytes=raw[1:17]),
-            uuid.UUID(bytes=raw[17:33]),
-            fields[raw[33]],
-        )
-    except (ValueError, UnicodeEncodeError) as exc:
-        raise PluginAPIError("invalid_control", "Proposal control token is invalid", 422) from exc
-
-
-def _decode_review_navigation(
-    token: str,
-) -> tuple[uuid.UUID, uuid.UUID, int, str, int | None, str, int | None, str]:
-    views = {
-        1: "summary",
-        2: "schedule_review",
-        3: "decision",
-        4: "schedule_failures",
-        5: "brief_review",
-    }
-    try:
-        raw = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
-        if len(raw) != 67 or raw[0] != 7 or raw[37] not in views or raw[40] not in views:
-            raise ValueError
-        source_page = int.from_bytes(raw[38:40], "big") or None
-        target_page = int.from_bytes(raw[41:43], "big") or None
-        return (
-            uuid.UUID(bytes=raw[1:17]),
-            uuid.UUID(bytes=raw[17:33]),
-            int.from_bytes(raw[33:37], "big"),
-            views[raw[37]],
-            source_page,
-            views[raw[40]],
-            target_page,
-            str(int.from_bytes(raw[43:51], "big")),
-        )
-    except (ValueError, UnicodeEncodeError) as exc:
-        raise PluginAPIError("invalid_control", "Review navigation token is invalid", 422) from exc
 
 
 def _render_embed(
     projection_id: uuid.UUID, payload: dict[str, Any]
-) -> tuple[object, object | None]:
+) -> tuple[object, None]:
     import discord
 
     model = payload.get("embed")
@@ -2274,6 +2121,13 @@ def _render_embed(
         "footer",
     }:
         raise PluginAPIError("invalid_embed", "Embed model contains unsupported fields", 422)
+    controls = payload.get("controls", [])
+    if controls != []:
+        raise PluginAPIError(
+            "invalid_control",
+            "Generic projections cannot carry interactive controls; use persisted semantic options",
+            422,
+        )
     title = _safe_text(model.get("title"), 256, "title")
     description_value = model.get("description")
     description = (
@@ -2319,468 +2173,11 @@ def _render_embed(
         )
     if aggregate >= 6000:
         raise PluginAPIError("invalid_embed", "Embed aggregate size exceeds its bound", 422)
-
-    controls = payload.get("controls", [])
-    if not isinstance(controls, list) or len(controls) > 10:
-        raise PluginAPIError("invalid_control", "Control set exceeds its bound", 422)
-    view = None
-    if controls:
-        view = discord.ui.View(timeout=None)
-        kinds = {str(control.get("kind")) for control in controls if isinstance(control, dict)}
-        if "approval" in kinds:
-            decisions: set[str] = set()
-            approval_ids: set[uuid.UUID] = set()
-            tokens: set[str] = set()
-            for control in (
-                item
-                for item in controls
-                if isinstance(item, dict) and item.get("kind") == "approval"
-            ):
-                if not isinstance(control, dict) or set(control) != {
-                    "kind",
-                    "decision",
-                    "label",
-                    "approval_id",
-                    "token",
-                }:
-                    raise PluginAPIError("invalid_control", "Control descriptor is invalid", 422)
-                decision = str(control["decision"])
-                if decision not in {"approve", "reject"}:
-                    raise PluginAPIError("invalid_control", "Control type is not allowed", 422)
-                approval_id = uuid.UUID(str(control["approval_id"]))
-                token = str(control["token"])
-                token_approval, token_projection = _decode_control(token)
-                if token_approval != approval_id or token_projection != projection_id:
-                    raise PluginAPIError("invalid_control", "Control binding does not match", 422)
-                decisions.add(decision)
-                approval_ids.add(approval_id)
-                tokens.add(token)
-                label = "Approve" if decision == "approve" else "Reject"
-                if control["label"] != label:
-                    raise PluginAPIError("invalid_control", "Control label is not canonical", 422)
-                view.add_item(
-                    discord.ui.Button(
-                        label=label,
-                        style=(
-                            discord.ButtonStyle.success
-                            if decision == "approve"
-                            else discord.ButtonStyle.danger
-                        ),
-                        custom_id=f"dkt:{decision[0]}:{token}",
-                        row=0,
-                    )
-                )
-            proposal_actions = [
-                item
-                for item in controls
-                if isinstance(item, dict) and item.get("kind") == "proposal_action"
-            ]
-            conflict_selects = [
-                item
-                for item in controls
-                if isinstance(item, dict)
-                and item.get("kind") == "string_select"
-                and item.get("field") == "conflict_resolution"
-            ]
-            valid_decisions = (
-                decisions == {"approve", "reject"}
-                or (
-                    decisions == {"reject"}
-                    and len(proposal_actions) == 1
-                    and proposal_actions[0].get("transition") == "proposal_refresh"
-                )
-                or (decisions == {"reject"} and len(conflict_selects) == 1)
-            )
-            if not valid_decisions or len(approval_ids) != 1 or len(tokens) != 1:
-                raise PluginAPIError("invalid_control", "Approval pair is inconsistent", 422)
-        if "local_action" in kinds:
-            if not kinds.issubset({"local_action", "review_navigation"}):
-                raise PluginAPIError(
-                    "invalid_control", "Local controls cannot mix with proposal controls", 422
-                )
-            action_types: set[str] = set()
-            for control in (
-                item
-                for item in controls
-                if isinstance(item, dict) and item.get("kind") == "local_action"
-            ):
-                if not isinstance(control, dict) or set(control) != {
-                    "kind",
-                    "action_type",
-                    "label",
-                    "action_id",
-                    "action_revision_id",
-                    "token",
-                }:
-                    raise PluginAPIError("invalid_control", "Control descriptor is invalid", 422)
-                action_type = str(control["action_type"])
-                labels = {
-                    "snooze_queue_item": "Snooze until tomorrow",
-                    "acknowledge_queue_item": "Acknowledge",
-                    "ignore_queue_item": "Ignore",
-                }
-                if action_type not in labels or control["label"] != labels[action_type]:
-                    raise PluginAPIError("invalid_control", "Local control is not canonical", 422)
-                uuid.UUID(str(control["action_id"]))
-                revision_id = uuid.UUID(str(control["action_revision_id"]))
-                token = str(control["token"])
-                token_revision, token_projection = _decode_local_control(token)
-                if token_revision != revision_id or token_projection != projection_id:
-                    raise PluginAPIError("invalid_control", "Local control binding differs", 422)
-                action_types.add(action_type)
-                view.add_item(
-                    discord.ui.Button(
-                        label=labels[action_type],
-                        style=(
-                            discord.ButtonStyle.secondary
-                            if action_type == "snooze_queue_item"
-                            else discord.ButtonStyle.success
-                            if action_type == "acknowledge_queue_item"
-                            else discord.ButtonStyle.danger
-                        ),
-                        custom_id=f"dkt:l:{token}",
-                        row=0,
-                    )
-                )
-            if action_types not in (
-                {"ignore_queue_item"},
-                {"snooze_queue_item", "ignore_queue_item"},
-                {"snooze_queue_item"},
-                {"acknowledge_queue_item"},
-                {"snooze_queue_item", "acknowledge_queue_item"},
-            ) or len(action_types) != len(
-                [
-                    item
-                    for item in controls
-                    if isinstance(item, dict) and item.get("kind") == "local_action"
-                ]
-            ):
-                raise PluginAPIError("invalid_control", "Local control set is inconsistent", 422)
-        if "string_select" in kinds:
-            if "local_action" in kinds or not kinds.issubset(
-                {"approval", "string_select", "proposal_action", "review_navigation"}
-            ):
-                raise PluginAPIError("invalid_control", "Control kinds are incompatible", 422)
-            rows: set[int] = set()
-            custom_ids: set[str] = set()
-            for control in (
-                item
-                for item in controls
-                if isinstance(item, dict) and item.get("kind") == "string_select"
-            ):
-                if set(control) != {
-                    "kind",
-                    "field",
-                    "label",
-                    "placeholder",
-                    "row",
-                    "min_values",
-                    "max_values",
-                    "token",
-                    "options",
-                }:
-                    raise PluginAPIError("invalid_control", "Select descriptor is invalid", 422)
-                field = str(control["field"])
-                if field not in {"priority", "reminder_preset", "conflict_resolution"}:
-                    raise PluginAPIError("invalid_control", "Select field is not allowlisted", 422)
-                row = int(control["row"])
-                if row not in {1, 2, 3, 4} or row in rows:
-                    raise PluginAPIError("invalid_control", "Select action row is invalid", 422)
-                rows.add(row)
-                if int(control["min_values"]) != 1 or int(control["max_values"]) != 1:
-                    raise PluginAPIError(
-                        "invalid_control", "Select must choose exactly one value", 422
-                    )
-                token = str(control["token"])
-                _revision, token_projection, token_field = _decode_proposal_control(token)
-                if token_projection != projection_id or token_field != field:
-                    raise PluginAPIError("invalid_control", "Select binding does not match", 422)
-                custom_id = f"dkt:p:{token}"
-                if custom_id in custom_ids:
-                    raise PluginAPIError("invalid_control", "Select custom ID is duplicated", 422)
-                custom_ids.add(custom_id)
-                options = control["options"]
-                if not isinstance(options, list) or not 1 <= len(options) <= 25:
-                    raise PluginAPIError("invalid_control", "Select option count is invalid", 422)
-                rendered_options = []
-                defaults = 0
-                for option in options:
-                    if not isinstance(option, dict) or set(option) != {
-                        "label",
-                        "value",
-                        "description",
-                        "default",
-                    }:
-                        raise PluginAPIError("invalid_control", "Select option is invalid", 422)
-                    default = bool(option["default"])
-                    defaults += int(default)
-                    rendered_options.append(
-                        discord.SelectOption(
-                            label=_escaped(
-                                _safe_text(option["label"], 100, "option.label"),
-                                100,
-                            ),
-                            value=_safe_text(option["value"], 100, "option.value"),
-                            description=_escaped(
-                                _safe_text(
-                                    option["description"],
-                                    100,
-                                    "option.description",
-                                ),
-                                100,
-                            ),
-                            default=default,
-                        )
-                    )
-                if defaults != 1:
-                    raise PluginAPIError(
-                        "invalid_control",
-                        "Select must identify one current value",
-                        422,
-                    )
-                view.add_item(
-                    discord.ui.Select(
-                        placeholder=_escaped(
-                            _safe_text(
-                                control["placeholder"],
-                                150,
-                                "select.placeholder",
-                            ),
-                            150,
-                        ),
-                        min_values=1,
-                        max_values=1,
-                        options=rendered_options,
-                        custom_id=custom_id,
-                        row=row,
-                    )
-                )
-        if "proposal_action" in kinds:
-            if "local_action" in kinds or not kinds.issubset(
-                {
-                    "approval",
-                    "string_select",
-                    "proposal_action",
-                    "review_navigation",
-                }
-            ):
-                raise PluginAPIError(
-                    "invalid_control", "Proposal action kinds are incompatible", 422
-                )
-            transitions: set[str] = set()
-            for control in (
-                item
-                for item in controls
-                if isinstance(item, dict) and item.get("kind") == "proposal_action"
-            ):
-                if set(control) != {
-                    "kind",
-                    "transition",
-                    "label",
-                    "row",
-                    "action_revision_id",
-                    "token",
-                }:
-                    raise PluginAPIError(
-                        "invalid_control", "Proposal action descriptor is invalid", 422
-                    )
-                transition = str(control["transition"])
-                labels = {
-                    "proposal_edit": "Edit details",
-                    "proposal_refresh": "Rebuild preview",
-                    "proposal_snooze": "Snooze until tomorrow",
-                }
-                fields = {
-                    "proposal_edit": "edit",
-                    "proposal_refresh": "refresh",
-                    "proposal_snooze": "snooze",
-                }
-                if transition not in labels or control["label"] != labels[transition]:
-                    raise PluginAPIError("invalid_control", "Proposal action is not canonical", 422)
-                expected_row = (
-                    0
-                    if transition == "proposal_snooze"
-                    else 4
-                    if transition == "proposal_edit" and conflict_selects
-                    else 3
-                )
-                if int(control["row"]) != expected_row:
-                    raise PluginAPIError("invalid_control", "Proposal action row is invalid", 422)
-                revision_id = uuid.UUID(str(control["action_revision_id"]))
-                token = str(control["token"])
-                token_revision, token_projection, token_field = _decode_proposal_control(token)
-                if (
-                    token_revision != revision_id
-                    or token_projection != projection_id
-                    or token_field != fields[transition]
-                ):
-                    raise PluginAPIError(
-                        "invalid_control", "Proposal action binding does not match", 422
-                    )
-                transitions.add(transition)
-                view.add_item(
-                    discord.ui.Button(
-                        label=labels[transition],
-                        style=(
-                            discord.ButtonStyle.primary
-                            if transition == "proposal_snooze"
-                            else discord.ButtonStyle.secondary
-                        ),
-                        custom_id=f"dkt:p:{token}",
-                        row=expected_row,
-                    )
-                )
-            if len(transitions) != len(
-                [
-                    item
-                    for item in controls
-                    if isinstance(item, dict) and item.get("kind") == "proposal_action"
-                ]
-            ):
-                raise PluginAPIError("invalid_control", "Proposal actions are duplicated", 422)
-        if "review_navigation" in kinds:
-            if not kinds.issubset(
-                {
-                    "approval",
-                    "local_action",
-                    "string_select",
-                    "proposal_action",
-                    "review_navigation",
-                }
-            ):
-                raise PluginAPIError(
-                    "invalid_control", "Review navigation control mix is invalid", 422
-                )
-            seen: set[tuple[str, int | None, str, int | None]] = set()
-            projection_version = int(payload["projection_version"])
-            for control in (
-                item
-                for item in controls
-                if isinstance(item, dict) and item.get("kind") == "review_navigation"
-            ):
-                if set(control) != {
-                    "kind",
-                    "transition",
-                    "label",
-                    "row",
-                    "action_revision_id",
-                    "source_view",
-                    "source_page",
-                    "target_view",
-                    "target_page",
-                    "token",
-                }:
-                    raise PluginAPIError(
-                        "invalid_control",
-                        "Review navigation descriptor is invalid",
-                        422,
-                    )
-                if control["transition"] != "proposal_review_navigate":
-                    raise PluginAPIError(
-                        "invalid_control", "Review transition is not canonical", 422
-                    )
-                revision_id = uuid.UUID(str(control["action_revision_id"]))
-                source_view = str(control["source_view"])
-                target_view = str(control["target_view"])
-                source_page = control["source_page"]
-                target_page = control["target_page"]
-                source_page = None if source_page is None else int(source_page)
-                target_page = None if target_page is None else int(target_page)
-                token = str(control["token"])
-                (
-                    token_revision,
-                    token_projection,
-                    token_version,
-                    token_source_view,
-                    token_source_page,
-                    token_target_view,
-                    token_target_page,
-                    token_actor,
-                ) = _decode_review_navigation(token)
-                if (
-                    token_revision != revision_id
-                    or token_projection != projection_id
-                    or token_version != projection_version
-                    or token_source_view != source_view
-                    or token_source_page != source_page
-                    or token_target_view != target_view
-                    or token_target_page != target_page
-                    or token_actor != str(int(_configured_identity()[2]))
-                ):
-                    raise PluginAPIError(
-                        "invalid_control",
-                        "Review navigation binding does not match",
-                        422,
-                    )
-                key = (source_view, source_page, target_view, target_page)
-                if key in seen:
-                    raise PluginAPIError("invalid_control", "Review navigation is duplicated", 422)
-                seen.add(key)
-                canonical_label: str | None = None
-                if source_view == "summary" and target_view == "schedule_review":
-                    canonical_label = "Begin review"
-                elif source_view == "summary" and target_view == "brief_review":
-                    canonical_label = "Review decisions"
-                elif source_view == "summary" and target_view == "schedule_failures":
-                    canonical_label = "View failures"
-                elif source_view == "brief_review" and target_view == "summary":
-                    canonical_label = "Back to brief"
-                elif source_view == "schedule_review" and target_view == "summary":
-                    canonical_label = "Back to summary"
-                elif source_view == "schedule_failures" and target_view == "summary":
-                    canonical_label = "Back to results"
-                elif source_view == "decision" and target_view == "schedule_review":
-                    canonical_label = "Back to review"
-                elif source_view == "schedule_review" and target_view == "decision":
-                    canonical_label = "Continue to decision"
-                elif (
-                    source_view == target_view
-                    and source_page is not None
-                    and target_page == source_page - 1
-                ):
-                    canonical_label = "Previous"
-                elif (
-                    source_view == target_view
-                    and source_page is not None
-                    and target_page == source_page + 1
-                ):
-                    canonical_label = "Next"
-                if (
-                    canonical_label is None
-                    or control["label"] != canonical_label
-                    or int(control["row"])
-                    != (4 if "brief_review" in {source_view, target_view} else 1)
-                ):
-                    raise PluginAPIError(
-                        "invalid_control",
-                        "Review navigation is not canonical",
-                        422,
-                    )
-                view.add_item(
-                    discord.ui.Button(
-                        label=canonical_label,
-                        style=discord.ButtonStyle.secondary,
-                        custom_id=f"dkt:n:{token}",
-                        row=(4 if "brief_review" in {source_view, target_view} else 1),
-                    )
-                )
-        if not kinds.issubset(
-            {
-                "approval",
-                "local_action",
-                "string_select",
-                "proposal_action",
-                "review_navigation",
-            }
-        ):
-            raise PluginAPIError("invalid_control", "Control kind is not allowed", 422)
     projection_ref = base64.urlsafe_b64encode(projection_id.bytes).decode().rstrip("=")
     context_prefix = f"{_escaped(footer_context, 384)} · " if footer_context else ""
     footer = f"{context_prefix}ref {projection_ref} · v{int(payload['projection_version'])}"
     embed.set_footer(text=footer)
-    return embed, view
-
-
+    return embed, None
 def _message_marker(message: object) -> str:
     embeds = getattr(message, "embeds", [])
     if len(embeds) != 1 or embeds[0].footer is None:
@@ -3587,31 +2984,6 @@ async def _quiesce_semantic_prompt(
     }
 
 
-def _post_button_response(payload: dict[str, Any], *, local_action: bool = False) -> dict[str, Any]:
-    endpoint = "local-action-responses" if local_action else "approval-responses"
-    request = urllib.request.Request(
-        f"{os.environ['DOCKET_INTERNAL_URL'].rstrip('/')}/internal/v1/discord/{endpoint}",
-        data=json.dumps(payload).encode(),
-        headers={
-            "Authorization": f"Bearer {_read_token()}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            body = json.load(response)
-    except urllib.error.HTTPError as exc:
-        try:
-            detail = json.load(exc).get("detail", {}).get("message")
-        except (ValueError, AttributeError):
-            detail = None
-        raise PluginAPIError(
-            "docket_interaction_rejected", detail or "Docket rejected the interaction", exc.code
-        ) from exc
-    if not isinstance(body, dict):
-        raise PluginAPIError("invalid_docket_response", "Docket returned invalid JSON", 502)
-    return body
 
 
 def _post_semantic_option_selection(payload: dict[str, Any]) -> dict[str, Any]:
@@ -3622,202 +2994,6 @@ def _post_semantic_option_selection(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
 
-async def _open_custom_reminder_modal(
-    interaction: object,
-    *,
-    action_revision_id: uuid.UUID,
-    projection_id: uuid.UUID,
-    token: str,
-    context: dict[str, str],
-) -> None:
-    import discord
-
-    class ReminderLeadsModal(discord.ui.Modal):
-        def __init__(self) -> None:
-            super().__init__(title="Custom reminder leads", timeout=300)
-            self.leads = discord.ui.TextInput(
-                label="Lead times in minutes",
-                placeholder="For example: 5, 10",
-                required=True,
-                min_length=1,
-                max_length=100,
-                custom_id="reminder_leads_minutes",
-            )
-            self.add_item(self.leads)
-
-        async def on_submit(self, modal_interaction: object) -> None:
-            try:
-                guild_id, queue_channel_id, operator_id = _configured_identity()
-                channel = modal_interaction.channel
-                if (
-                    str(modal_interaction.user.id) != operator_id
-                    or str(modal_interaction.guild_id) != guild_id
-                    or str(getattr(channel, "parent_id", None)) != queue_channel_id
-                    or str(modal_interaction.channel_id) != context["channel_id"]
-                    or not isinstance(channel, discord.Thread)
-                ):
-                    raise PluginAPIError(
-                        "unauthorized_interaction",
-                        "This Docket reminder editor is not authorized",
-                        403,
-                    )
-                await modal_interaction.response.defer(ephemeral=True, thinking=True)
-                payload = {
-                    **context,
-                    "request_id": str(uuid.uuid4()),
-                    "discord_interaction_id": str(modal_interaction.id),
-                    "responded_at": datetime.now(UTC).isoformat(),
-                    "action_revision_id": str(action_revision_id),
-                    "action_token": token,
-                    "transition": "proposal_edit",
-                    "field": "reminder_preset",
-                    "modal_values": {
-                        "reminder_leads_minutes": str(self.leads.value),
-                    },
-                }
-                result = await asyncio.to_thread(_post_button_response, payload, local_action=True)
-                await modal_interaction.followup.send(
-                    "Updated reminders to "
-                    f"{result.get('value')}; a new approval revision is being projected",
-                    ephemeral=True,
-                )
-            except PluginAPIError as exc:
-                logger.warning("Docket reminder modal failed: %s", exc.code)
-                if modal_interaction.response.is_done():
-                    await modal_interaction.followup.send(str(exc), ephemeral=True)
-                else:
-                    await modal_interaction.response.send_message(str(exc), ephemeral=True)
-            except Exception:
-                logger.exception("Unexpected Docket reminder modal failure")
-                if modal_interaction.response.is_done():
-                    await modal_interaction.followup.send(
-                        "Docket could not apply that reminder edit.", ephemeral=True
-                    )
-                else:
-                    await modal_interaction.response.send_message(
-                        "Docket could not apply that reminder edit.", ephemeral=True
-                    )
-
-    await interaction.response.send_modal(ReminderLeadsModal())
-
-
-async def _open_event_edit_modal(
-    interaction: object,
-    *,
-    action_revision_id: uuid.UUID,
-    projection_id: uuid.UUID,
-    token: str,
-    context: dict[str, str],
-) -> None:
-    import discord
-
-    class EventEditModal(discord.ui.Modal):
-        def __init__(self) -> None:
-            super().__init__(title="Edit event details", timeout=300)
-            self.title_input = discord.ui.TextInput(
-                label="New title",
-                placeholder="Leave blank to preserve",
-                required=False,
-                max_length=512,
-                custom_id="title",
-            )
-            self.location = discord.ui.TextInput(
-                label="New location",
-                placeholder="Leave blank to preserve; [clear] removes it",
-                required=False,
-                max_length=1000,
-                custom_id="location",
-            )
-            self.operator_tags = discord.ui.TextInput(
-                label="Operator tags",
-                placeholder="Comma-separated; [clear] removes all",
-                required=False,
-                max_length=300,
-                custom_id="operator_tags",
-            )
-            self.reminders = discord.ui.TextInput(
-                label="Reminder leads in minutes",
-                placeholder="For example: 5, 10",
-                required=False,
-                max_length=100,
-                custom_id="reminder_leads_minutes",
-            )
-            for item in (
-                self.title_input,
-                self.location,
-                self.operator_tags,
-                self.reminders,
-            ):
-                self.add_item(item)
-
-        async def on_submit(self, modal_interaction: object) -> None:
-            try:
-                guild_id, queue_channel_id, operator_id = _configured_identity()
-                channel = modal_interaction.channel
-                if (
-                    str(modal_interaction.user.id) != operator_id
-                    or str(modal_interaction.guild_id) != guild_id
-                    or str(getattr(channel, "parent_id", None)) != queue_channel_id
-                    or str(modal_interaction.channel_id) != context["channel_id"]
-                    or not isinstance(channel, discord.Thread)
-                ):
-                    raise PluginAPIError(
-                        "unauthorized_interaction",
-                        "This Docket proposal editor is not authorized",
-                        403,
-                    )
-                values = {
-                    key: value
-                    for key, value in {
-                        "title": str(self.title_input.value).strip(),
-                        "location": str(self.location.value).strip(),
-                        "operator_tags": str(self.operator_tags.value).strip(),
-                        "reminder_leads_minutes": str(self.reminders.value).strip(),
-                    }.items()
-                    if value
-                }
-                if not values:
-                    await modal_interaction.response.send_message(
-                        "Enter at least one replacement value.", ephemeral=True
-                    )
-                    return
-                await modal_interaction.response.defer(ephemeral=True, thinking=True)
-                payload = {
-                    **context,
-                    "request_id": str(uuid.uuid4()),
-                    "discord_interaction_id": str(modal_interaction.id),
-                    "responded_at": datetime.now(UTC).isoformat(),
-                    "action_revision_id": str(action_revision_id),
-                    "action_token": token,
-                    "transition": "proposal_edit",
-                    "modal_values": values,
-                }
-                result = await asyncio.to_thread(_post_button_response, payload, local_action=True)
-                await modal_interaction.followup.send(
-                    "Proposal edited; revision "
-                    f"{result.get('revision')} is being projected for fresh approval",
-                    ephemeral=True,
-                )
-            except PluginAPIError as exc:
-                logger.warning("Docket proposal modal failed: %s", exc.code)
-                if modal_interaction.response.is_done():
-                    await modal_interaction.followup.send(str(exc), ephemeral=True)
-                else:
-                    await modal_interaction.response.send_message(str(exc), ephemeral=True)
-            except Exception:
-                logger.exception("Unexpected Docket proposal modal failure")
-                if modal_interaction.response.is_done():
-                    await modal_interaction.followup.send(
-                        "Docket could not apply that proposal edit.", ephemeral=True
-                    )
-                else:
-                    await modal_interaction.response.send_message(
-                        "Docket could not apply that proposal edit.", ephemeral=True
-                    )
-
-    await interaction.response.send_modal(EventEditModal())
-
-
 async def _on_docket_interaction(interaction: object) -> None:
     import discord
 
@@ -3826,294 +3002,118 @@ async def _on_docket_interaction(interaction: object) -> None:
     match = _CONTROL_ID.fullmatch(str(custom_id))
     if match is None:
         return
+    if os.environ.get("DOCKET_STABLE_INGRESS_ENABLED", "").casefold() in {
+        "1",
+        "true",
+        "yes",
+    }:
+        return
     try:
         token = match.group(2)
-        semantic_option = match.group(1) == "s"
-        if semantic_option:
-            if os.environ.get("DOCKET_STABLE_INGRESS_ENABLED", "").casefold() in {
-                "1",
-                "true",
-                "yes",
-            }:
-                return
-            guild_id, queue_channel_id, operator_id = _configured_identity()
-            chat_channel_id = os.environ.get("DOCKET_CHAT_CHANNEL_ID", "")
-            channel = interaction.channel
-            parent_id = getattr(channel, "parent_id", None)
-            message = interaction.message
-            channel_id = str(interaction.channel_id)
-            authorized_surface = (channel_id == chat_channel_id and parent_id is None) or (
-                str(parent_id) == queue_channel_id
-                and channel_id != queue_channel_id
-                and isinstance(channel, discord.Thread)
+        guild_id, queue_channel_id, operator_id = _configured_identity()
+        chat_channel_id = os.environ.get("DOCKET_CHAT_CHANNEL_ID", "")
+        channel = interaction.channel
+        parent_id = getattr(channel, "parent_id", None)
+        message = interaction.message
+        channel_id = str(interaction.channel_id)
+        authorized_surface = (channel_id == chat_channel_id and parent_id is None) or (
+            str(parent_id) == queue_channel_id
+            and channel_id != queue_channel_id
+            and isinstance(channel, discord.Thread)
+        )
+        if (
+            str(interaction.user.id) != operator_id
+            or str(interaction.guild_id) != guild_id
+            or not authorized_surface
+            or message is None
+        ):
+            raise PluginAPIError(
+                "unauthorized_interaction",
+                "This Docket semantic option is not authorized",
+                403,
             )
-            if (
-                str(interaction.user.id) != operator_id
-                or str(interaction.guild_id) != guild_id
-                or not authorized_surface
-                or message is None
-            ):
-                raise PluginAPIError(
-                    "unauthorized_interaction",
-                    "This Docket semantic option is not authorized",
-                    403,
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        payload = {
+            "request_id": str(uuid.uuid4()),
+            "discord_interaction_id": str(interaction.id),
+            "discord_user_id": str(interaction.user.id),
+            "guild_id": str(interaction.guild_id),
+            "channel_id": channel_id,
+            "parent_channel_id": str(parent_id) if parent_id is not None else None,
+            "message_id": str(message.id),
+            "option_token": token,
+            "responded_at": datetime.now(UTC).isoformat(),
+            "gateway_instance_ref": _GATEWAY_INSTANCE_REF,
+        }
+        result = await asyncio.to_thread(_post_semantic_option_selection, payload)
+        response_ref = str(result.get("response_ref") or "")
+        response_text = str(result.get("response_text") or "").strip()
+        if _RESPONSE_REF.fullmatch(response_ref) is None or not response_text:
+            raise PluginAPIError(
+                "invalid_docket_response",
+                "Docket did not return a persisted semantic-option response",
+                502,
+            )
+        delivered = result.get("response_delivery_state") == "delivered"
+        if not delivered:
+            try:
+                await message.reply(
+                    response_text,
+                    mention_author=False,
+                    allowed_mentions=discord.AllowedMentions.none(),
                 )
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            payload = {
-                "request_id": str(uuid.uuid4()),
-                "discord_interaction_id": str(interaction.id),
-                "discord_user_id": str(interaction.user.id),
-                "guild_id": str(interaction.guild_id),
-                "channel_id": channel_id,
-                "parent_channel_id": str(parent_id) if parent_id is not None else None,
-                "message_id": str(message.id),
-                "option_token": token,
-                "responded_at": datetime.now(UTC).isoformat(),
-                "gateway_instance_ref": _GATEWAY_INSTANCE_REF,
-            }
-            result = await asyncio.to_thread(_post_semantic_option_selection, payload)
-            response_ref = str(result.get("response_ref") or "")
-            response_text = str(result.get("response_text") or "").strip()
-            if _RESPONSE_REF.fullmatch(response_ref) is None or not response_text:
-                raise PluginAPIError(
-                    "invalid_docket_response",
-                    "Docket did not return a persisted semantic-option response",
-                    502,
-                )
-            delivered = result.get("response_delivery_state") == "delivered"
-            if not delivered:
-                try:
-                    await message.reply(
-                        response_text,
-                        mention_author=False,
-                        allowed_mentions=discord.AllowedMentions.none(),
-                    )
-                except discord.HTTPException:
-                    await asyncio.to_thread(
-                        _post_agent_response_delivery,
-                        {
-                            "response_ref": response_ref,
-                            "guild_id": str(interaction.guild_id),
-                            "source_channel_id": channel_id,
-                            "parent_channel_id": (
-                                str(parent_id) if parent_id is not None else None
-                            ),
-                            "source_message_id": str(interaction.id),
-                            "actor_id": str(interaction.user.id),
-                        },
-                        delivered=False,
-                    )
-                    raise
+            except discord.HTTPException:
                 await asyncio.to_thread(
                     _post_agent_response_delivery,
                     {
                         "response_ref": response_ref,
                         "guild_id": str(interaction.guild_id),
                         "source_channel_id": channel_id,
-                        "parent_channel_id": (str(parent_id) if parent_id is not None else None),
+                        "parent_channel_id": (
+                            str(parent_id) if parent_id is not None else None
+                        ),
                         "source_message_id": str(interaction.id),
                         "actor_id": str(interaction.user.id),
                     },
-                    delivered=True,
+                    delivered=False,
                 )
-            try:
-                await message.edit(view=None)
-            except discord.HTTPException as exc:
-                logger.warning(
-                    "Docket recorded semantic selection but could not disable controls: %s",
-                    exc,
-                )
-            state = str(result.get("state", "recorded"))
-            acknowledgement = (
-                "Decision recorded and committed."
-                if state == "committed"
-                else "Decision recorded; execution is blocked, but no new authorization is needed."
-            )
-            await interaction.followup.send(acknowledgement, ephemeral=True)
-            return
-        local_action = match.group(1) == "l"
-        proposal_control = match.group(1) == "p"
-        review_navigation = match.group(1) == "n"
-        navigation = _decode_review_navigation(token) if review_navigation else None
-        if navigation is not None:
-            action_revision_id, projection_id = navigation[:2]
-            approval_id = None
-            proposal_field = None
-        elif local_action:
-            action_revision_id, projection_id = _decode_local_control(token)
-            approval_id = None
-            proposal_field = None
-        elif proposal_control:
-            action_revision_id, projection_id, proposal_field = _decode_proposal_control(token)
-            approval_id = None
-        else:
-            approval_id, projection_id = _decode_control(token)
-            proposal_field = None
-        guild_id, queue_channel_id, operator_id = _configured_identity()
-        channel = interaction.channel
-        parent_id = getattr(channel, "parent_id", None)
-        message = interaction.message
-        if (
-            str(interaction.user.id) != operator_id
-            or str(interaction.guild_id) != guild_id
-            or str(parent_id) != queue_channel_id
-            or not isinstance(channel, discord.Thread)
-            or message is None
-            or (
-                navigation is not None
-                and not hmac.compare_digest(navigation[7], str(int(interaction.user.id)))
-            )
-        ):
-            raise PluginAPIError(
-                "unauthorized_interaction", "This Docket control is not authorized", 403
-            )
-        decision = "approve" if match.group(1) == "a" else "reject"
-        context = {
-            "request_id": str(uuid.uuid4()),
-            "discord_interaction_id": str(interaction.id),
-            "discord_user_id": str(interaction.user.id),
-            "guild_id": str(interaction.guild_id),
-            "channel_id": str(interaction.channel_id),
-            "parent_channel_id": str(parent_id),
-            "projection_id": str(projection_id),
-            "message_id": str(message.id),
-            "responded_at": datetime.now(UTC).isoformat(),
-        }
-        proposal_value: str | None = None
-        if proposal_control:
-            if proposal_field == "edit":
-                await _open_event_edit_modal(
-                    interaction,
-                    action_revision_id=action_revision_id,
-                    projection_id=projection_id,
-                    token=token,
-                    context=context,
-                )
-                return
-            if proposal_field not in {"refresh", "snooze"}:
-                values = data.get("values", []) if isinstance(data, dict) else []
-                if (
-                    proposal_field not in {"priority", "reminder_preset", "conflict_resolution"}
-                    or not isinstance(values, list)
-                    or len(values) != 1
-                ):
-                    raise PluginAPIError(
-                        "invalid_control",
-                        "Proposal select returned an invalid value",
-                        422,
-                    )
-                proposal_value = str(values[0])
-                if proposal_field == "reminder_preset" and proposal_value == "custom":
-                    await _open_custom_reminder_modal(
-                        interaction,
-                        action_revision_id=action_revision_id,
-                        projection_id=projection_id,
-                        token=token,
-                        context=context,
-                    )
-                    return
-        if navigation is not None:
-            await interaction.response.defer()
-            payload = {
-                **context,
-                "action_revision_id": str(action_revision_id),
-                "action_token": token,
-                "transition": "proposal_review_navigate",
-                "source_view": navigation[3],
-                "source_page": navigation[4],
-                "target_view": navigation[5],
-                "target_page": navigation[6],
-            }
-            await asyncio.to_thread(_post_button_response, payload, local_action=True)
-            return
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        if local_action:
-            payload = {
-                **context,
-                "action_revision_id": str(action_revision_id),
-                "action_token": token,
-            }
-            result = await asyncio.to_thread(_post_button_response, payload, local_action=True)
-            acknowledgement = (
-                "Snoozed until the next daily rollover"
-                if result.get("action_type") == "snooze_queue_item"
-                else "Acknowledged"
-                if result.get("action_type") == "acknowledge_queue_item"
-                else "Ignored"
-            )
-        elif proposal_control:
-            assert proposal_field is not None
-            if proposal_field in {"refresh", "snooze"}:
-                payload = {
-                    **context,
-                    "action_revision_id": str(action_revision_id),
-                    "action_token": token,
-                    "transition": (
-                        "proposal_refresh" if proposal_field == "refresh" else "proposal_snooze"
+                raise
+            await asyncio.to_thread(
+                _post_agent_response_delivery,
+                {
+                    "response_ref": response_ref,
+                    "guild_id": str(interaction.guild_id),
+                    "source_channel_id": channel_id,
+                    "parent_channel_id": (
+                        str(parent_id) if parent_id is not None else None
                     ),
-                }
-            else:
-                assert proposal_value is not None
-                payload = {
-                    **context,
-                    "action_revision_id": str(action_revision_id),
-                    "action_token": token,
-                    "transition": "proposal_field_change",
-                    "field": proposal_field,
-                    "value": proposal_value,
-                }
-            result = await asyncio.to_thread(_post_button_response, payload, local_action=True)
-            acknowledgement = (
-                (
-                    "Calendar state refreshed; "
-                    f"proposal revision {result.get('revision')} is current"
-                    if proposal_field == "refresh"
-                    else "Snoozed until tomorrow's Docket queue"
-                )
-                if proposal_field in {"refresh", "snooze"}
-                else (
-                    f"Updated {result.get('field')} to {result.get('value')}; "
-                    "a new approval revision is being projected"
-                )
+                    "source_message_id": str(interaction.id),
+                    "actor_id": str(interaction.user.id),
+                },
+                delivered=True,
             )
-        else:
-            payload = {
-                **context,
-                "approval_id": str(approval_id),
-                "approval_token": token,
-                "short_code": None,
-                "decision": decision,
-            }
-            result = await asyncio.to_thread(_post_button_response, payload)
-            recorded_decision = str(result.get("decision", decision))
-            operation = result.get("operation_id")
-            if result.get("already_recorded"):
-                recorded_label = "approved" if recorded_decision == "approve" else "rejected"
-                acknowledgement = f"Already {recorded_label} — refreshing this card"
-            else:
-                acknowledgement = (
-                    "Approved — queued for execution"
-                    if recorded_decision == "approve"
-                    else "Rejected — no external action queued"
-                )
-            if operation and not result.get("already_recorded"):
-                acknowledgement += f" ({str(operation)[:8]})"
-            try:
-                await message.edit(view=None)
-            except discord.HTTPException as exc:
-                logger.warning(
-                    "Docket accepted the decision but could not disable stale controls: %s",
-                    exc,
-                )
+        try:
+            await message.edit(view=None)
+        except discord.HTTPException as exc:
+            logger.warning(
+                "Docket recorded semantic selection but could not disable controls: %s",
+                exc,
+            )
+        state = str(result.get("state", "recorded"))
+        acknowledgement = (
+            "Decision recorded and committed."
+            if state == "committed"
+            else "Decision recorded; execution is blocked, but no new authorization is needed."
+        )
         await interaction.followup.send(acknowledgement, ephemeral=True)
     except PluginAPIError as exc:
-        logger.warning("Docket button interaction failed: %s", exc.code)
+        logger.warning("Docket semantic-option interaction failed: %s", exc.code)
         if interaction.response.is_done():
             await interaction.followup.send(str(exc), ephemeral=True)
         else:
             await interaction.response.send_message(str(exc), ephemeral=True)
     except Exception:
-        logger.exception("Unexpected Docket button interaction failure")
+        logger.exception("Unexpected Docket semantic-option interaction failure")
         if interaction.response.is_done():
             await interaction.followup.send(
                 "Docket could not record that decision.", ephemeral=True
