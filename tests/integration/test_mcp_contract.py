@@ -99,6 +99,12 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
     }.issubset(content["properties"])
     assert "provider_intents" not in content["properties"]
     assert "ProviderIntentInput" not in commit_schema["$defs"]
+    import_scope = commit_schema["$defs"]["OperatorImportScope"]
+    assert "authorized_effects" in import_scope["properties"]
+    assert "authority_statement_refs" not in import_scope["properties"]
+    assert "Docket derives" in import_scope["properties"]["authorized_effects"][
+        "description"
+    ]
     registry_union = commit_schema["$defs"]["RegistryChangeInput"]
     assert registry_union["discriminator"]["propertyName"] == "mutation_type"
     assert registry_union["discriminator"]["mapping"]["entity_create"] == (

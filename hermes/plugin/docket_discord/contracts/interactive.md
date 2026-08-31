@@ -1,7 +1,7 @@
 # Docket Interactive Tool Contract
 
 contract_version: docket-tools-2026-08-30-v16
-contract_hash: 8fd53faf6b30d7985f3812c842e4f837ea071bd205726120104b9673c25488fa
+contract_hash: a11c76b7b9f61883ba3e24f80e5adc46b3816bdb8689c245bcbf62876ea90469
 profile: interactive
 
 Rules: MCP/Pydantic schemas define exact arguments. This contract defines selection, authority, side effects, and result handling.
@@ -10,7 +10,7 @@ Codes: P-READ=authorized profile+bounded args; P-MUT=persisted current utt_+exac
 Handling: O-STD=trust ok/state/ref and follow next; N-READ=use public refs; N-CHANGESET=ask only a genuine semantic clarification or report durable outcome; E-READ=not_found|validation_error; E-MUT=operator_utterance_authority_required|version_conflict|conflict_open|validation_error.
 ChangeSet refs: use *_ref for an existing object and *_change_id for an object created in the same atomic ChangeSet. All dependency edges validate before any effect begins.
 Items are bounded tracked context; Tasks are work; TemporalBindings attach time roles; Events are occurrences. Never launder a dated Item into an Event.
-Attachment imports require import_scope. context_only permits only source-fragment-backed Item, TemporalBinding, and Fact effects. Any broader effect requires an operator_explicit scope and a source-less operator_intent statement whose import_effect_authority exactly names those effect types.
+Attachment imports require import_scope. context_only permits only source-fragment-backed Item, TemporalBinding, and Fact effects. Any broader effect requires an operator_explicit scope whose authorized_effects exactly name those types. Docket derives the source-less authority statement; Hermes must not manufacture it or attach source_ref to operator intent.
 AttentionCase resolution uses exact case_ and caserev_; explicitly dispose only selected citem_ refs. Supporting omissions become not_pursued only on terminal closure.
 Provider projection is compiler-owned. An Event create with a resolved lane deterministically creates its required Calendar Operation in the same transaction. Never invent a separate push or repair request.
 CalendarLane create uses the public acct_ returned by docket_list_provider_accounts. Omit provider_calendar_binding to have Docket provision and bind a new Google calendar before dependent events.
