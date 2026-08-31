@@ -113,7 +113,7 @@ _DEFERRED_REPLAY_LOCK = threading.Lock()
 _DEFERRED_REPLAY_TASKS: set[asyncio.Task[None]] = set()
 
 
-def _load_interactive_tool_contract() -> tuple[str, str, str, str]:
+def _load_interactive_tool_contract() -> tuple[str, str, str, str, str]:
     content = _TOOL_CONTRACT_PATH.read_text(encoding="utf-8")
     if len(content.encode("utf-8")) > _TOOL_CONTRACT_LIMIT:
         raise RuntimeError("Docket interactive tool contract exceeds 24 KiB")
@@ -129,17 +129,32 @@ def _load_interactive_tool_contract() -> tuple[str, str, str, str]:
     expected_hash = metadata.get("contract_hash", "")
     profile = metadata.get("profile", "")
     actual_hash = hashlib.sha256(parts[2].encode("utf-8")).hexdigest()
+    prompt_rules, entries_marker, _entries = parts[2].partition("Entries:\n")
     if (
         not version
         or profile != "interactive"
         or not hmac.compare_digest(actual_hash, expected_hash)
+        or not entries_marker
     ):
         raise RuntimeError("Docket interactive tool contract metadata/hash is invalid")
-    return content, version, actual_hash, profile
+    compact_prompt = (
+        f"contract_version: {version}\n"
+        f"contract_hash: {actual_hash}\n"
+        f"profile: {profile}\n\n"
+        f"{prompt_rules.strip()}\n"
+        "The 19-tool contract remains registered exactly. Hermes progressive "
+        "tool disclosure may replace direct schemas with tool_search, tool_describe, "
+        "and tool_call; the underlying exact tool name, authenticated hooks, and "
+        "Pydantic schema still govern every invocation. Search once for the required "
+        "capabilities, describe only tools whose argument schema is needed, and do "
+        "not load unrelated mutation schemas."
+    )
+    return content, compact_prompt, version, actual_hash, profile
 
 
 (
     _INTERACTIVE_TOOL_CONTRACT,
+    _INTERACTIVE_TOOL_CONTRACT_PROMPT,
     _TOOL_CONTRACT_VERSION,
     _TOOL_CONTRACT_HASH,
     _TOOL_CONTRACT_PROFILE,
@@ -1607,9 +1622,10 @@ def _rewrite_with_source_context(
     )
     contract_context = (
         '\n\n<docket_tool_contract trusted="true">\n'
-        f"{_INTERACTIVE_TOOL_CONTRACT}"
+        f"{_INTERACTIVE_TOOL_CONTRACT_PROMPT}\n"
         "</docket_tool_contract>\n"
-        "This exact repository contract is mandatory for this interactive session."
+        "This compact projection is mandatory for this turn; the hash identifies the "
+        "complete repository contract."
     )
     rewritten = (
         f"{original_text}\n\n"
@@ -1628,7 +1644,7 @@ def _rewrite_with_source_context(
         "do not split one request across legacy mutations or manufacture additional "
         "intent indexes. Never invent Discord IDs."
     )
-    logger.info("Appended trusted Docket source context to authorized Discord message")
+    logger.info("Appended bounded trusted Docket context to authorized Discord message")
     return {"action": "rewrite", "text": rewritten}
 
 

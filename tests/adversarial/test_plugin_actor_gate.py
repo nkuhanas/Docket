@@ -185,6 +185,9 @@ def test_docket_mcp_hooks_emit_only_bounded_trace_metadata(plugin_module, monkey
     assert '<docket_tool_contract trusted="true">' in rewritten["text"]
     assert f"contract_version: {plugin_module._TOOL_CONTRACT_VERSION}" in rewritten["text"]
     assert f"contract_hash: {plugin_module._TOOL_CONTRACT_HASH}" in rewritten["text"]
+    assert "Entries:" not in rewritten["text"]
+    assert "tool_ref=ONT-TOOL" not in rewritten["text"]
+    assert len(rewritten["text"].encode("utf-8")) < 8 * 1024
     assert "profile: interactive" in rewritten["text"]
     assert "without a redundant approval phase" in rewritten["text"]
     plugin_module._on_pre_tool_call(

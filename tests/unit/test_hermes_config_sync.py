@@ -40,6 +40,15 @@ mcp_servers:
         - docket_old
       prompts: false
 custom: keep-me
+session_reset:
+  mode: none
+compression:
+  threshold: 0.85
+tools:
+  unrelated: keep-tool-setting
+auxiliary:
+  vision:
+    provider: custom
 """
     template = """mcp_servers:
   docket:
@@ -58,6 +67,18 @@ platform_toolsets:
     - cronjob
   discord:
     - terminal
+session_reset:
+  mode: both
+  idle_minutes: 120
+compression:
+  threshold: 0.50
+tools:
+  tool_search:
+    enabled: "on"
+auxiliary:
+  compression:
+    provider: codex
+    model: gpt-5.6-luna
 """
 
     updated = module.synchronize(active, template)
@@ -73,6 +94,47 @@ platform_toolsets:
     assert "  discord:\n    - terminal\n" in updated
     assert "docket_old" not in updated
     assert "        - docket_one\n        - docket_two\n" in updated
+    assert "session_reset:\n  mode: both\n  idle_minutes: 120\n" in updated
+    assert "compression:\n  threshold: 0.50\n" in updated
+    assert "unrelated: keep-tool-setting" in updated
+    assert 'tool_search:\n    enabled: "on"\n' in updated
+    assert "vision:\n    provider: custom\n" in updated
+    assert "compression:\n    provider: codex\n    model: gpt-5.6-luna\n" in updated
+
+
+def test_sync_adds_missing_performance_sections_without_replacing_parent_settings() -> None:
+    module = _module()
+    active = """display:
+  tool_progress: all
+  interim_assistant_messages: true
+  show_commentary: true
+  background_process_notifications: all
+platform_toolsets:
+  discord:
+    - terminal
+mcp_servers:
+  docket:
+    tools:
+      include:
+        - docket_old
+      prompts: false
+tools:
+  unrelated: preserve
+auxiliary:
+  vision:
+    provider: auto
+"""
+    template = Path("hermes/config.example.yaml").read_text(encoding="utf-8")
+
+    updated = module.synchronize(active, template)
+    parsed = yaml.safe_load(updated)
+
+    assert parsed["session_reset"]["mode"] == "both"
+    assert parsed["compression"]["codex_gpt55_autoraise"] is False
+    assert parsed["tools"]["unrelated"] == "preserve"
+    assert parsed["tools"]["tool_search"]["enabled"] == "on"
+    assert parsed["auxiliary"]["vision"]["provider"] == "auto"
+    assert parsed["auxiliary"]["compression"]["model"] == "gpt-5.6-luna"
 
 
 def test_sync_fails_closed_on_unmanaged_or_ambiguous_block() -> None:
@@ -116,3 +178,17 @@ def test_example_profiles_allow_exact_clean_contract_tools() -> None:
     assert set(triage["mcp_servers"]["docket-triage"]["tools"]["include"]) == set(
         contract_tool_names("triage")
     )
+    assert interactive["session_reset"] == {
+        "mode": "both",
+        "at_hour": 4,
+        "idle_minutes": 120,
+        "notify": False,
+    }
+    assert interactive["compression"]["codex_gpt55_autoraise"] is False
+    assert interactive["tools"]["tool_search"]["enabled"] == "on"
+    assert interactive["auxiliary"]["compression"] == {
+        "provider": "codex",
+        "model": "gpt-5.6-luna",
+        "timeout": 120,
+        "reasoning_effort": "low",
+    }

@@ -42,6 +42,42 @@ discord:
 
 group_sessions_per_user: true
 
+# Docket owns durable conversational/intent continuity. Hermes should retain a
+# useful short conversational window, but must not accumulate one immortal
+# per-operator transcript until the next request blocks on multi-minute
+# compression.
+session_reset:
+  mode: both
+  at_hour: 4
+  idle_minutes: 120
+  notify: false
+
+# Compress well before the provider's hard context cliff and use the cheaper,
+# faster Codex auxiliary model. Session reset is the primary bound; compression
+# remains a fallback for unusually busy two-hour windows.
+compression:
+  threshold: 0.50
+  target_ratio: 0.15
+  protect_last_n: 12
+  protect_first_n: 0
+  codex_gpt55_autoraise: false
+
+# Docket's exact discriminated mutation schemas are intentionally large. Hermes
+# progressive disclosure keeps them out of ordinary read/planning turns while
+# preserving the exact schema, scope gate, and plugin hooks when invoked.
+tools:
+  tool_search:
+    enabled: "on"
+    search_default_limit: 8
+    max_search_limit: 20
+
+auxiliary:
+  compression:
+    provider: codex
+    model: gpt-5.6-luna
+    timeout: 120
+    reasoning_effort: low
+
 plugins:
   enabled:
     - docket-discord

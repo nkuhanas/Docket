@@ -43,6 +43,59 @@ def _nested_section(document: str, parent: str, child: str) -> tuple[int, int]:
     return parent_start + child_start, parent_start + child_end
 
 
+def _optional_section_bounds(
+    document: str, header: str, *, indent: int = 0
+) -> tuple[int, int] | None:
+    try:
+        return _section_bounds(document, header, indent=indent)
+    except HermesConfigSyncError:
+        marker = f"{' ' * indent}{header}:"
+        if any(
+            line.rstrip("\r\n") == marker
+            for line in document.splitlines(keepends=True)
+        ):
+            raise
+        return None
+
+
+def _replace_or_append_top_level(active: str, template: str, header: str) -> str:
+    desired_start, desired_end = _section_bounds(template, header)
+    desired = template[desired_start:desired_end]
+    current = _optional_section_bounds(active, header)
+    if current is None:
+        separator = "" if not active or active.endswith("\n\n") else "\n"
+        return f"{active}{separator}{desired}"
+    start, end = current
+    return f"{active[:start]}{desired}{active[end:]}"
+
+
+def _replace_or_insert_nested(active: str, template: str, parent: str, child: str) -> str:
+    template_parent_start, template_parent_end = _section_bounds(template, parent)
+    template_parent = template[template_parent_start:template_parent_end]
+    desired_child_start, desired_child_end = _section_bounds(
+        template_parent, child, indent=2
+    )
+    desired_child = template_parent[desired_child_start:desired_child_end]
+
+    active_parent_bounds = _optional_section_bounds(active, parent)
+    if active_parent_bounds is None:
+        desired_parent = template[template_parent_start:template_parent_end]
+        separator = "" if not active or active.endswith("\n\n") else "\n"
+        return f"{active}{separator}{desired_parent}"
+
+    parent_start, parent_end = active_parent_bounds
+    active_parent = active[parent_start:parent_end]
+    child_bounds = _optional_section_bounds(active_parent, child, indent=2)
+    if child_bounds is None:
+        insertion = parent_end
+        separator = "" if active[:insertion].endswith("\n") else "\n"
+        return f"{active[:insertion]}{separator}{desired_child}{active[insertion:]}"
+    child_start, child_end = child_bounds
+    absolute_start = parent_start + child_start
+    absolute_end = parent_start + child_end
+    return f"{active[:absolute_start]}{desired_child}{active[absolute_end:]}"
+
+
 def _replace_discord_toolset(active: str, template: str) -> str:
     active_start, active_end = _nested_section(active, "platform_toolsets", "discord")
     template_start, template_end = _nested_section(template, "platform_toolsets", "discord")
@@ -100,7 +153,12 @@ def synchronize(active: str, template: str) -> str:
     _old, tail = suffix.split("      prompts:", 1)
     updated = f"{prefix}{marker}{desired}      prompts:{tail}"
     updated = _sync_display_policy(updated, template)
-    return _replace_discord_toolset(updated, template)
+    updated = _replace_discord_toolset(updated, template)
+    for section in ("session_reset", "compression"):
+        updated = _replace_or_append_top_level(updated, template, section)
+    for parent, child in (("tools", "tool_search"), ("auxiliary", "compression")):
+        updated = _replace_or_insert_nested(updated, template, parent, child)
+    return updated
 
 
 def atomic_write(path: Path, content: str) -> None:
