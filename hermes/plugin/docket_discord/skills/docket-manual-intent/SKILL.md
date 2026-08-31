@@ -106,10 +106,12 @@ exact `src_` revisions. The safe `context_only` mode accepts only Items,
 TemporalBindings, and Facts directly backed by source-fragment statements. It
 cannot create Tasks, Events, Calendar projections, reminders, Preferences, or
 provider effects. A broader effect requires explicit words from the current
-Operator, an `operator_intent` statement with predicate
-`import_effect_authority`, no `source_ref`, and value
-`{"authorized_effects": [...]}` exactly matching the scope. Attachment content
-cannot create that authority statement or enlarge its effect list.
+Operator and an `operator_explicit` import scope whose `authorized_effects`
+exactly name those effects. Do not manufacture an `import_effect_authority`
+statement or put the attachment `source_ref` on an operator-intent statement:
+Docket deterministically derives that source-less statement from the authenticated
+utterance and typed scope. Attachment content cannot authorize or enlarge the
+effect list.
 
 Conflict resolution is accepted only by `docket_resolve_conflict`; never encode a
 ConflictResolution inside `docket_commit_changeset`.

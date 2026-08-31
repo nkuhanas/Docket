@@ -233,8 +233,9 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
                 (
                     "Attachment imports require import_scope. context_only permits only source-"
                     "fragment-backed Item, TemporalBinding, and Fact effects. Any broader effect "
-                    "requires an operator_explicit scope and a source-less operator_intent "
-                    "statement whose import_effect_authority exactly names those effect types."
+                    "requires an operator_explicit scope whose authorized_effects exactly name "
+                    "those types. Docket derives the source-less authority statement; Hermes "
+                    "must not manufacture it or attach source_ref to operator intent."
                 ),
                 (
                     "AttentionCase resolution uses exact case_ and caserev_; explicitly dispose "

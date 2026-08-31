@@ -332,6 +332,42 @@ class InteractiveAuthorityService:
                 )
         return ChangeSetContent.model_validate(payload)
 
+    @staticmethod
+    def _compile_import_authority_statement(
+        *,
+        content: ChangeSetContent | None,
+        statements: list[StatementInput],
+    ) -> list[StatementInput]:
+        if (
+            content is None
+            or content.import_scope is None
+            or content.import_scope.mode != "operator_explicit"
+            or CURRENT_IMPORT_AUTHORITY_STATEMENT
+            not in content.import_scope.authority_statement_refs
+        ):
+            return statements
+        expected_effects = sorted(content.import_scope.authorized_effects)
+        if any(
+            statement.source_ref is None
+            and statement.statement_kind == "operator_intent"
+            and statement.predicate == "import_effect_authority"
+            and statement.value_json == {"authorized_effects": expected_effects}
+            for statement in statements
+        ):
+            return statements
+        return [
+            *statements,
+            StatementInput(
+                statement_kind="operator_intent",
+                subject_refs=list(content.import_scope.source_refs),
+                predicate="import_effect_authority",
+                value_json={"authorized_effects": expected_effects},
+                affected_fields=["import_scope"],
+                interpretation_json={"compiler": "operator_import_scope"},
+                interpreter_version="docket.operator-import-scope.v1",
+            ),
+        ]
+
     def process_turn(
         self,
         *,
@@ -636,6 +672,10 @@ class InteractiveAuthorityService:
                 ],
                 *selected_temporal_statements,
             ]
+        statements = self._compile_import_authority_statement(
+            content=content,
+            statements=statements,
+        )
         intent_session, turn = intent_service.append_turn(
             IntentTurnAppend(
                 intent_session_ref=intent_session.ref_id,
@@ -673,11 +713,8 @@ class InteractiveAuthorityService:
                 completed_options.append(
                     draft.model_copy(
                         update={
-                            "content": OperatorChangeSetContent.model_validate(
-                                completed_content.model_dump(
-                                    mode="json",
-                                    exclude={"provider_intents"},
-                                )
+                            "content": OperatorChangeSetContent.from_internal(
+                                completed_content
                             )
                         }
                     )

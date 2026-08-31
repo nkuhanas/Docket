@@ -139,6 +139,60 @@ class ImportScope(StrictModel):
         return self
 
 
+class OperatorImportScope(StrictModel):
+    """Model-facing import boundary; Docket compiles its authority statement."""
+
+    mode: Literal["context_only", "operator_explicit"] = "context_only"
+    source_refs: list[SourceRef] = Field(min_length=1, max_length=25)
+    authorized_effects: list[ImportEffect] = Field(
+        default_factory=_context_import_effects,
+        min_length=1,
+        max_length=18,
+        description=(
+            "Exact canonical effect types authorized by the current Operator turn. "
+            "Docket derives the source-less import authority statement; do not supply it."
+        ),
+    )
+    partition_key: str = Field(
+        default="default", pattern=r"^[a-z0-9][a-z0-9._-]{0,127}$"
+    )
+
+    @field_validator("source_refs")
+    @classmethod
+    def refs_are_unique(cls, values: list[str]) -> list[str]:
+        return _validate_refs(values)
+
+    @field_validator("authorized_effects")
+    @classmethod
+    def effects_are_unique_and_canonical(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("authorized_effects must not contain duplicates")
+        return sorted(values)
+
+    @model_validator(mode="after")
+    def mode_has_exact_authority_shape(self) -> OperatorImportScope:
+        context_effects = ["fact", "item", "temporal_binding"]
+        if self.mode == "context_only" and self.authorized_effects != context_effects:
+            raise ValueError(
+                "context_only import scope has exactly fact, item, and "
+                "temporal_binding effects"
+            )
+        return self
+
+    def to_internal(self) -> ImportScope:
+        return ImportScope(
+            mode=self.mode,
+            source_refs=self.source_refs,
+            authorized_effects=self.authorized_effects,
+            authority_statement_refs=(
+                [CURRENT_IMPORT_AUTHORITY_STATEMENT]
+                if self.mode == "operator_explicit"
+                else []
+            ),
+            partition_key=self.partition_key,
+        )
+
+
 def _validate_refs(values: list[str], *, provenance_only: bool = False) -> list[str]:
     return validate_refs(values, provenance_only=provenance_only)
 
@@ -171,6 +225,8 @@ def _validate_structural_locator(value: Any, *, depth: int = 0) -> int:
 
 
 class StatementInput(StrictModel):
+    """One utterance interpretation, optionally extracted from exact source evidence."""
+
     statement_kind: str = Field(min_length=1, max_length=128)
     subject_refs: list[PublicRef] = Field(min_length=1, max_length=25)
     predicate: str = Field(min_length=1, max_length=255)
@@ -180,16 +236,38 @@ class StatementInput(StrictModel):
     effective_to: date | None = None
     interpretation_json: dict[str, Any] = Field(default_factory=dict)
     interpreter_version: str = Field(min_length=1, max_length=255)
-    source_ref: SourceRef | None = None
-    source_fragment_locator: dict[str, Any] | None = None
+    source_ref: SourceRef | None = Field(
+        default=None,
+        description=(
+            "External source for an extracted statement only. Omit for operator-authored "
+            "intent, including import_effect_authority."
+        ),
+    )
+    source_fragment_locator: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Structural coordinates within source_ref; required with source_ref and must not "
+            "contain copied source text."
+        ),
+    )
     source_fragment_hash: str | None = Field(
         default=None,
         min_length=64,
         max_length=64,
         pattern=r"^[0-9a-f]{64}$",
     )
-    extractor_identifier: str | None = Field(default=None, min_length=1, max_length=255)
-    extractor_version: str | None = Field(default=None, min_length=1, max_length=128)
+    extractor_identifier: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=255,
+        description="Extractor identity; required with source_ref.",
+    )
+    extractor_version: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        description="Extractor version; required with source_ref.",
+    )
 
     @field_validator("subject_refs")
     @classmethod
@@ -984,7 +1062,7 @@ class OperatorChangeSetContent(StrictModel):
     """Model-facing canonical effects; provider projection is compiler-owned."""
 
     basis_refs: list[PublicRef] = Field(min_length=1, max_length=100)
-    import_scope: ImportScope | None = None
+    import_scope: OperatorImportScope | None = None
     expected_versions: dict[PublicRef, int] = Field(default_factory=dict, max_length=100)
     registry_changes: list[RegistryChangeInput] = Field(default_factory=list, max_length=100)
     preference_changes: list[PreferenceChangeInput] = Field(
@@ -1044,7 +1122,17 @@ class OperatorChangeSetContent(StrictModel):
         return self
 
     def to_internal(self) -> ChangeSetContent:
-        return ChangeSetContent.model_validate(self.model_dump(mode="json"))
+        payload = self.model_dump(mode="json")
+        if self.import_scope is not None:
+            payload["import_scope"] = self.import_scope.to_internal().model_dump(mode="json")
+        return ChangeSetContent.model_validate(payload)
+
+    @classmethod
+    def from_internal(cls, content: ChangeSetContent) -> OperatorChangeSetContent:
+        payload = content.model_dump(mode="json", exclude={"provider_intents"})
+        if payload.get("import_scope") is not None:
+            payload["import_scope"].pop("authority_statement_refs", None)
+        return cls.model_validate(payload)
 
 
 class ChangeSetContent(StrictModel):

@@ -15,7 +15,12 @@ from docket.domain.public_refs import (
     public_ref_type,
 )
 from docket.models import BriefEntry, CaseItem, Conflict, ProviderAccount, SemanticRequestAttempt
-from docket.schemas.authority import ImportScope, OperatorChangeSetContent
+from docket.schemas.authority import (
+    CURRENT_IMPORT_AUTHORITY_STATEMENT,
+    ImportScope,
+    OperatorChangeSetContent,
+    OperatorImportScope,
+)
 from docket.schemas.tracked_context import (
     DateTemporalValue,
     ItemInput,
@@ -262,6 +267,28 @@ def test_import_scope_has_exact_safe_default_and_explicit_authority_shape() -> N
         authority_statement_refs=[_ref("stm")],
     )
     assert explicit.authorized_effects == ["item", "task"]
+
+    model_scope = OperatorImportScope(
+        mode="operator_explicit",
+        source_refs=[source_ref],
+        authorized_effects=["task", "item"],
+    )
+    assert model_scope.model_dump(mode="json") == {
+        "mode": "operator_explicit",
+        "source_refs": [source_ref],
+        "authorized_effects": ["item", "task"],
+        "partition_key": "default",
+    }
+    assert model_scope.to_internal().authority_statement_refs == [
+        CURRENT_IMPORT_AUTHORITY_STATEMENT
+    ]
+    with pytest.raises(ValidationError, match="authority_statement_refs"):
+        OperatorImportScope.model_validate(
+            {
+                **model_scope.model_dump(mode="json"),
+                "authority_statement_refs": [_ref("stm")],
+            }
+        )
 
 
 def test_tracked_context_import_partition_is_bounded() -> None:

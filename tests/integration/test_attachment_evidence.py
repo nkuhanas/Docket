@@ -37,6 +37,7 @@ from docket.schemas.authority import (
     ChangeSetCommit,
     ChangeSetContent,
     ChangeSetPrepare,
+    OperatorChangeSetContent,
     StatementInput,
 )
 from docket.services.attachment_evidence import AttachmentCapture, AttachmentEvidenceService
@@ -319,16 +320,13 @@ def test_one_interactive_call_resolves_explicit_import_authority_symbol(
     with session_factory.begin() as session:
         captured = ProvenanceService(session).capture_operator_utterance(request)
         source_ref = captured["attachments"][0]["ref"]
-        content = ChangeSetContent.model_validate(
+        content = OperatorChangeSetContent.model_validate(
             {
                 "basis_refs": [captured["ref"]],
                 "import_scope": {
                     "mode": "operator_explicit",
                     "source_refs": [source_ref],
                     "authorized_effects": ["item", "task"],
-                    "authority_statement_refs": [
-                        CURRENT_IMPORT_AUTHORITY_STATEMENT
-                    ],
                 },
                 "tracked_context_changes": [
                     {
@@ -379,19 +377,11 @@ def test_one_interactive_call_resolves_explicit_import_authority_symbol(
                     extractor_identifier="fixture.schedule-table",
                     extractor_version="1.0.0",
                 ),
-                StatementInput(
-                    statement_kind="operator_intent",
-                    subject_refs=[source_ref],
-                    predicate="import_effect_authority",
-                    value_json={"authorized_effects": ["item", "task"]},
-                    affected_fields=["import_scope"],
-                    interpreter_version="fixture-v1",
-                ),
             ],
             relations=[],
             resolved_intent_json={"kind": "explicit_context_import"},
             blocking_clarifications=[],
-            content=content,
+            content=content.to_internal(),
             changeset_ref=None,
             expected_changeset_version=None,
         )
@@ -403,6 +393,16 @@ def test_one_interactive_call_resolves_explicit_import_authority_symbol(
         assert len(authority_refs) == 1
         assert authority_refs[0].startswith("stm_")
         assert CURRENT_IMPORT_AUTHORITY_STATEMENT not in str(changeset.import_scope_json)
+        authority_statement = session.scalar(
+            select(InterpretedStatement).where(
+                InterpretedStatement.ref_id == authority_refs[0]
+            )
+        )
+        assert authority_statement is not None
+        assert authority_statement.source_ref is None
+        assert authority_statement.interpretation_json["compiler"] == (
+            "operator_import_scope"
+        )
 
 
 @pytest.mark.integration
