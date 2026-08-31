@@ -6,6 +6,7 @@ from typing import Annotated, Any, Literal, cast
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import Field
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from docket.config import get_settings
 from docket.database import get_session_factory, session_scope
@@ -21,6 +22,7 @@ from docket.schemas.authority import (
     OperatorChangeSetContent,
     SemanticOptionDraft,
     SessionRef,
+    SourceRef,
     StatementInput,
     StatementRef,
     StatementRelationInput,
@@ -34,6 +36,10 @@ from docket.schemas.calendar import (
 from docket.schemas.common import HistoryObjectType, ProviderAccountRef, PublicRef
 from docket.schemas.registry import EntityRef
 from docket.services.accounts import AccountService
+from docket.services.attachment_evidence import (
+    AttachmentEvidenceService,
+    AttachmentTextService,
+)
 from docket.services.calendar_lanes import CalendarLaneService
 from docket.services.calendar_sync import CalendarReadService, CalendarSyncService
 from docket.services.conflicts import ConflictService
@@ -68,6 +74,9 @@ CalendarTextFilter = Annotated[str, Field(max_length=200)]
 NetworkLimit = Annotated[int, Field(ge=1, le=100)]
 NetworkDepth = Annotated[int, Field(ge=1, le=3)]
 NetworkNodeLimit = Annotated[int, Field(ge=1, le=100)]
+AttachmentTextBytes = Annotated[int, Field(ge=256, le=8192)]
+AttachmentPageLimit = Annotated[int, Field(ge=1, le=5)]
+AttachmentTextCursor = Annotated[str, Field(min_length=3, max_length=64)]
 EntitySearchQuery = Annotated[str, Field(min_length=1, max_length=256)]
 HistoryView = Literal["summary", "audit"]
 ProviderAccountView = Literal["summary", "details"]
@@ -104,6 +113,18 @@ def _calendar_read_service() -> CalendarReadService:
     settings = get_settings()
     sync = CalendarSyncService(get_session_factory(), get_calendar_read_provider(), settings)
     return CalendarReadService(get_session_factory(), sync, settings)
+
+
+def _attachment_text_service(session: Session) -> AttachmentTextService:
+    settings = get_settings()
+    evidence = AttachmentEvidenceService(
+        session,
+        encryption_key=settings.attachment_encryption_key(),
+        encryption_key_ref=settings.attachment_encryption_key_ref,
+        max_attachment_bytes=settings.attachment_max_bytes,
+        max_total_bytes=settings.attachment_total_max_bytes,
+    )
+    return AttachmentTextService(evidence)
 
 
 def _calendar_event_summary(event: dict[str, Any]) -> dict[str, Any]:
@@ -214,6 +235,26 @@ def docket_search_entities(
                 entity_kinds=cast(list[str] | None, entity_kinds),
                 cursor=cursor,
                 limit=limit,
+            )
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_read_attachment_text(
+    source_ref: SourceRef,
+    cursor: AttachmentTextCursor | None = None,
+    max_text_bytes: AttachmentTextBytes = 8192,
+    page_limit: AttachmentPageLimit = 3,
+) -> dict[str, Any]:
+    """Read bounded untrusted PDF text with exact source-fragment coordinates."""
+    try:
+        with session_scope() as session:
+            return _attachment_text_service(session).read_pdf_text(
+                source_ref=source_ref,
+                cursor=cursor,
+                max_text_bytes=max_text_bytes,
+                page_limit=page_limit,
             )
     except Exception as exc:
         return _error(exc)

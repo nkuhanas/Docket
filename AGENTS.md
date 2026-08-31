@@ -47,7 +47,7 @@ Hermes Discord gateway + docket-discord plugin
         +------> trusted internal API (/internal/v1/discord/...)
         |
         v
-Interactive MCP boundary (/mcp/; 19 bounded tools)
+Interactive MCP boundary (/mcp/; 20 bounded tools)
   - call_ starts after service authentication
   - reads are bounded
   - mutations require current utterance authority
@@ -142,7 +142,7 @@ canonical state or provenance authority.
 
 ## Tool and context boundaries
 
-The current interactive surface has exactly 19 tools, with only
+The current interactive surface has exactly 20 tools, with only
 `docket_commit_changeset` and `docket_resolve_conflict` able to mutate canonical
 state. The isolated triage surface has exactly four non-authoritative tools.
 `docket_get_attention_case` is the only deliberately shared tool.

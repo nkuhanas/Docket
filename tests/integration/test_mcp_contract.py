@@ -30,6 +30,7 @@ INTERACTIVE_TOOLS = {
     "docket_list_reminder_plans",
     "docket_query_items",
     "docket_query_people",
+    "docket_read_attachment_text",
     "docket_resolve_conflict",
     "docket_search_entities",
     "docket_search_history",
@@ -179,6 +180,12 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
     }
     assert "item_ref" in tools["docket_get_item_context"].inputSchema["properties"]
     assert "context_entity_ref" in tools["docket_query_items"].inputSchema["properties"]
+    attachment_text = tools["docket_read_attachment_text"]
+    assert "untrusted PDF text" in (attachment_text.description or "")
+    attachment_schema = attachment_text.inputSchema["properties"]
+    assert attachment_schema["source_ref"]["pattern"].startswith("^src_")
+    assert attachment_schema["max_text_bytes"]["maximum"] == 8192
+    assert attachment_schema["page_limit"]["maximum"] == 5
 
 
 @pytest.mark.asyncio

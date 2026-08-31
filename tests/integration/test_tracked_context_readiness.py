@@ -128,12 +128,13 @@ def test_every_current_tool_has_one_clean_cutover_disposition() -> None:
     target = [entry["target"] for entry in entries if entry["target"] is not None]
     assert len(current) == interactive["current_count"] == 22
     assert len(current) == len(set(current))
-    assert len(target) == interactive["target_count"] == 19
+    assert len(target) == interactive["target_count"] == 20
     assert len(target) == len(set(target))
     assert sum(entry["disposition"] == "remove" for entry in entries) == 5
-    assert sum(entry["disposition"] == "add" for entry in entries) == 2
+    assert sum(entry["disposition"] == "add" for entry in entries) == 3
     assert "docket_query_items" in target
     assert "docket_get_item_context" in target
+    assert "docket_read_attachment_text" in target
     assert "docket_get_record" not in target
     assert "docket_get_queue_item" not in target
     assert "docket_search_records" not in target

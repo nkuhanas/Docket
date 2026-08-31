@@ -33,6 +33,7 @@ EXPECTED_TOOLS = {
     "docket_list_reminder_plans",
     "docket_query_items",
     "docket_query_people",
+    "docket_read_attachment_text",
     "docket_resolve_conflict",
     "docket_search_entities",
     "docket_search_history",

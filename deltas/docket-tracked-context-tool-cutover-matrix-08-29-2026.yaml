@@ -5,9 +5,9 @@ status: complete
 
 interactive:
   current_count: 22
-  added_count: 2
+  added_count: 3
   removed_count: 5
-  target_count: 19
+  target_count: 20
   entries:
     - current: docket_commit_changeset
       disposition: modify
@@ -129,6 +129,11 @@ interactive:
       target: docket_get_item_context
       authority: interactive_read
       requirement: ONT-TRACK-TOOL-0002
+    - current: null
+      disposition: add
+      target: docket_read_attachment_text
+      authority: interactive_read
+      requirement: ONT-TRACK-REQ-0041
 
 triage:
   current_count: 4

@@ -102,7 +102,7 @@ implementation_start_blockers:
       path: deltas/docket-tracked-context-tool-cutover-matrix-08-29-2026.yaml
     resolution: >-
       Every current interactive and triage tool has exactly one cutover
-      disposition. The target profiles contain 19 interactive and four triage
+      disposition. The target profiles contain 20 interactive and four triage
       tools, with no old-name aliases.
 
   - blocker_ref: clean_reset_cutover_rehearsal

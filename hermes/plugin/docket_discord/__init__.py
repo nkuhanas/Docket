@@ -142,7 +142,7 @@ def _load_interactive_tool_contract() -> tuple[str, str, str, str, str]:
         f"contract_hash: {actual_hash}\n"
         f"profile: {profile}\n\n"
         f"{prompt_rules.strip()}\n"
-        "The 19-tool contract remains registered exactly. Hermes progressive "
+        "The 20-tool contract remains registered exactly. Hermes progressive "
         "tool disclosure may replace direct schemas with tool_search, tool_describe, "
         "and tool_call; the underlying exact tool name, authenticated hooks, and "
         "Pydantic schema still govern every invocation. Search once for the required "
@@ -178,6 +178,7 @@ _DOCKET_MCP_TOOL_NAMES = frozenset(
         "docket_query_items",
         "docket_resolve_conflict",
         "docket_query_people",
+        "docket_read_attachment_text",
         "docket_search_entities",
         "docket_search_history",
     }

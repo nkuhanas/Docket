@@ -23,7 +23,7 @@ authenticated Operator input
   -> asynchronous provider execution and reconciliation
 ```
 
-The interactive MCP profile exposes exactly 19 tools. Only
+The interactive MCP profile exposes exactly 20 tools. Only
 `docket_commit_changeset` and `docket_resolve_conflict` can mutate canonical
 state. The isolated triage profile exposes four non-authoritative tools;
 `docket_get_attention_case` is the sole shared read.
@@ -217,6 +217,13 @@ reaching interpretation or retrying indefinitely. If capture fails, verify the
 terminal ingest and retention disposition without printing plaintext. The
 encryption key must be retained with credential backups or retained blobs
 cannot be restored.
+
+When Hermes cannot natively consume a retained PDF, it reads the exact `src_`
+through `docket_read_attachment_text`. The tool returns bounded, paginated,
+untrusted text with page/character locators, fragment hashes, and the extractor
+identity/version required for derived statements. It never returns attachment
+bytes. A PDF without a text layer fails explicitly; OCR is not currently
+advertised or inferred.
 
 ## Provider operations and reconciliation
 

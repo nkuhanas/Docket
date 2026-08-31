@@ -3,12 +3,16 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import json
 import uuid
 from datetime import UTC, datetime
+from io import BytesIO
 
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
+from pypdf import PdfWriter
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -17,6 +21,7 @@ from docket.domain.errors import DocketError, IdempotencyConflict
 from docket.domain.public_refs import new_public_ref
 from docket.internal_api.schemas import AttachmentManifest, OperatorUtteranceCapture
 from docket.mcp.instrumented import ProvenanceFastMCP
+from docket.mcp.server import mcp
 from docket.models import (
     AttachmentEvidence,
     ChangeSet,
@@ -40,7 +45,12 @@ from docket.schemas.authority import (
     OperatorChangeSetContent,
     StatementInput,
 )
-from docket.services.attachment_evidence import AttachmentCapture, AttachmentEvidenceService
+from docket.services.attachment_evidence import (
+    PDF_TEXT_EXTRACTOR,
+    AttachmentCapture,
+    AttachmentEvidenceService,
+    AttachmentTextService,
+)
 from docket.services.change_sets import ChangeSetService
 from docket.services.deferred_ingress import DeferredIngressRunner
 from docket.services.history import HistoryService
@@ -57,13 +67,15 @@ def _request(
     attachment_id: str = "1542999000000000001",
     content: bytes | None = b"schedule bytes",
     ingest_error_code: str | None = None,
+    filename: str = "schedule.png",
+    media_type: str = "image/png",
 ) -> OperatorUtteranceCapture:
     settings = get_settings()
     manifest = AttachmentManifest.model_validate(
         {
             "transport_attachment_ref": attachment_id,
-            "filename": "schedule.png",
-            "media_type": "image/png",
+            "filename": filename,
+            "media_type": media_type,
             "byte_size": len(content) if content is not None else 14,
             "received_at": datetime.now(UTC),
             "plaintext_base64": (
@@ -85,6 +97,34 @@ def _request(
         ),
         attachments=[manifest],
     )
+
+
+def _pdf_bytes(*pages: str) -> bytes:
+    writer = PdfWriter()
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    font_ref = writer._add_object(font)
+    for text in pages:
+        page = writer.add_blank_page(width=612, height=792)
+        page[NameObject("/Resources")] = DictionaryObject(
+            {
+                NameObject("/Font"): DictionaryObject(
+                    {NameObject("/F1"): font_ref}
+                )
+            }
+        )
+        content = DecodedStreamObject()
+        escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        content.set_data(f"BT /F1 12 Tf 72 720 Td ({escaped}) Tj ET".encode("latin-1"))
+        page[NameObject("/Contents")] = writer._add_object(content)
+    output = BytesIO()
+    writer.write(output)
+    return output.getvalue()
 
 
 def _commit_tracked_content(
@@ -180,6 +220,137 @@ def test_attachment_is_encrypted_bound_and_idempotent(session_factory) -> None:
     request_without_manifest = request.model_copy(update={"attachments": []})
     with pytest.raises(IdempotencyConflict), session_factory.begin() as session:
         ProvenanceService(session).capture_operator_utterance(request_without_manifest)
+
+
+@pytest.mark.integration
+def test_pdf_attachment_text_is_bounded_paginated_and_provenance_linked(
+    session_factory,
+) -> None:
+    page_one = "ENGL 1134 Tuesday September 1 Introduction " + ("writing " * 80)
+    page_two = "ENGL 1134 Thursday September 3 Rhetoric workshop"
+    pdf = _pdf_bytes(page_one, page_two)
+    request = _request(
+        message_id="1542999000000000011",
+        content=pdf,
+        filename="engl-1134-schedule.pdf",
+        media_type="application/pdf",
+    )
+    settings = get_settings()
+    with session_factory.begin() as session:
+        captured = ProvenanceService(session).capture_operator_utterance(request)
+        source_ref = captured["attachments"][0]["ref"]
+        evidence = AttachmentEvidenceService(
+            session,
+            encryption_key=settings.attachment_encryption_key(),
+            encryption_key_ref=settings.attachment_encryption_key_ref,
+            max_attachment_bytes=settings.attachment_max_bytes,
+            max_total_bytes=settings.attachment_total_max_bytes,
+        )
+        extractor = AttachmentTextService(evidence)
+        first = extractor.read_pdf_text(
+            source_ref=source_ref,
+            cursor=None,
+            max_text_bytes=256,
+            page_limit=1,
+        )
+        second = extractor.read_pdf_text(
+            source_ref=source_ref,
+            cursor=str(first["cursor"]),
+            max_text_bytes=8192,
+            page_limit=5,
+        )
+
+    assert first["source_ref"] == source_ref
+    assert first["content_hash"] == hashlib.sha256(pdf).hexdigest()
+    assert first["untrusted_content"] is True
+    assert first["extractor_identifier"] == PDF_TEXT_EXTRACTOR
+    assert first["extractor_version"]
+    assert first["truncated"] is True
+    assert len(json.dumps(first, separators=(",", ":")).encode("utf-8")) <= 16384
+    assert first["cursor"]
+    first_fragment = first["items"][0]
+    assert first_fragment["source_fragment_locator"] == {
+        "page": 1,
+        "text_character_start": 0,
+        "text_character_end": len(first_fragment["text"]),
+    }
+    assert first_fragment["source_fragment_hash"] == hashlib.sha256(
+        first_fragment["text"].encode("utf-8")
+    ).hexdigest()
+    combined = "".join(
+        str(fragment["text"]) for fragment in [*first["items"], *second["items"]]
+    )
+    assert "ENGL 1134 Tuesday September 1" in combined
+    assert "ENGL 1134 Thursday September 3" in combined
+    assert second["truncated"] is False
+
+
+@pytest.mark.integration
+def test_pdf_without_text_layer_fails_explicitly_without_claiming_ocr(session_factory) -> None:
+    request = _request(
+        message_id="1542999000000000012",
+        content=_pdf_bytes(""),
+        filename="scan.pdf",
+        media_type="application/pdf",
+    )
+    settings = get_settings()
+    with session_factory.begin() as session:
+        captured = ProvenanceService(session).capture_operator_utterance(request)
+        source_ref = captured["attachments"][0]["ref"]
+        evidence = AttachmentEvidenceService(
+            session,
+            encryption_key=settings.attachment_encryption_key(),
+            encryption_key_ref=settings.attachment_encryption_key_ref,
+            max_attachment_bytes=settings.attachment_max_bytes,
+            max_total_bytes=settings.attachment_total_max_bytes,
+        )
+        with pytest.raises(DocketError) as error:
+            AttachmentTextService(evidence).read_pdf_text(
+                source_ref=source_ref,
+                cursor=None,
+                max_text_bytes=8192,
+                page_limit=3,
+            )
+    assert error.value.code == "attachment_pdf_no_text_layer"
+    assert "OCR is not currently available" in error.value.message
+
+
+@pytest.mark.integration
+def test_pdf_attachment_read_tool_records_bounded_result_refs_not_content(
+    session_factory,
+) -> None:
+    extracted_text = "ENGL 1134 schedule evidence"
+    request = _request(
+        message_id="1542999000000000013",
+        content=_pdf_bytes(extracted_text),
+        filename="engl-1134.pdf",
+        media_type="application/pdf",
+    )
+    with session_factory.begin() as session:
+        captured = ProvenanceService(session).capture_operator_utterance(request)
+        source_ref = captured["attachments"][0]["ref"]
+
+    result = asyncio.run(
+        mcp.call_tool("docket_read_attachment_text", {"source_ref": source_ref})
+    )
+    assert isinstance(result, tuple) and len(result) == 2
+    content, structured = result
+    assert structured["source_ref"] == source_ref
+    assert structured["items"][0]["text"] == extracted_text
+    assert len(content[0].text.encode("utf-8")) <= 16384
+
+    with session_factory() as session:
+        invocation = session.scalar(
+            select(ToolInvocation)
+            .where(ToolInvocation.tool_name == "docket_read_attachment_text")
+            .order_by(ToolInvocation.started_at.desc())
+        )
+        assert invocation is not None
+        assert invocation.transport_state == "completed"
+        assert invocation.domain_state == "succeeded"
+        assert invocation.result_disposition is None
+        assert invocation.result_refs == [source_ref]
+        assert extracted_text not in repr(invocation.__dict__)
 
 
 @pytest.mark.integration

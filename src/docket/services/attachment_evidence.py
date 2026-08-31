@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from dataclasses import dataclass
 from datetime import datetime
+from io import BytesIO
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from pypdf import PdfReader
+from pypdf import __version__ as pypdf_version
+from pypdf.errors import PdfReadError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -13,6 +18,10 @@ from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError, IdempotencyConflict
 from docket.domain.public_refs import new_public_ref
 from docket.models import AttachmentEvidence, EncryptedAttachmentBlob, OperatorUtterance, Source
+
+PDF_TEXT_EXTRACTOR = "docket.pypdf.text"
+PDF_TEXT_OUTPUT_BUDGET = 16 * 1024
+PDF_TEXT_MAX_PAGES = 200
 
 
 @dataclass(frozen=True)
@@ -324,3 +333,175 @@ class AttachmentEvidenceService:
                 details={"source_ref": source_ref},
             )
         return plaintext
+
+
+def _pdf_cursor(cursor: str | None) -> tuple[int, int]:
+    if cursor is None:
+        return 0, 0
+    parts = cursor.split(":", maxsplit=1)
+    if len(parts) != 2:
+        raise DocketError(code="invalid_cursor", message="Invalid attachment-text cursor.")
+    try:
+        page_index, character_offset = (int(part) for part in parts)
+    except ValueError as exc:
+        raise DocketError(
+            code="invalid_cursor", message="Invalid attachment-text cursor."
+        ) from exc
+    if page_index < 0 or character_offset < 0:
+        raise DocketError(code="invalid_cursor", message="Invalid attachment-text cursor.")
+    return page_index, character_offset
+
+
+def _slice_utf8(value: str, start: int, byte_limit: int) -> tuple[str, int]:
+    remaining = value[start:]
+    if len(remaining.encode("utf-8")) <= byte_limit:
+        return remaining, len(value)
+    low = 0
+    high = len(remaining)
+    while low < high:
+        midpoint = (low + high + 1) // 2
+        if len(remaining[:midpoint].encode("utf-8")) <= byte_limit:
+            low = midpoint
+        else:
+            high = midpoint - 1
+    return remaining[:low], start + low
+
+
+def _normalized_pdf_text(reader: PdfReader, page_index: int) -> str:
+    text = reader.pages[page_index].extract_text(extraction_mode="layout") or ""
+    return text.replace("\r\n", "\n").replace("\r", "\n").replace("\x00", "")
+
+
+class AttachmentTextService:
+    """Return bounded, provenance-addressable text from retained Operator evidence."""
+
+    def __init__(self, attachment_service: AttachmentEvidenceService) -> None:
+        self.attachments = attachment_service
+
+    @staticmethod
+    def _serialized_bytes(value: dict[str, object]) -> int:
+        return len(
+            json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+
+    def read_pdf_text(
+        self,
+        *,
+        source_ref: str,
+        cursor: str | None,
+        max_text_bytes: int,
+        page_limit: int,
+    ) -> dict[str, object]:
+        evidence = self.attachments.session.scalar(
+            select(AttachmentEvidence).where(AttachmentEvidence.ref_id == source_ref)
+        )
+        if evidence is None:
+            raise DocketError(code="not_found", message="Attachment source was not found.")
+        media_type = (evidence.media_type or "").casefold()
+        filename = (evidence.filename or "").casefold()
+        if media_type != "application/pdf" and not filename.endswith(".pdf"):
+            raise DocketError(
+                code="unsupported_attachment_media_type",
+                message="Bounded text extraction currently supports PDF attachments only.",
+                details={"source_ref": source_ref, "media_type": evidence.media_type},
+            )
+        plaintext = self.attachments.plaintext(source_ref)
+        try:
+            reader = PdfReader(BytesIO(plaintext), strict=False)
+        except (PdfReadError, ValueError, OSError) as exc:
+            raise DocketError(
+                code="attachment_pdf_invalid",
+                message="The retained attachment is not a readable PDF.",
+                details={"source_ref": source_ref},
+            ) from exc
+        if reader.is_encrypted:
+            raise DocketError(
+                code="attachment_pdf_encrypted",
+                message="The retained PDF requires a password and cannot be extracted.",
+                details={"source_ref": source_ref},
+            )
+        page_count = len(reader.pages)
+        if page_count > PDF_TEXT_MAX_PAGES:
+            raise DocketError(
+                code="attachment_pdf_page_limit_exceeded",
+                message="The retained PDF exceeds the bounded extraction page limit.",
+                details={"source_ref": source_ref, "page_count": page_count},
+            )
+        page_index, character_offset = _pdf_cursor(cursor)
+        if page_index > page_count or (page_index == page_count and character_offset != 0):
+            raise DocketError(code="invalid_cursor", message="Invalid attachment-text cursor.")
+
+        items: list[dict[str, object]] = []
+        remaining_bytes = max_text_bytes
+        next_cursor: str | None = None
+        while page_index < page_count and len(items) < page_limit and remaining_bytes > 0:
+            next_cursor = None
+            page_text = _normalized_pdf_text(reader, page_index)
+            if character_offset > len(page_text):
+                raise DocketError(code="invalid_cursor", message="Invalid attachment-text cursor.")
+            if not page_text[character_offset:]:
+                page_index += 1
+                character_offset = 0
+                continue
+            fragment, end = _slice_utf8(page_text, character_offset, remaining_bytes)
+            if not fragment:
+                break
+            items.append(
+                {
+                    "source_fragment_locator": {
+                        "page": page_index + 1,
+                        "text_character_start": character_offset,
+                        "text_character_end": end,
+                    },
+                    "source_fragment_hash": hashlib.sha256(
+                        fragment.encode("utf-8")
+                    ).hexdigest(),
+                    "text": fragment,
+                }
+            )
+            remaining_bytes -= len(fragment.encode("utf-8"))
+            if end < len(page_text):
+                next_cursor = f"{page_index}:{end}"
+                break
+            page_index += 1
+            character_offset = 0
+            if page_index < page_count:
+                next_cursor = f"{page_index}:0"
+
+        # Distinguish a scanned/image-only document from an empty requested page.
+        if (
+            not items
+            and cursor is None
+            and all(
+                not _normalized_pdf_text(reader, index).strip()
+                for index in range(page_count)
+            )
+        ):
+            raise DocketError(
+                code="attachment_pdf_no_text_layer",
+                message=(
+                    "The retained PDF has no extractable text layer; OCR is not currently "
+                    "available."
+                ),
+                details={"source_ref": source_ref, "page_count": page_count},
+            )
+        result: dict[str, object] = {
+            "ok": True,
+            "source_ref": source_ref,
+            "source_revision": 1,
+            "content_hash": evidence.content_hash,
+            "media_type": evidence.media_type or "application/pdf",
+            "untrusted_content": True,
+            "extractor_identifier": PDF_TEXT_EXTRACTOR,
+            "extractor_version": pypdf_version,
+            "items": items,
+            "count": len(items),
+            "page_count": page_count,
+            "truncated": next_cursor is not None,
+            "cursor": next_cursor,
+        }
+        if next_cursor is not None:
+            result["next"] = {"cursor": next_cursor}
+        if self._serialized_bytes(result) > PDF_TEXT_OUTPUT_BUDGET:
+            raise RuntimeError("bounded PDF extraction exceeded its output contract")
+        return result
