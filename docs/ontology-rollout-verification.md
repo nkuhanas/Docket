@@ -632,3 +632,41 @@ active email associations and the Preference still has an empty `policy_json`.
 This is intentional provenance preservation. It is not effective suppression
 until a new authenticated Operator correction associates the exact email and
 sets the executable disposition through one ChangeSet.
+
+## Tracked-context clean cutover
+
+The signed tracked-context production reset completed on 2026-08-30 at revision
+`77d399b56ea6cd6b52e5ec24ac2fa559b11204b0` after GitHub Actions run
+`33347572245` passed both required jobs. The reset was bound to manifest SHA-256
+`af6f7cf7cfd3710f39f5f36928dfbbf771ac4e09d0dc1332ac9c3df53f0560c9`
+and sealed backup
+`backups/tracked-context-readiness-20260831T012749Z/pre-reset-source.dump` at
+SHA-256
+`84042f9169f637fc6175a02816bc63044cc7689e5fe0ba3631becdc39a86bd69`.
+
+The authenticated authority chain is:
+
+```text
+utt_01M1AQ06PB3B6A22JYS7ZP38AY
+  -> dec_01M1AQ130PQPYPN2TPYC2BNRTP
+  -> aud_01M1AQ130QA4A5JGYT2W72443N
+```
+
+The clean materialization preserved 67 governance rows, all four required
+specification sign-offs, the exact reset authority, and one provider account.
+It reset disposable operator-domain state rather than translating it through
+legacy aliases or synthetic backfills. Production now has only the `docket`
+database at clean Alembic head `2022877699cf`, 75 clean model tables plus
+`alembic_version`, and zero obsolete Record, RecordSource, QueueItem, or
+Approval tables. The quarantined pre-reset database was removed only after
+post-deploy verification passed; the sealed backup remains offline.
+
+The live Docket image is
+`sha256:31a5c758d7268322e3bc38976d0fe252e06526ad7a58ec57883ca0fcfb583fa8`
+with revision label `77d399b56ea6cd6b52e5ec24ac2fa559b11204b0`.
+Docket and the stable Discord ingress are healthy, Hermes is connected with
+exactly 19 interactive tools, and the isolated triage profile exposes exactly
+four non-authoritative tools. Active provider execution and outbox delivery
+counts were both zero after cutover. Completion is recorded durably as
+`aud_01M1AQ3XN2HVEV7XXNW835N3B3` with event type
+`production_reset.completed`.
