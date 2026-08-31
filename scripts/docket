@@ -1010,6 +1010,7 @@ production_reset() (
            --deployment-revision "$RESET_DEPLOYMENT_REVISION" \
            --output /reset/production-reset-authority.json'
 
+    "$ROOT/scripts/prepare-hermes-home.sh"
     if [[ -f "$ROOT/.runtime/hermes/logs/agent.log" ]]; then
         log_first_line=$(( $(wc -l <"$ROOT/.runtime/hermes/logs/agent.log") + 1 ))
     fi

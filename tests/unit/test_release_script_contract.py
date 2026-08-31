@@ -79,6 +79,8 @@ def test_production_reset_is_manifest_bound_and_swaps_only_after_clean_verificat
     assert '"$execution_flag" == "--execute"' in reset
     assert reset.count("verify-execution") == 2
     first_verify = reset.index("verify-execution")
+    prepare_hermes = reset.index('"$ROOT/scripts/prepare-hermes-home.sh"')
+    log_checkpoint = reset.index("log_first_line=$(", prepare_hermes)
     drain = reset.index("request_database_drain")
     second_verify = reset.index("verify-execution", first_verify + 1)
     stop_writers = reset.index(
@@ -92,7 +94,8 @@ def test_production_reset_is_manifest_bound_and_swaps_only_after_clean_verificat
     completion = reset.index("record-completion")
     drop_old = reset.rindex('drop_cutover_database "$quarantine_database"')
 
-    assert first_verify < drain < second_verify < stop_writers
+    assert first_verify < prepare_hermes < log_checkpoint < drain
+    assert drain < second_verify < stop_writers
     assert stop_writers < materialize < clean_authority < rename_old < rename_clean
     assert rename_clean < postdeploy < completion < drop_old
     assert "matching pre-reset image is unavailable" in reset
