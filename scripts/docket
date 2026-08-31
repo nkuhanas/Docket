@@ -885,7 +885,7 @@ drop_cutover_database() {
     compose exec -T postgres dropdb -U docket --if-exists "$database_name"
 }
 
-production_reset() {
+production_reset() (
     local evidence_dir_input=${1:-}
     local execution_flag=${2:-}
     [[ -n "$evidence_dir_input" && "$execution_flag" == "--execute" ]] ||
@@ -1120,7 +1120,7 @@ production_reset() {
     printf 'Clean materialization: %s\n' "$materialization"
     printf 'Clean authority verification: %s\n' "$clean_authority"
     printf 'Completion audit evidence: %s\n' "$completion_evidence"
-}
+)
 
 verify_restore() {
     "$ROOT/scripts/verify-restore.sh" "${1:-}"

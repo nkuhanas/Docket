@@ -142,7 +142,7 @@ def require_rehearsal_database(database_url: str, *, suffix: str) -> None:
 
 def require_cutover_database(database_url: str) -> None:
     name = _database_name(database_url)
-    if re.fullmatch(r"docket_cutover_[a-z0-9_]+", name) is None:
+    if re.fullmatch(r"docket_cutover_[A-Za-z0-9_]+", name) is None:
         raise ValueError("cutover database must use the docket_cutover_ namespace")
 
 

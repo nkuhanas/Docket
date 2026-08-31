@@ -71,7 +71,7 @@ def test_deploy_drains_execution_but_preserves_queued_durable_work() -> None:
 def test_production_reset_is_manifest_bound_and_swaps_only_after_clean_verification() -> None:
     script = Path("scripts/docket").read_text(encoding="utf-8")
     readiness = script.split("\ntracked_context_readiness() (", 1)[1].split("\n)\n", 1)[0]
-    reset = script.split("\nproduction_reset() {", 1)[1].split("\n}\n", 1)[0]
+    reset = script.split("\nproduction_reset() (", 1)[1].split("\n)\n", 1)[0]
 
     assert "build-manifest" in readiness
     assert "production-reset-authorization.txt" in readiness
@@ -99,11 +99,12 @@ def test_production_reset_is_manifest_bound_and_swaps_only_after_clean_verificat
     assert "production_reset_authorization" not in reset
     assert "old_renamed" in reset
     assert 'docker_engine image tag "$old_image" docket-docket:latest' in reset
+    assert "production_reset() (" in script
 
 
 def test_production_reset_multiline_shell_commands_preserve_their_arguments() -> None:
     script = Path("scripts/docket").read_text(encoding="utf-8")
-    reset = script.split("\nproduction_reset() {", 1)[1].split("\n}\n", 1)[0]
+    reset = script.split("\nproduction_reset() (", 1)[1].split("\n)\n", 1)[0]
     commands = re.findall(r"docket sh -ec \\\n\s+'(.*?)'", reset, flags=re.DOTALL)
 
     assert len(commands) == 6
