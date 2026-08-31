@@ -560,10 +560,10 @@ deploy() {
         './.venv/bin/alembic upgrade head && ./.venv/bin/docket-provision-ingress-role'
     compose up -d --no-build --force-recreate docket hermes
     wait_for_hermes "$log_first_line"
-    clear_hermes_drain
-    database_continuity release "$drain_ref" >/dev/null
     gmail_triage_setup
     postdeploy
+    clear_hermes_drain
+    database_continuity release "$drain_ref" >/dev/null
     cleanup_on_failure=0
     trap - EXIT
     printf 'Deployed %s\nBackup: %s\nPrevious image: %s\n' \
