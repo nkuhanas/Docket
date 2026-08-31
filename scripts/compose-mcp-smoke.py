@@ -179,6 +179,7 @@ async def smoke() -> None:
 
         trace_ref = new_public_ref("trace")
         argument_hash = sha256_json(changeset_arguments)
+        turn_started_at = datetime.now(UTC).isoformat()
         trace_context = {
             "guild_id": "000000000000000002",
             "source_channel_id": "000000000000000003",
@@ -187,6 +188,7 @@ async def smoke() -> None:
             "tool_contract_version": CONTRACT_VERSION,
             "tool_contract_hash": contract_hash("interactive"),
             "caller_profile": "interactive",
+            "turn_started_at": turn_started_at,
             "updated_at": datetime.now(UTC).isoformat(),
         }
         running_call = {

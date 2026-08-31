@@ -60,6 +60,12 @@ Keep log output bounded. For a reported tool problem, begin with its `call_`,
 bounded history tools or trusted internal history API. Do not start by dumping
 all utterances or provider payloads.
 
+The Docket tool-activity projection includes compact turn timing. A large
+`before_first_tool_ms` indicates gateway/session/model preparation such as
+compression or queueing, while `tool_execution_ms` is the sum of bounded Docket
+tool calls. `outside_tool_ms` includes all non-tool model/agent time and is
+diagnostic only; it is not evidence that a provider or canonical mutation ran.
+
 Health endpoints distinguish liveness from readiness:
 
 ```bash

@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
@@ -29,8 +29,10 @@ def _update(
     received_argument_hash: str | None = None,
     tool_name: str = "docket_search_history",
     source_message_id: str = "777777777777777777",
+    turn_started_at: datetime | None = None,
 ) -> McpTraceUpdate:
     settings = get_settings()
+    updated_at = datetime.now(UTC)
     call = None
     if ordinal is not None and transport_state is not None:
         call = {
@@ -54,7 +56,8 @@ def _update(
             "tool_contract_version": CONTRACT_VERSION,
             "tool_contract_hash": contract_hash("interactive"),
             "caller_profile": "interactive",
-            "updated_at": datetime.now(UTC).isoformat(),
+            "turn_started_at": (turn_started_at or updated_at).isoformat(),
+            "updated_at": updated_at.isoformat(),
             "turn_status": turn_status,
             "call": call,
         }
@@ -166,6 +169,9 @@ def test_mcp_trace_is_monotonic_redacted_and_projected(
 
     projected = _project_all(session_factory).mcp_traces[trace_ref]["render"]
     assert projected["status"] == "Completed"
+    assert projected["timing"]["total_elapsed_ms"] >= 0
+    assert projected["timing"]["tool_execution_ms"] == 125
+    assert projected["timing"]["outside_tool_ms"] >= 0
     assert projected["calls"] == [
         {
             "ordinal": 1,
@@ -324,6 +330,60 @@ def test_mcp_trace_projects_semantic_disposition_as_primary_outcome(
         "transport_error_code": "none",
         "argument_preview": '{"fields":["query"]}',
     }
+
+
+@pytest.mark.integration
+def test_mcp_trace_timing_includes_gateway_to_first_tool_delay(
+    session_factory: sessionmaker[Session],
+) -> None:
+    trace_ref = new_public_ref("trace")
+    argument_hash = "c" * 64
+    turn_started_at = datetime.now(UTC) - timedelta(minutes=4)
+    with session_factory.begin() as session:
+        McpTraceService(session).update(
+            trace_ref,
+            _update(
+                ordinal=1,
+                transport_state="running",
+                received_argument_hash=argument_hash,
+                turn_started_at=turn_started_at,
+            ),
+        )
+        session.add(
+            ToolInvocation(
+                tool_name="docket_search_history",
+                tool_contract_version=CONTRACT_VERSION,
+                tool_contract_hash=contract_hash("interactive"),
+                caller_profile="interactive",
+                received_argument_hash=argument_hash,
+                result_refs=[],
+                transport_state="completed",
+                domain_state="succeeded",
+                result_disposition="succeeded",
+                completed_at=datetime.now(UTC),
+            )
+        )
+
+    with session_factory.begin() as session:
+        McpTraceService(session).update(
+            trace_ref,
+            _update(
+                ordinal=1,
+                transport_state="completed",
+                received_argument_hash=argument_hash,
+                turn_started_at=turn_started_at,
+            ),
+        )
+        McpTraceService(session).update(
+            trace_ref,
+            _update(turn_status="completed", turn_started_at=turn_started_at),
+        )
+
+    timing = _project_all(session_factory).mcp_traces[trace_ref]["render"]["timing"]
+    assert timing["before_first_tool_ms"] >= 239_000
+    assert timing["total_elapsed_ms"] >= timing["before_first_tool_ms"]
+    assert timing["tool_execution_ms"] == 125
+    assert timing["outside_tool_ms"] >= 239_000
 
 
 @pytest.mark.integration

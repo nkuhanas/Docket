@@ -49,7 +49,7 @@ on every request. Docket's callback uses the independent
 
 Hermes performs overlapping plugin discovery during this pin's startup. Each
 discovery pass imports an isolated plugin module, so module globals alone cannot
-prevent a transient second bind. Plugin `0.20.2` starts the private HTTP server
+prevent a transient second bind. Plugin `0.24.0` starts the private HTTP server
 under a background supervisor: an `EADDRINUSE` defers that copy without failing
 plugin registration, and it retries if the process that temporarily owned the
 port exits. Healthy startup may contain one `startup deferred` line, followed
@@ -110,9 +110,12 @@ Pinned outbound assumptions to revalidate:
   queue so trace telemetry does not add one network round trip to each tool's
   critical path. Docket validates monotonicity and projects the one trace
   through its durable outbox; the plugin never posts hook output directly to
-  Discord.
+  Discord. The trace carries the authenticated gateway turn-start instant, so
+  its compact timing projection distinguishes time before the first Docket tool,
+  tool execution time, and time outside tools without retaining model prompts or
+  tool payloads.
 
-Plugin `0.20.2` retains the phase-one provenance boundary. For every
+Plugin `0.24.0` retains the phase-one provenance boundary. For every
 authenticated operator message on the Docket chat root, Docket queue root, or
 a Docket-owned daily thread, `pre_gateway_dispatch` synchronously persists one
 verbatim `OperatorUtterance` before rewrite, control handling, model dispatch,
@@ -200,7 +203,7 @@ instead of only a gateway reaction. Successful sign-off dispatch likewise
 includes the already-created `dec_` so Hermes confirms it without replaying the
 mutation.
 
-Plugin `0.20.2` renders timed reminder start/end values as Docket-supplied native
+Plugin `0.24.0` renders timed reminder start/end values as Docket-supplied native
 Discord timestamps, puts the event subject under the native `Title` field, and
 omits a redundant timezone field. All-day reminders instead render fixed
 start/end dates plus the Calendar timezone. Projection embeds may omit their
@@ -253,7 +256,7 @@ cannot drift after recreation.
 
 Because each daily thread begins without Hermes conversation history, the
 pinned gateway otherwise attempts to send its generic `/sethome` reminder on
-the first Docket turn. Plugin `0.20.2` suppresses only that exact reminder while
+the first Docket turn. Plugin `0.24.0` suppresses only that exact reminder while
 an authenticated Docket provenance turn is active in the same channel. It does
 not create a home-channel binding, enable generic cron delivery, or suppress
 the reminder on ordinary non-Docket Discord surfaces.

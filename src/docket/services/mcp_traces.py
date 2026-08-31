@@ -383,7 +383,7 @@ class McpTraceService:
                 calls=[],
                 last_ordinal=0,
                 version=0,
-                started_at=now,
+                started_at=request.turn_started_at,
             )
             self.session.add(trace)
             self.session.flush()

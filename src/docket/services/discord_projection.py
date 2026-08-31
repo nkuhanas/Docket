@@ -18,6 +18,7 @@ from docket.models import (
     OutboxEvent,
     PersistedSemanticOption,
     ProjectionDelivery,
+    ToolInvocation,
 )
 from docket.models.base import utc_now
 from docket.providers.discord import DiscordProjectionAdapter, DiscordProjectionError
@@ -380,7 +381,7 @@ class DiscordProjectionRunner:
             trace = session.get(ConversationalToolTrace, event.aggregate_id)
             if trace is None:
                 raise DiscordProjectionError("mcp_trace_missing", "MCP trace is missing")
-            calls = [
+            calls: list[dict[str, Any]] = [
                 {
                     "ordinal": int(call["ordinal"]),
                     "tool_name": self._bounded(call["tool_name"], 128),
@@ -400,13 +401,44 @@ class DiscordProjectionRunner:
                 }
                 for call in trace.calls[:20]
             ]
+            invocations = list(
+                session.scalars(
+                    select(ToolInvocation).where(
+                        ToolInvocation.trace_ref == trace.ref_id
+                    )
+                )
+            )
+            rendered_at = trace.completed_at or trace.updated_at
+            total_elapsed_ms = max(
+                int((rendered_at - trace.started_at).total_seconds() * 1000),
+                0,
+            )
+            first_tool_at = min(
+                (invocation.started_at for invocation in invocations),
+                default=None,
+            )
+            tool_execution_ms = sum(int(call["elapsed_ms"]) for call in calls)
+            timing = {
+                "total_elapsed_ms": total_elapsed_ms,
+                "before_first_tool_ms": (
+                    max(
+                        int((first_tool_at - trace.started_at).total_seconds() * 1000),
+                        0,
+                    )
+                    if first_tool_at is not None
+                    else None
+                ),
+                "tool_execution_ms": tool_execution_ms,
+                "outside_tool_ms": max(total_elapsed_ms - tool_execution_ms, 0),
+            }
             render = {
                 "title": "Docket tool activity",
                 "summary": f"{trace.last_ordinal} authenticated Docket calls",
                 "status": trace.status.title(),
                 "calls": calls,
+                "timing": timing,
                 "overflow_count": max(0, trace.last_ordinal - len(calls)),
-                "updated_at": (trace.completed_at or trace.updated_at).astimezone(UTC).isoformat(),
+                "updated_at": rendered_at.astimezone(UTC).isoformat(),
             }
             payload = {
                 "request_id": str(event.id),

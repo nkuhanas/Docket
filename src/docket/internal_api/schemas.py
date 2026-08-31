@@ -50,6 +50,7 @@ class McpTraceUpdate(InternalModel):
     tool_contract_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     caller_profile: Literal["interactive"]
     gateway_instance_ref: str | None = Field(default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
+    turn_started_at: datetime
     updated_at: datetime
     turn_status: Literal["running", "completed", "failed", "interrupted"] = "running"
     call: McpTraceCallUpdate | None = None
@@ -58,6 +59,10 @@ class McpTraceUpdate(InternalModel):
     def require_update(self) -> "McpTraceUpdate":
         if self.call is None and self.turn_status == "running":
             raise ValueError("a running trace update requires a call")
+        if self.turn_started_at.tzinfo is None or self.updated_at.tzinfo is None:
+            raise ValueError("trace timestamps must include a UTC offset")
+        if self.turn_started_at > self.updated_at:
+            raise ValueError("turn_started_at cannot follow updated_at")
         return self
 
 

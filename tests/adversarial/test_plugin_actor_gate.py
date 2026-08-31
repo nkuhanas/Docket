@@ -634,6 +634,12 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
                 "argument_preview": '{"fields":["query"]}',
             }
         ],
+        "timing": {
+            "total_elapsed_ms": 4000,
+            "before_first_tool_ms": 3500,
+            "tool_execution_ms": 42,
+            "outside_tool_ms": 3958,
+        },
         "overflow_count": 0,
         "updated_at": "<t:1784940000:F> · <t:1784940000:R>",
     }
@@ -664,8 +670,12 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
     assert second["created"] is False
     assert len(channel.messages) == 1
     assert channel.messages[0].edit_count == 1
-    assert channel.messages[0].embeds[0].fields[1]["name"] == ("1. docket_search_history")
-    value = channel.messages[0].embeds[0].fields[1]["value"]
+    assert channel.messages[0].embeds[0].fields[1]["name"] == "Turn timing"
+    assert "Before first tool: 3500 ms" in (
+        channel.messages[0].embeds[0].fields[1]["value"]
+    )
+    assert channel.messages[0].embeds[0].fields[2]["name"] == ("1. docket_search_history")
+    value = channel.messages[0].embeds[0].fields[2]["value"]
     assert value.startswith("Outcome: Succeeded")
     assert "Transport: Completed" in value
     assert "Domain: Succeeded" in value

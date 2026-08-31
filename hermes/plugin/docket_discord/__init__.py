@@ -647,6 +647,7 @@ def _enqueue_trace_update(
         "tool_contract_hash": context["tool_contract_hash"],
         "caller_profile": context["caller_profile"],
         "gateway_instance_ref": context.get("gateway_instance_ref"),
+        "turn_started_at": context["turn_started_at"],
         "updated_at": datetime.now(UTC).isoformat(),
         "turn_status": turn_status,
         "call": call,
@@ -702,6 +703,7 @@ def _register_trace_context(
             "tool_contract_hash": _TOOL_CONTRACT_HASH,
             "caller_profile": _TOOL_CONTRACT_PROFILE,
             "gateway_instance_ref": _GATEWAY_INSTANCE_REF,
+            "turn_started_at": datetime.now(UTC).isoformat(),
             "session_key": session_key,
             "turn_id": None,
             "next_ordinal": 1,
@@ -2626,11 +2628,43 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
         raise PluginAPIError("invalid_mcp_trace", "overflow_count is invalid", 422) from exc
     if overflow_count < 0 or overflow_count > 80:
         raise PluginAPIError("invalid_mcp_trace", "overflow_count exceeds its bound", 422)
+    raw_timing = raw_render.get("timing")
+    if not isinstance(raw_timing, dict) or set(raw_timing) != {
+        "total_elapsed_ms",
+        "before_first_tool_ms",
+        "tool_execution_ms",
+        "outside_tool_ms",
+    }:
+        raise PluginAPIError("invalid_mcp_trace", "Trace timing is invalid", 422)
+    try:
+        timing = {
+            key: (
+                None
+                if key == "before_first_tool_ms" and raw_timing[key] is None
+                else int(raw_timing[key])
+            )
+            for key in (
+                "total_elapsed_ms",
+                "before_first_tool_ms",
+                "tool_execution_ms",
+                "outside_tool_ms",
+            )
+        }
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PluginAPIError(
+            "invalid_mcp_trace", "Trace timing values are invalid", 422
+        ) from exc
+    if any(
+        value is not None and (value < 0 or value > 86_400_000)
+        for value in timing.values()
+    ):
+        raise PluginAPIError("invalid_mcp_trace", "Trace timing exceeds its bound", 422)
     render = {
         "title": _safe_text(raw_render.get("title"), 256, "title"),
         "summary": _safe_text(raw_render.get("summary"), 2000, "summary"),
         "status": status,
         "calls": calls,
+        "timing": timing,
         "overflow_count": overflow_count,
         "updated_at": _safe_text(raw_render.get("updated_at"), 64, "updated_at"),
     }
@@ -2662,6 +2696,17 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
         color=colors[status],
     )
     embed.add_field(name="Status", value=status, inline=False)
+    before_first_tool = timing["before_first_tool_ms"]
+    before_first_tool_text = (
+        str(before_first_tool) if before_first_tool is not None else "n/a"
+    )
+    timing_text = (
+        f"Total: {timing['total_elapsed_ms']} ms · "
+        f"Before first tool: {before_first_tool_text} ms\n"
+        f"Tool execution: {timing['tool_execution_ms']} ms · "
+        f"Outside tools: {timing['outside_tool_ms']} ms"
+    )
+    embed.add_field(name="Turn timing", value=timing_text, inline=False)
     transport_labels = {
         "running": "Running",
         "completed": "Completed",
