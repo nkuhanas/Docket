@@ -18,6 +18,9 @@ def test_hermes_readiness_uses_generated_mcp_tool_count() -> None:
     assert "gmail_triage_setup" in deploy
     assert deploy.index("compose up -d") < deploy.index("gmail_triage_setup")
     assert deploy.index("gmail_triage_setup") < deploy.index("postdeploy")
+    verified = deploy.index("postdeploy")
+    assert verified < deploy.index("clear_hermes_drain", verified)
+    assert verified < deploy.index("database_continuity release", verified)
 
 
 def test_deploy_drains_execution_but_preserves_queued_durable_work() -> None:
