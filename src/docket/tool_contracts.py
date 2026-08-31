@@ -247,6 +247,11 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
                     "transaction. Never invent a separate push or repair request."
                 ),
                 (
+                    "CalendarLane create uses the public acct_ returned by "
+                    "docket_list_provider_accounts. Omit provider_calendar_binding to have "
+                    "Docket provision and bind a new Google calendar before dependent events."
+                ),
+                (
                     "A validation/runtime failure does not consume authority. Retry the same "
                     "semantic_request_ref and exact authority scope; never ask for equivalent "
                     "authorization again."

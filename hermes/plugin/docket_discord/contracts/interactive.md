@@ -1,7 +1,7 @@
 # Docket Interactive Tool Contract
 
 contract_version: docket-tools-2026-08-30-v16
-contract_hash: dba69548b40f71c25b1bd80cff956f9766e911604e52bede07aa79c1bd4d6354
+contract_hash: 8fd53faf6b30d7985f3812c842e4f837ea071bd205726120104b9673c25488fa
 profile: interactive
 
 Rules: MCP/Pydantic schemas define exact arguments. This contract defines selection, authority, side effects, and result handling.
@@ -13,6 +13,7 @@ Items are bounded tracked context; Tasks are work; TemporalBindings attach time 
 Attachment imports require import_scope. context_only permits only source-fragment-backed Item, TemporalBinding, and Fact effects. Any broader effect requires an operator_explicit scope and a source-less operator_intent statement whose import_effect_authority exactly names those effect types.
 AttentionCase resolution uses exact case_ and caserev_; explicitly dispose only selected citem_ refs. Supporting omissions become not_pursued only on terminal closure.
 Provider projection is compiler-owned. An Event create with a resolved lane deterministically creates its required Calendar Operation in the same transaction. Never invent a separate push or repair request.
+CalendarLane create uses the public acct_ returned by docket_list_provider_accounts. Omit provider_calendar_binding to have Docket provision and bind a new Google calendar before dependent events.
 A validation/runtime failure does not consume authority. Retry the same semantic_request_ref and exact authority scope; never ask for equivalent authorization again.
 Entries:
 - tool_ref=ONT-TOOL-0011 | tool_name=docket_commit_changeset | purpose=Compile and atomically commit resolved authenticated Operator intent. | use_when=Current authenticated Operator intent is resolved and requests this effect. | do_not_use_when=Never probe schemas, split one selected option, or retry as a new request. | authority=interactive_operator_utterance | preconditions=P-MUT | side_effects=Commits canonical state and required provider Operations atomically. | success_dispositions=S-CHANGESET | output_interpretation=O-STD | required_next_action=N-CHANGESET | important_errors=E-MUT

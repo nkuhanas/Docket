@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Annotated, Any, Literal
-from uuid import UUID
 
 from pydantic import Field, field_validator, model_validator
 
 from docket.domain.public_refs import parse_public_ref
-from docket.schemas.common import PublicRef, StrictModel
+from docket.schemas.common import ProviderAccountRef, PublicRef, StrictModel
 from docket.schemas.registry import EntityRef, EventRef
 
 PreferenceRef = Annotated[str, Field(pattern=r"^pref_[0-9A-HJKMNP-TV-Z]{26}$")]
@@ -88,7 +87,7 @@ class PreferencePatchSpec(StrictModel):
 
 class CalendarLaneCreateSpec(StrictModel):
     ref_id: LaneRef | None = None
-    account_id: UUID
+    account_ref: ProviderAccountRef
     name: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,31}$")
     display_name: str = Field(min_length=1, max_length=255)
     color_hex: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")

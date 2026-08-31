@@ -507,6 +507,22 @@ class ChangeSetService:
             if change.object_type == "calendar_lane" and change.action == "create"
         }
 
+        def account_for_lane_create(account_ref: str) -> ProviderAccount:
+            account = self.session.scalar(
+                select(ProviderAccount).where(ProviderAccount.ref_id == account_ref)
+            )
+            if (
+                account is None
+                or not account.enabled
+                or "google_calendar" not in account.capabilities
+            ):
+                raise DocketError(
+                    code="calendar_account_unavailable",
+                    message="CalendarLane requires an enabled Calendar-capable account.",
+                    details={"account_ref": account_ref},
+                )
+            return account
+
         def compiled_intent(
             *,
             operation_type: ProviderOperationType,
@@ -594,7 +610,7 @@ class ChangeSetService:
                 if lane_change is None or lane_change.create_spec is None:
                     continue
                 lane_spec = lane_change.create_spec
-                account_id = lane_spec.account_id
+                account_id = account_for_lane_create(lane_spec.account_ref).id
                 lane_needs_configuration = lane_spec.provider_calendar_binding is None
                 lane_basis_refs = list(lane_change.basis_refs)
             elif lane_ref is not None:
@@ -714,7 +730,9 @@ class ChangeSetService:
                 ):
                     continue
                 projection_lane_spec = projection_lane_change.create_spec
-                projection_account_id = projection_lane_spec.account_id
+                projection_account_id = account_for_lane_create(
+                    projection_lane_spec.account_ref
+                ).id
                 projection_lane_needs_configuration = (
                     projection_lane_spec.provider_calendar_binding is None
                 )
@@ -1551,6 +1569,25 @@ class ChangeSetService:
                                     "details": {
                                         "change_id": change.change_id,
                                         "referenced_change_id": planned_change_id,
+                                    },
+                                }
+                            )
+                        continue
+                    referenced_prefix, _payload = parse_public_ref(referenced_ref)
+                    if referenced_prefix == "acct":
+                        account = self.session.scalar(
+                            select(ProviderAccount).where(
+                                ProviderAccount.ref_id == referenced_ref
+                            )
+                        )
+                        if account is None:
+                            errors.append(
+                                {
+                                    "code": "unresolved_required_reference",
+                                    "details": {
+                                        "change_id": change.change_id,
+                                        "ref": referenced_ref,
+                                        "cause": "provider_account_not_found",
                                     },
                                 }
                             )
