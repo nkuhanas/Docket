@@ -52,6 +52,50 @@ def test_repeated_plugin_loads_share_one_process_registration_key() -> None:
     assert first._GATEWAY_REGISTRATION_KEY == second._GATEWAY_REGISTRATION_KEY
 
 
+def test_operator_capture_uses_raw_discord_content_for_stable_ingress_replay(
+    monkeypatch,
+) -> None:
+    spec = importlib.util.spec_from_file_location("docket_discord_capture_test", PLUGIN_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    actor = "111111111111111111"
+    guild = "222222222222222222"
+    channel = "333333333333333333"
+    message = "444444444444444444"
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", channel)
+    captured: dict[str, object] = {}
+
+    def fake_request(path, payload, **_kwargs):
+        captured["path"] = path
+        captured["payload"] = payload
+        return {"ok": True, "ref": f"utt_{'0' * 26}", "state": "recorded"}
+
+    monkeypatch.setattr(module, "_docket_internal_request", fake_request)
+    raw_text = f"<@{guild}> create the attached class calendars"
+    event = SimpleNamespace(
+        text="@Yuuka create the attached class calendars",
+        message_id=message,
+        timestamp=datetime.now(UTC),
+        raw_message=SimpleNamespace(content=raw_text, attachments=[]),
+        media_urls=[],
+        source=SimpleNamespace(
+            platform="discord",
+            user_id=actor,
+            guild_id=guild,
+            chat_id=channel,
+        ),
+    )
+
+    utterance_ref, _reply_binding, _ingress = module._capture_operator_utterance(event)
+
+    assert utterance_ref == f"utt_{'0' * 26}"
+    assert captured["path"] == "/internal/v1/discord/operator-utterances"
+    assert captured["payload"]["verbatim_text"] == raw_text
+
+
 @pytest.mark.parametrize(
     ("profile_name", "argv", "expected"),
     [
