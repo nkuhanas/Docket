@@ -877,7 +877,7 @@ database_exists() {
 
 drop_cutover_database() {
     local database_name=$1
-    [[ "$database_name" =~ ^docket_(cutover|pre_reset|failed_clean)_[0-9a-f]{12}_[0-9]{8}T[0-9]{6}Z$ ]] ||
+    [[ "$database_name" =~ ^docket_(cutover|pre_reset|failed_clean)_[0-9a-f]{12}_[0-9]{8}t[0-9]{6}z$ ]] ||
         die "refusing to drop database outside the cutover namespace: $database_name"
     compose exec -T postgres psql -U docket -d postgres -v ON_ERROR_STOP=1 -c \
         "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$database_name' AND pid <> pg_backend_pid();" \
@@ -939,7 +939,7 @@ production_reset() (
 
     revision=$(git rev-parse HEAD)
     short_revision=${revision:0:12}
-    timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+    timestamp=$(date -u +%Y%m%dt%H%M%Sz)
     database_url=$(env_value DOCKET_DATABASE_URL)
     [[ -n "$database_url" ]] || die "DOCKET_DATABASE_URL is not configured"
     clean_database="docket_cutover_${short_revision}_${timestamp}"
@@ -985,7 +985,11 @@ production_reset() (
             database_continuity abort "$drain_ref" >/dev/null 2>&1
         fi
         clear_hermes_drain
-        printf 'Production reset failed; the pre-reset database and image were restored.\n' >&2
+        if [[ "$(database_exists docket)" == "1" ]]; then
+            printf 'Production reset failed; the pre-reset database and image were restored.\n' >&2
+        else
+            printf 'Production reset failed and automatic database restoration is incomplete; services remain unsafe to use.\n' >&2
+        fi
         return "$status"
     }
     trap reset_failure_cleanup EXIT INT TERM

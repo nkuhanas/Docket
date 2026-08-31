@@ -247,8 +247,13 @@ def test_cutover_database_guard_requires_disposable_namespace() -> None:
     )
     require_cutover_database(
         "postgresql+psycopg://docket:test@postgres/"
-        "docket_cutover_beba77ce5c7e_20260831T005136Z"
+        "docket_cutover_beba77ce5c7e_20260831t005136z"
     )
+    with pytest.raises(ValueError, match="docket_cutover_"):
+        require_cutover_database(
+            "postgresql+psycopg://docket:test@postgres/"
+            "docket_cutover_beba77ce5c7e_20260831T005136Z"
+        )
     with pytest.raises(ValueError, match="docket_cutover_"):
         require_cutover_database(
             "postgresql+psycopg://docket:test@postgres/docket"

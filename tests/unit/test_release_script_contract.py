@@ -100,6 +100,8 @@ def test_production_reset_is_manifest_bound_and_swaps_only_after_clean_verificat
     assert "old_renamed" in reset
     assert 'docker_engine image tag "$old_image" docket-docket:latest' in reset
     assert "production_reset() (" in script
+    assert "date -u +%Y%m%dt%H%M%Sz" in reset
+    assert "automatic database restoration is incomplete" in reset
 
 
 def test_production_reset_multiline_shell_commands_preserve_their_arguments() -> None:
