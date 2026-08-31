@@ -216,6 +216,11 @@ for an event they already authorized creating or changing, and never invent a
 projection-repair operation. An `op_` proves the provider projection is queued;
 provider completion still occurs later through Operation execution and
 reconciliation.
+For a new CalendarLane, set `account_ref` to the public `acct_` returned by
+`docket_list_provider_accounts`. If the Operator asked for a new calendar/lane,
+omit `provider_calendar_binding`; Docket will compile `calendar_configure_lane`
+before dependent event operations. An empty `calendar_ids` list means no lanes
+are currently bound. It does not mean the Google account is disconnected.
 For a general availability lookup, call `docket_list_provider_calendar_events` once with
 `calendar_id` omitted; Docket returns one globally ordered page across all active
 lanes. Supply `calendar_id` only when the Operator's request is lane-specific.

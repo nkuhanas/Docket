@@ -129,6 +129,11 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
     assert "affected_fields" not in case_resolution["properties"]
     assert "ConflictResolution" not in repr(commit_schema)
 
+    lane_create = commit_schema["$defs"]["CalendarLaneCreateSpec"]
+    assert "account_ref" in lane_create["properties"]
+    assert "account_id" not in lane_create["properties"]
+    assert "provider_calendar_binding" not in lane_create.get("required", [])
+
     conflict_schema = tools["docket_resolve_conflict"].inputSchema
     canonical_effects = conflict_schema["properties"]["canonical_effects"]
     assert canonical_effects["items"] == {"$ref": "#/$defs/CanonicalChangeInput"}

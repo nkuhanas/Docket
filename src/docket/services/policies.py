@@ -285,7 +285,9 @@ class ContextPolicyService:
     ) -> list[str]:
         if change.action == "create":
             spec = CalendarLaneCreateSpec.model_validate(change.create_spec)
-            account = self.session.get(ProviderAccount, spec.account_id)
+            account = self.session.scalar(
+                select(ProviderAccount).where(ProviderAccount.ref_id == spec.account_ref)
+            )
             if (
                 account is None
                 or not account.enabled

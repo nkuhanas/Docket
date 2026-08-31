@@ -94,7 +94,7 @@ def _commit_rich_event(session, *, message_id: str) -> tuple[str, str, str]:
                     "object_type": "calendar_lane",
                     "create_spec": {
                         "ref_id": lane_ref,
-                        "account_id": str(account.id),
+                        "account_ref": account.ref_id,
                         "name": "clubs",
                         "display_name": "Clubs",
                         "color_hex": "#0B8043",
