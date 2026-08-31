@@ -396,6 +396,11 @@ def _capture_operator_utterance(
         "reply_to_message_id",
         "referenced_message_id",
     ) or _source_value(source, "reply_to_message_id", "referenced_message_id")
+    raw_message = getattr(event, "raw_message", None)
+    raw_content = getattr(raw_message, "content", None)
+    verbatim_text = (
+        raw_content if isinstance(raw_content, str) else str(getattr(event, "text", ""))
+    )
     payload: dict[str, Any] = {
         "request_id": str(uuid.uuid4()),
         "guild_id": guild,
@@ -404,7 +409,7 @@ def _capture_operator_utterance(
         "message_id": message_id,
         "actor_id": actor,
         "reply_to_message_id": reply_to_message_id or None,
-        "verbatim_text": str(getattr(event, "text", "")),
+        "verbatim_text": verbatim_text,
         "request_key": f"discord:{guild}:{channel}:{message_id}:0",
         "gateway_instance_ref": _GATEWAY_INSTANCE_REF,
         "attachments": _attachment_manifests(event),
