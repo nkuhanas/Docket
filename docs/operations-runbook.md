@@ -210,9 +210,13 @@ do not silently merge semantic Items. The safe default import scope permits
 context only; Task, Event, Reminder, provider, Preference, and destructive
 effects require explicit Operator scope.
 
-If attachment capture fails, verify the terminal ingest and retention
-disposition without printing plaintext. The encryption key must be retained with
-credential backups or retained blobs cannot be restored.
+Attachment download tries Discord's fresh URL before the cached proxy. A
+matching replay cannot redefine terminal evidence, and a failed/rejected
+capture terminates the ingress with a durable Operator response instead of
+reaching interpretation or retrying indefinitely. If capture fails, verify the
+terminal ingest and retention disposition without printing plaintext. The
+encryption key must be retained with credential backups or retained blobs
+cannot be restored.
 
 ## Provider operations and reconciliation
 

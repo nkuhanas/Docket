@@ -863,7 +863,9 @@ def test_pending_attachment_blocks_statement_and_mutation(session_factory) -> No
 
 
 @pytest.mark.integration
-def test_attachment_failure_is_terminal_and_records_no_plaintext(session_factory) -> None:
+def test_attachment_failure_is_terminal_and_records_no_plaintext(
+    session_factory,
+) -> None:
     request = _request(
         message_id="1542999000000000040",
         content=None,
@@ -896,8 +898,14 @@ def test_attachment_failure_is_terminal_and_records_no_plaintext(session_factory
             ],
         }
     )
-    with pytest.raises(IdempotencyConflict), session_factory.begin() as session:
-        ProvenanceService(session).capture_operator_utterance(available_retry)
+    with session_factory.begin() as session:
+        replayed = ProvenanceService(session).capture_operator_utterance(available_retry)
+        assert replayed["disposition"] == "replayed_request"
+        assert replayed["attachments"][0]["ingest_state"] == "failed"
+        assert replayed["attachments"][0]["content_hash"] is None
+
+    with session_factory() as session:
+        assert session.scalar(select(func.count(EncryptedAttachmentBlob.id))) == 0
 
 
 @pytest.mark.integration

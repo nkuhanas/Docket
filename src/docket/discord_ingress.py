@@ -42,6 +42,22 @@ def ingress_database_url() -> str:
     return f"postgresql+psycopg://docket_ingress:{password}@{host}:{port}/{database}"
 
 
+async def _read_attachment_bytes(attachment: discord.Attachment) -> bytes | None:
+    """Read fresh Discord bytes before falling back to the cached proxy."""
+
+    last_error: Exception | None = None
+    for use_cached in (False, True):
+        try:
+            return await attachment.read(use_cached=use_cached)
+        except Exception as exc:
+            last_error = exc
+    logger.warning(
+        "Discord attachment download failed after direct and cached attempts (%s)",
+        type(last_error).__name__ if last_error is not None else "unknown",
+    )
+    return None
+
+
 class StableDiscordIngress(discord.Client):
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         intents = discord.Intents.none()
@@ -148,9 +164,8 @@ class StableDiscordIngress(discord.Client):
             ):
                 ingest_error_code = "attachment_too_large"
             else:
-                try:
-                    plaintext = await attachment.read(use_cached=True)
-                except Exception:
+                plaintext = await _read_attachment_bytes(attachment)
+                if plaintext is None:
                     ingest_error_code = "attachment_download_failed"
                 else:
                     retained_total += len(plaintext)

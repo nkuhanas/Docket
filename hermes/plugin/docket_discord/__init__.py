@@ -1079,7 +1079,7 @@ def _persist_deterministic_response(context: dict[str, Any]) -> str:
             "utterance_ref": context["utterance_ref"],
             "turn_id": f"deterministic:{context['source_message_id']}",
             "session_id": context.get("session_key") or context["trace_ref"],
-            "model_identifier": "docket-deterministic-signoff-v1",
+            "model_identifier": "docket-deterministic-response-v1",
             "verbatim_text": response_text,
             "generated_at": datetime.now(UTC).isoformat(),
             "trace_ref": context["trace_ref"],
@@ -1668,6 +1668,8 @@ def _pre_gateway_dispatch(
     ingress_binding: dict[str, Any] | None = None
     signoff_result: dict[str, Any] | None = None
     reset_authorization_result: dict[str, Any] | None = None
+    deterministic_response_text: str | None = None
+    deterministic_response_reason = "docket-signoff-handled"
     if _provenance_ingress_context(source) is not None:
         try:
             captured = _capture_operator_utterance(event)
@@ -1690,61 +1692,107 @@ def _pre_gateway_dispatch(
                 ingress_binding.get("drain_ref"),
             )
             return {"action": "skip", "reason": "docket-ingress-deferred"}
-        try:
-            recorded_signoff = _record_final_signoff_if_explicit(event, utterance_ref)
-            if recorded_signoff is not None:
-                signoff_result = {
-                    **recorded_signoff,
-                    "attempted": True,
-                    "decision_ref": str(recorded_signoff["ref"]),
-                    "ok": True,
-                }
-        except PluginAPIError as exc:
-            if exc.status >= 500:
-                logger.exception(
-                    "Docket specification sign-off outcome was unavailable; turn rejected"
+        if (
+            ingress_binding is not None
+            and ingress_binding.get("state") in {"claimed", "completed", "rejected"}
+            and not ingress_binding.get("execution_completion_token")
+        ):
+            logger.info("Skipped duplicate Docket ingress already owned or finalized")
+            return {"action": "skip", "reason": "docket-ingress-already-owned"}
+        attachment_states = {
+            str(attachment.get("ingest_state", ""))
+            for attachment in (
+                ingress_binding.get("attachments", [])
+                if isinstance(ingress_binding, dict)
+                else []
+            )
+            if isinstance(attachment, dict)
+        }
+        if attachment_states.intersection({"failed", "rejected"}):
+            deterministic_response_text = (
+                "I couldn't durably read the attached file, so I did not interpret or "
+                "apply this request. Please upload the file again in a new message."
+            )
+            deterministic_response_reason = "docket-attachment-evidence-unavailable"
+        if deterministic_response_text is None:
+            try:
+                recorded_signoff = _record_final_signoff_if_explicit(event, utterance_ref)
+                if recorded_signoff is not None:
+                    signoff_result = {
+                        **recorded_signoff,
+                        "attempted": True,
+                        "decision_ref": str(recorded_signoff["ref"]),
+                        "ok": True,
+                    }
+            except PluginAPIError as exc:
+                if exc.status >= 500:
+                    logger.exception(
+                        "Docket specification sign-off outcome was unavailable; turn rejected"
+                    )
+                    _complete_captured_ingress(
+                        ingress_binding,
+                        outcome="failed",
+                        error_code="docket_signoff_persistence_failed",
+                    )
+                    return {"action": "skip", "reason": "docket-signoff-persistence-failed"}
+                logger.warning(
+                    "Docket specification sign-off rejected: %s",
+                    exc.code,
                 )
+                signoff_result = {
+                    "attempted": True,
+                    "error_code": exc.code,
+                    "message": str(exc),
+                    "ok": False,
+                }
+            except (OSError, RuntimeError, urllib.error.URLError):
+                logger.exception("Docket specification sign-off persistence failed; turn rejected")
                 _complete_captured_ingress(
                     ingress_binding,
                     outcome="failed",
                     error_code="docket_signoff_persistence_failed",
                 )
                 return {"action": "skip", "reason": "docket-signoff-persistence-failed"}
-            logger.warning(
-                "Docket specification sign-off rejected: %s",
-                exc.code,
-            )
-            signoff_result = {
-                "attempted": True,
-                "error_code": exc.code,
-                "message": str(exc),
-                "ok": False,
-            }
-        except (OSError, RuntimeError, urllib.error.URLError):
-            logger.exception("Docket specification sign-off persistence failed; turn rejected")
-            _complete_captured_ingress(
-                ingress_binding,
-                outcome="failed",
-                error_code="docket_signoff_persistence_failed",
-            )
-            return {"action": "skip", "reason": "docket-signoff-persistence-failed"}
-        if signoff_result is None:
-            try:
-                recorded_reset_authorization = _record_production_reset_authorization_if_explicit(
-                    event,
-                    utterance_ref,
-                )
-                if recorded_reset_authorization is not None:
+            if signoff_result is None:
+                try:
+                    recorded_reset_authorization = (
+                        _record_production_reset_authorization_if_explicit(
+                            event,
+                            utterance_ref,
+                        )
+                    )
+                    if recorded_reset_authorization is not None:
+                        reset_authorization_result = {
+                            **recorded_reset_authorization,
+                            "attempted": True,
+                            "decision_ref": str(recorded_reset_authorization["ref"]),
+                            "ok": True,
+                        }
+                except PluginAPIError as exc:
+                    if exc.status >= 500:
+                        logger.exception(
+                            "Docket production-reset authority outcome was unavailable; "
+                            "turn rejected"
+                        )
+                        _complete_captured_ingress(
+                            ingress_binding,
+                            outcome="failed",
+                            error_code="docket_reset_authority_persistence_failed",
+                        )
+                        return {
+                            "action": "skip",
+                            "reason": "docket-reset-authority-persistence-failed",
+                        }
+                    logger.warning("Docket production-reset authority rejected: %s", exc.code)
                     reset_authorization_result = {
-                        **recorded_reset_authorization,
                         "attempted": True,
-                        "decision_ref": str(recorded_reset_authorization["ref"]),
-                        "ok": True,
+                        "error_code": exc.code,
+                        "message": str(exc),
+                        "ok": False,
                     }
-            except PluginAPIError as exc:
-                if exc.status >= 500:
+                except (OSError, RuntimeError, urllib.error.URLError):
                     logger.exception(
-                        "Docket production-reset authority outcome was unavailable; turn rejected"
+                        "Docket production-reset authority persistence failed; turn rejected"
                     )
                     _complete_captured_ingress(
                         ingress_binding,
@@ -1755,26 +1803,6 @@ def _pre_gateway_dispatch(
                         "action": "skip",
                         "reason": "docket-reset-authority-persistence-failed",
                     }
-                logger.warning("Docket production-reset authority rejected: %s", exc.code)
-                reset_authorization_result = {
-                    "attempted": True,
-                    "error_code": exc.code,
-                    "message": str(exc),
-                    "ok": False,
-                }
-            except (OSError, RuntimeError, urllib.error.URLError):
-                logger.exception(
-                    "Docket production-reset authority persistence failed; turn rejected"
-                )
-                _complete_captured_ingress(
-                    ingress_binding,
-                    outcome="failed",
-                    error_code="docket_reset_authority_persistence_failed",
-                )
-                return {
-                    "action": "skip",
-                    "reason": "docket-reset-authority-persistence-failed",
-                }
     if _GENERIC_DELIVERY_COMMAND.match(text.strip()) and (
         _is_channel_surface(source, os.environ.get("DOCKET_CHAT_CHANNEL_ID", ""))
         or _is_configured_queue(source)
@@ -1807,8 +1835,7 @@ def _pre_gateway_dispatch(
             return {"action": "skip", "reason": "unauthorized-docket-thread"}
     if utterance_ref is None:
         return None
-    deterministic_response_text: str | None = None
-    if signoff_result is not None:
+    if deterministic_response_text is None and signoff_result is not None:
         if signoff_result.get("ok") is True:
             scope = str(signoff_result.get("authorized_scope") or "").strip()
             scope_text = f" Implementation scope: `{scope}`." if scope else ""
@@ -1828,7 +1855,7 @@ def _pre_gateway_dispatch(
                 f"(`{signoff_result.get('error_code', 'unknown')}`): "
                 f"{signoff_result.get('message', 'The request was rejected.')}"
             )
-    elif reset_authorization_result is not None:
+    elif deterministic_response_text is None and reset_authorization_result is not None:
         if reset_authorization_result.get("ok") is True:
             deterministic_response_text = (
                 "Authorized and recorded — Docket created ledger-backed production "
@@ -1859,12 +1886,10 @@ def _pre_gateway_dispatch(
                 context["response_persistence_failed"] = False
                 _schedule_persisted_deterministic_response(context)
             except (OSError, RuntimeError, urllib.error.URLError):
-                logger.exception(
-                    "Immediate Docket sign-off confirmation failed; using turn fallback"
-                )
+                logger.exception("Immediate deterministic response failed; using turn fallback")
             else:
                 context["terminal"] = True
-                return {"action": "skip", "reason": "docket-signoff-handled"}
+                return {"action": "skip", "reason": deterministic_response_reason}
     return _rewrite_with_source_context(
         event,
         utterance_ref,

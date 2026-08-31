@@ -415,7 +415,7 @@ def test_empty_signoff_turn_persists_deterministic_response(plugin_module, monke
     )
 
     assert requests[-1][0] == "/internal/v1/discord/agent-responses"
-    assert requests[-1][1]["model_identifier"] == "docket-deterministic-signoff-v1"
+    assert requests[-1][1]["model_identifier"] == "docket-deterministic-response-v1"
     assert decision_ref in str(requests[-1][1]["verbatim_text"])
     assert not any(path.endswith("/no-response") for path, _payload in requests)
 
@@ -481,7 +481,7 @@ def test_exact_signoff_persists_and_schedules_confirmation_without_model_turn(
 
     assert result == {"action": "skip", "reason": "docket-signoff-handled"}
     assert requests[-1][0] == "/internal/v1/discord/agent-responses"
-    assert requests[-1][1]["model_identifier"] == "docket-deterministic-signoff-v1"
+    assert requests[-1][1]["model_identifier"] == "docket-deterministic-response-v1"
     assert scheduled[0]["response_ref"] == response_ref
     assert decision_ref in str(scheduled[0]["deterministic_response_text"])
     assert "tracked_context_test_scope" in str(scheduled[0]["deterministic_response_text"])
@@ -876,6 +876,7 @@ def test_attachment_binding_is_trusted_but_content_is_explicitly_untrusted(
             None,
             {
                 "state": "claimed",
+                "execution_completion_token": "a" * 32,
                 "attachments": [
                     {
                         "ref": source_ref,
@@ -908,6 +909,116 @@ def test_attachment_binding_is_trusted_but_content_is_explicitly_untrusted(
     assert '"source_revision": 1' in result["text"]
     assert '"attachment_content_trust": "untrusted_evidence"' in result["text"]
     assert "plaintext_base64" not in result["text"]
+
+
+def test_already_owned_ingress_does_not_dispatch_duplicate_turn(
+    plugin_module, monkeypatch
+) -> None:
+    actor = "111111111111111111"
+    guild = "222222222222222222"
+    channel = "333333333333333333"
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", channel)
+    monkeypatch.setattr(
+        plugin_module,
+        "_capture_operator_utterance",
+        lambda _event: (
+            f"utt_{'0' * 26}",
+            None,
+            {"state": "claimed", "execution_completion_token": None},
+        ),
+    )
+    event = SimpleNamespace(
+        text="Import the attached schedule.",
+        message_id="444444444444444444",
+        source=SimpleNamespace(
+            platform="discord",
+            user_id=actor,
+            guild_id=guild,
+            chat_id=channel,
+        ),
+    )
+
+    assert plugin_module._pre_gateway_dispatch(event) == {
+        "action": "skip",
+        "reason": "docket-ingress-already-owned",
+    }
+
+
+def test_terminal_attachment_failure_gets_durable_response_without_model(
+    plugin_module, monkeypatch
+) -> None:
+    actor = "111111111111111111"
+    guild = "222222222222222222"
+    channel = "333333333333333333"
+    message = "444444444444444444"
+    response_ref = f"rsp_{'6' * 26}"
+    scheduled: list[dict[str, object]] = []
+    requests: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", channel)
+    monkeypatch.setattr(
+        plugin_module,
+        "_capture_operator_utterance",
+        lambda _event: (
+            f"utt_{'0' * 26}",
+            None,
+            {
+                "ref": f"ing_{'1' * 26}",
+                "state": "claimed",
+                "execution_completion_token": "a" * 32,
+                "attachments": [
+                    {
+                        "ref": f"src_{'5' * 26}",
+                        "ingest_state": "failed",
+                        "retention_disposition": "metadata_only",
+                    }
+                ],
+            },
+        ),
+    )
+
+    def fake_request(path, payload, **_kwargs):
+        requests.append((path, dict(payload)))
+        if path == "/internal/v1/discord/agent-responses":
+            return {"ok": True, "ref": response_ref, "state": "pending"}
+        return {"ok": True}
+
+    monkeypatch.setattr(plugin_module, "_docket_internal_request", fake_request)
+    monkeypatch.setattr(
+        plugin_module,
+        "_schedule_persisted_deterministic_response",
+        lambda context: scheduled.append(dict(context)),
+    )
+    event = SimpleNamespace(
+        text="Import the attached schedule.",
+        message_id=message,
+        source=SimpleNamespace(
+            platform="discord",
+            user_id=actor,
+            guild_id=guild,
+            chat_id=channel,
+        ),
+    )
+    store = SimpleNamespace(
+        get_or_create_session=lambda _source: SimpleNamespace(
+            session_id="session-attachment-failure",
+            session_key="session-attachment-failure",
+        )
+    )
+
+    result = plugin_module._pre_gateway_dispatch(event, session_store=store)
+
+    assert result == {
+        "action": "skip",
+        "reason": "docket-attachment-evidence-unavailable",
+    }
+    assert requests[-1][0] == "/internal/v1/discord/agent-responses"
+    assert requests[-1][1]["model_identifier"] == "docket-deterministic-response-v1"
+    assert "did not interpret or apply" in str(scheduled[0]["deterministic_response_text"])
+    assert scheduled[0]["response_ref"] == response_ref
 
 
 def test_pending_attachment_never_reaches_model(plugin_module, monkeypatch) -> None:

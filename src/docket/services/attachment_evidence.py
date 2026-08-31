@@ -246,8 +246,10 @@ class AttachmentEvidenceService:
                     raise IdempotencyConflict(utterance.request_key)
                 continue
             if evidence.ingest_state in {"failed", "rejected"}:
-                if evidence.ingest_state != ingest_state:
-                    raise IdempotencyConflict(utterance.request_key)
+                # The immutable manifest already reached a terminal retention outcome.
+                # A concurrent capture path may have observed different byte availability,
+                # but it cannot redefine or enrich terminal evidence. Preserve the first
+                # durable outcome and treat the matching manifest as an idempotent replay.
                 continue
             if ingest_state == "pending":
                 continue

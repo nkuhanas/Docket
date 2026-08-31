@@ -20,3 +20,44 @@ async def test_gateway_resume_restores_ingress_health(
 
     await client.on_disconnect()
     assert not ready_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_attachment_download_prefers_fresh_discord_url() -> None:
+    calls: list[bool] = []
+
+    class Attachment:
+        async def read(self, *, use_cached: bool) -> bytes:
+            calls.append(use_cached)
+            return b"pdf"
+
+    assert await discord_ingress._read_attachment_bytes(Attachment()) == b"pdf"
+    assert calls == [False]
+
+
+@pytest.mark.asyncio
+async def test_attachment_download_falls_back_to_cached_proxy() -> None:
+    calls: list[bool] = []
+
+    class Attachment:
+        async def read(self, *, use_cached: bool) -> bytes:
+            calls.append(use_cached)
+            if not use_cached:
+                raise RuntimeError("fresh URL failed")
+            return b"pdf"
+
+    assert await discord_ingress._read_attachment_bytes(Attachment()) == b"pdf"
+    assert calls == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_attachment_download_returns_none_after_both_paths_fail() -> None:
+    calls: list[bool] = []
+
+    class Attachment:
+        async def read(self, *, use_cached: bool) -> bytes:
+            calls.append(use_cached)
+            raise RuntimeError("download failed")
+
+    assert await discord_ingress._read_attachment_bytes(Attachment()) is None
+    assert calls == [False, True]
