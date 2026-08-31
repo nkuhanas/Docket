@@ -175,6 +175,7 @@ def test_mcp_trace_is_monotonic_redacted_and_projected(
             "elapsed_ms": 125,
             "outcome": "unknown",
             "tool_call_ref": "unreconciled",
+            "transport_error_code": "none",
             "argument_preview": '{"fields":["query"]}',
         }
     ]
@@ -320,6 +321,7 @@ def test_mcp_trace_projects_semantic_disposition_as_primary_outcome(
         "elapsed_ms": 125,
         "outcome": "needs_clarification",
         "tool_call_ref": invocation_ref,
+        "transport_error_code": "none",
         "argument_preview": '{"fields":["query"]}',
     }
 

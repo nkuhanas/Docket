@@ -390,6 +390,10 @@ class DiscordProjectionRunner:
                         call.get("disposition") or call.get("domain_error_code") or "unknown",
                         128,
                     ),
+                    "transport_error_code": self._bounded(
+                        call.get("transport_error_code") or "none",
+                        64,
+                    ),
                     "elapsed_ms": min(max(int(call.get("elapsed_ms", 0)), 0), 600000),
                     "tool_call_ref": self._bounded(call.get("tool_call_ref") or "unreconciled", 40),
                     "argument_preview": self._bounded(call.get("argument_preview", "{}"), 768),
