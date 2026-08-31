@@ -112,7 +112,7 @@ def test_one_changeset_atomically_creates_item_task_and_due_date(session) -> Non
     assert created is True
     assert changeset.state == "validated"
 
-    committed, affected_refs = service.commit(
+    committed, receipt = service.commit(
         ChangeSetCommit(
             changeset_ref=changeset.ref_id,
             expected_version=changeset.version,
@@ -134,7 +134,12 @@ def test_one_changeset_atomically_creates_item_task_and_due_date(session) -> Non
         "timezone": "America/Los_Angeles",
     }
     assert committed.state == "committed"
-    assert set(affected_refs) == {item.ref_id, task.ref_id, temporal.ref_id}
+    assert set(receipt.affected_refs) == {item.ref_id, task.ref_id, temporal.ref_id}
+    assert [effect.change_id for effect in receipt.effects] == [
+        "problem-set-4",
+        "complete-problem-set-4",
+        "problem-set-4-due",
+    ]
     assert session.scalar(select(func.count(CanonicalEvent.id))) == 0
     assert session.scalar(select(func.count(Operation.id))) == 0
     # compiled + one audit per canonical primitive + committed

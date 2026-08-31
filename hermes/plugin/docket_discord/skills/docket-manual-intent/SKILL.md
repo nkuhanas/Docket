@@ -46,6 +46,10 @@ No search match is permission to invent a fact. Resolve an external identity onl
 through an exact handle/alias/provider binding, an explicit current ref, or the
 Operator's explicit selection. Otherwise ask one consolidated clarification.
 
+Use the smallest read projection that resolves the current decision. Default
+summary views are intentional. Request routing, details, or audit only when a
+specific field in that view is required; never load broad state speculatively.
+
 ## Interpretation and conflict path
 
 Derive zero or more typed statements from the current utterance. Preserve what the
@@ -100,6 +104,12 @@ one `docket_commit_changeset` call:
 `provider_intents` is deliberately absent from the model-facing ChangeSet. Docket
 derives provider Operations from canonical mutations after validating the complete
 scope. Hermes never formulates, retries, or repairs provider Operations.
+
+Before commit, perform only the reads needed to resolve exact refs, current
+versions, provider targets, and real conflicts. After commit, use the returned
+per-effect receipt and `provider_operations` list. Do not reread newly committed
+objects, graph neighborhoods, history, lanes, or provider events merely to verify
+what the receipt already proves.
 
 For an attachment-backed context import, always supply `import_scope` with the
 exact `src_` revisions. The safe `context_only` mode accepts only Items,
@@ -200,10 +210,12 @@ Each change still includes the MCP-required `affected_fields` and `basis_refs`.
 If the email handle already exists, replace `add_associated_email_change_id` with
 `add_associated_email_ref` and its exact `idn_`.
 
-After a Preference commit, inspect/report the stored target, associated email
-table, and executable policy fields. Never describe an unassociated display label
-or missing disposition as active sender suppression. Historical behavior is
-advisory and never silently becomes Preference policy.
+After a Preference commit, report the authorized target and policy from the
+submitted typed effect plus its committed receipt. Read it again only when the
+receipt is missing the expected effect or the Operator explicitly asks for an
+audit. Never describe an unassociated display label or missing disposition as
+active sender suppression. Historical behavior is advisory and never silently
+becomes Preference policy.
 
 For Calendar work, current explicit lane direction wins, followed by exact active
 Preference/routing rules, entity rules, deterministic three-decision precedent,
@@ -226,6 +238,10 @@ are currently bound. It does not mean the Google account is disconnected.
 For a general availability lookup, call `docket_list_provider_calendar_events` once with
 `calendar_id` omitted; Docket returns one globally ordered page across all active
 lanes. Supply `calendar_id` only when the Operator's request is lane-specific.
+Use the default semantic summary. Request `detail="details"` only when the task
+specifically requires provider recurrence, raw binding, or reminder metadata.
+Creating an Event does not require an availability read unless collision checking
+or availability is part of the Operator's request.
 
 For a new event and a new event-specific route in the same ChangeSet, keep the
 dependency one-way. The CanonicalEvent `create_spec` uses `lane_ref` or
@@ -249,6 +265,13 @@ successful/no-op result. A duplicate failed draft remains failed: follow its
 and preserve the returned `semantic_request_ref`. Follow compact public refs; do
 not include unsolicited history. Do not reproduce raw provenance chains, tool
 transcripts, or provider payloads in chat.
+
+On `committed`, `effects` is the exact compact mapping from submitted `change_id`
+to durable public refs. `provider_operations` proves which compiler-owned external
+effects are queued and names their canonical targets. This is sufficient for the
+normal final response. Do not issue post-commit verification reads unless the
+receipt is internally inconsistent or the Operator explicitly requested provider
+completion rather than durable queueing.
 
 Tool transport completion and Docket domain success are different. Treat a durable
 `call_` with rejected or failed domain state as unsuccessful even when MCP transport

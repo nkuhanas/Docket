@@ -114,7 +114,7 @@ def _commit_tracked_content(
             content=content,
         )
     )
-    _committed, affected = service.commit(
+    _committed, receipt = service.commit(
         ChangeSetCommit(
             changeset_ref=changeset.ref_id,
             expected_version=changeset.version,
@@ -122,7 +122,7 @@ def _commit_tracked_content(
             authority_utterance_ref=utterance_ref,
         )
     )
-    return affected
+    return receipt.affected_refs
 
 
 @pytest.mark.integration

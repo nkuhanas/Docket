@@ -70,6 +70,9 @@ NetworkDepth = Annotated[int, Field(ge=1, le=3)]
 NetworkNodeLimit = Annotated[int, Field(ge=1, le=100)]
 EntitySearchQuery = Annotated[str, Field(min_length=1, max_length=256)]
 HistoryView = Literal["summary", "audit"]
+ProviderAccountView = Literal["summary", "details"]
+CalendarLaneView = Literal["summary", "routing", "audit"]
+CalendarEventDetail = Literal["summary", "details"]
 
 
 def _error(exc: Exception) -> dict[str, Any]:
@@ -101,6 +104,88 @@ def _calendar_read_service() -> CalendarReadService:
     settings = get_settings()
     sync = CalendarSyncService(get_session_factory(), get_calendar_read_provider(), settings)
     return CalendarReadService(get_session_factory(), sync, settings)
+
+
+def _calendar_event_summary(event: dict[str, Any]) -> dict[str, Any]:
+    if event.get("is_all_day"):
+        timing = {
+            "kind": "all_day",
+            "start_date": event.get("start_date"),
+            "end_date": event.get("end_date"),
+            "timezone": event.get("timezone"),
+        }
+    else:
+        timing = {
+            "kind": "timed",
+            "start_local": event.get("start_local"),
+            "end_local": event.get("end_local"),
+            "timezone": event.get("local_timezone"),
+        }
+    return {
+        key: value
+        for key, value in {
+            "ref": event.get("ref"),
+            "lane_ref": event.get("lane_ref"),
+            "calendar_id": event.get("calendar_id"),
+            "object_type": event.get("object_type"),
+            "semantic_role": event.get("semantic_role"),
+            "status": event.get("status"),
+            "summary": event.get("summary"),
+            "location": event.get("location"),
+            "timing": {key: value for key, value in timing.items() if value is not None},
+            "series": (
+                {
+                    "scope": event.get("scope"),
+                    "occurrences_in_range": event.get("occurrences_in_range"),
+                }
+                if "scope" in event
+                else None
+            ),
+        }.items()
+        if value is not None
+    }
+
+
+def _calendar_events_summary(result: dict[str, Any]) -> dict[str, Any]:
+    raw_events = result.get("events", [])
+    freshness_by_calendar = result.get("freshness_by_calendar")
+    if isinstance(freshness_by_calendar, dict):
+        freshness_values = list(freshness_by_calendar.values())
+        freshness = {
+            "calendar_count": len(freshness_values),
+            "stale": any(bool(item.get("stale")) for item in freshness_values),
+            "covered": all(bool(item.get("covered")) for item in freshness_values),
+        }
+    else:
+        raw_freshness = result.get("freshness", {})
+        freshness = {
+            "calendar_count": 1,
+            "stale": bool(raw_freshness.get("stale")),
+            "covered": bool(raw_freshness.get("covered")),
+        }
+    freshness.update(
+        {
+            "refresh_pending": bool(result.get("refresh_pending")),
+            "refresh_disabled": bool(result.get("refresh_disabled")),
+        }
+    )
+    return {
+        "ok": True,
+        "account_ref": result.get("account_ref"),
+        "range": {
+            "start": result.get("range_start"),
+            "end": result.get("range_end"),
+            "resolution": result.get("range_resolution"),
+        },
+        "result_view": result.get("result_view"),
+        "detail": "summary",
+        "items": [_calendar_event_summary(event) for event in raw_events],
+        "count": result.get("count", len(raw_events)),
+        "total_if_known": result.get("total_if_known"),
+        "truncated": bool(result.get("truncated")),
+        "cursor": result.get("cursor"),
+        "freshness": freshness,
+    }
 
 
 @mcp.tool()
@@ -329,25 +414,35 @@ def docket_get_intent_session(intent_session_ref: SessionRef) -> dict[str, Any]:
 
 
 @mcp.tool()
-def docket_list_provider_accounts() -> dict[str, Any]:
-    """List enabled Google provider accounts and their Calendar bindings."""
+def docket_list_provider_accounts(
+    view: ProviderAccountView = "summary",
+) -> dict[str, Any]:
+    """List compact enabled provider accounts; request details for raw bindings."""
     try:
         with session_scope() as session:
             lane_service = CalendarLaneService(session, get_settings())
             accounts = AccountService(session).list_enabled_google()
-            items = [
-                {
+            items = []
+            for account in accounts:
+                calendar_ids = lane_service.calendar_ids(account.id)
+                item = {
                     "ref": account.ref_id,
-                    "provider": account.provider,
                     "display_name": account.display_name,
-                    "email_address": account.email_address,
                     "capabilities": account.capabilities,
-                    "calendar_ids": lane_service.calendar_ids(account.id),
+                    "calendar_binding_count": len(calendar_ids),
                 }
-                for account in accounts
-            ]
+                if view == "details":
+                    item.update(
+                        {
+                            "provider": account.provider,
+                            "email_address": account.email_address,
+                            "calendar_ids": calendar_ids,
+                        }
+                    )
+                items.append(item)
             return {
                 "ok": True,
+                "view": view,
                 "items": items,
                 "count": len(items),
                 "total_if_known": len(items),
@@ -358,15 +453,50 @@ def docket_list_provider_accounts() -> dict[str, Any]:
 
 
 @mcp.tool()
-def docket_list_calendar_lanes(account_ref: ProviderAccountRef) -> dict[str, Any]:
-    """List canonical Calendar lanes and exact provider bindings for one account."""
+def docket_list_calendar_lanes(
+    account_ref: ProviderAccountRef,
+    view: CalendarLaneView = "summary",
+) -> dict[str, Any]:
+    """List compact Calendar lanes; request routing or audit fields explicitly."""
     try:
         with session_scope() as session:
             account = AccountService(session).require_google_ref(account_ref)
             lanes = CalendarLaneService(session, get_settings()).list_lanes(account.id)
-            items = [lane.model_dump(mode="json", exclude_none=True) for lane in lanes]
+            items: list[dict[str, Any]] = []
+            for lane in lanes:
+                item = {
+                    "ref": lane.ref,
+                    "lane": lane.lane,
+                    "display_name": lane.display_name,
+                    "status": lane.status,
+                    "enabled": lane.enabled,
+                    "version": lane.version,
+                }
+                if view in {"routing", "audit"}:
+                    item.update(
+                        {
+                            "calendar_id": lane.calendar_id,
+                            "operator_policy_text": lane.operator_policy_text,
+                            "priority": lane.priority,
+                        }
+                    )
+                if view == "audit":
+                    item.update(
+                        {
+                            "color_hex": lane.color_hex,
+                            "metadata_json": lane.metadata_json,
+                            "basis_refs": lane.basis_refs,
+                            "decision_refs": lane.decision_refs,
+                            "source_refs": lane.source_refs,
+                            "created_by_changeset_ref": (
+                                lane.created_by_changeset_ref
+                            ),
+                        }
+                    )
+                items.append(item)
             return {
                 "ok": True,
+                "view": view,
                 "items": items,
                 "count": len(items),
                 "total_if_known": len(items),
@@ -388,9 +518,11 @@ def docket_list_provider_calendar_events(
     limit: CalendarLimit = 25,
     freshness: CalendarFreshness = "prefer_cache",
     result_view: CalendarEventResultView = "occurrences",
+    detail: CalendarEventDetail = "summary",
 ) -> dict[str, Any]:
-    """Read one globally ordered bounded provider Calendar cache range.
+    """Read one globally ordered Calendar range as compact semantic summaries.
 
+    Request details only when provider recurrence or reminder metadata is needed.
     This tool never mutates a provider.
     """
     try:
@@ -431,7 +563,9 @@ def docket_list_provider_calendar_events(
                 result_view=result_view,
                 offset=offset,
             )
-        return {"ok": True, **result}
+        if detail == "summary":
+            return _calendar_events_summary(result)
+        return {"ok": True, "detail": "details", **result}
     except Exception as exc:
         return _error(exc)
 

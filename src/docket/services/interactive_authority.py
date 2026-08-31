@@ -1038,7 +1038,8 @@ class InteractiveAuthorityService:
                 "intent_session": intent_service.projection(intent_session),
                 "changeset": self.changesets.projection(changeset),
             }
-        committed, affected_refs = self.changesets.commit(
+        was_committed = changeset.state == "committed"
+        committed, receipt = self.changesets.commit(
             ChangeSetCommit(
                 changeset_ref=changeset.ref_id,
                 expected_version=changeset.version,
@@ -1101,11 +1102,12 @@ class InteractiveAuthorityService:
             "ref": committed.ref_id,
             "state": "committed",
             "summary": "Resolved Operator intent committed atomically.",
-            "affected_refs": affected_refs,
+            "affected_refs": receipt.affected_refs,
+            **receipt.projection(),
             "basis_refs": committed.basis_refs,
             "next": next_action,
             "warnings": [],
-            "disposition": "committed",
+            "disposition": "replayed_request" if was_committed else "committed",
             "intent_session_ref": intent_session.ref_id,
             "intent_turn_ref": turn.ref_id,
             "semantic_request_ref": (
@@ -1185,7 +1187,7 @@ class InteractiveAuthorityService:
             )
         )
         intent_session.semantic_state = "ready"
-        changeset, affected_refs, created = self.changesets.resolve_conflict(
+        changeset, receipt, created = self.changesets.resolve_conflict(
             intent_session=intent_session,
             request=resolution,
             idempotency_key=idempotency_key,
@@ -1195,7 +1197,8 @@ class InteractiveAuthorityService:
             "ref": changeset.ref_id,
             "state": changeset.state,
             "summary": "Conflict resolution committed atomically.",
-            "affected_refs": affected_refs,
+            "affected_refs": receipt.affected_refs,
+            **receipt.projection(),
             "basis_refs": changeset.basis_refs,
             "next": None,
             "warnings": [],

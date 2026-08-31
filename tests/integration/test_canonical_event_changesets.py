@@ -163,6 +163,21 @@ def _commit_rich_event(session, *, message_id: str) -> tuple[str, str, str]:
         expected_changeset_version=None,
     )
     assert result["state"] == "committed"
+    assert [effect["change_id"] for effect in result["effects"]] == [
+        "clubs-lane",
+        "polyuas-event",
+        "polyuas-route",
+    ]
+    assert [
+        operation["operation_type"]
+        for operation in result["provider_operations"]
+    ] == ["calendar_configure_lane", "calendar_create_event"]
+    assert all(
+        operation["state"] == "queued"
+        and operation["refs"][0].startswith("op_")
+        and operation["target_refs"]
+        for operation in result["provider_operations"]
+    )
     event = session.scalar(select(CanonicalEvent))
     lane = session.scalar(select(CalendarLane))
     changeset = session.scalar(select(ChangeSet))

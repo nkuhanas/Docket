@@ -125,8 +125,20 @@ def test_retained_provider_reads_chain_through_public_refs_without_uuid_leak(
     assert isinstance(accounts_result, tuple)
     accounts = accounts_result[1]
     assert accounts["items"][0]["ref"] == account_ref
+    assert accounts["items"][0]["calendar_binding_count"] == 1
     assert "account_id" not in accounts["items"][0]
     assert "calendar_lanes" not in accounts["items"][0]
+    assert "calendar_ids" not in accounts["items"][0]
+    assert "email_address" not in accounts["items"][0]
+
+    account_details_result = asyncio.run(
+        mcp.call_tool("docket_list_provider_accounts", {"view": "details"})
+    )
+    assert isinstance(account_details_result, tuple)
+    account_details = account_details_result[1]
+    assert account_details["items"][0]["calendar_ids"] == [
+        "personal@example.com"
+    ]
 
     lanes_result = asyncio.run(
         mcp.call_tool("docket_list_calendar_lanes", {"account_ref": account_ref})
@@ -136,3 +148,15 @@ def test_retained_provider_reads_chain_through_public_refs_without_uuid_leak(
     assert lanes["items"]
     assert all(item["ref"].startswith("lane_") for item in lanes["items"])
     assert all("lane_id" not in item and "account_id" not in item for item in lanes["items"])
+    assert all("calendar_id" not in item for item in lanes["items"])
+    assert all("operator_policy_text" not in item for item in lanes["items"])
+
+    routing_result = asyncio.run(
+        mcp.call_tool(
+            "docket_list_calendar_lanes",
+            {"account_ref": account_ref, "view": "routing"},
+        )
+    )
+    assert isinstance(routing_result, tuple)
+    routing = routing_result[1]
+    assert routing["items"][0]["calendar_id"] == "personal@example.com"

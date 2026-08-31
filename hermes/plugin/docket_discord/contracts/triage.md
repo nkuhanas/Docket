@@ -1,11 +1,12 @@
 # Docket Restricted triage Tool Contract
 
-contract_version: docket-tools-2026-08-30-v16
-contract_hash: 827b40746b52f150a1e62ad7149bfe722ca1d1c8463c5bc429a29b0fd98b3a06
+contract_version: docket-tools-2026-08-31-v17
+contract_hash: df72858bb689e5ea331a5381574007678c99b78fb1e66b6b6de5c91b7dd8c85c
 profile: triage
 
 Rules: MCP/Pydantic schemas define exact arguments. This contract defines selection, authority, side effects, and result handling.
 Results: default JSON is compact; provider queued is not provider-complete; ToolInvocation transport_state, domain_state, and result_disposition are distinct.
+Read scope: use default summary projections unless the task requires a named detail/routing/audit field. Never request detail speculatively.
 Codes: P-READ=authorized profile+bounded args; P-MUT=persisted current utt_+exact refs/versions; S-READ=succeeded; S-CHANGESET=committed|needs_clarification|replayed_request|rejected_validation|rejected_authority|rejected_conflict|blocked_version|failed|unknown.
 Handling: O-STD=trust ok/state/ref and follow next; N-READ=use public refs; N-CHANGESET=ask only a genuine semantic clarification or report durable outcome; E-READ=not_found|validation_error; E-MUT=operator_utterance_authority_required|version_conflict|conflict_open|validation_error.
 Entries:

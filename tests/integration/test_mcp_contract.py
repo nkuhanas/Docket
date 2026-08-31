@@ -158,6 +158,13 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
     calendar_events = tools["docket_list_provider_calendar_events"]
     assert "calendar_id" not in calendar_events.inputSchema.get("required", [])
     assert "globally ordered" in (calendar_events.description or "")
+    assert calendar_events.inputSchema["properties"]["detail"]["default"] == "summary"
+    assert tools["docket_list_calendar_lanes"].inputSchema["properties"]["view"][
+        "default"
+    ] == "summary"
+    assert tools["docket_list_provider_accounts"].inputSchema["properties"]["view"][
+        "default"
+    ] == "summary"
     history_type = tools["docket_search_history"].inputSchema["properties"][
         "object_type"
     ]

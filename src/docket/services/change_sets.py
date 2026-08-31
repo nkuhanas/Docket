@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import BaseModel
@@ -59,6 +60,67 @@ ProviderIntentHandler = Callable[
     [Session, ChangeSet, ProviderIntentInput, dict[str, list[str]]],
     list[str],
 ]
+
+
+@dataclass(frozen=True)
+class ChangeSetEffectReceipt:
+    """Compact semantic result for one canonical mutation."""
+
+    change_id: str
+    mutation_type: str
+    action: str
+    object_type: str
+    refs: tuple[str, ...]
+
+    def projection(self) -> dict[str, Any]:
+        return {
+            "change_id": self.change_id,
+            "mutation_type": self.mutation_type,
+            "action": self.action,
+            "object_type": self.object_type,
+            "refs": list(self.refs),
+        }
+
+
+@dataclass(frozen=True)
+class ProviderOperationReceipt:
+    """Compact receipt proving one compiler-owned provider effect is durable."""
+
+    intent_id: str
+    operation_type: str
+    refs: tuple[str, ...]
+    target_refs: tuple[str, ...]
+
+    def projection(self) -> dict[str, Any]:
+        return {
+            "intent_id": self.intent_id,
+            "operation_type": self.operation_type,
+            "refs": list(self.refs),
+            "target_refs": list(self.target_refs),
+            "state": "queued",
+        }
+
+
+@dataclass
+class ChangeSetApplicationReceipt:
+    """Bounded commit outcome used instead of follow-up object/history reads."""
+
+    affected_refs: list[str] = field(default_factory=list)
+    effects: list[ChangeSetEffectReceipt] = field(default_factory=list)
+    provider_operations: list[ProviderOperationReceipt] = field(default_factory=list)
+
+    def add_refs(self, refs: list[str]) -> None:
+        for ref_id in refs:
+            if ref_id not in self.affected_refs:
+                self.affected_refs.append(ref_id)
+
+    def projection(self) -> dict[str, Any]:
+        return {
+            "effects": [effect.projection() for effect in self.effects],
+            "provider_operations": [
+                operation.projection() for operation in self.provider_operations
+            ],
+        }
 
 _GROUP_TYPES: dict[str, frozenset[str]] = {
     "registry_changes": frozenset(
@@ -429,8 +491,8 @@ class ChangeSetService:
         self,
         changeset: ChangeSet,
         content: ChangeSetContent,
-    ) -> list[str]:
-        affected_refs: list[str] = []
+    ) -> ChangeSetApplicationReceipt:
+        receipt = ChangeSetApplicationReceipt()
         refs_by_change_id: dict[str, list[str]] = {}
         for change in _all_changes(content):
             resolved_change: ChangeInput = change
@@ -465,9 +527,16 @@ class ChangeSetService:
                 self.session, changeset, resolved_change
             )
             refs_by_change_id[change.change_id] = refs
-            for ref_id in refs:
-                if ref_id not in affected_refs:
-                    affected_refs.append(ref_id)
+            receipt.add_refs(refs)
+            receipt.effects.append(
+                ChangeSetEffectReceipt(
+                    change_id=change.change_id,
+                    mutation_type=change.mutation_type,
+                    action=change.action,
+                    object_type=change.object_type,
+                    refs=tuple(refs),
+                )
+            )
         if self.provider_handler is not None:
             provider_intents = sorted(
                 content.provider_intents,
@@ -483,10 +552,21 @@ class ChangeSetService:
                     intent,
                     refs_by_change_id,
                 )
-                for ref_id in provider_refs:
-                    if ref_id not in affected_refs:
-                        affected_refs.append(ref_id)
-        return affected_refs
+                receipt.add_refs(provider_refs)
+                target_refs = list(intent.canonical_target_refs)
+                for change_id in intent.canonical_target_change_ids:
+                    for ref_id in refs_by_change_id.get(change_id, []):
+                        if ref_id not in target_refs:
+                            target_refs.append(ref_id)
+                receipt.provider_operations.append(
+                    ProviderOperationReceipt(
+                        intent_id=intent.intent_id,
+                        operation_type=intent.operation_type,
+                        refs=tuple(provider_refs),
+                        target_refs=tuple(target_refs),
+                    )
+                )
+        return receipt
 
     def _compile_required_provider_intents(
         self,
@@ -958,7 +1038,7 @@ class ChangeSetService:
         intent_session: IntentSession,
         request: ConflictResolve,
         idempotency_key: str,
-    ) -> tuple[ChangeSet, list[str], bool]:
+    ) -> tuple[ChangeSet, ChangeSetApplicationReceipt, bool]:
         payload = request.model_dump(mode="json", exclude_defaults=True, exclude_none=True)
         parameter_hash = sha256_json(payload)
         existing = self.session.scalar(
@@ -977,7 +1057,7 @@ class ChangeSetService:
                 or revision.parameter_hash != parameter_hash
             ):
                 raise IdempotencyConflict(idempotency_key)
-            return existing, [], False
+            return existing, ChangeSetApplicationReceipt(), False
         if intent_session.blocking_clarifications:
             raise DocketError(
                 code="intent_needs_clarification",
@@ -1067,8 +1147,10 @@ class ChangeSetService:
         )
         intent_session.semantic_state = "ready"
         intent_session.commit_state = "pending"
-        affected_refs = (
-            self._apply_content(changeset, content) if content is not None else []
+        receipt = (
+            self._apply_content(changeset, content)
+            if content is not None
+            else ChangeSetApplicationReceipt()
         )
         conflict, decision = conflict_service.resolve(request)
         changeset.state = "committed"
@@ -1078,7 +1160,17 @@ class ChangeSetService:
         intent_session.commit_state = "committed"
         intent_session.committed_changeset_ref = changeset.ref_id
         intent_session.version += 1
-        affected_refs.extend([conflict.ref_id, decision.ref_id])
+        conflict_refs = [conflict.ref_id, decision.ref_id]
+        receipt.add_refs(conflict_refs)
+        receipt.effects.append(
+            ChangeSetEffectReceipt(
+                change_id="resolve-conflict",
+                mutation_type="conflict_resolution",
+                action="resolve",
+                object_type="conflict",
+                refs=tuple(conflict_refs),
+            )
+        )
         self.session.add(
             AuditEvent(
                 event_type="changeset.committed",
@@ -1088,16 +1180,20 @@ class ChangeSetService:
                 actor_id=get_settings().operator_discord_user_id,
                 request_id=None,
                 primary_ref=changeset.ref_id,
-                affected_refs=[changeset.ref_id, intent_session.ref_id, *affected_refs],
+                affected_refs=[
+                    changeset.ref_id,
+                    intent_session.ref_id,
+                    *receipt.affected_refs,
+                ],
                 basis_refs=list(changeset.basis_refs),
                 data={
                     "revision": 1,
-                    "canonical_effect_count": len(affected_refs),
+                    "canonical_effect_count": len(receipt.effects),
                 },
             )
         )
         self.session.flush()
-        return changeset, affected_refs, True
+        return changeset, receipt, True
 
     @staticmethod
     def _content(changeset: ChangeSet) -> ChangeSetContent:
@@ -2457,12 +2553,14 @@ class ChangeSetService:
         )
         return changeset
 
-    def commit(self, request: ChangeSetCommit) -> tuple[ChangeSet, list[str]]:
+    def commit(
+        self, request: ChangeSetCommit
+    ) -> tuple[ChangeSet, ChangeSetApplicationReceipt]:
         changeset = self.get(request.changeset_ref)
         if changeset.idempotency_key != request.idempotency_key:
             raise IdempotencyConflict(request.idempotency_key)
         if changeset.state == "committed":
-            return changeset, []
+            return changeset, ChangeSetApplicationReceipt()
         if changeset.state != "validated":
             raise DocketError(
                 code="changeset_not_resolved",
@@ -2521,7 +2619,7 @@ class ChangeSetService:
                 details={"errors": errors},
             )
         intent_session.commit_state = "pending"
-        affected_refs = self._apply_content(changeset, content)
+        receipt = self._apply_content(changeset, content)
         changeset.state = "committed"
         changeset.committed_at = utc_now()
         changeset.version += 1
@@ -2539,16 +2637,20 @@ class ChangeSetService:
                 actor_id=get_settings().operator_discord_user_id,
                 request_id=None,
                 primary_ref=changeset.ref_id,
-                affected_refs=[changeset.ref_id, intent_session.ref_id, *affected_refs],
+                affected_refs=[
+                    changeset.ref_id,
+                    intent_session.ref_id,
+                    *receipt.affected_refs,
+                ],
                 basis_refs=changeset.basis_refs,
                 data={
                     "revision": changeset.current_revision,
-                    "canonical_effect_count": len(affected_refs),
+                    "canonical_effect_count": len(receipt.effects),
                 },
             )
         )
         self.session.flush()
-        return changeset, affected_refs
+        return changeset, receipt
 
     def projection(self, changeset: ChangeSet) -> dict[str, Any]:
         return {

@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-08-30-v16"
+CONTRACT_VERSION = "docket-tools-2026-08-31-v17"
 
 
 class ToolContractEntry(TypedDict):
@@ -75,15 +75,15 @@ _INTERACTIVE_READS: dict[str, tuple[str, str]] = {
     ),
     "docket_list_provider_accounts": (
         "ONT-TRACK-TOOL-0003",
-        "List enabled provider-account bindings.",
+        "List compact enabled provider accounts; details exposes exact bindings.",
     ),
     "docket_list_calendar_lanes": (
         "ONT-TRACK-TOOL-0004",
-        "List canonical Calendar lanes and exact provider bindings.",
+        "List compact Calendar lanes; routing/audit views expose scoped detail.",
     ),
     "docket_list_provider_calendar_events": (
         "ONT-TRACK-TOOL-0005",
-        "Read one bounded provider Calendar cache page.",
+        "Read one bounded provider Calendar page as semantic summaries by default.",
     ),
     "docket_get_calendar_sync_status": (
         "ONT-TRACK-TOOL-0006",
@@ -206,6 +206,10 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
             "ToolInvocation transport_state, domain_state, and result_disposition are distinct."
         ),
         (
+            "Read scope: use default summary projections unless the task requires a named "
+            "detail/routing/audit field. Never request detail speculatively."
+        ),
+        (
             "Codes: P-READ=authorized profile+bounded args; P-MUT=persisted current utt_+"
             "exact refs/versions; S-READ=succeeded; S-CHANGESET=committed|needs_clarification|"
             "replayed_request|rejected_validation|rejected_authority|rejected_conflict|"
@@ -246,6 +250,12 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
                     "Provider projection is compiler-owned. An Event create with a resolved lane "
                     "deterministically creates its required Calendar Operation in the same "
                     "transaction. Never invent a separate push or repair request."
+                ),
+                (
+                    "A committed ChangeSet receipt maps each change_id to created/updated refs "
+                    "and lists compiler-owned provider Operations. Treat that receipt as the "
+                    "authoritative commit result; do not reread objects or history merely to "
+                    "verify the commit."
                 ),
                 (
                     "CalendarLane create uses the public acct_ returned by "
