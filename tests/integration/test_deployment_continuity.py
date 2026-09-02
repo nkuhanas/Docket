@@ -7,7 +7,7 @@ from sqlalchemy import func, select
 from docket.config import get_settings
 from docket.domain.errors import DocketError
 from docket.domain.public_refs import new_public_ref
-from docket.internal_api.schemas import OperatorUtteranceCapture
+from docket.internal_api.schemas import AgentResponseCapture, OperatorUtteranceCapture
 from docket.models import (
     ConversationalToolTrace,
     DeferredIngress,
@@ -15,6 +15,7 @@ from docket.models import (
     GatewayLifetime,
     IntentSession,
     OperatorUtterance,
+    OutboxEvent,
     ToolInvocation,
 )
 from docket.providers.discord import FakeDiscordProjectionAdapter
@@ -109,6 +110,170 @@ def test_drained_deployment_fences_prior_gateway_during_replacement(
             session.scalars(select(GatewayLifetime).order_by(GatewayLifetime.lease_generation))
         )
         assert [lifetime.status for lifetime in lifetimes] == ["clean_shutdown", "active"]
+
+
+@pytest.mark.integration
+def test_drained_replacement_terminalizes_trace_without_replaying_finalized_utterance(
+    session_factory,
+) -> None:
+    settings = get_settings()
+    now = datetime.now(UTC)
+    message_id = "1542799000000000421"
+    trace_ref = new_public_ref("trace")
+    with session_factory.begin() as session:
+        prior = GatewayLifetimeService(session).register(
+            registration_key=uuid.uuid4(),
+            instance_kind="hermes_discord_gateway",
+        )
+        capture = ProvenanceService(session).capture_operator_utterance(
+            OperatorUtteranceCapture(
+                request_id=uuid.uuid4(),
+                guild_id=settings.discord_guild_id,
+                channel_id=settings.chat_channel_id,
+                message_id=message_id,
+                actor_id=settings.operator_discord_user_id,
+                verbatim_text="Track this deadline.",
+                request_key=(
+                    f"discord:{settings.discord_guild_id}:"
+                    f"{settings.chat_channel_id}:{message_id}:0"
+                ),
+                gateway_instance_ref=str(prior["ref"]),
+            )
+        )
+        ingress_binding = capture["deferred_ingress"]
+        session.add(
+            ConversationalToolTrace(
+                ref_id=trace_ref,
+                guild_id=settings.discord_guild_id,
+                source_channel_id=settings.chat_channel_id,
+                source_message_id=message_id,
+                actor_id=settings.operator_discord_user_id,
+                tool_contract_version=CONTRACT_VERSION,
+                tool_contract_hash=contract_hash("interactive"),
+                caller_profile="interactive",
+                gateway_instance_ref=str(prior["ref"]),
+                status="running",
+                calls=[
+                    {
+                        "call_id": "locally-rejected-call",
+                        "ordinal": 1,
+                        "tool_name": "docket_commit_changeset",
+                        "transport_state": "running",
+                        "domain_state": "unknown",
+                    }
+                ],
+                last_ordinal=1,
+                version=1,
+                started_at=now,
+            )
+        )
+        session.flush()
+        ProvenanceService(session).capture_agent_response(
+            AgentResponseCapture(
+                request_id=uuid.uuid4(),
+                guild_id=settings.discord_guild_id,
+                channel_id=settings.chat_channel_id,
+                source_message_id=message_id,
+                actor_id=settings.operator_discord_user_id,
+                utterance_ref=str(capture["ref"]),
+                turn_id="turn-finalized-before-drain",
+                session_id="session-finalized-before-drain",
+                model_identifier="test-model",
+                verbatim_text="The request could not be committed.",
+                generated_at=now,
+                trace_ref=trace_ref,
+                gateway_instance_ref=str(prior["ref"]),
+            )
+        )
+        ContinuityService(session).complete_execution_lease(
+            str(ingress_binding["execution_completion_token"])
+        )
+        ContinuityService(session).request_drain(
+            requested_by="test deployment",
+            timeout_seconds=60,
+        )
+        GatewayLifetimeService(session).register(
+            registration_key=uuid.uuid4(),
+            instance_kind="hermes_discord_gateway",
+        )
+
+    with session_factory() as session:
+        ingress = session.scalar(
+            select(DeferredIngress).where(DeferredIngress.ref_id == ingress_binding["ref"])
+        )
+        trace = session.scalar(
+            select(ConversationalToolTrace).where(
+                ConversationalToolTrace.ref_id == trace_ref
+            )
+        )
+        assert ingress is not None and ingress.status == "completed"
+        assert ingress.claimed_by_gateway_ref is None
+        assert ingress.claim_token is None
+        assert trace is not None and trace.status == "interrupted"
+        assert trace.calls[0]["transport_state"] == "timed_out"
+        assert trace.calls[0]["disposition"] == "unknown"
+        assert session.scalar(
+            select(func.count(OutboxEvent.id)).where(
+                OutboxEvent.event_type == "discord.mcp_trace.requested",
+                OutboxEvent.aggregate_id == trace.id,
+            )
+        ) == 1
+
+    assert DeferredIngressRunner(
+        session_factory,
+        FakeDiscordProjectionAdapter(),
+    ).run_once() is False
+
+
+@pytest.mark.integration
+def test_startup_reconciles_trace_left_running_by_closed_gateway(
+    session_factory,
+) -> None:
+    settings = get_settings()
+    now = datetime.now(UTC)
+    trace_ref = new_public_ref("trace")
+    with session_factory.begin() as session:
+        gateway = GatewayLifetime(
+            registration_key=uuid.uuid4(),
+            instance_kind="hermes_discord_gateway",
+            lease_generation=1,
+            started_at=now - timedelta(minutes=5),
+            heartbeat_at=now,
+            lease_expires_at=now,
+            clean_shutdown_at=now,
+            status="clean_shutdown",
+        )
+        session.add(gateway)
+        session.flush()
+        session.add(
+            ConversationalToolTrace(
+                ref_id=trace_ref,
+                guild_id=settings.discord_guild_id,
+                source_channel_id=settings.chat_channel_id,
+                source_message_id="1542799000000000422",
+                actor_id=settings.operator_discord_user_id,
+                tool_contract_version=CONTRACT_VERSION,
+                tool_contract_hash=contract_hash("interactive"),
+                caller_profile="interactive",
+                gateway_instance_ref=gateway.ref_id,
+                status="running",
+                calls=[],
+                last_ordinal=0,
+                version=1,
+                started_at=now - timedelta(minutes=4),
+            )
+        )
+
+    with session_factory.begin() as session:
+        assert GatewayLifetimeService(session).expire_and_reconcile() == []
+
+    with session_factory() as session:
+        trace = session.scalar(
+            select(ConversationalToolTrace).where(
+                ConversationalToolTrace.ref_id == trace_ref
+            )
+        )
+        assert trace is not None and trace.status == "interrupted"
 
 
 @pytest.mark.integration

@@ -4,17 +4,21 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from docket.config import get_settings
+from docket.domain.enums import OutboxStatus
 from docket.domain.errors import DocketError
 from docket.models import (
+    AgentResponse,
     ConversationalToolTrace,
     DeferredIngress,
     DrainBarrier,
     ExecutionLease,
     GatewayLifetime,
+    IntentTurn,
+    OutboxEvent,
     SemanticRequest,
     ToolInvocation,
 )
@@ -122,6 +126,7 @@ class GatewayLifetimeService:
             live.heartbeat_at = now
             live.lease_expires_at = now
             live.status = "clean_shutdown"
+            self._reconcile_closed_gateway(live, now)
             replaced_gateway_ref = live.ref_id
         generation = int(
             self.session.scalar(
@@ -251,6 +256,100 @@ class GatewayLifetimeService:
         trace.status = "interrupted"
         trace.completed_at = now
         trace.version += 1
+        self.session.add(
+            OutboxEvent(
+                event_type="discord.mcp_trace.requested",
+                aggregate_type="conversational_tool_trace",
+                aggregate_id=trace.id,
+                deduplication_key=(
+                    f"conversational_tool_trace:{trace.ref_id}:v{trace.version}"
+                ),
+                payload={"trace_ref": trace.ref_id, "trace_version": trace.version},
+                status=OutboxStatus.PENDING.value,
+            )
+        )
+
+    def _utterance_execution_finalized(
+        self,
+        *,
+        utterance_ref: str,
+        gateway_instance_ref: str,
+    ) -> bool:
+        response_bindings = self.session.scalars(
+            select(AgentResponse.responds_to_utterance_refs).where(
+                AgentResponse.gateway_instance_ref == gateway_instance_ref
+            )
+        )
+        if any(utterance_ref in refs for refs in response_bindings):
+            return True
+        return (
+            self.session.scalar(
+                select(IntentTurn.id)
+                .where(
+                    IntentTurn.utterance_ref == utterance_ref,
+                    IntentTurn.gateway_instance_ref == gateway_instance_ref,
+                    IntentTurn.response_disposition.in_(("final_response", "no_response")),
+                )
+                .limit(1)
+            )
+            is not None
+        )
+
+    def _reconcile_closed_gateway(
+        self,
+        lifetime: GatewayLifetime,
+        now: datetime,
+    ) -> None:
+        leases = list(
+            self.session.scalars(
+                select(ExecutionLease)
+                .where(
+                    ExecutionLease.gateway_instance_ref == lifetime.ref_id,
+                    ExecutionLease.status == "active",
+                )
+                .with_for_update()
+            )
+        )
+        for lease in leases:
+            lease.status = "expired"
+            lease.completed_at = now
+            lease.metadata_json = {
+                **lease.metadata_json,
+                "error_code": "gateway_interrupted",
+            }
+        deferred = list(
+            self.session.scalars(
+                select(DeferredIngress)
+                .where(
+                    DeferredIngress.claimed_by_gateway_ref == lifetime.ref_id,
+                    DeferredIngress.status == "claimed",
+                )
+                .with_for_update()
+            )
+        )
+        for ingress in deferred:
+            finalized = self._utterance_execution_finalized(
+                utterance_ref=ingress.utterance_ref,
+                gateway_instance_ref=lifetime.ref_id,
+            )
+            ingress.status = "completed" if finalized else "pending"
+            ingress.completed_at = now if finalized else None
+            ingress.claimed_by_gateway_ref = None
+            ingress.claim_token = None
+            ingress.claimed_at = None
+            ingress.last_error_code = None if finalized else "gateway_interrupted"
+        traces = list(
+            self.session.scalars(
+                select(ConversationalToolTrace)
+                .where(
+                    ConversationalToolTrace.gateway_instance_ref == lifetime.ref_id,
+                    ConversationalToolTrace.status == "running",
+                )
+                .with_for_update()
+            )
+        )
+        for trace in traces:
+            self._reconcile_trace(trace, now)
 
     def expire_and_reconcile(self) -> list[str]:
         now = self._database_now()
@@ -269,51 +368,37 @@ class GatewayLifetimeService:
         for lifetime in expired:
             lifetime.status = "expired"
             expired_refs.append(lifetime.ref_id)
-            leases = list(
-                self.session.scalars(
-                    select(ExecutionLease)
-                    .where(
-                        ExecutionLease.gateway_instance_ref == lifetime.ref_id,
-                        ExecutionLease.status == "active",
-                    )
-                    .with_for_update()
+        closed = list(
+            self.session.scalars(
+                select(GatewayLifetime)
+                .where(
+                    GatewayLifetime.status.in_(("expired", "clean_shutdown")),
+                    or_(
+                        GatewayLifetime.ref_id.in_(
+                            select(ExecutionLease.gateway_instance_ref).where(
+                                ExecutionLease.status == "active",
+                                ExecutionLease.gateway_instance_ref.is_not(None),
+                            )
+                        ),
+                        GatewayLifetime.ref_id.in_(
+                            select(DeferredIngress.claimed_by_gateway_ref).where(
+                                DeferredIngress.status == "claimed",
+                                DeferredIngress.claimed_by_gateway_ref.is_not(None),
+                            )
+                        ),
+                        GatewayLifetime.ref_id.in_(
+                            select(ConversationalToolTrace.gateway_instance_ref).where(
+                                ConversationalToolTrace.status == "running",
+                                ConversationalToolTrace.gateway_instance_ref.is_not(None),
+                            )
+                        ),
+                    ),
                 )
+                .with_for_update()
             )
-            for lease in leases:
-                lease.status = "expired"
-                lease.completed_at = now
-                lease.metadata_json = {
-                    **lease.metadata_json,
-                    "error_code": "gateway_interrupted",
-                }
-            deferred = list(
-                self.session.scalars(
-                    select(DeferredIngress)
-                    .where(
-                        DeferredIngress.claimed_by_gateway_ref == lifetime.ref_id,
-                        DeferredIngress.status == "claimed",
-                    )
-                    .with_for_update()
-                )
-            )
-            for ingress in deferred:
-                ingress.status = "pending"
-                ingress.claimed_by_gateway_ref = None
-                ingress.claim_token = None
-                ingress.claimed_at = None
-                ingress.last_error_code = "gateway_interrupted"
-            traces = list(
-                self.session.scalars(
-                    select(ConversationalToolTrace)
-                    .where(
-                        ConversationalToolTrace.gateway_instance_ref == lifetime.ref_id,
-                        ConversationalToolTrace.status == "running",
-                    )
-                    .with_for_update()
-                )
-            )
-            for trace in traces:
-                self._reconcile_trace(trace, now)
+        )
+        for lifetime in closed:
+            self._reconcile_closed_gateway(lifetime, now)
         return expired_refs
 
 

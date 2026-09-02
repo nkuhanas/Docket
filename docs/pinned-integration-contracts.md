@@ -136,6 +136,14 @@ must not make the same `utt_` eligible for another model run. The plugin's
 listener is installed on the adapter instance and must be revalidated whenever
 the pinned Hermes gateway lifecycle changes.
 
+A drained gateway replacement and an expired gateway both reconcile unfinished
+trace/ingress bookkeeping against durable outcomes. A persisted `rsp_` or
+terminal `turn_` proves the utterance execution finished even if Discord
+delivery failed; that ingress is completed, while its projection remains
+independently retryable. Missing terminal evidence releases the ingress for
+idempotent resumption. Running traces owned by the closed lifetime become
+interrupted/unknown unless a linked `call_` proves a terminal domain outcome.
+
 Each interactive and triage MCP request creates `call_` after service bearer
 authentication but before FastMCP argument validation. Received and normalized
 argument hashes, status, timing, bounded result references, and later trusted

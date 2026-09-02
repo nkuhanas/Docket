@@ -130,8 +130,9 @@ If an Operator message receives only a reaction or no final response:
 2. Inspect its IntentSession and ToolInvocations.
 3. Determine whether a `chg_` committed before diagnosing delivery.
 4. Inspect `rsp_`, `proj_`, projection delivery, and outbox state separately.
-5. Reconcile a dead gateway lifetime against durable outcomes; never relabel a
-   committed ChangeSet as interrupted merely because response delivery failed.
+5. Reconcile a dead or cleanly replaced gateway lifetime against durable
+   outcomes; never relabel a committed ChangeSet as interrupted merely because
+   response delivery failed.
 
 An input that cannot be durably captured fails closed. A generated response may
 exist even when delivery failed; retry the same projection identity rather than
@@ -278,6 +279,10 @@ scripts/docket deploy-ingress
 Do not manually restart the gateway in the middle of an Operator turn. After an
 unclean lifetime expires, reconciliation preserves any durable domain result and
 marks only evidence-free conversational execution interrupted/unknown.
+The same reconciliation runs when a drained deployment cleanly replaces a
+gateway. If an `rsp_` or terminal `turn_` already proves execution finished, its
+claimed ingress becomes completed rather than pending and is never re-executed;
+only an ingress without durable terminal evidence is released for resumption.
 
 ## Clean reset boundary
 
