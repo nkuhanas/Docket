@@ -17,6 +17,7 @@ from collections.abc import Iterable
 from typing import Any
 
 COMMIT_TOOL_NAME = "docket_commit_changeset"
+NAMESPACED_COMMIT_TOOL_NAME = f"mcp__docket__{COMMIT_TOOL_NAME}"
 MUTATION_TYPES_ARGUMENT = "mutation_types"
 MAX_MUTATION_TYPES = 16
 MAX_SCOPED_DESCRIPTION_BYTES = 48 * 1024
@@ -36,6 +37,11 @@ _DIRECT_MUTATIONS = {
 
 class SchemaScopeError(ValueError):
     """The requested model-facing schema scope is invalid or too broad."""
+
+
+def _is_commit_tool_name(name: str) -> bool:
+    """Accept the public name and the exact Hermes MCP registry name."""
+    return name in {COMMIT_TOOL_NAME, NAMESPACED_COMMIT_TOOL_NAME}
 
 
 def _canonical_json(value: Any) -> str:
@@ -115,9 +121,7 @@ def scoped_commit_schema(
     for field_name, union_name in _CHANGE_UNIONS.items():
         union = definitions[union_name]
         mapping = union["discriminator"]["mapping"]
-        selected = {
-            name: reference for name, reference in mapping.items() if name in requested
-        }
+        selected = {name: reference for name, reference in mapping.items() if name in requested}
         if not selected:
             content_properties.pop(field_name, None)
             continue
@@ -160,7 +164,10 @@ def scoped_tool_description(
     full_hash = hashlib.sha256(_canonical_json(parameters).encode()).hexdigest()
     scoped_hash = hashlib.sha256(_canonical_json(scoped).encode()).hexdigest()
     payload = {
-        "name": COMMIT_TOOL_NAME,
+        # Hermes describes deferred tools by their registry name, which is
+        # namespaced for MCP tools. Preserve that exact callable name in the
+        # response while keeping mutation semantics independent of the bridge.
+        "name": str(function.get("name") or COMMIT_TOOL_NAME),
         "description": function.get("description", ""),
         "schema_scope": {
             "mutation_types": list(requested),
@@ -210,7 +217,7 @@ def install_hermes_progressive_schema_patch() -> bool:
         args: dict[str, Any], *, current_tool_defs: list[dict[str, Any]]
     ) -> str:
         name = str(args.get("name") or "").strip()
-        if name != COMMIT_TOOL_NAME:
+        if not _is_commit_tool_name(name):
             return original_dispatch(args, current_tool_defs=current_tool_defs)
         mutation_types = args.get(MUTATION_TYPES_ARGUMENT)
         if not isinstance(mutation_types, list) or not mutation_types:

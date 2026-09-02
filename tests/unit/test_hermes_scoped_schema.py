@@ -20,13 +20,15 @@ def _module():
     return module
 
 
-def _commit_definition() -> dict[str, object]:
+def _commit_definition(
+    name: str = "docket_commit_changeset",
+) -> dict[str, object]:
     tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
     tool = tools["docket_commit_changeset"]
     return {
         "type": "function",
         "function": {
-            "name": tool.name,
+            "name": name,
             "description": tool.description or "",
             "parameters": tool.inputSchema,
         },
@@ -135,3 +137,47 @@ def test_pinned_hermes_bridge_requires_and_applies_mutation_scope(monkeypatch) -
     )
     assert described["schema_scope"]["complete_for_selected_mutations"] is True
     assert len(json.dumps(described, separators=(",", ":")).encode()) < 20_000
+
+
+def test_pinned_hermes_bridge_scopes_namespaced_commit_tool(monkeypatch) -> None:
+    module = _module()
+    tool_search = ModuleType("tools.tool_search")
+    tool_search.dispatch_tool_describe = lambda args, *, current_tool_defs: json.dumps(
+        {"original": args, "definitions": len(current_tool_defs)}
+    )
+    tool_search.bridge_tool_schemas = lambda _count: []
+    tools_package = ModuleType("tools")
+    tools_package.tool_search = tool_search
+    monkeypatch.setitem(sys.modules, "tools", tools_package)
+    monkeypatch.setitem(sys.modules, "tools.tool_search", tool_search)
+
+    assert module.install_hermes_progressive_schema_patch() is True
+    namespaced = module.NAMESPACED_COMMIT_TOOL_NAME
+    described = json.loads(
+        tool_search.dispatch_tool_describe(
+            {
+                "name": namespaced,
+                "mutation_types": [
+                    "item_create",
+                    "task_create",
+                    "temporal_binding_create",
+                ],
+            },
+            current_tool_defs=[_commit_definition(namespaced)],
+        )
+    )
+
+    assert described["name"] == namespaced
+    definitions = described["parameters"]["$defs"]
+    assert set(definitions["TaskInput"]["properties"]) >= {
+        "item_change_id",
+        "title",
+        "task_state",
+    }
+    assert set(definitions["TemporalBindingInput"]["properties"]) >= {
+        "subject_change_id",
+        "role",
+        "temporal_value",
+    }
+    assert "status" not in definitions["TaskInput"]["properties"]
+    assert "start_at" not in definitions["TemporalBindingInput"]["properties"]
