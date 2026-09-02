@@ -18,6 +18,7 @@ import binascii
 import errno
 import hashlib
 import hmac
+import importlib.util
 import json
 import logging
 import os
@@ -36,6 +37,25 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _load_schema_disclosure_module() -> Any:
+    """Load the sibling adapter under Hermes and direct-file unit-test imports."""
+    module_name = "docket_discord_schema_disclosure"
+    existing = sys.modules.get(module_name)
+    if existing is not None:
+        return existing
+    module_path = Path(__file__).resolve().parent / "schema_disclosure.py"
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Docket scoped-schema adapter could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_SCHEMA_DISCLOSURE = _load_schema_disclosure_module()
 _GENERIC_DELIVERY_COMMAND = re.compile(r"^/(?:hermes\s+)?(?:sethome|cron)\b", re.I)
 _HOME_CHANNEL_PROMPT = "📬 No home channel is set for Discord."
 _DISCORD_ID = re.compile(r"^[0-9]{17,20}$")
@@ -147,7 +167,8 @@ def _load_interactive_tool_contract() -> tuple[str, str, str, str, str]:
         "and tool_call; the underlying exact tool name, authenticated hooks, and "
         "Pydantic schema still govern every invocation. Search once for the required "
         "capabilities, describe only tools whose argument schema is needed, and do "
-        "not load unrelated mutation schemas."
+        "not load unrelated mutation schemas. Describe docket_commit_changeset with "
+        "only the exact mutation_types required by the current semantic request."
     )
     return content, compact_prompt, version, actual_hash, profile
 
@@ -228,6 +249,8 @@ _TRACE_CONTEXT_LOCK = threading.Lock()
 _TRACE_DELIVERY_QUEUE: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1000)
 _TRACE_DELIVERY_STARTED = False
 _TRACE_DELIVERY_START_LOCK = threading.Lock()
+_COMMIT_SCHEMA_LOCK = threading.Lock()
+_COMMIT_SCHEMA: dict[str, Any] | None = None
 _PREFERENCE_NAMES = ("AGENT.md", "TRIAGE.md")
 _MAX_PREFERENCE_BYTES = 16384
 _FROZEN_DOCUMENT_REF = "ONT-DELTA-2026-08-27"
@@ -767,6 +790,7 @@ def _argument_preview(tool_name: str, arguments: dict[str, Any]) -> str:
                     "preference_changes",
                     "lane_changes",
                     "event_changes",
+                    "tracked_context_changes",
                     "resolution_changes",
                     "provider_intents",
                 )
@@ -825,18 +849,28 @@ def _on_pre_tool_call(
     turn_id: str = "",
     args: Any = None,
     **_kwargs: Any,
-) -> None:
+) -> dict[str, str] | None:
     public_name = _docket_public_tool_name(tool_name)
     if public_name is None:
-        return
+        return None
+    validation_error = (
+        _validate_commit_arguments_locally(args)
+        if public_name == "docket_commit_changeset"
+        else None
+    )
+    directive = (
+        {"action": "block", "message": validation_error}
+        if validation_error is not None
+        else None
+    )
     with _TRACE_CONTEXT_LOCK:
         context = _trace_context(task_id, session_id)
         if context is None or context.get("terminal"):
-            return
+            return directive
         if context["turn_id"] is None:
             context["turn_id"] = turn_id
         elif turn_id and context["turn_id"] != turn_id:
-            return
+            return directive
         stable_call_id = str(tool_call_id)[:255]
         if not stable_call_id:
             stable_call_id = str(
@@ -846,11 +880,11 @@ def _on_pre_tool_call(
                 )
             )
         if stable_call_id in context["calls"]:
-            return
+            return directive
         ordinal = int(context["next_ordinal"])
         if ordinal > 100:
             logger.error("Docket MCP trace exceeded its 100-call safety bound")
-            return
+            return directive
         context["next_ordinal"] = ordinal + 1
         context["started"] = True
         context["calls"][stable_call_id] = {
@@ -876,18 +910,143 @@ def _on_pre_tool_call(
         payload_context = dict(context)
         call = dict(context["calls"][stable_call_id])
     _enqueue_trace_update(payload_context, call=call)
+    return directive
+
+
+def _registered_commit_schema() -> dict[str, Any] | None:
+    """Read the exact normalized commit schema from Hermes' live registry."""
+    global _COMMIT_SCHEMA
+    with _COMMIT_SCHEMA_LOCK:
+        if _COMMIT_SCHEMA is not None:
+            return _COMMIT_SCHEMA
+        try:
+            from model_tools import get_tool_definitions
+
+            definitions = get_tool_definitions(
+                quiet_mode=True,
+                skip_tool_search_assembly=True,
+            ) or []
+        except Exception:
+            logger.exception("Docket local schema preflight could not read Hermes registry")
+            return None
+        for definition in definitions:
+            function = definition.get("function")
+            if not isinstance(function, dict):
+                continue
+            name = str(function.get("name") or "")
+            if _docket_public_tool_name(name) != "docket_commit_changeset":
+                continue
+            parameters = function.get("parameters")
+            if isinstance(parameters, dict):
+                _COMMIT_SCHEMA = parameters
+                return _COMMIT_SCHEMA
+        logger.error("Docket local schema preflight found no registered commit schema")
+        return None
+
+
+def _validation_path(error: Any) -> str:
+    path = "$"
+    for component in list(getattr(error, "absolute_path", []))[:12]:
+        if isinstance(component, int):
+            path += f"[{component}]"
+        else:
+            path += f".{str(component)[:64]}"
+    return path
+
+
+def _validate_commit_arguments_locally(args: Any) -> str | None:
+    """Block malformed ChangeSets before they reach Docket or its MCP breaker."""
+    if not isinstance(args, dict):
+        return (
+            "local_schema_validation: docket_commit_changeset arguments must be an "
+            "object; no Docket request was sent"
+        )
+    schema = _registered_commit_schema()
+    if schema is None:
+        # Docket remains fail-closed at its authenticated Pydantic boundary.  A
+        # registry lookup problem must not make all valid mutations unavailable.
+        return None
+    try:
+        from jsonschema import Draft202012Validator
+
+        errors = sorted(
+            Draft202012Validator(schema).iter_errors(args),
+            key=lambda error: (
+                tuple(str(component) for component in error.absolute_path),
+                error.message,
+            ),
+        )
+    except Exception:
+        logger.exception("Docket local schema preflight failed")
+        return None
+    if not errors:
+        return None
+    issues = [
+        {
+            "path": _validation_path(error),
+            "message": str(error.message)[:240],
+        }
+        for error in errors[:8]
+    ]
+    return json.dumps(
+        {
+            "code": "local_schema_validation",
+            "message": (
+                "Arguments do not match the exact registered ChangeSet schema; "
+                "no Docket request was sent. Describe docket_commit_changeset with "
+                "only the required mutation_types, then construct one valid call."
+            ),
+            "issues": issues,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def _decoded_tool_result(result: Any) -> dict[str, Any] | None:
     if isinstance(result, dict):
-        return result
-    if not isinstance(result, str):
+        decoded = result
+    elif isinstance(result, str):
+        try:
+            decoded = json.loads(result)
+        except (TypeError, ValueError):
+            return None
+    else:
         return None
-    try:
-        decoded = json.loads(result)
-    except (TypeError, ValueError):
+    if not isinstance(decoded, dict):
         return None
-    return decoded if isinstance(decoded, dict) else None
+    nested = decoded.get("result")
+    if isinstance(nested, str):
+        try:
+            nested_decoded = json.loads(nested)
+        except (TypeError, ValueError):
+            nested_decoded = None
+        if isinstance(nested_decoded, dict):
+            return nested_decoded
+    if isinstance(nested, dict):
+        return nested
+    structured = decoded.get("structuredContent")
+    if isinstance(structured, dict):
+        return structured
+    return decoded
+
+
+def _domain_rejection_disposition(decoded: dict[str, Any] | None) -> str | None:
+    if decoded is None:
+        return None
+    candidate = decoded.get("disposition")
+    if isinstance(candidate, str) and candidate in _TRACE_DISPOSITIONS:
+        return candidate
+    error = decoded.get("error")
+    code = str(error.get("code") or "") if isinstance(error, dict) else str(error or "")
+    folded = code.casefold()
+    if "validation" in folded or "invalid argument" in folded:
+        return "rejected_validation"
+    if "author" in folded or "invalid actor" in folded:
+        return "rejected_authority"
+    if "conflict" in folded or "stale" in folded or "version" in folded:
+        return "rejected_conflict"
+    return None
 
 
 def _terminal_trace_call(
@@ -904,6 +1063,7 @@ def _terminal_trace_call(
     transport_state = "completed"
     disposition = "succeeded"
     error_code = None
+    domain_rejection = _domain_rejection_disposition(decoded)
     if "timeout" in status_text or "timeout" in error_text:
         transport_state = "timed_out"
         disposition = None
@@ -913,7 +1073,12 @@ def _terminal_trace_call(
         disposition = None
         error_code = "cancelled"
     elif decoded is not None and decoded.get("ok") is False:
-        disposition = None
+        disposition = domain_rejection
+    elif domain_rejection is not None:
+        # FastMCP historically represented schema/domain rejection with an
+        # isError content block. It is still a completed request/response, not
+        # evidence that the Docket transport is unavailable.
+        disposition = domain_rejection
     elif status_text in {"error", "failed", "blocked"} or error_type:
         transport_state = "failed"
         disposition = None
@@ -3731,6 +3896,8 @@ def _validate_channel_lanes() -> None:
 
 def register(ctx: object) -> None:
     _validate_channel_lanes()
+    if not _SCHEMA_DISCLOSURE.install_hermes_progressive_schema_patch():
+        logger.debug("Hermes scoped-schema adapter is inactive outside the gateway runtime")
     if _owns_discord_gateway_lifetime(ctx):
         _start_gateway_lifetime()
     ctx.register_hook("pre_gateway_dispatch", _pre_gateway_dispatch)

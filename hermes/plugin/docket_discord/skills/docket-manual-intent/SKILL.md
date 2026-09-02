@@ -101,6 +101,13 @@ one `docket_commit_changeset` call:
   projections, and ReminderPlans;
 - `resolution_changes`: exact AttentionCase resolutions.
 
+When progressive tool disclosure is active, call `tool_describe` for
+`docket_commit_changeset` with the exact discriminated `mutation_types` needed by
+this request. For example, a newly stated homework deadline uses only
+`item_create`, `task_create`, and `temporal_binding_create`. The returned schema
+is reference-closed and complete for those variants. Never describe the unscoped
+ChangeSet schema, and never reconstruct an omitted mutation shape from memory.
+
 `provider_intents` is deliberately absent from the model-facing ChangeSet. Docket
 derives provider Operations from canonical mutations after validating the complete
 scope. Hermes never formulates, retries, or repairs provider Operations.
@@ -265,6 +272,11 @@ successful/no-op result. A duplicate failed draft remains failed: follow its
 and preserve the returned `semantic_request_ref`. Follow compact public refs; do
 not include unsolicited history. Do not reproduce raw provenance chains, tool
 transcripts, or provider payloads in chat.
+
+A validation/runtime failure preserves reusable authority only when Docket
+returns an available `semantic_request_ref` for that exact scope. Do not claim
+authority was preserved merely because the immutable `utt_` exists or a malformed
+call was blocked locally.
 
 On `committed`, `effects` is the exact compact mapping from submitted `change_id`
 to durable public refs. `provider_operations` proves which compiler-owned external

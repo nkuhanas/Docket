@@ -690,7 +690,9 @@ def docket_commit_changeset(
 
     Reference persistent objects with ``*_ref``. Reference objects created in
     this same ChangeSet with ``*_change_id``; every dependency is validated
-    before any canonical mutation begins.
+    before any canonical mutation begins. Under progressive disclosure, request
+    this schema with only the exact discriminated ``mutation_types`` required by
+    the current semantic request.
     """
     try:
         with session_scope() as session:

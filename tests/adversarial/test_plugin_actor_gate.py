@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import importlib.util
+import json
 import sys
 import uuid
 from datetime import UTC, datetime
@@ -310,6 +311,76 @@ def test_terminal_trace_preserves_needs_clarification_disposition(plugin_module)
     assert terminal["transport_state"] == "completed"
     assert terminal["disposition"] == "needs_clarification"
     assert terminal["transport_error_code"] is None
+
+
+@pytest.mark.adversarial
+def test_domain_validation_rejection_is_not_reported_as_transport_failure(plugin_module) -> None:
+    call = {
+        "ordinal": 1,
+        "tool_name": "docket_commit_changeset",
+        "transport_state": "running",
+        "elapsed_ms": 0,
+        "disposition": None,
+        "transport_error_code": None,
+        "argument_preview": '{"effects":["tracked context"]}',
+    }
+
+    terminal = plugin_module._terminal_trace_call(
+        call,
+        result=json.dumps(
+            {
+                "result": json.dumps(
+                    {
+                        "ok": False,
+                        "disposition": "rejected_validation",
+                        "error": {"code": "validation_error"},
+                    }
+                )
+            }
+        ),
+        duration_ms=12,
+        status="failed",
+        error_type="mcp_tool_error",
+    )
+
+    assert terminal["transport_state"] == "completed"
+    assert terminal["disposition"] == "rejected_validation"
+    assert terminal["transport_error_code"] is None
+
+
+@pytest.mark.adversarial
+def test_local_commit_preflight_blocks_before_docket_transport(plugin_module, monkeypatch) -> None:
+    monkeypatch.setattr(
+        plugin_module,
+        "_registered_commit_schema",
+        lambda: {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"utterance_ref": {"type": "string"}},
+            "required": ["utterance_ref"],
+        },
+    )
+
+    blocked = plugin_module._validate_commit_arguments_locally({})
+    assert blocked is not None
+    payload = json.loads(blocked)
+    assert payload["code"] == "local_schema_validation"
+    assert payload["issues"][0]["path"] == "$"
+    assert "no Docket request was sent" in payload["message"]
+    directive = plugin_module._on_pre_tool_call(
+        tool_name="mcp__docket__docket_commit_changeset",
+        args={},
+        task_id="no-trace-context",
+    )
+    assert directive is not None
+    assert directive["action"] == "block"
+    assert "local_schema_validation" in directive["message"]
+    assert (
+        plugin_module._validate_commit_arguments_locally(
+            {"utterance_ref": "utt_01ARZ3NDEKTSV4RRFFQ69G5FAV"}
+        )
+        is None
+    )
 
 
 @pytest.mark.adversarial

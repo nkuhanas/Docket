@@ -1,7 +1,7 @@
 # Docket Interactive Tool Contract
 
-contract_version: docket-tools-2026-08-31-v18
-contract_hash: bb6b3893f4bbb82ece6c16cfea394515711b63fda5445fe518f910395b96455b
+contract_version: docket-tools-2026-09-02-v19
+contract_hash: ce2c11df3acba602b9d42179396914e61a45f541aaf7583fe276af7e8aee9d6d
 profile: interactive
 
 Rules: MCP/Pydantic schemas define exact arguments. This contract defines selection, authority, side effects, and result handling.
@@ -18,6 +18,7 @@ Provider projection is compiler-owned. An Event create with a resolved lane dete
 A committed ChangeSet receipt maps each change_id to created/updated refs and lists compiler-owned provider Operations. Treat that receipt as the authoritative commit result; do not reread objects or history merely to verify the commit.
 CalendarLane create uses the public acct_ returned by docket_list_provider_accounts. Omit provider_calendar_binding to have Docket provision and bind a new Google calendar before dependent events.
 A validation/runtime failure does not consume authority. Retry the same semantic_request_ref and exact authority scope; never ask for equivalent authorization again.
+With progressive disclosure, describe docket_commit_changeset using only the exact mutation_types required by this semantic request. The returned reference-closed schema is complete for those variants; never request or reconstruct the full ChangeSet union.
 Entries:
 - tool_ref=ONT-TOOL-0011 | tool_name=docket_commit_changeset | purpose=Compile and atomically commit resolved authenticated Operator intent. | use_when=Current authenticated Operator intent is resolved and requests this effect. | do_not_use_when=Never probe schemas, split one selected option, or retry as a new request. | authority=interactive_operator_utterance | preconditions=P-MUT | side_effects=Commits canonical state and required provider Operations atomically. | success_dispositions=S-CHANGESET | output_interpretation=O-STD | required_next_action=N-CHANGESET | important_errors=E-MUT
 - tool_ref=ONT-TOOL-0014 | tool_name=docket_get_attention_case | purpose=Read one bounded AttentionCase and its required/supporting CaseItems. | use_when=Answer requires this exact bounded Docket state. | do_not_use_when=Unneeded or a more specific Docket read exists. | authority=interactive_read_only | preconditions=P-READ | side_effects=None. | success_dispositions=S-READ | output_interpretation=O-STD | required_next_action=N-READ | important_errors=E-READ

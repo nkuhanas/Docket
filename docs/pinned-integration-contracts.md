@@ -431,6 +431,42 @@ Consequences:
   session even when `hermes mcp test docket` already reports the new server
   contract.
 
+### Scoped ChangeSet schema disclosure
+
+The clean `docket_commit_changeset` input is a fully discriminated union across
+all canonical mutation variants. Its complete normalized schema is too large to
+place in every model turn or return through Hermes' ordinary inline
+`tool_describe` budget. The pinned Docket Discord plugin therefore extends only
+the progressive `tool_describe` bridge with:
+
+```text
+mutation_types[]
+```
+
+For `docket_commit_changeset`, this field is mandatory. The plugin derives a
+reference-closed schema containing the common turn envelope and only the exact
+requested mutation variants, and binds the result to both the complete and
+scoped schema SHA-256 values. It never hand-maintains a second mutation schema.
+Other tools retain upstream Hermes describe behavior.
+
+Before a constructed ChangeSet crosses the MCP transport, the plugin validates
+it against the complete normalized schema in Hermes' live registry. A malformed
+construction is blocked locally and does not create a Docket `call_` or affect
+MCP server connectivity health. Docket repeats Pydantic validation at its
+authenticated boundary; such a rejection is returned as `ok=false` over a
+completed MCP request/response, not as an MCP transport error. This distinction
+prevents schema mistakes from opening Hermes' server circuit breaker.
+
+The adapter lives at:
+
+```text
+hermes/plugin/docket_discord/schema_disclosure.py
+```
+
+It is deliberately pin-specific. A Hermes upgrade must re-run the scoped-schema,
+bridge-shape, invalid-argument, and Compose smoke fixtures before changing the
+image digest.
+
 The model-facing persistence tool is intentionally named `docket_store_record`,
 not `docket_create_record`. Its operation stores a source-backed assertion:
 create when absent, or match materially equal canonical data and attach current

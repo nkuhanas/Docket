@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-08-31-v18"
+CONTRACT_VERSION = "docket-tools-2026-09-02-v19"
 
 
 class ToolContractEntry(TypedDict):
@@ -276,6 +276,12 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
                     "A validation/runtime failure does not consume authority. Retry the same "
                     "semantic_request_ref and exact authority scope; never ask for equivalent "
                     "authorization again."
+                ),
+                (
+                    "With progressive disclosure, describe docket_commit_changeset using only "
+                    "the exact mutation_types required by this semantic request. The returned "
+                    "reference-closed schema is complete for those variants; never request or "
+                    "reconstruct the full ChangeSet union."
                 ),
             ]
         )

@@ -41,6 +41,7 @@ def test_manual_skill_defines_exact_resolved_intent_and_changeset_groups() -> No
         "`preference_changes`",
         "`lane_changes`",
         "`event_changes`",
+        "`tracked_context_changes`",
         "`resolution_changes`",
     ):
         assert group in skill
@@ -56,6 +57,9 @@ def test_manual_skill_defines_exact_resolved_intent_and_changeset_groups() -> No
     assert "Docket deterministically compiles the required Google projection" in skill
     assert 'Never ask the Operator to authorize a later "push to Google"' in skill
     assert "Hermes never formulates, retries, or repairs provider Operations" in skill
+    assert "exact discriminated `mutation_types`" in skill
+    assert "`item_create`, `task_create`, and `temporal_binding_create`" in skill
+    assert "Never describe the unscoped ChangeSet schema" in skill
 
 
 def test_manual_skill_keeps_triage_non_authoritative_and_outputs_compact() -> None:
@@ -66,6 +70,7 @@ def test_manual_skill_keeps_triage_non_authoritative_and_outputs_compact() -> No
     assert "does not mean the provider call has completed" in skill
     assert "Do not reproduce raw provenance chains" in skill
     assert "Do not tell the Operator to click an approval card" in skill
+    assert "merely because the immutable `utt_` exists" in skill
 
 
 def test_triage_skill_does_not_invent_acknowledgement_work() -> None:
