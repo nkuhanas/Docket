@@ -6,8 +6,8 @@ from collections.abc import Sequence
 from typing import Any, Literal, cast
 
 from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ContentBlock, TextContent
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -144,6 +144,52 @@ def _internal_uuid_field(key: object, value: object) -> bool:
 
 def _serialized_bytes(value: dict[str, Any]) -> int:
     return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+
+def _validation_issues(exc: Exception) -> list[dict[str, Any]]:
+    if not isinstance(exc, ValidationError):
+        return []
+    issues: list[dict[str, Any]] = []
+    for error in exc.errors(
+        include_url=False,
+        include_context=False,
+        include_input=False,
+    )[:12]:
+        location = [str(component)[:64] for component in error.get("loc", ())[:16]]
+        issues.append(
+            {
+                "path": location,
+                "type": str(error.get("type", "validation_error"))[:128],
+                "message": str(error.get("msg", "Invalid argument."))[:240],
+            }
+        )
+    return issues
+
+
+def _domain_error_result(
+    *,
+    code: str,
+    message: str,
+    disposition: str,
+    details: dict[str, Any] | None = None,
+) -> Sequence[ContentBlock] | dict[str, Any]:
+    """Return a domain rejection as a successful MCP transport result."""
+    payload = {
+        "ok": False,
+        "disposition": disposition,
+        "error": {
+            "code": code,
+            "message": message,
+            "details": details or {},
+        },
+    }
+    result, _envelope = _compact_result(
+        payload,
+        payload,
+        audit=False,
+        page_limit=25,
+    )
+    return result
 
 
 def _compact_result(
@@ -286,7 +332,9 @@ class ProvenanceFastMCP(FastMCP[Any]):
         invocation.normalized_argument_hash = normalized_argument_hash
         invocation.result_refs = result_refs
         invocation.result_disposition = result_disposition
-        invocation.transport_state = "failed" if status == "failed" else "completed"
+        # Reaching this method means the authenticated MCP request received a
+        # durable Docket outcome. Domain failure is not transport failure.
+        invocation.transport_state = "completed"
         invocation.domain_state = domain_state or _domain_state(status)
         invocation.error_code = error_code
         invocation.completed_at = utc_now()
@@ -356,10 +404,15 @@ class ProvenanceFastMCP(FastMCP[Any]):
                 )
 
         if drain_error is not None:
-            raise ToolError(f"{drain_error.code}: {drain_error.message}")
+            return _domain_error_result(
+                code=drain_error.code,
+                message=drain_error.message,
+                disposition="deferred_drain",
+            )
 
         normalized_hash: str | None = None
         normalized_arguments: dict[str, Any] | None = None
+        normalization_error: Exception | None = None
         tool = self._tool_manager.get_tool(name)
         if tool is not None:
             try:
@@ -367,8 +420,32 @@ class ProvenanceFastMCP(FastMCP[Any]):
                 normalized = tool.fn_metadata.arg_model.model_validate(preparsed)
                 normalized_arguments = normalized.model_dump(mode="json", by_alias=True)
                 normalized_hash = sha256_json(normalized_arguments)
-            except Exception:
+            except Exception as exc:
                 normalized_hash = None
+                normalization_error = exc
+
+        if normalization_error is not None:
+            with session_scope() as session:
+                self._finish_invocation(
+                    session,
+                    invocation_id,
+                    status="rejected_validation",
+                    normalized_argument_hash=None,
+                    result_refs=[],
+                    result_disposition="rejected_validation",
+                    error_code="validation_error",
+                )
+                if execution_completion_token is not None:
+                    ContinuityService(session).complete_execution_lease(
+                        execution_completion_token,
+                        metadata={"disposition": "rejected_validation"},
+                    )
+            return _domain_error_result(
+                code="validation_error",
+                message="Tool arguments do not satisfy the registered Pydantic schema.",
+                disposition="rejected_validation",
+                details={"issues": _validation_issues(normalization_error)},
+            )
 
         if (
             self.caller_profile == "interactive"
@@ -439,36 +516,55 @@ class ProvenanceFastMCP(FastMCP[Any]):
                                 },
                             )
             if utterance is None:
-                raise ToolError(
-                    "operator_utterance_authority_required: mutating Docket calls require "
-                    "a persisted authenticated OperatorUtterance"
+                return _domain_error_result(
+                    code="operator_utterance_authority_required",
+                    message=(
+                        "Mutating Docket calls require the persisted authenticated "
+                        "OperatorUtterance for the current request."
+                    ),
+                    disposition="rejected_authority",
                 )
             if attachment_error:
-                raise ToolError(
-                    "attachment_evidence_unavailable: canonical mutation is blocked until "
-                    "every attachment supplied with this utterance has durable plaintext evidence"
+                return _domain_error_result(
+                    code="attachment_evidence_unavailable",
+                    message=(
+                        "Canonical mutation is blocked until every attachment supplied "
+                        "with this utterance has durable plaintext evidence."
+                    ),
+                    disposition="attachment_evidence_unavailable",
                 )
 
         try:
             result = await super().call_tool(name, arguments)
         except Exception as exc:
-            error_code = "validation_error" if normalized_hash is None else type(exc).__name__
+            validation_failure = normalized_hash is None
+            error_code = "validation_error" if validation_failure else "internal_error"
+            status = "rejected_validation" if validation_failure else "failed"
             with session_scope() as session:
                 self._finish_invocation(
                     session,
                     invocation_id,
-                    status=_terminal_status(error_code),
+                    status=status,
                     normalized_argument_hash=normalized_hash,
                     result_refs=[],
-                    result_disposition=_terminal_status(error_code),
-                    error_code=error_code[:128],
+                    result_disposition=status,
+                    error_code=error_code,
                 )
                 if execution_completion_token is not None:
                     ContinuityService(session).complete_execution_lease(
                         execution_completion_token,
-                        metadata={"disposition": _terminal_status(error_code)},
+                        metadata={"disposition": status},
                     )
-            raise
+            return _domain_error_result(
+                code=error_code,
+                message=(
+                    "Tool arguments do not satisfy the registered Pydantic schema."
+                    if validation_failure
+                    else "Docket encountered an internal processing failure."
+                ),
+                disposition=status,
+                details={"issues": _validation_issues(exc)} if validation_failure else None,
+            )
 
         envelope = _result_envelope(result)
         requested_page_limit = (

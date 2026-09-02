@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import uuid
 from datetime import UTC, datetime
@@ -171,6 +172,13 @@ async def smoke() -> None:
                     {"object_type": "operator_utterance", "limit": 5},
                 )
                 assert not searched.isError, searched
+
+                invalid = await session.call_tool("docket_commit_changeset", {})
+                assert not invalid.isError, invalid
+                invalid_payload = json.loads(invalid.content[0].text)
+                assert invalid_payload["ok"] is False
+                assert invalid_payload["disposition"] == "rejected_validation"
+                assert invalid_payload["error"]["code"] == "validation_error"
 
                 clarification = await session.call_tool(
                     "docket_commit_changeset",

@@ -3,11 +3,12 @@ import json
 import uuid
 
 import pytest
+from sqlalchemy import select
 
 from docket.domain.public_refs import new_public_ref
 from docket.mcp.instrumented import ProvenanceFastMCP
 from docket.mcp.server import mcp
-from docket.models import CalendarLane, ProviderAccount
+from docket.models import CalendarLane, ProviderAccount, ToolInvocation
 
 
 @pytest.mark.integration
@@ -91,6 +92,81 @@ def test_explicit_audit_view_uses_64_kib_utf8_budget_and_self_truncates(
     assert payload["count"] < 100
     assert payload["truncated"] is True
     assert payload["cursor"] == "audit-next-page"
+
+
+@pytest.mark.integration
+def test_argument_validation_is_a_domain_rejection_not_an_mcp_transport_error(
+    session_factory,
+) -> None:
+    server = ProvenanceFastMCP("validation-envelope-test", caller_profile="interactive")
+    executed = False
+
+    @server.tool(name="docket_search_history")
+    def search_history(required_query: str) -> dict[str, object]:
+        nonlocal executed
+        executed = True
+        return {"ok": True, "query": required_query}
+
+    result = asyncio.run(server.call_tool("docket_search_history", {}))
+
+    assert executed is False
+    assert isinstance(result, tuple)
+    content, structured = result
+    assert json.loads(content[0].text) == structured
+    assert structured["ok"] is False
+    assert structured["disposition"] == "rejected_validation"
+    assert structured["error"]["code"] == "validation_error"
+    assert structured["error"]["details"]["issues"] == [
+        {
+            "path": ["required_query"],
+            "type": "missing",
+            "message": "Field required",
+        }
+    ]
+    with session_factory() as session:
+        invocation = session.scalar(
+            select(ToolInvocation).order_by(ToolInvocation.started_at.desc())
+        )
+        assert invocation is not None
+        assert invocation.transport_state == "completed"
+        assert invocation.domain_state == "rejected"
+        assert invocation.result_disposition == "rejected_validation"
+        assert invocation.error_code == "validation_error"
+
+
+@pytest.mark.integration
+def test_handler_exception_is_a_domain_failure_not_an_mcp_transport_error(
+    session_factory,
+) -> None:
+    server = ProvenanceFastMCP("failure-envelope-test", caller_profile="interactive")
+
+    @server.tool(name="docket_search_history")
+    def search_history() -> dict[str, object]:
+        raise RuntimeError("fixture detail must not escape")
+
+    result = asyncio.run(server.call_tool("docket_search_history", {}))
+
+    assert isinstance(result, tuple)
+    _content, structured = result
+    assert structured == {
+        "ok": False,
+        "disposition": "failed",
+        "error": {
+            "code": "internal_error",
+            "message": "Docket encountered an internal processing failure.",
+            "details": {},
+        },
+    }
+    assert "fixture detail" not in json.dumps(structured)
+    with session_factory() as session:
+        invocation = session.scalar(
+            select(ToolInvocation).order_by(ToolInvocation.started_at.desc())
+        )
+        assert invocation is not None
+        assert invocation.transport_state == "completed"
+        assert invocation.domain_state == "failed"
+        assert invocation.result_disposition == "failed"
+        assert invocation.error_code == "internal_error"
 
 
 @pytest.mark.integration

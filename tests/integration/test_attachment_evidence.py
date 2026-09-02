@@ -9,7 +9,6 @@ from datetime import UTC, datetime
 from io import BytesIO
 
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
 from pydantic import ValidationError
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
@@ -1014,13 +1013,17 @@ def test_pending_attachment_blocks_statement_and_mutation(session_factory) -> No
         executed = True
         return {"ok": True, "ref": new_public_ref("chg"), "disposition": "committed"}
 
-    with pytest.raises(ToolError, match="attachment_evidence_unavailable"):
-        asyncio.run(
-            server.call_tool(
-                "docket_commit_changeset",
-                {"utterance_ref": captured["ref"], "request_key": request.request_key},
-            )
+    result = asyncio.run(
+        server.call_tool(
+            "docket_commit_changeset",
+            {"utterance_ref": captured["ref"], "request_key": request.request_key},
         )
+    )
+    assert isinstance(result, tuple)
+    payload = result[1]
+    assert payload["ok"] is False
+    assert payload["disposition"] == "attachment_evidence_unavailable"
+    assert payload["error"]["code"] == "attachment_evidence_unavailable"
     assert executed is False
     with session_factory() as session:
         invocation = session.scalar(
