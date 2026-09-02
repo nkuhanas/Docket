@@ -30,6 +30,7 @@ def _update(
     tool_name: str = "docket_search_history",
     source_message_id: str = "777777777777777777",
     turn_started_at: datetime | None = None,
+    disposition: str | None = "succeeded",
 ) -> McpTraceUpdate:
     settings = get_settings()
     updated_at = datetime.now(UTC)
@@ -41,7 +42,7 @@ def _update(
             "tool_name": tool_name,
             "transport_state": transport_state,
             "elapsed_ms": 0 if transport_state == "running" else 125,
-            "disposition": "succeeded" if transport_state == "completed" else None,
+            "disposition": disposition if transport_state == "completed" else None,
             "transport_error_code": None,
             "argument_preview": '{"fields":["query"]}',
             "received_argument_hash": received_argument_hash,
@@ -62,6 +63,64 @@ def _update(
             "call": call,
         }
     )
+
+
+@pytest.mark.integration
+def test_mcp_trace_accepts_completed_domain_rejection(
+    session_factory: sessionmaker[Session],
+) -> None:
+    trace_ref = new_public_ref("trace")
+    with session_factory.begin() as session:
+        McpTraceService(session).update(
+            trace_ref,
+            _update(ordinal=1, transport_state="running"),
+        )
+    with session_factory.begin() as session:
+        result = McpTraceService(session).update(
+            trace_ref,
+            _update(
+                ordinal=1,
+                transport_state="completed",
+                disposition="rejected_validation",
+            ),
+        )
+
+    assert result["disposition"] == "updated"
+    with session_factory() as session:
+        trace = session.scalar(
+            select(ConversationalToolTrace).where(ConversationalToolTrace.ref_id == trace_ref)
+        )
+        assert trace is not None
+        assert trace.calls[0]["transport_state"] == "completed"
+        assert trace.calls[0]["disposition"] == "rejected_validation"
+
+
+@pytest.mark.integration
+def test_mcp_trace_rejects_duplicate_source_with_domain_error(
+    session_factory: sessionmaker[Session],
+) -> None:
+    source_message_id = "777777777777777777"
+    with session_factory.begin() as session:
+        McpTraceService(session).update(
+            new_public_ref("trace"),
+            _update(
+                ordinal=1,
+                transport_state="running",
+                source_message_id=source_message_id,
+            ),
+        )
+
+    with pytest.raises(DocketError) as duplicate, session_factory.begin() as session:
+        McpTraceService(session).update(
+            new_public_ref("trace"),
+            _update(
+                ordinal=1,
+                transport_state="running",
+                source_message_id=source_message_id,
+            ),
+        )
+
+    assert duplicate.value.code == "mcp_trace_source_conflict"
 
 
 def _project_all(session_factory: sessionmaker[Session]) -> FakeDiscordBackend:

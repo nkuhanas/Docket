@@ -28,18 +28,29 @@ DOCKET_MCP_TOOL_NAMES = contract_tool_names("interactive")
 TRACE_DISPOSITIONS = frozenset(
     {
         "archived",
+        "attachment_evidence_unavailable",
+        "blocked_version",
+        "committed",
         "created",
         "configured",
+        "deferred_drain",
         "disabled",
         "duplicate_suppressed",
+        "execution_deferred",
+        "failed",
         "matched_existing",
+        "needs_clarification",
         "no_op",
         "proposed",
         "execution_queued",
+        "rejected_authority",
+        "rejected_conflict",
+        "rejected_validation",
         "replayed_request",
         "restored",
         "stored",
         "succeeded",
+        "unknown",
         "updated",
     }
 )
@@ -138,7 +149,7 @@ class McpTraceService:
             "transport_state": call.transport_state,
             "domain_state": "unknown",
             "elapsed_ms": call.elapsed_ms,
-            "disposition": None,
+            "disposition": call.disposition,
             "transport_error_code": call.transport_error_code,
             "domain_error_code": None,
             "argument_preview": call.argument_preview,
@@ -154,6 +165,7 @@ class McpTraceService:
             "tool_name": call.tool_name,
             "transport_state": call.transport_state,
             "elapsed_ms": call.elapsed_ms,
+            "disposition": call.disposition,
             "transport_error_code": call.transport_error_code,
             "argument_preview": call.argument_preview,
             "received_argument_hash": call.received_argument_hash,
@@ -322,17 +334,22 @@ class McpTraceService:
             authoritative = {
                 "domain_state": domain_state,
                 "tool_call_ref": invocation.ref_id if invocation is not None else None,
-                "disposition": (
-                    invocation.result_disposition
-                    if invocation is not None and domain_state != "unknown"
-                    else None
-                ),
                 "domain_error_code": (
                     invocation.error_code
                     if invocation is not None and domain_state in {"rejected", "failed"}
                     else None
                 ),
             }
+            if invocation is not None:
+                authoritative["disposition"] = (
+                    invocation.result_disposition if domain_state != "unknown" else None
+                )
+            elif call.get("disposition") != "rejected_validation":
+                # A local schema rejection is a terminal Hermes result that
+                # deliberately never crosses Docket's authenticated MCP
+                # boundary. All other domain dispositions require a linked
+                # ToolInvocation before they may be treated as authoritative.
+                authoritative["disposition"] = None
             if any(call.get(key) != value for key, value in authoritative.items()):
                 call.update(authoritative)
                 changed = True
@@ -369,6 +386,23 @@ class McpTraceService:
         )
         now = utc_now()
         if trace is None:
+            source_trace = self.session.scalar(
+                select(ConversationalToolTrace)
+                .where(
+                    ConversationalToolTrace.guild_id == request.guild_id,
+                    ConversationalToolTrace.source_channel_id == request.source_channel_id,
+                    ConversationalToolTrace.source_message_id == request.source_message_id,
+                )
+                .with_for_update()
+            )
+            if source_trace is not None:
+                raise DocketError(
+                    code="mcp_trace_source_conflict",
+                    message=(
+                        "This Discord source message already has a different conversational trace."
+                    ),
+                    details={"existing_trace_ref": source_trace.ref_id},
+                )
             trace = ConversationalToolTrace(
                 ref_id=trace_ref,
                 guild_id=request.guild_id,

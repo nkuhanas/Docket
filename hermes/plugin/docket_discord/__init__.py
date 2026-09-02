@@ -207,6 +207,7 @@ _DOCKET_MCP_TOOL_NAMES = frozenset(
 _TRACE_DISPOSITIONS = frozenset(
     {
         "archived",
+        "attachment_evidence_unavailable",
         "created",
         "configured",
         "disabled",
@@ -712,6 +713,23 @@ def _register_trace_context(
         existing = _TRACE_CONTEXTS.get(session_id)
         if existing is not None and existing.get("source_message_id") == message_id:
             return
+        # A failed gateway/session attempt may be resumed under a new Hermes
+        # session id. The Discord source message still owns exactly one trace;
+        # reuse its in-memory lineage instead of minting a competing trace ref.
+        source_context = next(
+            (
+                candidate
+                for candidate in _TRACE_CONTEXTS.values()
+                if candidate.get("actor_id") == actor
+                and candidate.get("guild_id") == guild
+                and candidate.get("source_channel_id") == channel
+                and candidate.get("source_message_id") == message_id
+            ),
+            None,
+        )
+        if source_context is not None:
+            _TRACE_CONTEXTS[session_id] = source_context
+            return
         if existing is not None and existing.get("started") and not existing.get("terminal"):
             existing["terminal"] = True
             prior = dict(existing)
@@ -734,6 +752,7 @@ def _register_trace_context(
             "calls": {},
             "started": False,
             "terminal": False,
+            "turn_finalized": False,
             "deterministic_response_text": deterministic_response_text,
             "execution_completion_token": (
                 ingress_binding.get("execution_completion_token")
@@ -837,8 +856,10 @@ def _argument_preview(tool_name: str, arguments: dict[str, Any]) -> str:
 
 
 def _trace_context(task_id: str, session_id: str) -> dict[str, Any] | None:
-    key = task_id or session_id
-    return _TRACE_CONTEXTS.get(key)
+    for key in (task_id, session_id):
+        if key and (context := _TRACE_CONTEXTS.get(key)) is not None:
+            return context
+    return None
 
 
 def _on_pre_tool_call(
@@ -954,6 +975,35 @@ def _validation_path(error: Any) -> str:
     return path
 
 
+def _safe_validation_message(error: Any) -> str:
+    """Describe a schema failure without echoing submitted argument values."""
+    validator = str(getattr(error, "validator", "validation"))
+    expected = getattr(error, "validator_value", None)
+    if validator == "required":
+        allowed = (
+            [str(value)[:64] for value in expected]
+            if isinstance(expected, list)
+            else []
+        )
+        return "object is missing one or more required fields" + (
+            f"; allowed required fields: {', '.join(allowed[:16])}" if allowed else ""
+        )
+    if validator == "additionalProperties":
+        return "object contains one or more fields not accepted by this schema"
+    if validator == "type":
+        type_name = (
+            ", ".join(str(value) for value in expected)
+            if isinstance(expected, list)
+            else str(expected)
+        )
+        return f"value has the wrong JSON type; expected {type_name[:128]}"
+    if validator in {"oneOf", "anyOf"}:
+        return "value does not match the selected discriminated mutation schema"
+    if validator in {"const", "enum", "pattern", "format"}:
+        return f"value does not satisfy the schema's {validator} constraint"
+    return f"value does not satisfy the schema's {validator} constraint"
+
+
 def _validate_commit_arguments_locally(args: Any) -> str | None:
     """Block malformed ChangeSets before they reach Docket or its MCP breaker."""
     if not isinstance(args, dict):
@@ -984,7 +1034,7 @@ def _validate_commit_arguments_locally(args: Any) -> str | None:
     issues = [
         {
             "path": _validation_path(error),
-            "message": str(error.message)[:240],
+            "message": _safe_validation_message(error)[:240],
         }
         for error in errors[:8]
     ]
@@ -1168,6 +1218,7 @@ def _on_post_llm_call(
         with _TRACE_CONTEXT_LOCK:
             context["response_ref"] = response_ref
             context["response_persistence_failed"] = False
+            context["turn_finalized"] = True
         return
     if not assistant_response:
         payload = {
@@ -1190,6 +1241,9 @@ def _on_post_llm_call(
             )
         except (OSError, RuntimeError, urllib.error.URLError):
             logger.exception("Docket no-response IntentTurn finalization failed")
+        else:
+            with _TRACE_CONTEXT_LOCK:
+                context["turn_finalized"] = True
         return
     payload = {
         "request_id": str(uuid.uuid4()),
@@ -1227,6 +1281,7 @@ def _on_post_llm_call(
     with _TRACE_CONTEXT_LOCK:
         context["response_ref"] = response_ref
         context["response_persistence_failed"] = False
+        context["turn_finalized"] = True
 
 
 def _persist_deterministic_response(context: dict[str, Any]) -> str:
@@ -1552,11 +1607,20 @@ def _install_processing_outcome_listener(adapter: object) -> None:
             logger.exception("Docket AgentResponse delivery-state update failed")
             return
         try:
+            turn_finalized = bool(context.get("turn_finalized")) or bool(
+                _RESPONSE_REF.fullmatch(str(context.get("response_ref") or ""))
+            )
+            execution_failed = (
+                context.get("response_persistence_failed") is True or not turn_finalized
+            )
             await asyncio.to_thread(
                 _complete_interactive_ingress,
                 dict(context),
-                outcome="completed" if delivered else "failed",
-                error_code=None if delivered else "discord_delivery_failed",
+                # Agent execution and response delivery are separate durable
+                # lifecycles. A failed Discord projection must not make the
+                # immutable utterance eligible for a second model execution.
+                outcome="failed" if execution_failed else "completed",
+                error_code=("agent_turn_not_finalized" if execution_failed else None),
             )
         except (OSError, RuntimeError, urllib.error.URLError):
             logger.exception("Docket interactive ingress completion failed")

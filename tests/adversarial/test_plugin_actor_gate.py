@@ -53,6 +53,12 @@ def test_repeated_plugin_loads_share_one_process_registration_key() -> None:
     assert first._GATEWAY_REGISTRATION_KEY == second._GATEWAY_REGISTRATION_KEY
 
 
+def test_plugin_and_docket_trace_dispositions_remain_identical(plugin_module) -> None:
+    from docket.services.mcp_traces import TRACE_DISPOSITIONS
+
+    assert plugin_module._TRACE_DISPOSITIONS == TRACE_DISPOSITIONS
+
+
 def test_operator_capture_uses_raw_discord_content_for_stable_ingress_replay(
     monkeypatch,
 ) -> None:
@@ -384,6 +390,118 @@ def test_local_commit_preflight_blocks_before_docket_transport(plugin_module, mo
 
 
 @pytest.mark.adversarial
+def test_local_commit_rejection_is_traced_as_completed_domain_result(
+    plugin_module, monkeypatch
+) -> None:
+    emitted: list[dict[str, object]] = []
+    plugin_module._TRACE_CONTEXTS["session-local-rejection"] = {
+        "trace_ref": f"trace_{'2' * 26}",
+        "turn_id": None,
+        "next_ordinal": 1,
+        "calls": {},
+        "started": False,
+        "terminal": False,
+    }
+    monkeypatch.setattr(
+        plugin_module,
+        "_registered_commit_schema",
+        lambda: {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"utterance_ref": {"type": "string"}},
+            "required": ["utterance_ref"],
+        },
+    )
+    monkeypatch.setattr(
+        plugin_module,
+        "_enqueue_trace_update",
+        lambda _context, **kwargs: emitted.append(dict(kwargs["call"])),
+    )
+
+    directive = plugin_module._on_pre_tool_call(
+        tool_name="mcp__docket__docket_commit_changeset",
+        args={},
+        task_id="session-local-rejection",
+        session_id="session-local-rejection",
+        tool_call_id="local-call",
+        turn_id="turn-local-rejection",
+    )
+    assert directive is not None
+    plugin_module._on_post_tool_call(
+        tool_name="mcp__docket__docket_commit_changeset",
+        result=json.dumps({"error": directive["message"]}),
+        task_id="session-local-rejection",
+        session_id="session-local-rejection",
+        tool_call_id="local-call",
+        turn_id="turn-local-rejection",
+        status="blocked",
+        error_type="plugin_block",
+    )
+
+    assert [call["transport_state"] for call in emitted] == ["running", "completed"]
+    assert emitted[-1]["disposition"] == "rejected_validation"
+    assert emitted[-1]["transport_error_code"] is None
+
+
+@pytest.mark.adversarial
+def test_local_validation_messages_never_echo_argument_values(
+    plugin_module, monkeypatch
+) -> None:
+    secret_value = "operator-private-value"
+    monkeypatch.setattr(
+        plugin_module,
+        "_registered_commit_schema",
+        lambda: {
+            "type": "object",
+            "properties": {"mode": {"const": "allowed"}},
+            "required": ["mode"],
+        },
+    )
+
+    blocked = plugin_module._validate_commit_arguments_locally({"mode": secret_value})
+
+    assert blocked is not None
+    assert secret_value not in blocked
+    assert "const constraint" in blocked
+
+
+@pytest.mark.adversarial
+def test_trace_context_reuses_source_lineage_across_hermes_sessions(
+    plugin_module, monkeypatch
+) -> None:
+    actor = "111111111111111111"
+    guild = "222222222222222222"
+    channel = "333333333333333333"
+    message = "444444444444444444"
+    monkeypatch.setenv("DOCKET_OPERATOR_DISCORD_USER_ID", actor)
+    monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild)
+    monkeypatch.setenv("DOCKET_CHAT_CHANNEL_ID", channel)
+    event = SimpleNamespace(
+        text="Track this task.",
+        message_id=message,
+        source=SimpleNamespace(
+            platform="discord",
+            user_id=actor,
+            guild_id=guild,
+            chat_id=channel,
+        ),
+    )
+
+    first_store = SimpleNamespace(
+        get_or_create_session=lambda _source: SimpleNamespace(session_id="session-first")
+    )
+    second_store = SimpleNamespace(
+        get_or_create_session=lambda _source: SimpleNamespace(session_id="session-second")
+    )
+    plugin_module._pre_gateway_dispatch(event, session_store=first_store)
+    first = plugin_module._TRACE_CONTEXTS["session-first"]
+    plugin_module._pre_gateway_dispatch(event, session_store=second_store)
+
+    assert plugin_module._TRACE_CONTEXTS["session-second"] is first
+    assert len({id(value) for value in plugin_module._TRACE_CONTEXTS.values()}) == 1
+
+
+@pytest.mark.adversarial
 def test_empty_model_turn_is_reported_as_no_response(plugin_module, monkeypatch) -> None:
     actor = "111111111111111111"
     guild = "222222222222222222"
@@ -612,6 +730,54 @@ async def test_processing_completion_delivers_persisted_signoff_fallback(
     assert len(deliveries) == 1
     assert deliveries[0][0]["response_ref"] == context["response_ref"]
     assert deliveries[0][1] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.adversarial
+async def test_response_delivery_failure_does_not_reexecute_operator_utterance(
+    plugin_module, monkeypatch
+) -> None:
+    completions: list[tuple[str, str | None]] = []
+
+    async def fake_to_thread(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    class FakeAdapter:
+        async def on_processing_complete(self, _event, _outcome) -> None:
+            return None
+
+    context = {
+        "response_ref": f"rsp_{'4' * 26}",
+        "turn_finalized": True,
+        "guild_id": "222222222222222222",
+        "source_channel_id": "333333333333333333",
+        "source_message_id": "444444444444444444",
+        "actor_id": "111111111111111111",
+    }
+    monkeypatch.setattr(
+        plugin_module,
+        "_trace_context_for_event",
+        lambda _event, _adapter: context,
+    )
+    monkeypatch.setattr(plugin_module.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(
+        plugin_module,
+        "_post_agent_response_delivery",
+        lambda _payload, *, delivered: None,
+    )
+    monkeypatch.setattr(
+        plugin_module,
+        "_complete_interactive_ingress",
+        lambda _payload, *, outcome, error_code=None: completions.append(
+            (outcome, error_code)
+        ),
+    )
+    adapter = FakeAdapter()
+    plugin_module._install_processing_outcome_listener(adapter)
+
+    await adapter.on_processing_complete(SimpleNamespace(), "failed")
+
+    assert completions == [("completed", None)]
 
 
 @pytest.mark.asyncio

@@ -106,6 +106,11 @@ Pinned outbound assumptions to revalidate:
   A canonical SHA-256 of the complete received arguments is forwarded
   separately so the authenticated trace can bind to the `call_` created at
   Docket's MCP boundary.
+* `tool_describe` also receives that namespaced registry name. The Docket
+  extension must recognize `mcp__docket__docket_commit_changeset` and return
+  the exact reference-closed schema for the requested mutation types; matching
+  only the unprefixed public name silently falls back to Hermes's generic
+  truncated description and is a release-blocking compatibility failure.
 * the plugin sends hook observations to Docket through a bounded background
   queue so trace telemetry does not add one network round trip to each tool's
   critical path. Docket validates monotonicity and projects the one trace
@@ -115,7 +120,7 @@ Pinned outbound assumptions to revalidate:
   tool execution time, and time outside tools without retaining model prompts or
   tool payloads.
 
-Plugin `0.24.0` retains the phase-one provenance boundary. For every
+Plugin `0.26.0` retains the phase-one provenance boundary. For every
 authenticated operator message on the Docket chat root, Docket queue root, or
 a Docket-owned daily thread, `pre_gateway_dispatch` synchronously persists one
 verbatim `OperatorUtterance` before rewrite, control handling, model dispatch,
@@ -125,7 +130,9 @@ Discord delivery reuses the same `utt_` through the transport request key.
 After the tool loop, `post_llm_call` persists the one final assembled assistant
 message as `rsp_`; stream chunks are not responses. The Discord adapter's
 `on_processing_complete` callback updates delivery state separately, so a
-generated response and failed projection remain distinct facts. The plugin's
+generated response and failed projection remain distinct facts. Once the turn
+is durably finalized, projection failure terminalizes the ingress execution and
+must not make the same `utt_` eligible for another model run. The plugin's
 listener is installed on the adapter instance and must be revalidated whenever
 the pinned Hermes gateway lifecycle changes.
 

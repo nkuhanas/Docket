@@ -102,6 +102,9 @@ When Hermes appears to use the wrong schema:
 2. Confirm the interactive profile reports 19 tools and triage reports four.
 3. Compare the injected contract version, hash, and profile with the generated
    repository artifacts.
+   Confirm a namespaced `mcp__docket__docket_commit_changeset` description with
+   exact `mutation_types` returns the scoped Task/Time field definitions rather
+   than Hermes's generic truncated description.
 4. Inspect the `call_` lifecycle:
    `transport_state`, `domain_state`, and `result_disposition` are distinct.
 5. Reload MCP only after the server and generated contract agree.
@@ -114,6 +117,10 @@ Every authenticated tool invocation receives one `call_`, including validation
 and authority rejection. Tool logs retain hashes and bounded references, not raw
 arguments or results. A conversational trace marked interrupted has
 `domain_state=unknown` unless a durable terminal Docket outcome proves otherwise.
+Local schema rejection is a completed transport with
+`result_disposition=rejected_validation`; a trace card left at `running` for
+such a rejection indicates a trace-callback contract failure, not live Docket
+work.
 
 ## Operator input and response failures
 
