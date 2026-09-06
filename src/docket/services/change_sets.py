@@ -39,13 +39,17 @@ from docket.models.base import utc_now
 from docket.schemas.authority import (
     AttentionCaseResolutionInput,
     CanonicalChangeInput,
+    CanonicalEventCreate,
     ChangeSetCommit,
     ChangeSetContent,
     ChangeSetPrepare,
     ChangeSetRevise,
     ConflictResolve,
+    ItemCreate,
     ProviderIntentInput,
     ProviderOperationType,
+    TemporalBindingCreate,
+    TemporalCalendarProjectionCreate,
 )
 from docket.services.case_resolutions import AttentionCaseResolutionService
 from docket.services.conflicts import ConflictService
@@ -1282,14 +1286,10 @@ class ChangeSetService:
         calendar_create_ids = {
             change.change_id
             for change in changes
-            if change.action == "create"
-            and (
-                change.object_type == "canonical_event"
-                or (
-                    change.object_type == "temporal_calendar_projection"
-                    and change.create_spec is not None
-                    and change.create_spec.enabled
-                )
+            if isinstance(change, CanonicalEventCreate)
+            or (
+                isinstance(change, TemporalCalendarProjectionCreate)
+                and change.create_spec.enabled
             )
         }
         entry_statements: dict[str, list[InterpretedStatement]] = {}
@@ -1363,10 +1363,7 @@ class ChangeSetService:
 
             item_change = changes_by_id.get(entry.item_change_id)
             item_valid = (
-                item_change is not None
-                and item_change.action == "create"
-                and item_change.object_type == "item"
-                and item_change.create_spec is not None
+                isinstance(item_change, ItemCreate)
                 and statement.ref_id in item_change.basis_refs
                 and statement.source_ref in item_change.create_spec.source_refs
             )
@@ -1385,10 +1382,7 @@ class ChangeSetService:
 
             time_change = changes_by_id.get(entry.temporal_binding_change_id)
             time_valid = (
-                time_change is not None
-                and time_change.action == "create"
-                and time_change.object_type == "temporal_binding"
-                and time_change.create_spec is not None
+                isinstance(time_change, TemporalBindingCreate)
                 and time_change.create_spec.subject_change_id == entry.item_change_id
                 and statement.ref_id in time_change.basis_refs
                 and statement.source_ref in time_change.create_spec.source_refs
@@ -1412,10 +1406,7 @@ class ChangeSetService:
             calendar_valid = False
             if (
                 entry.calendar_representation == "temporal_projection"
-                and calendar_change is not None
-                and calendar_change.action == "create"
-                and calendar_change.object_type == "temporal_calendar_projection"
-                and calendar_change.create_spec is not None
+                and isinstance(calendar_change, TemporalCalendarProjectionCreate)
             ):
                 calendar_valid = (
                     calendar_change.create_spec.temporal_binding_change_id
@@ -1425,12 +1416,8 @@ class ChangeSetService:
                 )
             elif (
                 entry.calendar_representation == "canonical_event"
-                and calendar_change is not None
-                and calendar_change.action == "create"
-                and calendar_change.object_type == "canonical_event"
-                and calendar_change.create_spec is not None
-                and item_change is not None
-                and item_change.create_spec is not None
+                and isinstance(calendar_change, CanonicalEventCreate)
+                and isinstance(item_change, ItemCreate)
             ):
                 event_spec = calendar_change.create_spec.event_spec
                 calendar_valid = (
@@ -1459,17 +1446,13 @@ class ChangeSetService:
         source_item_ids = {
             change.change_id
             for change in changes
-            if change.action == "create"
-            and change.object_type == "item"
-            and change.create_spec is not None
+            if isinstance(change, ItemCreate)
             and source_refs.intersection(change.create_spec.source_refs)
         }
         source_time_ids = {
             change.change_id
             for change in changes
-            if change.action == "create"
-            and change.object_type == "temporal_binding"
-            and change.create_spec is not None
+            if isinstance(change, TemporalBindingCreate)
             and source_refs.intersection(change.create_spec.source_refs)
         }
         for code, actual, covered in (
