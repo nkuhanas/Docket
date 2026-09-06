@@ -1,0 +1,404 @@
+readiness_ref: ONT-ASSEMBLY-READINESS-2026-09-06
+document_ref: ONT-DELTA-2026-09-06-INCREMENTAL-CHANGESET-ASSEMBLY
+frozen_artifact_hash: 0557d095d8c4d166f4f3f8a47d58247842649bbfbfc4f696223e065754d858d7
+recorded_at: 2026-09-06
+status: pre_implementation_design_complete
+
+authority:
+  architecture_authority: true
+  implementation_authority: amendment_scope
+  authorized_scope: incremental_changeset_assembly_concurrency_idempotency_and_compilation
+  production_reset_authority: false
+  deployment_authority: false
+  signoff_evidence:
+    operator_utterance_ref: utt_01M1W7634P9N080KCGBRNQN53R
+    decision_ref: dec_01M1W7648P7YJZ22GRD114WSBV
+    audit_ref: aud_01M1W7648QWKN6Q4989Q06B7TM
+    agent_response_ref: rsp_01M1W76495SA0FS5AEWWPCYJKC
+    response_delivery_state: delivered
+  prerequisite_decision_refs:
+    - dec_01M13MANM19BX22EW8QC8AH9DT
+    - dec_01M1587SE1JX3BVQ1QZBQKX6T7
+    - dec_01M15EHKNXVKRBM7MZ3FN39X3E
+    - dec_01M18DYEYJVVJ7TW5VQQBCA6NC
+
+implementation_start_gate:
+  total: 8
+  design_complete: 8
+  blocked: 0
+  implementation_start_permitted: true
+  implementation_complete: false
+  deployment_permitted: false
+
+tool_migration_matrix:
+  current_interactive_count: 20
+  target_interactive_count: 22
+  current_triage_count: 4
+  target_triage_count: 4
+  additions:
+    - tool: docket_stage_changes
+      profile: interactive
+      authority: current_authenticated_operator_utterance
+      effect: noncanonical_draft_workflow_only
+      implicit_draft_creation: true
+      model_supplied_changeset_ref: false
+      model_supplied_revision: false
+      model_supplied_idempotency_key: false
+    - tool: docket_review_changeset
+      profile: interactive
+      authority: current_authenticated_operator_utterance
+      effect: bounded_read_plus_attempt_observation
+      model_supplied_changeset_ref: false
+      model_supplied_revision: false
+  modifications:
+    - tool: docket_commit_changeset
+      schema:
+        discriminator: commit_mode
+        variants:
+          - direct
+          - assembled
+      direct_behavior: bounded_complete_payload_fast_path
+      assembled_behavior: commit_current_observed_draft_without_retransmission
+      direct_rejected_when_draft_exists: assembled_draft_exists
+  unchanged:
+    - tool: docket_resolve_conflict
+      behavior: sole_external_conflict_resolution_surface
+  prohibited:
+    - begin_changeset
+    - model_supplied_stage_operation_key
+    - public_draft_push_operation
+  triage_exclusions:
+    - docket_stage_changes
+    - docket_review_changeset
+    - docket_commit_changeset
+    - docket_resolve_conflict
+
+persistence_and_concurrency_design:
+  retained_models:
+    - model: ChangeSet
+      table: change_sets
+      invariant: existing_unique_semantic_request_ref_enforces_one_changeset_lineage
+    - model: ChangeSetRevision
+      table: change_set_revisions
+      invariant: immutable_revision_snapshot
+    - model: SemanticRequest
+      table: semantic_requests
+      invariant: authority_survives_noncommitting_failures
+    - model: SemanticRequestAttempt
+      table: semantic_request_attempts
+      invariant: one_execution_attempt_observation_and_causal_fence
+  new_internal_models:
+    - model: AssemblyExecution
+      table: assembly_executions
+      public_ref: false
+      identity: [source_utterance_ref, trace_ref]
+      fields:
+        - semantic_request_ref
+        - semantic_request_attempt_ref
+        - next_sequence
+        - created_at
+        - updated_at
+      purpose: durable_per_trace_attempt_queue_owner
+    - model: AssemblyOperation
+      table: assembly_operations
+      public_ref: false
+      identity: [source_utterance_ref, upstream_tool_call_id]
+      fields:
+        - assembly_execution_id
+        - operation_key
+        - operation_kind
+        - tool_name
+        - argument_hash
+        - patch_hash
+        - attempt_sequence
+        - causal_observed_revision
+        - state
+        - result_disposition
+        - result_json
+        - created_at
+        - completed_at
+      states: [admitted, running, completed, rejected, unknown]
+      purpose: infrastructure_idempotency_and_causal_admission
+  altered_models:
+    - model: SemanticRequestAttempt
+      add_fields:
+        - execution_trace_ref
+        - observed_changeset_ref
+        - observed_draft_revision
+      add_constraint: unique_semantic_request_execution_trace
+    - model: ChangeSet
+      add_fields:
+        - normalized_entries_json
+        - compiled_action_ownership_json
+        - compiler_manifest_json
+    - model: ChangeSetRevision
+      add_fields:
+        - normalized_entries_json
+        - compiled_action_ownership_json
+        - compiler_manifest_json
+        - assembly_operation_id
+  lock_order:
+    - intent_session
+    - semantic_request
+    - semantic_request_attempt
+    - change_set
+    - assembly_operation
+  edit_fence: causal_observed_revision_must_equal_current_draft_revision
+  commit_fence: attempt_observed_draft_revision_must_equal_current_draft_revision
+  new_attempt_rule: existing_draft_requires_successful_current_revision_review_before_edit_or_commit
+  first_patch_rule: same_transaction_creates_draft_and_revision_and_establishes_observation
+  automatic_merge: false
+  process_local_mutex_sufficient: false
+  restart_behavior: admitted_or_running_operations_reconcile_from_revision_and_receipt_rows
+  named_postgresql_race_fixtures:
+    - postgres_cross_attempt_stale_stage
+    - postgres_cross_attempt_stale_commit
+    - postgres_same_attempt_concurrent_stage
+    - postgres_review_then_commit_order
+    - postgres_first_patch_unique_draft
+
+typed_stage_schema:
+  tool_input: StageChangesInput
+  common_fields:
+    - utterance_ref
+    - request_key
+    - assembly_scope
+    - patch
+  infrastructure_only_field: assembly_operation_token
+  infrastructure_field_removed_from_model_schema: true
+  assembly_scope:
+    model: AssemblyAuthorityScopeInput
+    fields:
+      - resolved_intent
+      - allowed_mutation_types
+      - target_refs
+      - source_refs
+      - planned_create_types
+      - explicit_exclusions
+    first_stage_required: true
+    later_stage_behavior: may_be_omitted_or_must_match_persisted_scope_exactly
+    hash_role: semantic_request_authority_scope_hash
+  patch:
+    max_operations_per_call: 50
+    discriminator: operation
+    variants:
+      - action_upsert
+      - action_remove
+      - normalized_entry_upsert
+      - normalized_entry_remove
+  action_upsert:
+    payload: existing_discriminated_canonical_mutation_union
+    progressive_filter: mutation_types
+  normalized_entry_upsert:
+    discriminator: entry_type
+    variants:
+      - tracked_temporal_entry
+      - scheduled_occurrence_entry
+      - schedule_exception_entry
+    progressive_filter: normalized_entry_types
+  reference_closure:
+    persistent_object: typed_public_ref
+    same_changeset_object: stable_change_id
+    evidence: source_ref_plus_fragment_locator_and_hash
+
+compiler_boundary_matrix:
+  compiler_identifier: docket.normalized-temporal-entry
+  compiler_version: 1
+  deterministic_identifiers:
+    item: "{import_entry_id}.item"
+    temporal_binding: "{import_entry_id}.time"
+    event: "{import_entry_id}.event"
+    provider_operation: "{import_entry_id}.provider"
+  mechanical_derivations:
+    - normalized_item_fields_to_item_create
+    - normalized_temporal_fields_to_temporal_binding_create
+    - explicit_scheduled_occurrence_to_canonical_event_create
+    - exact_event_links_to_item_and_temporal_change_ids
+    - compiler_owned_provider_intent_from_explicit_projection_and_lane_binding
+    - deterministic_basis_completion_from_entry_statement
+  semantic_inputs_required:
+    - exact_source_fragment_locator_and_hash
+    - title_and_descriptive_kind
+    - resolved_context_or_authorized_planned_context_create
+    - temporal_role_precision_value_and_timezone
+    - occurrence_versus_schedule_exception_disposition
+    - explicit_calendar_projection_intent
+    - resolved_lane_and_account_binding_when_projected
+    - replacement_or_supersession_scope
+  prohibited_inference:
+    - missing_date_time_duration_timezone_or_location
+    - uncertain_context_entity_or_course
+    - uncertain_lane_or_provider_account
+    - event_from_date_alone
+    - ordinary_event_from_no_class_or_closure
+    - source_replacement_scope
+    - authority_broadening
+  evidence_materialization:
+    behavior: create_immutable_interpreted_statement_when_entry_is_first_staged
+    replacement: create_new_statement_and_retain_prior_evidence
+    removal: retain_statement_evidence_but_remove_current_entry_and_derived_actions
+  ownership:
+    direct_compiler_owned_action_edit: rejected_compiler_owned_action
+    entry_replacement: atomically_replace_complete_owned_action_set
+    entry_removal: remove_complete_owned_action_set
+    orphaned_dependency_edges: remove_when_unreferenced_and_compiler_owned
+    compiler_upgrade: explicit_recompile_stage_operation_only
+
+idempotency_and_ingress_design:
+  admission_endpoint: /internal/v1/discord/assembly-operations/admit
+  caller: docket_discord_plugin_only
+  request_contains:
+    - authenticated_discord_context
+    - utterance_ref
+    - trace_ref
+    - upstream_tool_call_id
+    - trace_ordinal
+    - tool_name
+    - canonical_model_argument_hash
+  request_excludes:
+    - raw_stage_patch
+    - source_text
+    - authorization_headers
+  response:
+    - opaque_assembly_operation_token
+  plugin_behavior:
+    - validate_model_arguments_before_admission
+    - persist_admission_before_mcp_delivery
+    - inject_token_after_model_validation
+    - strip_infrastructure_field_from_model_facing_schema
+    - recover_same_token_for_same_utterance_and_upstream_call
+  mismatch_disposition: stage_idempotency_mismatch
+  replay_behavior: return_original_terminal_result_without_reapplying_or_advancing_observation
+  unknown_behavior: reconcile_revision_and_receipt_before_application
+  commit_idempotency: semantic_request_ref_to_single_committed_changeset_and_receipt
+  named_fixtures:
+    - lost_stage_response_replay
+    - old_stage_retry_after_newer_replacement
+    - old_remove_retry_after_restore
+    - operation_key_content_mismatch
+    - admitted_operation_restart_reconciliation
+    - lost_commit_response_receipt_replay
+    - unknown_commit_outcome_reconciliation
+
+output_and_workload_contract:
+  output_budgets:
+    ordinary_serialized_json_bytes: 16384
+    audit_serialized_json_bytes: 65536
+    review_default_items: 25
+    review_max_items: 100
+  stage_receipt:
+    includes:
+      - disposition
+      - changeset_ref
+      - current_revision
+      - staged_removed_replayed_counts
+      - whole_draft_effect_totals
+      - assembly_readiness
+      - bounded_diagnostic_counts_and_sample
+      - next_action
+    excludes:
+      - complete_draft
+      - repeated_source_text
+      - complete_schema
+      - complete_provenance_chain
+  review_cursor:
+    binds:
+      - changeset_ref
+      - immutable_revision
+      - view
+      - filters
+      - ordering
+      - next_position
+    old_snapshot_does_not_observe_new_revision: true
+    unavailable_snapshot_disposition: review_snapshot_unavailable
+  commit_receipt:
+    durable_before_rendering: true
+    fields:
+      - changeset_ref
+      - semantic_request_ref
+      - canonical_disposition
+      - canonical_effect_counts
+      - provider_operation_counts_by_initial_state
+      - affected_ref_sample
+      - detail_cursor
+    provider_truth: queued_is_not_provider_applied
+  workload_limits:
+    normalized_stage_request_bytes: 524288
+    patch_operations_per_call: 50
+    normalized_entries_per_call: 25
+    normalized_entries_per_draft: 250
+    draft_revisions: 1000
+    canonical_actions_per_draft: 1000
+    provider_operations_per_draft: 500
+    dependency_depth: 32
+  limit_disposition: workload_limit_exceeded
+  limit_response_requires:
+    - measured_count
+    - applicable_limit
+    - deterministic_partition_or_narrowing_strategy
+    - preserved_authority_disposition
+
+traceability_plan:
+  path: deltas/docket-incremental-changeset-traceability-09-06-2026.csv
+  normative_clauses: 44
+  acceptance_scenarios: 16
+  preimplementation_status: planned
+  required_predeployment_status: implemented_and_verified
+  planned_test_files:
+    - tests/unit/test_changeset_assembly_schema.py
+    - tests/unit/test_changeset_compiler.py
+    - tests/integration/test_changeset_assembly.py
+    - tests/integration/test_changeset_assembly_postgres.py
+    - tests/adversarial/test_changeset_assembly.py
+    - tests/adversarial/test_plugin_actor_gate.py
+    - tests/integration/test_mcp_contract.py
+    - tests/integration/test_deployment_continuity.py
+    - tests/integration/test_migration_clean.py
+    - tests/unit/test_release_script_contract.py
+
+hermes_contract_plan:
+  generated_contracts:
+    - hermes/plugin/docket_discord/contracts/interactive.md
+    - hermes/plugin/docket_discord/contracts/triage.md
+  generator: scripts/generate-tool-contracts.py
+  plugin_files:
+    - hermes/plugin/docket_discord/__init__.py
+    - hermes/plugin/docket_discord/schema_disclosure.py
+  skill_files:
+    - hermes/plugin/docket_discord/skills/docket-manual-intent/SKILL.md
+    - hermes/plugin/docket_discord/skills/docket-schedule-management/SKILL.md
+  required_guidance:
+    - use_stage_review_commit_for_large_resolved_requests
+    - never_call_begin_changeset
+    - never_reconstruct_or_retransmit_complete_draft_at_commit
+    - never_supply_changeset_ref_revision_or_stage_operation_key_for_ordinary_flow
+    - request_only_scoped_action_and_normalized_entry_schemas
+    - never_probe_schema_with_rejected_calls
+    - distinguish_canonical_committed_from_provider_queued_and_applied
+  local_validation:
+    stage_patch: before_admission_and_mcp_delivery
+    direct_commit: before_mcp_delivery
+    assembled_commit: before_mcp_delivery
+  profile_parity:
+    interactive_tools: 22
+    triage_tools: 4
+
+predeployment_gate:
+  implementation_dependent_results_required: true
+  required_results:
+    - all_traceability_rows_implemented_and_verified
+    - postgresql_race_fixtures_pass
+    - lost_response_restart_replay_and_collision_fixtures_pass
+    - generated_schema_profile_parity_and_output_envelopes_pass
+    - scripts_docket_check_pass
+    - scripts_docket_compose_smoke_pass
+    - migration_upgrade_downgrade_reupgrade_pass
+  live_provider_check:
+    operator_present: true
+    simulated_in_ci: false
+  deployment_requires_separate_operator_direction: true
+
+production_actions:
+  production_data_mutated: false
+  provider_mutation_performed: false
+  implementation_deployed: false

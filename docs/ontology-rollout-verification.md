@@ -211,14 +211,26 @@ dec_01M15EHKNXVKRBM7MZ3FN39X3E  August 28 interactive continuity
 dec_01M18DYEYJVVJ7TW5VQQBCA6NC  August 29 tracked context
 ```
 
-The eventual sign-off Decision will authorize only
+The ledger-backed sign-off Decision authorizes only
 `incremental_changeset_assembly_concurrency_idempotency_and_compilation` and
-will retain `production_reset_authority=false`.
+retains `production_reset_authority=false`. The authenticated sign-off chain is:
+
+```text
+utt_01M1W7634P9N080KCGBRNQN53R
+  -> dec_01M1W7648P7YJZ22GRD114WSBV
+  -> aud_01M1W7648QWKN6Q4989Q06B7TM
+  -> rsp_01M1W76495SA0FS5AEWWPCYJKC (delivered)
+```
 
 This enablement adds no stage/review tool, migration, ChangeSet behavior,
 compiler behavior, provider effect, prompt instruction, deployment authority,
-or implementation-readiness result. Those remain blocked on ledger sign-off
-and the amendment's pre-implementation readiness design.
+or deployment authority. The eight pre-implementation design gates are recorded
+in
+[`docket-incremental-changeset-readiness-09-06-2026.yaml`](../deltas/docket-incremental-changeset-readiness-09-06-2026.yaml),
+with clause-level planned coverage in
+[`docket-incremental-changeset-traceability-09-06-2026.csv`](../deltas/docket-incremental-changeset-traceability-09-06-2026.csv).
+Implementation-dependent passing evidence and deployment remain separate later
+gates.
 
 ## Tracked-context readiness closure
 
