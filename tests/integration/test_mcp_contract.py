@@ -87,9 +87,9 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
         "relations",
         "resolved_intent",
         "blocking_clarifications",
-            "content",
-            "request_key",
-        }.issubset(commit_schema["properties"])
+        "content",
+        "request_key",
+    }.issubset(commit_schema["properties"])
     content = commit_schema["$defs"]["OperatorChangeSetContent"]
     assert {
         "registry_changes",
@@ -102,24 +102,30 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
     assert "ProviderIntentInput" not in commit_schema["$defs"]
     import_scope = commit_schema["$defs"]["OperatorImportScope"]
     assert "authorized_effects" in import_scope["properties"]
+    assert "entry_coverage" in import_scope["properties"]
     assert "authority_statement_refs" not in import_scope["properties"]
-    assert "Docket derives" in import_scope["properties"]["authorized_effects"][
-        "description"
-    ]
+    assert "Docket derives" in import_scope["properties"]["authorized_effects"]["description"]
+    entry_coverage = commit_schema["$defs"]["ImportEntryCoverage"]
+    assert entry_coverage["additionalProperties"] is False
+    assert set(entry_coverage["properties"]) == {
+        "entry_id",
+        "item_change_id",
+        "temporal_binding_change_id",
+        "calendar_representation",
+        "calendar_change_id",
+    }
+    statement = commit_schema["$defs"]["StatementInput"]
+    assert "import_entry_id" in statement["properties"]
     registry_union = commit_schema["$defs"]["RegistryChangeInput"]
     assert registry_union["discriminator"]["propertyName"] == "mutation_type"
-    assert registry_union["discriminator"]["mapping"]["entity_create"] == (
-        "#/$defs/EntityCreate"
-    )
+    assert registry_union["discriminator"]["mapping"]["entity_create"] == ("#/$defs/EntityCreate")
     assert registry_union["discriminator"]["mapping"]["identity_binding_bind"] == (
         "#/$defs/IdentityBindingBind"
     )
     identity_bind = commit_schema["$defs"]["IdentityBindingBind"]
     assert identity_bind["additionalProperties"] is False
     assert "object_change_id" in identity_bind["properties"]
-    assert identity_bind["properties"]["payload"] == {
-        "$ref": "#/$defs/IdentityBindingBindSpec"
-    }
+    assert identity_bind["properties"]["payload"] == {"$ref": "#/$defs/IdentityBindingBindSpec"}
     identity_bind_spec = commit_schema["$defs"]["IdentityBindingBindSpec"]
     assert "entity_change_id" in identity_bind_spec["properties"]
     assert identity_bind_spec["properties"]["resolution_basis"] == {
@@ -129,9 +135,7 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
     case_resolution = commit_schema["$defs"]["ResolutionChangeInput"]
     assert case_resolution["additionalProperties"] is False
     assert case_resolution["properties"]["object_ref"]["pattern"].startswith("^case_")
-    assert case_resolution["properties"]["case_revision_ref"]["pattern"].startswith(
-        "^caserev_"
-    )
+    assert case_resolution["properties"]["case_revision_ref"]["pattern"].startswith("^caserev_")
     assert "payload" not in case_resolution["properties"]
     assert "affected_fields" not in case_resolution["properties"]
     assert "ConflictResolution" not in repr(commit_schema)
@@ -160,18 +164,16 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
     assert "calendar_id" not in calendar_events.inputSchema.get("required", [])
     assert "globally ordered" in (calendar_events.description or "")
     assert calendar_events.inputSchema["properties"]["detail"]["default"] == "summary"
-    assert tools["docket_list_calendar_lanes"].inputSchema["properties"]["view"][
-        "default"
-    ] == "summary"
-    assert tools["docket_list_provider_accounts"].inputSchema["properties"]["view"][
-        "default"
-    ] == "summary"
-    history_type = tools["docket_search_history"].inputSchema["properties"][
-        "object_type"
-    ]
-    history_type_schema = next(
-        branch for branch in history_type["anyOf"] if "enum" in branch
+    assert (
+        tools["docket_list_calendar_lanes"].inputSchema["properties"]["view"]["default"]
+        == "summary"
     )
+    assert (
+        tools["docket_list_provider_accounts"].inputSchema["properties"]["view"]["default"]
+        == "summary"
+    )
+    history_type = tools["docket_search_history"].inputSchema["properties"]["object_type"]
+    history_type_schema = next(branch for branch in history_type["anyOf"] if "enum" in branch)
     assert set(history_type_schema["enum"]) >= {
         "operator_utterance",
         "attention_case",

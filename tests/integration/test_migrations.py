@@ -51,9 +51,11 @@ def test_active_migration_history_is_one_clean_baseline() -> None:
     script = ScriptDirectory.from_config(config)
     revisions = list(script.walk_revisions())
 
-    assert len(revisions) == 1
-    assert revisions[0].revision == "2022877699cf"
-    assert revisions[0].down_revision is None
+    assert [revision.revision for revision in revisions] == [
+        "20260905f4c1",
+        "2022877699cf",
+    ]
+    assert revisions[-1].down_revision is None
     assert script.get_current_head() == revisions[0].revision
 
 
@@ -127,6 +129,9 @@ def test_clean_namespace_columns_are_unambiguous(
     }
     assert "lease_key" in {column["name"] for column in inspector.get_columns("execution_leases")}
     assert "ref_id" not in {column["name"] for column in inspector.get_columns("execution_leases")}
+    assert "semantic_key" in {
+        column["name"] for column in inspector.get_columns("item_source_bindings")
+    }
 
     engine.dispose()
     clear_settings_cache()

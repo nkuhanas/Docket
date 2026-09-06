@@ -114,13 +114,35 @@ class ChangeSetApplicationReceipt:
             if ref_id not in self.affected_refs:
                 self.affected_refs.append(ref_id)
 
-    def projection(self) -> dict[str, Any]:
+    @staticmethod
+    def _counts(values: list[Any], field_name: str) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for value in values:
+            key = str(getattr(value, field_name))
+            counts[key] = counts.get(key, 0) + 1
+        return dict(sorted(counts.items()))
+
+    def affected_projection(self, *, limit: int = 25) -> dict[str, Any]:
         return {
-            "effects": [effect.projection() for effect in self.effects],
-            "provider_operations": [
-                operation.projection() for operation in self.provider_operations
-            ],
+            "affected_refs": self.affected_refs[:limit],
+            "affected_ref_count": len(self.affected_refs),
+            "affected_refs_truncated": len(self.affected_refs) > limit,
         }
+
+    def projection(self, *, limit: int = 10) -> dict[str, Any]:
+        return {
+            "effects": [effect.projection() for effect in self.effects[:limit]],
+            "effect_count": len(self.effects),
+            "effect_counts": self._counts(self.effects, "mutation_type"),
+            "effects_truncated": len(self.effects) > limit,
+            "provider_operations": [
+                operation.projection() for operation in self.provider_operations[:limit]
+            ],
+            "provider_operation_count": len(self.provider_operations),
+            "provider_operation_counts": self._counts(self.provider_operations, "operation_type"),
+            "provider_operations_truncated": len(self.provider_operations) > limit,
+        }
+
 
 _GROUP_TYPES: dict[str, frozenset[str]] = {
     "registry_changes": frozenset(
@@ -227,11 +249,7 @@ def _all_changes(content: ChangeSetContent) -> list[ChangeInput]:
     resolved_ids: set[str] = set()
     while pending:
         ready = next(
-            (
-                change
-                for change in pending
-                if _change_dependencies(change) <= resolved_ids
-            ),
+            (change for change in pending if _change_dependencies(change) <= resolved_ids),
             None,
         )
         if ready is None:
@@ -300,9 +318,13 @@ def _dependency_expected_types(change: ChangeInput, field_path: str) -> set[str]
         return {"canonical_event"}
     if field in {"parent_item_change_id", "item_change_id", "item_change_ids"}:
         return {"item"}
-    if field in {
-        "subject_change_id",
-    } and getattr(change, "object_type", "") == "temporal_binding":
+    if (
+        field
+        in {
+            "subject_change_id",
+        }
+        and getattr(change, "object_type", "") == "temporal_binding"
+    ):
         return {"item", "task"}
     if field == "subject_change_id" and getattr(change, "object_type", "") == "reminder_plan":
         return {"canonical_event", "temporal_binding"}
@@ -523,9 +545,7 @@ class ChangeSetService:
                     )
             if resolved_fields:
                 resolved_change = change.model_copy(update=resolved_fields)
-            refs = self.handlers[change.object_type](
-                self.session, changeset, resolved_change
-            )
+            refs = self.handlers[change.object_type](self.session, changeset, resolved_change)
             refs_by_change_id[change.change_id] = refs
             receipt.add_refs(refs)
             receipt.effects.append(
@@ -644,9 +664,7 @@ class ChangeSetService:
                 target_change_ids = [event_change.change_id]
             elif event_change.object_ref is not None:
                 event = self.session.scalar(
-                    select(CanonicalEvent).where(
-                        CanonicalEvent.ref_id == event_change.object_ref
-                    )
+                    select(CanonicalEvent).where(CanonicalEvent.ref_id == event_change.object_ref)
                 )
                 if event is None:
                     continue
@@ -664,8 +682,7 @@ class ChangeSetService:
                     lane_change_id = patch.lane_change_id
                     requested_lane_ref = patch.lane_ref
                     if lane_change_id is not None or (
-                        requested_lane_ref is not None
-                        and requested_lane_ref != event.lane_ref
+                        requested_lane_ref is not None and requested_lane_ref != event.lane_ref
                     ):
                         # A lane move has distinct provider semantics. Validation below
                         # blocks it before canonical state can commit.
@@ -675,9 +692,9 @@ class ChangeSetService:
                         operation_type = "calendar_cancel_event"
                     elif patch.status == "active" and event.status == "cancelled":
                         continue
-                    elif "event_spec" in patch_values or set(
-                        patch_values
-                    ).intersection({"title", "status"}):
+                    elif "event_spec" in patch_values or set(patch_values).intersection(
+                        {"title", "status"}
+                    ):
                         operation_type = "calendar_update_event"
             if operation_type is None:
                 continue
@@ -753,10 +770,7 @@ class ChangeSetService:
             projection_operation_type: ProviderOperationType | None = None
             projection_target_change_ids: list[str] = []
             projection_target_refs: list[str] = []
-            if (
-                projection_change.action == "create"
-                and projection_change.create_spec is not None
-            ):
+            if projection_change.action == "create" and projection_change.create_spec is not None:
                 spec = projection_change.create_spec
                 if not spec.enabled:
                     continue
@@ -767,8 +781,7 @@ class ChangeSetService:
             elif projection_change.object_ref is not None:
                 projection = self.session.scalar(
                     select(TemporalCalendarProjection).where(
-                        TemporalCalendarProjection.ref_id
-                        == projection_change.object_ref
+                        TemporalCalendarProjection.ref_id == projection_change.object_ref
                     )
                 )
                 if projection is None:
@@ -804,36 +817,25 @@ class ChangeSetService:
             projection_lane_basis_refs = list(projection_change.basis_refs)
             if projection_lane_change_id is not None:
                 projection_lane_change = lane_creates.get(projection_lane_change_id)
-                if (
-                    projection_lane_change is None
-                    or projection_lane_change.create_spec is None
-                ):
+                if projection_lane_change is None or projection_lane_change.create_spec is None:
                     continue
                 projection_lane_spec = projection_lane_change.create_spec
-                projection_account_id = account_for_lane_create(
-                    projection_lane_spec.account_ref
-                ).id
+                projection_account_id = account_for_lane_create(projection_lane_spec.account_ref).id
                 projection_lane_needs_configuration = (
                     projection_lane_spec.provider_calendar_binding is None
                 )
                 projection_lane_basis_refs = list(projection_lane_change.basis_refs)
             elif projection_lane_ref is not None:
                 projection_lane = self.session.scalar(
-                    select(CalendarLane).where(
-                        CalendarLane.ref_id == projection_lane_ref
-                    )
+                    select(CalendarLane).where(CalendarLane.ref_id == projection_lane_ref)
                 )
                 if projection_lane is None:
                     continue
                 projection_account_id = projection_lane.account_id
-                projection_lane_needs_configuration = (
-                    projection_lane.calendar_id is None
-                )
+                projection_lane_needs_configuration = projection_lane.calendar_id is None
             if projection_account_id is None:
                 continue
-            projection_account = self.session.get(
-                ProviderAccount, projection_account_id
-            )
+            projection_account = self.session.get(ProviderAccount, projection_account_id)
             if (
                 projection_account is None
                 or not projection_account.enabled
@@ -844,8 +846,7 @@ class ChangeSetService:
                 projection_lane_already_compiled = any(
                     intent.operation_type == "calendar_configure_lane"
                     and (
-                        projection_lane_change_id
-                        in intent.canonical_target_change_ids
+                        projection_lane_change_id in intent.canonical_target_change_ids
                         if projection_lane_change_id is not None
                         else projection_lane_ref in intent.canonical_target_refs
                     )
@@ -862,14 +863,11 @@ class ChangeSetService:
                                 else []
                             ),
                             target_refs=(
-                                [projection_lane_ref]
-                                if projection_lane_ref is not None
-                                else []
+                                [projection_lane_ref] if projection_lane_ref is not None else []
                             ),
                             basis_refs=projection_lane_basis_refs,
                             source_change_id=(
-                                projection_lane_change_id
-                                or projection_change.change_id
+                                projection_lane_change_id or projection_change.change_id
                             ),
                         )
                     )
@@ -892,10 +890,7 @@ class ChangeSetService:
             subject_change_id: str | None = None
             prior_google_popup = False
             next_google_popup = False
-            if (
-                reminder_change.action == "create"
-                and reminder_change.create_spec is not None
-            ):
+            if reminder_change.action == "create" and reminder_change.create_spec is not None:
                 reminder_spec = reminder_change.create_spec
                 subject_ref = reminder_spec.subject_ref
                 subject_change_id = reminder_spec.subject_change_id
@@ -905,9 +900,7 @@ class ChangeSetService:
                 )
             elif reminder_change.object_ref is not None:
                 stored_reminder = self.session.scalar(
-                    select(ReminderPlan).where(
-                        ReminderPlan.ref_id == reminder_change.object_ref
-                    )
+                    select(ReminderPlan).where(ReminderPlan.ref_id == reminder_change.object_ref)
                 )
                 if stored_reminder is None:
                     continue
@@ -932,9 +925,7 @@ class ChangeSetService:
                         if reminder_patch.canonical_status is not None
                         else stored_reminder.canonical_status
                     )
-                    next_google_popup = (
-                        "google_popup" in channels and status == "active"
-                    )
+                    next_google_popup = "google_popup" in channels and status == "active"
             if not prior_google_popup and not next_google_popup:
                 continue
 
@@ -983,8 +974,7 @@ class ChangeSetService:
                 continue
             reminder_provider_binding = self.session.scalar(
                 select(ProviderEventBinding).where(
-                    ProviderEventBinding.canonical_target_ref
-                    == reminder_target_ref,
+                    ProviderEventBinding.canonical_target_ref == reminder_target_ref,
                     ProviderEventBinding.target_kind == reminder_target_kind,
                     ProviderEventBinding.status == "active",
                 )
@@ -996,9 +986,7 @@ class ChangeSetService:
             )
             if reminder_lane is None:
                 continue
-            reminder_account = self.session.get(
-                ProviderAccount, reminder_lane.account_id
-            )
+            reminder_account = self.session.get(ProviderAccount, reminder_lane.account_id)
             if (
                 reminder_account is None
                 or not reminder_account.enabled
@@ -1026,9 +1014,7 @@ class ChangeSetService:
         return ChangeSetContent.model_validate(
             {
                 **content.model_dump(mode="json"),
-                "provider_intents": [
-                    intent.model_dump(mode="json") for intent in provider_intents
-                ],
+                "provider_intents": [intent.model_dump(mode="json") for intent in provider_intents],
             }
         )
 
@@ -1283,6 +1269,230 @@ class ChangeSetService:
         )
         return refs
 
+    @staticmethod
+    def _import_entry_coverage_errors(
+        *,
+        scope: Any,
+        changes: list[ChangeInput],
+        statements: dict[str, InterpretedStatement],
+        attachment_source_refs: set[str],
+    ) -> list[dict[str, Any]]:
+        errors: list[dict[str, Any]] = []
+        changes_by_id = {change.change_id: change for change in changes}
+        calendar_create_ids = {
+            change.change_id
+            for change in changes
+            if change.action == "create"
+            and (
+                change.object_type == "canonical_event"
+                or (
+                    change.object_type == "temporal_calendar_projection"
+                    and change.create_spec is not None
+                    and change.create_spec.enabled
+                )
+            )
+        }
+        entry_statements: dict[str, list[InterpretedStatement]] = {}
+        for statement in statements.values():
+            entry_id = statement.interpretation_json.get("import_entry_id")
+            if isinstance(entry_id, str):
+                entry_statements.setdefault(entry_id, []).append(statement)
+
+        coverage = list(scope.entry_coverage)
+        if attachment_source_refs and calendar_create_ids and not coverage:
+            errors.append(
+                {
+                    "code": "import_entry_coverage_required",
+                    "details": {
+                        "calendar_create_count": len(calendar_create_ids),
+                        "source_refs": sorted(attachment_source_refs),
+                    },
+                }
+            )
+            return errors
+        if len(entry_statements) > 1 and not coverage:
+            errors.append(
+                {
+                    "code": "import_entry_coverage_required",
+                    "details": {"source_entry_count": len(entry_statements)},
+                }
+            )
+            return errors
+        if not coverage:
+            return errors
+
+        coverage_entry_ids = {entry.entry_id for entry in coverage}
+        uncovered_entry_ids = sorted(set(entry_statements) - coverage_entry_ids)
+        if uncovered_entry_ids:
+            errors.append(
+                {
+                    "code": "import_entry_statement_uncovered",
+                    "details": {"entry_ids": uncovered_entry_ids[:25]},
+                }
+            )
+
+        covered_item_ids: set[str] = set()
+        covered_time_ids: set[str] = set()
+        covered_calendar_ids: set[str] = set()
+        for entry in coverage:
+            matching_statements = entry_statements.get(entry.entry_id, [])
+            if len(matching_statements) != 1:
+                errors.append(
+                    {
+                        "code": "import_entry_statement_not_exact",
+                        "details": {
+                            "entry_id": entry.entry_id,
+                            "matching_statements": len(matching_statements),
+                        },
+                    }
+                )
+                continue
+            statement = matching_statements[0]
+            if (
+                statement.source_ref not in set(scope.source_refs)
+                or statement.source_fragment_locator is None
+                or statement.source_fragment_hash is None
+            ):
+                errors.append(
+                    {
+                        "code": "import_entry_source_fragment_required",
+                        "details": {"entry_id": entry.entry_id},
+                    }
+                )
+                continue
+
+            item_change = changes_by_id.get(entry.item_change_id)
+            item_valid = (
+                item_change is not None
+                and item_change.action == "create"
+                and item_change.object_type == "item"
+                and item_change.create_spec is not None
+                and statement.ref_id in item_change.basis_refs
+                and statement.source_ref in item_change.create_spec.source_refs
+            )
+            if not item_valid:
+                errors.append(
+                    {
+                        "code": "import_entry_item_invalid",
+                        "details": {
+                            "entry_id": entry.entry_id,
+                            "change_id": entry.item_change_id,
+                        },
+                    }
+                )
+            else:
+                covered_item_ids.add(entry.item_change_id)
+
+            time_change = changes_by_id.get(entry.temporal_binding_change_id)
+            time_valid = (
+                time_change is not None
+                and time_change.action == "create"
+                and time_change.object_type == "temporal_binding"
+                and time_change.create_spec is not None
+                and time_change.create_spec.subject_change_id == entry.item_change_id
+                and statement.ref_id in time_change.basis_refs
+                and statement.source_ref in time_change.create_spec.source_refs
+            )
+            if not time_valid:
+                errors.append(
+                    {
+                        "code": "import_entry_temporal_binding_invalid",
+                        "details": {
+                            "entry_id": entry.entry_id,
+                            "change_id": entry.temporal_binding_change_id,
+                        },
+                    }
+                )
+            else:
+                covered_time_ids.add(entry.temporal_binding_change_id)
+
+            if entry.calendar_representation == "none":
+                continue
+            calendar_change = changes_by_id.get(entry.calendar_change_id or "")
+            calendar_valid = False
+            if (
+                entry.calendar_representation == "temporal_projection"
+                and calendar_change is not None
+                and calendar_change.action == "create"
+                and calendar_change.object_type == "temporal_calendar_projection"
+                and calendar_change.create_spec is not None
+            ):
+                calendar_valid = (
+                    calendar_change.create_spec.temporal_binding_change_id
+                    == entry.temporal_binding_change_id
+                    and calendar_change.create_spec.enabled
+                    and statement.ref_id in calendar_change.basis_refs
+                )
+            elif (
+                entry.calendar_representation == "canonical_event"
+                and calendar_change is not None
+                and calendar_change.action == "create"
+                and calendar_change.object_type == "canonical_event"
+                and calendar_change.create_spec is not None
+                and item_change is not None
+                and item_change.create_spec is not None
+            ):
+                event_spec = calendar_change.create_spec.event_spec
+                calendar_valid = (
+                    entry.item_change_id in calendar_change.create_spec.item_change_ids
+                    and entry.temporal_binding_change_id
+                    in calendar_change.create_spec.realizes_temporal_binding_change_ids
+                    and event_spec.recurrence is None
+                    and event_spec.title == item_change.create_spec.title
+                    and statement.ref_id in calendar_change.basis_refs
+                )
+            if not calendar_valid:
+                errors.append(
+                    {
+                        "code": "import_entry_calendar_representation_invalid",
+                        "details": {
+                            "entry_id": entry.entry_id,
+                            "change_id": entry.calendar_change_id,
+                            "representation": entry.calendar_representation,
+                        },
+                    }
+                )
+            elif entry.calendar_change_id is not None:
+                covered_calendar_ids.add(entry.calendar_change_id)
+
+        source_refs = set(scope.source_refs)
+        source_item_ids = {
+            change.change_id
+            for change in changes
+            if change.action == "create"
+            and change.object_type == "item"
+            and change.create_spec is not None
+            and source_refs.intersection(change.create_spec.source_refs)
+        }
+        source_time_ids = {
+            change.change_id
+            for change in changes
+            if change.action == "create"
+            and change.object_type == "temporal_binding"
+            and change.create_spec is not None
+            and source_refs.intersection(change.create_spec.source_refs)
+        }
+        for code, actual, covered in (
+            ("import_entry_items_not_exact", source_item_ids, covered_item_ids),
+            ("import_entry_times_not_exact", source_time_ids, covered_time_ids),
+            (
+                "import_entry_calendar_changes_not_exact",
+                calendar_create_ids,
+                covered_calendar_ids,
+            ),
+        ):
+            if actual != covered:
+                errors.append(
+                    {
+                        "code": code,
+                        "details": {
+                            "uncovered_change_ids": sorted(actual - covered)[:25],
+                            "unknown_change_ids": sorted(covered - actual)[:25],
+                        },
+                    }
+                )
+        return errors
+
     def _import_scope_errors(
         self,
         *,
@@ -1296,14 +1506,10 @@ class ChangeSetService:
         statements = {
             statement.ref_id: statement
             for statement in self.session.scalars(
-                select(InterpretedStatement).where(
-                    InterpretedStatement.ref_id.in_(statement_refs)
-                )
+                select(InterpretedStatement).where(InterpretedStatement.ref_id.in_(statement_refs))
             )
         }
-        referenced_source_refs = {
-            ref for ref in nested_refs if ref.startswith("src_")
-        }
+        referenced_source_refs = {ref for ref in nested_refs if ref.startswith("src_")}
         referenced_source_refs.update(
             statement.source_ref
             for statement in statements.values()
@@ -1316,9 +1522,7 @@ class ChangeSetService:
             )
         }
         attachment_source_refs = {
-            ref
-            for ref, source in sources.items()
-            if source.source_kind == "attachment"
+            ref for ref, source in sources.items() if source.source_kind == "attachment"
         }
         scope = content.import_scope
         if attachment_source_refs and scope is None:
@@ -1362,13 +1566,21 @@ class ChangeSetService:
                 }
             )
 
+        errors.extend(
+            self._import_entry_coverage_errors(
+                scope=scope,
+                changes=changes,
+                statements=statements,
+                attachment_source_refs=attachment_source_refs,
+            )
+        )
+
         if scope.mode == "context_only":
             for change in changes:
                 source_statement_refs = {
                     ref
                     for ref in change.basis_refs
-                    if ref in statements
-                    and statements[ref].source_ref in scope_source_refs
+                    if ref in statements and statements[ref].source_ref in scope_source_refs
                 }
                 if not source_statement_refs:
                     errors.append(
@@ -1516,9 +1728,7 @@ class ChangeSetService:
                                         "organization",
                                         "institution",
                                     ],
-                                    "actual_entity_kind": dependency_payload.get(
-                                        "entity_kind"
-                                    ),
+                                    "actual_entity_kind": dependency_payload.get("entity_kind"),
                                 },
                             }
                         )
@@ -1672,9 +1882,7 @@ class ChangeSetService:
                     referenced_prefix, _payload = parse_public_ref(referenced_ref)
                     if referenced_prefix == "acct":
                         account = self.session.scalar(
-                            select(ProviderAccount).where(
-                                ProviderAccount.ref_id == referenced_ref
-                            )
+                            select(ProviderAccount).where(ProviderAccount.ref_id == referenced_ref)
                         )
                         if account is None:
                             errors.append(
@@ -1701,9 +1909,7 @@ class ChangeSetService:
                                 },
                             }
                         )
-                for referenced_change_id in sorted(
-                    _change_dependencies(change)
-                ):
+                for referenced_change_id in sorted(_change_dependencies(change)):
                     if referenced_change_id not in change_ids:
                         errors.append(
                             {
@@ -1725,9 +1931,7 @@ class ChangeSetService:
                         and change.object_ref is not None
                     ):
                         existing_event = self.session.scalar(
-                            select(CanonicalEvent).where(
-                                CanonicalEvent.ref_id == change.object_ref
-                            )
+                            select(CanonicalEvent).where(CanonicalEvent.ref_id == change.object_ref)
                         )
                         if existing_event is not None:
                             lane_ref = existing_event.lane_ref
@@ -1780,8 +1984,7 @@ class ChangeSetService:
                 (
                     route
                     for route in route_changes
-                    if _change_payload(route).get("event_change_id")
-                    == event_change.change_id
+                    if _change_payload(route).get("event_change_id") == event_change.change_id
                     or (
                         event_ref is not None
                         and _change_payload(route).get("event_ref") == event_ref
@@ -1809,8 +2012,7 @@ class ChangeSetService:
                 existing_route = (
                     self.session.scalar(
                         select(LaneRoutingDecision).where(
-                            LaneRoutingDecision.ref_id
-                            == existing_event.routing_decision_ref
+                            LaneRoutingDecision.ref_id == existing_event.routing_decision_ref
                         )
                     )
                     if existing_event is not None
@@ -1886,9 +2088,9 @@ class ChangeSetService:
                                 }
                             )
                             continue
-                        elif "event_spec" in patch_values or set(
-                            patch_values
-                        ).intersection({"title", "status"}):
+                        elif "event_spec" in patch_values or set(patch_values).intersection(
+                            {"title", "status"}
+                        ):
                             expected_operation = "calendar_update_event"
             if expected_operation is None:
                 continue
@@ -1951,8 +2153,7 @@ class ChangeSetService:
             elif projection_target_ref is not None:
                 existing_projection = self.session.scalar(
                     select(TemporalCalendarProjection).where(
-                        TemporalCalendarProjection.ref_id
-                        == projection_target_ref
+                        TemporalCalendarProjection.ref_id == projection_target_ref
                     )
                 )
                 if projection_change.action == "retract":
@@ -1964,15 +2165,12 @@ class ChangeSetService:
                         if projection_patch.lane_change_id is not None or (
                             projection_patch.lane_ref is not None
                             and existing_projection is not None
-                            and projection_patch.lane_ref
-                            != existing_projection.lane_ref
+                            and projection_patch.lane_ref != existing_projection.lane_ref
                         ):
                             errors.append(
                                 {
                                     "code": "temporal_projection_lane_move_requires_recreate",
-                                    "details": {
-                                        "change_id": projection_change.change_id
-                                    },
+                                    "details": {"change_id": projection_change.change_id},
                                 }
                             )
                             continue
@@ -1988,10 +2186,7 @@ class ChangeSetService:
                             and not existing_projection.enabled
                         ):
                             projection_operation = "calendar_create_event"
-                        elif (
-                            existing_projection is not None
-                            and existing_projection.enabled
-                        ):
+                        elif existing_projection is not None and existing_projection.enabled:
                             projection_operation = "calendar_update_event"
             if projection_operation is None:
                 continue
@@ -2000,8 +2195,7 @@ class ChangeSetService:
                 for intent in content.provider_intents
                 if intent.operation_type == projection_operation
                 and (
-                    projection_change.change_id
-                    in intent.canonical_target_change_ids
+                    projection_change.change_id in intent.canonical_target_change_ids
                     if projection_change.action == "create"
                     else projection_target_ref in intent.canonical_target_refs
                 )
@@ -2017,14 +2211,10 @@ class ChangeSetService:
                         },
                     }
                 )
-            if (
-                projection_change.action != "create"
-                and projection_target_ref is not None
-            ):
+            if projection_change.action != "create" and projection_target_ref is not None:
                 projection_binding = self.session.scalar(
                     select(ProviderEventBinding).where(
-                        ProviderEventBinding.canonical_target_ref
-                        == projection_target_ref,
+                        ProviderEventBinding.canonical_target_ref == projection_target_ref,
                         ProviderEventBinding.target_kind == "temporal_projection",
                         ProviderEventBinding.status == "active",
                     )
@@ -2047,14 +2237,10 @@ class ChangeSetService:
             reminder_status = reminder_values.get("canonical_status")
             if reminder_change.action == "update" and reminder_change.object_ref:
                 existing_reminder = self.session.scalar(
-                    select(ReminderPlan).where(
-                        ReminderPlan.ref_id == reminder_change.object_ref
-                    )
+                    select(ReminderPlan).where(ReminderPlan.ref_id == reminder_change.object_ref)
                 )
                 if existing_reminder is not None:
-                    reminder_subject_ref = (
-                        reminder_subject_ref or existing_reminder.subject_ref
-                    )
+                    reminder_subject_ref = reminder_subject_ref or existing_reminder.subject_ref
                     reminder_channels = (
                         reminder_channels
                         if reminder_channels is not None
@@ -2084,8 +2270,7 @@ class ChangeSetService:
                         (
                             candidate
                             for candidate in content.tracked_context_changes
-                            if candidate.object_type
-                            == "temporal_calendar_projection"
+                            if candidate.object_type == "temporal_calendar_projection"
                             and candidate.action == "create"
                             and candidate.create_spec is not None
                             and candidate.create_spec.temporal_binding_change_id
@@ -2095,9 +2280,7 @@ class ChangeSetService:
                         None,
                     )
                     planned_projection_change_id = (
-                        planned_projection.change_id
-                        if planned_projection is not None
-                        else None
+                        planned_projection.change_id if planned_projection is not None else None
                     )
                 planned_target_change_id = (
                     reminder_subject_change_id
@@ -2109,8 +2292,7 @@ class ChangeSetService:
                     intent
                     for intent in content.provider_intents
                     if intent.operation_type == "calendar_create_event"
-                    and planned_target_change_id
-                    in intent.canonical_target_change_ids
+                    and planned_target_change_id in intent.canonical_target_change_ids
                 ]
                 if planned_target_change_id is None or len(matching_creates) != 1:
                     errors.append(
@@ -2123,18 +2305,13 @@ class ChangeSetService:
 
             reminder_provider_target_ref: str | None = None
             reminder_provider_target_kind: str | None = None
-            if isinstance(reminder_subject_ref, str) and reminder_subject_ref.startswith(
-                "evt_"
-            ):
+            if isinstance(reminder_subject_ref, str) and reminder_subject_ref.startswith("evt_"):
                 reminder_provider_target_ref = reminder_subject_ref
                 reminder_provider_target_kind = "event"
-            elif isinstance(
-                reminder_subject_ref, str
-            ) and reminder_subject_ref.startswith("time_"):
+            elif isinstance(reminder_subject_ref, str) and reminder_subject_ref.startswith("time_"):
                 active_projection = self.session.scalar(
                     select(TemporalCalendarProjection).where(
-                        TemporalCalendarProjection.temporal_binding_ref
-                        == reminder_subject_ref,
+                        TemporalCalendarProjection.temporal_binding_ref == reminder_subject_ref,
                         TemporalCalendarProjection.enabled.is_(True),
                     )
                 )
@@ -2144,10 +2321,8 @@ class ChangeSetService:
             active_provider_binding = (
                 self.session.scalar(
                     select(ProviderEventBinding).where(
-                        ProviderEventBinding.canonical_target_ref
-                        == reminder_provider_target_ref,
-                        ProviderEventBinding.target_kind
-                        == reminder_provider_target_kind,
+                        ProviderEventBinding.canonical_target_ref == reminder_provider_target_ref,
+                        ProviderEventBinding.target_kind == reminder_provider_target_kind,
                         ProviderEventBinding.status == "active",
                     )
                 )
@@ -2315,11 +2490,7 @@ class ChangeSetService:
                 )
                 existing = list(intent_session.blocking_clarifications)
                 additional = self._clarifications(
-                    [
-                        error
-                        for error in errors
-                        if error["code"] != "intent_needs_clarification"
-                    ]
+                    [error for error in errors if error["code"] != "intent_needs_clarification"]
                 )
                 existing_keys = {
                     (
@@ -2498,8 +2669,7 @@ class ChangeSetService:
                 select(SemanticRequest).where(
                     SemanticRequest.ref_id == request.semantic_request_ref,
                     SemanticRequest.intent_session_ref == intent_session.ref_id,
-                    SemanticRequest.authority_scope_hash
-                    == request.authority_scope_hash,
+                    SemanticRequest.authority_scope_hash == request.authority_scope_hash,
                 )
             )
             if semantic_request is None:
@@ -2553,9 +2723,7 @@ class ChangeSetService:
         )
         return changeset
 
-    def commit(
-        self, request: ChangeSetCommit
-    ) -> tuple[ChangeSet, ChangeSetApplicationReceipt]:
+    def commit(self, request: ChangeSetCommit) -> tuple[ChangeSet, ChangeSetApplicationReceipt]:
         changeset = self.get(request.changeset_ref)
         if changeset.idempotency_key != request.idempotency_key:
             raise IdempotencyConflict(request.idempotency_key)

@@ -49,15 +49,11 @@ ChangeSetRef = Annotated[str, Field(pattern=r"^chg_[0-9A-HJKMNP-TV-Z]{26}$")]
 SemanticRequestRef = Annotated[str, Field(pattern=r"^sreq_[0-9A-HJKMNP-TV-Z]{26}$")]
 ConflictRef = Annotated[str, Field(pattern=r"^conf_[0-9A-HJKMNP-TV-Z]{26}$")]
 AttentionCaseRef = Annotated[str, Field(pattern=r"^case_[0-9A-HJKMNP-TV-Z]{26}$")]
-AttentionCaseRevisionRef = Annotated[
-    str, Field(pattern=r"^caserev_[0-9A-HJKMNP-TV-Z]{26}$")
-]
+AttentionCaseRevisionRef = Annotated[str, Field(pattern=r"^caserev_[0-9A-HJKMNP-TV-Z]{26}$")]
 CaseItemRef = Annotated[str, Field(pattern=r"^citem_[0-9A-HJKMNP-TV-Z]{26}$")]
 SourceRef = Annotated[str, Field(pattern=r"^src_[0-9A-HJKMNP-TV-Z]{26}$")]
 CURRENT_IMPORT_AUTHORITY_STATEMENT = "current_import_authority_statement"
-ImportAuthorityStatementRef = StatementRef | Literal[
-    "current_import_authority_statement"
-]
+ImportAuthorityStatementRef = StatementRef | Literal["current_import_authority_statement"]
 
 ImportEffect = Literal[
     "entity",
@@ -80,6 +76,53 @@ ImportEffect = Literal[
 ]
 
 
+class ImportEntryCoverage(StrictModel):
+    """One source-derived entry and the exact canonical facets representing it."""
+
+    entry_id: str = Field(
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+        description=(
+            "Matches exactly one source-backed StatementInput.import_entry_id in the "
+            "current turn. Use one entry for every bounded row or occurrence extracted "
+            "from a structured source."
+        ),
+    )
+    item_change_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    temporal_binding_change_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    calendar_representation: Literal["none", "temporal_projection", "canonical_event"] = "none"
+    calendar_change_id: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+        description=(
+            "Required for a Calendar representation and omitted for tracked-only "
+            "entries. Each entry must use a distinct Calendar change."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def calendar_change_matches_representation(self) -> ImportEntryCoverage:
+        if (self.calendar_representation == "none") != (self.calendar_change_id is None):
+            raise ValueError(
+                "calendar_change_id is present exactly when calendar_representation is not none"
+            )
+        return self
+
+
+def _validate_entry_coverage(
+    entries: list[ImportEntryCoverage],
+) -> list[ImportEntryCoverage]:
+    for field_name in (
+        "entry_id",
+        "item_change_id",
+        "temporal_binding_change_id",
+        "calendar_change_id",
+    ):
+        values = [value for entry in entries if (value := getattr(entry, field_name)) is not None]
+        if len(values) != len(set(values)):
+            raise ValueError(f"entry_coverage {field_name} values must be unique")
+    return entries
+
+
 def _context_import_effects() -> list[ImportEffect]:
     return ["fact", "item", "temporal_binding"]
 
@@ -98,6 +141,15 @@ class ImportScope(StrictModel):
         default_factory=list,
         max_length=25,
     )
+    entry_coverage: list[ImportEntryCoverage] = Field(
+        default_factory=list,
+        max_length=80,
+        description=(
+            "Exact one-entry-to-one-Item-and-Time coverage for structured imports. "
+            "Required when attachment evidence creates Calendar representations or "
+            "contains multiple source-derived temporal entries."
+        ),
+    )
     partition_key: str = Field(default="default", pattern=r"^[a-z0-9][a-z0-9._-]{0,127}$")
 
     @field_validator("source_refs")
@@ -112,6 +164,11 @@ class ImportScope(StrictModel):
             raise ValueError("authority_statement_refs must not contain duplicates")
         return values
 
+    @field_validator("entry_coverage")
+    @classmethod
+    def coverage_is_one_to_one(cls, values: list[ImportEntryCoverage]) -> list[ImportEntryCoverage]:
+        return _validate_entry_coverage(values)
+
     @field_validator("authorized_effects")
     @classmethod
     def effects_are_unique_and_canonical(cls, values: list[str]) -> list[str]:
@@ -125,13 +182,10 @@ class ImportScope(StrictModel):
         if self.mode == "context_only":
             if self.authorized_effects != context_effects:
                 raise ValueError(
-                    "context_only import scope has exactly fact, item, and "
-                    "temporal_binding effects"
+                    "context_only import scope has exactly fact, item, and temporal_binding effects"
                 )
             if self.authority_statement_refs:
-                raise ValueError(
-                    "context_only import scope does not accept authority statements"
-                )
+                raise ValueError("context_only import scope does not accept authority statements")
         elif not self.authority_statement_refs:
             raise ValueError(
                 "operator_explicit import scope requires an Operator-derived authority statement"
@@ -153,9 +207,16 @@ class OperatorImportScope(StrictModel):
             "Docket derives the source-less import authority statement; do not supply it."
         ),
     )
-    partition_key: str = Field(
-        default="default", pattern=r"^[a-z0-9][a-z0-9._-]{0,127}$"
+    entry_coverage: list[ImportEntryCoverage] = Field(
+        default_factory=list,
+        max_length=80,
+        description=(
+            "Map every structured source entry to its unique item_create and "
+            "temporal_binding_create changes, plus its unique Calendar change when "
+            "projected."
+        ),
     )
+    partition_key: str = Field(default="default", pattern=r"^[a-z0-9][a-z0-9._-]{0,127}$")
 
     @field_validator("source_refs")
     @classmethod
@@ -169,13 +230,17 @@ class OperatorImportScope(StrictModel):
             raise ValueError("authorized_effects must not contain duplicates")
         return sorted(values)
 
+    @field_validator("entry_coverage")
+    @classmethod
+    def coverage_is_one_to_one(cls, values: list[ImportEntryCoverage]) -> list[ImportEntryCoverage]:
+        return _validate_entry_coverage(values)
+
     @model_validator(mode="after")
     def mode_has_exact_authority_shape(self) -> OperatorImportScope:
         context_effects = ["fact", "item", "temporal_binding"]
         if self.mode == "context_only" and self.authorized_effects != context_effects:
             raise ValueError(
-                "context_only import scope has exactly fact, item, and "
-                "temporal_binding effects"
+                "context_only import scope has exactly fact, item, and temporal_binding effects"
             )
         return self
 
@@ -185,10 +250,9 @@ class OperatorImportScope(StrictModel):
             source_refs=self.source_refs,
             authorized_effects=self.authorized_effects,
             authority_statement_refs=(
-                [CURRENT_IMPORT_AUTHORITY_STATEMENT]
-                if self.mode == "operator_explicit"
-                else []
+                [CURRENT_IMPORT_AUTHORITY_STATEMENT] if self.mode == "operator_explicit" else []
             ),
+            entry_coverage=self.entry_coverage,
             partition_key=self.partition_key,
         )
 
@@ -216,9 +280,7 @@ def _validate_structural_locator(value: Any, *, depth: int = 0) -> int:
             _validate_structural_locator(item, depth=depth + 1) for item in value.values()
         )
     if isinstance(value, list):
-        return 1 + sum(
-            _validate_structural_locator(item, depth=depth + 1) for item in value
-        )
+        return 1 + sum(_validate_structural_locator(item, depth=depth + 1) for item in value)
     if isinstance(value, str) and len(value.encode("utf-8")) > 256:
         raise ValueError("source_fragment_locator string coordinate is too large")
     return 1
@@ -236,6 +298,14 @@ class StatementInput(StrictModel):
     effective_to: date | None = None
     interpretation_json: dict[str, Any] = Field(default_factory=dict)
     interpreter_version: str = Field(min_length=1, max_length=255)
+    import_entry_id: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+        description=(
+            "Turn-local key for one bounded structured-source entry. Required when "
+            "ImportScope.entry_coverage names this statement."
+        ),
+    )
     source_ref: SourceRef | None = Field(
         default=None,
         description=(
@@ -298,6 +368,12 @@ class StatementInput(StrictModel):
         )
         if self.source_ref is None and any(value is not None for value in source_fields):
             raise ValueError("source extraction metadata requires source_ref")
+        if self.import_entry_id is not None and self.source_ref is None:
+            raise ValueError("import_entry_id requires source_ref")
+        if "import_entry_id" in self.interpretation_json:
+            raise ValueError(
+                "import_entry_id is a typed field and must not be hidden in interpretation_json"
+            )
         if self.source_ref is not None and any(value is None for value in source_fields):
             raise ValueError(
                 "source_ref requires a fragment locator, extractor identifier, "
@@ -320,9 +396,7 @@ class StatementInput(StrictModel):
 class StatementRelationInput(StrictModel):
     source_statement_ref: StatementRef
     target_statement_ref: StatementRef
-    relation_kind: Literal[
-        "affirms", "amends", "supersedes", "contradicts", "retracts", "scopes"
-    ]
+    relation_kind: Literal["affirms", "amends", "supersedes", "contradicts", "retracts", "scopes"]
 
     @model_validator(mode="after")
     def statements_differ(self) -> StatementRelationInput:
@@ -357,14 +431,23 @@ class IntentTurnAppend(StrictModel):
     blocking_clarifications: list[dict[str, Any]] = Field(default_factory=list, max_length=25)
     semantic_request_ref: SemanticRequestRef | None = None
     authority_substitutions: dict[str, UtteranceRef] = Field(default_factory=dict)
-    gateway_instance_ref: str | None = Field(
-        default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$"
-    )
+    gateway_instance_ref: str | None = Field(default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
 
     @field_validator("context_refs", "tool_call_refs")
     @classmethod
     def validate_public_refs(cls, values: list[str]) -> list[str]:
         return _validate_refs(values)
+
+    @model_validator(mode="after")
+    def import_entry_ids_are_unique(self) -> IntentTurnAppend:
+        entry_ids = [
+            statement.import_entry_id
+            for statement in self.statements
+            if statement.import_entry_id is not None
+        ]
+        if len(entry_ids) != len(set(entry_ids)):
+            raise ValueError("statement import_entry_id values must be unique in a turn")
+        return self
 
 
 class IntentTurnFinalize(StrictModel):
@@ -549,7 +632,6 @@ class ReminderPlanRetract(MutationBase):
     payload: EmptyMutationSpec = Field(default_factory=EmptyMutationSpec)
 
 
-
 class EntityCreate(MutationBase):
     mutation_type: Literal["entity_create"] = "entity_create"
     action: Literal["create"]
@@ -599,9 +681,7 @@ class IdentityBindingBind(MutationBase):
     mutation_type: Literal["identity_binding_bind"] = "identity_binding_bind"
     action: Literal["bind"]
     object_type: Literal["identity_binding"]
-    object_ref: Annotated[
-        str, Field(pattern=r"^idn_[0-9A-HJKMNP-TV-Z]{26}$")
-    ] | None = None
+    object_ref: Annotated[str, Field(pattern=r"^idn_[0-9A-HJKMNP-TV-Z]{26}$")] | None = None
     object_change_id: str | None = Field(
         default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
     )
@@ -751,9 +831,7 @@ class FactSupersede(MutationBase):
 
     @field_validator("payload")
     @classmethod
-    def replacement_only(
-        cls, value: dict[str, FactCreateSpec]
-    ) -> dict[str, FactCreateSpec]:
+    def replacement_only(cls, value: dict[str, FactCreateSpec]) -> dict[str, FactCreateSpec]:
         if set(value) != {"replacement"}:
             raise ValueError("supersede payload contains only replacement")
         return value
@@ -832,9 +910,7 @@ class CalendarLaneRetract(MutationBase):
 
 
 class LaneRoutingDecisionCreate(MutationBase):
-    mutation_type: Literal["lane_routing_decision_create"] = (
-        "lane_routing_decision_create"
-    )
+    mutation_type: Literal["lane_routing_decision_create"] = "lane_routing_decision_create"
     action: Literal["create"]
     object_type: Literal["lane_routing_decision"]
     object_ref: None = None
@@ -894,10 +970,7 @@ type RegistryMutation = (
 )
 type PreferenceMutation = PreferenceCreate | PreferenceModify | PreferenceRetract
 type LaneMutation = (
-    CalendarLaneCreate
-    | CalendarLaneModify
-    | CalendarLaneRetract
-    | LaneRoutingDecisionCreate
+    CalendarLaneCreate | CalendarLaneModify | CalendarLaneRetract | LaneRoutingDecisionCreate
 )
 type EventMutation = CanonicalEventCreate | CanonicalEventModify | CanonicalEventCancel
 type TrackedContextMutation = (
@@ -969,17 +1042,13 @@ type CanonicalMutation = (
 )
 
 type RegistryChangeInput = Annotated[RegistryMutation, Field(discriminator="mutation_type")]
-type PreferenceChangeInput = Annotated[
-    PreferenceMutation, Field(discriminator="mutation_type")
-]
+type PreferenceChangeInput = Annotated[PreferenceMutation, Field(discriminator="mutation_type")]
 type LaneChangeInput = Annotated[LaneMutation, Field(discriminator="mutation_type")]
 type EventChangeInput = Annotated[EventMutation, Field(discriminator="mutation_type")]
 type TrackedContextChangeInput = Annotated[
     TrackedContextMutation, Field(discriminator="mutation_type")
 ]
-type CanonicalChangeInput = Annotated[
-    CanonicalMutation, Field(discriminator="mutation_type")
-]
+type CanonicalChangeInput = Annotated[CanonicalMutation, Field(discriminator="mutation_type")]
 
 
 class AttentionCaseItemDisposition(StrictModel):
@@ -1051,9 +1120,7 @@ class ProviderIntentInput(StrictModel):
     def targets_are_resolved(self) -> ProviderIntentInput:
         if not self.canonical_target_refs and not self.canonical_target_change_ids:
             raise ValueError("provider intent requires at least one canonical target")
-        if len(self.canonical_target_change_ids) != len(
-            set(self.canonical_target_change_ids)
-        ):
+        if len(self.canonical_target_change_ids) != len(set(self.canonical_target_change_ids)):
             raise ValueError("canonical_target_change_ids must not contain duplicates")
         return self
 
@@ -1065,17 +1132,13 @@ class OperatorChangeSetContent(StrictModel):
     import_scope: OperatorImportScope | None = None
     expected_versions: dict[PublicRef, int] = Field(default_factory=dict, max_length=100)
     registry_changes: list[RegistryChangeInput] = Field(default_factory=list, max_length=100)
-    preference_changes: list[PreferenceChangeInput] = Field(
-        default_factory=list, max_length=100
-    )
+    preference_changes: list[PreferenceChangeInput] = Field(default_factory=list, max_length=100)
     lane_changes: list[LaneChangeInput] = Field(default_factory=list, max_length=100)
     event_changes: list[EventChangeInput] = Field(default_factory=list, max_length=100)
     tracked_context_changes: list[TrackedContextChangeInput] = Field(
         default_factory=list, max_length=250
     )
-    resolution_changes: list[ResolutionChangeInput] = Field(
-        default_factory=list, max_length=100
-    )
+    resolution_changes: list[ResolutionChangeInput] = Field(default_factory=list, max_length=100)
 
     @field_validator("basis_refs")
     @classmethod
@@ -1142,17 +1205,13 @@ class ChangeSetContent(StrictModel):
     import_scope: ImportScope | None = None
     expected_versions: dict[PublicRef, int] = Field(default_factory=dict, max_length=100)
     registry_changes: list[RegistryChangeInput] = Field(default_factory=list, max_length=100)
-    preference_changes: list[PreferenceChangeInput] = Field(
-        default_factory=list, max_length=100
-    )
+    preference_changes: list[PreferenceChangeInput] = Field(default_factory=list, max_length=100)
     lane_changes: list[LaneChangeInput] = Field(default_factory=list, max_length=100)
     event_changes: list[EventChangeInput] = Field(default_factory=list, max_length=100)
     tracked_context_changes: list[TrackedContextChangeInput] = Field(
         default_factory=list, max_length=250
     )
-    resolution_changes: list[ResolutionChangeInput] = Field(
-        default_factory=list, max_length=100
-    )
+    resolution_changes: list[ResolutionChangeInput] = Field(default_factory=list, max_length=100)
     provider_intents: list[ProviderIntentInput] = Field(default_factory=list, max_length=100)
 
     @field_validator("basis_refs")
@@ -1235,9 +1294,7 @@ class SemanticOptionDraft(StrictModel):
             return False
 
         if not contains(serialized):
-            raise ValueError(
-                "selection_authority_ref must occupy at least one provenance slot"
-            )
+            raise ValueError("selection_authority_ref must occupy at least one provenance slot")
         return self
 
 

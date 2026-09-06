@@ -115,16 +115,12 @@ class TrackedContextService:
         source_refs: list[str],
     ) -> list[dict[str, Any]]:
         allowed_source_refs = set(source_refs)
-        statement_refs = [
-            ref for ref in change.basis_refs if ref.startswith("stm_")
-        ]
+        statement_refs = [ref for ref in change.basis_refs if ref.startswith("stm_")]
         if not statement_refs or not allowed_source_refs:
             return []
         statements = list(
             self.session.scalars(
-                select(InterpretedStatement).where(
-                    InterpretedStatement.ref_id.in_(statement_refs)
-                )
+                select(InterpretedStatement).where(InterpretedStatement.ref_id.in_(statement_refs))
             )
         )
         sources = {
@@ -159,12 +155,17 @@ class TrackedContextService:
                 {
                     "statement_ref": statement.ref_id,
                     "source_ref": source.ref_id,
-                    "source_revision_key": (
-                        f"{source.ref_id}:{source.content_hash or 'unhashed'}"
-                    ),
+                    "source_revision_key": (f"{source.ref_id}:{source.content_hash or 'unhashed'}"),
                     "source_fragment_locator": dict(statement.source_fragment_locator),
                     "locator_hash": sha256_json(statement.source_fragment_locator),
                     "semantic_role": statement.predicate,
+                    "semantic_key": sha256_json(
+                        {
+                            "predicate": statement.predicate,
+                            "value": statement.value_json,
+                            "affected_fields": statement.affected_fields,
+                        }
+                    ),
                 }
             )
         return fragments
@@ -178,10 +179,9 @@ class TrackedContextService:
             binding = self.session.scalar(
                 select(ItemSourceBinding).where(
                     ItemSourceBinding.source_ref == fragment["source_ref"],
-                    ItemSourceBinding.source_revision_key
-                    == fragment["source_revision_key"],
+                    ItemSourceBinding.source_revision_key == fragment["source_revision_key"],
                     ItemSourceBinding.locator_hash == fragment["locator_hash"],
-                    ItemSourceBinding.semantic_role == fragment["semantic_role"],
+                    ItemSourceBinding.semantic_key == fragment["semantic_key"],
                 )
             )
             if binding is not None:
@@ -204,10 +204,9 @@ class TrackedContextService:
             existing = self.session.scalar(
                 select(ItemSourceBinding).where(
                     ItemSourceBinding.source_ref == fragment["source_ref"],
-                    ItemSourceBinding.source_revision_key
-                    == fragment["source_revision_key"],
+                    ItemSourceBinding.source_revision_key == fragment["source_revision_key"],
                     ItemSourceBinding.locator_hash == fragment["locator_hash"],
-                    ItemSourceBinding.semantic_role == fragment["semantic_role"],
+                    ItemSourceBinding.semantic_key == fragment["semantic_key"],
                 )
             )
             if existing is not None:
@@ -229,11 +228,8 @@ class TrackedContextService:
                     source_fragment_locator=fragment["source_fragment_locator"],
                     locator_hash=fragment["locator_hash"],
                     semantic_role=fragment["semantic_role"],
-                    basis_refs=list(
-                        dict.fromkeys(
-                            [*change.basis_refs, fragment["statement_ref"]]
-                        )
-                    ),
+                    semantic_key=fragment["semantic_key"],
+                    basis_refs=list(dict.fromkeys([*change.basis_refs, fragment["statement_ref"]])),
                 )
             )
 
@@ -767,12 +763,8 @@ class TrackedContextService:
                     )
                 )
             )
-            fragment_source_refs = {
-                str(fragment["source_ref"]) for fragment in fragments
-            }
-            missing_fragment_sources = sorted(
-                set(attachment_sources) - fragment_source_refs
-            )
+            fragment_source_refs = {str(fragment["source_ref"]) for fragment in fragments}
+            missing_fragment_sources = sorted(set(attachment_sources) - fragment_source_refs)
             if missing_fragment_sources:
                 raise DocketError(
                     code="item_source_fragment_required",
@@ -803,8 +795,7 @@ class TrackedContextService:
                     raise DocketError(
                         code="item_source_correlation_conflict",
                         message=(
-                            "The exact source fragment is already bound to an "
-                            "incompatible Item."
+                            "The exact source fragment is already bound to an incompatible Item."
                         ),
                         details={"item_ref": correlated.ref_id},
                     )
@@ -957,9 +948,7 @@ class TrackedContextService:
             spec = TaskInput.model_validate(change.create_spec)
             assert spec.item_ref is not None
             self._item(spec.item_ref)
-            statement_refs = {
-                ref for ref in change.basis_refs if ref.startswith("stm_")
-            }
+            statement_refs = {ref for ref in change.basis_refs if ref.startswith("stm_")}
             exact_tasks = list(
                 self.session.scalars(
                     select(Task).where(
@@ -984,9 +973,7 @@ class TrackedContextService:
                 raise DocketError(
                     code="task_source_correlation_conflict",
                     message="Exact source evidence resolves to more than one Task.",
-                    details={
-                        "task_refs": sorted(task.ref_id for task in exact_source_replays)
-                    },
+                    details={"task_refs": sorted(task.ref_id for task in exact_source_replays)},
                 )
             if exact_source_replays:
                 return [exact_source_replays[0].ref_id]
@@ -1069,8 +1056,7 @@ class TrackedContextService:
                 self._reminder_plan(spec.reminder_plan_ref)
             active_projection = self.session.scalar(
                 select(TemporalCalendarProjection).where(
-                    TemporalCalendarProjection.temporal_binding_ref
-                    == spec.temporal_binding_ref,
+                    TemporalCalendarProjection.temporal_binding_ref == spec.temporal_binding_ref,
                     TemporalCalendarProjection.enabled.is_(True),
                 )
             )
@@ -1078,8 +1064,7 @@ class TrackedContextService:
                 if (
                     active_projection.lane_ref == spec.lane_ref
                     and active_projection.display_policy == display_policy
-                    and active_projection.reminder_plan_ref
-                    == spec.reminder_plan_ref
+                    and active_projection.reminder_plan_ref == spec.reminder_plan_ref
                 ):
                     return [active_projection.ref_id]
                 raise DocketError(
@@ -1120,9 +1105,7 @@ class TrackedContextService:
                 values = patch.model_dump(exclude_unset=True)
                 if "display_policy" in values and patch.display_policy is not None:
                     values["display_policy"] = patch.display_policy.model_dump(mode="json")
-                    binding = self._temporal_binding(
-                        stored_projection.temporal_binding_ref
-                    )
+                    binding = self._temporal_binding(stored_projection.temporal_binding_ref)
                     self._require_projection_policy(
                         binding=binding,
                         display_policy=values["display_policy"],
@@ -1154,9 +1137,7 @@ class TrackedContextService:
                     if other_projection is not None:
                         raise DocketError(
                             code="temporal_projection_exists",
-                            message=(
-                                "A Time may have only one active Calendar projection."
-                            ),
+                            message=("A Time may have only one active Calendar projection."),
                             details={
                                 "temporal_binding_ref": projection.temporal_binding_ref,
                                 "projection_ref": other_projection.ref_id,

@@ -70,8 +70,8 @@ class ItemSourceBinding(Base):
             "source_ref",
             "source_revision_key",
             "locator_hash",
-            "semantic_role",
-            name="uq_item_source_bindings_fragment_role",
+            "semantic_key",
+            name="uq_item_source_bindings_fragment_semantic_key",
         ),
         Index("ix_item_source_bindings_item", "item_ref", "created_at"),
     )
@@ -85,6 +85,7 @@ class ItemSourceBinding(Base):
     source_fragment_locator: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     locator_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     semantic_role: Mapped[str] = mapped_column(String(128), nullable=False)
+    semantic_key: Mapped[str] = mapped_column(String(64), nullable=False)
     basis_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
@@ -102,8 +103,7 @@ class TemporalBinding(Base):
         ),
         CheckConstraint(_CANONICAL_STATUS, name="ck_temporal_bindings_canonical_status"),
         CheckConstraint(
-            "subject_ref LIKE 'item\\_%' ESCAPE '\\' OR "
-            "subject_ref LIKE 'task\\_%' ESCAPE '\\'",
+            "subject_ref LIKE 'item\\_%' ESCAPE '\\' OR subject_ref LIKE 'task\\_%' ESCAPE '\\'",
             name="ck_temporal_bindings_subject_ref",
         ),
         CheckConstraint("version >= 1", name="ck_temporal_bindings_version"),
@@ -150,8 +150,7 @@ class Task(Base):
     __tablename__ = "tasks"
     __table_args__ = (
         CheckConstraint(
-            "task_state IN ('not_started', 'in_progress', 'blocked', 'completed', "
-            "'cancelled')",
+            "task_state IN ('not_started', 'in_progress', 'blocked', 'completed', 'cancelled')",
             name="ck_tasks_state",
         ),
         CheckConstraint(
@@ -253,8 +252,7 @@ class ReminderPlan(Base):
     __table_args__ = (
         CheckConstraint(_CANONICAL_STATUS, name="ck_reminder_plans_canonical_status"),
         CheckConstraint(
-            "subject_ref LIKE 'evt\\_%' ESCAPE '\\' OR "
-            "subject_ref LIKE 'time\\_%' ESCAPE '\\'",
+            "subject_ref LIKE 'evt\\_%' ESCAPE '\\' OR subject_ref LIKE 'time\\_%' ESCAPE '\\'",
             name="ck_reminder_plans_subject_ref",
         ),
         CheckConstraint("version >= 1", name="ck_reminder_plans_version"),

@@ -23,19 +23,25 @@ from docket.mcp.instrumented import ProvenanceFastMCP
 from docket.mcp.server import mcp
 from docket.models import (
     AttachmentEvidence,
+    CalendarLane,
     ChangeSet,
     EncryptedAttachmentBlob,
     IntentSession,
     InterpretedStatement,
     Item,
     ItemSourceBinding,
+    Operation,
     OperatorUtterance,
+    ProviderAccount,
+    ProviderEventBinding,
     Source,
     Task,
     TemporalBinding,
+    TemporalCalendarProjection,
     ToolInvocation,
 )
 from docket.providers.discord import FakeDiscordProjectionAdapter
+from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.schemas.authority import (
     CURRENT_IMPORT_AUTHORITY_STATEMENT,
     ChangeSetCommit,
@@ -55,6 +61,7 @@ from docket.services.deferred_ingress import DeferredIngressRunner
 from docket.services.history import HistoryService
 from docket.services.ingress_ledger import IngressIdentity, IngressLedgerService
 from docket.services.interactive_authority import InteractiveAuthorityService
+from docket.services.operations import OperationRunner
 from docket.services.provenance import ProvenanceService
 from docket.services.statements import StatementService
 from docket.services.tracked_context import TrackedContextService
@@ -91,8 +98,7 @@ def _request(
         actor_id=settings.operator_discord_user_id,
         verbatim_text="Import this schedule as tracked context.",
         request_key=(
-            f"discord:{settings.discord_guild_id}:{settings.chat_channel_id}:"
-            f"{message_id}:0"
+            f"discord:{settings.discord_guild_id}:{settings.chat_channel_id}:{message_id}:0"
         ),
         attachments=[manifest],
     )
@@ -111,11 +117,7 @@ def _pdf_bytes(*pages: str) -> bytes:
     for text in pages:
         page = writer.add_blank_page(width=612, height=792)
         page[NameObject("/Resources")] = DictionaryObject(
-            {
-                NameObject("/Font"): DictionaryObject(
-                    {NameObject("/F1"): font_ref}
-                )
-            }
+            {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})}
         )
         content = DecodedStreamObject()
         escaped = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
@@ -211,9 +213,10 @@ def test_attachment_is_encrypted_bound_and_idempotent(session_factory) -> None:
         )
         history = HistoryService(session).get_entry(source_ref)
         assert history["entry"]["attachment"]["operator_utterance_ref"] == utterance.ref_id
-        assert history["entry"]["attachment"]["content_hash"] == hashlib.sha256(
-            b"schedule bytes"
-        ).hexdigest()
+        assert (
+            history["entry"]["attachment"]["content_hash"]
+            == hashlib.sha256(b"schedule bytes").hexdigest()
+        )
         assert "plaintext_base64" not in str(history)
 
     request_without_manifest = request.model_copy(update={"attachments": []})
@@ -273,12 +276,11 @@ def test_pdf_attachment_text_is_bounded_paginated_and_provenance_linked(
         "text_character_start": 0,
         "text_character_end": len(first_fragment["text"]),
     }
-    assert first_fragment["source_fragment_hash"] == hashlib.sha256(
-        first_fragment["text"].encode("utf-8")
-    ).hexdigest()
-    combined = "".join(
-        str(fragment["text"]) for fragment in [*first["items"], *second["items"]]
+    assert (
+        first_fragment["source_fragment_hash"]
+        == hashlib.sha256(first_fragment["text"].encode("utf-8")).hexdigest()
     )
+    combined = "".join(str(fragment["text"]) for fragment in [*first["items"], *second["items"]])
     assert "ENGL 1134 Tuesday September 1" in combined
     assert "ENGL 1134 Thursday September 3" in combined
     assert second["truncated"] is False
@@ -329,9 +331,7 @@ def test_pdf_attachment_read_tool_records_bounded_result_refs_not_content(
         captured = ProvenanceService(session).capture_operator_utterance(request)
         source_ref = captured["attachments"][0]["ref"]
 
-    result = asyncio.run(
-        mcp.call_tool("docket_read_attachment_text", {"source_ref": source_ref})
-    )
+    result = asyncio.run(mcp.call_tool("docket_read_attachment_text", {"source_ref": source_ref}))
     assert isinstance(result, tuple) and len(result) == 2
     content, structured = result
     assert structured["source_ref"] == source_ref
@@ -481,11 +481,7 @@ def test_one_interactive_call_resolves_explicit_import_authority_symbol(
         message_id="1542999000000000024",
         content=b"assignment row",
     ).model_copy(
-        update={
-            "verbatim_text": (
-                "Import this assignment and create the task I need to complete."
-            )
-        }
+        update={"verbatim_text": ("Import this assignment and create the task I need to complete.")}
     )
     with session_factory.begin() as session:
         captured = ProvenanceService(session).capture_operator_utterance(request)
@@ -564,15 +560,292 @@ def test_one_interactive_call_resolves_explicit_import_authority_symbol(
         assert authority_refs[0].startswith("stm_")
         assert CURRENT_IMPORT_AUTHORITY_STATEMENT not in str(changeset.import_scope_json)
         authority_statement = session.scalar(
-            select(InterpretedStatement).where(
-                InterpretedStatement.ref_id == authority_refs[0]
-            )
+            select(InterpretedStatement).where(InterpretedStatement.ref_id == authority_refs[0])
         )
         assert authority_statement is not None
         assert authority_statement.source_ref is None
-        assert authority_statement.interpretation_json["compiler"] == (
-            "operator_import_scope"
+        assert authority_statement.interpretation_json["compiler"] == ("operator_import_scope")
+
+
+@pytest.mark.integration
+def test_structured_schedule_import_preserves_each_entry_and_calendar_title(
+    session_factory,
+) -> None:
+    shared_fragment = b"8/24 Lecture 11.1\n8/25 Lecture 11.2"
+    with session_factory.begin() as session:
+        request = _request(
+            message_id="1542999000000000041",
+            content=shared_fragment,
+            filename="schedule.pdf",
+            media_type="application/pdf",
+        ).model_copy(
+            update={"verbatim_text": ("Replace the generic class series with this rich schedule.")}
         )
+        captured = ProvenanceService(session).capture_operator_utterance(request)
+        source_ref = captured["attachments"][0]["ref"]
+        account = ProviderAccount(
+            provider="google",
+            external_account_id="structured-schedule-account",
+            capabilities=["google_calendar"],
+            enabled=True,
+        )
+        session.add(account)
+        session.flush()
+        lane = CalendarLane(
+            account_id=account.id,
+            lane="math-1263",
+            display_name="MATH 1263",
+            color_hex="#039BE5",
+            calendar_id="math-1263@example.com",
+            status="active",
+            basis_refs=[captured["ref"]],
+            created_by_changeset_ref=new_public_ref("chg"),
+        )
+        session.add(lane)
+        session.flush()
+
+        entries = [
+            ("lecture-11-1", "MATH 1263 — Lecture 11.1", "2026-08-24T15:00:00"),
+            ("lecture-11-2", "MATH 1263 — Lecture 11.2", "2026-08-25T15:00:00"),
+        ]
+        changes: list[dict[str, object]] = []
+        coverage: list[dict[str, object]] = []
+        statements: list[StatementInput] = []
+        for entry_id, title, start_local in entries:
+            item_change_id = f"item-{entry_id}"
+            time_change_id = f"time-{entry_id}"
+            projection_change_id = f"project-{entry_id}"
+            statements.append(
+                StatementInput(
+                    statement_kind="item_candidate",
+                    subject_refs=[source_ref],
+                    predicate="schedule_entry",
+                    value_json={"title": title, "start_local": start_local},
+                    affected_fields=["title", "scheduled_on"],
+                    interpreter_version="fixture.schedule-table.v1",
+                    import_entry_id=entry_id,
+                    source_ref=source_ref,
+                    source_fragment_locator={
+                        "page": 1,
+                        "text_character_start": 0,
+                        "text_character_end": len(shared_fragment),
+                    },
+                    source_fragment_hash=hashlib.sha256(shared_fragment).hexdigest(),
+                    extractor_identifier="fixture.schedule-table",
+                    extractor_version="1.0.0",
+                )
+            )
+            changes.extend(
+                [
+                    {
+                        "mutation_type": "item_create",
+                        "change_id": item_change_id,
+                        "action": "create",
+                        "object_type": "item",
+                        "affected_fields": ["title", "kind", "source_refs"],
+                        "basis_refs": [captured["ref"]],
+                        "create_spec": {
+                            "title": title,
+                            "kind": "academic.lecture_topic",
+                            "source_refs": [source_ref],
+                        },
+                    },
+                    {
+                        "mutation_type": "temporal_binding_create",
+                        "change_id": time_change_id,
+                        "action": "create",
+                        "object_type": "temporal_binding",
+                        "affected_fields": ["subject_ref", "role", "temporal_value"],
+                        "basis_refs": [captured["ref"]],
+                        "create_spec": {
+                            "subject_change_id": item_change_id,
+                            "role": "scheduled_on",
+                            "temporal_value": {
+                                "kind": "datetime",
+                                "local_datetime": start_local,
+                                "timezone": "America/Los_Angeles",
+                            },
+                            "source_refs": [source_ref],
+                        },
+                    },
+                    {
+                        "mutation_type": "temporal_calendar_projection_create",
+                        "change_id": projection_change_id,
+                        "action": "create",
+                        "object_type": "temporal_calendar_projection",
+                        "affected_fields": ["temporal_binding_ref", "lane_ref"],
+                        "basis_refs": [captured["ref"]],
+                        "create_spec": {
+                            "temporal_binding_change_id": time_change_id,
+                            "lane_ref": lane.ref_id,
+                            "display_policy": {
+                                "kind": "timed_marker",
+                                "duration_seconds": 3000,
+                                "transparency": "transparent",
+                            },
+                        },
+                    },
+                ]
+            )
+            coverage.append(
+                {
+                    "entry_id": entry_id,
+                    "item_change_id": item_change_id,
+                    "temporal_binding_change_id": time_change_id,
+                    "calendar_representation": "temporal_projection",
+                    "calendar_change_id": projection_change_id,
+                }
+            )
+
+        content = OperatorChangeSetContent.model_validate(
+            {
+                "basis_refs": [captured["ref"]],
+                "import_scope": {
+                    "mode": "operator_explicit",
+                    "source_refs": [source_ref],
+                    "authorized_effects": [
+                        "item",
+                        "temporal_binding",
+                        "temporal_calendar_projection",
+                    ],
+                    "entry_coverage": coverage,
+                    "partition_key": "math-1263-rich-schedule",
+                },
+                "tracked_context_changes": changes,
+            }
+        ).to_internal()
+        result = InteractiveAuthorityService(session).process_turn(
+            utterance_ref=captured["ref"],
+            request_key=request.request_key,
+            actor_id=get_settings().operator_discord_user_id,
+            intent_session_ref=None,
+            expected_session_version=None,
+            statements=statements,
+            relations=[],
+            resolved_intent_json={"kind": "structured_schedule_import"},
+            blocking_clarifications=[],
+            content=content,
+            changeset_ref=None,
+            expected_changeset_version=None,
+        )
+        assert result["disposition"] == "committed", result
+        assert result["effect_count"] == 6
+        assert result["provider_operation_count"] == 2
+        assert session.scalar(select(func.count(Item.id))) == 2
+        assert session.scalar(select(func.count(TemporalBinding.id))) == 2
+        assert session.scalar(select(func.count(TemporalCalendarProjection.id))) == 2
+        bindings = list(session.scalars(select(ItemSourceBinding)))
+        assert len(bindings) == 2
+        assert len({binding.item_ref for binding in bindings}) == 2
+        assert len({binding.semantic_key for binding in bindings}) == 2
+        assert len({binding.locator_hash for binding in bindings}) == 1
+
+    provider = FakeCalendarProvider()
+    runner = OperationRunner(session_factory, provider)
+    assert runner.run_due_once() is True
+    assert runner.run_due_once() is True
+    with session_factory() as session:
+        assert session.scalar(select(func.count(Operation.id))) == 2
+        provider_bindings = list(
+            session.scalars(
+                select(ProviderEventBinding).where(
+                    ProviderEventBinding.target_kind == "temporal_projection"
+                )
+            )
+        )
+        assert {binding.provider_snapshot["summary"] for binding in provider_bindings} == {
+            "MATH 1263 — Lecture 11.1",
+            "MATH 1263 — Lecture 11.2",
+        }
+
+
+@pytest.mark.integration
+def test_attachment_calendar_create_without_entry_coverage_is_rejected(session) -> None:
+    request = _request(
+        message_id="1542999000000000042",
+        content=b"8/24 Lecture 11.1\n8/25 Lecture 11.2",
+    ).model_copy(update={"verbatim_text": "Replace the class series with this schedule."})
+    captured = ProvenanceService(session).capture_operator_utterance(request)
+    source_ref = captured["attachments"][0]["ref"]
+    account = ProviderAccount(
+        provider="google",
+        external_account_id="lossy-schedule-account",
+        capabilities=["google_calendar"],
+        enabled=True,
+    )
+    session.add(account)
+    session.flush()
+    lane = CalendarLane(
+        account_id=account.id,
+        lane="lossy-schedule",
+        display_name="Lossy schedule",
+        color_hex="#039BE5",
+        calendar_id="lossy@example.com",
+        status="active",
+        basis_refs=[captured["ref"]],
+        created_by_changeset_ref=new_public_ref("chg"),
+    )
+    session.add(lane)
+    session.flush()
+    content = OperatorChangeSetContent.model_validate(
+        {
+            "basis_refs": [captured["ref"]],
+            "import_scope": {
+                "mode": "operator_explicit",
+                "source_refs": [source_ref],
+                "authorized_effects": ["canonical_event"],
+            },
+            "event_changes": [
+                {
+                    "mutation_type": "canonical_event_create",
+                    "change_id": "generic-series",
+                    "action": "create",
+                    "object_type": "canonical_event",
+                    "affected_fields": ["title", "event_spec", "lane_ref"],
+                    "basis_refs": [captured["ref"]],
+                    "create_spec": {
+                        "canonical_key": "generic-lossy-series",
+                        "title": "MATH 1263",
+                        "lane_ref": lane.ref_id,
+                        "event_spec": {
+                            "title": "MATH 1263",
+                            "timing": {
+                                "kind": "timed",
+                                "start_local": "2026-08-24T15:00:00",
+                                "end_local": "2026-08-24T15:50:00",
+                                "timezone": "America/Los_Angeles",
+                            },
+                            "recurrence": {
+                                "frequency": "weekly",
+                                "interval": 1,
+                                "weekdays": ["MO", "TU"],
+                                "count": 2,
+                            },
+                        },
+                    },
+                }
+            ],
+        }
+    ).to_internal()
+    result = InteractiveAuthorityService(session).process_turn(
+        utterance_ref=captured["ref"],
+        request_key=request.request_key,
+        actor_id=get_settings().operator_discord_user_id,
+        intent_session_ref=None,
+        expected_session_version=None,
+        statements=[],
+        relations=[],
+        resolved_intent_json={"kind": "structured_schedule_import"},
+        blocking_clarifications=[],
+        content=content,
+        changeset_ref=None,
+        expected_changeset_version=None,
+    )
+    assert result["disposition"] == "rejected_validation"
+    assert "import_entry_coverage_required" in {
+        error["code"] for error in result["changeset"]["validation_errors"]
+    }
+    assert session.scalar(select(func.count(Item.id))) == 0
 
 
 @pytest.mark.integration
@@ -842,9 +1115,7 @@ def test_attachment_import_scope_blocks_source_broadening_without_operator_state
                 content=no_scope,
             )
         )
-        assert {error["code"] for error in changeset.validation_errors} == {
-            "import_scope_required"
-        }
+        assert {error["code"] for error in changeset.validation_errors} == {"import_scope_required"}
 
     with session_factory.begin() as session:
         context_only = ChangeSetContent.model_validate(
@@ -1151,9 +1422,10 @@ def test_deferred_ingress_waits_for_durable_bytes_then_replays_exact_evidence(
     payload = adapter.deferred_ingress[0]
     assert payload["utterance_ref"] == captured["utterance_ref"]
     assert payload["attachment_evidence"][0]["ref"] == replay["attachments"][0]["ref"]
-    assert payload["attachment_evidence"][0]["content_hash"] == hashlib.sha256(
-        plaintext
-    ).hexdigest()
-    assert base64.b64decode(
-        payload["attachment_evidence"][0]["plaintext_base64"], validate=True
-    ) == plaintext
+    assert (
+        payload["attachment_evidence"][0]["content_hash"] == hashlib.sha256(plaintext).hexdigest()
+    )
+    assert (
+        base64.b64decode(payload["attachment_evidence"][0]["plaintext_base64"], validate=True)
+        == plaintext
+    )

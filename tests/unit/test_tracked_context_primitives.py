@@ -20,6 +20,7 @@ from docket.schemas.authority import (
     ImportScope,
     OperatorChangeSetContent,
     OperatorImportScope,
+    StatementInput,
 )
 from docket.schemas.tracked_context import (
     DateTemporalValue,
@@ -204,9 +205,11 @@ def test_model_facing_changeset_uses_typed_tracked_context_variants() -> None:
         }
     )
 
-    assert [
-        change.mutation_type for change in content.tracked_context_changes
-    ] == ["item_create", "task_create", "temporal_binding_create"]
+    assert [change.mutation_type for change in content.tracked_context_changes] == [
+        "item_create",
+        "task_create",
+        "temporal_binding_create",
+    ]
 
 
 def test_model_facing_changeset_rejects_legacy_shapes_and_provider_intents() -> None:
@@ -277,6 +280,7 @@ def test_import_scope_has_exact_safe_default_and_explicit_authority_shape() -> N
         "mode": "operator_explicit",
         "source_refs": [source_ref],
         "authorized_effects": ["item", "task"],
+        "entry_coverage": [],
         "partition_key": "default",
     }
     assert model_scope.to_internal().authority_statement_refs == [
@@ -287,6 +291,97 @@ def test_import_scope_has_exact_safe_default_and_explicit_authority_shape() -> N
             {
                 **model_scope.model_dump(mode="json"),
                 "authority_statement_refs": [_ref("stm")],
+            }
+        )
+
+
+def test_import_entry_coverage_is_typed_and_one_to_one() -> None:
+    source_ref = _ref("src")
+    scope = OperatorImportScope.model_validate(
+        {
+            "mode": "operator_explicit",
+            "source_refs": [source_ref],
+            "authorized_effects": [
+                "item",
+                "temporal_binding",
+                "temporal_calendar_projection",
+            ],
+            "entry_coverage": [
+                {
+                    "entry_id": "lecture-11-1",
+                    "item_change_id": "item-lecture-11-1",
+                    "temporal_binding_change_id": "time-lecture-11-1",
+                    "calendar_representation": "temporal_projection",
+                    "calendar_change_id": "project-lecture-11-1",
+                }
+            ],
+        }
+    )
+    assert scope.entry_coverage[0].entry_id == "lecture-11-1"
+    assert scope.to_internal().entry_coverage == scope.entry_coverage
+
+    with pytest.raises(ValidationError, match="calendar_change_id is present exactly"):
+        OperatorImportScope.model_validate(
+            {
+                **scope.model_dump(mode="json"),
+                "entry_coverage": [
+                    {
+                        "entry_id": "lecture-11-1",
+                        "item_change_id": "item-lecture-11-1",
+                        "temporal_binding_change_id": "time-lecture-11-1",
+                        "calendar_representation": "temporal_projection",
+                    }
+                ],
+            }
+        )
+
+    duplicated = scope.entry_coverage[0].model_dump(mode="json")
+    with pytest.raises(ValidationError, match="calendar_change_id values must be unique"):
+        OperatorImportScope.model_validate(
+            {
+                **scope.model_dump(mode="json"),
+                "entry_coverage": [
+                    duplicated,
+                    {
+                        **duplicated,
+                        "entry_id": "lecture-11-2",
+                        "item_change_id": "item-lecture-11-2",
+                        "temporal_binding_change_id": "time-lecture-11-2",
+                    },
+                ],
+            }
+        )
+
+
+def test_import_entry_id_requires_visible_typed_source_binding() -> None:
+    with pytest.raises(ValidationError, match="import_entry_id requires source_ref"):
+        StatementInput.model_validate(
+            {
+                "statement_kind": "item_candidate",
+                "subject_refs": [_ref("src")],
+                "predicate": "schedule_entry",
+                "value_json": {"title": "Lecture 11.1"},
+                "affected_fields": ["title"],
+                "interpreter_version": "fixture-v1",
+                "import_entry_id": "lecture-11-1",
+            }
+        )
+
+    with pytest.raises(ValidationError, match="must not be hidden"):
+        StatementInput.model_validate(
+            {
+                "statement_kind": "item_candidate",
+                "subject_refs": [_ref("src")],
+                "predicate": "schedule_entry",
+                "value_json": {"title": "Lecture 11.1"},
+                "affected_fields": ["title"],
+                "interpreter_version": "fixture-v1",
+                "source_ref": _ref("src"),
+                "source_fragment_locator": {"page": 1},
+                "source_fragment_hash": "a" * 64,
+                "extractor_identifier": "fixture",
+                "extractor_version": "1",
+                "interpretation_json": {"import_entry_id": "hidden"},
             }
         )
 
@@ -316,8 +411,7 @@ def test_tracked_context_import_partition_is_bounded() -> None:
             {
                 "basis_refs": [utterance_ref],
                 "tracked_context_changes": [
-                    {**base_change, "change_id": f"row-{index}"}
-                    for index in range(251)
+                    {**base_change, "change_id": f"row-{index}"} for index in range(251)
                 ],
             }
         )

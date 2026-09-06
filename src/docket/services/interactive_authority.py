@@ -247,14 +247,17 @@ class InteractiveAuthorityService:
         semantic_request: SemanticRequest,
         gateway_instance_ref: str | None,
     ) -> SemanticRequestAttempt:
-        next_attempt = int(
-            self.session.scalar(
-                select(func.max(SemanticRequestAttempt.attempt_number)).where(
-                    SemanticRequestAttempt.semantic_request_id == semantic_request.id
+        next_attempt = (
+            int(
+                self.session.scalar(
+                    select(func.max(SemanticRequestAttempt.attempt_number)).where(
+                        SemanticRequestAttempt.semantic_request_id == semantic_request.id
+                    )
                 )
+                or 0
             )
-            or 0
-        ) + 1
+            + 1
+        )
         attempt = SemanticRequestAttempt(
             semantic_request_id=semantic_request.id,
             semantic_request_ref=semantic_request.ref_id,
@@ -290,6 +293,11 @@ class InteractiveAuthorityService:
             for statement in statements
             if statement.source_ref in set(scope.source_refs)
         ]
+        source_statements_by_entry: dict[str, list[str]] = {}
+        for statement in statements:
+            entry_id = statement.interpretation_json.get("import_entry_id")
+            if statement.source_ref in set(scope.source_refs) and isinstance(entry_id, str):
+                source_statements_by_entry.setdefault(entry_id, []).append(statement.ref_id)
         authority_statement_refs = list(scope.authority_statement_refs)
         if CURRENT_IMPORT_AUTHORITY_STATEMENT in authority_statement_refs:
             expected_effects = sorted(scope.authorized_effects)
@@ -299,20 +307,29 @@ class InteractiveAuthorityService:
                 if statement.source_ref is None
                 and statement.statement_kind == "operator_intent"
                 and statement.predicate == "import_effect_authority"
-                and statement.value_json
-                == {"authorized_effects": expected_effects}
+                and statement.value_json == {"authorized_effects": expected_effects}
             ]
             if len(candidates) == 1:
                 authority_statement_refs = [
-                    candidates[0]
-                    if ref == CURRENT_IMPORT_AUTHORITY_STATEMENT
-                    else ref
+                    candidates[0] if ref == CURRENT_IMPORT_AUTHORITY_STATEMENT else ref
                     for ref in authority_statement_refs
                 ]
 
         completed_statement_refs = list(
             dict.fromkeys([*source_statement_refs, *authority_statement_refs])
         )
+        entry_basis_by_change_id: dict[str, str] = {}
+        for entry in scope.entry_coverage:
+            entry_statement_refs = source_statements_by_entry.get(entry.entry_id, [])
+            if len(entry_statement_refs) != 1:
+                continue
+            for change_id in (
+                entry.item_change_id,
+                entry.temporal_binding_change_id,
+                entry.calendar_change_id,
+            ):
+                if change_id is not None:
+                    entry_basis_by_change_id[change_id] = entry_statement_refs[0]
         payload = content.model_dump(mode="json")
         payload["basis_refs"] = list(
             dict.fromkeys([*content.basis_refs, *completed_statement_refs])
@@ -327,8 +344,21 @@ class InteractiveAuthorityService:
             "resolution_changes",
         ):
             for change in payload[group_name]:
+                source_basis_refs = (
+                    [entry_basis_by_change_id[change["change_id"]]]
+                    if change["change_id"] in entry_basis_by_change_id
+                    else []
+                    if scope.entry_coverage
+                    else source_statement_refs
+                )
                 change["basis_refs"] = list(
-                    dict.fromkeys([*change["basis_refs"], *completed_statement_refs])
+                    dict.fromkeys(
+                        [
+                            *change["basis_refs"],
+                            *source_basis_refs,
+                            *authority_statement_refs,
+                        ]
+                    )
                 )
         return ChangeSetContent.model_validate(payload)
 
@@ -400,9 +430,7 @@ class InteractiveAuthorityService:
             active_gateway = GatewayLifetimeService(self.session).current_live(
                 "hermes_discord_gateway"
             )
-            gateway_instance_ref = (
-                active_gateway.ref_id if active_gateway is not None else None
-            )
+            gateway_instance_ref = active_gateway.ref_id if active_gateway is not None else None
         semantic_request: SemanticRequest | None = None
         semantic_attempt: SemanticRequestAttempt | None = None
         if semantic_request_ref is not None:
@@ -427,9 +455,7 @@ class InteractiveAuthorityService:
                 )
             binding = semantic_request.selected_option_binding or {}
             if binding.get("kind") == "freeform_turn":
-                bound_session = self.session.get(
-                    IntentSession, semantic_request.intent_session_id
-                )
+                bound_session = self.session.get(IntentSession, semantic_request.intent_session_id)
                 if bound_session is None:
                     raise DocketError(
                         code="intent_session_not_found",
@@ -442,8 +468,7 @@ class InteractiveAuthorityService:
                     raise DocketError(
                         code="semantic_request_scope_mismatch",
                         message=(
-                            "Submitted ChangeSet changes the authorized freeform "
-                            "semantic scope."
+                            "Submitted ChangeSet changes the authorized freeform semantic scope."
                         ),
                     )
                 if precondition_hash != semantic_request.current_precondition_hash:
@@ -474,21 +499,17 @@ class InteractiveAuthorityService:
                             binding.get("selected_option_ref"),
                         ),
                         PersistedSemanticOption.option_id == binding.get("option_id"),
-                        PersistedSemanticOption.authority_scope_hash
-                        == authority_scope_hash,
+                        PersistedSemanticOption.authority_scope_hash == authority_scope_hash,
                         PersistedSemanticOption.precondition_hash == precondition_hash,
                     )
                 )
                 if option is None or complete_selection_provenance(
                     option.compilation_template_json, utterance.ref_id
-                ) != content.model_dump(
-                    mode="json", exclude={"provider_intents"}
-                ):
+                ) != content.model_dump(mode="json", exclude={"provider_intents"}):
                     raise DocketError(
                         code="semantic_request_scope_mismatch",
                         message=(
-                            "Submitted ChangeSet differs from the exact persisted "
-                            "option scope."
+                            "Submitted ChangeSet differs from the exact persisted option scope."
                         ),
                     )
             semantic_attempt = self._start_semantic_attempt(
@@ -496,9 +517,7 @@ class InteractiveAuthorityService:
                 gateway_instance_ref=gateway_instance_ref,
             )
         replay = self.session.scalar(
-            select(ChangeSet).where(
-                ChangeSet.idempotency_key == f"{request_key}:changeset"
-            )
+            select(ChangeSet).where(ChangeSet.idempotency_key == f"{request_key}:changeset")
         )
         if replay is not None and replay.state == "committed":
             replay_request = (
@@ -523,27 +542,15 @@ class InteractiveAuthorityService:
                 "intent_session_ref": replay.intent_session_ref,
                 "semantic_request_ref": replay.semantic_request_ref,
                 "authority_scope_hash": (
-                    replay_request.authority_scope_hash
-                    if replay_request is not None
-                    else None
+                    replay_request.authority_scope_hash if replay_request is not None else None
                 ),
                 "precondition_hash": (
-                    replay_request.current_precondition_hash
-                    if replay_request is not None
-                    else None
+                    replay_request.current_precondition_hash if replay_request is not None else None
                 ),
             }
-        if (
-            replay is not None
-            and changeset_ref is None
-            and semantic_request is None
-        ):
+        if replay is not None and changeset_ref is None and semantic_request is None:
             replay_session = self.session.get(IntentSession, replay.intent_session_id)
-            commit_state = (
-                replay_session.commit_state
-                if replay_session is not None
-                else "unknown"
-            )
+            commit_state = replay_session.commit_state if replay_session is not None else "unknown"
             disposition = (
                 "blocked_version"
                 if commit_state == "blocked_version"
@@ -583,14 +590,10 @@ class InteractiveAuthorityService:
                 "intent_session_ref": replay.intent_session_ref,
                 "semantic_request_ref": replay.semantic_request_ref,
                 "authority_scope_hash": (
-                    replay_request.authority_scope_hash
-                    if replay_request is not None
-                    else None
+                    replay_request.authority_scope_hash if replay_request is not None else None
                 ),
                 "precondition_hash": (
-                    replay_request.current_precondition_hash
-                    if replay_request is not None
-                    else None
+                    replay_request.current_precondition_hash if replay_request is not None else None
                 ),
             }
         intent_service = IntentSessionService(self.session)
@@ -602,9 +605,7 @@ class InteractiveAuthorityService:
                     case_refs=reply_binding.get("case_refs", []),
                     case_revision_refs=reply_binding.get("case_revision_refs", []),
                     brief_ref=reply_binding.get("brief_ref"),
-                    trusted_context_refs=reply_binding.get(
-                        "trusted_context_refs", []
-                    ),
+                    trusted_context_refs=reply_binding.get("trusted_context_refs", []),
                 )
             )
         else:
@@ -621,11 +622,7 @@ class InteractiveAuthorityService:
                         "current_version": intent_session.version,
                     },
                 )
-        if (
-            semantic_request is None
-            and content is not None
-            and not blocking_clarifications
-        ):
+        if semantic_request is None and content is not None and not blocking_clarifications:
             if replay is not None and replay.semantic_request_ref is not None:
                 semantic_request = self.session.scalar(
                     select(SemanticRequest).where(
@@ -713,9 +710,7 @@ class InteractiveAuthorityService:
                 completed_options.append(
                     draft.model_copy(
                         update={
-                            "content": OperatorChangeSetContent.from_internal(
-                                completed_content
-                            )
+                            "content": OperatorChangeSetContent.from_internal(completed_content)
                         }
                     )
                 )
@@ -723,9 +718,7 @@ class InteractiveAuthorityService:
         conflict_refs = list(
             dict.fromkeys(
                 [
-                    *RegistryConflictCompiler(self.session).compile(
-                        list(turn.statement_refs)
-                    ),
+                    *RegistryConflictCompiler(self.session).compile(list(turn.statement_refs)),
                     *IdentityBindingConflictCompiler(self.session).compile(
                         list(turn.statement_refs)
                     ),
@@ -749,8 +742,7 @@ class InteractiveAuthorityService:
                 for conflict_ref in conflict_refs
             ]
             existing_conflicts = {
-                str(item.get("conflict_ref"))
-                for item in intent_session.blocking_clarifications
+                str(item.get("conflict_ref")) for item in intent_session.blocking_clarifications
             }
             intent_session.blocking_clarifications = [
                 *intent_session.blocking_clarifications,
@@ -827,9 +819,9 @@ class InteractiveAuthorityService:
                         {
                             "selection_utterance_ref": utterance.ref_id,
                             "case_revision_ref": semantic_request.current_case_revision_ref,
-                            "kind": (
-                                semantic_request.selected_option_binding or {}
-                            ).get("kind", "selected_option"),
+                            "kind": (semantic_request.selected_option_binding or {}).get(
+                                "kind", "selected_option"
+                            ),
                         }
                         if semantic_request is not None
                         else {}
@@ -848,21 +840,17 @@ class InteractiveAuthorityService:
                     expected_version=expected_changeset_version,
                     content=content,
                     semantic_request_ref=(
-                        semantic_request.ref_id
-                        if semantic_request is not None
-                        else None
+                        semantic_request.ref_id if semantic_request is not None else None
                     ),
                     authority_scope_hash=authority_scope_hash,
                     precondition_hash=precondition_hash,
                     execution_binding=(
                         {
                             "selection_utterance_ref": utterance.ref_id,
-                            "case_revision_ref": (
-                                semantic_request.current_case_revision_ref
+                            "case_revision_ref": (semantic_request.current_case_revision_ref),
+                            "kind": (semantic_request.selected_option_binding or {}).get(
+                                "kind", "selected_option"
                             ),
-                            "kind": (
-                                semantic_request.selected_option_binding or {}
-                            ).get("kind", "selected_option"),
                         }
                         if semantic_request is not None
                         else {}
@@ -879,9 +867,7 @@ class InteractiveAuthorityService:
                     if changeset.validation_errors
                     else "changeset_validation_failed"
                 )
-                semantic_attempt.error_details_json = {
-                    "errors": changeset.validation_errors
-                }
+                semantic_attempt.error_details_json = {"errors": changeset.validation_errors}
                 semantic_attempt.completed_at = utc_now()
             selected_conflict_error = next(
                 (
@@ -893,8 +879,7 @@ class InteractiveAuthorityService:
             )
             if (
                 semantic_request is not None
-                and (semantic_request.selected_option_binding or {}).get("kind")
-                != "freeform_turn"
+                and (semantic_request.selected_option_binding or {}).get("kind") != "freeform_turn"
                 and selected_conflict_error is not None
             ):
                 conflict_ref = str(
@@ -930,9 +915,7 @@ class InteractiveAuthorityService:
                     "warnings": [],
                     "disposition": "rejected_conflict",
                     "semantic_request_ref": (
-                        semantic_request.ref_id
-                        if semantic_request is not None
-                        else None
+                        semantic_request.ref_id if semantic_request is not None else None
                     ),
                     "authority_scope_hash": authority_scope_hash,
                     "precondition_hash": precondition_hash,
@@ -959,17 +942,14 @@ class InteractiveAuthorityService:
                     "error": {
                         "code": exact_case_error["code"],
                         "message": (
-                            "AttentionCase resolution does not match the current "
-                            "visible revision."
+                            "AttentionCase resolution does not match the current visible revision."
                         ),
                         "details": exact_case_error.get("details", {}),
                     },
                     "disposition": "blocked_version",
                     "next": exact_case_error.get("details", {}).get("next"),
                     "semantic_request_ref": (
-                        semantic_request.ref_id
-                        if semantic_request is not None
-                        else None
+                        semantic_request.ref_id if semantic_request is not None else None
                     ),
                     "authority_scope_hash": authority_scope_hash,
                     "precondition_hash": precondition_hash,
@@ -1004,9 +984,7 @@ class InteractiveAuthorityService:
                     "warnings": [],
                     "disposition": disposition,
                     "semantic_request_ref": (
-                        semantic_request.ref_id
-                        if semantic_request is not None
-                        else None
+                        semantic_request.ref_id if semantic_request is not None else None
                     ),
                     "authority_scope_hash": authority_scope_hash,
                     "precondition_hash": precondition_hash,
@@ -1072,9 +1050,7 @@ class InteractiveAuthorityService:
                     select(CaseItem.ref_id).where(
                         CaseItem.attention_case_id == case.id,
                         CaseItem.status == "open",
-                        CaseItem.resolution_role.in_(
-                            ("required", "legacy_unspecified")
-                        ),
+                        CaseItem.resolution_role.in_(("required", "legacy_unspecified")),
                     )
                 )
             )
@@ -1088,8 +1064,7 @@ class InteractiveAuthorityService:
                         "code": "attention_case_required_items_remaining",
                         "case_items_by_case": remaining_required,
                         "question": (
-                            "What should Docket do with the remaining required "
-                            "case items?"
+                            "What should Docket do with the remaining required case items?"
                         ),
                     }
                 ]
@@ -1102,7 +1077,7 @@ class InteractiveAuthorityService:
             "ref": committed.ref_id,
             "state": "committed",
             "summary": "Resolved Operator intent committed atomically.",
-            "affected_refs": receipt.affected_refs,
+            **receipt.affected_projection(),
             **receipt.projection(),
             "basis_refs": committed.basis_refs,
             "next": next_action,
@@ -1169,9 +1144,7 @@ class InteractiveAuthorityService:
                         "current_version": intent_session.version,
                     },
                 )
-        active_gateway = GatewayLifetimeService(self.session).current_live(
-            "hermes_discord_gateway"
-        )
+        active_gateway = GatewayLifetimeService(self.session).current_live("hermes_discord_gateway")
         intent_session, turn = intent_service.append_turn(
             IntentTurnAppend(
                 intent_session_ref=intent_session.ref_id,

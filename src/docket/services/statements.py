@@ -91,9 +91,9 @@ class StatementService:
             if replay is not None:
                 results.append(replay)
                 continue
-            interpretation_json: dict[str, Any] = dict(
-                statement_input.interpretation_json
-            )
+            interpretation_json: dict[str, Any] = dict(statement_input.interpretation_json)
+            if statement_input.import_entry_id is not None:
+                interpretation_json["import_entry_id"] = statement_input.import_entry_id
             interpretation_json["_derivation_hash"] = derivation_hash
             statement = InterpretedStatement(
                 utterance_id=utterance.id,

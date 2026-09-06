@@ -64,6 +64,9 @@ def test_tracked_work_scope_is_exact_reference_closed_and_bounded() -> None:
     }
     mapping = scoped["$defs"]["TrackedContextChangeInput"]["discriminator"]["mapping"]
     assert set(mapping) == {"item_create", "task_create", "temporal_binding_create"}
+    assert "entry_coverage" in scoped["$defs"]["OperatorImportScope"]["properties"]
+    assert "ImportEntryCoverage" in scoped["$defs"]
+    assert "import_entry_id" in scoped["$defs"]["StatementInput"]["properties"]
     assert "EntityCreate" not in scoped["$defs"]
     assert "CanonicalEventCreate" not in scoped["$defs"]
     for definition_value in scoped["$defs"].values():
