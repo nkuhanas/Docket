@@ -22,6 +22,7 @@ from docket.models import (
     ToolInvocation,
 )
 from docket.models.base import utc_now
+from docket.services.changeset_assembly import ChangeSetAssemblyService
 from docket.services.continuity import ContinuityService
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash
 
@@ -176,6 +177,47 @@ def _validation_issues(exc: Exception) -> list[dict[str, Any]]:
             }
         )
     return issues
+
+
+def _terminalize_invalid_assembly_operation(
+    session: Session,
+    *,
+    name: str,
+    arguments: dict[str, Any],
+    argument_hash: str,
+    issues: list[dict[str, Any]],
+) -> None:
+    operation_kind: Literal["stage", "review", "commit"] | None = None
+    if name == "docket_stage_changes":
+        operation_kind = "stage"
+    elif name == "docket_review_changeset":
+        operation_kind = "review"
+    elif name == "docket_commit_changeset":
+        submission = arguments.get("submission")
+        if isinstance(submission, dict) and submission.get("commit_mode") == "assembled":
+            operation_kind = "commit"
+    token = arguments.get("assembly_operation_token")
+    admitted_hash = arguments.get("assembly_argument_hash")
+    utterance_ref = arguments.get("utterance_ref")
+    if (
+        operation_kind is None
+        or not isinstance(token, str)
+        or not isinstance(admitted_hash, str)
+        or admitted_hash != argument_hash
+        or not isinstance(utterance_ref, str)
+    ):
+        return
+    ChangeSetAssemblyService(session).reject_admitted_operation(
+        token=token,
+        argument_hash=argument_hash,
+        operation_kind=operation_kind,
+        utterance_ref=utterance_ref,
+        error=DocketError(
+            code="validation_error",
+            message="Tool arguments do not satisfy the registered Pydantic schema.",
+            details={"issues": issues},
+        ),
+    )
 
 
 def _domain_error_result(
@@ -447,7 +489,15 @@ class ProvenanceFastMCP(FastMCP[Any]):
                 normalization_error = exc
 
         if normalization_error is not None:
+            validation_issues = _validation_issues(normalization_error)
             with session_scope() as session:
+                _terminalize_invalid_assembly_operation(
+                    session,
+                    name=name,
+                    arguments=arguments,
+                    argument_hash=received_hash,
+                    issues=validation_issues,
+                )
                 self._finish_invocation(
                     session,
                     invocation_id,
@@ -466,7 +516,7 @@ class ProvenanceFastMCP(FastMCP[Any]):
                 code="validation_error",
                 message="Tool arguments do not satisfy the registered Pydantic schema.",
                 disposition="rejected_validation",
-                details={"issues": _validation_issues(normalization_error)},
+                details={"issues": validation_issues},
             )
 
         if (

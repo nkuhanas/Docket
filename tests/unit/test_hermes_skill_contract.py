@@ -61,6 +61,10 @@ def test_manual_skill_defines_exact_resolved_intent_and_changeset_groups() -> No
     assert "exact discriminated `mutation_types`" in skill
     assert "`item_create`, `task_create`, and `temporal_binding_create`" in skill
     assert "Never describe an unscoped union" in skill
+    assert "at most 25 normalized-entry upserts" in skill
+    assert "do not fan out into per-event graph or history reads" in skill
+    assert "offset-free wall-clock values" in skill
+    assert "reads retained PDFs, not image attachments" in skill
     assert "unique `import_entry_id`" in skill
     assert "exact source-fragment locator/hash" in skill
     assert "Never compress source entries" in skill

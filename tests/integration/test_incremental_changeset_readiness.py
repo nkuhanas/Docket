@@ -118,7 +118,7 @@ def test_readiness_separates_test_plans_from_predeployment_results() -> None:
         "schema_profile_output_contracts": "passed",
         "scripts_docket_check": {
             "status": "passed",
-            "pytest_count": 359,
+            "pytest_count": 361,
             "ruff": "passed",
             "mypy": "passed",
         },

@@ -149,6 +149,16 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
 
     stage_schema = tools["docket_stage_changes"].inputSchema
     assert stage_schema["properties"]["patch"] == {"$ref": "#/$defs/StagePatchInput"}
+    patch_operations = stage_schema["$defs"]["StagePatchInput"]["properties"][
+        "operations"
+    ]
+    assert "At most 25" in patch_operations["description"]
+    expected_versions = next(
+        branch
+        for branch in stage_schema["properties"]["expected_versions"]["anyOf"]
+        if branch.get("type") == "object"
+    )
+    assert expected_versions["additionalProperties"]["minimum"] == 1
     stage_union = stage_schema["$defs"]["StagePatchInput"]["properties"]["operations"][
         "items"
     ]
@@ -160,6 +170,12 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
     }
     assert "implicit" in (tools["docket_stage_changes"].description or "")
     assert "revision-consistent" in (tools["docket_review_changeset"].description or "")
+    timed = stage_schema["$defs"]["TimedEventTiming"]["properties"]
+    assert "Offset-free local wall-clock" in timed["start_local"]["description"]
+    temporal_interval = stage_schema["$defs"]["DateTimeIntervalTemporalValue"][
+        "properties"
+    ]
+    assert "numeric UTC offset" in temporal_interval["end_local"]["description"]
 
     lane_create = commit_schema["$defs"]["CalendarLaneCreateSpec"]
     assert "account_ref" in lane_create["properties"]

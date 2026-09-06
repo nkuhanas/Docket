@@ -216,7 +216,14 @@ StagePatchOperation = Annotated[
 
 
 class StagePatchInput(StrictModel):
-    operations: list[StagePatchOperation] = Field(min_length=1, max_length=50)
+    operations: list[StagePatchOperation] = Field(
+        min_length=1,
+        max_length=50,
+        description=(
+            "One bounded patch. At most 25 operations may be normalized_entry_upsert; "
+            "split larger imports across multiple stage calls."
+        ),
+    )
 
     @model_validator(mode="after")
     def targets_are_unique(self) -> StagePatchInput:

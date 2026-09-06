@@ -753,6 +753,13 @@ class CalendarReadService:
                                 if temporal_binding is not None
                                 else "occurrence"
                             ),
+                            "version": (
+                                temporal_binding.version
+                                if temporal_binding is not None
+                                else canonical.version
+                                if canonical is not None
+                                else None
+                            ),
                             **(
                                 {"projection_ref": temporal_projection.ref_id}
                                 if temporal_projection is not None

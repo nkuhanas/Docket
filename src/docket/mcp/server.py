@@ -74,6 +74,7 @@ mcp = ProvenanceFastMCP(
 )
 
 RequestKey = Annotated[str, Field(min_length=1, max_length=512)]
+ExpectedVersion = Annotated[int, Field(ge=1)]
 CalendarId = Annotated[str, Field(min_length=1, max_length=1024)]
 CalendarLimit = Annotated[int, Field(ge=1, le=100)]
 CalendarTextFilter = Annotated[str, Field(max_length=200)]
@@ -156,6 +157,7 @@ def _calendar_event_summary(event: dict[str, Any]) -> dict[str, Any]:
             "calendar_id": event.get("calendar_id"),
             "object_type": event.get("object_type"),
             "semantic_role": event.get("semantic_role"),
+            "version": event.get("version"),
             "status": event.get("status"),
             "summary": event.get("summary"),
             "location": event.get("location"),
@@ -567,8 +569,10 @@ def docket_list_provider_calendar_events(
 ) -> dict[str, Any]:
     """Read one globally ordered Calendar range as compact semantic summaries.
 
-    Request details only when provider recurrence or reminder metadata is needed.
-    This tool never mutates a provider.
+    Bound canonical results include their public ref and current version, so no
+    per-event history lookup is needed before an authorized change. Request
+    details only when provider recurrence or reminder metadata is needed. This
+    tool never mutates a provider.
     """
     try:
         offset = _offset_cursor(cursor)
@@ -678,7 +682,7 @@ def docket_stage_changes(
     request_key: RequestKey,
     patch: StagePatchInput,
     assembly_scope: AssemblyAuthorityScopeInput | None = None,
-    expected_versions: dict[PublicRef, int] | None = None,
+    expected_versions: dict[PublicRef, ExpectedVersion] | None = None,
     assembly_operation_token: Annotated[
         str | None,
         Field(

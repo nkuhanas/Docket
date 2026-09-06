@@ -83,7 +83,12 @@ class DateTemporalValue(StrictModel):
 
 class DateTimeTemporalValue(StrictModel):
     kind: Literal["datetime"]
-    local_datetime: datetime
+    local_datetime: datetime = Field(
+        description=(
+            "Offset-free local wall-clock datetime; put the IANA zone in timezone "
+            "instead of appending Z or a numeric UTC offset."
+        )
+    )
     timezone: str
     fold: Literal[0, 1] | None = None
 
@@ -115,8 +120,18 @@ class DateIntervalTemporalValue(StrictModel):
 
 class DateTimeIntervalTemporalValue(StrictModel):
     kind: Literal["datetime_interval"]
-    start_local: datetime
-    end_local: datetime
+    start_local: datetime = Field(
+        description=(
+            "Offset-free local wall-clock start; put the IANA zone in timezone "
+            "instead of appending Z or a numeric UTC offset."
+        )
+    )
+    end_local: datetime = Field(
+        description=(
+            "Offset-free local wall-clock end; put the IANA zone in timezone "
+            "instead of appending Z or a numeric UTC offset."
+        )
+    )
     timezone: str
     fold: Literal[0, 1] | None = None
 

@@ -25,6 +25,7 @@ from docket.models import (
     OperatorUtterance,
     SemanticRequest,
     SemanticRequestAttempt,
+    ToolInvocation,
 )
 from docket.models.base import utc_now
 from docket.schemas.assembly import (
@@ -292,6 +293,58 @@ class ChangeSetAssemblyService:
         self.authority = InteractiveAuthorityService(session)
         self.changesets = self.authority.changesets
 
+    def _reconcile_terminal_predecessors(
+        self,
+        *,
+        execution: AssemblyExecution,
+        before_sequence: int,
+    ) -> None:
+        """Recover admitted predecessors whose authenticated call is terminal."""
+
+        predecessors = list(
+            self.session.scalars(
+                select(AssemblyOperation)
+                .where(
+                    AssemblyOperation.assembly_execution_id == execution.id,
+                    AssemblyOperation.attempt_sequence < before_sequence,
+                    AssemblyOperation.state.in_(("admitted", "running", "unknown")),
+                )
+                .order_by(AssemblyOperation.attempt_sequence)
+                .with_for_update()
+            )
+        )
+        for predecessor in predecessors:
+            invocation = self.session.scalar(
+                select(ToolInvocation).where(
+                    ToolInvocation.trace_ref == predecessor.trace_ref,
+                    ToolInvocation.trace_call_id == predecessor.upstream_tool_call_id,
+                )
+            )
+            if invocation is None or invocation.transport_state == "running":
+                continue
+            if invocation.domain_state == "rejected":
+                disposition = invocation.result_disposition or "rejected_validation"
+                self._terminal(
+                    predecessor,
+                    {
+                        "ok": False,
+                        "disposition": disposition,
+                        "error": {
+                            "code": invocation.error_code or "rejected_validation",
+                            "message": (
+                                "The earlier admitted operation was rejected before "
+                                "draft execution."
+                            ),
+                            "details": {"authority_preserved": True},
+                        },
+                        "reconciled": True,
+                    },
+                    state="rejected",
+                )
+                continue
+            predecessor.state = "unknown"
+            self._replay(predecessor)
+
     def _operation(
         self,
         *,
@@ -329,6 +382,10 @@ class ChangeSetAssemblyService:
                 code="assembly_execution_missing",
                 message="Assembly operation lost its durable execution binding.",
             )
+        self._reconcile_terminal_predecessors(
+            execution=execution,
+            before_sequence=operation.attempt_sequence,
+        )
         earlier_pending = self.session.scalar(
             select(func.count(AssemblyOperation.id)).where(
                 AssemblyOperation.assembly_execution_id == execution.id,

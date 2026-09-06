@@ -54,8 +54,18 @@ def _configured_timezone() -> str:
 
 class TimedEventTiming(StrictModel):
     kind: Literal["timed"]
-    start_local: datetime
-    end_local: datetime
+    start_local: datetime = Field(
+        description=(
+            "Offset-free local wall-clock start; put the IANA zone in timezone "
+            "instead of appending Z or a numeric UTC offset."
+        )
+    )
+    end_local: datetime = Field(
+        description=(
+            "Offset-free local wall-clock end; put the IANA zone in timezone "
+            "instead of appending Z or a numeric UTC offset."
+        )
+    )
     timezone: str = Field(
         default_factory=_configured_timezone,
         min_length=1,

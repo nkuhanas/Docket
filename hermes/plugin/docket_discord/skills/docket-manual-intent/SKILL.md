@@ -111,7 +111,9 @@ When progressive tool disclosure is active:
    `temporal_binding_create`; request only the variants the resolved intent needs.
 2. For larger work, describe `docket_stage_changes` with only the exact
    `mutation_types` or `normalized_entry_types` needed by the next bounded batch.
-   Call it repeatedly as needed. The first valid stage call creates the draft.
+   Call it repeatedly as needed. A patch accepts at most 25 normalized-entry
+   upserts, so split a 26+ entry import before the first call. The first valid
+   stage call creates the draft.
 3. Use `docket_review_changeset` only when a compact summary, diagnostics, or a
    bounded page is needed to correct or confidently finish the draft.
 4. Describe `docket_commit_changeset` with `commit_mode=assembled`, then commit
@@ -134,6 +136,13 @@ bounded receipt, effect/provider counts, and sampled `effects`/
 samples while preserving exact totals and durable refs. Do not reread newly
 committed objects, graph neighborhoods, history, lanes, or provider events merely
 to verify what the receipt already proves.
+
+Calendar summaries for Docket-bound objects include the canonical public ref and
+current version. Use those values directly; do not fan out into per-event graph or
+history reads to rediscover them. For schedule inputs, `start_local`, `end_local`,
+and `local_datetime` are offset-free wall-clock values; supply the IANA timezone in
+the separate `timezone` field. `docket_read_attachment_text` reads retained PDFs,
+not image attachments; use the image already supplied to the vision-capable turn.
 
 For an attachment-backed context import, always supply `import_scope` with the
 exact `src_` revisions. The safe `context_only` mode accepts only Items,

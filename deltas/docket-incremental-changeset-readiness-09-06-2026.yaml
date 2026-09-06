@@ -406,7 +406,7 @@ predeployment_gate:
     schema_profile_output_contracts: passed
     scripts_docket_check:
       status: passed
-      pytest_count: 359
+      pytest_count: 361
       ruff: passed
       mypy: passed
     scripts_docket_compose_smoke:

@@ -87,7 +87,7 @@ _INTERACTIVE_READS: dict[str, tuple[str, str]] = {
     ),
     "docket_list_provider_calendar_events": (
         "ONT-TRACK-TOOL-0005",
-        "Read one bounded provider Calendar page as semantic summaries by default.",
+        "Read one bounded provider Calendar page with bound canonical refs and versions.",
     ),
     "docket_get_calendar_sync_status": (
         "ONT-TRACK-TOOL-0006",
@@ -113,7 +113,7 @@ _INTERACTIVE_MUTATIONS: dict[str, tuple[str, str]] = {
 _INTERACTIVE_ASSEMBLY: dict[str, tuple[str, str]] = {
     "docket_stage_changes": (
         "ONT-CS-TOOL-0001",
-        "Add, replace, or remove bounded actions in the implicit durable draft.",
+        "Add, replace, or remove a bounded, durably ordered implicit-draft patch.",
     ),
     "docket_review_changeset": (
         "ONT-CS-TOOL-0002",
@@ -319,11 +319,17 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
                 (
                     "For larger work, describe docket_stage_changes with only the exact "
                     "mutation_types or normalized_entry_types needed, stage bounded batches, "
+                    "with at most 25 normalized-entry upserts per call, "
                     "optionally review, then describe docket_commit_changeset with "
                     "commit_mode=assembled and commit without retransmitting content. No begin "
                     "call, draft ID, revision, or idempotency key is model-supplied. Use direct "
                     "commit only for a small complete request, with commit_mode=direct and the "
                     "exact mutation_types. Never request or reconstruct a full union."
+                ),
+                (
+                    "Calendar local datetimes are offset-free wall-clock values with a separate "
+                    "IANA timezone. Calendar summaries expose bound canonical refs and versions; "
+                    "do not fan out into per-event history reads to rediscover them."
                 ),
             ]
         )

@@ -220,6 +220,7 @@ def test_calendar_series_read_resolves_clean_binding_and_reminder(
     projected = result["events"][0]
     assert projected["provider_event_id"] == "series-1"
     assert projected["ref"] == event_ref
+    assert projected["version"] == 1
     assert projected["lane_ref"] == lane_ref
     assert projected["target_kind"] == "event"
     assert projected["scope"] == "series"

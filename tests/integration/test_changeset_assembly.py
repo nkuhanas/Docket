@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
@@ -8,9 +9,10 @@ import pytest
 from sqlalchemy import func, select
 
 from docket.config import get_settings
+from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
 from docket.domain.public_refs import new_public_ref
-from docket.mcp.server import docket_stage_changes
+from docket.mcp.server import docket_stage_changes, mcp
 from docket.models import (
     AssemblyOperation,
     AttachmentEvidence,
@@ -24,6 +26,7 @@ from docket.models import (
     ProviderAccount,
     Source,
     Task,
+    ToolInvocation,
 )
 from docket.schemas.assembly import (
     AssemblyAuthorityScopeInput,
@@ -1035,6 +1038,138 @@ def test_mcp_stage_domain_rejection_is_a_durable_operation_outcome(
         assert operation.state == "rejected"
         assert operation.result_json == result
         assert session.scalar(select(func.count(ChangeSet.id))) == 0
+
+
+@pytest.mark.integration
+def test_mcp_schema_rejection_terminalizes_admission_and_next_stage_proceeds(
+    session_factory,
+) -> None:
+    utterance = _utterance("1542799000000000811")
+    trace_ref = new_public_ref("trace")
+    with session_factory.begin() as session:
+        session.add(utterance)
+        session.flush()
+        invalid_arguments = _item_stage(utterance).model_dump(
+            mode="json", exclude_none=True
+        )
+        invalid_arguments["patch"]["operations"][0]["action"]["create_spec"][
+            "title"
+        ] = ""
+        invalid_hash = sha256_json(invalid_arguments)
+        invalid_token = _admit(
+            session,
+            utterance=utterance,
+            trace_ref=trace_ref,
+            call_id="invalid-before-service",
+            ordinal=1,
+            tool_name="docket_stage_changes",
+            argument_hash=invalid_hash,
+        )
+
+    invalid_result = asyncio.run(
+        mcp.call_tool(
+            "docket_stage_changes",
+            {
+                **invalid_arguments,
+                "assembly_operation_token": invalid_token,
+                "assembly_argument_hash": invalid_hash,
+            },
+        )
+    )
+    assert isinstance(invalid_result, tuple)
+    assert invalid_result[1]["error"]["code"] == "validation_error"
+    with session_factory() as session:
+        rejected = session.scalar(
+            select(AssemblyOperation).where(
+                AssemblyOperation.upstream_tool_call_id == "invalid-before-service"
+            )
+        )
+        assert rejected is not None
+        assert rejected.state == "rejected"
+        assert rejected.result_disposition == "rejected_validation"
+
+    valid_arguments = _item_stage(utterance).model_dump(mode="json", exclude_none=True)
+    valid_hash = sha256_json(valid_arguments)
+    with session_factory.begin() as session:
+        valid_token = _admit(
+            session,
+            utterance=utterance,
+            trace_ref=trace_ref,
+            call_id="valid-after-rejection",
+            ordinal=2,
+            tool_name="docket_stage_changes",
+            argument_hash=valid_hash,
+        )
+    valid_result = asyncio.run(
+        mcp.call_tool(
+            "docket_stage_changes",
+            {
+                **valid_arguments,
+                "assembly_operation_token": valid_token,
+                "assembly_argument_hash": valid_hash,
+            },
+        )
+    )
+    assert isinstance(valid_result, tuple)
+    assert valid_result[1]["disposition"] == "staged"
+
+
+@pytest.mark.integration
+def test_terminal_tool_call_reconciles_stale_admitted_predecessor(session) -> None:
+    utterance = _utterance("1542799000000000812")
+    session.add(utterance)
+    session.flush()
+    trace_ref = new_public_ref("trace")
+    _admit(
+        session,
+        utterance=utterance,
+        trace_ref=trace_ref,
+        call_id="stale-predecessor",
+        ordinal=1,
+        tool_name="docket_stage_changes",
+        argument_hash="a" * 64,
+    )
+    session.add(
+        ToolInvocation(
+            tool_name="docket_stage_changes",
+            tool_contract_version="test",
+            tool_contract_hash="0" * 64,
+            caller_profile="interactive",
+            utterance_refs=[utterance.ref_id],
+            received_argument_hash="a" * 64,
+            result_disposition="rejected_validation",
+            transport_state="completed",
+            domain_state="rejected",
+            error_code="validation_error",
+            trace_ref=trace_ref,
+            trace_call_id="stale-predecessor",
+            trace_ordinal=1,
+            completed_at=datetime.now(UTC),
+        )
+    )
+    valid_token = _admit(
+        session,
+        utterance=utterance,
+        trace_ref=trace_ref,
+        call_id="stage-after-reconciliation",
+        ordinal=2,
+        tool_name="docket_stage_changes",
+        argument_hash="b" * 64,
+    )
+    staged = ChangeSetAssemblyService(session).stage(
+        _item_stage(utterance),
+        assembly_operation_token=valid_token,
+        assembly_argument_hash="b" * 64,
+    )
+    assert staged["disposition"] == "staged"
+    predecessor = session.scalar(
+        select(AssemblyOperation).where(
+            AssemblyOperation.upstream_tool_call_id == "stale-predecessor"
+        )
+    )
+    assert predecessor is not None
+    assert predecessor.state == "rejected"
+    assert predecessor.result_json["reconciled"] is True
 
 
 @pytest.mark.integration
