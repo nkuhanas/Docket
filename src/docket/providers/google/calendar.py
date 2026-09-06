@@ -304,6 +304,8 @@ class CalendarLaneProvider(Protocol):
 
 
 class CalendarProvider(CalendarLaneProvider, Protocol):
+    def validate_authorization(self) -> None: ...
+
     def create_event(self, request: CalendarEventRequest) -> CalendarEventResult: ...
 
     def update_event(self, request: CalendarEventRequest) -> CalendarEventResult: ...
@@ -472,6 +474,11 @@ class GoogleCalendarProvider:
                 "google_auth_invalid", "Google did not provide an access token.", transient=False
             )
         return f"Bearer {credentials.token}"
+
+    def validate_authorization(self) -> None:
+        """Prove the configured refresh grant is usable without mutating Calendar."""
+
+        self._authorization_header()
 
     @staticmethod
     def _event_url(calendar_id: str, event_id: str | None = None) -> str:

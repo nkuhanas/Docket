@@ -25,6 +25,9 @@ class DisabledCalendarProvider:
         del request
         return self._unavailable()
 
+    def validate_authorization(self) -> None:
+        self._unavailable()
+
     def update_event(self, request: CalendarEventRequest) -> CalendarEventResult:
         del request
         return self._unavailable()

@@ -23,6 +23,14 @@ def test_hermes_readiness_uses_generated_mcp_tool_count() -> None:
     assert verified < deploy.index("database_continuity release", verified)
 
 
+def test_calendar_auth_recovery_has_an_explicit_execution_boundary() -> None:
+    script = Path("scripts/docket").read_text(encoding="utf-8")
+
+    assert "calendar-recover-auth status CHANGESET_REF" in script
+    assert "calendar-recover-auth requeue-auth-failures CHANGESET_REF --execute" in script
+    assert "docket-calendar-recovery" in script
+
+
 def test_deploy_drains_execution_but_preserves_queued_durable_work() -> None:
     script = Path("scripts/docket").read_text(encoding="utf-8")
     deploy = script.split("\ndeploy() {", 1)[1].split("\n}\n", 1)[0]

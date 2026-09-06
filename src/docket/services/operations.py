@@ -16,6 +16,7 @@ from docket.models import (
     AuditEvent,
     CalendarEventCache,
     CalendarLane,
+    ChangeSet,
     ExecutionAttempt,
     Operation,
     OperationTarget,
@@ -86,6 +87,30 @@ class ClaimedOperation:
             calendar_id=self.parameters.get("calendar_id"),
             create_if_missing=create_if_missing,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class AuthFailureRecoveryStatus:
+    """Bounded lifecycle summary for one ChangeSet's Calendar operations."""
+
+    changeset_ref: str
+    total: int
+    failed_auth: int
+    succeeded: int
+    active: int
+    other_terminal: int
+    requeued: int = 0
+
+    def projection(self) -> dict[str, int | str]:
+        return {
+            "changeset_ref": self.changeset_ref,
+            "total": self.total,
+            "failed_auth": self.failed_auth,
+            "succeeded": self.succeeded,
+            "active": self.active,
+            "other_terminal": self.other_terminal,
+            "requeued": self.requeued,
+        }
 
 
 class OperationRunner:
@@ -236,6 +261,171 @@ class OperationRunner:
             return None
         with self.session_factory.begin() as session:
             return self._claim(session, reconcile=True)
+
+    @staticmethod
+    def _auth_failure_recovery_status(
+        changeset_ref: str,
+        operations: list[Operation],
+        *,
+        requeued: int = 0,
+    ) -> AuthFailureRecoveryStatus:
+        active_states = {
+            OperationStatus.PENDING.value,
+            OperationStatus.RUNNING.value,
+            OperationStatus.RECONCILIATION_REQUIRED.value,
+        }
+        return AuthFailureRecoveryStatus(
+            changeset_ref=changeset_ref,
+            total=len(operations),
+            failed_auth=sum(
+                operation.status == OperationStatus.FAILED.value
+                and operation.last_error_code == "google_auth_invalid"
+                for operation in operations
+            ),
+            succeeded=sum(
+                operation.status == OperationStatus.SUCCEEDED.value
+                for operation in operations
+            ),
+            active=sum(operation.status in active_states for operation in operations),
+            other_terminal=sum(
+                operation.status not in active_states
+                and operation.status != OperationStatus.SUCCEEDED.value
+                and not (
+                    operation.status == OperationStatus.FAILED.value
+                    and operation.last_error_code == "google_auth_invalid"
+                )
+                for operation in operations
+            ),
+            requeued=requeued,
+        )
+
+    @staticmethod
+    def _changeset_operations(
+        session: Session,
+        changeset_ref: str,
+        *,
+        lock: bool,
+    ) -> list[Operation]:
+        changeset = session.scalar(select(ChangeSet).where(ChangeSet.ref_id == changeset_ref))
+        if changeset is None:
+            raise DocketError(
+                code="changeset_not_found",
+                message="The requested ChangeSet was not found.",
+            )
+        if changeset.state != "committed":
+            raise DocketError(
+                code="changeset_not_committed",
+                message="Only a committed ChangeSet can recover provider operations.",
+                details={"changeset_ref": changeset_ref, "state": changeset.state},
+            )
+        query = (
+            select(Operation)
+            .where(Operation.originating_changeset_ref == changeset_ref)
+            .order_by(Operation.created_at, Operation.ref_id)
+        )
+        if lock:
+            query = query.with_for_update()
+        return list(session.scalars(query))
+
+    def auth_failure_recovery_status(
+        self, changeset_ref: str
+    ) -> AuthFailureRecoveryStatus:
+        with self.session_factory() as session:
+            operations = self._changeset_operations(session, changeset_ref, lock=False)
+            return self._auth_failure_recovery_status(changeset_ref, operations)
+
+    def requeue_auth_failures(self, changeset_ref: str) -> AuthFailureRecoveryStatus:
+        """Requeue one exact committed scope after a restored Google refresh grant."""
+
+        self.provider.validate_authorization()
+        with self.session_factory.begin() as session:
+            operations = self._changeset_operations(session, changeset_ref, lock=True)
+            if not operations:
+                raise DocketError(
+                    code="calendar_recovery_no_operations",
+                    message="The ChangeSet has no provider operations to recover.",
+                    details={"changeset_ref": changeset_ref},
+                )
+            unsupported = [
+                operation.ref_id
+                for operation in operations
+                if not operation.operation_type.startswith("calendar_")
+            ]
+            if unsupported:
+                raise DocketError(
+                    code="calendar_recovery_mixed_provider_scope",
+                    message="The ChangeSet includes non-Calendar provider operations.",
+                    details={"changeset_ref": changeset_ref, "count": len(unsupported)},
+                )
+            status = self._auth_failure_recovery_status(changeset_ref, operations)
+            if status.active:
+                raise DocketError(
+                    code="calendar_recovery_in_flight",
+                    message="The ChangeSet still has active provider work.",
+                    details={"changeset_ref": changeset_ref, "active": status.active},
+                )
+            if status.other_terminal:
+                raise DocketError(
+                    code="calendar_recovery_mixed_failure",
+                    message=(
+                        "The ChangeSet has terminal outcomes unrelated to Google authorization."
+                    ),
+                    details={
+                        "changeset_ref": changeset_ref,
+                        "other_terminal": status.other_terminal,
+                    },
+                )
+            now = utc_now()
+            requeued = 0
+            for operation in operations:
+                if not (
+                    operation.status == OperationStatus.FAILED.value
+                    and operation.last_error_code == "google_auth_invalid"
+                ):
+                    continue
+                target = self._target(session, operation)
+                if (
+                    target.status != "failed"
+                    or target.last_error_code != "google_auth_invalid"
+                    or operation.lease_token is not None
+                    or target.lease_token is not None
+                ):
+                    raise DocketError(
+                        code="calendar_recovery_invalid_operation_state",
+                        message="A failed Calendar operation is not safely requeueable.",
+                        details={"operation_ref": operation.ref_id},
+                    )
+                operation.status = OperationStatus.PENDING.value
+                operation.next_attempt_at = now
+                operation.last_error_code = None
+                operation.last_error_message = None
+                target.status = "pending"
+                target.next_attempt_at = now
+                target.last_error_code = None
+                session.add(
+                    AuditEvent(
+                        event_type="operation.requeued_after_auth_restore",
+                        entity_type="operation",
+                        entity_id=operation.id,
+                        actor_type="docket_recovery",
+                        actor_id=None,
+                        primary_ref=operation.ref_id,
+                        affected_refs=[operation.ref_id, target.canonical_target_ref],
+                        basis_refs=list(operation.basis_refs),
+                        data={
+                            "changeset_ref": changeset_ref,
+                            "operation_type": operation.operation_type,
+                            "prior_error_code": "google_auth_invalid",
+                            "preserved_attempt_count": operation.attempt_count,
+                        },
+                    )
+                )
+                requeued += 1
+            return self._auth_failure_recovery_status(
+                changeset_ref,
+                operations,
+                requeued=requeued,
+            )
 
     def mark_provider_call_started(self, claim: ClaimedOperation) -> None:
         with self.session_factory.begin() as session:

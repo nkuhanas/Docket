@@ -18,6 +18,7 @@ class FakeCalendarProvider:
 
     def __init__(self) -> None:
         self.events: dict[str, CalendarEventResult] = {}
+        self.next_authorization_outcome = "success"
         self.next_create_outcome = "success"
         self.next_update_outcome = "success"
         self.next_cancel_outcome = "success"
@@ -27,6 +28,18 @@ class FakeCalendarProvider:
         self.fail_snapshot_page: int | None = None
         self.snapshot_calls = 0
         self.lanes: dict[str, CalendarLaneProviderResult] = {}
+
+    def validate_authorization(self) -> None:
+        outcome, self.next_authorization_outcome = (
+            self.next_authorization_outcome,
+            "success",
+        )
+        if outcome != "success":
+            raise CalendarProviderError(
+                "google_auth_invalid",
+                "Injected invalid Calendar authorization.",
+                transient=False,
+            )
 
     @staticmethod
     def _result(

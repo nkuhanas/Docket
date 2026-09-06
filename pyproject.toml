@@ -37,6 +37,7 @@ dev = [
 [project.scripts]
 docket = "docket.main:run"
 docket-continuity = "docket.continuity_cli:main"
+docket-calendar-recovery = "docket.calendar_recovery_cli:main"
 docket-discord-ingress = "docket.discord_ingress:main"
 docket-provision-ingress-role = "docket.ingress_credentials:main"
 docket-google-auth = "docket.google_oauth_cli:main"

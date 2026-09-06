@@ -251,6 +251,24 @@ operation succeeded to clear a queue or make a deployment pass.
 External write gates in production fail closed. Enabling a gate does not itself
 authorize a new semantic effect.
 
+If a committed ChangeSet's Calendar operations reached terminal
+`google_auth_invalid`, replacing the refresh credential does not silently replay
+them. Inspect and recover that exact scope through:
+
+```bash
+scripts/docket calendar-recover-auth status chg_...
+scripts/docket calendar-recover-auth requeue-auth-failures chg_... --execute
+```
+
+The recovery command first validates the current Google refresh grant. It then
+requeues only that committed ChangeSet's exact failed Calendar operations,
+preserving every `op_`, provider correlation, idempotency key, basis reference,
+and failed ExecutionAttempt. It refuses mixed provider scopes, unrelated
+terminal failures, or concurrent pending/running/reconciliation work. The
+original Operator authority remains the basis; credential recovery creates no
+new semantic effect. Monitor the exact operations to terminal provider outcomes
+and refresh Calendar sync before reporting the external repair complete.
+
 ## Deployment and drain
 
 Deployment is distinct from push and requires explicit Operator direction.

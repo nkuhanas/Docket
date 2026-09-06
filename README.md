@@ -253,6 +253,7 @@ an operator is present for the corresponding live-account verification.
 | `scripts/docket predeploy` | Check clean synchronized `main`, green CI, production configuration, and durable-state gates. |
 | `scripts/docket deploy` | Drain work, back up PostgreSQL, migrate, replace Docket and Hermes, and verify the live stack. |
 | `scripts/docket deploy-ingress` | Replace stable Discord ingress through its quiesced handoff path. |
+| `scripts/docket calendar-recover-auth` | Inspect or requeue one committed ChangeSet's exact Google-auth-failed Calendar operations. |
 
 An image rollback does not reverse a database migration. Follow the
 migration-specific recovery procedure and verified backup instead of retagging

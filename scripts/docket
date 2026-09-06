@@ -720,6 +720,11 @@ gmail() {
     compose exec -T docket ./.venv/bin/python -m docket.gmail_cli "$@"
 }
 
+calendar_recovery() {
+    init_docker
+    compose exec -T docket ./.venv/bin/docket-calendar-recovery "$@"
+}
+
 tracked_context_readiness() (
     init_docker
     local live_container
@@ -1151,6 +1156,10 @@ Commands:
   setup-triage    Install the isolated Hermes Gmail-triage profile and cron.
   setup-hermes-auth [--main|--triage|--all]
                   Reauthorize Hermes's OpenAI Codex model credential.
+  calendar-recover-auth status CHANGESET_REF
+                  Inspect one ChangeSet's Calendar provider-operation states.
+  calendar-recover-auth requeue-auth-failures CHANGESET_REF --execute
+                  Requeue exact Google-auth failures after validating the credential.
   gmail-status    Report Gmail gates, checkpoint freshness, and source counts.
   gmail-scan      Force one bounded metadata scan; never invokes semantic triage.
   gmail-propose-archive SOURCE_ID SOURCE_VERSION REQUEST_KEY
@@ -1178,6 +1187,7 @@ case "${1:-}" in
     production-reset) production_reset "${2:-}" "${3:-}" ;;
     setup-triage) gmail_triage_setup ;;
     setup-hermes-auth) hermes_oauth_setup "${2:---main}" ;;
+    calendar-recover-auth) calendar_recovery "${@:2}" ;;
     gmail-status) gmail status ;;
     gmail-scan) gmail scan ;;
     gmail-propose-archive)
