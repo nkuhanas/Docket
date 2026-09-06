@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from docket.config import get_settings
 from docket.domain.errors import DocketError
 from docket.domain.public_refs import new_public_ref
+from docket.mcp.server import docket_stage_changes
 from docket.models import (
     AssemblyOperation,
     AttachmentEvidence,
@@ -994,3 +995,88 @@ def test_direct_commit_cannot_collide_with_existing_assembled_draft(session) -> 
     changeset = session.scalar(select(ChangeSet))
     assert changeset is not None and changeset.current_revision == 1
     assert session.scalar(select(func.count(Item.id))) == 0
+
+
+@pytest.mark.integration
+def test_mcp_stage_domain_rejection_is_a_durable_operation_outcome(
+    session_factory,
+) -> None:
+    utterance = _utterance("1542799000000000809")
+    with session_factory.begin() as session:
+        session.add(utterance)
+        session.flush()
+        token = _admit(
+            session,
+            utterance=utterance,
+            trace_ref=new_public_ref("trace"),
+            call_id="durable-rejection",
+            ordinal=1,
+            tool_name="docket_stage_changes",
+            argument_hash="a" * 64,
+        )
+    item_operation = _item_stage(utterance).patch.operations[0]
+    result = docket_stage_changes(
+        utterance_ref=utterance.ref_id,
+        request_key=utterance.request_key,
+        patch={"operations": [item_operation]},
+        assembly_scope=AssemblyAuthorityScopeInput(
+            resolved_intent={"intent": "only tasks are authorized"},
+            allowed_mutation_types=["task_create"],
+            planned_create_types=["task"],
+        ),
+        assembly_operation_token=token,
+        assembly_argument_hash="a" * 64,
+    )
+    assert result["disposition"] == "rejected_validation"
+    assert result["error"]["code"] == "assembly_scope_violation"
+    with session_factory() as session:
+        operation = session.scalar(select(AssemblyOperation))
+        assert operation is not None
+        assert operation.state == "rejected"
+        assert operation.result_json == result
+        assert session.scalar(select(func.count(ChangeSet.id))) == 0
+
+
+@pytest.mark.integration
+def test_unknown_stage_operation_reconciles_durable_revision_without_reapplication(
+    session,
+) -> None:
+    utterance = _utterance("1542799000000000810")
+    session.add(utterance)
+    session.flush()
+    trace_ref = new_public_ref("trace")
+    token = _admit(
+        session,
+        utterance=utterance,
+        trace_ref=trace_ref,
+        call_id="unknown-stage",
+        ordinal=1,
+        tool_name="docket_stage_changes",
+        argument_hash="a" * 64,
+    )
+    service = ChangeSetAssemblyService(session)
+    first = service.stage(
+        _item_stage(utterance),
+        assembly_operation_token=token,
+        assembly_argument_hash="a" * 64,
+    )
+    assert first["current_revision"] == 1
+    operation = session.scalar(select(AssemblyOperation))
+    assert operation is not None
+    operation.state = "unknown"
+    operation.result_json = {}
+    operation.result_disposition = None
+    operation.completed_at = None
+    session.flush()
+
+    reconciled = service.stage(
+        _item_stage(utterance),
+        assembly_operation_token=token,
+        assembly_argument_hash="a" * 64,
+    )
+    assert reconciled["disposition"] == "staged"
+    assert reconciled["reconciled"] is True
+    assert reconciled["current_revision"] == 1
+    changeset = session.scalar(select(ChangeSet))
+    assert changeset is not None and changeset.current_revision == 1
+    assert session.scalar(select(func.count(ChangeSetRevision.id))) == 1

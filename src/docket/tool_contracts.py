@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-09-02-v19"
+CONTRACT_VERSION = "docket-tools-2026-09-06-v20"
 
 
 class ToolContractEntry(TypedDict):
@@ -110,6 +110,17 @@ _INTERACTIVE_MUTATIONS: dict[str, tuple[str, str]] = {
     ),
 }
 
+_INTERACTIVE_ASSEMBLY: dict[str, tuple[str, str]] = {
+    "docket_stage_changes": (
+        "ONT-CS-TOOL-0001",
+        "Add, replace, or remove bounded actions in the implicit durable draft.",
+    ),
+    "docket_review_changeset": (
+        "ONT-CS-TOOL-0002",
+        "Read a compact revision-consistent view of the implicit durable draft.",
+    ),
+}
+
 _TRIAGE: dict[str, tuple[str, str]] = {
     "docket_get_triage_context": (
         "ONT-TOOL-0012",
@@ -132,8 +143,10 @@ _TRIAGE: dict[str, tuple[str, str]] = {
 
 def _interactive_entries() -> tuple[ToolContractEntry, ...]:
     entries: list[ToolContractEntry] = []
-    for name, (tool_ref, purpose) in sorted((_INTERACTIVE_READS | _INTERACTIVE_MUTATIONS).items()):
+    tools = _INTERACTIVE_READS | _INTERACTIVE_ASSEMBLY | _INTERACTIVE_MUTATIONS
+    for name, (tool_ref, purpose) in sorted(tools.items()):
         mutation = name in _INTERACTIVE_MUTATIONS
+        assembly = name in _INTERACTIVE_ASSEMBLY
         entries.append(
             {
                 "tool_ref": tool_ref,
@@ -141,27 +154,45 @@ def _interactive_entries() -> tuple[ToolContractEntry, ...]:
                 "purpose": purpose,
                 "use_when": (
                     "Current authenticated Operator intent is resolved and requests this effect."
-                    if mutation
+                    if mutation or assembly
                     else "Answer requires this exact bounded Docket state."
                 ),
                 "do_not_use_when": (
                     "Never probe schemas, split one selected option, or retry as a new request."
-                    if mutation
+                    if mutation or assembly
                     else "Unneeded or a more specific Docket read exists."
                 ),
                 "authority": (
-                    "interactive_operator_utterance" if mutation else "interactive_read_only"
+                    "interactive_operator_utterance"
+                    if mutation or assembly
+                    else "interactive_read_only"
                 ),
-                "preconditions": "P-MUT" if mutation else "P-READ",
+                "preconditions": "P-MUT" if mutation or assembly else "P-READ",
                 "side_effects": (
                     "Commits canonical state and required provider Operations atomically."
                     if mutation
+                    else (
+                        "Mutates only noncanonical durable draft workflow state."
+                        if name == "docket_stage_changes"
+                        else "Observes a draft revision; no canonical or provider effects."
+                    )
+                    if assembly
                     else "None."
                 ),
-                "success_dispositions": "S-CHANGESET" if mutation else "S-READ",
+                "success_dispositions": (
+                    "staged|no_op|draft_revision_conflict|already_committed"
+                    if name == "docket_stage_changes"
+                    else "reviewed"
+                    if name == "docket_review_changeset"
+                    else "S-CHANGESET"
+                    if mutation
+                    else "S-READ"
+                ),
                 "output_interpretation": "O-STD",
-                "required_next_action": "N-CHANGESET" if mutation else "N-READ",
-                "important_errors": "E-MUT" if mutation else "E-READ",
+                "required_next_action": (
+                    "N-CHANGESET" if mutation or assembly else "N-READ"
+                ),
+                "important_errors": "E-MUT" if mutation or assembly else "E-READ",
             }
         )
     return tuple(entries)
@@ -286,10 +317,13 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
                     "authorization again."
                 ),
                 (
-                    "With progressive disclosure, describe docket_commit_changeset using only "
-                    "the exact mutation_types required by this semantic request. The returned "
-                    "reference-closed schema is complete for those variants; never request or "
-                    "reconstruct the full ChangeSet union."
+                    "For larger work, describe docket_stage_changes with only the exact "
+                    "mutation_types or normalized_entry_types needed, stage bounded batches, "
+                    "optionally review, then describe docket_commit_changeset with "
+                    "commit_mode=assembled and commit without retransmitting content. No begin "
+                    "call, draft ID, revision, or idempotency key is model-supplied. Use direct "
+                    "commit only for a small complete request, with commit_mode=direct and the "
+                    "exact mutation_types. Never request or reconstruct a full union."
                 ),
             ]
         )

@@ -88,9 +88,7 @@ _PRODUCTION_RESET_AUTHORIZATION = re.compile(
 _CONTROL_ID = re.compile(r"^dkt:(s):([A-Za-z0-9_-]{40,100})$")
 _MAX_REQUEST_BYTES = max(
     65536,
-    int(os.environ.get("DOCKET_ATTACHMENT_TOTAL_MAX_BYTES", str(16 * 1024 * 1024)))
-    * 4
-    // 3
+    int(os.environ.get("DOCKET_ATTACHMENT_TOTAL_MAX_BYTES", str(16 * 1024 * 1024))) * 4 // 3
     + 1024 * 1024,
 )
 _SERVER: ThreadingHTTPServer | None = None
@@ -162,13 +160,15 @@ def _load_interactive_tool_contract() -> tuple[str, str, str, str, str]:
         f"contract_hash: {actual_hash}\n"
         f"profile: {profile}\n\n"
         f"{prompt_rules.strip()}\n"
-        "The 20-tool contract remains registered exactly. Hermes progressive "
+        "The 22-tool contract remains registered exactly. Hermes progressive "
         "tool disclosure may replace direct schemas with tool_search, tool_describe, "
         "and tool_call; the underlying exact tool name, authenticated hooks, and "
         "Pydantic schema still govern every invocation. Search once for the required "
         "capabilities, describe only tools whose argument schema is needed, and do "
-        "not load unrelated mutation schemas. Describe docket_commit_changeset with "
-        "only the exact mutation_types required by the current semantic request."
+        "not load unrelated mutation schemas. For larger work, describe and call "
+        "docket_stage_changes in bounded batches, then describe "
+        "docket_commit_changeset with commit_mode=assembled. There is no begin call "
+        "and no model-supplied draft ID, revision, or idempotency key."
     )
     return content, compact_prompt, version, actual_hash, profile
 
@@ -200,13 +200,17 @@ _DOCKET_MCP_TOOL_NAMES = frozenset(
         "docket_resolve_conflict",
         "docket_query_people",
         "docket_read_attachment_text",
+        "docket_review_changeset",
         "docket_search_entities",
         "docket_search_history",
+        "docket_stage_changes",
     }
 )
 _TRACE_DISPOSITIONS = frozenset(
     {
         "archived",
+        "already_committed",
+        "assembled_draft_exists",
         "attachment_evidence_unavailable",
         "created",
         "configured",
@@ -215,6 +219,7 @@ _TRACE_DISPOSITIONS = frozenset(
         "blocked_version",
         "committed",
         "deferred_drain",
+        "draft_revision_conflict",
         "execution_deferred",
         "execution_queued",
         "failed",
@@ -226,8 +231,10 @@ _TRACE_DISPOSITIONS = frozenset(
         "rejected_conflict",
         "rejected_validation",
         "replayed_request",
+        "reviewed",
         "restored",
         "stored",
+        "staged",
         "succeeded",
         "unknown",
         "updated",
@@ -250,8 +257,8 @@ _TRACE_CONTEXT_LOCK = threading.Lock()
 _TRACE_DELIVERY_QUEUE: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1000)
 _TRACE_DELIVERY_STARTED = False
 _TRACE_DELIVERY_START_LOCK = threading.Lock()
-_COMMIT_SCHEMA_LOCK = threading.Lock()
-_COMMIT_SCHEMA: dict[str, Any] | None = None
+_TOOL_SCHEMA_LOCK = threading.Lock()
+_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {}
 _PREFERENCE_NAMES = ("AGENT.md", "TRIAGE.md")
 _MAX_PREFERENCE_BYTES = 16384
 _FROZEN_DOCUMENT_REF = "ONT-DELTA-2026-08-27"
@@ -438,9 +445,7 @@ def _capture_operator_utterance(
     ) or _source_value(source, "reply_to_message_id", "referenced_message_id")
     raw_message = getattr(event, "raw_message", None)
     raw_content = getattr(raw_message, "content", None)
-    verbatim_text = (
-        raw_content if isinstance(raw_content, str) else str(getattr(event, "text", ""))
-    )
+    verbatim_text = raw_content if isinstance(raw_content, str) else str(getattr(event, "text", ""))
     payload: dict[str, Any] = {
         "request_id": str(uuid.uuid4()),
         "guild_id": guild,
@@ -501,9 +506,8 @@ def _attachment_manifests(event: object) -> list[dict[str, Any]]:
             "byte_size": byte_size,
             "received_at": timestamp.astimezone(UTC).isoformat(),
         }
-        if (
-            byte_size is not None
-            and (byte_size > max_bytes or retained_total + byte_size > total_max_bytes)
+        if byte_size is not None and (
+            byte_size > max_bytes or retained_total + byte_size > total_max_bytes
         ):
             manifest["ingest_error_code"] = "attachment_too_large"
             manifests.append(manifest)
@@ -800,7 +804,10 @@ def _argument_preview(tool_name: str, arguments: dict[str, Any]) -> str:
     if public_refs:
         preview_data["refs"] = public_refs
     if tool_name == "docket_commit_changeset":
-        content = arguments.get("content")
+        submission = arguments.get("submission")
+        content = submission.get("content") if isinstance(submission, dict) else None
+        if isinstance(submission, dict):
+            preview_data["commit_mode"] = submission.get("commit_mode")
         if isinstance(content, dict):
             preview_data["change_counts"] = {
                 key: len(value)
@@ -875,15 +882,31 @@ def _on_pre_tool_call(
     if public_name is None:
         return None
     validation_error = (
-        _validate_commit_arguments_locally(args)
-        if public_name == "docket_commit_changeset"
+        _validate_authority_arguments_locally(public_name, args)
+        if public_name
+        in {
+            "docket_stage_changes",
+            "docket_review_changeset",
+            "docket_commit_changeset",
+        }
         else None
     )
     directive = (
-        {"action": "block", "message": validation_error}
-        if validation_error is not None
-        else None
+        {"action": "block", "message": validation_error} if validation_error is not None else None
     )
+    model_arguments = {
+        key: value
+        for key, value in (args.items() if isinstance(args, dict) else [])
+        if key not in {"assembly_operation_token", "assembly_argument_hash"}
+    }
+    model_argument_hash = hashlib.sha256(
+        json.dumps(
+            model_arguments,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
     with _TRACE_CONTEXT_LOCK:
         context = _trace_context(task_id, session_id)
         if context is None or context.get("terminal"):
@@ -900,53 +923,94 @@ def _on_pre_tool_call(
                     f"{context['trace_ref']}:{turn_id}:{context['next_ordinal']}",
                 )
             )
-        if stable_call_id in context["calls"]:
-            return directive
-        ordinal = int(context["next_ordinal"])
-        if ordinal > 100:
-            logger.error("Docket MCP trace exceeded its 100-call safety bound")
-            return directive
-        context["next_ordinal"] = ordinal + 1
-        context["started"] = True
-        context["calls"][stable_call_id] = {
-            "call_id": stable_call_id,
-            "ordinal": ordinal,
-            "tool_name": public_name,
-            "transport_state": "running",
-            "elapsed_ms": 0,
-            "disposition": None,
-            "transport_error_code": None,
-            "argument_preview": _argument_preview(
-                public_name, args if isinstance(args, dict) else {}
-            ),
-            "received_argument_hash": hashlib.sha256(
-                json.dumps(
-                    args if isinstance(args, dict) else {},
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                ).encode("utf-8")
-            ).hexdigest(),
-        }
+        existing_call = context["calls"].get(stable_call_id)
+        if existing_call is None:
+            ordinal = int(context["next_ordinal"])
+            if ordinal > 100:
+                logger.error("Docket MCP trace exceeded its 100-call safety bound")
+                return directive
+            context["next_ordinal"] = ordinal + 1
+            context["started"] = True
+            context["calls"][stable_call_id] = {
+                "call_id": stable_call_id,
+                "ordinal": ordinal,
+                "tool_name": public_name,
+                "transport_state": "running",
+                "elapsed_ms": 0,
+                "disposition": None,
+                "transport_error_code": None,
+                "argument_preview": _argument_preview(
+                    public_name, args if isinstance(args, dict) else {}
+                ),
+                "received_argument_hash": model_argument_hash,
+            }
+        else:
+            ordinal = int(existing_call["ordinal"])
         payload_context = dict(context)
         call = dict(context["calls"][stable_call_id])
+    needs_assembly_admission = public_name in {
+        "docket_stage_changes",
+        "docket_review_changeset",
+    } or (
+        public_name == "docket_commit_changeset"
+        and isinstance(args, dict)
+        and isinstance(args.get("submission"), dict)
+        and args["submission"].get("commit_mode") == "assembled"
+    )
+    if directive is None and needs_assembly_admission:
+        if not isinstance(args, dict):
+            directive = {
+                "action": "block",
+                "message": "Assembly tool arguments must be an object.",
+            }
+        else:
+            try:
+                admission = _docket_internal_request(
+                    "/internal/v1/discord/assembly-operations/admit",
+                    {
+                        "request_id": str(uuid.uuid4()),
+                        "guild_id": payload_context["guild_id"],
+                        "channel_id": payload_context["source_channel_id"],
+                        "source_message_id": payload_context["source_message_id"],
+                        "actor_id": payload_context["actor_id"],
+                        "utterance_ref": payload_context["utterance_ref"],
+                        "trace_ref": payload_context["trace_ref"],
+                        "upstream_tool_call_id": stable_call_id,
+                        "trace_ordinal": ordinal,
+                        "tool_name": public_name,
+                        "canonical_model_argument_hash": model_argument_hash,
+                    },
+                )
+                args["assembly_operation_token"] = admission["assembly_operation_token"]
+                args["assembly_argument_hash"] = admission["canonical_model_argument_hash"]
+            except (KeyError, OSError, PluginAPIError, RuntimeError) as exc:
+                code = getattr(exc, "code", "assembly_admission_failed")
+                directive = {
+                    "action": "block",
+                    "message": (
+                        "Docket could not durably admit this assembly operation "
+                        f"({code}); no draft change was sent."
+                    ),
+                }
     _enqueue_trace_update(payload_context, call=call)
     return directive
 
 
-def _registered_commit_schema() -> dict[str, Any] | None:
-    """Read the exact normalized commit schema from Hermes' live registry."""
-    global _COMMIT_SCHEMA
-    with _COMMIT_SCHEMA_LOCK:
-        if _COMMIT_SCHEMA is not None:
-            return _COMMIT_SCHEMA
+def _registered_tool_schema(public_name: str) -> dict[str, Any] | None:
+    """Read one exact normalized Docket schema from Hermes' live registry."""
+    with _TOOL_SCHEMA_LOCK:
+        if public_name in _TOOL_SCHEMAS:
+            return _TOOL_SCHEMAS[public_name]
         try:
             from model_tools import get_tool_definitions
 
-            definitions = get_tool_definitions(
-                quiet_mode=True,
-                skip_tool_search_assembly=True,
-            ) or []
+            definitions = (
+                get_tool_definitions(
+                    quiet_mode=True,
+                    skip_tool_search_assembly=True,
+                )
+                or []
+            )
         except Exception:
             logger.exception("Docket local schema preflight could not read Hermes registry")
             return None
@@ -955,13 +1019,13 @@ def _registered_commit_schema() -> dict[str, Any] | None:
             if not isinstance(function, dict):
                 continue
             name = str(function.get("name") or "")
-            if _docket_public_tool_name(name) != "docket_commit_changeset":
+            if _docket_public_tool_name(name) != public_name:
                 continue
             parameters = function.get("parameters")
             if isinstance(parameters, dict):
-                _COMMIT_SCHEMA = parameters
-                return _COMMIT_SCHEMA
-        logger.error("Docket local schema preflight found no registered commit schema")
+                _TOOL_SCHEMAS[public_name] = parameters
+                return parameters
+        logger.error("Docket local schema preflight found no registered %s schema", public_name)
         return None
 
 
@@ -980,11 +1044,7 @@ def _safe_validation_message(error: Any) -> str:
     validator = str(getattr(error, "validator", "validation"))
     expected = getattr(error, "validator_value", None)
     if validator == "required":
-        allowed = (
-            [str(value)[:64] for value in expected]
-            if isinstance(expected, list)
-            else []
-        )
+        allowed = [str(value)[:64] for value in expected] if isinstance(expected, list) else []
         return "object is missing one or more required fields" + (
             f"; allowed required fields: {', '.join(allowed[:16])}" if allowed else ""
         )
@@ -1004,14 +1064,14 @@ def _safe_validation_message(error: Any) -> str:
     return f"value does not satisfy the schema's {validator} constraint"
 
 
-def _validate_commit_arguments_locally(args: Any) -> str | None:
-    """Block malformed ChangeSets before they reach Docket or its MCP breaker."""
+def _validate_authority_arguments_locally(tool_name: str, args: Any) -> str | None:
+    """Block malformed assembly/commit calls before Docket's MCP boundary."""
     if not isinstance(args, dict):
         return (
-            "local_schema_validation: docket_commit_changeset arguments must be an "
+            f"local_schema_validation: {tool_name} arguments must be an "
             "object; no Docket request was sent"
         )
-    schema = _registered_commit_schema()
+    schema = _registered_tool_schema(tool_name)
     if schema is None:
         # Docket remains fail-closed at its authenticated Pydantic boundary.  A
         # registry lookup problem must not make all valid mutations unavailable.
@@ -1042,9 +1102,9 @@ def _validate_commit_arguments_locally(args: Any) -> str | None:
         {
             "code": "local_schema_validation",
             "message": (
-                "Arguments do not match the exact registered ChangeSet schema; "
-                "no Docket request was sent. Describe docket_commit_changeset with "
-                "only the required mutation_types, then construct one valid call."
+                f"Arguments do not match the exact registered {tool_name} schema; "
+                "no Docket request was sent. Describe the tool with only the "
+                "required variants, then construct one valid call."
             ),
             "issues": issues,
         },
@@ -1932,9 +1992,7 @@ def _pre_gateway_dispatch(
         attachment_states = {
             str(attachment.get("ingest_state", ""))
             for attachment in (
-                ingress_binding.get("attachments", [])
-                if isinstance(ingress_binding, dict)
-                else []
+                ingress_binding.get("attachments", []) if isinstance(ingress_binding, dict) else []
             )
             if isinstance(attachment, dict)
         }
@@ -2132,6 +2190,7 @@ def _pre_gateway_dispatch(
         ),
         reset_authorization_result,
     )
+
 
 def _read_outbound_token() -> str:
     path = Path(os.environ["DOCKET_TO_HERMES_TOKEN_FILE"])
@@ -2456,11 +2515,7 @@ def _calendar_reminder_fields(render: dict[str, Any]) -> list[tuple[str, str, bo
     ]
 
 
-
-
-def _render_embed(
-    projection_id: uuid.UUID, payload: dict[str, Any]
-) -> tuple[object, None]:
+def _render_embed(projection_id: uuid.UUID, payload: dict[str, Any]) -> tuple[object, None]:
     import discord
 
     model = payload.get("embed")
@@ -2530,6 +2585,8 @@ def _render_embed(
     footer = f"{context_prefix}ref {projection_ref} · v{int(payload['projection_version'])}"
     embed.set_footer(text=footer)
     return embed, None
+
+
 def _message_marker(message: object) -> str:
     embeds = getattr(message, "embeds", [])
     if len(embeds) != 1 or embeds[0].footer is None:
@@ -2906,13 +2963,8 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
             )
         }
     except (KeyError, TypeError, ValueError) as exc:
-        raise PluginAPIError(
-            "invalid_mcp_trace", "Trace timing values are invalid", 422
-        ) from exc
-    if any(
-        value is not None and (value < 0 or value > 86_400_000)
-        for value in timing.values()
-    ):
+        raise PluginAPIError("invalid_mcp_trace", "Trace timing values are invalid", 422) from exc
+    if any(value is not None and (value < 0 or value > 86_400_000) for value in timing.values()):
         raise PluginAPIError("invalid_mcp_trace", "Trace timing exceeds its bound", 422)
     render = {
         "title": _safe_text(raw_render.get("title"), 256, "title"),
@@ -2952,9 +3004,7 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
     )
     embed.add_field(name="Status", value=status, inline=False)
     before_first_tool = timing["before_first_tool_ms"]
-    before_first_tool_text = (
-        str(before_first_tool) if before_first_tool is not None else "n/a"
-    )
+    before_first_tool_text = str(before_first_tool) if before_first_tool is not None else "n/a"
     timing_text = (
         f"Total: {timing['total_elapsed_ms']} ms · "
         f"Before first tool: {before_first_tool_text} ms\n"
@@ -3379,8 +3429,6 @@ async def _quiesce_semantic_prompt(
     }
 
 
-
-
 def _post_semantic_option_selection(payload: dict[str, Any]) -> dict[str, Any]:
     return _docket_internal_request(
         "/internal/v1/discord/semantic-option-selections",
@@ -3464,9 +3512,7 @@ async def _on_docket_interaction(interaction: object) -> None:
                         "response_ref": response_ref,
                         "guild_id": str(interaction.guild_id),
                         "source_channel_id": channel_id,
-                        "parent_channel_id": (
-                            str(parent_id) if parent_id is not None else None
-                        ),
+                        "parent_channel_id": (str(parent_id) if parent_id is not None else None),
                         "source_message_id": str(interaction.id),
                         "actor_id": str(interaction.user.id),
                     },
@@ -3479,9 +3525,7 @@ async def _on_docket_interaction(interaction: object) -> None:
                     "response_ref": response_ref,
                     "guild_id": str(interaction.guild_id),
                     "source_channel_id": channel_id,
-                    "parent_channel_id": (
-                        str(parent_id) if parent_id is not None else None
-                    ),
+                    "parent_channel_id": (str(parent_id) if parent_id is not None else None),
                     "source_message_id": str(interaction.id),
                     "actor_id": str(interaction.user.id),
                 },

@@ -1,4 +1,3 @@
-
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import ValidationError
@@ -13,6 +12,7 @@ from docket.internal_api.schemas import (
     AgentResponseCapture,
     AgentResponseDeliveryUpdate,
     AgentTurnNoResponse,
+    AssemblyOperationAdmission,
     ExecutionLeaseComplete,
     GatewayLifetimeHeartbeat,
     GatewayLifetimeRegister,
@@ -32,6 +32,7 @@ from docket.models import (
 )
 from docket.models.base import utc_now
 from docket.schemas.authority import ChangeSetContent
+from docket.services.changeset_assembly import ChangeSetAssemblyAdmissionService
 from docket.services.continuity import ContinuityService
 from docket.services.gateway_lifetimes import GatewayLifetimeService
 from docket.services.interactive_authority import InteractiveAuthorityService
@@ -47,6 +48,29 @@ router = APIRouter(
     tags=["trusted-internal"],
     dependencies=[Depends(require_hermes_service)],
 )
+
+
+@router.post("/assembly-operations/admit")
+def assembly_operation_admit(payload: AssemblyOperationAdmission) -> dict[str, object]:
+    try:
+        with session_scope() as session:
+            return ChangeSetAssemblyAdmissionService(session).admit(
+                utterance_ref=payload.utterance_ref,
+                trace_ref=payload.trace_ref,
+                upstream_tool_call_id=payload.upstream_tool_call_id,
+                trace_ordinal=payload.trace_ordinal,
+                tool_name=payload.tool_name,
+                argument_hash=payload.canonical_model_argument_hash,
+                guild_id=payload.guild_id,
+                channel_id=payload.channel_id,
+                source_message_id=payload.source_message_id,
+                actor_id=payload.actor_id,
+            )
+    except DocketError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=exc.as_dict()["error"],
+        ) from exc
 
 
 @router.post("/gateway-lifetimes")
@@ -246,9 +270,7 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
             status_code=error_status,
             detail=exc.as_dict()["error"],
         ) from exc
-    retry_turn_id = (
-        f"semantic-option:{payload.discord_interaction_id}:retry:{payload.request_id}"
-    )
+    retry_turn_id = f"semantic-option:{payload.discord_interaction_id}:retry:{payload.request_id}"
     trace_ref = new_public_ref("trace")
     if payload.resume_authorized_execution and not selection.get("execution_ready"):
         response_key = (
@@ -367,9 +389,7 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
                 intent_session_ref=str(selection["intent_session_ref"]),
                 semantic_request_ref=str(selection["semantic_request_ref"]),
                 case_ref=(
-                    str(selection["case_ref"])
-                    if selection.get("case_ref") is not None
-                    else None
+                    str(selection["case_ref"]) if selection.get("case_ref") is not None else None
                 ),
                 gateway_instance_ref=payload.gateway_instance_ref,
                 arguments=invocation_arguments,
@@ -418,9 +438,7 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
                         ingress.claimed_by_gateway_ref = None
                         ingress.claim_token = None
                         ingress.claimed_at = None
-                        ingress.last_error_code = str(
-                            execution.get("disposition", "unknown")
-                        )[:128]
+                        ingress.last_error_code = str(execution.get("disposition", "unknown"))[:128]
                 completion_token = selection.get("execution_completion_token")
                 if isinstance(completion_token, str):
                     ContinuityService(session).complete_execution_lease(
@@ -459,9 +477,7 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
                         ingress.last_error_code = str(error["code"])
                     semantic_request = session.scalar(
                         select(SemanticRequest)
-                        .where(
-                            SemanticRequest.ref_id == selection["semantic_request_ref"]
-                        )
+                        .where(SemanticRequest.ref_id == selection["semantic_request_ref"])
                         .with_for_update()
                     )
                     if (
@@ -471,36 +487,32 @@ def semantic_option_selection(payload: SemanticOptionSelection) -> dict[str, obj
                         semantic_request.commit_state = "blocked_validation"
                         intent_session = session.scalar(
                             select(IntentSession).where(
-                                IntentSession.ref_id
-                                == semantic_request.intent_session_ref
+                                IntentSession.ref_id == semantic_request.intent_session_ref
                             )
                         )
                         if intent_session is not None:
                             intent_session.semantic_state = "ready"
                             intent_session.commit_state = "blocked_validation"
-                        attempt_number = int(
-                            session.scalar(
-                                select(
-                                    func.max(SemanticRequestAttempt.attempt_number)
-                                ).where(
-                                    SemanticRequestAttempt.semantic_request_id
-                                    == semantic_request.id
+                        attempt_number = (
+                            int(
+                                session.scalar(
+                                    select(func.max(SemanticRequestAttempt.attempt_number)).where(
+                                        SemanticRequestAttempt.semantic_request_id
+                                        == semantic_request.id
+                                    )
                                 )
+                                or 0
                             )
-                            or 0
-                        ) + 1
+                            + 1
+                        )
                         session.add(
                             SemanticRequestAttempt(
                                 semantic_request_id=semantic_request.id,
                                 semantic_request_ref=semantic_request.ref_id,
                                 attempt_number=attempt_number,
                                 authority_scope_hash=semantic_request.authority_scope_hash,
-                                precondition_hash=(
-                                    semantic_request.current_precondition_hash
-                                ),
-                                case_revision_ref=(
-                                    semantic_request.current_case_revision_ref
-                                ),
+                                precondition_hash=(semantic_request.current_precondition_hash),
+                                case_revision_ref=(semantic_request.current_case_revision_ref),
                                 tool_call_ref=invocation_ref,
                                 gateway_instance_ref=payload.gateway_instance_ref,
                                 state="blocked_validation",

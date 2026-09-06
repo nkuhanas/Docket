@@ -28,6 +28,8 @@ DOCKET_MCP_TOOL_NAMES = contract_tool_names("interactive")
 TRACE_DISPOSITIONS = frozenset(
     {
         "archived",
+        "already_committed",
+        "assembled_draft_exists",
         "attachment_evidence_unavailable",
         "blocked_version",
         "committed",
@@ -35,6 +37,7 @@ TRACE_DISPOSITIONS = frozenset(
         "configured",
         "deferred_drain",
         "disabled",
+        "draft_revision_conflict",
         "duplicate_suppressed",
         "execution_deferred",
         "failed",
@@ -47,7 +50,9 @@ TRACE_DISPOSITIONS = frozenset(
         "rejected_conflict",
         "rejected_validation",
         "replayed_request",
+        "reviewed",
         "restored",
+        "staged",
         "stored",
         "succeeded",
         "unknown",

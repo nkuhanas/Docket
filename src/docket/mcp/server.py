@@ -15,17 +15,22 @@ from docket.mcp.instrumented import ProvenanceFastMCP
 from docket.models import ReminderPlan
 from docket.providers.google.gmail_runtime import get_gmail_read_provider
 from docket.providers.google.runtime import get_calendar_read_provider
+from docket.schemas.assembly import (
+    AssembledChangeSetSubmission,
+    AssemblyAuthorityScopeInput,
+    ChangeSetSubmission,
+    ReviewChangesInput,
+    StageChangesInput,
+    StagePatchInput,
+)
 from docket.schemas.authority import (
     CanonicalChangeInput,
     ConflictRef,
     ConflictResolve,
-    OperatorChangeSetContent,
-    SemanticOptionDraft,
     SessionRef,
     SourceRef,
     StatementInput,
     StatementRef,
-    StatementRelationInput,
     UtteranceRef,
 )
 from docket.schemas.calendar import (
@@ -42,6 +47,7 @@ from docket.services.attachment_evidence import (
 )
 from docket.services.calendar_lanes import CalendarLaneService
 from docket.services.calendar_sync import CalendarReadService, CalendarSyncService
+from docket.services.changeset_assembly import ChangeSetAssemblyService
 from docket.services.conflicts import ConflictService
 from docket.services.history import HistoryService
 from docket.services.intelligence import IntelligenceService
@@ -529,9 +535,7 @@ def docket_list_calendar_lanes(
                             "basis_refs": lane.basis_refs,
                             "decision_refs": lane.decision_refs,
                             "source_refs": lane.source_refs,
-                            "created_by_changeset_ref": (
-                                lane.created_by_changeset_ref
-                            ),
+                            "created_by_changeset_ref": (lane.created_by_changeset_ref),
                         }
                     )
                 items.append(item)
@@ -669,53 +673,204 @@ def docket_list_reminder_plans(
 
 
 @mcp.tool()
-def docket_commit_changeset(
+def docket_stage_changes(
     utterance_ref: UtteranceRef,
-    statements: list[StatementInput],
-    relations: list[StatementRelationInput],
-    resolved_intent: dict[str, Any],
-    blocking_clarifications: list[dict[str, Any]],
-    content: OperatorChangeSetContent | None,
     request_key: RequestKey,
-    intent_session_ref: SessionRef | None = None,
-    expected_session_version: int | None = None,
-    changeset_ref: str | None = None,
-    expected_changeset_version: int | None = None,
-    semantic_options: list[SemanticOptionDraft] | None = None,
-    semantic_request_ref: str | None = None,
-    authority_scope_hash: str | None = None,
-    precondition_hash: str | None = None,
+    patch: StagePatchInput,
+    assembly_scope: AssemblyAuthorityScopeInput | None = None,
+    expected_versions: dict[PublicRef, int] | None = None,
+    assembly_operation_token: Annotated[
+        str | None,
+        Field(
+            default=None,
+            pattern=r"^[0-9a-f]{64}$",
+            json_schema_extra={"x-docket-internal": True},
+        ),
+    ] = None,
+    assembly_argument_hash: Annotated[
+        str | None,
+        Field(
+            default=None,
+            pattern=r"^[0-9a-f]{64}$",
+            json_schema_extra={"x-docket-internal": True},
+        ),
+    ] = None,
 ) -> dict[str, Any]:
-    """Compile and atomically commit one authenticated Operator turn.
+    """Stage bounded actions into the current request's implicit durable draft.
 
-    Reference persistent objects with ``*_ref``. Reference objects created in
-    this same ChangeSet with ``*_change_id``; every dependency is validated
-    before any canonical mutation begins. Under progressive disclosure, request
-    this schema with only the exact discriminated ``mutation_types`` required by
-    the current semantic request. Structured attachment schedules use one
-    ``StatementInput.import_entry_id`` and ``import_scope.entry_coverage`` row
-    per distinct source entry; changing entry content must not be collapsed into
-    a generic recurrence.
+    The first valid patch creates the draft automatically. Staging changes only
+    noncanonical workflow state. The gateway supplies the hidden operation
+    binding; never invent or request it.
     """
     try:
+        if assembly_operation_token is None or assembly_argument_hash is None:
+            raise DocketError(
+                code="assembly_admission_required",
+                message="Stage operations require the authenticated infrastructure binding.",
+            )
+        with session_scope() as session:
+            service = ChangeSetAssemblyService(session)
+            try:
+                with session.begin_nested():
+                    return service.stage(
+                        StageChangesInput(
+                            utterance_ref=utterance_ref,
+                            request_key=request_key,
+                            patch=patch,
+                            assembly_scope=assembly_scope,
+                            expected_versions=expected_versions or {},
+                        ),
+                        assembly_operation_token=assembly_operation_token,
+                        assembly_argument_hash=assembly_argument_hash,
+                    )
+            except DocketError as exc:
+                return service.reject_admitted_operation(
+                    token=assembly_operation_token,
+                    argument_hash=assembly_argument_hash,
+                    operation_kind="stage",
+                    utterance_ref=utterance_ref,
+                    error=exc,
+                ) or _error(exc)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_review_changeset(
+    utterance_ref: UtteranceRef,
+    request_key: RequestKey,
+    view: Literal["summary", "actions", "entries", "diagnostics", "diff"] = "summary",
+    mutation_types: list[str] | None = None,
+    normalized_entry_types: list[str] | None = None,
+    cursor: str | None = None,
+    limit: Annotated[int, Field(ge=1, le=100)] = 25,
+    assembly_operation_token: Annotated[
+        str | None,
+        Field(
+            default=None,
+            pattern=r"^[0-9a-f]{64}$",
+            json_schema_extra={"x-docket-internal": True},
+        ),
+    ] = None,
+    assembly_argument_hash: Annotated[
+        str | None,
+        Field(
+            default=None,
+            pattern=r"^[0-9a-f]{64}$",
+            json_schema_extra={"x-docket-internal": True},
+        ),
+    ] = None,
+) -> dict[str, Any]:
+    """Review one compact revision-consistent view of the implicit draft."""
+    try:
+        if assembly_operation_token is None or assembly_argument_hash is None:
+            raise DocketError(
+                code="assembly_admission_required",
+                message="Review operations require the authenticated infrastructure binding.",
+            )
+        with session_scope() as session:
+            service = ChangeSetAssemblyService(session)
+            try:
+                with session.begin_nested():
+                    return service.review(
+                        ReviewChangesInput(
+                            utterance_ref=utterance_ref,
+                            request_key=request_key,
+                            view=view,
+                            mutation_types=mutation_types or [],
+                            normalized_entry_types=normalized_entry_types or [],
+                            cursor=cursor,
+                            limit=limit,
+                        ),
+                        assembly_operation_token=assembly_operation_token,
+                        assembly_argument_hash=assembly_argument_hash,
+                    )
+            except DocketError as exc:
+                return service.reject_admitted_operation(
+                    token=assembly_operation_token,
+                    argument_hash=assembly_argument_hash,
+                    operation_kind="review",
+                    utterance_ref=utterance_ref,
+                    error=exc,
+                ) or _error(exc)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_commit_changeset(
+    utterance_ref: UtteranceRef,
+    request_key: RequestKey,
+    submission: ChangeSetSubmission,
+    assembly_operation_token: Annotated[
+        str | None,
+        Field(
+            default=None,
+            pattern=r"^[0-9a-f]{64}$",
+            json_schema_extra={"x-docket-internal": True},
+        ),
+    ] = None,
+    assembly_argument_hash: Annotated[
+        str | None,
+        Field(
+            default=None,
+            pattern=r"^[0-9a-f]{64}$",
+            json_schema_extra={"x-docket-internal": True},
+        ),
+    ] = None,
+) -> dict[str, Any]:
+    """Commit either one complete direct payload or the current assembled draft.
+
+    The assembled form retransmits no staged content. The direct form remains
+    available for a small complete request. Canonical effects and required
+    provider Operation intents commit atomically; provider application remains
+    asynchronous. Direct dependent creates use *_change_id; existing objects use
+    *_ref.
+    """
+    try:
+        if isinstance(submission, AssembledChangeSetSubmission):
+            if assembly_operation_token is None or assembly_argument_hash is None:
+                raise DocketError(
+                    code="assembly_admission_required",
+                    message="Assembled commit requires the infrastructure binding.",
+                )
+            with session_scope() as session:
+                service = ChangeSetAssemblyService(session)
+                try:
+                    with session.begin_nested():
+                        return service.commit(
+                            utterance_ref=utterance_ref,
+                            request_key=request_key,
+                            assembly_operation_token=assembly_operation_token,
+                            assembly_argument_hash=assembly_argument_hash,
+                        )
+                except DocketError as exc:
+                    return service.reject_admitted_operation(
+                        token=assembly_operation_token,
+                        argument_hash=assembly_argument_hash,
+                        operation_kind="commit",
+                        utterance_ref=utterance_ref,
+                        error=exc,
+                    ) or _error(exc)
+        direct = submission
         with session_scope() as session:
             return InteractiveAuthorityService(session).process_turn(
                 utterance_ref=utterance_ref,
                 request_key=request_key,
                 actor_id=str(get_settings().operator_discord_user_id),
-                intent_session_ref=intent_session_ref,
-                expected_session_version=expected_session_version,
-                statements=statements,
-                relations=relations,
-                resolved_intent_json=resolved_intent,
-                blocking_clarifications=blocking_clarifications,
-                semantic_options=semantic_options,
-                content=content.to_internal() if content is not None else None,
-                changeset_ref=changeset_ref,
-                expected_changeset_version=expected_changeset_version,
-                semantic_request_ref=semantic_request_ref,
-                authority_scope_hash=authority_scope_hash,
-                precondition_hash=precondition_hash,
+                intent_session_ref=direct.intent_session_ref,
+                expected_session_version=direct.expected_session_version,
+                statements=direct.statements,
+                relations=direct.relations,
+                resolved_intent_json=direct.resolved_intent,
+                blocking_clarifications=direct.blocking_clarifications,
+                semantic_options=direct.semantic_options,
+                content=(direct.content.to_internal() if direct.content is not None else None),
+                changeset_ref=direct.changeset_ref,
+                expected_changeset_version=direct.expected_changeset_version,
+                semantic_request_ref=direct.semantic_request_ref,
+                authority_scope_hash=direct.authority_scope_hash,
+                precondition_hash=direct.precondition_hash,
             )
     except Exception as exc:
         return _error(exc)

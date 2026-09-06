@@ -35,6 +35,19 @@ def _commit_definition(
     }
 
 
+def _stage_definition(name: str = "docket_stage_changes") -> dict[str, object]:
+    tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
+    tool = tools["docket_stage_changes"]
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": tool.description or "",
+            "parameters": tool.inputSchema,
+        },
+    }
+
+
 def test_tracked_work_scope_is_exact_reference_closed_and_bounded() -> None:
     module = _module()
     definition = _commit_definition()
@@ -43,6 +56,7 @@ def test_tracked_work_scope_is_exact_reference_closed_and_bounded() -> None:
     described = module.scoped_tool_description(
         definition,
         ["item_create", "task_create", "temporal_binding_create"],
+        commit_mode="direct",
     )
 
     scoped = described["parameters"]
@@ -50,6 +64,7 @@ def test_tracked_work_scope_is_exact_reference_closed_and_bounded() -> None:
     assert len(json.dumps(full_schema, separators=(",", ":")).encode()) > 100_000
     assert len(encoded) < 20_000
     assert described["schema_scope"]["complete_for_selected_mutations"] is True
+    assert described["schema_scope"]["commit_mode"] == "direct"
     assert described["schema_scope"]["mutation_types"] == [
         "item_create",
         "task_create",
@@ -69,6 +84,7 @@ def test_tracked_work_scope_is_exact_reference_closed_and_bounded() -> None:
     assert "import_entry_id" in scoped["$defs"]["StatementInput"]["properties"]
     assert "EntityCreate" not in scoped["$defs"]
     assert "CanonicalEventCreate" not in scoped["$defs"]
+    assert "assembly_operation_token" not in scoped["properties"]
     for definition_value in scoped["$defs"].values():
         for reference in module._definition_refs(definition_value):
             assert reference in scoped["$defs"]
@@ -78,7 +94,40 @@ def test_commit_description_requires_an_explicit_known_scope() -> None:
     module = _module()
     definition = _commit_definition()
     with pytest.raises(module.SchemaScopeError, match="unknown mutation types"):
-        module.scoped_tool_description(definition, ["made_up_create"])
+        module.scoped_tool_description(
+            definition, ["made_up_create"], commit_mode="direct"
+        )
+
+
+def test_assembled_commit_schema_is_minimal_and_hides_gateway_binding() -> None:
+    module = _module()
+    described = module.scoped_tool_description(
+        _commit_definition(), commit_mode="assembled"
+    )
+    scoped = described["parameters"]
+    assert len(json.dumps(described, separators=(",", ":")).encode()) < 3_000
+    assert set(scoped["properties"]) == {"utterance_ref", "request_key", "submission"}
+    assert set(scoped["$defs"]) == {"AssembledChangeSetSubmission"}
+
+
+def test_normalized_entry_stage_schema_is_exact_and_bounded() -> None:
+    module = _module()
+    described = module.scoped_tool_description(
+        _stage_definition(),
+        normalized_entry_types=["scheduled_occurrence_entry"],
+    )
+    scoped = described["parameters"]
+    assert len(json.dumps(described, separators=(",", ":")).encode()) < 16_000
+    assert "assembly_argument_hash" not in scoped["properties"]
+    mapping = scoped["$defs"]["StagePatchInput"]["properties"]["operations"][
+        "items"
+    ]["discriminator"]["mapping"]
+    assert set(mapping) == {"normalized_entry_upsert", "normalized_entry_remove"}
+    entry_mapping = scoped["$defs"]["StageNormalizedEntryUpsert"]["properties"][
+        "entry"
+    ]["discriminator"]["mapping"]
+    assert set(entry_mapping) == {"scheduled_occurrence_entry"}
+    assert "CanonicalChangeInput" not in scoped["$defs"]
 
 
 def test_pinned_hermes_bridge_requires_and_applies_mutation_scope(monkeypatch) -> None:
@@ -115,6 +164,8 @@ def test_pinned_hermes_bridge_requires_and_applies_mutation_scope(monkeypatch) -
     assert module.install_hermes_progressive_schema_patch() is True
     bridge = tool_search.bridge_tool_schemas(20)[0]["function"]
     assert "mutation_types" in bridge["parameters"]["properties"]
+    assert "commit_mode" in bridge["parameters"]["properties"]
+    assert "normalized_entry_types" in bridge["parameters"]["properties"]
 
     missing_scope = json.loads(
         tool_search.dispatch_tool_describe(
@@ -122,13 +173,14 @@ def test_pinned_hermes_bridge_requires_and_applies_mutation_scope(monkeypatch) -
             current_tool_defs=[_commit_definition()],
         )
     )
-    assert "mutation_types is required" in missing_scope["error"]
+    assert "commit_mode is required" in missing_scope["error"]
     assert "item_create" in missing_scope["available_mutation_types"]
 
     described = json.loads(
         tool_search.dispatch_tool_describe(
             {
                 "name": "docket_commit_changeset",
+                "commit_mode": "direct",
                 "mutation_types": [
                     "item_create",
                     "task_create",
@@ -160,6 +212,7 @@ def test_pinned_hermes_bridge_scopes_namespaced_commit_tool(monkeypatch) -> None
         tool_search.dispatch_tool_describe(
             {
                 "name": namespaced,
+                "commit_mode": "direct",
                 "mutation_types": [
                     "item_create",
                     "task_create",

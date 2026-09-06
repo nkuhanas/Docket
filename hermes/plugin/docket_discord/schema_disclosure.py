@@ -17,9 +17,14 @@ from collections.abc import Iterable
 from typing import Any
 
 COMMIT_TOOL_NAME = "docket_commit_changeset"
+STAGE_TOOL_NAME = "docket_stage_changes"
 NAMESPACED_COMMIT_TOOL_NAME = f"mcp__docket__{COMMIT_TOOL_NAME}"
+NAMESPACED_STAGE_TOOL_NAME = f"mcp__docket__{STAGE_TOOL_NAME}"
 MUTATION_TYPES_ARGUMENT = "mutation_types"
+COMMIT_MODE_ARGUMENT = "commit_mode"
+NORMALIZED_ENTRY_TYPES_ARGUMENT = "normalized_entry_types"
 MAX_MUTATION_TYPES = 16
+MAX_NORMALIZED_ENTRY_TYPES = 3
 MAX_SCOPED_DESCRIPTION_BYTES = 48 * 1024
 
 _DEFINITION_REF = re.compile(r"^#/\$defs/([^/]+)$")
@@ -44,6 +49,10 @@ def _is_commit_tool_name(name: str) -> bool:
     return name in {COMMIT_TOOL_NAME, NAMESPACED_COMMIT_TOOL_NAME}
 
 
+def _is_stage_tool_name(name: str) -> bool:
+    return name in {STAGE_TOOL_NAME, NAMESPACED_STAGE_TOOL_NAME}
+
+
 def _canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -62,11 +71,62 @@ def _definition_refs(value: Any) -> Iterable[str]:
             yield from _definition_refs(nested)
 
 
+def _strip_internal_properties(value: Any) -> None:
+    """Remove gateway-supplied fields from every model-facing schema object."""
+    if isinstance(value, dict):
+        properties = value.get("properties")
+        if isinstance(properties, dict):
+            hidden = [
+                name
+                for name, schema in properties.items()
+                if isinstance(schema, dict) and schema.get("x-docket-internal") is True
+            ]
+            for name in hidden:
+                properties.pop(name, None)
+            required = value.get("required")
+            if isinstance(required, list):
+                value["required"] = [name for name in required if name not in hidden]
+        for nested in value.values():
+            _strip_internal_properties(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            _strip_internal_properties(nested)
+
+
+def _reference_closed(schema: dict[str, Any]) -> dict[str, Any]:
+    definitions = schema.get("$defs")
+    if not isinstance(definitions, dict):
+        return schema
+    roots = {key: value for key, value in schema.items() if key != "$defs"}
+    needed = set(_definition_refs(roots))
+    pending = list(needed)
+    while pending:
+        definition_name = pending.pop()
+        definition = definitions.get(definition_name)
+        if not isinstance(definition, dict):
+            raise SchemaScopeError(f"schema references missing definition {definition_name}")
+        for dependency in _definition_refs(definition):
+            if dependency not in needed:
+                needed.add(dependency)
+                pending.append(dependency)
+    schema["$defs"] = {
+        name: definition for name, definition in definitions.items() if name in needed
+    }
+    return schema
+
+
 def mutation_type_catalog(parameters: dict[str, Any]) -> tuple[str, ...]:
     """Return every exact discriminated mutation type in a commit schema."""
     definitions = parameters.get("$defs")
     if not isinstance(definitions, dict):
         raise SchemaScopeError("commit schema has no $defs object")
+    canonical = definitions.get("CanonicalChangeInput")
+    if isinstance(canonical, dict):
+        discriminator = canonical.get("discriminator")
+        mapping = discriminator.get("mapping") if isinstance(discriminator, dict) else None
+        if not isinstance(mapping, dict) or not mapping:
+            raise SchemaScopeError("CanonicalChangeInput has no discriminator mapping")
+        return tuple(sorted(str(name) for name in mapping))
     names = set(_DIRECT_MUTATIONS)
     for union_name in _CHANGE_UNIONS.values():
         union = definitions.get(union_name)
@@ -90,29 +150,43 @@ def _narrow_union(union: dict[str, Any], selected: dict[str, str]) -> dict[str, 
 
 
 def scoped_commit_schema(
-    parameters: dict[str, Any], mutation_types: Iterable[str]
+    parameters: dict[str, Any],
+    mutation_types: Iterable[str] = (),
+    *,
+    commit_mode: str = "direct",
 ) -> dict[str, Any]:
-    """Build a reference-closed schema for exactly ``mutation_types``.
-
-    Unselected ChangeSet groups are removed from the model-facing view.  They
-    retain their normal server-side defaults, so arguments constructed from the
-    view still validate against the complete Pydantic schema.
-    """
+    """Build a model-facing schema for one exact commit form."""
     requested = tuple(dict.fromkeys(str(name).strip() for name in mutation_types if name))
-    if not requested:
-        raise SchemaScopeError("mutation_types is required for docket_commit_changeset")
+    if commit_mode not in {"direct", "assembled"}:
+        raise SchemaScopeError("commit_mode must be direct or assembled")
+    if commit_mode == "direct" and not requested:
+        raise SchemaScopeError("mutation_types is required for direct commit")
+    if commit_mode == "assembled" and requested:
+        raise SchemaScopeError("assembled commit does not accept mutation_types")
     if len(requested) > MAX_MUTATION_TYPES:
         raise SchemaScopeError(
             f"mutation_types accepts at most {MAX_MUTATION_TYPES} exact variants"
         )
 
+    scoped = copy.deepcopy(parameters)
+    _strip_internal_properties(scoped)
+    definitions = scoped["$defs"]
+    submission = scoped.get("properties", {}).get("submission")
+    if not isinstance(submission, dict):
+        raise SchemaScopeError("commit schema is missing submission")
+    submission_name = (
+        "AssembledChangeSetSubmission"
+        if commit_mode == "assembled"
+        else "DirectChangeSetSubmission"
+    )
+    scoped["properties"]["submission"] = {"$ref": f"#/$defs/{submission_name}"}
+    if commit_mode == "assembled":
+        return _reference_closed(scoped)
+
     available = set(mutation_type_catalog(parameters))
     unknown = sorted(set(requested) - available)
     if unknown:
         raise SchemaScopeError(f"unknown mutation types: {', '.join(unknown)}")
-
-    scoped = copy.deepcopy(parameters)
-    definitions = scoped["$defs"]
     content = definitions.get("OperatorChangeSetContent")
     if not isinstance(content, dict) or not isinstance(content.get("properties"), dict):
         raise SchemaScopeError("commit schema is missing OperatorChangeSetContent")
@@ -131,28 +205,106 @@ def scoped_commit_schema(
         if mutation_type not in requested:
             content_properties.pop(field_name, None)
 
-    roots = {key: value for key, value in scoped.items() if key != "$defs"}
-    needed = set(_definition_refs(roots))
-    pending = list(needed)
-    while pending:
-        definition_name = pending.pop()
-        definition = definitions.get(definition_name)
-        if not isinstance(definition, dict):
-            raise SchemaScopeError(f"schema references missing definition {definition_name}")
-        for dependency in _definition_refs(definition):
-            if dependency not in needed:
-                needed.add(dependency)
-                pending.append(dependency)
-    scoped["$defs"] = {
-        name: definition for name, definition in definitions.items() if name in needed
-    }
-    return scoped
+    return _reference_closed(scoped)
+
+
+def normalized_entry_type_catalog(parameters: dict[str, Any]) -> tuple[str, ...]:
+    definitions = parameters.get("$defs", {})
+    upsert = definitions.get("StageNormalizedEntryUpsert")
+    entry = upsert.get("properties", {}).get("entry") if isinstance(upsert, dict) else None
+    discriminator = entry.get("discriminator") if isinstance(entry, dict) else None
+    mapping = discriminator.get("mapping") if isinstance(discriminator, dict) else None
+    if not isinstance(mapping, dict) or not mapping:
+        raise SchemaScopeError("stage schema has no normalized-entry discriminator")
+    return tuple(sorted(str(name) for name in mapping))
+
+
+def scoped_stage_schema(
+    parameters: dict[str, Any],
+    *,
+    mutation_types: Iterable[str] = (),
+    normalized_entry_types: Iterable[str] = (),
+) -> dict[str, Any]:
+    """Build a bounded staging schema for only the requested patch forms."""
+    requested_mutations = tuple(
+        dict.fromkeys(str(name).strip() for name in mutation_types if name)
+    )
+    requested_entries = tuple(
+        dict.fromkeys(str(name).strip() for name in normalized_entry_types if name)
+    )
+    if not requested_mutations and not requested_entries:
+        raise SchemaScopeError(
+            "mutation_types or normalized_entry_types is required for docket_stage_changes"
+        )
+    if len(requested_mutations) > MAX_MUTATION_TYPES:
+        raise SchemaScopeError(
+            f"mutation_types accepts at most {MAX_MUTATION_TYPES} exact variants"
+        )
+    if len(requested_entries) > MAX_NORMALIZED_ENTRY_TYPES:
+        raise SchemaScopeError(
+            "normalized_entry_types accepts at most "
+            f"{MAX_NORMALIZED_ENTRY_TYPES} exact variants"
+        )
+
+    available_mutations = set(mutation_type_catalog(parameters))
+    unknown_mutations = sorted(set(requested_mutations) - available_mutations)
+    if unknown_mutations:
+        raise SchemaScopeError(f"unknown mutation types: {', '.join(unknown_mutations)}")
+    available_entries = set(normalized_entry_type_catalog(parameters))
+    unknown_entries = sorted(set(requested_entries) - available_entries)
+    if unknown_entries:
+        raise SchemaScopeError(f"unknown normalized entry types: {', '.join(unknown_entries)}")
+
+    scoped = copy.deepcopy(parameters)
+    _strip_internal_properties(scoped)
+    definitions = scoped["$defs"]
+    patch_items = definitions["StagePatchInput"]["properties"]["operations"]["items"]
+    patch_mapping = patch_items["discriminator"]["mapping"]
+    selected_patch: dict[str, str] = {}
+    if requested_mutations:
+        selected_patch["action_upsert"] = patch_mapping["action_upsert"]
+        selected_patch["action_remove"] = patch_mapping["action_remove"]
+        canonical_union = definitions["CanonicalChangeInput"]
+        canonical_mapping = canonical_union["discriminator"]["mapping"]
+        selected_canonical = {
+            name: reference
+            for name, reference in canonical_mapping.items()
+            if name in requested_mutations
+        }
+        definitions["CanonicalChangeInput"] = _narrow_union(
+            canonical_union, selected_canonical
+        )
+    if requested_entries:
+        selected_patch["normalized_entry_upsert"] = patch_mapping[
+            "normalized_entry_upsert"
+        ]
+        selected_patch["normalized_entry_remove"] = patch_mapping[
+            "normalized_entry_remove"
+        ]
+        entry_schema = definitions["StageNormalizedEntryUpsert"]["properties"]["entry"]
+        entry_mapping = entry_schema["discriminator"]["mapping"]
+        selected_entries = {
+            name: reference
+            for name, reference in entry_mapping.items()
+            if name in requested_entries
+        }
+        definitions["StageNormalizedEntryUpsert"]["properties"]["entry"] = _narrow_union(
+            entry_schema, selected_entries
+        )
+    definitions["StagePatchInput"]["properties"]["operations"]["items"] = _narrow_union(
+        patch_items, selected_patch
+    )
+    return _reference_closed(scoped)
 
 
 def scoped_tool_description(
-    tool_definition: dict[str, Any], mutation_types: Iterable[str]
+    tool_definition: dict[str, Any],
+    mutation_types: Iterable[str] = (),
+    *,
+    commit_mode: str = "direct",
+    normalized_entry_types: Iterable[str] = (),
 ) -> dict[str, Any]:
-    """Return a bounded, hash-bound description for one ChangeSet scope."""
+    """Return a bounded, hash-bound description for one assembly tool scope."""
     function = tool_definition.get("function")
     if not isinstance(function, dict):
         raise SchemaScopeError("tool definition has no function object")
@@ -160,17 +312,32 @@ def scoped_tool_description(
     if not isinstance(parameters, dict):
         raise SchemaScopeError("tool definition has no parameter schema")
     requested = tuple(dict.fromkeys(str(name).strip() for name in mutation_types if name))
-    scoped = scoped_commit_schema(parameters, requested)
+    requested_entries = tuple(
+        dict.fromkeys(str(name).strip() for name in normalized_entry_types if name)
+    )
+    tool_name = str(function.get("name") or "")
+    if _is_commit_tool_name(tool_name):
+        scoped = scoped_commit_schema(parameters, requested, commit_mode=commit_mode)
+    elif _is_stage_tool_name(tool_name):
+        scoped = scoped_stage_schema(
+            parameters,
+            mutation_types=requested,
+            normalized_entry_types=requested_entries,
+        )
+    else:
+        raise SchemaScopeError("tool does not support scoped Docket disclosure")
     full_hash = hashlib.sha256(_canonical_json(parameters).encode()).hexdigest()
     scoped_hash = hashlib.sha256(_canonical_json(scoped).encode()).hexdigest()
     payload = {
         # Hermes describes deferred tools by their registry name, which is
         # namespaced for MCP tools. Preserve that exact callable name in the
         # response while keeping mutation semantics independent of the bridge.
-        "name": str(function.get("name") or COMMIT_TOOL_NAME),
+        "name": tool_name,
         "description": function.get("description", ""),
         "schema_scope": {
             "mutation_types": list(requested),
+            "normalized_entry_types": list(requested_entries),
+            **({"commit_mode": commit_mode} if _is_commit_tool_name(tool_name) else {}),
             "complete_for_selected_mutations": True,
             "full_schema_sha256": full_hash,
             "scoped_schema_sha256": scoped_hash,
@@ -217,14 +384,18 @@ def install_hermes_progressive_schema_patch() -> bool:
         args: dict[str, Any], *, current_tool_defs: list[dict[str, Any]]
     ) -> str:
         name = str(args.get("name") or "").strip()
-        if not _is_commit_tool_name(name):
+        if not (_is_commit_tool_name(name) or _is_stage_tool_name(name)):
             return original_dispatch(args, current_tool_defs=current_tool_defs)
+        definition = _find_tool_definition(current_tool_defs, name)
+        if definition is None:
+            return original_dispatch(args, current_tool_defs=current_tool_defs)
+        parameters = definition.get("function", {}).get("parameters", {})
         mutation_types = args.get(MUTATION_TYPES_ARGUMENT)
-        if not isinstance(mutation_types, list) or not mutation_types:
-            definition = _find_tool_definition(current_tool_defs, name)
-            if definition is None:
-                return original_dispatch(args, current_tool_defs=current_tool_defs)
-            parameters = definition.get("function", {}).get("parameters", {})
+        requested_mutations = mutation_types if isinstance(mutation_types, list) else []
+        entry_types = args.get(NORMALIZED_ENTRY_TYPES_ARGUMENT)
+        requested_entries = entry_types if isinstance(entry_types, list) else []
+        commit_mode = str(args.get(COMMIT_MODE_ARGUMENT) or "").strip()
+        if _is_commit_tool_name(name) and commit_mode not in {"direct", "assembled"}:
             try:
                 available = mutation_type_catalog(parameters)
             except SchemaScopeError as exc:
@@ -232,19 +403,39 @@ def install_hermes_progressive_schema_patch() -> bool:
             return json.dumps(
                 {
                     "error": (
-                        "mutation_types is required when describing "
-                        "docket_commit_changeset; request only the exact variants "
-                        "needed by this semantic request"
+                        "commit_mode is required when describing docket_commit_changeset; "
+                        "use assembled to commit the current draft without retransmitting "
+                        "content, or direct with exact mutation_types for a small request"
                     ),
+                    "available_commit_modes": ["assembled", "direct"],
                     "available_mutation_types": list(available),
                 },
                 ensure_ascii=False,
             )
-        definition = _find_tool_definition(current_tool_defs, name)
-        if definition is None:
-            return original_dispatch(args, current_tool_defs=current_tool_defs)
+        if _is_stage_tool_name(name) and not requested_mutations and not requested_entries:
+            try:
+                available_mutations = mutation_type_catalog(parameters)
+                available_entries = normalized_entry_type_catalog(parameters)
+            except SchemaScopeError as exc:
+                return json.dumps({"error": str(exc)}, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "error": (
+                        "mutation_types or normalized_entry_types is required when describing "
+                        "docket_stage_changes; request only the forms needed by this patch"
+                    ),
+                    "available_mutation_types": list(available_mutations),
+                    "available_normalized_entry_types": list(available_entries),
+                },
+                ensure_ascii=False,
+            )
         try:
-            payload = scoped_tool_description(definition, mutation_types)
+            payload = scoped_tool_description(
+                definition,
+                requested_mutations,
+                commit_mode=commit_mode or "direct",
+                normalized_entry_types=requested_entries,
+            )
         except SchemaScopeError as exc:
             return json.dumps({"error": str(exc)}, ensure_ascii=False)
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -266,15 +457,31 @@ def install_hermes_progressive_schema_patch() -> bool:
                 "items": {"type": "string"},
                 "maxItems": MAX_MUTATION_TYPES,
                 "description": (
-                    "Required only for docket_commit_changeset. Exact discriminated "
-                    "mutation_type values needed by this semantic request; returns a "
-                    "complete reference-closed schema containing only those variants."
+                    "For a direct docket_commit_changeset or docket_stage_changes action "
+                    "patch, the exact discriminated mutation_type values needed."
+                ),
+            }
+            properties[COMMIT_MODE_ARGUMENT] = {
+                "type": "string",
+                "enum": ["direct", "assembled"],
+                "description": (
+                    "Required only for docket_commit_changeset. Assembled commits the "
+                    "current draft without retransmitting staged content."
+                ),
+            }
+            properties[NORMALIZED_ENTRY_TYPES_ARGUMENT] = {
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": MAX_NORMALIZED_ENTRY_TYPES,
+                "description": (
+                    "For docket_stage_changes, exact normalized entry forms needed by "
+                    "this patch."
                 ),
             }
             function["description"] = (
                 str(function.get("description") or "")
-                + " For docket_commit_changeset, mutation_types is required and bounds "
-                "the returned exact schema."
+                + " For Docket staging and commit tools, provide the exact mode and "
+                "schema scope requested by the tool contract."
             )
         return schemas
 

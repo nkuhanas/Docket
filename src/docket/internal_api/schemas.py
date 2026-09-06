@@ -66,6 +66,24 @@ class McpTraceUpdate(InternalModel):
         return self
 
 
+class AssemblyOperationAdmission(InternalModel):
+    request_id: UUID
+    guild_id: str = Field(pattern=r"^[0-9]{17,20}$")
+    channel_id: str = Field(pattern=r"^[0-9]{17,20}$")
+    source_message_id: str = Field(pattern=r"^[0-9]{17,20}$")
+    actor_id: str = Field(pattern=r"^[0-9]{17,20}$")
+    utterance_ref: str = Field(pattern=r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")
+    trace_ref: str = Field(pattern=r"^trace_[0-9A-HJKMNP-TV-Z]{26}$")
+    upstream_tool_call_id: str = Field(min_length=1, max_length=255)
+    trace_ordinal: int = Field(ge=1, le=100)
+    tool_name: Literal[
+        "docket_stage_changes",
+        "docket_review_changeset",
+        "docket_commit_changeset",
+    ]
+    canonical_model_argument_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 DiscordSnowflake = str
 
 
@@ -76,11 +94,14 @@ class AttachmentManifest(InternalModel):
     byte_size: int | None = Field(default=None, ge=0)
     received_at: datetime
     plaintext_base64: str | None = None
-    ingest_error_code: Literal[
-        "attachment_bytes_unavailable",
-        "attachment_download_failed",
-        "attachment_too_large",
-    ] | None = None
+    ingest_error_code: (
+        Literal[
+            "attachment_bytes_unavailable",
+            "attachment_download_failed",
+            "attachment_too_large",
+        ]
+        | None
+    ) = None
 
     @model_validator(mode="after")
     def content_and_failure_are_exclusive(self) -> "AttachmentManifest":

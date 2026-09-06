@@ -25,11 +25,23 @@ from docket.models.base import utc_now
 from docket.services.continuity import ContinuityService
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash
 
-INTERACTIVE_MUTATION_TOOLS = frozenset(
+INTERACTIVE_AUTHORITY_TOOLS = frozenset(
     {
+        "docket_stage_changes",
+        "docket_review_changeset",
         "docket_commit_changeset",
         "docket_resolve_conflict",
     }
+)
+INTERACTIVE_ATTACHMENT_TOOLS = frozenset(
+    {
+        "docket_stage_changes",
+        "docket_commit_changeset",
+        "docket_resolve_conflict",
+    }
+)
+INTERACTIVE_CANONICAL_MUTATION_TOOLS = frozenset(
+    {"docket_commit_changeset", "docket_resolve_conflict"}
 )
 
 _LIST_RESULT_KEYS = (
@@ -343,8 +355,7 @@ class ProvenanceFastMCP(FastMCP[Any]):
             attempt = session.scalar(
                 select(SemanticRequestAttempt)
                 .where(
-                    SemanticRequestAttempt.semantic_request_ref
-                    == semantic_request_ref,
+                    SemanticRequestAttempt.semantic_request_ref == semantic_request_ref,
                     SemanticRequestAttempt.tool_call_ref.is_(None),
                 )
                 .order_by(SemanticRequestAttempt.attempt_number.desc())
@@ -358,7 +369,12 @@ class ProvenanceFastMCP(FastMCP[Any]):
         name: str,
         arguments: dict[str, Any],
     ) -> Sequence[ContentBlock] | dict[str, Any]:
-        received_hash = sha256_json(arguments)
+        public_arguments = {
+            key: value
+            for key, value in arguments.items()
+            if key not in {"assembly_operation_token", "assembly_argument_hash"}
+        }
+        received_hash = sha256_json(public_arguments)
         context = self.get_context()
         try:
             mcp_request_id = context.request_id
@@ -419,7 +435,13 @@ class ProvenanceFastMCP(FastMCP[Any]):
                 preparsed = tool.fn_metadata.pre_parse_json(arguments)
                 normalized = tool.fn_metadata.arg_model.model_validate(preparsed)
                 normalized_arguments = normalized.model_dump(mode="json", by_alias=True)
-                normalized_hash = sha256_json(normalized_arguments)
+                normalized_hash = sha256_json(
+                    {
+                        key: value
+                        for key, value in normalized_arguments.items()
+                        if key not in {"assembly_operation_token", "assembly_argument_hash"}
+                    }
+                )
             except Exception as exc:
                 normalized_hash = None
                 normalization_error = exc
@@ -449,7 +471,7 @@ class ProvenanceFastMCP(FastMCP[Any]):
 
         if (
             self.caller_profile == "interactive"
-            and name in INTERACTIVE_MUTATION_TOOLS
+            and name in INTERACTIVE_AUTHORITY_TOOLS
             and normalized_arguments is not None
         ):
             attachment_error = False
@@ -482,9 +504,7 @@ class ProvenanceFastMCP(FastMCP[Any]):
                     attachment_evidence = list(
                         session.scalars(
                             select(AttachmentEvidence).where(
-                                AttachmentEvidence.ref_id.in_(
-                                    utterance.attachment_source_refs
-                                )
+                                AttachmentEvidence.ref_id.in_(utterance.attachment_source_refs)
                             )
                         )
                     )
@@ -497,7 +517,7 @@ class ProvenanceFastMCP(FastMCP[Any]):
                         if ref not in evidence_by_ref
                         or evidence_by_ref[ref].ingest_state != "available"
                     ]
-                    if unavailable_refs:
+                    if name in INTERACTIVE_ATTACHMENT_TOOLS and unavailable_refs:
                         attachment_error = True
                         self._finish_invocation(
                             session,
@@ -511,9 +531,7 @@ class ProvenanceFastMCP(FastMCP[Any]):
                         if execution_completion_token is not None:
                             ContinuityService(session).complete_execution_lease(
                                 execution_completion_token,
-                                metadata={
-                                    "disposition": "attachment_evidence_unavailable"
-                                },
+                                metadata={"disposition": "attachment_evidence_unavailable"},
                             )
             if utterance is None:
                 return _domain_error_result(
@@ -597,12 +615,10 @@ class ProvenanceFastMCP(FastMCP[Any]):
             envelope.get("semantic_request_ref") if envelope is not None else None
         )
         result_semantic_request_ref = (
-            str(raw_semantic_request_ref)
-            if isinstance(raw_semantic_request_ref, str)
-            else None
+            str(raw_semantic_request_ref) if isinstance(raw_semantic_request_ref, str) else None
         )
         domain_state = _domain_state(status)
-        if name in INTERACTIVE_MUTATION_TOOLS and result_disposition is None:
+        if name in INTERACTIVE_CANONICAL_MUTATION_TOOLS and result_disposition is None:
             # The durable result may have committed even if a faulty tool omitted
             # its disposition. Preserve that uncertainty rather than calling it
             # success or converting it into a fresh authority request.

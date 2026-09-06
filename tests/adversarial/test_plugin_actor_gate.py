@@ -267,22 +267,25 @@ def test_changeset_argument_preview_is_semantic_and_never_raw(plugin_module) -> 
         "docket_commit_changeset",
         {
             "utterance_ref": "utt_01ARZ3NDEKTSV4RRFFQ69G5FAV",
-            "resolved_intent": {"secret": "I already applied for this one"},
-            "content": {
-                "resolution_changes": [
-                    {
-                        "object_type": "attention_case_resolution",
-                        "object_ref": "case_01ARZ3NDEKTSV4RRFFQ69G5FAV",
-                        "case_revision_ref": "caserev_01ARZ3NDEKTSV4RRFFQ69G5FAV",
-                        "case_outcome": "resolved",
-                        "item_dispositions": [
-                            {
-                                "case_item_ref": "citem_01ARZ3NDEKTSV4RRFFQ69G5FAV",
-                                "disposition": "resolved",
-                            }
-                        ],
-                    }
-                ]
+            "submission": {
+                "commit_mode": "direct",
+                "resolved_intent": {"secret": "I already applied for this one"},
+                "content": {
+                    "resolution_changes": [
+                        {
+                            "object_type": "attention_case_resolution",
+                            "object_ref": "case_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                            "case_revision_ref": "caserev_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                            "case_outcome": "resolved",
+                            "item_dispositions": [
+                                {
+                                    "case_item_ref": "citem_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+                                    "disposition": "resolved",
+                                }
+                            ],
+                        }
+                    ]
+                },
             },
         },
     )
@@ -358,8 +361,8 @@ def test_domain_validation_rejection_is_not_reported_as_transport_failure(plugin
 def test_local_commit_preflight_blocks_before_docket_transport(plugin_module, monkeypatch) -> None:
     monkeypatch.setattr(
         plugin_module,
-        "_registered_commit_schema",
-        lambda: {
+        "_registered_tool_schema",
+        lambda _tool_name: {
             "type": "object",
             "additionalProperties": False,
             "properties": {"utterance_ref": {"type": "string"}},
@@ -367,7 +370,9 @@ def test_local_commit_preflight_blocks_before_docket_transport(plugin_module, mo
         },
     )
 
-    blocked = plugin_module._validate_commit_arguments_locally({})
+    blocked = plugin_module._validate_authority_arguments_locally(
+        "docket_commit_changeset", {}
+    )
     assert blocked is not None
     payload = json.loads(blocked)
     assert payload["code"] == "local_schema_validation"
@@ -382,8 +387,9 @@ def test_local_commit_preflight_blocks_before_docket_transport(plugin_module, mo
     assert directive["action"] == "block"
     assert "local_schema_validation" in directive["message"]
     assert (
-        plugin_module._validate_commit_arguments_locally(
-            {"utterance_ref": "utt_01ARZ3NDEKTSV4RRFFQ69G5FAV"}
+        plugin_module._validate_authority_arguments_locally(
+            "docket_commit_changeset",
+            {"utterance_ref": "utt_01ARZ3NDEKTSV4RRFFQ69G5FAV"},
         )
         is None
     )
@@ -404,8 +410,8 @@ def test_local_commit_rejection_is_traced_as_completed_domain_result(
     }
     monkeypatch.setattr(
         plugin_module,
-        "_registered_commit_schema",
-        lambda: {
+        "_registered_tool_schema",
+        lambda _tool_name: {
             "type": "object",
             "additionalProperties": False,
             "properties": {"utterance_ref": {"type": "string"}},
@@ -444,21 +450,108 @@ def test_local_commit_rejection_is_traced_as_completed_domain_result(
 
 
 @pytest.mark.adversarial
+def test_assembly_admission_injects_hidden_server_bookkeeping(
+    plugin_module, monkeypatch
+) -> None:
+    context = {
+        "trace_ref": f"trace_{'2' * 26}",
+        "guild_id": "222222222222222222",
+        "source_channel_id": "333333333333333333",
+        "source_message_id": "444444444444444444",
+        "actor_id": "111111111111111111",
+        "utterance_ref": f"utt_{'0' * 26}",
+        "turn_id": None,
+        "next_ordinal": 1,
+        "calls": {},
+        "started": False,
+        "terminal": False,
+    }
+    plugin_module._TRACE_CONTEXTS["assembly-session"] = context
+    requests: list[tuple[str, dict[str, object]]] = []
+
+    def fake_request(path, payload, **_kwargs):
+        requests.append((path, dict(payload)))
+        return {
+            "ok": True,
+            "assembly_operation_token": "a" * 64,
+            "canonical_model_argument_hash": payload["canonical_model_argument_hash"],
+        }
+
+    monkeypatch.setattr(plugin_module, "_docket_internal_request", fake_request)
+    monkeypatch.setattr(plugin_module, "_enqueue_trace_update", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        plugin_module,
+        "_registered_tool_schema",
+        lambda _tool_name: {
+            "type": "object",
+            "additionalProperties": True,
+            "properties": {},
+        },
+    )
+    args = {
+        "utterance_ref": context["utterance_ref"],
+        "request_key": "discord:222:333:444:0",
+        "patch": {"operations": [{"operation": "action_remove", "change_id": "x"}]},
+    }
+    expected_hash = hashlib.sha256(
+        json.dumps(
+            args,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+    directive = plugin_module._on_pre_tool_call(
+        tool_name="mcp__docket__docket_stage_changes",
+        args=args,
+        task_id="assembly-session",
+        session_id="assembly-session",
+        tool_call_id="assembly-call-1",
+        turn_id="assembly-turn",
+    )
+
+    assert directive is None
+    assert requests == [
+        (
+            "/internal/v1/discord/assembly-operations/admit",
+            {
+                "request_id": requests[0][1]["request_id"],
+                "guild_id": context["guild_id"],
+                "channel_id": context["source_channel_id"],
+                "source_message_id": context["source_message_id"],
+                "actor_id": context["actor_id"],
+                "utterance_ref": context["utterance_ref"],
+                "trace_ref": context["trace_ref"],
+                "upstream_tool_call_id": "assembly-call-1",
+                "trace_ordinal": 1,
+                "tool_name": "docket_stage_changes",
+                "canonical_model_argument_hash": expected_hash,
+            },
+        )
+    ]
+    assert args["assembly_operation_token"] == "a" * 64
+    assert args["assembly_argument_hash"] == expected_hash
+
+
+@pytest.mark.adversarial
 def test_local_validation_messages_never_echo_argument_values(
     plugin_module, monkeypatch
 ) -> None:
     secret_value = "operator-private-value"
     monkeypatch.setattr(
         plugin_module,
-        "_registered_commit_schema",
-        lambda: {
+        "_registered_tool_schema",
+        lambda _tool_name: {
             "type": "object",
             "properties": {"mode": {"const": "allowed"}},
             "required": ["mode"],
         },
     )
 
-    blocked = plugin_module._validate_commit_arguments_locally({"mode": secret_value})
+    blocked = plugin_module._validate_authority_arguments_locally(
+        "docket_commit_changeset", {"mode": secret_value}
+    )
 
     assert blocked is not None
     assert secret_value not in blocked

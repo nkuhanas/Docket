@@ -34,6 +34,8 @@ INTERACTIVE_TOOLS = {
     "docket_resolve_conflict",
     "docket_search_entities",
     "docket_search_history",
+    "docket_stage_changes",
+    "docket_review_changeset",
 }
 
 TRIAGE_TOOLS = {
@@ -81,15 +83,20 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
     assert "atomically" in (tools["docket_commit_changeset"].description or "")
     assert "Conflict" in (tools["docket_resolve_conflict"].description or "")
     commit_schema = tools["docket_commit_changeset"].inputSchema
+    assert {"utterance_ref", "request_key", "submission"}.issubset(
+        commit_schema["properties"]
+    )
+    submission = commit_schema["properties"]["submission"]
+    assert submission["discriminator"]["propertyName"] == "commit_mode"
+    assert set(submission["discriminator"]["mapping"]) == {"assembled", "direct"}
+    direct = commit_schema["$defs"]["DirectChangeSetSubmission"]
     assert {
-        "utterance_ref",
         "statements",
         "relations",
         "resolved_intent",
         "blocking_clarifications",
         "content",
-        "request_key",
-    }.issubset(commit_schema["properties"])
+    }.issubset(direct["properties"])
     content = commit_schema["$defs"]["OperatorChangeSetContent"]
     assert {
         "registry_changes",
@@ -139,6 +146,20 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
     assert "payload" not in case_resolution["properties"]
     assert "affected_fields" not in case_resolution["properties"]
     assert "ConflictResolution" not in repr(commit_schema)
+
+    stage_schema = tools["docket_stage_changes"].inputSchema
+    assert stage_schema["properties"]["patch"] == {"$ref": "#/$defs/StagePatchInput"}
+    stage_union = stage_schema["$defs"]["StagePatchInput"]["properties"]["operations"][
+        "items"
+    ]
+    assert set(stage_union["discriminator"]["mapping"]) == {
+        "action_upsert",
+        "action_remove",
+        "normalized_entry_upsert",
+        "normalized_entry_remove",
+    }
+    assert "implicit" in (tools["docket_stage_changes"].description or "")
+    assert "revision-consistent" in (tools["docket_review_changeset"].description or "")
 
     lane_create = commit_schema["$defs"]["CalendarLaneCreateSpec"]
     assert "account_ref" in lane_create["properties"]
