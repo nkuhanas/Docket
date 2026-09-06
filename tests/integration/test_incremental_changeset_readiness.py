@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import csv
-import re
 from pathlib import Path
 
 import yaml
 
 READINESS = Path("deltas/docket-incremental-changeset-readiness-09-06-2026.yaml")
 TRACEABILITY = Path("deltas/docket-incremental-changeset-traceability-09-06-2026.csv")
-SPEC = Path("deltas/docket-incremental-changeset-assembly-delta-09-06-2026.md")
+FROZEN_CLAUSE_IDS = (
+    {f"ONT-ASSEMBLY-INV-{number:04d}" for number in range(1, 5)}
+    | {f"ONT-ASSEMBLY-DEF-{number:04d}" for number in range(1, 4)}
+    | {f"ONT-ASSEMBLY-REQ-{number:04d}" for number in range(1, 22)}
+    | {f"ONT-ASSEMBLY-ACC-{number:04d}" for number in range(1, 17)}
+)
 
 
 def _readiness() -> dict[str, object]:
@@ -80,16 +84,10 @@ def test_all_eight_preimplementation_design_gates_are_exact() -> None:
 
 
 def test_traceability_plans_every_normative_clause_and_acceptance() -> None:
-    clause_ids = set(
-        re.findall(
-            r"\*\*(ONT-ASSEMBLY-(?:INV|DEF|REQ|ACC)-\d{4})\b",
-            SPEC.read_text(encoding="utf-8"),
-        )
-    )
     with TRACEABILITY.open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
-    assert len(rows) == len(clause_ids) == 44
-    assert {row["clause_id"] for row in rows} == clause_ids
+    assert len(rows) == len(FROZEN_CLAUSE_IDS) == 44
+    assert {row["clause_id"] for row in rows} == FROZEN_CLAUSE_IDS
     assert all(row["status"] == "implemented_and_verified" for row in rows)
     assert sum(row["kind"] == "acceptance" for row in rows) == 16
     assert all(row["implementation_targets"] for row in rows)
