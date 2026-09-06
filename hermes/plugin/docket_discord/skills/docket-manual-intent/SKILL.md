@@ -114,9 +114,11 @@ scope. Hermes never formulates, retries, or repairs provider Operations.
 
 Before commit, perform only the reads needed to resolve exact refs, current
 versions, provider targets, and real conflicts. After commit, use the returned
-per-effect receipt and `provider_operations` list. Do not reread newly committed
-objects, graph neighborhoods, history, lanes, or provider events merely to verify
-what the receipt already proves.
+bounded receipt, effect/provider counts, and sampled `effects`/
+`provider_operations`. A large atomic ChangeSet intentionally truncates those
+samples while preserving exact totals and durable refs. Do not reread newly
+committed objects, graph neighborhoods, history, lanes, or provider events merely
+to verify what the receipt already proves.
 
 For an attachment-backed context import, always supply `import_scope` with the
 exact `src_` revisions. The safe `context_only` mode accepts only Items,
@@ -129,6 +131,25 @@ statement or put the attachment `source_ref` on an operator-intent statement:
 Docket deterministically derives that source-less statement from the authenticated
 utterance and typed scope. Attachment content cannot authorize or enlarge the
 effect list.
+
+For a structured schedule, read every page required to cover the requested scope
+before committing. Emit exactly one source-backed statement per bounded row or
+occurrence and give each statement a unique `import_entry_id`. Map every entry
+through `import_scope.entry_coverage` to one unique `item_create`, one unique
+`temporal_binding_create`, and, when the Operator requested Calendar display, one
+unique `temporal_calendar_projection_create` or linked one-time
+`canonical_event_create`. The Item title carries the distinct row content; the
+Time carries its exact date/time; the projection occupies that entry's actual
+timeslot. Multiple entries extracted from the same PDF text fragment still use
+distinct `import_entry_id` values and distinct semantic statements.
+
+Never compress source entries with changing titles, topics, assessment kinds, or
+other content into a generic recurring Calendar event. Recurrence is valid only
+when the source itself describes semantically identical repeated occurrences.
+When replacing a generic series with a rich schedule, retract the old series and
+represent every retained source entry through the coverage map. If any requested
+page, entry, date, or timeslot remains unread or unresolved, ask one clarification
+instead of claiming complete coverage.
 
 Conflict resolution is accepted only by `docket_resolve_conflict`; never encode a
 ConflictResolution inside `docket_commit_changeset`.

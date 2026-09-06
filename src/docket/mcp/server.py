@@ -692,7 +692,10 @@ def docket_commit_changeset(
     this same ChangeSet with ``*_change_id``; every dependency is validated
     before any canonical mutation begins. Under progressive disclosure, request
     this schema with only the exact discriminated ``mutation_types`` required by
-    the current semantic request.
+    the current semantic request. Structured attachment schedules use one
+    ``StatementInput.import_entry_id`` and ``import_scope.entry_coverage`` row
+    per distinct source entry; changing entry content must not be collapsed into
+    a generic recurrence.
     """
     try:
         with session_scope() as session:

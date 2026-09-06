@@ -670,3 +670,21 @@ four non-authoritative tools. Active provider execution and outbox delivery
 counts were both zero after cutover. Completion is recorded durably as
 `aud_01M1AQ3XN2HVEV7XXNW835N3B3` with event type
 `production_reset.completed`.
+
+## Structured-source calendar preservation
+
+The structured-import path now requires explicit one-to-one coverage whenever
+attachment evidence is projected to Calendar. Each bounded source row or
+occurrence has one typed statement key, one Item, one TemporalBinding, and—when
+requested—one distinct temporal projection or linked one-time Event. Docket
+rejects attachment-backed Calendar creates that omit this map, preventing a
+rich schedule from being collapsed into a generic recurring event whose title
+or notes merely claim that it was corrected.
+
+Item source correlation also includes a semantic content key in addition to
+the source fragment locator. This preserves distinct rows extracted from the
+same PDF page or text chunk while remaining idempotent for a replay of the same
+semantic entry. ChangeSet receipts return exact effect and provider-operation
+counts with bounded samples, so a large valid schedule import remains within
+the MCP output budget rather than committing and then appearing to fail during
+response serialization.

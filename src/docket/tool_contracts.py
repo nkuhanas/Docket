@@ -243,7 +243,9 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
                     "fragment-backed Item, TemporalBinding, and Fact effects. Any broader effect "
                     "requires an operator_explicit scope whose authorized_effects exactly name "
                     "those types. Docket derives the source-less authority statement; Hermes "
-                    "must not manufacture it or attach source_ref to operator intent."
+                    "must not manufacture it or attach source_ref to operator intent. Structured "
+                    "temporal sources require one statement import_entry_id and one "
+                    "entry_coverage mapping per bounded entry."
                 ),
                 (
                     "Use docket_read_attachment_text for a retained PDF src_ when native document "
@@ -262,10 +264,16 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
                     "transaction. Never invent a separate push or repair request."
                 ),
                 (
-                    "A committed ChangeSet receipt maps each change_id to created/updated refs "
-                    "and lists compiler-owned provider Operations. Treat that receipt as the "
-                    "authoritative commit result; do not reread objects or history merely to "
-                    "verify the commit."
+                    "A committed ChangeSet receipt returns exact effect/provider totals and "
+                    "bounded samples mapping change_id to refs. Large atomic receipts truncate "
+                    "samples, never the commit. Treat totals and disposition as authoritative; "
+                    "do not reread objects or history merely to verify the commit."
+                ),
+                (
+                    "Never compress structured source entries with distinct content into one "
+                    "generic recurrence. Use one Item plus TemporalBinding per entry and one "
+                    "distinct Time projection (or linked one-time Event) for each requested "
+                    "Calendar timeslot."
                 ),
                 (
                     "CalendarLane create uses the public acct_ returned by "

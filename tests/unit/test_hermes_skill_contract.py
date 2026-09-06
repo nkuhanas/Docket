@@ -60,6 +60,9 @@ def test_manual_skill_defines_exact_resolved_intent_and_changeset_groups() -> No
     assert "exact discriminated `mutation_types`" in skill
     assert "`item_create`, `task_create`, and `temporal_binding_create`" in skill
     assert "Never describe the unscoped ChangeSet schema" in skill
+    assert "unique `import_entry_id`" in skill
+    assert "`import_scope.entry_coverage`" in skill
+    assert "Never compress source entries" in skill
 
 
 def test_manual_skill_keeps_triage_non_authoritative_and_outputs_compact() -> None:
@@ -71,6 +74,8 @@ def test_manual_skill_keeps_triage_non_authoritative_and_outputs_compact() -> No
     assert "Do not reproduce raw provenance chains" in skill
     assert "Do not tell the Operator to click an approval card" in skill
     assert "merely because the immutable `utt_` exists" in skill
+    assert "bounded receipt, effect/provider counts" in skill
+    assert "intentionally truncates those samples" in skill
 
 
 def test_triage_skill_does_not_invent_acknowledgement_work() -> None:
