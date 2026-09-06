@@ -131,11 +131,13 @@ persistence_and_concurrency_design:
         - normalized_entries_json
         - compiled_action_ownership_json
         - compiler_manifest_json
+        - commit_receipt_json
     - model: ChangeSetRevision
       add_fields:
         - normalized_entries_json
         - compiled_action_ownership_json
         - compiler_manifest_json
+        - validation_errors_json
         - assembly_operation_id
   lock_order:
     - intent_session

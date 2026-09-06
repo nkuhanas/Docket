@@ -51,7 +51,8 @@ def test_manual_skill_defines_exact_resolved_intent_and_changeset_groups() -> No
     assert "`add_associated_email_ref`" in skill
     assert "do not preallocate an `idn_`" in skill
     assert "returned current `caserev_`" in skill
-    assert "first structurally valid ChangeSet" in skill
+    assert "first structurally valid direct ChangeSet" in skill
+    assert "stage a larger resolved scope without rejected schema probes" in skill
     assert "omitted supporting items deterministically become `not_pursued`" in skill
     assert "`predicate=application_status`" in skill
     assert "Docket deterministically compiles the required Google projection" in skill
@@ -59,9 +60,9 @@ def test_manual_skill_defines_exact_resolved_intent_and_changeset_groups() -> No
     assert "Hermes never formulates, retries, or repairs provider Operations" in skill
     assert "exact discriminated `mutation_types`" in skill
     assert "`item_create`, `task_create`, and `temporal_binding_create`" in skill
-    assert "Never describe the unscoped ChangeSet schema" in skill
+    assert "Never describe an unscoped union" in skill
     assert "unique `import_entry_id`" in skill
-    assert "`import_scope.entry_coverage`" in skill
+    assert "exact source-fragment locator/hash" in skill
     assert "Never compress source entries" in skill
 
 

@@ -6,7 +6,6 @@ from pathlib import Path
 
 import yaml
 
-
 READINESS = Path("deltas/docket-incremental-changeset-readiness-09-06-2026.yaml")
 TRACEABILITY = Path("deltas/docket-incremental-changeset-traceability-09-06-2026.csv")
 SPEC = Path("deltas/docket-incremental-changeset-assembly-delta-09-06-2026.md")

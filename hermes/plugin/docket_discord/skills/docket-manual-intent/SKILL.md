@@ -107,6 +107,8 @@ When progressive tool disclosure is active:
 
 1. For a small request, describe `docket_commit_changeset` with
    `commit_mode=direct` and the exact discriminated `mutation_types` required.
+   For direct tracked work, those may be `item_create`, `task_create`, and
+   `temporal_binding_create`; request only the variants the resolved intent needs.
 2. For larger work, describe `docket_stage_changes` with only the exact
    `mutation_types` or `normalized_entry_types` needed by the next bounded batch.
    Call it repeatedly as needed. The first valid stage call creates the draft.
