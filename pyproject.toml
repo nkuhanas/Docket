@@ -22,7 +22,7 @@ dependencies = [
   "pypdf==6.16.2",
   "sqlalchemy==2.0.51",
   "structlog==26.1.0",
-  "uvicorn[standard]==0.51.0",
+  "uvicorn[standard]==0.52.4",
 ]
 
 [dependency-groups]
