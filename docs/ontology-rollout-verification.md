@@ -194,6 +194,32 @@ TemporalBinding schema, triage change, provider behavior, reset implementation,
 or model-facing mutation. Amendment sign-off and all substantive readiness/
 implementation work remain pending.
 
+## Frozen incremental ChangeSet assembly sign-off enablement
+
+`ONT-DELTA-2026-09-06-INCREMENTAL-CHANGESET-ASSEMBLY` is frozen at SHA-256
+`0557d095d8c4d166f4f3f8a47d58247842649bbfbfc4f696223e065754d858d7`.
+The packaged candidate permits only exact manifest-bound recognition through
+the existing authenticated Discord sign-off path.
+
+Its prerequisite DAG binds the exact four existing specification-signoff
+Decisions:
+
+```text
+dec_01M13MANM19BX22EW8QC8AH9DT  August 27 ontology
+dec_01M1587SE1JX3BVQ1QZBQKX6T7  August 28 case resolution
+dec_01M15EHKNXVKRBM7MZ3FN39X3E  August 28 interactive continuity
+dec_01M18DYEYJVVJ7TW5VQQBCA6NC  August 29 tracked context
+```
+
+The eventual sign-off Decision will authorize only
+`incremental_changeset_assembly_concurrency_idempotency_and_compilation` and
+will retain `production_reset_authority=false`.
+
+This enablement adds no stage/review tool, migration, ChangeSet behavior,
+compiler behavior, provider effect, prompt instruction, deployment authority,
+or implementation-readiness result. Those remain blocked on ledger sign-off
+and the amendment's pre-implementation readiness design.
+
 ## Tracked-context readiness closure
 
 The Operator subsequently signed the tracked-context artifact through the

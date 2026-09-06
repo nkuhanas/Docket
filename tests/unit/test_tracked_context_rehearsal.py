@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from docket.domain.public_refs import new_public_ref
+from docket.specification_artifacts import specification_artifact_manifest
 from docket.tracked_context_readiness import (
     _ALLOWED_PROVIDER_DISPOSITIONS,
     _CLEAN_TABLES,
@@ -188,7 +189,7 @@ def test_synthetic_closure_is_hash_bound_and_covers_every_artifact() -> None:
     payload = _synthetic_payload()
 
     assert payload["row_count"] == len(payload["rows"])
-    assert len(payload["seed_refs"]) == 4
+    assert len(payload["seed_refs"]) == len(specification_artifact_manifest().artifacts)
     assert payload["closure_sha256"] == _sha256(
         {
             key: value

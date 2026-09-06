@@ -14,6 +14,7 @@ def test_specification_artifact_manifest_is_unique_and_packaged() -> None:
         "ONT-DELTA-2026-08-28-CASE-RESOLUTION",
         "ONT-DELTA-2026-08-28-INTERACTIVE-CONTINUITY",
         "ONT-DELTA-2026-08-29-TRACKED-CONTEXT",
+        "ONT-DELTA-2026-09-06-INCREMENTAL-CHANGESET-ASSEMBLY",
     ]
     assert all(item.document_ref in item.signoff_text for item in manifest.artifacts)
     assert all(item.frozen_artifact_hash in item.signoff_text for item in manifest.artifacts)
@@ -69,6 +70,38 @@ def test_tracked_context_candidate_requires_exact_specification_dag() -> None:
         "dec_01M13MANM19BX22EW8QC8AH9DT",
         "dec_01M1587SE1JX3BVQ1QZBQKX6T7",
         "dec_01M15EHKNXVKRBM7MZ3FN39X3E",
+    ]
+    assert all(
+        item.decision_kind == "specification_signoff" for item in artifact.prerequisites
+    )
+    assert all(item.architecture_authority is True for item in artifact.prerequisites)
+
+
+def test_incremental_changeset_candidate_requires_exact_specification_dag() -> None:
+    document_ref = "ONT-DELTA-2026-09-06-INCREMENTAL-CHANGESET-ASSEMBLY"
+    frozen_hash = "0557d095d8c4d166f4f3f8a47d58247842649bbfbfc4f696223e065754d858d7"
+
+    artifact = specification_artifact(document_ref, frozen_hash)
+
+    assert artifact is not None
+    assert artifact.status == "frozen_candidate"
+    assert artifact.implementation_authority == "amendment_scope"
+    assert artifact.authorized_scope == (
+        "incremental_changeset_assembly_concurrency_idempotency_and_compilation"
+    )
+    assert artifact.production_reset_authority is False
+    assert artifact.bootstrap_authority is None
+    assert [item.decision_ref for item in artifact.prerequisites] == [
+        "dec_01M13MANM19BX22EW8QC8AH9DT",
+        "dec_01M1587SE1JX3BVQ1QZBQKX6T7",
+        "dec_01M15EHKNXVKRBM7MZ3FN39X3E",
+        "dec_01M18DYEYJVVJ7TW5VQQBCA6NC",
+    ]
+    assert [item.document_ref for item in artifact.prerequisites] == [
+        "ONT-DELTA-2026-08-27",
+        "ONT-DELTA-2026-08-28-CASE-RESOLUTION",
+        "ONT-DELTA-2026-08-28-INTERACTIVE-CONTINUITY",
+        "ONT-DELTA-2026-08-29-TRACKED-CONTEXT",
     ]
     assert all(
         item.decision_kind == "specification_signoff" for item in artifact.prerequisites

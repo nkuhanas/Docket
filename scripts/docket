@@ -145,6 +145,7 @@ from docket.tracked_context_readiness import (
     _synthetic_payload,
     materialize_clean_cutover_database,
 )
+from docket.specification_artifacts import specification_artifact_manifest
 
 database_url = (
     "postgresql+psycopg://docket:docket-smoke@postgres:5432/docket_cutover_smoke"
@@ -176,7 +177,9 @@ result = materialize_clean_cutover_database(
 )
 with psycopg.connect(database_url.replace("postgresql+psycopg://", "postgresql://")) as connection:
     assert connection.execute("SELECT count(*) FROM attachment_evidence_metadata").fetchone()[0] == 0
-    assert connection.execute("SELECT count(*) FROM decisions").fetchone()[0] == 4
+    assert connection.execute("SELECT count(*) FROM decisions").fetchone()[0] == len(
+        specification_artifact_manifest().artifacts
+    )
 print(json.dumps(result, sort_keys=True))
 PY
 )

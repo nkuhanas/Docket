@@ -94,6 +94,47 @@
         }
       ],
       "bootstrap_authority": null
+    },
+    {
+      "document_ref": "ONT-DELTA-2026-09-06-INCREMENTAL-CHANGESET-ASSEMBLY",
+      "frozen_artifact_hash": "0557d095d8c4d166f4f3f8a47d58247842649bbfbfc4f696223e065754d858d7",
+      "status": "frozen_candidate",
+      "signoff_text": "I accept ONT-DELTA-2026-09-06-INCREMENTAL-CHANGESET-ASSEMBLY frozen at SHA-256 0557d095d8c4d166f4f3f8a47d58247842649bbfbfc4f696223e065754d858d7 and authorize implementation of that amendment.",
+      "architecture_authority": true,
+      "implementation_authority": "amendment_scope",
+      "authorized_scope": "incremental_changeset_assembly_concurrency_idempotency_and_compilation",
+      "production_reset_authority": false,
+      "prerequisites": [
+        {
+          "decision_ref": "dec_01M13MANM19BX22EW8QC8AH9DT",
+          "decision_kind": "specification_signoff",
+          "document_ref": "ONT-DELTA-2026-08-27",
+          "frozen_artifact_hash": "3d744f4d021f8a605086152eb76743a7ec5a7ed2c8754694e38c1a891a14b5e1",
+          "architecture_authority": true
+        },
+        {
+          "decision_ref": "dec_01M1587SE1JX3BVQ1QZBQKX6T7",
+          "decision_kind": "specification_signoff",
+          "document_ref": "ONT-DELTA-2026-08-28-CASE-RESOLUTION",
+          "frozen_artifact_hash": "058788ec6728565b51bbce3e80d51146c52fec0c0364f7599e3877f97d964a05",
+          "architecture_authority": true
+        },
+        {
+          "decision_ref": "dec_01M15EHKNXVKRBM7MZ3FN39X3E",
+          "decision_kind": "specification_signoff",
+          "document_ref": "ONT-DELTA-2026-08-28-INTERACTIVE-CONTINUITY",
+          "frozen_artifact_hash": "972784149dd2a219d027684a76f04fac37d8147e9656a3ff06326d883fd06579",
+          "architecture_authority": true
+        },
+        {
+          "decision_ref": "dec_01M18DYEYJVVJ7TW5VQQBCA6NC",
+          "decision_kind": "specification_signoff",
+          "document_ref": "ONT-DELTA-2026-08-29-TRACKED-CONTEXT",
+          "frozen_artifact_hash": "830c33c9d78485a6a6a8f872b6dfad996869f8a7eaea9a5f7d39d52e9357cf48",
+          "architecture_authority": true
+        }
+      ],
+      "bootstrap_authority": null
     }
   ]
 }
