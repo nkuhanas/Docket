@@ -2,7 +2,7 @@ readiness_ref: ONT-ASSEMBLY-READINESS-2026-09-06
 document_ref: ONT-DELTA-2026-09-06-INCREMENTAL-CHANGESET-ASSEMBLY
 frozen_artifact_hash: 0557d095d8c4d166f4f3f8a47d58247842649bbfbfc4f696223e065754d858d7
 recorded_at: 2026-09-06
-status: pre_implementation_design_complete
+status: predeployment_verification_complete
 
 authority:
   architecture_authority: true
@@ -27,7 +27,7 @@ implementation_start_gate:
   design_complete: 8
   blocked: 0
   implementation_start_permitted: true
-  implementation_complete: false
+  implementation_complete: true
   deployment_permitted: false
 
 tool_migration_matrix:
@@ -345,17 +345,17 @@ traceability_plan:
   normative_clauses: 44
   acceptance_scenarios: 16
   preimplementation_status: planned
+  current_status: implemented_and_verified
   required_predeployment_status: implemented_and_verified
   planned_test_files:
     - tests/unit/test_changeset_assembly_schema.py
     - tests/unit/test_changeset_compiler.py
     - tests/integration/test_changeset_assembly.py
-    - tests/integration/test_changeset_assembly_postgres.py
-    - tests/adversarial/test_changeset_assembly.py
+    - scripts/compose-assembly-postgres-smoke.py
     - tests/adversarial/test_plugin_actor_gate.py
     - tests/integration/test_mcp_contract.py
     - tests/integration/test_deployment_continuity.py
-    - tests/integration/test_migration_clean.py
+    - tests/integration/test_migrations.py
     - tests/unit/test_release_script_contract.py
 
 hermes_contract_plan:
@@ -399,6 +399,28 @@ predeployment_gate:
     operator_present: true
     simulated_in_ci: false
   deployment_requires_separate_operator_direction: true
+  verification_results:
+    traceability: implemented_and_verified
+    postgresql_race_fixtures: passed
+    replay_restart_and_collision_fixtures: passed
+    schema_profile_output_contracts: passed
+    scripts_docket_check:
+      status: passed
+      pytest_count: 359
+      ruff: passed
+      mypy: passed
+    scripts_docket_compose_smoke:
+      status: passed
+      database: postgresql_16_9
+      interactive_tool_count: 22
+      triage_tool_count: 4
+    migration_round_trip:
+      status: passed
+      sequence:
+        - upgrade_20260905f4c1_to_20260906a5d2
+        - downgrade_20260906a5d2_to_20260905f4c1
+        - reupgrade_20260905f4c1_to_20260906a5d2
+    live_provider_check: pending_separate_operator_present_deployment_verification
 
 production_actions:
   production_data_mutated: false

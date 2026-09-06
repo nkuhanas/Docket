@@ -58,7 +58,7 @@ def test_all_eight_preimplementation_design_gates_are_exact() -> None:
         "design_complete": 8,
         "blocked": 0,
         "implementation_start_permitted": True,
-        "implementation_complete": False,
+        "implementation_complete": True,
         "deployment_permitted": False,
     }
     assert readiness["tool_migration_matrix"]["target_interactive_count"] == 22
@@ -90,7 +90,7 @@ def test_traceability_plans_every_normative_clause_and_acceptance() -> None:
         rows = list(csv.DictReader(handle))
     assert len(rows) == len(clause_ids) == 44
     assert {row["clause_id"] for row in rows} == clause_ids
-    assert all(row["status"] == "planned" for row in rows)
+    assert all(row["status"] == "implemented_and_verified" for row in rows)
     assert sum(row["kind"] == "acceptance" for row in rows) == 16
     assert all(row["implementation_targets"] for row in rows)
     assert all("::test_" in row["test_plan"] for row in rows)
@@ -98,8 +98,11 @@ def test_traceability_plans_every_normative_clause_and_acceptance() -> None:
 
 def test_readiness_separates_test_plans_from_predeployment_results() -> None:
     readiness = _readiness()
-    assert readiness["status"] == "pre_implementation_design_complete"
+    assert readiness["status"] == "predeployment_verification_complete"
     assert readiness["traceability_plan"]["preimplementation_status"] == "planned"
+    assert readiness["traceability_plan"]["current_status"] == (
+        "implemented_and_verified"
+    )
     assert readiness["traceability_plan"]["required_predeployment_status"] == (
         "implemented_and_verified"
     )
@@ -109,4 +112,33 @@ def test_readiness_separates_test_plans_from_predeployment_results() -> None:
     assert gate["live_provider_check"] == {
         "operator_present": True,
         "simulated_in_ci": False,
+    }
+    assert gate["verification_results"] == {
+        "traceability": "implemented_and_verified",
+        "postgresql_race_fixtures": "passed",
+        "replay_restart_and_collision_fixtures": "passed",
+        "schema_profile_output_contracts": "passed",
+        "scripts_docket_check": {
+            "status": "passed",
+            "pytest_count": 359,
+            "ruff": "passed",
+            "mypy": "passed",
+        },
+        "scripts_docket_compose_smoke": {
+            "status": "passed",
+            "database": "postgresql_16_9",
+            "interactive_tool_count": 22,
+            "triage_tool_count": 4,
+        },
+        "migration_round_trip": {
+            "status": "passed",
+            "sequence": [
+                "upgrade_20260905f4c1_to_20260906a5d2",
+                "downgrade_20260906a5d2_to_20260905f4c1",
+                "reupgrade_20260905f4c1_to_20260906a5d2",
+            ],
+        },
+        "live_provider_check": (
+            "pending_separate_operator_present_deployment_verification"
+        ),
     }

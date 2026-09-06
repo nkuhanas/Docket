@@ -127,6 +127,7 @@ PY
     smoke_compose exec -T postgres createdb -U docket docket_readiness_rehearsal
     smoke_compose exec -T postgres createdb -U docket docket_readiness_restore
     smoke_compose exec -T postgres createdb -U docket docket_cutover_smoke
+    smoke_compose exec -T postgres createdb -U docket docket_assembly_races
     smoke_compose run --rm --no-deps docket \
         ./.venv/bin/python -m docket.tracked_context_readiness synthetic-rehearsal \
         --rehearsal-url \
@@ -182,6 +183,25 @@ with psycopg.connect(database_url.replace("postgresql+psycopg://", "postgresql:/
     )
 print(json.dumps(result, sort_keys=True))
 PY
+
+    local assembly_database_url
+    assembly_database_url="postgresql+psycopg://docket:docket-smoke@postgres:5432/docket_assembly_races"
+    smoke_compose run --rm --no-deps \
+        -e "DOCKET_DATABASE_URL=$assembly_database_url" \
+        docket ./.venv/bin/alembic upgrade head
+    smoke_compose run --rm --no-deps \
+        -v "$ROOT:/workspace:ro" \
+        -e "DOCKET_DATABASE_URL=$assembly_database_url" \
+        docket ./.venv/bin/python /workspace/scripts/compose-assembly-postgres-smoke.py
+    smoke_compose run --rm --no-deps \
+        -e "DOCKET_DATABASE_URL=$assembly_database_url" \
+        docket ./.venv/bin/alembic downgrade 20260905f4c1
+    smoke_compose run --rm --no-deps \
+        -e "DOCKET_DATABASE_URL=$assembly_database_url" \
+        docket ./.venv/bin/alembic upgrade head
+    smoke_compose exec -T postgres psql -U docket -d docket_assembly_races -Atc \
+        "SELECT to_regclass('public.assembly_operations'), to_regclass('public.assembly_executions')" \
+        | grep -Fx 'assembly_operations|assembly_executions' >/dev/null
 )
 
 build_image() {

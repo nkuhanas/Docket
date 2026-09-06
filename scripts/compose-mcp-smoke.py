@@ -36,8 +36,10 @@ EXPECTED_TOOLS = {
     "docket_query_people",
     "docket_read_attachment_text",
     "docket_resolve_conflict",
+    "docket_review_changeset",
     "docket_search_entities",
     "docket_search_history",
+    "docket_stage_changes",
 }
 EXPECTED_TRIAGE_TOOLS = {
     "docket_get_triage_context",
@@ -131,32 +133,22 @@ async def smoke() -> None:
             utterance_ref = utterance.json()["ref"]
             assert utterance_ref.startswith("utt_")
 
-            source = {
-                "source_type": "discord_message",
-                "source_object_id": "999999999999999999",
-                "metadata": {
-                    "guild_id": "000000000000000002",
-                    "channel_id": "000000000000000003",
-                    "message_id": "999999999999999999",
-                    "user_id": "000000000000000001",
-                    "intent_index": 1,
-                },
-            }
             changeset_arguments = {
                 "utterance_ref": utterance_ref,
-                "statements": [],
-                "relations": [],
-                "resolved_intent": {"kind": "compose_smoke"},
-                "blocking_clarifications": [
-                    {"blocking": True, "question": "Which dummy term?"}
-                ],
-                "content": None,
                 "request_key": (
                     "discord:000000000000000002:000000000000000003:"
                     "999999999999999999:1"
                 ),
-                "source": source,
-                "actor_id": "000000000000000001",
+                "submission": {
+                    "commit_mode": "direct",
+                    "statements": [],
+                    "relations": [],
+                    "resolved_intent": {"kind": "compose_smoke"},
+                    "blocking_clarifications": [
+                        {"blocking": True, "question": "Which dummy term?"}
+                    ],
+                    "content": None,
+                },
             }
 
         async with streamable_http_client(f"{base_url}/mcp/", http_client=client) as streams:
