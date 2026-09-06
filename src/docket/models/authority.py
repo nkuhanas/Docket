@@ -177,6 +177,18 @@ class ChangeSet(Base):
     provider_intents: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, default=list, nullable=False
     )
+    normalized_entries_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    compiled_action_ownership_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    compiler_manifest_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    commit_receipt_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
     validation_errors: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, default=list, nullable=False
     )
@@ -197,6 +209,9 @@ class ChangeSetRevision(Base):
     __table_args__ = (
         UniqueConstraint(
             "change_set_id", "revision", name="uq_change_set_revisions_number"
+        ),
+        UniqueConstraint(
+            "assembly_operation_id", name="uq_change_set_revisions_assembly_operation"
         ),
         Index("ix_change_set_revisions_changeset", "change_set_id", "revision"),
     )
@@ -235,6 +250,21 @@ class ChangeSetRevision(Base):
     )
     provider_intents: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, default=list, nullable=False
+    )
+    normalized_entries_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    compiled_action_ownership_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    compiler_manifest_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON, default=dict, nullable=False
+    )
+    validation_errors_json: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, default=list, nullable=False
+    )
+    assembly_operation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("assembly_operations.id", ondelete="RESTRICT")
     )
     parameter_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     preview_hash: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -316,6 +346,11 @@ class SemanticRequestAttempt(Base):
             name="uq_semantic_request_attempts_number",
         ),
         UniqueConstraint("tool_call_ref", name="uq_semantic_request_attempts_call"),
+        UniqueConstraint(
+            "semantic_request_id",
+            "execution_trace_ref",
+            name="uq_semantic_request_attempts_execution_trace",
+        ),
         Index("ix_semantic_request_attempts_request", "semantic_request_id", "attempt_number"),
     )
 
@@ -336,12 +371,111 @@ class SemanticRequestAttempt(Base):
     change_set_ref: Mapped[str | None] = mapped_column(String(40))
     tool_call_ref: Mapped[str | None] = mapped_column(String(40))
     gateway_instance_ref: Mapped[str | None] = mapped_column(String(40))
+    execution_trace_ref: Mapped[str | None] = mapped_column(String(40))
+    observed_changeset_ref: Mapped[str | None] = mapped_column(String(40))
+    observed_draft_revision: Mapped[int | None] = mapped_column(Integer)
     state: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(128))
     error_details_json: Mapped[dict[str, Any]] = mapped_column(
         JSON, default=dict, nullable=False
     )
     started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AssemblyExecution(Base):
+    """Internal durable owner for one trace's causally ordered assembly calls."""
+
+    __tablename__ = "assembly_executions"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_utterance_ref",
+            "trace_ref",
+            name="uq_assembly_executions_utterance_trace",
+        ),
+        UniqueConstraint(
+            "semantic_request_attempt_ref",
+            name="uq_assembly_executions_semantic_attempt",
+        ),
+        Index("ix_assembly_executions_trace", "trace_ref"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    source_utterance_ref: Mapped[str] = mapped_column(
+        ForeignKey("operator_utterances.ref_id", ondelete="RESTRICT"), nullable=False
+    )
+    trace_ref: Mapped[str] = mapped_column(String(40), nullable=False)
+    semantic_request_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("semantic_requests.ref_id", ondelete="RESTRICT")
+    )
+    semantic_request_attempt_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("semantic_request_attempts.ref_id", ondelete="RESTRICT")
+    )
+    next_sequence: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
+class AssemblyOperation(Base):
+    """Internal idempotency and causal-admission record; it has no public ref."""
+
+    __tablename__ = "assembly_operations"
+    __table_args__ = (
+        CheckConstraint(
+            "operation_kind IN ('stage', 'review', 'commit')",
+            name="ck_assembly_operations_kind",
+        ),
+        CheckConstraint(
+            "state IN ('admitted', 'running', 'completed', 'rejected', 'unknown')",
+            name="ck_assembly_operations_state",
+        ),
+        UniqueConstraint("operation_key", name="uq_assembly_operations_key"),
+        UniqueConstraint(
+            "source_utterance_ref",
+            "upstream_tool_call_id",
+            name="uq_assembly_operations_utterance_call",
+        ),
+        UniqueConstraint(
+            "assembly_execution_id",
+            "attempt_sequence",
+            name="uq_assembly_operations_execution_sequence",
+        ),
+        Index("ix_assembly_operations_execution_state", "assembly_execution_id", "state"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    assembly_execution_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assembly_executions.id", ondelete="RESTRICT"), nullable=False
+    )
+    source_utterance_ref: Mapped[str] = mapped_column(
+        ForeignKey("operator_utterances.ref_id", ondelete="RESTRICT"), nullable=False
+    )
+    trace_ref: Mapped[str] = mapped_column(String(40), nullable=False)
+    upstream_tool_call_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    operation_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    operation_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    tool_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    argument_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    patch_hash: Mapped[str | None] = mapped_column(String(64))
+    attempt_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    causal_observed_revision: Mapped[int | None] = mapped_column(Integer)
+    semantic_request_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("semantic_requests.ref_id", ondelete="RESTRICT")
+    )
+    semantic_request_attempt_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("semantic_request_attempts.ref_id", ondelete="RESTRICT")
+    )
+    change_set_ref: Mapped[str | None] = mapped_column(String(40))
+    state: Mapped[str] = mapped_column(String(16), default="admitted", nullable=False)
+    result_disposition: Mapped[str | None] = mapped_column(String(64))
+    result_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

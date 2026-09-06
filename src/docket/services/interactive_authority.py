@@ -433,6 +433,43 @@ class InteractiveAuthorityService:
             gateway_instance_ref = active_gateway.ref_id if active_gateway is not None else None
         semantic_request: SemanticRequest | None = None
         semantic_attempt: SemanticRequestAttempt | None = None
+        if content is not None and semantic_request_ref is None:
+            assembly_request = next(
+                (
+                    candidate
+                    for candidate in self.session.scalars(select(SemanticRequest))
+                    if utterance.ref_id in candidate.origin_utterance_refs
+                    and (candidate.selected_option_binding or {}).get("kind")
+                    == "freeform_assembly"
+                ),
+                None,
+            )
+            if assembly_request is not None:
+                assembled = self.session.scalar(
+                    select(ChangeSet).where(
+                        ChangeSet.semantic_request_ref == assembly_request.ref_id
+                    )
+                )
+                if assembled is not None and assembled.state == "committed":
+                    return {
+                        **assembled.commit_receipt_json,
+                        "disposition": "already_committed",
+                    }
+                if assembled is not None:
+                    return {
+                        "ok": False,
+                        "disposition": "assembled_draft_exists",
+                        "error": {
+                            "code": "assembled_draft_exists",
+                            "message": (
+                                "This semantic request already has staged work; commit or "
+                                "edit the assembled draft instead of using direct commit."
+                            ),
+                            "details": {"draft_ref": assembled.ref_id},
+                        },
+                        "next": {"action": "review_or_commit_assembled_changeset"},
+                        "semantic_request_ref": assembly_request.ref_id,
+                    }
         if semantic_request_ref is not None:
             if content is None or authority_scope_hash is None or precondition_hash is None:
                 raise DocketError(
@@ -520,6 +557,8 @@ class InteractiveAuthorityService:
             select(ChangeSet).where(ChangeSet.idempotency_key == f"{request_key}:changeset")
         )
         if replay is not None and replay.state == "committed":
+            if replay.commit_receipt_json:
+                return {**replay.commit_receipt_json, "disposition": "replayed_request"}
             replay_request = (
                 self.session.scalar(
                     select(SemanticRequest).where(

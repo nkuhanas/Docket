@@ -1,4 +1,6 @@
 from docket.models.authority import (
+    AssemblyExecution,
+    AssemblyOperation,
     ChangeSet,
     ChangeSetRevision,
     Conflict,
@@ -89,6 +91,8 @@ from docket.models.tracked_context import (
 __all__ = [
     "Affiliation",
     "AgentResponse",
+    "AssemblyExecution",
+    "AssemblyOperation",
     "AttachmentEvidence",
     "AttentionCase",
     "AttentionCaseRevision",

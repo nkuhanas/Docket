@@ -52,6 +52,7 @@ def test_active_migration_history_is_one_clean_baseline() -> None:
     revisions = list(script.walk_revisions())
 
     assert [revision.revision for revision in revisions] == [
+        "20260906a5d2",
         "20260905f4c1",
         "2022877699cf",
     ]
@@ -84,6 +85,8 @@ def test_clean_baseline_matches_current_metadata(
         "persisted_semantic_options",
         "operation_targets",
         "conversational_tool_traces",
+        "assembly_executions",
+        "assembly_operations",
     }.issubset(migrated_tables)
 
     command.downgrade(config, "base")
@@ -127,6 +130,23 @@ def test_clean_namespace_columns_are_unambiguous(
     assert "import_scope_json" in {
         column["name"] for column in inspector.get_columns("change_set_revisions")
     }
+    assert {
+        "normalized_entries_json",
+        "compiled_action_ownership_json",
+        "compiler_manifest_json",
+        "commit_receipt_json",
+    }.issubset(
+        {column["name"] for column in inspector.get_columns("change_sets")}
+    )
+    assert {
+        "normalized_entries_json",
+        "compiled_action_ownership_json",
+        "compiler_manifest_json",
+        "validation_errors_json",
+        "assembly_operation_id",
+    }.issubset(
+        {column["name"] for column in inspector.get_columns("change_set_revisions")}
+    )
     assert "lease_key" in {column["name"] for column in inspector.get_columns("execution_leases")}
     assert "ref_id" not in {column["name"] for column in inspector.get_columns("execution_leases")}
     assert "semantic_key" in {

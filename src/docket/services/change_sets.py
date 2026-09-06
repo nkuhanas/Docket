@@ -147,6 +147,36 @@ class ChangeSetApplicationReceipt:
             "provider_operations_truncated": len(self.provider_operations) > limit,
         }
 
+    def durable_projection(
+        self,
+        *,
+        changeset_ref: str,
+        semantic_request_ref: str | None,
+        limit: int = 25,
+    ) -> dict[str, Any]:
+        """Minimal restart-safe receipt; never claims asynchronous provider completion."""
+        provider_counts = self._counts(self.provider_operations, "operation_type")
+        return {
+            "ok": True,
+            "disposition": "committed",
+            "changeset_ref": changeset_ref,
+            "semantic_request_ref": semantic_request_ref,
+            "canonical_disposition": "committed",
+            "canonical_effect_count": len(self.effects),
+            "canonical_effect_counts": self._counts(self.effects, "mutation_type"),
+            "provider_disposition": (
+                "queued" if self.provider_operations else "no_provider_operations"
+            ),
+            "provider_operation_count": len(self.provider_operations),
+            "provider_operation_counts_by_initial_state": (
+                {"queued": len(self.provider_operations)} if self.provider_operations else {}
+            ),
+            "provider_operation_counts": provider_counts,
+            "affected_refs": self.affected_refs[:limit],
+            "affected_ref_count": len(self.affected_refs),
+            "affected_refs_truncated": len(self.affected_refs) > limit,
+        }
+
 
 _GROUP_TYPES: dict[str, frozenset[str]] = {
     "registry_changes": frozenset(
@@ -2775,6 +2805,10 @@ class ChangeSetService:
         changeset.committed_at = utc_now()
         changeset.version += 1
         changeset.validation_errors = []
+        changeset.commit_receipt_json = receipt.durable_projection(
+            changeset_ref=changeset.ref_id,
+            semantic_request_ref=changeset.semantic_request_ref,
+        )
         intent_session.semantic_state = "ready"
         intent_session.commit_state = "committed"
         intent_session.committed_changeset_ref = changeset.ref_id
