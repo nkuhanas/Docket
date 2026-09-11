@@ -6,6 +6,7 @@ import secrets
 from collections import Counter
 from typing import Any, ClassVar, Literal, cast
 
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -52,7 +53,10 @@ from docket.services.changeset_compiler import (
     COMPILER_IDENTIFIER,
     COMPILER_VERSION,
     compile_normalized_entry,
+    entry_action_ids,
     entry_facets,
+    entry_mutation_types,
+    normalized_entry_record,
 )
 from docket.services.intent_sessions import IntentSessionService
 from docket.services.interactive_authority import InteractiveAuthorityService
@@ -437,9 +441,13 @@ class ChangeSetAssemblyService:
                     operation,
                     {
                         "ok": True,
-                        "disposition": "staged",
+                        "disposition": "saved_with_errors"
+                        if revision.validation_errors_json
+                        else "ready_to_commit",
                         "draft_ref": changeset.ref_id if changeset is not None else None,
                         "current_revision": revision.revision,
+                        "assembly_ready": not revision.validation_errors_json,
+                        "diagnostic_count": len(revision.validation_errors_json),
                         "reconciled": True,
                         "next": {"action": "review_changeset"},
                     },
@@ -678,19 +686,48 @@ class ChangeSetAssemblyService:
 
     @staticmethod
     def _draft_actions(changeset: ChangeSet) -> dict[str, dict[str, Any]]:
-        actions = {
-            str(item["change_id"]): dict(item)
-            for group_name in _SNAPSHOT_GROUPS[:-1]
-            for item in cast(list[dict[str, Any]], getattr(changeset, group_name))
-        }
-        for plan in changeset.compiler_manifest_json.get("occurrence_plans", []):
-            for change_id in plan["action_hashes"]:
-                actions.pop(change_id, None)
-            replacement_id = plan.get("replacement_change_id")
-            if replacement_id:
-                actions.pop(replacement_id.removesuffix("-replacement") + "-route", None)
-            actions[plan["source_change_id"]] = dict(plan["source_change"])
-        return actions
+        if changeset.staged_actions_json is not None:
+            return {str(item["change_id"]): dict(item) for item in changeset.staged_actions_json}
+        raise DocketError(
+            code="draft_input_adoption_required",
+            message="This draft predates independent staged inputs; explicit adoption is required.",
+            details={"authority_preserved": True, "next_action": "adopt_preserved_request"},
+        )
+
+    @staticmethod
+    def _compilation_diagnostics(
+        error: DocketError | ValidationError,
+        *,
+        entry_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if isinstance(error, DocketError):
+            details = error.details or {}
+            return [
+                {
+                    "code": error.code,
+                    "category": "domain_validation",
+                    "entry_id": entry_id,
+                    "field_path": details.get("field_path", []),
+                    "constraint": error.code,
+                    "next_action": details.get(
+                        "next_action",
+                        "repair_staged_entry" if entry_id else "repair_staged_actions",
+                    ),
+                }
+            ]
+        # Only structured paths/codes cross the boundary, never validation
+        # inputs, arbitrary exception text or copied source contents.
+        return [
+            {
+                "code": "compiled_input_invalid",
+                "category": "implementation_validation",
+                "entry_id": entry_id,
+                "field_path": list(item["loc"]),
+                "constraint": item["type"],
+                "next_action": "repair_staged_entry" if entry_id else "repair_staged_actions",
+            }
+            for item in error.errors(include_input=False, include_context=False, include_url=False)
+        ]
 
     @staticmethod
     def _remove_owned_actions(
@@ -904,16 +941,11 @@ class ChangeSetAssemblyService:
             resolution_changes=grouped["resolution_changes"],
             provider_intents=[],
         )
-        return self.changesets._compile_required_provider_intents(
-            raw,
-            changeset_idempotency_key=changeset.idempotency_key,
-        )
+        return raw
 
     @staticmethod
     def _sync_empty(changeset: ChangeSet) -> None:
-        changeset.basis_refs = []
         changeset.import_scope_json = None
-        changeset.expected_versions = {}
         for group_name in _SNAPSHOT_GROUPS:
             setattr(changeset, group_name, [])
 
@@ -941,9 +973,9 @@ class ChangeSetAssemblyService:
                 authority_scope_hash=changeset.authority_scope_hash,
                 precondition_hash=changeset.precondition_hash,
                 execution_binding_json=changeset.execution_binding_json,
-                basis_refs=[],
+                basis_refs=changeset.basis_refs,
                 import_scope_json=None,
-                expected_versions={},
+                expected_versions=changeset.expected_versions,
                 registry_changes=[],
                 preference_changes=[],
                 lane_changes=[],
@@ -952,12 +984,23 @@ class ChangeSetAssemblyService:
                 resolution_changes=[],
                 provider_intents=[],
                 normalized_entries_json=changeset.normalized_entries_json,
+                staged_actions_json=changeset.staged_actions_json,
                 compiled_action_ownership_json=changeset.compiled_action_ownership_json,
                 compiler_manifest_json=changeset.compiler_manifest_json,
                 validation_errors_json=changeset.validation_errors,
                 assembly_operation_id=operation.id,
-                parameter_hash=sha256_json({"empty": True}),
-                preview_hash=sha256_json({"empty": True}),
+                parameter_hash=sha256_json(
+                    {
+                        "actions": changeset.staged_actions_json,
+                        "entries": changeset.normalized_entries_json,
+                    }
+                ),
+                preview_hash=sha256_json(
+                    {
+                        "actions": changeset.staged_actions_json,
+                        "entries": changeset.normalized_entries_json,
+                    }
+                ),
             )
             self.session.add(revision)
         else:
@@ -968,6 +1011,7 @@ class ChangeSetAssemblyService:
                 changeset.current_revision,
             )
             revision.normalized_entries_json = changeset.normalized_entries_json
+            revision.staged_actions_json = changeset.staged_actions_json
             revision.compiled_action_ownership_json = changeset.compiled_action_ownership_json
             revision.compiler_manifest_json = changeset.compiler_manifest_json
             revision.validation_errors_json = changeset.validation_errors
@@ -976,6 +1020,14 @@ class ChangeSetAssemblyService:
 
     @staticmethod
     def _counts(changeset: ChangeSet) -> dict[str, int]:
+        if changeset.staged_actions_json is not None:
+            return dict(
+                sorted(
+                    Counter(
+                        str(item["object_type"]) for item in changeset.staged_actions_json
+                    ).items()
+                )
+            )
         action_counts = Counter(
             str(item.get("object_type"))
             for group_name in _SNAPSHOT_GROUPS[:-1]
@@ -985,12 +1037,48 @@ class ChangeSetAssemblyService:
 
     @staticmethod
     def _snapshot_counts(snapshot: dict[str, Any]) -> dict[str, int]:
+        if snapshot.get("staged_actions") is not None:
+            return dict(
+                sorted(
+                    Counter(str(item["object_type"]) for item in snapshot["staged_actions"]).items()
+                )
+            )
         action_counts = Counter(
             str(item.get("object_type"))
             for group_name in _SNAPSHOT_GROUPS[:-1]
             for item in cast(list[dict[str, Any]], snapshot[group_name])
         )
         return dict(sorted(action_counts.items()))
+
+    @staticmethod
+    def _entry_preview(entry: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in {
+                "import_entry_id": entry["import_entry_id"],
+                "entry_type": entry["entry_type"],
+                "title": entry.get("title") or (entry.get("item") or {}).get("title"),
+                "timing": entry.get("timing")
+                or (entry.get("temporal") or {}).get("temporal_value"),
+                "location": entry.get("location"),
+                "lane_ref": entry.get("lane_ref"),
+                "lane_change_id": entry.get("lane_change_id"),
+                "scope": "one_time"
+                if entry["entry_type"] == "scheduled_occurrence_entry"
+                else "tracked_context",
+            }.items()
+            if value is not None
+        }
+
+    @classmethod
+    def _entry_previews(cls, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        previews: list[dict[str, Any]] = []
+        for entry in entries[:3]:
+            candidate = [*previews, cls._entry_preview(entry)]
+            if len(json.dumps(candidate, ensure_ascii=False).encode()) > 7_000:
+                break
+            previews = candidate
+        return previews
 
     def stage(
         self,
@@ -1041,6 +1129,7 @@ class ChangeSetAssemblyService:
                 version=0,
                 current_revision=0,
                 basis_refs=[],
+                staged_actions_json=[],
             )
             self.session.add(changeset)
             self.session.flush()
@@ -1162,13 +1251,7 @@ class ChangeSetAssemblyService:
                     utterance.ref_id,
                     [self._entry_statement(entry)],
                 )[0]
-                compiled = compile_normalized_entry(
-                    entry,
-                    utterance_ref=utterance.ref_id,
-                    statement_ref=statement.ref_id,
-                    calendar_lane=self._entry_lane(entry, proposed_actions),
-                )
-                compiled_types = {str(item["mutation_type"]) for item in compiled.actions}
+                compiled_types = entry_mutation_types(entry)
                 if entry.entry_type not in scope.normalized_entry_types and not (
                     compiled_types <= allowed_mutations
                 ):
@@ -1178,31 +1261,58 @@ class ChangeSetAssemblyService:
                         details={"mutation_types": sorted(compiled_types - allowed_mutations)},
                     )
                 self._require_targets_within_scope(
-                    list(compiled.actions), target_refs=allowed_targets
+                    [entry.model_dump(mode="json", exclude={"evidence"}, exclude_none=True)],
+                    target_refs=allowed_targets,
                 )
+                record = normalized_entry_record(entry, statement_ref=statement.ref_id)
+                reserved_ids = entry_action_ids(entry)
+                compiled = None
+                try:
+                    compiled = compile_normalized_entry(
+                        entry,
+                        utterance_ref=utterance.ref_id,
+                        statement_ref=statement.ref_id,
+                        calendar_lane=self._entry_lane(entry, proposed_actions),
+                    )
+                except (DocketError, ValidationError) as exc:
+                    record["compilation_errors"] = self._compilation_diagnostics(
+                        exc,
+                        entry_id=entry.import_entry_id,
+                    )
                 prior = entries_by_id.get(entry.import_entry_id)
-                if prior == compiled.stored_entry:
+                if prior == record:
                     unchanged += 1
                     continue
                 ownership, removed_count = self._remove_owned_actions(
                     actions, ownership, entry.import_entry_id
                 )
                 removed += removed_count
-                for action in compiled.actions:
-                    change_id = str(action["change_id"])
+                for change_id in reserved_ids:
                     if change_id in actions:
                         raise DocketError(
                             code="compiled_action_collision",
                             message="Normalized entry action ID collides with a direct action.",
                             details={"change_id": change_id},
                         )
-                    actions[change_id] = dict(action)
-                owner = {
-                    **compiled.ownership,
-                    "coverage": compiled.coverage.model_dump(mode="json", exclude_none=True),
-                }
+                if compiled is not None:
+                    for action in compiled.actions:
+                        actions[str(action["change_id"])] = dict(action)
+                    owner = {
+                        **compiled.ownership,
+                        "coverage": compiled.coverage.model_dump(mode="json", exclude_none=True),
+                    }
+                else:
+                    owner = {
+                        "owner_kind": "normalized_entry",
+                        "owner_import_entry_id": entry.import_entry_id,
+                        "compiler_identifier": COMPILER_IDENTIFIER,
+                        "compiler_version": COMPILER_VERSION,
+                        "change_ids": reserved_ids,
+                        "compilation_state": "blocked_validation",
+                    }
                 ownership.append(owner)
-                entries_by_id[entry.import_entry_id] = compiled.stored_entry
+                owned_ids.update(reserved_ids)
+                entries_by_id[entry.import_entry_id] = record
                 replaced += int(prior is not None)
                 staged += int(prior is None)
             elif isinstance(patch_operation, StageNormalizedEntryRemove):
@@ -1212,6 +1322,9 @@ class ChangeSetAssemblyService:
                 )
                 removed += removed_count + int(prior is not None)
                 unchanged += int(prior is None)
+                owned_ids = {
+                    str(change_id) for owner in ownership for change_id in owner["change_ids"]
+                }
 
         entries = sorted(entries_by_id.values(), key=lambda item: str(item["import_entry_id"]))
         ownership = sorted(ownership, key=lambda item: str(item["owner_import_entry_id"]))
@@ -1238,25 +1351,38 @@ class ChangeSetAssemblyService:
                     details={"ref": ref_id},
                 )
             expected_versions[ref_id] = version
-        changeset.normalized_entries_json = entries
-        changeset.compiled_action_ownership_json = ownership
-        changeset.compiler_manifest_json = (
-            {
-                "identifier": COMPILER_IDENTIFIER,
-                "version": COMPILER_VERSION,
-                "entry_count": len(entries),
-            }
-            if entries
-            else {}
-        )
-        content = self._content(
-            changeset=changeset,
-            utterance=utterance,
-            actions=actions,
-            entries=entries,
-            ownership=ownership,
-            expected_versions=expected_versions,
-        )
+        errors = [error for entry in entries for error in entry.get("compilation_errors", [])]
+        content = None
+        try:
+            if not errors:
+                content = self._content(
+                    changeset=changeset,
+                    utterance=utterance,
+                    actions=actions,
+                    entries=entries,
+                    ownership=ownership,
+                    expected_versions=expected_versions,
+                )
+                if content is not None:
+                    content = self.changesets._compile_required_provider_intents(
+                        content,
+                        changeset_idempotency_key=changeset.idempotency_key,
+                    )
+                    errors.extend(
+                        self.changesets._validate(intent_session, content, require_handlers=False)
+                    )
+                else:
+                    errors.append(
+                        {
+                            "code": "empty_changeset",
+                            "category": "domain_validation",
+                            "field_path": ["patch"],
+                            "constraint": "nonempty_changeset",
+                            "next_action": "stage_changes",
+                        }
+                    )
+        except (DocketError, ValidationError) as exc:
+            errors.extend(self._compilation_diagnostics(exc))
         after_hash = sha256_json(
             {
                 "actions": actions,
@@ -1264,7 +1390,7 @@ class ChangeSetAssemblyService:
                 "expected_versions": expected_versions,
             }
         )
-        if not created and before_hash == after_hash:
+        if not created and before_hash == after_hash and errors == changeset.validation_errors:
             result = {
                 "ok": True,
                 "disposition": "no_op",
@@ -1276,8 +1402,9 @@ class ChangeSetAssemblyService:
                 "unchanged_count": unchanged,
                 "totals": self._counts(changeset),
                 "assembly_ready": changeset.state == "validated",
+                "readiness": "saved_with_errors" if errors else "ready_to_commit",
                 "diagnostic_count": len(changeset.validation_errors),
-                "next": {"action": "review_or_commit"},
+                "next": {"action": "repair_staged_actions" if errors else "commit_changeset"},
             }
             return self._terminal(operation, result)
         if content is not None and len(content.provider_intents) > MAX_PROVIDER_OPERATIONS:
@@ -1298,22 +1425,45 @@ class ChangeSetAssemblyService:
         )
         semantic_request.current_precondition_hash = new_precondition_hash
         attempt.precondition_hash = new_precondition_hash
+        changeset.normalized_entries_json = entries
+        changeset.staged_actions_json = sorted(
+            actions.values(), key=lambda action: str(action["change_id"])
+        )
+        changeset.compiled_action_ownership_json = ownership
+        changeset.compiler_manifest_json = (
+            {
+                "identifier": COMPILER_IDENTIFIER,
+                "version": COMPILER_VERSION,
+                "entry_count": len(entries),
+            }
+            if entries
+            else {}
+        )
         changeset.precondition_hash = new_precondition_hash
-        errors = (
-            [{"code": "empty_changeset", "details": {}}]
-            if content is None
-            else self.changesets._validate(intent_session, content, require_handlers=False)
+        changeset.expected_versions = expected_versions
+        changeset.basis_refs = list(
+            dict.fromkeys(
+                [
+                    utterance.ref_id,
+                    *(str(entry["statement_ref"]) for entry in entries),
+                ]
+            )
         )
         changeset.validation_errors = errors
         changeset.state = "validated" if not errors else "draft"
+        if not errors:
+            semantic_request.commit_state = "pending"
+            intent_session.commit_state = "pending"
+            attempt.state = "pending"
         self._write_revision(changeset=changeset, content=content, operation=operation)
         attempt.observed_changeset_ref = changeset.ref_id
         attempt.observed_draft_revision = changeset.current_revision
         attempt.change_set_ref = changeset.ref_id
         operation.change_set_ref = changeset.ref_id
+        entry_previews = self._entry_previews(entries)
         result = {
             "ok": True,
-            "disposition": "staged",
+            "disposition": "saved_with_errors" if errors else "ready_to_commit",
             "draft_ref": changeset.ref_id,
             "current_revision": changeset.current_revision,
             "staged_count": staged,
@@ -1322,11 +1472,13 @@ class ChangeSetAssemblyService:
             "unchanged_count": unchanged,
             "totals": self._counts(changeset),
             "normalized_entry_count": len(entries),
+            "entry_preview": entry_previews,
+            "omitted_entry_count": len(entries) - len(entry_previews),
             "predicted_provider_operation_count": len(changeset.provider_intents),
             "assembly_ready": not errors,
             "diagnostic_count": len(errors),
             "diagnostic_sample": errors[:5],
-            "next": {"action": "commit_changeset" if not errors else "review_changeset"},
+            "next": {"action": "commit_changeset" if not errors else "repair_staged_actions"},
         }
         self.session.add(
             AuditEvent(
@@ -1363,6 +1515,7 @@ class ChangeSetAssemblyService:
             "resolution_changes": revision.resolution_changes,
             "provider_intents": revision.provider_intents,
             "normalized_entries": revision.normalized_entries_json,
+            "staged_actions": revision.staged_actions_json,
             "ownership": revision.compiled_action_ownership_json,
             "validation_errors": revision.validation_errors_json,
         }
@@ -1437,10 +1590,14 @@ class ChangeSetAssemblyService:
                 message="The immutable review revision is unavailable; restart review.",
             )
         snapshot = self._revision_snapshot(revision)
+        all_actions = snapshot["staged_actions"]
+        if all_actions is None:
+            all_actions = [
+                item for group_name in _SNAPSHOT_GROUPS[:-1] for item in snapshot[group_name]
+            ]
         actions = [
             item
-            for group_name in _SNAPSHOT_GROUPS[:-1]
-            for item in cast(list[dict[str, Any]], snapshot[group_name])
+            for item in all_actions
             if not request.mutation_types
             or str(item.get("mutation_type")) in request.mutation_types
         ]
@@ -1458,9 +1615,7 @@ class ChangeSetAssemblyService:
         if request.view == "entries":
             details = [
                 {
-                    "import_entry_id": entry.get("import_entry_id"),
-                    "entry_type": entry.get("entry_type"),
-                    "title": entry.get("title") or (entry.get("item") or {}).get("title"),
+                    **self._entry_preview(entry),
                     "compiled_change_ids": ownership.get(str(entry.get("import_entry_id")), {}).get(
                         "change_ids", []
                     ),
@@ -1485,7 +1640,12 @@ class ChangeSetAssemblyService:
         else:
             details = []
         details.sort(key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")))
-        page = details[position : position + request.limit]
+        page: list[dict[str, Any]] = []
+        for detail in details[position : position + request.limit]:
+            candidate = [*page, detail]
+            if page and len(json.dumps(candidate, ensure_ascii=False).encode()) > 8_000:
+                break
+            page = candidate
         next_position = position + len(page)
         next_cursor = None
         if next_position < len(details):
@@ -1668,6 +1828,13 @@ class ChangeSetAssemblyService:
                 state="rejected",
             )
         if changeset.state != "validated":
+            semantic_request.commit_state = "blocked_validation"
+            attempt.state = "blocked_validation"
+            attempt.error_code = "changeset_validation_failed"
+            attempt.error_details_json = {"revision": changeset.current_revision}
+            bound_session = self.session.get(IntentSession, semantic_request.intent_session_id)
+            if bound_session is not None:
+                bound_session.commit_state = "blocked_validation"
             return self._terminal(
                 operation,
                 {

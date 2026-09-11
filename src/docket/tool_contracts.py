@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-09-11-v22"
+CONTRACT_VERSION = "docket-tools-2026-09-11-v23"
 
 
 class ToolContractEntry(TypedDict):
@@ -192,7 +192,10 @@ def _interactive_entries() -> tuple[ToolContractEntry, ...]:
                 "success_dispositions": (
                     "needs_clarification"
                     if name == "docket_request_clarification"
-                    else "staged|no_op|draft_revision_conflict|already_committed"
+                    else (
+                        "ready_to_commit|saved_with_errors|no_op|"
+                        "draft_revision_conflict|already_committed"
+                    )
                     if name == "docket_stage_changes"
                     else "reviewed"
                     if name == "docket_review_changeset"
@@ -201,9 +204,7 @@ def _interactive_entries() -> tuple[ToolContractEntry, ...]:
                     else "S-READ"
                 ),
                 "output_interpretation": "O-STD",
-                "required_next_action": (
-                    "N-CHANGESET" if mutation or assembly else "N-READ"
-                ),
+                "required_next_action": ("N-CHANGESET" if mutation or assembly else "N-READ"),
                 "important_errors": "E-MUT" if mutation or assembly else "E-READ",
             }
         )

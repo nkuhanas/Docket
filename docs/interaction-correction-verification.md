@@ -210,3 +210,35 @@ and one commit with no review. These are synthetic deterministic fixtures, not
 live Calendar delivery or latency evidence. Saved-error retention, immutable
 semantic repair, compiler-deployment continuity and other remaining amendment
 gates are still open; this compiler slice has not been deployed.
+
+## Retained failed drafts and explicit readiness
+
+Stage now separates editable action inputs from executable compiled snapshots.
+An entry-level or whole-ChangeSet compilation error preserves the entire input
+batch, original evidence, expected versions and immutable failed revision.
+Successful neighboring entries cannot commit on their own. A corrected patch is
+a new operation within the same request; replay of the failed operation returns
+its old receipt without restoring obsolete input. A rejected commit records
+`blocked_validation` without consuming authority or making intent ambiguous.
+
+Receipts distinguish `saved_with_errors` and `ready_to_commit`. They include a
+bounded semantic entry preview, exact entry totals and omitted-entry count.
+Compilation diagnostics carry entry/path/constraint/category/next-action fields
+without copied validation inputs. Entry review paginates the same immutable
+revision. A ready draft still needs no mandatory review before commit.
+
+Migration `20260911c2f1` adds nullable `staged_actions_json` to ChangeSet and its
+immutable revisions. It does not backfill or execute old requests. Null inputs
+on a pre-cutover draft require explicit adoption; the complete adoption path is
+still a deployment prerequisite. Downgrade is for isolated rehearsal only once
+failed drafts exist: production recovery must retain these inputs through the
+verified backup or a reviewed forward repair.
+
+Local verification passed 413 tests, Ruff and strict mypy. The PostgreSQL smoke
+injects a compiler error into a 30-entry draft, reconnects in a fresh session,
+verifies all 30 entries and the surviving action inputs, rejects an attempted
+rewrite of the immutable failed revision, repairs only the failed entry, and
+commits exactly 30 events/provider intents once. Isolated MCP, governance restore
+and migration downgrade/re-upgrade also passed. These fixtures do not establish
+full semantic-equivalence repair or live provider delivery; those gates, explicit
+adoption, executable compiler pinning, full diffs and timing remain open.

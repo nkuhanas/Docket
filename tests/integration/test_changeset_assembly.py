@@ -6,6 +6,7 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import func, select
 
 from docket.config import get_settings
@@ -24,6 +25,7 @@ from docket.models import (
     Operation,
     OperatorUtterance,
     ProviderAccount,
+    SemanticRequest,
     Source,
     Task,
     TemporalBinding,
@@ -291,7 +293,7 @@ def test_incremental_staging_reviews_and_commits_once(session) -> None:
         assembly_operation_token=first_token,
         assembly_argument_hash=argument_hash,
     )
-    assert first["disposition"] == "staged"
+    assert first["disposition"] == "ready_to_commit"
     assert first["current_revision"] == 1
 
     replay = service.stage(
@@ -316,7 +318,7 @@ def test_incremental_staging_reviews_and_commits_once(session) -> None:
         assembly_operation_token=second_token,
         assembly_argument_hash="b" * 64,
     )
-    assert second["disposition"] == "staged"
+    assert second["disposition"] == "ready_to_commit"
     assert second["current_revision"] == 2
     assert second["totals"] == {"item": 1, "task": 1}
 
@@ -427,7 +429,7 @@ def test_concurrently_admitted_stale_stage_cannot_overwrite_newer_revision(sessi
             assembly_operation_token=first_token,
             assembly_argument_hash="1" * 64,
         )["disposition"]
-        == "staged"
+        == "ready_to_commit"
     )
     conflict = service.stage(
         _task_stage(utterance),
@@ -479,7 +481,7 @@ def test_thirty_entry_schedule_stages_in_batches_and_commits_once(session) -> No
             assembly_operation_token=token,
             assembly_argument_hash=argument_hash,
         )
-        assert result["disposition"] == "staged"
+        assert result["disposition"] == "ready_to_commit"
         assert len(json.dumps(result, separators=(",", ":")).encode()) < 16 * 1024
 
     commit_token = _admit(
@@ -608,6 +610,192 @@ def test_three_career_fair_entries_compile_once_without_review(session) -> None:
         event.ref_id for event in events
     }
     assert session.scalar(select(func.count(AssemblyOperation.id))) == 2
+
+
+@pytest.mark.integration
+def test_failed_entry_preserves_entire_draft_and_repairs_without_new_request(
+    session, monkeypatch
+) -> None:
+    import docket.services.changeset_assembly as assembly_module
+
+    utterance = _utterance("1542799000000000841")
+    source, lane = _schedule_context(session, utterance, suffix="retained-entry")
+    stage = _schedule_stage(
+        utterance,
+        source_ref=source.ref_id,
+        lane_ref=lane.ref_id,
+        start_index=0,
+        count=3,
+        include_scope=True,
+    )
+    stage.expected_versions = {lane.ref_id: lane.version}
+    compiler = assembly_module.compile_normalized_entry
+
+    def faulty_compiler(entry, **kwargs):
+        if entry.import_entry_id == "math-1263-entry-01":
+            raise DocketError(
+                code="normalized_entry_lane_unresolved",
+                message="Injected transient compiler error",
+                details={"field_path": ["lane_ref"], "next_action": "resolve_lane"},
+            )
+        return compiler(entry, **kwargs)
+
+    monkeypatch.setattr(assembly_module, "compile_normalized_entry", faulty_compiler)
+    trace_ref = new_public_ref("trace")
+    service = ChangeSetAssemblyService(session)
+    token = _admit(
+        session,
+        utterance=utterance,
+        trace_ref=trace_ref,
+        call_id="save-batch",
+        ordinal=1,
+        tool_name="docket_stage_changes",
+        argument_hash="a" * 64,
+    )
+    saved = service.stage(stage, assembly_operation_token=token, assembly_argument_hash="a" * 64)
+    assert saved["disposition"] == "saved_with_errors", saved
+    assert saved["assembly_ready"] is False
+    assert saved["normalized_entry_count"] == len(saved["entry_preview"]) == 3
+    assert saved["omitted_entry_count"] == 0
+    assert saved["diagnostic_sample"][0] == {
+        "code": "normalized_entry_lane_unresolved",
+        "category": "domain_validation",
+        "entry_id": "math-1263-entry-01",
+        "field_path": ["lane_ref"],
+        "constraint": "normalized_entry_lane_unresolved",
+        "next_action": "resolve_lane",
+    }
+    draft = session.scalar(select(ChangeSet))
+    assert draft is not None
+    assert len(draft.normalized_entries_json) == 3
+    assert draft.staged_actions_json is not None and len(draft.staged_actions_json) == 8
+    assert draft.expected_versions == stage.expected_versions
+    failed_snapshot = session.scalar(select(ChangeSetRevision))
+    assert failed_snapshot.staged_actions_json == draft.staged_actions_json
+    assert len(failed_snapshot.normalized_entries_json) == 3
+    original_hash = draft.authority_scope_hash
+    original_ref = draft.semantic_request_ref
+    original_entries = json.dumps(draft.normalized_entries_json, sort_keys=True)
+    malformed = stage.model_dump(mode="json")
+    malformed["patch"]["operations"][1]["entry"]["title"] = None
+    with pytest.raises(ValidationError):
+        StageChangesInput.model_validate(malformed)
+    assert json.dumps(draft.normalized_entries_json, sort_keys=True) == original_entries
+    commit_token = _admit(
+        session,
+        utterance=utterance,
+        trace_ref=trace_ref,
+        call_id="blocked-commit",
+        ordinal=2,
+        tool_name="docket_commit_changeset",
+        argument_hash="b" * 64,
+    )
+    blocked = service.commit(
+        utterance_ref=utterance.ref_id,
+        request_key=utterance.request_key,
+        assembly_operation_token=commit_token,
+        assembly_argument_hash="b" * 64,
+    )
+    assert blocked["disposition"] == "rejected_validation"
+    assert session.scalar(select(func.count(CanonicalEvent.id))) == 0
+    assert session.scalar(select(func.count(Operation.id))) == 0
+    assert session.scalar(select(SemanticRequest)).authority_availability == "available"
+    assert session.scalar(select(SemanticRequest)).commit_state == "blocked_validation"
+
+    monkeypatch.setattr(assembly_module, "compile_normalized_entry", compiler)
+    repair = stage.model_copy(deep=True)
+    repair.assembly_scope = None
+    repair.patch.operations = [repair.patch.operations[1]]
+    repair_token = _admit(
+        session,
+        utterance=utterance,
+        trace_ref=trace_ref,
+        call_id="repair-entry",
+        ordinal=3,
+        tool_name="docket_stage_changes",
+        argument_hash="c" * 64,
+    )
+    repaired = service.stage(
+        repair, assembly_operation_token=repair_token, assembly_argument_hash="c" * 64
+    )
+    assert repaired["disposition"] == "ready_to_commit", repaired
+    assert repaired["normalized_entry_count"] == 3
+    assert draft.authority_scope_hash == original_hash
+    assert draft.semantic_request_ref == original_ref
+    assert draft.current_revision == 2
+    assert failed_snapshot.validation_errors_json
+    # Lost-response retry returns the original outcome, without restoring its error.
+    replay = service.stage(stage, assembly_operation_token=token, assembly_argument_hash="a" * 64)
+    assert replay["disposition"] == "saved_with_errors" and replay["replayed"] is True
+    assert draft.current_revision == 2 and draft.state == "validated"
+    commit_token = _admit(
+        session,
+        utterance=utterance,
+        trace_ref=trace_ref,
+        call_id="repaired-commit",
+        ordinal=4,
+        tool_name="docket_commit_changeset",
+        argument_hash="d" * 64,
+    )
+    committed = service.commit(
+        utterance_ref=utterance.ref_id,
+        request_key=utterance.request_key,
+        assembly_operation_token=commit_token,
+        assembly_argument_hash="d" * 64,
+    )
+    assert committed["disposition"] == "committed", committed
+    assert session.scalar(select(func.count(CanonicalEvent.id))) == 3
+    assert session.scalar(select(func.count(Operation.id))) == 3
+    assert session.scalar(select(func.count(SemanticRequest.id))) == 1
+
+
+@pytest.mark.integration
+def test_global_compilation_failure_retains_action_inputs_for_new_operation(
+    session, monkeypatch
+) -> None:
+    utterance = _utterance("1542799000000000842")
+    session.add(utterance)
+    session.flush()
+    service = ChangeSetAssemblyService(session)
+    original_compile = service.changesets._compile_required_provider_intents
+
+    def fail_compile(*args, **kwargs):
+        raise DocketError(code="injected_provider_compilation_error", message="Synthetic failure")
+
+    monkeypatch.setattr(service.changesets, "_compile_required_provider_intents", fail_compile)
+    trace_ref = new_public_ref("trace")
+    stage = _item_stage(utterance)
+    token = _admit(
+        session,
+        utterance=utterance,
+        trace_ref=trace_ref,
+        call_id="global-failure",
+        ordinal=1,
+        tool_name="docket_stage_changes",
+        argument_hash="a" * 64,
+    )
+    failed = service.stage(stage, assembly_operation_token=token, assembly_argument_hash="a" * 64)
+    assert failed["disposition"] == "saved_with_errors"
+    assert failed["totals"] == {"item": 1}
+    draft = session.scalar(select(ChangeSet))
+    assert draft.staged_actions_json[0]["create_spec"]["title"] == "Tracked request"
+    assert session.scalar(select(func.count(Item.id))) == 0
+    monkeypatch.setattr(service.changesets, "_compile_required_provider_intents", original_compile)
+    repair_token = _admit(
+        session,
+        utterance=utterance,
+        trace_ref=trace_ref,
+        call_id="global-repair",
+        ordinal=2,
+        tool_name="docket_stage_changes",
+        argument_hash="b" * 64,
+    )
+    repaired = service.stage(
+        stage, assembly_operation_token=repair_token, assembly_argument_hash="b" * 64
+    )
+    assert repaired["disposition"] == "ready_to_commit"
+    assert repaired["current_revision"] == 2
+    assert session.scalar(select(func.count(SemanticRequest.id))) == 1
 
 
 @pytest.mark.integration
@@ -1193,7 +1381,7 @@ def test_mcp_schema_rejection_terminalizes_admission_and_next_stage_proceeds(
         )
     )
     assert isinstance(valid_result, tuple)
-    assert valid_result[1]["disposition"] == "staged"
+    assert valid_result[1]["disposition"] == "ready_to_commit"
 
 
 @pytest.mark.integration
@@ -1236,7 +1424,7 @@ def test_mcp_stage_then_payload_free_commit_and_replay_without_review(session_fa
         assert isinstance(result, tuple)
         return result[1]
 
-    assert invoke("docket_stage_changes", stage_arguments, 1)["disposition"] == "staged"
+    assert invoke("docket_stage_changes", stage_arguments, 1)["disposition"] == "ready_to_commit"
     binding = {"utterance_ref": utterance.ref_id, "request_key": utterance.request_key}
     # A resumed pre-cutover recipe must be rejected, not ignored or decoded.
     rejected = invoke(
@@ -1352,7 +1540,7 @@ def test_terminal_tool_call_reconciles_stale_admitted_predecessor(session) -> No
         assembly_operation_token=valid_token,
         assembly_argument_hash="b" * 64,
     )
-    assert staged["disposition"] == "staged"
+    assert staged["disposition"] == "ready_to_commit"
     predecessor = session.scalar(
         select(AssemblyOperation).where(
             AssemblyOperation.upstream_tool_call_id == "stale-predecessor"
@@ -1400,7 +1588,7 @@ def test_unknown_stage_operation_reconciles_durable_revision_without_reapplicati
         assembly_operation_token=token,
         assembly_argument_hash="a" * 64,
     )
-    assert reconciled["disposition"] == "staged"
+    assert reconciled["disposition"] == "ready_to_commit"
     assert reconciled["reconciled"] is True
     assert reconciled["current_revision"] == 1
     changeset = session.scalar(select(ChangeSet))
