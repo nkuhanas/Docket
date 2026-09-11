@@ -179,8 +179,10 @@ option but still cannot update the utterance ledger.
 Local verification passed 410 tests, Ruff, and strict mypy. Isolated Compose smoke
 passed the new 23-tool MCP flow, PostgreSQL races, governance restore, and migration
 downgrade/re-upgrade. No production data, deployment, or historical replay changed.
-The older tool count in the governing `AGENTS.md` was not rewritten: an automated
-safety check requires separate authorization to change that governing guide.
+The older tool count in the governing `AGENTS.md` initially remained unchanged
+pending separate authorization. The Operator subsequently authorized updating
+only its tool count and mutation-protocol description; the guide now matches the
+23-tool, staged-only API. Authority and production-safety rules are unchanged.
 The signed amendment and generated runtime contract define this API cutover.
 Exact semantic repair, compact compilation, delivery recovery, diffs, and timing
 acceptance remain open; this is not full-amendment completion evidence.
