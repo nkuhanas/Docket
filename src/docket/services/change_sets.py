@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -52,6 +52,7 @@ from docket.schemas.authority import (
     TemporalCalendarProjectionCreate,
 )
 from docket.services.case_resolutions import AttentionCaseResolutionService
+from docket.services.changeset_pins import migration_required, pin_snapshot, verify_snapshot
 from docket.services.conflicts import ConflictService
 from docket.services.event_occurrences import EventOccurrenceService
 from docket.services.event_scope import EventScopeGuard
@@ -1276,6 +1277,7 @@ class ChangeSetService:
         revision: int,
     ) -> ChangeSetRevision:
         payload = _content_payload(content)
+        pin_snapshot(changeset, payload)
         parameter_hash = sha256_json(payload)
         preview_hash = sha256_json(
             {
@@ -1312,9 +1314,31 @@ class ChangeSetService:
             precondition_hash=changeset.precondition_hash,
             execution_binding_json=changeset.execution_binding_json,
             compiler_manifest_json=changeset.compiler_manifest_json,
+            normalized_entries_json=changeset.normalized_entries_json,
+            staged_actions_json=changeset.staged_actions_json,
+            compiled_action_ownership_json=changeset.compiled_action_ownership_json,
         )
         self.session.add(item)
         return item
+
+    def verify_execution_revision(self, changeset: ChangeSet) -> ChangeSetContent | None:
+        revision = self.session.scalar(
+            select(ChangeSetRevision).where(
+                ChangeSetRevision.change_set_id == changeset.id,
+                ChangeSetRevision.revision == changeset.current_revision,
+            )
+        )
+        pin = verify_snapshot(changeset, revision, None)
+        if pin.compiled_effect_hash is None:
+            return None
+        try:
+            content = self._content(changeset)
+        except ValidationError as exc:
+            raise migration_required() from exc
+        # Even changing a Pydantic default must not alter previously observed
+        # meaning. Current schemas parse stored effects; they never migrate them.
+        verify_snapshot(changeset, revision, _content_payload(content))
+        return content
 
     def _session_utterance_refs(self, intent_session: IntentSession) -> set[str]:
         refs = {intent_session.source_utterance_ref}
@@ -2807,7 +2831,12 @@ class ChangeSetService:
         return changeset
 
     def commit(self, request: ChangeSetCommit) -> tuple[ChangeSet, ChangeSetApplicationReceipt]:
-        changeset = self.get(request.changeset_ref)
+        # Shared service callers receive the same revision lock as MCP assembly.
+        changeset = self.session.scalar(
+            select(ChangeSet).where(ChangeSet.ref_id == request.changeset_ref).with_for_update()
+        )
+        if changeset is None:
+            raise DocketError(code="changeset_not_found", message="ChangeSet was not found.")
         if changeset.idempotency_key != request.idempotency_key:
             raise IdempotencyConflict(request.idempotency_key)
         if changeset.state == "committed":
@@ -2850,7 +2879,11 @@ class ChangeSetService:
                 code="operator_utterance_authority_required",
                 message="ChangeSet commit requires an authenticated OperatorUtterance.",
             )
-        content = self._content(changeset)
+        content = self.verify_execution_revision(changeset)
+        if content is None:
+            raise migration_required()
+        # Revalidation may reject current preconditions, but must not rewrite
+        # defaults, compiler products or provider intents from a previous turn.
         authority_refs = ProvenanceRefService(self.session).authority_utterance_refs(
             content.basis_refs
         )

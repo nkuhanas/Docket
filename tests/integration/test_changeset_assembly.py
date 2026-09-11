@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -42,6 +43,261 @@ from docket.services.changeset_assembly import (
     ChangeSetAssemblyService,
 )
 from docket.services.interactive_authority import InteractiveAuthorityService
+
+
+def test_resumed_draft_executes_pinned_effects_without_current_compiler(session, monkeypatch):
+    import docket.services.changeset_assembly as assembly_module
+    import docket.services.changeset_pins as pins_module
+    from docket.services.change_sets import ChangeSetService
+
+    utterance = _utterance("1542799000000000891")
+    source, lane = _schedule_context(session, utterance, suffix="pin-resume")
+    service = ChangeSetAssemblyService(session)
+    trace_ref = new_public_ref("trace")
+    stage_token = _admit(
+        session,
+        utterance=utterance,
+        trace_ref=trace_ref,
+        call_id="pin-stage",
+        ordinal=1,
+        tool_name="docket_stage_changes",
+        argument_hash="a" * 64,
+    )
+    result = service.stage(
+        _schedule_stage(
+            utterance,
+            source_ref=source.ref_id,
+            lane_ref=lane.ref_id,
+            start_index=0,
+            count=1,
+            include_scope=True,
+        ),
+        assembly_operation_token=stage_token,
+        assembly_argument_hash="a" * 64,
+    )
+    assert result["disposition"] == "ready_to_commit"
+    draft = session.scalar(select(ChangeSet))
+    manifest = deepcopy(draft.compiler_manifest_json)
+    pin = manifest["execution_pin"]
+    assert pin["normalized_entry_compilers"][0]["input_schema_version"] == 2
+    assert pin["normalized_entry_compilers"][0]["version"] == 2
+    original_effects = deepcopy(draft.event_changes)
+    original_provider_intents = deepcopy(draft.provider_intents)
+    session.commit()
+    session.expire_all()
+
+    def never_compile(*args, **kwargs):
+        raise AssertionError("Commit may not rerun a deployment's compiler")
+
+    monkeypatch.setattr(assembly_module, "COMPILER_VERSION", 3)
+    monkeypatch.setattr(pins_module, "COMPILER_VERSION", 2)
+    monkeypatch.setattr(assembly_module, "compile_normalized_entry", never_compile)
+    monkeypatch.setattr(ChangeSetService, "_compile_required_provider_intents", never_compile)
+    # A fresh execution observes the immutable revision, not a regenerated draft.
+    resumed_trace = new_public_ref("trace")
+    review_token = _admit(
+        session,
+        utterance=utterance,
+        trace_ref=resumed_trace,
+        call_id="pin-review",
+        ordinal=1,
+        tool_name="docket_review_changeset",
+        argument_hash="b" * 64,
+    )
+    service.review(
+        ReviewChangesInput(utterance_ref=utterance.ref_id, request_key=utterance.request_key),
+        assembly_operation_token=review_token,
+        assembly_argument_hash="b" * 64,
+    )
+    commit_token = _admit(
+        session,
+        utterance=utterance,
+        trace_ref=resumed_trace,
+        call_id="pin-commit",
+        ordinal=2,
+        tool_name="docket_commit_changeset",
+        argument_hash="c" * 64,
+    )
+    receipt = service.commit(
+        utterance_ref=utterance.ref_id,
+        request_key=utterance.request_key,
+        assembly_operation_token=commit_token,
+        assembly_argument_hash="c" * 64,
+    )
+    assert receipt["disposition"] == "committed"
+    assert draft.compiler_manifest_json == manifest
+    assert draft.event_changes == original_effects
+    assert draft.provider_intents == original_provider_intents
+    event = session.scalar(select(CanonicalEvent))
+    assert event.title == "MATH 1263 — Topic 1"
+    assert session.scalar(select(func.count(Operation.id))) == 1
+    # Receipt recovery never tries to migrate/reexecute an already committed request.
+    monkeypatch.setattr(pins_module, "EXECUTABLE_SCHEMA_VERSION", 2)
+    replay_token = _admit(
+        session,
+        utterance=utterance,
+        trace_ref=resumed_trace,
+        call_id="pin-replay",
+        ordinal=3,
+        tool_name="docket_commit_changeset",
+        argument_hash="d" * 64,
+    )
+    replay = service.commit(
+        utterance_ref=utterance.ref_id,
+        request_key=utterance.request_key,
+        assembly_operation_token=replay_token,
+        assembly_argument_hash="d" * 64,
+    )
+    assert replay == receipt
+    assert session.scalar(select(func.count(Operation.id))) == 1
+
+
+@pytest.mark.parametrize("drift", ["effects", "inputs", "preconditions", "binding", "manifest"])
+def test_commit_rejects_mutable_snapshot_drift_from_immutable_pin(session, drift):
+    utterance = _utterance("1542799000000000892")
+    session.add(utterance)
+    session.flush()
+    service = ChangeSetAssemblyService(session)
+    trace_ref = new_public_ref("trace")
+    token = _admit(
+        session,
+        utterance=utterance,
+        trace_ref=trace_ref,
+        call_id="stage",
+        ordinal=1,
+        tool_name="docket_stage_changes",
+        argument_hash="a" * 64,
+    )
+    service.stage(
+        _item_stage(utterance), assembly_operation_token=token, assembly_argument_hash="a" * 64
+    )
+    draft = session.scalar(select(ChangeSet))
+    if drift == "effects":
+        effects = deepcopy(draft.tracked_context_changes)
+        effects[0]["create_spec"]["title"] = "Unobserved different title"
+        draft.tracked_context_changes = effects
+    elif drift == "inputs":
+        draft.staged_actions_json = []
+    elif drift == "preconditions":
+        draft.expected_versions = {new_public_ref("item"): 4}
+    elif drift == "binding":
+        draft.authority_scope_hash = "f" * 64
+    else:
+        draft.compiler_manifest_json = {}
+    token = _admit(
+        session,
+        utterance=utterance,
+        trace_ref=trace_ref,
+        call_id="commit",
+        ordinal=2,
+        tool_name="docket_commit_changeset",
+        argument_hash="b" * 64,
+    )
+    with pytest.raises(DocketError) as error:
+        service.commit(
+            utterance_ref=utterance.ref_id,
+            request_key=utterance.request_key,
+            assembly_operation_token=token,
+            assembly_argument_hash="b" * 64,
+        )
+    assert error.value.code == "draft_execution_pin_mismatch"
+    assert error.value.details["authority_preserved"] is True
+    assert session.scalar(select(func.count(Item.id))) == 0
+    assert session.scalar(select(func.count(Operation.id))) == 0
+    assert session.scalar(select(SemanticRequest)).authority_availability == "available"
+
+
+def test_incompatible_execution_schema_requires_explicit_migration(session, monkeypatch):
+    import docket.services.changeset_pins as pins_module
+
+    utterance = _utterance("1542799000000000893")
+    session.add(utterance)
+    session.flush()
+    service = ChangeSetAssemblyService(session)
+    trace_ref = new_public_ref("trace")
+    token = _admit(
+        session,
+        utterance=utterance,
+        trace_ref=trace_ref,
+        call_id="stage",
+        ordinal=1,
+        tool_name="docket_stage_changes",
+        argument_hash="a" * 64,
+    )
+    service.stage(
+        _item_stage(utterance), assembly_operation_token=token, assembly_argument_hash="a" * 64
+    )
+    draft = session.scalar(select(ChangeSet))
+    old_manifest = deepcopy(draft.compiler_manifest_json)
+    monkeypatch.setattr(pins_module, "EXECUTABLE_SCHEMA_VERSION", 2)
+    token = _admit(
+        session,
+        utterance=utterance,
+        trace_ref=trace_ref,
+        call_id="commit",
+        ordinal=2,
+        tool_name="docket_commit_changeset",
+        argument_hash="b" * 64,
+    )
+    with pytest.raises(DocketError) as error:
+        service.commit(
+            utterance_ref=utterance.ref_id,
+            request_key=utterance.request_key,
+            assembly_operation_token=token,
+            assembly_argument_hash="b" * 64,
+        )
+    assert error.value.code == "draft_migration_required"
+    assert error.value.details["next_action"] == "migrate_draft"
+    assert draft.compiler_manifest_json == old_manifest
+    assert draft.current_revision == 1
+    assert session.scalar(select(func.count(Item.id))) == 0
+
+
+def test_same_patch_cannot_silently_recompile_changed_effects(session, monkeypatch):
+    utterance = _utterance("1542799000000000894")
+    session.add(utterance)
+    session.flush()
+    service = ChangeSetAssemblyService(session)
+    trace_ref = new_public_ref("trace")
+    token = _admit(
+        session,
+        utterance=utterance,
+        trace_ref=trace_ref,
+        call_id="stage",
+        ordinal=1,
+        tool_name="docket_stage_changes",
+        argument_hash="a" * 64,
+    )
+    service.stage(
+        _item_stage(utterance), assembly_operation_token=token, assembly_argument_hash="a" * 64
+    )
+    draft = session.scalar(select(ChangeSet))
+    old_manifest = deepcopy(draft.compiler_manifest_json)
+
+    def changed_compiler(content, **kwargs):
+        payload = content.model_dump(mode="json")
+        payload["tracked_context_changes"][0]["create_spec"]["title"] = "Changed compiler output"
+        return ChangeSetContent.model_validate(payload)
+
+    monkeypatch.setattr(service.changesets, "_compile_required_provider_intents", changed_compiler)
+    token = _admit(
+        session,
+        utterance=utterance,
+        trace_ref=trace_ref,
+        call_id="same-patch",
+        ordinal=2,
+        tool_name="docket_stage_changes",
+        argument_hash="b" * 64,
+    )
+    with pytest.raises(DocketError) as error:
+        service.stage(
+            _item_stage(utterance), assembly_operation_token=token, assembly_argument_hash="b" * 64
+        )
+    assert error.value.code == "draft_migration_required"
+    assert draft.compiler_manifest_json == old_manifest
+    assert draft.current_revision == 1
+    assert draft.tracked_context_changes[0]["create_spec"]["title"] == "Tracked request"
+    assert session.scalar(select(func.count(Item.id))) == 0
 
 
 def _utterance(message_id: str) -> OperatorUtterance:

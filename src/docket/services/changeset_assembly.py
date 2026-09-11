@@ -58,6 +58,7 @@ from docket.services.changeset_compiler import (
     entry_mutation_types,
     normalized_entry_record,
 )
+from docket.services.changeset_pins import effect_hash, migration_required, pin_snapshot
 from docket.services.intent_sessions import IntentSessionService
 from docket.services.interactive_authority import InteractiveAuthorityService
 from docket.services.reply_bindings import ReplyBindingService
@@ -966,6 +967,7 @@ class ChangeSetAssemblyService:
         changeset.version += 1
         if content is None:
             self._sync_empty(changeset)
+            pin_snapshot(changeset, None)
             revision = ChangeSetRevision(
                 change_set_id=changeset.id,
                 revision=changeset.current_revision,
@@ -1174,6 +1176,7 @@ class ChangeSetAssemblyService:
                 )
 
         scope = self._scope(semantic_request)
+        prior_content = None if created else self.changesets.verify_execution_revision(changeset)
         allowed_mutations = set(scope.allowed_mutation_types)
         allowed_sources = set(scope.source_refs)
         allowed_targets = set(scope.target_refs)
@@ -1391,6 +1394,15 @@ class ChangeSetAssemblyService:
             }
         )
         if not created and before_hash == after_hash and errors == changeset.validation_errors:
+            if (
+                prior_content is not None
+                and content is not None
+                and effect_hash(prior_content.model_dump(mode="json", exclude_none=True))
+                != effect_hash(content.model_dump(mode="json", exclude_none=True))
+            ):
+                # An unchanged stage patch is not permission for a deployment
+                # to silently replace provider/occurrence compiler products.
+                raise migration_required()
             result = {
                 "ok": True,
                 "disposition": "no_op",

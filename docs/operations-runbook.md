@@ -125,6 +125,16 @@ provides details. A compiler failure must not lead to a new authorization reques
 or manual edits of production rows. Pre-cutover drafts without an independent
 input snapshot require explicit adoption, not an automatic backfill.
 
+Draft revisions also retain an executable pin in their compiler manifest: the
+compiler and input-schema versions, input/ownership digest, compiled-effect
+digest, execution preconditions and authority binding. Commit checks the
+immutable revision under the same transaction lock and executes its stored
+effects without rerunning a newly deployed compiler. Current preconditions
+still validate. Missing/incompatible pins require an explicit audited draft
+migration; a pin mismatch requires revision reconciliation. Neither permits
+editing production rows, reauthorizing the same request, or silently changing
+the draft. A committed receipt remains replayable without recompilation.
+
 Every authenticated tool invocation receives one `call_`, including validation
 and authority rejection. Tool logs retain hashes and bounded references, not raw
 arguments or results. A conversational trace marked interrupted has
