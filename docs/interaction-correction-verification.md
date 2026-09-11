@@ -242,3 +242,32 @@ commits exactly 30 events/provider intents once. Isolated MCP, governance restor
 and migration downgrade/re-upgrade also passed. These fixtures do not establish
 full semantic-equivalence repair or live provider delivery; those gates, explicit
 adoption, executable compiler pinning, full diffs and timing remain open.
+
+## Pinned executable draft revisions
+
+Each new revision stores a versioned executable pin in the existing compiler
+manifest. The pin binds editable inputs/ownership, each normalized entry's
+compiler/input-schema versions, exact compiled effects, execution preconditions
+and request authority separately. Failed uncompiled drafts pin their retained
+inputs without inventing executable effects. No historical pin backfill or
+old-schema decoder is introduced.
+
+The shared commit service locks the ChangeSet and verifies it against the
+immutable revision before applying anything. It parses stored effects with the
+current canonical schema and checks that parsing did not change their digest.
+It does not rerun the normalized-entry, occurrence or provider compiler. Current
+canonical preconditions still validate. Snapshot drift fails with preserved
+authority; an incompatible executable schema requires explicit migration.
+An unchanged patch also cannot silently install changed compiler products.
+Committed receipt replay bypasses migration and never executes again.
+
+The new regression fixtures exercise changed compiler versions after resumption,
+mutated inputs/effects/preconditions/bindings/manifests, incompatible schemas,
+and unchanged input producing different compiler output. The PostgreSQL smoke
+also reconnects before committing the 30-entry draft under changed compiler
+versions, forbids either compiler from running, and verifies database rejection
+of edits to an immutable revision's pin. Local verification passed 421 tests,
+Ruff and strict mypy. Isolated Compose smoke passed, including PostgreSQL
+pin/revision enforcement, concurrency, governance restore and migration
+downgrade/re-upgrade. Explicit migration/adoption and semantic repair remain
+separate open gates, so this does not establish full amendment readiness.

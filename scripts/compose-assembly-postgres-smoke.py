@@ -797,6 +797,8 @@ def _schedule_stage(
 
 def test_thirty_entry_schedule_commits_once(factory: sessionmaker[Session]) -> None:
     import docket.services.changeset_assembly as assembly_module
+    import docket.services.changeset_pins as pins_module
+    from docket.services.change_sets import ChangeSetService
 
     compiler = assembly_module.compile_normalized_entry
 
@@ -948,6 +950,25 @@ def test_thirty_entry_schedule_commits_once(factory: sessionmaker[Session]) -> N
     assert repaired["disposition"] == "ready_to_commit", repaired
     assert repaired["normalized_entry_count"] == 30
 
+    with factory() as session:
+        draft = session.scalar(select(ChangeSet).where(ChangeSet.ref_id == repaired["draft_ref"]))
+        assert draft is not None
+        execution_pin = draft.compiler_manifest_json["execution_pin"]
+        assert len(execution_pin["normalized_entry_compilers"]) == 30
+        assert execution_pin["compiled_effect_hash"]
+    try:
+        with factory.begin() as session:
+            session.execute(
+                text(
+                    "UPDATE change_set_revisions SET compiler_manifest_json = '{}' WHERE id = :id"
+                ),
+                {"id": revision_id},
+            )
+    except DBAPIError:
+        pass
+    else:
+        raise AssertionError("PostgreSQL allowed rewriting an immutable execution pin")
+
     commit_hash = "f" * 64
     commit_token = _admit_committed(
         factory,
@@ -958,13 +979,32 @@ def test_thirty_entry_schedule_commits_once(factory: sessionmaker[Session]) -> N
         tool_name="docket_commit_changeset",
         argument_hash=commit_hash,
     )
-    with factory.begin() as session:
+    with (
+        factory.begin() as session,
+        patch.object(pins_module, "COMPILER_VERSION", 2),
+        patch.object(assembly_module, "COMPILER_VERSION", 3),
+        patch.object(
+            assembly_module,
+            "compile_normalized_entry",
+            side_effect=AssertionError("Resumed commit reran the entry compiler"),
+        ),
+        patch.object(
+            ChangeSetService,
+            "_compile_required_provider_intents",
+            side_effect=AssertionError("Resumed commit reran the provider compiler"),
+        ),
+    ):
         result = ChangeSetAssemblyService(session).commit(
             utterance_ref=utterance_ref,
             request_key=request_key,
             assembly_operation_token=commit_token,
             assembly_argument_hash=commit_hash,
         )
+        committed = session.scalar(
+            select(ChangeSet).where(ChangeSet.ref_id == repaired["draft_ref"])
+        )
+        assert committed is not None
+        assert committed.compiler_manifest_json["execution_pin"] == execution_pin
     assert result["disposition"] == "committed", result
     assert result["canonical_effect_count"] == 120
     assert result["provider_operation_count"] == 30
