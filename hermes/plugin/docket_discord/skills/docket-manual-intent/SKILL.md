@@ -135,6 +135,13 @@ A revision conflict means review and reconcile the current draft; it does not me
 reauthorize or start a second request. Never describe an unscoped union or
 reconstruct omitted mutation shapes from memory.
 
+`ready_to_commit` permits immediate commit without review. `saved_with_errors`
+means the whole staged batch is retained but no canonical part may commit yet.
+Use the entry/field diagnostic to submit a corrected patch in the same request;
+do not re-add the other entries or request renewed approval. A retry of the exact
+old operation returns its recorded result; repair is a new stage operation.
+Do not equate a saved draft, ready draft, canonical commit and provider delivery.
+
 `provider_intents` is deliberately absent from the model-facing ChangeSet. Docket
 derives provider Operations from canonical mutations after validating the complete
 scope. Hermes never formulates, retries, or repairs provider Operations.

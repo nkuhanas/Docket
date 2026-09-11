@@ -40,6 +40,32 @@ class CompiledNormalizedEntry:
     predicted_provider_operation_types: tuple[str, ...]
 
 
+def normalized_entry_record(entry: NormalizedEntryInput, *, statement_ref: str) -> dict[str, Any]:
+    normalized_input = entry.model_dump(mode="json", exclude_none=True)
+    return {
+        **normalized_input,
+        "statement_ref": statement_ref,
+        "compiler_identifier": COMPILER_IDENTIFIER,
+        "compiler_version": COMPILER_VERSION,
+        "input_schema_version": NORMALIZED_INPUT_SCHEMA_VERSION,
+        "normalized_input_hash": sha256_json(normalized_input),
+    }
+
+
+def entry_mutation_types(entry: NormalizedEntryInput) -> set[str]:
+    types = {"item_create", "temporal_binding_create"}
+    if isinstance(entry, ScheduledOccurrenceEntry):
+        types.update({"canonical_event_create", "lane_routing_decision_create"})
+    return types
+
+
+def entry_action_ids(entry: NormalizedEntryInput) -> list[str]:
+    suffixes = ["item", "time"]
+    if isinstance(entry, ScheduledOccurrenceEntry):
+        suffixes += ["event", "route"]
+    return [f"{entry.import_entry_id}.{suffix}" for suffix in suffixes]
+
+
 def entry_facets(entry: NormalizedEntryInput) -> tuple[ItemInput, NormalizedTemporalFacet]:
     """Derive support semantics from a single resolved occurrence definition."""
     if not isinstance(entry, ScheduledOccurrenceEntry):
@@ -196,14 +222,7 @@ def compile_normalized_entry(
         predicted_provider_operations = ("calendar_create_event",)
 
     change_ids = [str(action["change_id"]) for action in actions]
-    stored_entry = {
-        **normalized_input,
-        "statement_ref": statement_ref,
-        "compiler_identifier": COMPILER_IDENTIFIER,
-        "compiler_version": COMPILER_VERSION,
-        "input_schema_version": NORMALIZED_INPUT_SCHEMA_VERSION,
-        "normalized_input_hash": normalized_input_hash,
-    }
+    stored_entry = normalized_entry_record(entry, statement_ref=statement_ref)
     ownership = {
         "owner_kind": "normalized_entry",
         "owner_import_entry_id": entry.import_entry_id,

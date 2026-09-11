@@ -8,8 +8,10 @@ import os
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from unittest.mock import patch
 
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -26,6 +28,7 @@ from docket.models import (
     CalendarLane,
     CanonicalEvent,
     ChangeSet,
+    ChangeSetRevision,
     DeferredIngress,
     EventOccurrence,
     ExecutionLease,
@@ -793,6 +796,15 @@ def _schedule_stage(
 
 
 def test_thirty_entry_schedule_commits_once(factory: sessionmaker[Session]) -> None:
+    import docket.services.changeset_assembly as assembly_module
+
+    compiler = assembly_module.compile_normalized_entry
+
+    def faulty_compiler(entry: Any, **kwargs: Any) -> Any:
+        if entry.import_entry_id == "postgres-schedule-17":
+            raise DocketError(code="injected_compiler_fault", message="Synthetic failure")
+        return compiler(entry, **kwargs)
+
     with factory.begin() as session:
         utterance = _utterance(
             "1542799000000000913",
@@ -870,15 +882,71 @@ def test_thirty_entry_schedule_commits_once(factory: sessionmaker[Session]) -> N
                 count=15,
                 include_scope=batch == 1,
             )
-        result = _stage(
-            factory,
-            utterance_ref=utterance_ref,
-            token=token,
-            argument_hash=argument_hash,
-            request=request,
-        )
-        assert result["disposition"] == "staged"
+        with (
+            patch.object(assembly_module, "compile_normalized_entry", faulty_compiler)
+            if batch == 2
+            else nullcontext()
+        ):
+            result = _stage(
+                factory,
+                utterance_ref=utterance_ref,
+                token=token,
+                argument_hash=argument_hash,
+                request=request,
+            )
+        assert result["disposition"] == ("ready_to_commit" if batch == 1 else "saved_with_errors")
         assert len(json.dumps(result, separators=(",", ":")).encode()) < 16 * 1024
+
+    with factory() as session:
+        draft = session.scalar(select(ChangeSet).where(ChangeSet.ref_id == result["draft_ref"]))
+        assert draft is not None and draft.state == "draft"
+        assert len(draft.normalized_entries_json) == 30
+        assert draft.staged_actions_json is not None and len(draft.staged_actions_json) == 116
+        revision = session.scalar(
+            select(ChangeSetRevision).where(
+                ChangeSetRevision.change_set_id == draft.id,
+                ChangeSetRevision.revision == 2,
+            )
+        )
+        assert revision is not None and len(revision.normalized_entries_json) == 30
+        assert revision.staged_actions_json == draft.staged_actions_json
+        revision_id = revision.id
+        repair = _schedule_stage(
+            _load_utterance(session, utterance_ref),
+            source_ref=source_ref,
+            lane_ref=lane_ref,
+            start_index=17,
+            count=1,
+            include_scope=False,
+        )
+    try:
+        with factory.begin() as session:
+            session.execute(
+                text("UPDATE change_set_revisions SET staged_actions_json = '[]' WHERE id = :id"),
+                {"id": revision_id},
+            )
+    except DBAPIError:
+        pass
+    else:
+        raise AssertionError("PostgreSQL allowed rewriting immutable failed-draft inputs")
+    repair_token = _admit_committed(
+        factory,
+        utterance_ref=utterance_ref,
+        trace_ref=trace_ref,
+        call_id="repair-schedule",
+        ordinal=3,
+        tool_name="docket_stage_changes",
+        argument_hash="e" * 64,
+    )
+    repaired = _stage(
+        factory,
+        utterance_ref=utterance_ref,
+        token=repair_token,
+        argument_hash="e" * 64,
+        request=repair,
+    )
+    assert repaired["disposition"] == "ready_to_commit", repaired
+    assert repaired["normalized_entry_count"] == 30
 
     commit_hash = "f" * 64
     commit_token = _admit_committed(
@@ -886,7 +954,7 @@ def test_thirty_entry_schedule_commits_once(factory: sessionmaker[Session]) -> N
         utterance_ref=utterance_ref,
         trace_ref=trace_ref,
         call_id="postgres-schedule-commit",
-        ordinal=3,
+        ordinal=4,
         tool_name="docket_commit_changeset",
         argument_hash=commit_hash,
     )

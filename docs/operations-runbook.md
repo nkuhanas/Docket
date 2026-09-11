@@ -116,6 +116,15 @@ Do not probe hidden HTTP endpoints or use terminal access to discover a mutation
 shape. The Pydantic/FastMCP schema is the structural contract; the generated
 Markdown contract supplies authority, selection, side-effect, and result rules.
 
+Staging returns `ready_to_commit` or `saved_with_errors`. The latter preserves
+all entries and action inputs but blocks the entire canonical commit. Repair
+the identified entry through a new stage operation in the same request; a replay
+of the old operation deliberately returns its old receipt. The bounded preview
+shows exact entry totals and omitted counts; optional revision-bound review
+provides details. A compiler failure must not lead to a new authorization request
+or manual edits of production rows. Pre-cutover drafts without an independent
+input snapshot require explicit adoption, not an automatic backfill.
+
 Every authenticated tool invocation receives one `call_`, including validation
 and authority rejection. Tool logs retain hashes and bounded references, not raw
 arguments or results. A conversational trace marked interrupted has

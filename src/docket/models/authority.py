@@ -180,6 +180,9 @@ class ChangeSet(Base):
     normalized_entries_json: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, default=list, nullable=False
     )
+    # The editable draft survives even when no valid compiled snapshot exists.
+    # NULL denotes a pre-cutover draft requiring explicit input adoption.
+    staged_actions_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
     compiled_action_ownership_json: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, default=list, nullable=False
     )
@@ -254,6 +257,7 @@ class ChangeSetRevision(Base):
     normalized_entries_json: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, default=list, nullable=False
     )
+    staged_actions_json: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
     compiled_action_ownership_json: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, default=list, nullable=False
     )
