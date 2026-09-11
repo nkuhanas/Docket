@@ -90,8 +90,8 @@ An intent is ready only when all of these are true:
 
 Confidence, plausibility, or “obvious” is never a substitute. Consolidate related
 unknowns into the smallest natural question. If a bounded choice would authorize a
-mutation, call `docket_commit_changeset` with `commit_mode=direct`, the blocking
-clarification, and one through four fully typed `semantic_options`. Docket persists the exact scopes
+mutation, call `docket_request_clarification` with the question
+and one through four fully typed `semantic_options`. Docket persists the exact scopes
 before projecting deterministic visible choices. Never use a generic clarification
 tool for a mutation-authorizing choice. For a genuinely open-ended question, ask in
 the final response so the existing IntentSession survives restart.
@@ -99,9 +99,10 @@ the final response so the existing IntentSession survives restart.
 ## Mutation path
 
 All resolved canonical effects from one semantic request commit as one atomic
-ChangeSet. Use the direct form for a small complete request. For larger work,
-stage bounded batches into Docket's implicit durable draft and commit the assembled
-form once:
+ChangeSet. Always stage into Docket's implicit durable draft, even for one effect.
+Review is optional. Commit once with no model arguments: the gateway supplies the
+current message, request and execution binding. Never submit a direct content
+payload, commit mode, request key, draft ref or revision. Stage these effects:
 
 - `registry_changes`: entities, identity bindings, affiliations, relationships,
   facts, interactions;
@@ -114,19 +115,19 @@ form once:
 
 When progressive tool disclosure is active:
 
-1. For a small request, describe `docket_commit_changeset` with
-   `commit_mode=direct` and the exact discriminated `mutation_types` required.
-   For direct tracked work, those may be `item_create`, `task_create`, and
-   `temporal_binding_create`; request only the variants the resolved intent needs.
-2. For larger work, describe `docket_stage_changes` with only the exact
-   `mutation_types` or `normalized_entry_types` needed by the next bounded batch.
+1. Describe `docket_stage_changes` with only the exact discriminated `mutation_types`
+   or `normalized_entry_types` needed by the next bounded batch.
+   For tracked work these may be `item_create`, `task_create`, and
+   `temporal_binding_create`; request only what the resolved intent needs.
+2. Stage the bounded patch, even for a single effect.
    Call it repeatedly as needed. A patch accepts at most 25 normalized-entry
    upserts, so split a 26+ entry import before the first call. The first valid
    stage call creates the draft.
 3. Use `docket_review_changeset` only when a compact summary, diagnostics, or a
    bounded page is needed to correct or confidently finish the draft.
-4. Describe `docket_commit_changeset` with `commit_mode=assembled`, then commit
-   without retransmitting staged content.
+4. Describe `docket_commit_changeset`, then call it with no model arguments.
+   Do not retransmit staged content. For genuine ambiguity, use
+   `docket_request_clarification` with exact `mutation_types` for its typed choices.
 
 There is no `begin_changeset` tool. Never invent or carry a draft ref, revision,
 stage-operation key, or idempotency key: authenticated infrastructure binds them.
@@ -138,7 +139,7 @@ reconstruct omitted mutation shapes from memory.
 derives provider Operations from canonical mutations after validating the complete
 scope. Hermes never formulates, retries, or repairs provider Operations.
 
-Before staging or direct commit, perform only the reads needed to resolve exact refs, current
+Before staging, perform only the reads needed to resolve exact refs, current
 versions, provider targets, and real conflicts. After commit, use the returned
 bounded receipt, effect/provider counts, and sampled `effects`/
 `provider_operations`. A large atomic ChangeSet intentionally truncates those
@@ -188,7 +189,7 @@ Conflict resolution is accepted only by `docket_resolve_conflict`; never encode 
 ConflictResolution inside `docket_commit_changeset`.
 
 One persisted semantic option is one indivisible authorized scope and compiles to
-one atomic ChangeSet. Build each option from the exact direct ChangeSet
+one atomic ChangeSet. Build each option from the exact typed future ChangeSet
 schema and set `selection_authority_ref` to the current `utt_`; Docket replaces only
 that provenance slot with the future selection `utt_` after the Operator clicks.
 Visible option text is rendered by Docket from the typed effects. Do not supply or
@@ -205,8 +206,8 @@ when a public ref exists.
 
 For an AttentionCase or DailyBrief reply, read each addressed `case_` once and use
 the returned current `caserev_`, version, item refs, roles, and statuses. Submit the
-first structurally valid direct ChangeSet, or stage a larger resolved scope without
-rejected schema probes. The typed resolution change uses `object_ref`, `case_revision_ref`,
+first structurally valid stage, then commit without rejected schema probes.
+The typed resolution change uses `object_ref`, `case_revision_ref`,
 `case_outcome`, `item_dispositions`, and `basis_refs` directly—never generic
 `payload` or agent-supplied `affected_fields`.
 
@@ -322,9 +323,9 @@ interactive IntentSession through its exact trusted revision binding.
 state and provider intents are durable; it does not
 mean the provider call has completed. `needs_clarification` means the session and
 evidence are preserved. `replayed_request` is only a replay of an already terminal
-successful/no-op result. A duplicate failed draft remains failed: follow its
-`next.changeset_ref` and `expected_changeset_version`, revise that exact ChangeSet,
-and preserve the returned `semantic_request_ref`. Follow compact public refs; do
+successful/no-op result. Replaying a failed operation returns its original failure;
+repair with a new stage call under the same bound request. Do not copy draft refs
+or versions into commit. Follow compact public refs; do
 not include unsolicited history. Do not reproduce raw provenance chains, tool
 transcripts, or provider payloads in chat.
 
@@ -333,8 +334,7 @@ returns an available `semantic_request_ref` for that exact scope. Do not claim
 authority was preserved merely because the immutable `utt_` exists or a malformed
 call was blocked locally.
 
-On direct `committed`, bounded `effects` and `provider_operations` identify sampled
-results. On assembled `committed`, the durable minimal receipt reports exact
+On `committed`, the durable minimal receipt reports exact
 canonical/provider totals, provider disposition, and a bounded affected-ref sample.
 `provider_disposition=queued` proves durable provider intent, not provider completion.
 This is sufficient for the normal final response. Do not issue post-commit

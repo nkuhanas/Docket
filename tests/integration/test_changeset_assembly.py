@@ -1055,7 +1055,10 @@ def test_mcp_schema_rejection_terminalizes_admission_and_next_stage_proceeds(
         invalid_arguments["patch"]["operations"][0]["action"]["create_spec"][
             "title"
         ] = ""
-        invalid_hash = sha256_json(invalid_arguments)
+        invalid_hash = sha256_json({
+            key: value for key, value in invalid_arguments.items()
+            if key not in {"utterance_ref", "request_key"}
+        })
         invalid_token = _admit(
             session,
             utterance=utterance,
@@ -1089,7 +1092,10 @@ def test_mcp_schema_rejection_terminalizes_admission_and_next_stage_proceeds(
         assert rejected.result_disposition == "rejected_validation"
 
     valid_arguments = _item_stage(utterance).model_dump(mode="json", exclude_none=True)
-    valid_hash = sha256_json(valid_arguments)
+    valid_hash = sha256_json({
+        key: value for key, value in valid_arguments.items()
+        if key not in {"utterance_ref", "request_key"}
+    })
     with session_factory.begin() as session:
         valid_token = _admit(
             session,
@@ -1112,6 +1118,84 @@ def test_mcp_schema_rejection_terminalizes_admission_and_next_stage_proceeds(
     )
     assert isinstance(valid_result, tuple)
     assert valid_result[1]["disposition"] == "staged"
+
+
+@pytest.mark.integration
+def test_mcp_stage_then_payload_free_commit_and_replay_without_review(session_factory) -> None:
+    utterance = _utterance("1542799000000000840")
+    trace_ref = new_public_ref("trace")
+    with session_factory.begin() as session:
+        session.add(utterance)
+        session.flush()
+        stage_arguments = _item_stage(utterance).model_dump(mode="json", exclude_none=True)
+
+    def invoke(name: str, arguments: dict, ordinal: int) -> dict:
+        model_hash = sha256_json({
+            key: value for key, value in arguments.items()
+            if key not in {"utterance_ref", "request_key"}
+        })
+        with session_factory.begin() as session:
+            token = _admit(
+                session, utterance=utterance, trace_ref=trace_ref,
+                call_id=f"mcp-{ordinal}", ordinal=ordinal,
+                tool_name=name, argument_hash=model_hash,
+            )
+        result = asyncio.run(mcp.call_tool(name, {
+            **arguments, "assembly_operation_token": token,
+            "assembly_argument_hash": model_hash,
+        }))
+        assert isinstance(result, tuple)
+        return result[1]
+
+    assert invoke("docket_stage_changes", stage_arguments, 1)["disposition"] == "staged"
+    binding = {"utterance_ref": utterance.ref_id, "request_key": utterance.request_key}
+    # A resumed pre-cutover recipe must be rejected, not ignored or decoded.
+    rejected = invoke("docket_commit_changeset", {
+        **binding, "submission": {"commit_mode": "direct", "content": {}},
+    }, 2)
+    assert rejected["error"]["code"] == "validation_error"
+    with session_factory() as session:
+        assert session.scalar(select(func.count(Item.id))) == 0
+        obsolete = session.scalar(select(AssemblyOperation).where(
+            AssemblyOperation.upstream_tool_call_id == "mcp-2"
+        ))
+        assert obsolete.state == "rejected"
+    receipt = invoke("docket_commit_changeset", binding, 3)
+    assert receipt["disposition"] == "committed"
+    replay = invoke("docket_commit_changeset", binding, 4)
+    assert replay == receipt
+    with session_factory() as session:
+        assert session.scalar(select(func.count(Item.id))) == 1
+        assert session.scalar(select(Item.title)) == "Tracked request"
+        assert session.scalar(select(func.count(ChangeSet.id))) == 1
+        calls = list(session.scalars(select(ToolInvocation)))
+        assert len(calls) == 4
+        assert all(call.transport_state == "completed" for call in calls)
+        assert all(call.normalized_argument_hash == sha256_json({}) for call in calls[-2:])
+
+
+@pytest.mark.integration
+def test_mcp_clarification_persists_choices_without_canonical_effects(session_factory) -> None:
+    utterance = _utterance("1542799000000000841")
+    with session_factory.begin() as session:
+        session.add(utterance)
+        session.flush()
+        action = _item_stage(utterance).patch.operations[0].action.model_dump(mode="json")
+    result = asyncio.run(mcp.call_tool("docket_request_clarification", {
+        "utterance_ref": utterance.ref_id, "request_key": utterance.request_key,
+        "question": "Track this item?", "semantic_options": [{
+            "option_id": "track-item", "selection_authority_ref": utterance.ref_id,
+            "content": {"basis_refs": [utterance.ref_id], "tracked_context_changes": [action]},
+        }],
+    }))
+    assert isinstance(result, tuple)
+    assert result[1]["disposition"] == "needs_clarification"
+    with session_factory() as session:
+        assert session.scalar(select(func.count(ChangeSet.id))) == 0
+        assert session.scalar(select(func.count(Item.id))) == 0
+        call = session.scalar(select(ToolInvocation))
+        assert call.domain_state == "succeeded"
+        assert call.result_disposition == "needs_clarification"
 
 
 @pytest.mark.integration

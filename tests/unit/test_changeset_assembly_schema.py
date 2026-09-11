@@ -4,8 +4,6 @@ import pytest
 from pydantic import ValidationError
 
 from docket.schemas.assembly import (
-    AssembledChangeSetSubmission,
-    DirectChangeSetSubmission,
     StagePatchInput,
 )
 from docket.services.changeset_assembly import (
@@ -56,26 +54,12 @@ def test_stage_patch_is_bounded_and_discriminated() -> None:
         )
 
 
-def test_commit_forms_are_exact_and_exclusive() -> None:
-    assembled = AssembledChangeSetSubmission.model_validate(
-        {"commit_mode": "assembled"}
-    )
-    assert assembled.commit_mode == "assembled"
-    with pytest.raises(ValidationError):
-        AssembledChangeSetSubmission.model_validate(
-            {"commit_mode": "assembled", "content": None}
-        )
+def test_commit_submission_variants_are_removed_not_aliased() -> None:
+    import docket.schemas.assembly as assembly
 
-    direct = DirectChangeSetSubmission.model_validate(
-        {
-            "commit_mode": "direct",
-            "resolved_intent": {"intent": "small direct request"},
-            "content": None,
-        }
-    )
-    assert direct.commit_mode == "direct"
-    with pytest.raises(ValidationError):
-        DirectChangeSetSubmission.model_validate({"commit_mode": "direct"})
+    assert not hasattr(assembly, "DirectChangeSetSubmission")
+    assert not hasattr(assembly, "AssembledChangeSetSubmission")
+    assert not hasattr(assembly, "ChangeSetSubmission")
 
 
 def test_workload_limits_are_independent_of_output_budget() -> None:

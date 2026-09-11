@@ -214,14 +214,14 @@ def _load_interactive_tool_contract() -> tuple[str, str, str, str, str]:
         f"contract_hash: {actual_hash}\n"
         f"profile: {profile}\n\n"
         f"{prompt_rules.strip()}\n"
-        "The 22-tool contract remains registered exactly. Hermes progressive "
+        "The 23-tool contract remains registered exactly. Hermes progressive "
         "tool disclosure may replace direct schemas with tool_search, tool_describe, "
         "and tool_call; the underlying exact tool name, authenticated hooks, and "
         "Pydantic schema still govern every invocation. Search once for the required "
         "capabilities, describe only tools whose argument schema is needed, and do "
-        "not load unrelated mutation schemas. For larger work, describe and call "
+        "not load unrelated mutation schemas. For every canonical request, describe and call "
         "docket_stage_changes in bounded batches, then describe "
-        "docket_commit_changeset with commit_mode=assembled. There is no begin call "
+        "docket_commit_changeset with no model arguments. Review is optional. No begin call "
         "and no model-supplied draft ID, revision, or idempotency key."
     )
     return content, compact_prompt, version, actual_hash, profile
@@ -252,6 +252,7 @@ _DOCKET_MCP_TOOL_NAMES = frozenset(
         "docket_list_reminder_plans",
         "docket_query_items",
         "docket_resolve_conflict",
+        "docket_request_clarification",
         "docket_query_people",
         "docket_read_attachment_text",
         "docket_review_changeset",
@@ -882,44 +883,12 @@ def _argument_preview(tool_name: str, arguments: dict[str, Any]) -> str:
     if public_refs:
         preview_data["refs"] = public_refs
     if tool_name == "docket_commit_changeset":
-        submission = arguments.get("submission")
-        content = submission.get("content") if isinstance(submission, dict) else None
-        if isinstance(submission, dict):
-            preview_data["commit_mode"] = submission.get("commit_mode")
-        if isinstance(content, dict):
-            preview_data["change_counts"] = {
-                key: len(value)
-                for key in (
-                    "registry_changes",
-                    "preference_changes",
-                    "lane_changes",
-                    "event_changes",
-                    "tracked_context_changes",
-                    "resolution_changes",
-                    "provider_intents",
-                )
-                if isinstance((value := content.get(key)), list) and value
-            }
-            resolution_summaries = []
-            for change in content.get("resolution_changes", [])[:10]:
-                if not isinstance(change, dict):
-                    continue
-                if change.get("object_type") != "attention_case_resolution":
-                    continue
-                resolution_summaries.append(
-                    {
-                        "case_ref": change.get("object_ref"),
-                        "case_revision_ref": change.get("case_revision_ref"),
-                        "case_outcome": change.get("case_outcome"),
-                        "explicit_item_dispositions": len(
-                            change.get("item_dispositions", [])
-                            if isinstance(change.get("item_dispositions"), list)
-                            else []
-                        ),
-                    }
-                )
-            if resolution_summaries:
-                preview_data["case_resolutions"] = resolution_summaries
+        preview_data["effect"] = "commit_bound_staged_revision"
+    elif tool_name == "docket_stage_changes":
+        patch = arguments.get("patch")
+        operations = patch.get("operations") if isinstance(patch, dict) else None
+        if isinstance(operations, list):
+            preview_data["patch_operation_count"] = len(operations)
     elif "limit" in arguments and isinstance(arguments.get("limit"), int):
         preview_data["limit"] = arguments["limit"]
     preview = json.dumps(
@@ -947,6 +916,16 @@ def _trace_context(task_id: str, session_id: str) -> dict[str, Any] | None:
     return None
 
 
+_INFRASTRUCTURE_ARGUMENT_NAMES = frozenset({
+    "assembly_operation_token", "assembly_argument_hash", "utterance_ref",
+    "request_key", "operator_utterance_ref",
+})
+_TRUSTED_CONTEXT_TOOLS = frozenset({
+    "docket_stage_changes", "docket_review_changeset", "docket_commit_changeset",
+    "docket_request_clarification",
+})
+
+
 def _on_pre_tool_call(
     tool_name: str = "",
     task_id: str = "",
@@ -967,6 +946,22 @@ def _on_pre_tool_call(
             "action": "block",
             "message": "Docket instructions changed during execution; resume after deployment.",
         }
+    if public_name in _TRUSTED_CONTEXT_TOOLS and isinstance(args, dict):
+        with _TRACE_CONTEXT_LOCK:
+            trusted = _trace_context(task_id, session_id)
+            if trusted is None or trusted.get("terminal") or not all(
+                trusted.get(key) for key in (
+                    "utterance_ref", "guild_id", "source_channel_id", "source_message_id"
+                )
+            ) or (
+                turn_id and trusted.get("turn_id") not in {None, turn_id}
+            ):
+                return {"action": "block", "message": "Resume the authenticated Docket request."}
+            args["utterance_ref"] = trusted["utterance_ref"]
+            args["request_key"] = (
+                f"discord:{trusted['guild_id']}:{trusted['source_channel_id']}:"
+                f"{trusted['source_message_id']}:0"
+            )
     validation_error = (
         _validate_authority_arguments_locally(public_name, args)
         if public_name
@@ -974,6 +969,7 @@ def _on_pre_tool_call(
             "docket_stage_changes",
             "docket_review_changeset",
             "docket_commit_changeset",
+            "docket_request_clarification",
         }
         else None
     )
@@ -983,7 +979,7 @@ def _on_pre_tool_call(
     model_arguments = {
         key: value
         for key, value in (args.items() if isinstance(args, dict) else [])
-        if key not in {"assembly_operation_token", "assembly_argument_hash"}
+        if key not in _INFRASTRUCTURE_ARGUMENT_NAMES
     }
     model_argument_hash = hashlib.sha256(
         json.dumps(
@@ -1040,12 +1036,8 @@ def _on_pre_tool_call(
     needs_assembly_admission = public_name in {
         "docket_stage_changes",
         "docket_review_changeset",
-    } or (
-        public_name == "docket_commit_changeset"
-        and isinstance(args, dict)
-        and isinstance(args.get("submission"), dict)
-        and args["submission"].get("commit_mode") == "assembled"
-    )
+        "docket_commit_changeset",
+    }
     if directive is None and needs_assembly_admission:
         if not isinstance(args, dict):
             directive = {
@@ -1168,6 +1160,7 @@ def _validate_authority_arguments_locally(tool_name: str, args: Any) -> str | No
     try:
         from jsonschema import Draft202012Validator
 
+        schema = {**schema, "additionalProperties": False}
         errors = sorted(
             Draft202012Validator(schema).iter_errors(args),
             key=lambda error: (

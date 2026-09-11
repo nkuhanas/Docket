@@ -51,8 +51,11 @@ def test_manual_skill_defines_exact_resolved_intent_and_changeset_groups() -> No
     assert "`add_associated_email_ref`" in skill
     assert "do not preallocate an `idn_`" in skill
     assert "returned current `caserev_`" in skill
-    assert "first structurally valid direct ChangeSet" in skill
-    assert "stage a larger resolved scope without rejected schema probes" in skill
+    assert "first structurally valid stage, then commit without rejected schema probes" in skill
+    assert "commit_mode=" not in skill
+    assert "Always stage into Docket's implicit durable draft" in skill
+    assert "Review is optional" in skill
+    assert "`docket_request_clarification`" in skill
     assert "omitted supporting items deterministically become `not_pursued`" in skill
     assert "`predicate=application_status`" in skill
     assert "Docket deterministically compiles the required Google projection" in skill

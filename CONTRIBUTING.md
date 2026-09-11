@@ -62,7 +62,7 @@ a PostgreSQL custom-format backup, retains the previous image under a
 timestamped rollback tag, applies migrations, and replaces Docket and Hermes
 while the restricted Discord ingress remains connected. It then verifies
 Docket health, Alembic head, the Hermes gateway, the pinned plugin version, the
-22-tool MCP registry, the private projection listener, and zero in-flight work.
+23-tool MCP registry, the private projection listener, and zero in-flight work.
 Queued Operations, reconciliation work, and unclaimed outbox entries survive
 the restart and do not block it.
 

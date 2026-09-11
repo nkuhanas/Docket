@@ -37,6 +37,7 @@ EXPECTED_TOOLS = {
     "docket_read_attachment_text",
     "docket_resolve_conflict",
     "docket_review_changeset",
+    "docket_request_clarification",
     "docket_search_entities",
     "docket_search_history",
     "docket_stage_changes",
@@ -139,16 +140,20 @@ async def smoke() -> None:
                     "discord:000000000000000002:000000000000000003:"
                     "999999999999999999:1"
                 ),
-                "submission": {
-                    "commit_mode": "direct",
-                    "statements": [],
-                    "relations": [],
-                    "resolved_intent": {"kind": "compose_smoke"},
-                    "blocking_clarifications": [
-                        {"blocking": True, "question": "Which dummy term?"}
-                    ],
-                    "content": None,
-                },
+                "question": "Track the dummy smoke term?",
+                "semantic_options": [{
+                    "option_id": "track-dummy-term",
+                    "selection_authority_ref": utterance_ref,
+                    "content": {
+                        "basis_refs": [utterance_ref],
+                        "tracked_context_changes": [{
+                            "mutation_type": "item_create", "change_id": "dummy-term",
+                            "action": "create", "object_type": "item",
+                            "affected_fields": ["title"], "basis_refs": [utterance_ref],
+                            "create_spec": {"title": "Dummy smoke term"},
+                        }],
+                    },
+                }],
             }
 
         async with streamable_http_client(f"{base_url}/mcp/", http_client=client) as streams:
@@ -165,7 +170,9 @@ async def smoke() -> None:
                 )
                 assert not searched.isError, searched
 
-                invalid = await session.call_tool("docket_commit_changeset", {})
+                invalid = await session.call_tool(
+                    "docket_commit_changeset", {"submission": {"commit_mode": "direct"}}
+                )
                 assert not invalid.isError, invalid
                 invalid_payload = json.loads(invalid.content[0].text)
                 assert invalid_payload["ok"] is False
@@ -173,13 +180,18 @@ async def smoke() -> None:
                 assert invalid_payload["error"]["code"] == "validation_error"
 
                 clarification = await session.call_tool(
-                    "docket_commit_changeset",
+                    "docket_request_clarification",
                     changeset_arguments,
                 )
                 assert not clarification.isError, clarification
+                clarification_payload = json.loads(clarification.content[0].text)
+                assert clarification_payload["disposition"] == "needs_clarification"
 
         trace_ref = new_public_ref("trace")
-        argument_hash = sha256_json(changeset_arguments)
+        argument_hash = sha256_json({
+            key: value for key, value in changeset_arguments.items()
+            if key not in {"utterance_ref", "request_key"}
+        })
         turn_started_at = datetime.now(UTC).isoformat()
         trace_context = {
             "guild_id": "000000000000000002",
@@ -195,7 +207,7 @@ async def smoke() -> None:
         running_call = {
             "call_id": "compose-smoke-call",
             "ordinal": 1,
-            "tool_name": "docket_commit_changeset",
+            "tool_name": "docket_request_clarification",
             "transport_state": "running",
             "received_argument_hash": argument_hash,
             "argument_preview": '{"fields":["content"]}',

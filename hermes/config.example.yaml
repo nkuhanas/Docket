@@ -117,6 +117,7 @@ mcp_servers:
         - docket_read_attachment_text
         - docket_resolve_conflict
         - docket_review_changeset
+        - docket_request_clarification
         - docket_search_entities
         - docket_search_history
         - docket_stage_changes

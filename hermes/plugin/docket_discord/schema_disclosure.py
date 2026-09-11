@@ -18,10 +18,10 @@ from typing import Any
 
 COMMIT_TOOL_NAME = "docket_commit_changeset"
 STAGE_TOOL_NAME = "docket_stage_changes"
+CLARIFICATION_TOOL_NAME = "docket_request_clarification"
 NAMESPACED_COMMIT_TOOL_NAME = f"mcp__docket__{COMMIT_TOOL_NAME}"
 NAMESPACED_STAGE_TOOL_NAME = f"mcp__docket__{STAGE_TOOL_NAME}"
 MUTATION_TYPES_ARGUMENT = "mutation_types"
-COMMIT_MODE_ARGUMENT = "commit_mode"
 NORMALIZED_ENTRY_TYPES_ARGUMENT = "normalized_entry_types"
 MAX_MUTATION_TYPES = 16
 MAX_NORMALIZED_ENTRY_TYPES = 3
@@ -51,6 +51,10 @@ def _is_commit_tool_name(name: str) -> bool:
 
 def _is_stage_tool_name(name: str) -> bool:
     return name in {STAGE_TOOL_NAME, NAMESPACED_STAGE_TOOL_NAME}
+
+
+def _is_clarification_tool_name(name: str) -> bool:
+    return name in {CLARIFICATION_TOOL_NAME, f"mcp__docket__{CLARIFICATION_TOOL_NAME}"}
 
 
 def _canonical_json(value: Any) -> str:
@@ -151,18 +155,21 @@ def _narrow_union(union: dict[str, Any], selected: dict[str, str]) -> dict[str, 
 
 def scoped_commit_schema(
     parameters: dict[str, Any],
-    mutation_types: Iterable[str] = (),
-    *,
-    commit_mode: str = "direct",
 ) -> dict[str, Any]:
-    """Build a model-facing schema for one exact commit form."""
+    """Commit has no semantic payload; infrastructure owns all its bindings."""
+    scoped = copy.deepcopy(parameters)
+    _strip_internal_properties(scoped)
+    scoped["additionalProperties"] = False
+    return _reference_closed(scoped)
+
+
+def scoped_clarification_schema(
+    parameters: dict[str, Any], mutation_types: Iterable[str],
+) -> dict[str, Any]:
+    """Choices carry exact future effects, but this tool cannot execute them."""
     requested = tuple(dict.fromkeys(str(name).strip() for name in mutation_types if name))
-    if commit_mode not in {"direct", "assembled"}:
-        raise SchemaScopeError("commit_mode must be direct or assembled")
-    if commit_mode == "direct" and not requested:
-        raise SchemaScopeError("mutation_types is required for direct commit")
-    if commit_mode == "assembled" and requested:
-        raise SchemaScopeError("assembled commit does not accept mutation_types")
+    if not requested:
+        raise SchemaScopeError("mutation_types is required for typed clarification choices")
     if len(requested) > MAX_MUTATION_TYPES:
         raise SchemaScopeError(
             f"mutation_types accepts at most {MAX_MUTATION_TYPES} exact variants"
@@ -171,18 +178,6 @@ def scoped_commit_schema(
     scoped = copy.deepcopy(parameters)
     _strip_internal_properties(scoped)
     definitions = scoped["$defs"]
-    submission = scoped.get("properties", {}).get("submission")
-    if not isinstance(submission, dict):
-        raise SchemaScopeError("commit schema is missing submission")
-    submission_name = (
-        "AssembledChangeSetSubmission"
-        if commit_mode == "assembled"
-        else "DirectChangeSetSubmission"
-    )
-    scoped["properties"]["submission"] = {"$ref": f"#/$defs/{submission_name}"}
-    if commit_mode == "assembled":
-        return _reference_closed(scoped)
-
     available = set(mutation_type_catalog(parameters))
     unknown = sorted(set(requested) - available)
     if unknown:
@@ -301,7 +296,6 @@ def scoped_tool_description(
     tool_definition: dict[str, Any],
     mutation_types: Iterable[str] = (),
     *,
-    commit_mode: str = "direct",
     normalized_entry_types: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Return a bounded, hash-bound description for one assembly tool scope."""
@@ -317,7 +311,11 @@ def scoped_tool_description(
     )
     tool_name = str(function.get("name") or "")
     if _is_commit_tool_name(tool_name):
-        scoped = scoped_commit_schema(parameters, requested, commit_mode=commit_mode)
+        if requested or requested_entries:
+            raise SchemaScopeError("commit accepts no mutation or entry schema scope; stage first")
+        scoped = scoped_commit_schema(parameters)
+    elif _is_clarification_tool_name(tool_name):
+        scoped = scoped_clarification_schema(parameters, requested)
     elif _is_stage_tool_name(tool_name):
         scoped = scoped_stage_schema(
             parameters,
@@ -325,7 +323,10 @@ def scoped_tool_description(
             normalized_entry_types=requested_entries,
         )
     else:
-        raise SchemaScopeError("tool does not support scoped Docket disclosure")
+        scoped = copy.deepcopy(parameters)
+        _strip_internal_properties(scoped)
+        scoped["additionalProperties"] = False
+        scoped = _reference_closed(scoped)
     full_hash = hashlib.sha256(_canonical_json(parameters).encode()).hexdigest()
     scoped_hash = hashlib.sha256(_canonical_json(scoped).encode()).hexdigest()
     payload = {
@@ -337,7 +338,6 @@ def scoped_tool_description(
         "schema_scope": {
             "mutation_types": list(requested),
             "normalized_entry_types": list(requested_entries),
-            **({"commit_mode": commit_mode} if _is_commit_tool_name(tool_name) else {}),
             "complete_for_selected_mutations": True,
             "full_schema_sha256": full_hash,
             "scoped_schema_sha256": scoped_hash,
@@ -384,7 +384,7 @@ def install_hermes_progressive_schema_patch() -> bool:
         args: dict[str, Any], *, current_tool_defs: list[dict[str, Any]]
     ) -> str:
         name = str(args.get("name") or "").strip()
-        if not (_is_commit_tool_name(name) or _is_stage_tool_name(name)):
+        if not (name.startswith("docket_") or name.startswith("mcp__docket__docket_")):
             return original_dispatch(args, current_tool_defs=current_tool_defs)
         definition = _find_tool_definition(current_tool_defs, name)
         if definition is None:
@@ -394,24 +394,13 @@ def install_hermes_progressive_schema_patch() -> bool:
         requested_mutations = mutation_types if isinstance(mutation_types, list) else []
         entry_types = args.get(NORMALIZED_ENTRY_TYPES_ARGUMENT)
         requested_entries = entry_types if isinstance(entry_types, list) else []
-        commit_mode = str(args.get(COMMIT_MODE_ARGUMENT) or "").strip()
-        if _is_commit_tool_name(name) and commit_mode not in {"direct", "assembled"}:
-            try:
-                available = mutation_type_catalog(parameters)
-            except SchemaScopeError as exc:
-                return json.dumps({"error": str(exc)}, ensure_ascii=False)
-            return json.dumps(
-                {
-                    "error": (
-                        "commit_mode is required when describing docket_commit_changeset; "
-                        "use assembled to commit the current draft without retransmitting "
-                        "content, or direct with exact mutation_types for a small request"
-                    ),
-                    "available_commit_modes": ["assembled", "direct"],
-                    "available_mutation_types": list(available),
-                },
-                ensure_ascii=False,
-            )
+        if "commit_mode" in args:
+            return json.dumps({"error": "commit has no mode or payload; stage first, then commit"})
+        if _is_clarification_tool_name(name) and not requested_mutations:
+            return json.dumps({
+                "error": "mutation_types is required to describe exact typed choices",
+                "available_mutation_types": list(mutation_type_catalog(parameters)),
+            })
         if _is_stage_tool_name(name) and not requested_mutations and not requested_entries:
             try:
                 available_mutations = mutation_type_catalog(parameters)
@@ -433,7 +422,6 @@ def install_hermes_progressive_schema_patch() -> bool:
             payload = scoped_tool_description(
                 definition,
                 requested_mutations,
-                commit_mode=commit_mode or "direct",
                 normalized_entry_types=requested_entries,
             )
         except SchemaScopeError as exc:
@@ -457,16 +445,8 @@ def install_hermes_progressive_schema_patch() -> bool:
                 "items": {"type": "string"},
                 "maxItems": MAX_MUTATION_TYPES,
                 "description": (
-                    "For a direct docket_commit_changeset or docket_stage_changes action "
-                    "patch, the exact discriminated mutation_type values needed."
-                ),
-            }
-            properties[COMMIT_MODE_ARGUMENT] = {
-                "type": "string",
-                "enum": ["direct", "assembled"],
-                "description": (
-                    "Required only for docket_commit_changeset. Assembled commits the "
-                    "current draft without retransmitting staged content."
+                    "For docket_stage_changes action patches or typed clarification choices, "
+                    "the exact discriminated mutation_type values needed."
                 ),
             }
             properties[NORMALIZED_ENTRY_TYPES_ARGUMENT] = {
@@ -480,8 +460,8 @@ def install_hermes_progressive_schema_patch() -> bool:
             }
             function["description"] = (
                 str(function.get("description") or "")
-                + " For Docket staging and commit tools, provide the exact mode and "
-                "schema scope requested by the tool contract."
+                + " Scope Docket staging/clarification schemas to the required variants. "
+                "Docket commit has no model arguments or mode."
             )
         return schemas
 

@@ -36,6 +36,7 @@ INTERACTIVE_TOOLS = {
     "docket_search_history",
     "docket_stage_changes",
     "docket_review_changeset",
+    "docket_request_clarification",
 }
 
 TRIAGE_TOOLS = {
@@ -80,24 +81,22 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
     assert set(tools) == INTERACTIVE_TOOLS
     assert REMOVED_LEGACY_MUTATIONS.isdisjoint(tools)
     assert REPLACED_LEGACY_READS.isdisjoint(tools)
-    assert "atomically" in (tools["docket_commit_changeset"].description or "")
+    assert "atomically" in (tools["docket_commit_changeset"].description or "").lower()
     assert "Conflict" in (tools["docket_resolve_conflict"].description or "")
     commit_schema = tools["docket_commit_changeset"].inputSchema
-    assert {"utterance_ref", "request_key", "submission"}.issubset(
-        commit_schema["properties"]
-    )
-    submission = commit_schema["properties"]["submission"]
-    assert submission["discriminator"]["propertyName"] == "commit_mode"
-    assert set(submission["discriminator"]["mapping"]) == {"assembled", "direct"}
-    direct = commit_schema["$defs"]["DirectChangeSetSubmission"]
+    assert all(field["x-docket-internal"] for field in commit_schema["properties"].values())
+    assert "submission" not in commit_schema["properties"]
+    assert "content" not in commit_schema["properties"]
+    assert "commit_mode" not in repr(commit_schema)
+    choice_schema = tools["docket_request_clarification"].inputSchema
     assert {
         "statements",
         "relations",
-        "resolved_intent",
-        "blocking_clarifications",
-        "content",
-    }.issubset(direct["properties"])
-    content = commit_schema["$defs"]["OperatorChangeSetContent"]
+        "question",
+        "semantic_options",
+    }.issubset(choice_schema["properties"])
+    # Future choice effects remain fully typed, but are not commit arguments.
+    content = choice_schema["$defs"]["OperatorChangeSetContent"]
     assert {
         "registry_changes",
         "preference_changes",
@@ -106,13 +105,13 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
         "resolution_changes",
     }.issubset(content["properties"])
     assert "provider_intents" not in content["properties"]
-    assert "ProviderIntentInput" not in commit_schema["$defs"]
-    import_scope = commit_schema["$defs"]["OperatorImportScope"]
+    assert "ProviderIntentInput" not in choice_schema["$defs"]
+    import_scope = choice_schema["$defs"]["OperatorImportScope"]
     assert "authorized_effects" in import_scope["properties"]
     assert "entry_coverage" in import_scope["properties"]
     assert "authority_statement_refs" not in import_scope["properties"]
     assert "Docket derives" in import_scope["properties"]["authorized_effects"]["description"]
-    entry_coverage = commit_schema["$defs"]["ImportEntryCoverage"]
+    entry_coverage = choice_schema["$defs"]["ImportEntryCoverage"]
     assert entry_coverage["additionalProperties"] is False
     assert set(entry_coverage["properties"]) == {
         "entry_id",
@@ -121,25 +120,24 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
         "calendar_representation",
         "calendar_change_id",
     }
-    statement = commit_schema["$defs"]["StatementInput"]
+    statement = choice_schema["$defs"]["StatementInput"]
     assert "import_entry_id" in statement["properties"]
-    registry_union = commit_schema["$defs"]["RegistryChangeInput"]
+    registry_union = choice_schema["$defs"]["RegistryChangeInput"]
     assert registry_union["discriminator"]["propertyName"] == "mutation_type"
     assert registry_union["discriminator"]["mapping"]["entity_create"] == ("#/$defs/EntityCreate")
     assert registry_union["discriminator"]["mapping"]["identity_binding_bind"] == (
         "#/$defs/IdentityBindingBind"
     )
-    identity_bind = commit_schema["$defs"]["IdentityBindingBind"]
+    identity_bind = choice_schema["$defs"]["IdentityBindingBind"]
     assert identity_bind["additionalProperties"] is False
     assert "object_change_id" in identity_bind["properties"]
     assert identity_bind["properties"]["payload"] == {"$ref": "#/$defs/IdentityBindingBindSpec"}
-    identity_bind_spec = commit_schema["$defs"]["IdentityBindingBindSpec"]
+    identity_bind_spec = choice_schema["$defs"]["IdentityBindingBindSpec"]
     assert "entity_change_id" in identity_bind_spec["properties"]
     assert identity_bind_spec["properties"]["resolution_basis"] == {
         "$ref": "#/$defs/IdentityResolutionBasis"
     }
-    assert "*_change_id" in (tools["docket_commit_changeset"].description or "")
-    case_resolution = commit_schema["$defs"]["ResolutionChangeInput"]
+    case_resolution = choice_schema["$defs"]["ResolutionChangeInput"]
     assert case_resolution["additionalProperties"] is False
     assert case_resolution["properties"]["object_ref"]["pattern"].startswith("^case_")
     assert case_resolution["properties"]["case_revision_ref"]["pattern"].startswith("^caserev_")
@@ -177,7 +175,7 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
     ]
     assert "numeric UTC offset" in temporal_interval["end_local"]["description"]
 
-    lane_create = commit_schema["$defs"]["CalendarLaneCreateSpec"]
+    lane_create = choice_schema["$defs"]["CalendarLaneCreateSpec"]
     assert "account_ref" in lane_create["properties"]
     assert "account_id" not in lane_create["properties"]
     assert "provider_calendar_binding" not in lane_create.get("required", [])
