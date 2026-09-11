@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
 from typing import Annotated, Any, Literal, cast
 
@@ -158,6 +159,7 @@ def _calendar_event_summary(event: dict[str, Any]) -> dict[str, Any]:
             "object_type": event.get("object_type"),
             "semantic_role": event.get("semantic_role"),
             "version": event.get("version"),
+            "mutation_target": event.get("mutation_target"),
             "status": event.get("status"),
             "summary": event.get("summary"),
             "location": event.get("location"),
@@ -175,7 +177,7 @@ def _calendar_event_summary(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _calendar_events_summary(result: dict[str, Any]) -> dict[str, Any]:
+def _calendar_events_summary(result: dict[str, Any], *, offset: int = 0) -> dict[str, Any]:
     raw_events = result.get("events", [])
     freshness_by_calendar = result.get("freshness_by_calendar")
     if isinstance(freshness_by_calendar, dict):
@@ -198,7 +200,7 @@ def _calendar_events_summary(result: dict[str, Any]) -> dict[str, Any]:
             "refresh_disabled": bool(result.get("refresh_disabled")),
         }
     )
-    return {
+    projected = {
         "ok": True,
         "account_ref": result.get("account_ref"),
         "range": {
@@ -215,6 +217,13 @@ def _calendar_events_summary(result: dict[str, Any]) -> dict[str, Any]:
         "cursor": result.get("cursor"),
         "freshness": freshness,
     }
+    # Long titles and original occurrence selectors must paginate, not turn a
+    # successful scoped read into an output-budget error. Leave envelope headroom.
+    items = projected["items"]
+    while len(items) > 1 and len(json.dumps(projected, ensure_ascii=False).encode()) > 14 * 1024:
+        items.pop()
+        projected.update(count=len(items), truncated=True, cursor=str(offset + len(items)))
+    return projected
 
 
 @mcp.tool()
@@ -566,6 +575,9 @@ def docket_list_provider_calendar_events(
     freshness: CalendarFreshness = "prefer_cache",
     result_view: CalendarEventResultView = "occurrences",
     detail: CalendarEventDetail = "summary",
+    operator_utterance_ref: Annotated[
+        UtteranceRef | None, Field(default=None, json_schema_extra={"x-docket-internal": True})
+    ] = None,
 ) -> dict[str, Any]:
     """Read one globally ordered Calendar range as compact semantic summaries.
 
@@ -575,6 +587,12 @@ def docket_list_provider_calendar_events(
     tool never mutates a provider.
     """
     try:
+        if relative_day is not None and operator_utterance_ref is None:
+            raise DocketError(
+                code="calendar_message_context_required",
+                message="Relative dates require the gateway's captured message binding.",
+                details={"next_action": "resume_authenticated_request"},
+            )
         offset = _offset_cursor(cursor)
         with session_scope() as session:
             account = AccountService(session).require_google_ref(account_ref)
@@ -593,6 +611,7 @@ def docket_list_provider_calendar_events(
                 freshness=freshness,
                 result_view=result_view,
                 offset=offset,
+                operator_utterance_ref=operator_utterance_ref,
             )
         else:
             if calendar_id not in calendar_ids:
@@ -611,9 +630,10 @@ def docket_list_provider_calendar_events(
                 freshness=freshness,
                 result_view=result_view,
                 offset=offset,
+                operator_utterance_ref=operator_utterance_ref,
             )
         if detail == "summary":
-            return _calendar_events_summary(result)
+            return _calendar_events_summary(result, offset=offset)
         return {"ok": True, "detail": "details", **result}
     except Exception as exc:
         return _error(exc)

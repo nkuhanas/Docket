@@ -268,6 +268,7 @@ class CalendarSnapshotEvent:
     timezone: str | None = None
     recurring_event_id: str | None = None
     original_start_at: datetime | None = None
+    original_start_date: date | None = None
     has_attendees: bool = False
     organizer_is_self: bool | None = None
     recurrence_kind: str = "one_time"
@@ -879,6 +880,7 @@ class GoogleCalendarProvider:
                 ) from exc
 
         original_start_at: datetime | None = None
+        original_start_date: date | None = None
         original = document.get("originalStartTime")
         if isinstance(original, dict) and isinstance(original.get("dateTime"), str):
             try:
@@ -892,6 +894,16 @@ class GoogleCalendarProvider:
                 raise CalendarProviderError(
                     "google_calendar_invalid_response",
                     "Google Calendar returned an invalid recurring-instance time.",
+                    transient=False,
+                ) from exc
+
+        if isinstance(original, dict) and isinstance(original.get("date"), str):
+            try:
+                original_start_date = date.fromisoformat(original["date"])
+            except ValueError as exc:
+                raise CalendarProviderError(
+                    "google_calendar_invalid_response",
+                    "Google Calendar returned an invalid recurring-instance date.",
                     transient=False,
                 ) from exc
 
@@ -946,6 +958,7 @@ class GoogleCalendarProvider:
                 recurring[:1024] if isinstance(recurring, str) and recurring else None
             ),
             original_start_at=original_start_at,
+            original_start_date=original_start_date,
             has_attendees=has_attendees,
             organizer_is_self=organizer_is_self,
             recurrence_kind=recurrence_kind,

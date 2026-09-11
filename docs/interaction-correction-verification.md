@@ -116,3 +116,44 @@ smoke (MCP/authentication, governance preservation, PostgreSQL concurrency, and
 migration downgrade/re-upgrade). The remaining occurrence, mandatory-staging,
 semantic-repair, and delivery/latency acceptance gates are still open. This slice
 does not claim the full amendment implemented or production changed.
+
+## Occurrence identity and scope enforcement
+
+The occurrence slice introduces internal `event_occurrences` rows, identified by
+canonical series ref and the original zoned start/date, not by the replacement's
+current start or a Google instance ID. Cancelling one occurrence compiles an
+exception on the master. Moving it adds one routed replacement; subsequent edits
+reuse that replacement. Explicit whole-series cancellation includes moved
+children. Existing exclusions and adjacent occurrences remain intact. A repeated
+occurrence cancellation produces a committed no-op without more provider work.
+
+The guard runs in ChangeSet preflight and the canonical event mutation handler.
+Unqualified recurring-event changes are rejected even from an older direct
+client. Scope must match the persisted request, and occurrence effects must match
+Docket's compiled actions. Calendar summary reads expose a compact
+`mutation_target` with original identity and canonical series version, including
+for moved occurrences. Unbound provider rows do not become canonical authority.
+
+`calendar_date_bindings` pins the date and timezone resolved from the captured
+utterance. The gateway supplies that message ref; a relative MCP lookup without
+it fails closed. Recovery reuses the stored result despite timezone or clock
+changes. Google all-day `originalStartTime.date` is retained in the provider
+cache alongside timed original starts.
+
+Migration `20260911b1e0` adds these internal tables and the all-day cache field.
+PostgreSQL triggers protect original identities and date bindings. There is no
+public alias, historical calendar rewrite, provider call, or domain backfill in
+the migration. Its downgrade removes the new bookkeeping; it is a rehearsal
+operation, not a safe production rollback after new occurrence edits. Production
+recovery must use the pre-migration verified backup or a reviewed forward repair.
+
+The staged read and recurrence tests verify original identity, DST ambiguity,
+already-moved edits/cancellation, duplicate cancellation, existing exclusions,
+explicit whole-series cancellation, relative-date stability, and no master
+retraction through an unqualified service call. Local verification passed 408
+tests, Ruff, and strict mypy. Isolated Compose smoke passed, including competing
+occurrence commits (one succeeds; one receives a version conflict), concurrent
+relative-date capture, database trigger enforcement, governance restore, and
+migration downgrade/re-upgrade. Large scoped summaries paginate within the output
+budget without losing the remaining rows. Mandatory
+staging, exact repair, delivery recovery, and latency gates remain open.

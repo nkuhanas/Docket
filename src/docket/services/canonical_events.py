@@ -20,7 +20,9 @@ from docket.models import (
     Task,
     TemporalBinding,
 )
+from docket.schemas.event_occurrences import CompiledOccurrenceEdit
 from docket.schemas.events import CanonicalEventCreateSpec, CanonicalEventPatchSpec
+from docket.services.event_scope import EventScopeGuard
 
 EventHandler = Callable[[Session, ChangeSet, Any], list[str]]
 
@@ -247,6 +249,11 @@ class CanonicalEventAuthorityService:
                 basis_refs=list(change.basis_refs),
             )
         else:
+            EventScopeGuard(self.session).validate(
+                change, semantic_request_ref=changeset.semantic_request_ref,
+                occurrence_plans=[CompiledOccurrenceEdit.model_validate(value) for value in
+                                  changeset.compiler_manifest_json.get("occurrence_plans", [])],
+            )
             if change.object_ref is None:
                 raise DocketError(
                     code="canonical_event_ref_required",

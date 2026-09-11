@@ -53,7 +53,10 @@ from docket.schemas.authority import (
 )
 from docket.services.case_resolutions import AttentionCaseResolutionService
 from docket.services.conflicts import ConflictService
+from docket.services.event_occurrences import EventOccurrenceService
+from docket.services.event_scope import EventScopeGuard
 from docket.services.intent_sessions import IntentSessionService
+from docket.services.occurrence_compiler import compile_occurrence_changes
 from docket.services.provenance_refs import ProvenanceRefService
 
 CanonicalChangeHandler = Callable[
@@ -591,6 +594,20 @@ class ChangeSetService:
                     refs=tuple(refs),
                 )
             )
+        for compiled in content.occurrence_plans:
+            replacement_ref = compiled.plan.replacement_event_ref
+            if replacement_ref is None and compiled.replacement_change_id is not None:
+                replacement_refs = refs_by_change_id.get(compiled.replacement_change_id, [])
+                if len(replacement_refs) != 1:
+                    raise DocketError(
+                        code="occurrence_replacement_unresolved",
+                        message="The compiled replacement did not resolve exactly once.",
+                    )
+                replacement_ref = replacement_refs[0]
+            EventOccurrenceService(self.session).record_applied(
+                compiled.plan, changeset_ref=changeset.ref_id,
+                basis_refs=compiled.basis_refs, replacement_event_ref=replacement_ref,
+            )
         if self.provider_handler is not None:
             provider_intents = sorted(
                 content.provider_intents,
@@ -634,6 +651,7 @@ class ChangeSetService:
                 code="provider_intents_compiler_owned",
                 message="Provider intents are derived by Docket from canonical mutations.",
             )
+        content = compile_occurrence_changes(self.session, content)
         provider_intents: list[ProviderIntentInput] = []
         lane_creates = {
             change.change_id: change
@@ -1229,6 +1247,7 @@ class ChangeSetService:
                 "tracked_context_changes": changeset.tracked_context_changes,
                 "resolution_changes": changeset.resolution_changes,
                 "provider_intents": changeset.provider_intents,
+                "occurrence_plans": changeset.compiler_manifest_json.get("occurrence_plans", []),
             }
         )
 
@@ -1245,6 +1264,10 @@ class ChangeSetService:
         changeset.tracked_context_changes = payload["tracked_context_changes"]
         changeset.resolution_changes = payload["resolution_changes"]
         changeset.provider_intents = payload["provider_intents"]
+        changeset.compiler_manifest_json = {
+            **(changeset.compiler_manifest_json or {}),
+            "occurrence_plans": payload["occurrence_plans"],
+        }
 
     def _revision(
         self,
@@ -1288,6 +1311,7 @@ class ChangeSetService:
             authority_scope_hash=changeset.authority_scope_hash,
             precondition_hash=changeset.precondition_hash,
             execution_binding_json=changeset.execution_binding_json,
+            compiler_manifest_json=changeset.compiler_manifest_json,
         )
         self.session.add(item)
         return item
@@ -1676,6 +1700,52 @@ class ChangeSetService:
             )
 
         changes = _all_changes(content)
+        event_guard = EventScopeGuard(self.session)
+        # Series locks serialize concurrent occurrence changes even before a
+        # tombstone/replacement row exists. Validation follows the locked read.
+        series_refs = sorted({plan.plan.identity.series_ref for plan in content.occurrence_plans})
+        if series_refs:
+            self.session.scalars(
+                select(CanonicalEvent)
+                .where(CanonicalEvent.ref_id.in_(series_refs))
+                .order_by(CanonicalEvent.ref_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            ).all()
+        for compiled in content.occurrence_plans:
+            try:
+                event_guard.require_bound_scope(
+                    compiled.plan.identity.series_ref, compiled.source_scope,
+                    intent_session.semantic_request_ref,
+                )
+                current_series = self.session.scalar(
+                    select(CanonicalEvent).where(
+                        CanonicalEvent.ref_id == compiled.plan.identity.series_ref
+                    )
+                )
+                if current_series is None or current_series.version != compiled.plan.series_version:
+                    raise DocketError(
+                        code="version_conflict", message="The series changed after staging."
+                    )
+                stored_occurrence = EventOccurrenceService(self.session).get(compiled.plan.identity)
+                actual_version = stored_occurrence.version if stored_occurrence else None
+                if actual_version != compiled.plan.occurrence_version:
+                    raise DocketError(
+                        code="occurrence_version_conflict",
+                        message="The occurrence changed after staging.",
+                    )
+            except DocketError as exc:
+                errors.append({"code": exc.code, "details": exc.details or {}})
+        for event_change in content.event_changes:
+            try:
+                event_guard.validate(
+                    event_change, semantic_request_ref=intent_session.semantic_request_ref,
+                    occurrence_plans=content.occurrence_plans,
+                )
+            except DocketError as exc:
+                errors.append({"code": exc.code, "details": {
+                    "change_id": event_change.change_id, **(exc.details or {}),
+                }})
         errors.extend(
             self._import_scope_errors(
                 content=content,

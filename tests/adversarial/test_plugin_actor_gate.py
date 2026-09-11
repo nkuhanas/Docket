@@ -59,6 +59,22 @@ def test_plugin_and_docket_trace_dispositions_remain_identical(plugin_module) ->
     assert plugin_module._TRACE_DISPOSITIONS == TRACE_DISPOSITIONS
 
 
+def test_relative_calendar_read_uses_trusted_message_not_model_ref(plugin_module, monkeypatch):
+    captured_ref = f"utt_{'0' * 26}"
+    plugin_module._TRACE_CONTEXTS["relative-date-test"] = {
+        "trace_ref": f"trace_{'2' * 26}", "utterance_ref": captured_ref,
+        "turn_id": None, "next_ordinal": 1, "calls": {}, "started": False, "terminal": False,
+    }
+    monkeypatch.setattr(plugin_module, "_enqueue_trace_update", lambda *_args, **_kwargs: None)
+    args = {"relative_day": "tomorrow", "operator_utterance_ref": f"utt_{'1' * 26}"}
+    assert plugin_module._on_pre_tool_call(
+        tool_name="mcp__docket__docket_list_provider_calendar_events", args=args,
+        task_id="relative-date-test", session_id="relative-date-test", tool_call_id="relative-1",
+        turn_id="relative-turn",
+    ) is None
+    assert args["operator_utterance_ref"] == captured_ref
+
+
 def test_operator_capture_uses_raw_discord_content_for_stable_ingress_replay(
     monkeypatch,
 ) -> None:

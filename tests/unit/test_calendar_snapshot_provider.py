@@ -1,9 +1,20 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import httpx
 import pytest
 
 from docket.providers.google.calendar import CalendarProviderError, GoogleCalendarProvider
+
+
+def test_all_day_moved_instance_preserves_original_date() -> None:
+    row = GoogleCalendarProvider._snapshot_event({
+        "id": "instance", "recurringEventId": "master", "status": "confirmed",
+        "start": {"date": "2026-09-10"}, "end": {"date": "2026-09-11"},
+        "originalStartTime": {"date": "2026-09-08"},
+    }, "America/Los_Angeles")
+    assert row.start_date == date(2026, 9, 10)
+    assert row.original_start_date == date(2026, 9, 8)
+    assert row.original_start_at is None
 
 
 def test_google_snapshot_request_is_bounded_paginated_and_redacted(monkeypatch) -> None:
