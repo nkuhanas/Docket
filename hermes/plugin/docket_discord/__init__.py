@@ -687,6 +687,26 @@ def _enqueue_trace_update(
         logger.error("Docket MCP trace delivery queue is full")
 
 
+def _rebind_trace_execution(
+    context: dict[str, Any], event: object, ingress_binding: dict[str, Any] | None
+) -> None:
+    token = ingress_binding.get("execution_completion_token") if ingress_binding else None
+    if token and token != context.get("execution_completion_token"):
+        # Retain trace identity/history but bind recovery to its NEW execution.
+        context.update(
+            execution_completion_token=token,
+            processing_event_id=id(event),
+            deferred_ingress_ref=ingress_binding.get("ref"),
+            gateway_instance_ref=_GATEWAY_INSTANCE_REF,
+            terminal=False,
+            turn_finalized=False,
+            delivery_recorded=False,
+            response_persistence_failed=False,
+            turn_id=None,
+            response_ref=None,
+        )
+
+
 def _register_trace_context(
     event: object,
     session_store: object | None,
@@ -716,6 +736,7 @@ def _register_trace_context(
     with _TRACE_CONTEXT_LOCK:
         existing = _TRACE_CONTEXTS.get(session_id)
         if existing is not None and existing.get("source_message_id") == message_id:
+            _rebind_trace_execution(existing, event, ingress_binding)
             return
         # A failed gateway/session attempt may be resumed under a new Hermes
         # session id. The Discord source message still owns exactly one trace;
@@ -732,6 +753,7 @@ def _register_trace_context(
             None,
         )
         if source_context is not None:
+            _rebind_trace_execution(source_context, event, ingress_binding)
             _TRACE_CONTEXTS[session_id] = source_context
             return
         if existing is not None and existing.get("started") and not existing.get("terminal"):
@@ -757,6 +779,7 @@ def _register_trace_context(
             "started": False,
             "terminal": False,
             "turn_finalized": False,
+            "processing_event_id": id(event),
             "deterministic_response_text": deterministic_response_text,
             "execution_completion_token": (
                 ingress_binding.get("execution_completion_token")
@@ -1409,9 +1432,9 @@ async def _deliver_persisted_deterministic_response(context: dict[str, Any]) -> 
         await asyncio.to_thread(
             _complete_interactive_ingress,
             dict(context),
-            outcome="completed" if delivered else "failed",
-            error_code=None if delivered else "discord_delivery_failed",
+            outcome="completed",
         )
+        context["delivery_recorded"] = True
     except (OSError, RuntimeError, urllib.error.URLError):
         logger.exception("Docket deterministic response finalization failed")
 
@@ -1423,7 +1446,15 @@ def _schedule_persisted_deterministic_response(context: dict[str, Any]) -> None:
     except Exception:
         coroutine.close()
         raise
-    asyncio.run_coroutine_threadsafe(coroutine, loop)
+    # The adapter also reports completion for the hook's skip result. Only
+    # this scheduled projection owns delivery; that callback must not resend it.
+    context["deterministic_delivery_scheduled"] = True
+    try:
+        asyncio.run_coroutine_threadsafe(coroutine, loop)
+    except Exception:
+        context.pop("deterministic_delivery_scheduled", None)
+        coroutine.close()
+        raise
 
 
 def _trace_context_for_event(
@@ -1635,11 +1666,18 @@ def _install_processing_outcome_listener(adapter: object) -> None:
     original = getattr(adapter, "on_processing_complete", None)
 
     async def on_processing_complete(event: object, outcome: object) -> None:
+        context = _trace_context_for_event(event, adapter)
+        if context is not None and (
+            context.get("processing_event_id", id(event)) != id(event)
+            or context.get("deterministic_delivery_scheduled")
+        ):
+            # A skipped duplicate has the same Discord message ID but is NOT
+            # the dispatch which owns the running turn/response projection.
+            return
         if callable(original):
             result = original(event, outcome)
             if hasattr(result, "__await__"):
                 await result
-        context = _trace_context_for_event(event, adapter)
         if context is None or context.get("delivery_recorded"):
             return
         deterministic_text = str(context.get("deterministic_response_text") or "").strip()
@@ -3645,13 +3683,34 @@ async def _run_deferred_typed_message(payload: dict[str, Any]) -> None:
     runner = __import__("gateway.run", fromlist=["_gateway_runner_ref"])._gateway_runner_ref()
     if runner is None:
         raise PluginAPIError("discord_runtime_unavailable", "Gateway is not running", 503)
-    response = await runner._handle_message(event)
-    if isinstance(response, str) and response.strip():
-        await adapter.send(
-            str(channel.id),
-            response,
-            metadata={"reply_to": str(message.id)},
-        )
+    await _dispatch_deferred_message(runner, adapter, event)
+
+
+async def _dispatch_deferred_message(runner: Any, adapter: Any, event: Any) -> None:
+    """Complete the same response lifecycle as native adapter dispatch.
+
+    Deferred delivery bypasses BasePlatformAdapter's background message loop,
+    so it must report its own send outcome. A duplicate skipped by the hook
+    cannot complete the real owner's execution (checked by event identity).
+    """
+    from gateway.platforms.base import ProcessingOutcome
+
+    _install_processing_outcome_listener(adapter)
+    outcome = ProcessingOutcome.FAILURE
+    try:
+        response = await runner._handle_message(event)
+        if isinstance(response, str) and response.strip():
+            sent = await adapter.send(
+                chat_id=str(event.source.chat_id),
+                content=response,
+                reply_to=str(event.message_id),
+            )
+            if bool(getattr(sent, "success", False)):
+                outcome = ProcessingOutcome.SUCCESS
+        else:
+            outcome = ProcessingOutcome.SUCCESS
+    finally:
+        await adapter.on_processing_complete(event, outcome)
 
 
 def _materialize_deferred_attachments(payload: dict[str, Any]) -> tuple[list[str], list[str]]:

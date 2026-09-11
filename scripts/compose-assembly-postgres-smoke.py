@@ -5,6 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -15,11 +18,14 @@ from sqlalchemy.orm import Session, sessionmaker
 from docket.config import get_settings
 from docket.database import configure_database
 from docket.domain.public_refs import new_public_ref
+from docket.internal_api.schemas import OperatorUtteranceCapture
 from docket.models import (
     AttachmentEvidence,
     CalendarLane,
     CanonicalEvent,
     ChangeSet,
+    DeferredIngress,
+    ExecutionLease,
     Operation,
     OperatorUtterance,
     ProviderAccount,
@@ -30,6 +36,49 @@ from docket.services.changeset_assembly import (
     ChangeSetAssemblyAdmissionService,
     ChangeSetAssemblyService,
 )
+from docket.services.gateway_lifetimes import GatewayLifetimeService
+from docket.services.provenance import ProvenanceService
+
+
+def test_native_and_deferred_ingress_claim_once(factory: sessionmaker[Session]) -> None:
+    settings = get_settings()
+    with factory.begin() as session:
+        gateway = GatewayLifetimeService(session).register(
+            registration_key=uuid.uuid4(), instance_kind="hermes_discord_gateway"
+        )
+        utterance = _utterance("1542799000000000550", "One input, one execution.")
+        session.add(utterance)
+        session.flush()
+        session.add(DeferredIngress(
+            source_key=utterance.request_key, ingress_kind="typed_message",
+            utterance_ref=utterance.ref_id, status="pending",
+        ))
+        utterance_ref = utterance.ref_id
+        request = OperatorUtteranceCapture(
+            request_id=uuid.uuid4(), guild_id=settings.discord_guild_id,
+            channel_id=settings.chat_channel_id, message_id="1542799000000000550",
+            actor_id=settings.operator_discord_user_id, verbatim_text=utterance.verbatim_text,
+            request_key=utterance.request_key, gateway_instance_ref=str(gateway["ref"]),
+        )
+    barrier = threading.Barrier(2)
+
+    def capture() -> dict[str, Any]:
+        with factory.begin() as session:
+            # Both transactions may have observed the pending state before claim.
+            session.scalar(select(DeferredIngress).where(
+                DeferredIngress.utterance_ref == utterance_ref
+            ))
+            barrier.wait(timeout=10)
+            return ProvenanceService(session).capture_operator_utterance(request)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first, second = executor.submit(capture), executor.submit(capture)
+        results = [first.result(timeout=15), second.result(timeout=15)]
+    assert sum(bool(row["deferred_ingress"]["execution_completion_token"]) for row in results) == 1
+    with factory() as session:
+        assert session.scalar(select(func.count(ExecutionLease.id)).where(
+            ExecutionLease.subject_ref == utterance_ref
+        )) == 1
 
 
 def _utterance(message_id: str, text: str) -> OperatorUtterance:
@@ -646,6 +695,7 @@ def main() -> None:
         test_cross_attempt_stale_edit_and_commit_are_rejected,
         test_one_changeset_lineage_per_semantic_request,
         test_thirty_entry_schedule_commits_once,
+        test_native_and_deferred_ingress_claim_once,
     )
     for check in checks:
         check(factory)

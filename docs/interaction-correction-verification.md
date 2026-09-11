@@ -1,10 +1,17 @@
 # Interaction correction verification
 
-`ONT-DELTA-2026-09-11-INTERACTION-CORRECTION` is a frozen candidate at SHA-256
+`ONT-DELTA-2026-09-11-INTERACTION-CORRECTION` is signed at SHA-256
 `39ca596f2ff00e70cad28fe6e3750f284efde53d4db47d8490531d61ae9fd23a`.
 Its private source remains under `deltas/`. The packaged artifact manifest
 registers its exact command, implementation scope, and five prerequisite
 specification Decisions. Registration does not establish sign-off.
+
+September 11 read-only production verification established the exact chain:
+`utt_01M293W0FNQ8NSMP6K71WQRNAQ` →
+`dec_01M293W1JA9CZFRMNY3FR2A48D` →
+`aud_01M293W1JBB5B6PZQXTKS7AXM0` →
+`rsp_01M293W1JMYAYT29RBGDK1MK0A` (delivered).
+Implementation is in progress; sign-off does not mean the amendment is deployed.
 
 The enablement slice changes only manifest metadata and verification. It does
 not activate occurrence actions, remove direct commit, change skills, migrate
@@ -54,3 +61,30 @@ generated contracts, full checks, and isolated Compose smoke.
 Live latency is measured from durable ingress to delivery of the canonical-commit
 receipt; provider completion is separate. Deterministic fixtures are not evidence
 of live latency. Historical calendar repair is not an automatic deployment step.
+
+## Duplicate execution correction
+
+An additional Operator report exposed two competing ingress paths: native
+Discord delivery and Docket's deferred dispatcher. Read-only September 11
+evidence found two recent utterances each with two leases. The first lease was
+completed with `agent_turn_not_finalized` within seconds; a final response was
+persisted minutes later, then a second lease was acquired. This establishes
+erroneous re-admission, not a measured count of duplicate model generations.
+
+The correction serializes claim admission on the immutable utterance, binds
+processing callbacks to the actual dispatch event, and explicitly completes the
+deferred dispatch's response lifecycle. Deterministic sign-offs have one delivery
+owner. A terminal response fences re-execution even when its Discord delivery is
+pending. An old completion token cannot release a newer claim or another message
+under the same gateway lifetime. Genuine unfinished execution remains recoverable.
+
+Regression coverage is in `test_deployment_continuity.py`,
+`test_plugin_actor_gate.py`, and the native/deferred concurrency case in
+`scripts/compose-assembly-postgres-smoke.py`. This does not replay or modify
+historical requests and does not claim exactly-once delivery from Discord.
+
+Local verification passed all 378 tests, Ruff, strict mypy, and isolated Compose
+smoke, including a two-connection PostgreSQL race with exactly one execution
+claim and one utterance audit. The first race run exposed an additional
+deterministic-audit insertion race; serializing before audit creation fixed it,
+and the complete smoke passed on rerun. No production deployment is implied.

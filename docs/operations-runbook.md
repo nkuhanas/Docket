@@ -138,6 +138,13 @@ An input that cannot be durably captured fails closed. A generated response may
 exist even when delivery failed; retry the same projection identity rather than
 creating another semantic response.
 
+Native Discord receipt and deferred ingress may both observe the same message.
+They share one durable utterance and a serialized execution claim. A completion
+callback must belong to that exact claim, not merely the same gateway lifetime
+or Discord message. A skipped duplicate cannot release the owner's lease. The
+deferred path records its own response delivery/completion, and a persisted final
+response prevents another model execution even if delivery remains pending.
+
 ## Attention and brief diagnosis
 
 Triage may suppress under an existing Preference, create `bentry_` informational

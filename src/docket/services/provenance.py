@@ -35,6 +35,7 @@ from docket.models import (
     Decision,
     DeferredIngress,
     DiscordDailyThread,
+    ExecutionLease,
     IntentSession,
     IntentTurn,
     OperatorProjection,
@@ -220,6 +221,13 @@ class ProvenanceService:
         utterance: OperatorUtterance,
         request: OperatorUtteranceCapture,
     ) -> None:
+        # Stable ingress appends the evidence before the full gateway sees it.
+        # Competing captures must not both append its deterministic audit ref.
+        self.session.execute(
+            select(OperatorUtterance.id)
+            .where(OperatorUtterance.id == utterance.id)
+            .with_for_update()
+        )
         audit_ref = f"aud_{utterance.ref_id.removeprefix('utt_')}"
         if self.session.scalar(
             select(AuditEvent.id).where(
@@ -367,11 +375,38 @@ class ProvenanceService:
     ) -> dict[str, Any] | None:
         if request.gateway_instance_ref is None:
             return None
+        # Native Discord delivery and the durable ingress dispatcher may race.
+        # Serialize on their shared evidence row before inspecting/claiming work.
+        self.session.execute(
+            select(OperatorUtterance.id)
+            .where(OperatorUtterance.id == utterance.id)
+            .with_for_update()
+        )
         existing = self.session.scalar(
-            select(DeferredIngress).where(DeferredIngress.source_key == request.request_key)
+            select(DeferredIngress)
+            .where(DeferredIngress.source_key == request.request_key)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
         if existing is not None and existing.utterance_ref != utterance.ref_id:
             raise IdempotencyConflict(request.request_key)
+        if existing is not None and GatewayLifetimeService(
+            self.session
+        ).utterance_execution_finalized(utterance_ref=utterance.ref_id):
+            existing.status = "completed"
+            existing.completed_at = existing.completed_at or utc_now()
+            existing.last_error_code = None
+            lease = self.session.scalar(
+                select(ExecutionLease).where(
+                    ExecutionLease.lease_key
+                    == f"interactive:{utterance.ref_id}:{existing.claim_token}",
+                    ExecutionLease.status == "active",
+                )
+            )
+            if lease is not None:
+                ContinuityService(self.session).complete_execution_lease(
+                    lease.completion_token, metadata={"outcome": "completed"}
+                )
         if existing is not None and existing.status in {"completed", "rejected", "claimed"}:
             return {
                 "ref": existing.ref_id,

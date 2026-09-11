@@ -27,6 +27,101 @@ from docket.services.provenance import ProvenanceService
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash
 
 
+def _claimed_message(session_factory):
+    settings = get_settings()
+    with session_factory.begin() as session:
+        gateway = GatewayLifetimeService(session).register(
+            registration_key=uuid.uuid4(), instance_kind="hermes_discord_gateway"
+        )
+        request = OperatorUtteranceCapture(
+            request_id=uuid.uuid4(), guild_id=settings.discord_guild_id,
+            channel_id=settings.chat_channel_id, message_id="1542799000000000450",
+            actor_id=settings.operator_discord_user_id, verbatim_text="A bounded request.",
+            request_key=(f"discord:{settings.discord_guild_id}:{settings.chat_channel_id}:"
+                         "1542799000000000450:0"),
+            gateway_instance_ref=str(gateway["ref"]),
+        )
+        captured = ProvenanceService(session).capture_operator_utterance(request)
+    return request, captured
+
+
+@pytest.mark.integration
+def test_old_completion_cannot_release_new_claim_in_same_gateway(session_factory) -> None:
+    request, captured = _claimed_message(session_factory)
+    binding = captured["deferred_ingress"]
+    arguments = dict(
+        completion_token=binding["execution_completion_token"], ingress_ref=binding["ref"],
+        gateway_instance_ref=request.gateway_instance_ref, outcome="failed", error_code="failed",
+    )
+    with session_factory.begin() as session:
+        ContinuityService(session).complete_interactive_ingress(**arguments)
+    with session_factory.begin() as session:
+        retry = ProvenanceService(session).capture_operator_utterance(request)["deferred_ingress"]
+        assert retry["execution_completion_token"] != arguments["completion_token"]
+    with session_factory.begin() as session:
+        assert ContinuityService(session).complete_interactive_ingress(**arguments)[
+            "disposition"
+        ] == "failed"
+        ingress = session.scalar(select(DeferredIngress))
+        assert ingress.status == "claimed"
+        assert str(ingress.claim_token) == retry["claim_token"]
+
+
+@pytest.mark.integration
+def test_completion_token_cannot_release_other_utterance(session_factory) -> None:
+    request, captured = _claimed_message(session_factory)
+    with session_factory.begin() as session:
+        other = ProvenanceService(session).capture_operator_utterance(request.model_copy(update={
+            "message_id": "1542799000000000451",
+            "request_key": request.request_key.replace("450:0", "451:0"),
+        }))
+        with pytest.raises(DocketError) as exc_info:
+            ContinuityService(session).complete_interactive_ingress(
+                completion_token=captured["deferred_ingress"]["execution_completion_token"],
+                ingress_ref=other["deferred_ingress"]["ref"],
+                gateway_instance_ref=request.gateway_instance_ref,
+                outcome="failed", error_code="failed",
+            )
+        assert exc_info.value.code == "execution_lease_binding_mismatch"
+        assert all(row.status == "claimed" for row in session.scalars(select(DeferredIngress)))
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("replay_before_completion", [True, False])
+def test_final_response_fences_pending_ingress_and_failed_callback(
+    session_factory, replay_before_completion
+) -> None:
+    request, captured = _claimed_message(session_factory)
+    binding = captured["deferred_ingress"]
+    with session_factory.begin() as session:
+        ProvenanceService(session).capture_agent_response(AgentResponseCapture(
+            request_id=uuid.uuid4(), guild_id=request.guild_id, channel_id=request.channel_id,
+            source_message_id=request.message_id, actor_id=request.actor_id,
+            utterance_ref=captured["ref"], turn_id="original", session_id="session",
+            model_identifier="test", verbatim_text="Finished; delivery is still pending.",
+            generated_at=datetime.now(UTC), gateway_instance_ref=request.gateway_instance_ref,
+            trace_ref=new_public_ref("trace"),
+        ))
+        # Reproduce a stale pending row, without changing immutable evidence.
+        if replay_before_completion:
+            session.scalar(select(DeferredIngress)).status = "pending"
+    with session_factory.begin() as session:
+        if replay_before_completion:
+            replay = ProvenanceService(session).capture_operator_utterance(request)
+            assert replay["deferred_ingress"]["state"] == "completed"
+            assert replay["deferred_ingress"]["execution_completion_token"] is None
+        else:
+            outcome = ContinuityService(session).complete_interactive_ingress(
+                completion_token=binding["execution_completion_token"], ingress_ref=binding["ref"],
+                gateway_instance_ref=request.gateway_instance_ref,
+                outcome="failed", error_code="agent_turn_not_finalized",
+            )
+            assert outcome["disposition"] == "completed"
+        assert session.scalar(select(func.count(ExecutionLease.id))) == 1
+    runner = DeferredIngressRunner(session_factory, FakeDiscordProjectionAdapter())
+    assert runner.run_once() is False
+
+
 @pytest.mark.integration
 def test_drain_waits_only_for_prebarrier_execution_leases(session_factory) -> None:
     with session_factory.begin() as session:
