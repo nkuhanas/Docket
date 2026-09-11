@@ -203,49 +203,13 @@ def execution_lease_complete(
         )
     try:
         with session_scope() as session:
-            GatewayLifetimeService(session).require_live(payload.gateway_instance_ref)
-            if payload.deferred_ingress_ref is not None:
-                ingress = session.scalar(
-                    select(DeferredIngress)
-                    .where(DeferredIngress.ref_id == payload.deferred_ingress_ref)
-                    .with_for_update()
-                )
-                if (
-                    ingress is None
-                    or ingress.claimed_by_gateway_ref != payload.gateway_instance_ref
-                ):
-                    raise DocketError(
-                        code="deferred_ingress_claim_mismatch",
-                        message="Deferred ingress is not owned by this gateway lifetime.",
-                    )
-                if payload.outcome == "completed":
-                    ingress.status = "completed"
-                    ingress.completed_at = utc_now()
-                    ingress.last_error_code = None
-                elif payload.outcome == "rejected":
-                    ingress.status = "rejected"
-                    ingress.completed_at = utc_now()
-                    ingress.last_error_code = payload.error_code
-                else:
-                    ingress.status = "pending"
-                    ingress.claimed_by_gateway_ref = None
-                    ingress.claim_token = None
-                    ingress.claimed_at = None
-                    ingress.last_error_code = payload.error_code or "interactive_turn_failed"
-            ContinuityService(session).complete_execution_lease(
-                payload.completion_token,
-                metadata={
-                    "outcome": payload.outcome,
-                    **(
-                        {"error_code": payload.error_code} if payload.error_code is not None else {}
-                    ),
-                },
+            return ContinuityService(session).complete_interactive_ingress(
+                completion_token=payload.completion_token,
+                ingress_ref=payload.deferred_ingress_ref,
+                gateway_instance_ref=payload.gateway_instance_ref,
+                outcome=payload.outcome,
+                error_code=payload.error_code,
             )
-            return {
-                "ok": True,
-                "state": "completed",
-                "disposition": payload.outcome,
-            }
     except DocketError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

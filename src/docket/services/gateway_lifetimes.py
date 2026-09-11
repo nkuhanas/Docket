@@ -269,25 +269,24 @@ class GatewayLifetimeService:
             )
         )
 
-    def _utterance_execution_finalized(
+    def utterance_execution_finalized(
         self,
         *,
         utterance_ref: str,
-        gateway_instance_ref: str,
     ) -> bool:
-        response_bindings = self.session.scalars(
-            select(AgentResponse.responds_to_utterance_refs).where(
-                AgentResponse.gateway_instance_ref == gateway_instance_ref
-            )
-        )
-        if any(utterance_ref in refs for refs in response_bindings):
+        # Capture binds each final response to exactly one originating utterance.
+        # Delivery and gateway lifetime are deliberately not part of this test.
+        if self.session.scalar(
+            select(AgentResponse.id)
+            .where(AgentResponse.responds_to_utterance_refs[0].as_string() == utterance_ref)
+            .limit(1)
+        ) is not None:
             return True
         return (
             self.session.scalar(
                 select(IntentTurn.id)
                 .where(
                     IntentTurn.utterance_ref == utterance_ref,
-                    IntentTurn.gateway_instance_ref == gateway_instance_ref,
                     IntentTurn.response_disposition.in_(("final_response", "no_response")),
                 )
                 .limit(1)
@@ -328,9 +327,8 @@ class GatewayLifetimeService:
             )
         )
         for ingress in deferred:
-            finalized = self._utterance_execution_finalized(
+            finalized = self.utterance_execution_finalized(
                 utterance_ref=ingress.utterance_ref,
-                gateway_instance_ref=lifetime.ref_id,
             )
             ingress.status = "completed" if finalized else "pending"
             ingress.completed_at = now if finalized else None

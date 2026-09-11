@@ -874,6 +874,101 @@ async def test_response_delivery_failure_does_not_reexecute_operator_utterance(
 
 
 @pytest.mark.asyncio
+@pytest.mark.adversarial
+async def test_skipped_duplicate_callback_cannot_finalize_running_owner(
+    plugin_module, monkeypatch
+) -> None:
+    owner = SimpleNamespace(message_id="same-message")
+    duplicate = SimpleNamespace(message_id="same-message")
+    context = {"processing_event_id": id(owner), "turn_finalized": False}
+    callbacks = []
+
+    class Adapter:
+        async def on_processing_complete(self, event, outcome):
+            callbacks.append((event, outcome))
+
+    adapter = Adapter()
+    monkeypatch.setattr(plugin_module, "_trace_context_for_event", lambda *args: context)
+    plugin_module._install_processing_outcome_listener(adapter)
+    await adapter.on_processing_complete(duplicate, "success")
+    assert callbacks == []
+    assert context == {"processing_event_id": id(owner), "turn_finalized": False}
+
+
+@pytest.mark.asyncio
+async def test_scheduled_signoff_has_one_delivery_owner(plugin_module, monkeypatch) -> None:
+    context = {"deterministic_delivery_scheduled": True}
+    monkeypatch.setattr(plugin_module, "_trace_context_for_event", lambda *args: context)
+    adapter = SimpleNamespace()
+    plugin_module._install_processing_outcome_listener(adapter)
+    await adapter.on_processing_complete(SimpleNamespace(), "success")
+    assert "delivery_recorded" not in context
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delivery_success", [True, False])
+async def test_deferred_dispatch_reports_delivery_and_completes_once(
+    plugin_module, monkeypatch, delivery_success
+) -> None:
+    class Outcome(Enum):
+        SUCCESS = "success"
+        FAILURE = "failure"
+
+    base = ModuleType("gateway.platforms.base")
+    base.ProcessingOutcome = Outcome
+    monkeypatch.setitem(sys.modules, "gateway.platforms.base", base)
+    event = SimpleNamespace(source=SimpleNamespace(chat_id="chat"), message_id="message")
+    context = {
+        "processing_event_id": id(event),
+        "response_ref": f"rsp_{'4' * 26}",
+        "turn_finalized": True,
+    }
+    completions = []
+    deliveries = []
+
+    class Adapter:
+        async def send(self, **kwargs):
+            assert kwargs["reply_to"] == "message"
+            return SimpleNamespace(success=delivery_success)
+
+    class Runner:
+        async def _handle_message(self, supplied):
+            assert supplied is event
+            return "Durable result."
+
+    monkeypatch.setattr(plugin_module, "_trace_context_for_event", lambda *args: context)
+    monkeypatch.setattr(
+        plugin_module, "_post_agent_response_delivery",
+        lambda *args, delivered: deliveries.append(delivered),
+    )
+    monkeypatch.setattr(
+        plugin_module, "_complete_interactive_ingress",
+        lambda *args, **kwargs: completions.append(kwargs),
+    )
+    await plugin_module._dispatch_deferred_message(Runner(), Adapter(), event)
+    assert deliveries == [delivery_success]
+    assert completions == [{"outcome": "completed", "error_code": None}]
+    assert context["delivery_recorded"] is True
+
+
+def test_recovery_rebinds_execution_without_discarding_trace(plugin_module) -> None:
+    event = SimpleNamespace()
+    context = {
+        "execution_completion_token": "old-token", "delivery_recorded": True,
+        "terminal": True, "calls": {"first": {}}, "next_ordinal": 2,
+    }
+    plugin_module._rebind_trace_execution(
+        context, event, {"execution_completion_token": "new-token", "ref": "ing-new"}
+    )
+    assert context["processing_event_id"] == id(event)
+    assert context["execution_completion_token"] == "new-token"
+    assert context["delivery_recorded"] is False
+    assert context["terminal"] is False
+    assert context["calls"] == {"first": {}}
+    assert context["next_ordinal"] == 2
+
+
+@pytest.mark.asyncio
 async def test_mcp_trace_projection_creates_then_edits_one_system_message(
     plugin_module, monkeypatch
 ) -> None:

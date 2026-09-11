@@ -7,7 +7,7 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from docket.domain.errors import DocketError
-from docket.models import DeferredIngress, DrainBarrier, ExecutionLease
+from docket.models import DeferredIngress, DrainBarrier, ExecutionLease, OperatorUtterance
 from docket.models.base import utc_now
 
 _DRAIN_LOCK_ID = 873_420_826
@@ -133,6 +133,97 @@ class ContinuityService:
         lease.completed_at = _database_now(self.session)
         if metadata:
             lease.metadata_json = {**lease.metadata_json, **metadata}
+
+    def complete_interactive_ingress(
+        self,
+        *,
+        completion_token: str,
+        ingress_ref: str | None,
+        gateway_instance_ref: str,
+        outcome: str,
+        error_code: str | None,
+    ) -> dict[str, Any]:
+        from docket.services.gateway_lifetimes import GatewayLifetimeService
+
+        GatewayLifetimeService(self.session).require_live(gateway_instance_ref)
+        # Same lock order as admission: utterance -> ingress -> execution lease.
+        if ingress_ref is not None:
+            self.session.execute(
+                select(OperatorUtterance.id)
+                .where(
+                    OperatorUtterance.ref_id
+                    == select(DeferredIngress.utterance_ref)
+                    .where(DeferredIngress.ref_id == ingress_ref)
+                    .scalar_subquery()
+                )
+                .with_for_update()
+            )
+        ingress = (
+            self.session.scalar(
+                select(DeferredIngress)
+                .where(DeferredIngress.ref_id == ingress_ref)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            if ingress_ref is not None
+            else None
+        )
+        lease = self.session.scalar(
+            select(ExecutionLease)
+            .where(ExecutionLease.completion_token == completion_token)
+            .with_for_update()
+        )
+        if (
+            lease is None
+            or lease.gateway_instance_ref != gateway_instance_ref
+            or lease.lease_kind != "interactive_turn"
+            or (ingress_ref is not None and (
+                ingress is None or lease.subject_ref != ingress.utterance_ref
+            ))
+        ):
+            raise DocketError(
+                code="execution_lease_binding_mismatch",
+                message="Completion does not identify this ingress execution.",
+            )
+        if lease.status != "active":
+            # A late callback for an older claim cannot reset a newer claim.
+            return {
+                "ok": True,
+                "state": lease.status,
+                "disposition": lease.metadata_json.get("outcome", lease.status),
+            }
+        if ingress is not None:
+            if (
+                ingress.claimed_by_gateway_ref != gateway_instance_ref
+                or lease.lease_key
+                != f"interactive:{ingress.utterance_ref}:{ingress.claim_token}"
+            ):
+                raise DocketError(
+                    code="deferred_ingress_claim_mismatch",
+                    message="Completion belongs to a different ingress claim.",
+                )
+            if GatewayLifetimeService(self.session).utterance_execution_finalized(
+                utterance_ref=ingress.utterance_ref
+            ):
+                outcome, error_code = "completed", None
+            if outcome in {"completed", "rejected"}:
+                ingress.status = outcome
+                ingress.completed_at = _database_now(self.session)
+                ingress.last_error_code = error_code if outcome == "rejected" else None
+            else:
+                ingress.status = "pending"
+                ingress.claimed_by_gateway_ref = None
+                ingress.claim_token = None
+                ingress.claimed_at = None
+                ingress.last_error_code = error_code or "interactive_turn_failed"
+        self.complete_execution_lease(
+            completion_token,
+            metadata={
+                "outcome": outcome,
+                **({"error_code": error_code} if error_code is not None else {}),
+            },
+        )
+        return {"ok": True, "state": "completed", "disposition": outcome}
 
     def heartbeat_execution_lease(
         self, completion_token: str, *, lease_seconds: int = 1800
