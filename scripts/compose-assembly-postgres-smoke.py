@@ -761,32 +761,14 @@ def _schedule_stage(
                         "extractor_identifier": "docket.postgres-smoke",
                         "extractor_version": "1",
                     },
-                    "item": {
-                        "title": f"MATH 1263 — PostgreSQL topic {index + 1}",
-                        "kind": "academic.lecture_topic",
-                    },
-                    "temporal": {
-                        "role": "window",
-                        "temporal_value": {
-                            "kind": "datetime_interval",
-                            "start_local": start.isoformat(),
-                            "end_local": end.isoformat(),
-                            "timezone": "America/Los_Angeles",
-                        },
-                    },
-                    "calendar": {
-                        "kind": "canonical_event",
-                        "lane_ref": lane_ref,
-                        "event_spec": {
-                            "title": f"MATH 1263 — PostgreSQL topic {index + 1}",
-                            "calendar_lane": "postgres-math-1263",
-                            "timing": {
-                                "kind": "timed",
-                                "start_local": start.isoformat(),
-                                "end_local": end.isoformat(),
-                                "timezone": "America/Los_Angeles",
-                            },
-                        },
+                    "title": f"MATH 1263 — PostgreSQL topic {index + 1}",
+                    "kind": "academic.lecture_topic",
+                    "lane_ref": lane_ref,
+                    "timing": {
+                        "kind": "timed",
+                        "start_local": start.isoformat(),
+                        "end_local": end.isoformat(),
+                        "timezone": "America/Los_Angeles",
                     },
                 },
             }
@@ -798,20 +780,9 @@ def _schedule_stage(
             "assembly_scope": (
                 {
                     "resolved_intent": {"intent": "verify thirty-entry PostgreSQL assembly"},
-                    "allowed_mutation_types": [
-                        "canonical_event_create",
-                        "item_create",
-                        "lane_routing_decision_create",
-                        "temporal_binding_create",
-                    ],
+                    "normalized_entry_types": ["scheduled_occurrence_entry"],
                     "target_refs": [lane_ref],
                     "source_refs": [source_ref],
-                    "planned_create_types": [
-                        "canonical_event",
-                        "item",
-                        "lane_routing_decision",
-                        "temporal_binding",
-                    ],
                 }
                 if include_scope
                 else None

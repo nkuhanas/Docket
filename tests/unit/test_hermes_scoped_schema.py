@@ -120,6 +120,9 @@ def test_normalized_entry_stage_schema_is_exact_and_bounded() -> None:
     ]["discriminator"]["mapping"]
     assert set(entry_mapping) == {"scheduled_occurrence_entry"}
     assert "CanonicalChangeInput" not in scoped["$defs"]
+    properties = scoped["$defs"]["ScheduledOccurrenceEntry"]["properties"]
+    assert {"title", "timing", "lane_ref", "location", "evidence"} <= properties.keys()
+    assert not {"item", "temporal", "calendar", "calendar_lane", "event_spec"} & properties.keys()
 
 
 def test_pinned_hermes_bridge_requires_and_applies_mutation_scope(monkeypatch) -> None:

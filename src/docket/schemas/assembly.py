@@ -10,7 +10,7 @@ from docket.schemas.authority import (
     CanonicalChangeInput,
     UtteranceRef,
 )
-from docket.schemas.calendar import StandaloneCalendarEventInput
+from docket.schemas.calendar import CalendarEventTiming
 from docket.schemas.common import PublicRef, StrictModel, validate_refs
 from docket.schemas.event_occurrences import EventMutationScope
 from docket.schemas.tracked_context import (
@@ -24,13 +24,17 @@ _MUTATION_PATTERN = r"^[a-z][a-z0-9_]{0,127}$"
 _TYPE_PATTERN = r"^[a-z][a-z0-9_]{0,127}$"
 _HASH_PATTERN = r"^[0-9a-f]{64}$"
 RequestKey = Annotated[str, Field(min_length=1, max_length=512)]
+NormalizedEntryType = Literal[
+    "tracked_temporal_entry", "scheduled_occurrence_entry", "schedule_exception_entry"
+]
 
 
 class AssemblyAuthorityScopeInput(StrictModel):
     """Stable semantic authority boundary for one incrementally assembled request."""
 
     resolved_intent: dict[str, Any]
-    allowed_mutation_types: list[str] = Field(min_length=1, max_length=64)
+    allowed_mutation_types: list[str] = Field(default_factory=list, max_length=64)
+    normalized_entry_types: list[NormalizedEntryType] = Field(default_factory=list, max_length=3)
     target_refs: list[PublicRef] = Field(default_factory=list, max_length=100)
     source_refs: list[Annotated[str, Field(pattern=r"^src_[0-9A-HJKMNP-TV-Z]{26}$")]] = Field(
         default_factory=list, max_length=25
@@ -78,6 +82,10 @@ class AssemblyAuthorityScopeInput(StrictModel):
 
     @model_validator(mode="after")
     def payload_is_bounded(self) -> AssemblyAuthorityScopeInput:
+        if not self.allowed_mutation_types and not self.normalized_entry_types:
+            raise ValueError("assembly scope requires action types or normalized entry types")
+        if len(self.normalized_entry_types) != len(set(self.normalized_entry_types)):
+            raise ValueError("normalized entry types must be unique")
         encoded = json.dumps(
             self.model_dump(mode="json"),
             sort_keys=True,
@@ -132,28 +140,6 @@ class NoCalendarRepresentation(StrictModel):
     kind: Literal["none"] = "none"
 
 
-class CanonicalEventRepresentation(StrictModel):
-    kind: Literal["canonical_event"] = "canonical_event"
-    lane_ref: Annotated[str, Field(pattern=r"^lane_[0-9A-HJKMNP-TV-Z]{26}$")] | None = None
-    lane_change_id: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
-    event_spec: StandaloneCalendarEventInput
-    entity_refs: list[Annotated[str, Field(pattern=r"^ent_[0-9A-HJKMNP-TV-Z]{26}$")]] = Field(
-        default_factory=list, max_length=100
-    )
-
-    @model_validator(mode="after")
-    def lane_is_exact(self) -> CanonicalEventRepresentation:
-        if (self.lane_ref is None) == (self.lane_change_id is None):
-            raise ValueError("canonical event representation requires one lane ref or change id")
-        return self
-
-
-CalendarRepresentation = Annotated[
-    NoCalendarRepresentation | CanonicalEventRepresentation,
-    Field(discriminator="kind"),
-]
-
-
 class NormalizedEntryBase(StrictModel):
     import_entry_id: str = Field(pattern=_IDENTIFIER_PATTERN)
     evidence: NormalizedEntryEvidence
@@ -172,9 +158,35 @@ class TrackedTemporalEntry(NormalizedEntryBase):
     calendar: Literal[None] = None
 
 
-class ScheduledOccurrenceEntry(NormalizedEntryBase):
+class ScheduledOccurrenceEntry(StrictModel):
+    """One source occurrence; Docket derives all support records from these values."""
+
     entry_type: Literal["scheduled_occurrence_entry"] = "scheduled_occurrence_entry"
-    calendar: CanonicalEventRepresentation
+    import_entry_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    evidence: NormalizedEntryEvidence
+    title: str = Field(min_length=1, max_length=512)
+    timing: CalendarEventTiming
+    location: str | None = Field(default=None, max_length=1000)
+    description: str | None = Field(default=None, max_length=4000)
+    kind: str | None = Field(
+        default=None, max_length=128, pattern=r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$"
+    )
+    context_entity_refs: list[Annotated[str, Field(pattern=r"^ent_[0-9A-HJKMNP-TV-Z]{26}$")]] = (
+        Field(default_factory=list, max_length=100)
+    )
+    lane_ref: Annotated[str, Field(pattern=r"^lane_[0-9A-HJKMNP-TV-Z]{26}$")] | None = None
+    lane_change_id: str | None = Field(default=None, pattern=_IDENTIFIER_PATTERN)
+
+    @model_validator(mode="after")
+    def lane_is_exact(self) -> ScheduledOccurrenceEntry:
+        if (self.lane_ref is None) == (self.lane_change_id is None):
+            raise ValueError("scheduled occurrence requires one lane ref or change id")
+        return self
+
+    @field_validator("context_entity_refs")
+    @classmethod
+    def contexts_are_unique(cls, values: list[str]) -> list[str]:
+        return validate_refs(values)
 
 
 class ScheduleExceptionEntry(NormalizedEntryBase):

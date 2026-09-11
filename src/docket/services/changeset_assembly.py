@@ -17,6 +17,7 @@ from docket.models import (
     AssemblyExecution,
     AssemblyOperation,
     AuditEvent,
+    CalendarLane,
     ChangeSet,
     ChangeSetRevision,
     IntentSession,
@@ -32,6 +33,7 @@ from docket.schemas.assembly import (
     AssemblyAuthorityScopeInput,
     NormalizedEntryInput,
     ReviewChangesInput,
+    ScheduledOccurrenceEntry,
     StageActionRemove,
     StageActionUpsert,
     StageChangesInput,
@@ -50,6 +52,7 @@ from docket.services.changeset_compiler import (
     COMPILER_IDENTIFIER,
     COMPILER_VERSION,
     compile_normalized_entry,
+    entry_facets,
 )
 from docket.services.intent_sessions import IntentSessionService
 from docket.services.interactive_authority import InteractiveAuthorityService
@@ -164,10 +167,7 @@ class ChangeSetAssemblyAdmissionService:
             )
         )
         if existing is not None:
-            if (
-                existing.tool_name != tool_name
-                or existing.argument_hash != argument_hash
-            ):
+            if existing.tool_name != tool_name or existing.argument_hash != argument_hash:
                 raise DocketError(
                     code="stage_idempotency_mismatch",
                     message="An upstream tool-call identity was reused with different content.",
@@ -199,10 +199,8 @@ class ChangeSetAssemblyAdmissionService:
                 request
                 for request in self.session.scalars(select(SemanticRequest))
                 if utterance.ref_id in request.origin_utterance_refs
-                and (request.selected_option_binding or {}).get("kind")
-                == "freeform_assembly"
-                and request.authority_availability
-                in {"available", "consumed_committed"}
+                and (request.selected_option_binding or {}).get("kind") == "freeform_assembly"
+                and request.authority_availability in {"available", "consumed_committed"}
             ]
             if len(resumable) > 1:
                 raise DocketError(
@@ -713,7 +711,8 @@ class ChangeSetAssemblyService:
 
     @staticmethod
     def _entry_statement(entry: NormalizedEntryInput) -> StatementInput:
-        subject_refs = list(entry.item.context_entity_refs) or [entry.evidence.source_ref]
+        item, _temporal = entry_facets(entry)
+        subject_refs = list(item.context_entity_refs) or [entry.evidence.source_ref]
         return StatementInput(
             statement_kind="normalized_source_entry",
             subject_refs=subject_refs,
@@ -724,13 +723,40 @@ class ChangeSetAssemblyService:
                 "compiler_identifier": COMPILER_IDENTIFIER,
                 "compiler_version": COMPILER_VERSION,
             },
-            interpreter_version="docket.normalized-entry.v1",
+            interpreter_version=f"docket.normalized-entry.v{COMPILER_VERSION}",
             import_entry_id=entry.import_entry_id,
             source_ref=entry.evidence.source_ref,
             source_fragment_locator=entry.evidence.source_fragment_locator,
             source_fragment_hash=entry.evidence.source_fragment_hash,
             extractor_identifier=entry.evidence.extractor_identifier,
             extractor_version=entry.evidence.extractor_version,
+        )
+
+    def _entry_lane(
+        self,
+        entry: NormalizedEntryInput,
+        actions: dict[str, dict[str, Any]],
+    ) -> str | None:
+        if not isinstance(entry, ScheduledOccurrenceEntry):
+            return None
+        if entry.lane_ref is not None:
+            lane = self.session.scalar(
+                select(CalendarLane).where(CalendarLane.ref_id == entry.lane_ref)
+            )
+            if lane is not None:
+                return lane.lane
+        else:
+            action = actions.get(entry.lane_change_id or "", {})
+            if action.get("mutation_type") == "calendar_lane_create":
+                return str(action["create_spec"]["lane"])
+        raise DocketError(
+            code="normalized_entry_lane_unresolved",
+            message="The selected occurrence lane is unavailable; repair its binding.",
+            details={
+                "entry_id": entry.import_entry_id,
+                "field_path": ["lane_ref"],
+                "next_action": "resolve_lane",
+            },
         )
 
     @staticmethod
@@ -770,9 +796,7 @@ class ChangeSetAssemblyService:
         *,
         target_refs: set[str],
     ) -> None:
-        observed = {
-            ref for action in actions for ref in cls._semantic_target_refs(action)
-        }
+        observed = {ref for action in actions for ref in cls._semantic_target_refs(action)}
         unexpected = sorted(observed - target_refs)
         if unexpected:
             raise DocketError(
@@ -1080,6 +1104,19 @@ class ChangeSetAssemblyService:
         }
         staged = removed = replaced = unchanged = 0
         statement_service = StatementService(self.session)
+        # Same-patch creates are resolvable regardless of patch order. Their
+        # authority and whole-graph validation still run before any commit.
+        proposed_actions = {
+            **actions,
+            **{
+                op.action.change_id: op.action.model_dump(mode="json", exclude_none=True)
+                for op in request.patch.operations
+                if isinstance(op, StageActionUpsert)
+            },
+        }
+        for op in request.patch.operations:
+            if isinstance(op, StageActionRemove):
+                proposed_actions.pop(op.change_id, None)
         for patch_operation in request.patch.operations:
             if isinstance(patch_operation, StageActionUpsert):
                 action = patch_operation.action.model_dump(mode="json", exclude_none=True)
@@ -1096,9 +1133,7 @@ class ChangeSetAssemblyService:
                         message="Staged action is outside the authorized mutation scope.",
                         details={"mutation_type": patch_operation.action.mutation_type},
                     )
-                self._require_targets_within_scope(
-                    [action], target_refs=allowed_targets
-                )
+                self._require_targets_within_scope([action], target_refs=allowed_targets)
                 prior = actions.get(change_id)
                 if prior == action:
                     unchanged += 1
@@ -1131,9 +1166,12 @@ class ChangeSetAssemblyService:
                     entry,
                     utterance_ref=utterance.ref_id,
                     statement_ref=statement.ref_id,
+                    calendar_lane=self._entry_lane(entry, proposed_actions),
                 )
                 compiled_types = {str(item["mutation_type"]) for item in compiled.actions}
-                if not compiled_types <= allowed_mutations:
+                if entry.entry_type not in scope.normalized_entry_types and not (
+                    compiled_types <= allowed_mutations
+                ):
                     raise DocketError(
                         code="assembly_scope_violation",
                         message="Compiled entry would exceed the authorized mutation scope.",
@@ -1422,7 +1460,7 @@ class ChangeSetAssemblyService:
                 {
                     "import_entry_id": entry.get("import_entry_id"),
                     "entry_type": entry.get("entry_type"),
-                    "title": (entry.get("item") or {}).get("title"),
+                    "title": entry.get("title") or (entry.get("item") or {}).get("title"),
                     "compiled_change_ids": ownership.get(str(entry.get("import_entry_id")), {}).get(
                         "change_ids", []
                     ),
@@ -1500,8 +1538,7 @@ class ChangeSetAssemblyService:
             **({"cursor": next_cursor} if next_cursor is not None else {}),
             "next": {
                 "action": "commit_changeset"
-                if revision_state == "validated"
-                and revision_number == changeset.current_revision
+                if revision_state == "validated" and revision_number == changeset.current_revision
                 else "stage_or_reconcile"
             },
         }

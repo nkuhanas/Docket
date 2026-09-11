@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-09-11-v21"
+CONTRACT_VERSION = "docket-tools-2026-09-11-v22"
 
 
 class ToolContractEntry(TypedDict):
@@ -118,7 +118,8 @@ _INTERACTIVE_ASSEMBLY: dict[str, tuple[str, str]] = {
     ),
     "docket_stage_changes": (
         "ONT-CS-TOOL-0001",
-        "Add, replace, or remove a bounded, durably ordered implicit-draft patch.",
+        "Stage bounded actions or normalized entries; scheduled entries carry one title/time/lane "
+        "and Docket derives their complete support records.",
     ),
     "docket_review_changeset": (
         "ONT-CS-TOOL-0002",

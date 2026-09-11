@@ -7,6 +7,7 @@ from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
 from docket.schemas.assembly import (
     NormalizedEntryInput,
+    NormalizedTemporalFacet,
     ScheduledOccurrenceEntry,
     ScheduleExceptionEntry,
 )
@@ -17,15 +18,17 @@ from docket.schemas.authority import (
     LaneRoutingDecisionCreate,
     TemporalBindingCreate,
 )
-from docket.schemas.calendar import AllDayEventTiming, TimedEventTiming
+from docket.schemas.calendar import StandaloneCalendarEventInput, TimedEventTiming
 from docket.schemas.tracked_context import (
     DateIntervalTemporalValue,
     DateTimeIntervalTemporalValue,
+    ItemInput,
     TemporalBindingInput,
 )
 
 COMPILER_IDENTIFIER = "docket.normalized-temporal-entry"
-COMPILER_VERSION = 1
+COMPILER_VERSION = 2
+NORMALIZED_INPUT_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -37,39 +40,36 @@ class CompiledNormalizedEntry:
     predicted_provider_operation_types: tuple[str, ...]
 
 
-def _assert_occurrence_matches_time(entry: ScheduledOccurrenceEntry) -> None:
-    timing = entry.calendar.event_spec.timing
-    value = entry.temporal.temporal_value
-    if isinstance(timing, TimedEventTiming) and isinstance(value, DateTimeIntervalTemporalValue):
-        if (
-            timing.start_local != value.start_local
-            or timing.end_local != value.end_local
-            or timing.timezone != value.timezone
-            or timing.fold != value.fold
-        ):
-            raise DocketError(
-                code="normalized_occurrence_time_mismatch",
-                message="The Event timing must exactly match the normalized temporal interval.",
-            )
-        return
-    if isinstance(timing, AllDayEventTiming) and isinstance(value, DateIntervalTemporalValue):
-        if (
-            timing.start_date != value.start_date
-            or timing.end_date != value.end_date
-            or value.end_inclusive
-            or timing.timezone != value.timezone
-        ):
-            raise DocketError(
-                code="normalized_occurrence_time_mismatch",
-                message="The all-day Event timing must match the normalized date interval.",
-            )
-        return
-    raise DocketError(
-        code="normalized_occurrence_time_incomplete",
-        message=(
-            "A scheduled occurrence requires an exact datetime or all-day interval; "
-            "a date alone is not an Event."
+def entry_facets(entry: NormalizedEntryInput) -> tuple[ItemInput, NormalizedTemporalFacet]:
+    """Derive support semantics from a single resolved occurrence definition."""
+    if not isinstance(entry, ScheduledOccurrenceEntry):
+        return entry.item, entry.temporal
+    timing = entry.timing
+    value = (
+        DateTimeIntervalTemporalValue(
+            kind="datetime_interval",
+            start_local=timing.start_local,
+            end_local=timing.end_local,
+            timezone=timing.timezone,
+            fold=timing.fold,
+        )
+        if isinstance(timing, TimedEventTiming)
+        else DateIntervalTemporalValue(
+            kind="date_interval",
+            start_date=timing.start_date,
+            end_date=timing.end_date,
+            timezone=timing.timezone,
+            end_inclusive=False,
+        )
+    )
+    return (
+        ItemInput(
+            title=entry.title,
+            kind=entry.kind,
+            description=entry.description,
+            context_entity_refs=entry.context_entity_refs,
         ),
+        NormalizedTemporalFacet(role="window", temporal_value=value),
     )
 
 
@@ -78,11 +78,20 @@ def compile_normalized_entry(
     *,
     utterance_ref: str,
     statement_ref: str,
+    calendar_lane: str | None = None,
 ) -> CompiledNormalizedEntry:
     """Expand resolved normalized meaning into mechanical canonical actions."""
 
-    if isinstance(entry, ScheduledOccurrenceEntry):
-        _assert_occurrence_matches_time(entry)
+    if isinstance(entry, ScheduledOccurrenceEntry) and calendar_lane is None:
+        raise DocketError(
+            code="normalized_entry_lane_unresolved",
+            message="Resolve the selected lane before compiling this occurrence.",
+            details={
+                "entry_id": entry.import_entry_id,
+                "field_path": ["lane_ref"],
+                "next_action": "resolve_lane",
+            },
+        )
     if isinstance(entry, ScheduleExceptionEntry) and entry.calendar.kind != "none":
         raise DocketError(
             code="schedule_exception_event_forbidden",
@@ -96,7 +105,8 @@ def compile_normalized_entry(
     event_change_id = f"{entry.import_entry_id}.event"
     route_change_id = f"{entry.import_entry_id}.route"
     basis_refs = [utterance_ref, statement_ref]
-    item_spec = entry.item.model_copy(update={"source_refs": [entry.evidence.source_ref]})
+    item_input, temporal_input = entry_facets(entry)
+    item_spec = item_input.model_copy(update={"source_refs": [entry.evidence.source_ref]})
     item = ItemCreate(
         change_id=item_change_id,
         mutation_type="item_create",
@@ -116,9 +126,9 @@ def compile_normalized_entry(
         object_ref=None,
         create_spec=TemporalBindingInput(
             subject_change_id=item_change_id,
-            role=entry.temporal.role,
-            binding_key=entry.temporal.binding_key,
-            temporal_value=entry.temporal.temporal_value,
+            role=temporal_input.role,
+            binding_key=temporal_input.binding_key,
+            temporal_value=temporal_input.temporal_value,
             source_refs=[entry.evidence.source_ref],
         ),
         payload=None,
@@ -132,6 +142,7 @@ def compile_normalized_entry(
     predicted_provider_operations: tuple[str, ...] = ()
     calendar_change_id: str | None = None
     if isinstance(entry, ScheduledOccurrenceEntry):
+        assert calendar_lane is not None
         calendar_change_id = event_change_id
         event = CanonicalEventCreate(
             change_id=event_change_id,
@@ -141,14 +152,20 @@ def compile_normalized_entry(
             object_ref=None,
             create_spec={
                 "canonical_key": f"normalized-entry:{normalized_input_hash}",
-                "title": entry.item.title,
-                "event_spec": entry.calendar.event_spec,
-                "lane_ref": entry.calendar.lane_ref,
-                "lane_change_id": entry.calendar.lane_change_id,
-                "entity_refs": entry.calendar.entity_refs,
+                "title": entry.title,
+                "event_spec": StandaloneCalendarEventInput(
+                    title=entry.title,
+                    timing=entry.timing,
+                    location=entry.location,
+                    notes=entry.description,
+                    calendar_lane=calendar_lane,
+                ),
+                "lane_ref": entry.lane_ref,
+                "lane_change_id": entry.lane_change_id,
+                "entity_refs": entry.context_entity_refs,
                 "item_change_ids": [item_change_id],
                 "realizes_temporal_binding_change_ids": [time_change_id],
-                "context_labels": [entry.item.kind] if entry.item.kind is not None else [],
+                "context_labels": [entry.kind] if entry.kind is not None else [],
                 "status": "active",
             },
             payload=None,
@@ -163,8 +180,8 @@ def compile_normalized_entry(
             object_type="lane_routing_decision",
             object_ref=None,
             create_spec={
-                "lane_ref": entry.calendar.lane_ref,
-                "lane_change_id": entry.calendar.lane_change_id,
+                "lane_ref": entry.lane_ref,
+                "lane_change_id": entry.lane_change_id,
                 "event_change_id": event_change_id,
                 "recurring_identity": f"normalized-entry:{normalized_input_hash}",
                 "decision_kind": "explicit_operator",
@@ -184,6 +201,7 @@ def compile_normalized_entry(
         "statement_ref": statement_ref,
         "compiler_identifier": COMPILER_IDENTIFIER,
         "compiler_version": COMPILER_VERSION,
+        "input_schema_version": NORMALIZED_INPUT_SCHEMA_VERSION,
         "normalized_input_hash": normalized_input_hash,
     }
     ownership = {
