@@ -40,6 +40,9 @@ mcp_servers:
         - docket_old
       prompts: false
 custom: keep-me
+skills:
+  external_dirs:
+    - /opt/data/unreviewed-protocols
 session_reset:
   mode: none
 compression:
@@ -100,6 +103,7 @@ auxiliary:
     assert 'tool_search:\n    enabled: "on"\n' in updated
     assert "vision:\n    provider: custom\n" in updated
     assert "compression:\n    provider: codex\n    model: gpt-5.6-luna\n" in updated
+    assert yaml.safe_load(updated)["skills"] == {"external_dirs": []}
 
 
 def test_sync_adds_missing_performance_sections_without_replacing_parent_settings() -> None:
