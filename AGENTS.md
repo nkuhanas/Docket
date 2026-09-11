@@ -47,13 +47,14 @@ Hermes Discord gateway + docket-discord plugin
         +------> trusted internal API (/internal/v1/discord/...)
         |
         v
-Interactive MCP boundary (/mcp/; 20 bounded tools)
+Interactive MCP boundary (/mcp/; 23 bounded tools)
   - call_ starts after service authentication
   - reads are bounded
   - mutations require current utterance authority
         |
         v
-IntentSession -> statements -> conflicts/clarification -> ChangeSet
+IntentSession -> statements -> conflicts/clarification
+  -> stage -> optional review/edit -> commit ChangeSet
         |
         v
 PostgreSQL canonical transaction
@@ -142,10 +143,21 @@ canonical state or provenance authority.
 
 ## Tool and context boundaries
 
-The current interactive surface has exactly 20 tools, with only
+The current interactive surface has exactly 23 tools, with only
 `docket_commit_changeset` and `docket_resolve_conflict` able to mutate canonical
 state. The isolated triage surface has exactly four non-authoritative tools.
 `docket_get_attention_case` is the only deliberately shared tool.
+
+Under the signed September 11 interaction-correction amendment, ordinary
+canonical work uses `docket_stage_changes`, optional `docket_review_changeset`,
+then `docket_commit_changeset`. Staging implicitly creates the noncanonical
+durable draft; there is no begin call. Commit accepts no model-supplied payload
+or direct/assembled mode. The trusted gateway supplies the current utterance,
+request, and admitted execution binding; commit checks the specific observed
+draft revision atomically, never whichever revision happens to be latest.
+`docket_request_clarification` persists typed choices without canonical effects.
+`docket_resolve_conflict` remains the single conflict surface through the shared
+guarded ChangeSet service, not an escape from authority or occurrence checks.
 
 When changing a tool:
 
