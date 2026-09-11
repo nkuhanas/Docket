@@ -114,7 +114,9 @@ from docket.discord_ingress import ingress_database_url
 
 engine = create_engine(ingress_database_url())
 with engine.connect() as connection:
-    assert connection.scalar(text("SELECT count(*) FROM persisted_semantic_options")) == 0
+    # The MCP clarification fixture persisted one option, readable (not
+    # writable) by stable ingress so it can authenticate a later selection.
+    assert connection.scalar(text("SELECT count(*) FROM persisted_semantic_options")) == 1
     try:
         connection.execute(text("UPDATE operator_utterances SET verbatim_text = verbatim_text"))
     except ProgrammingError:

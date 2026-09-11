@@ -323,7 +323,12 @@ class SemanticOptionService:
             source_message_ref=utterance.source_message_ref,
             status="pending",
         )
-        self.session.add_all([projection, *option_rows, delivery])
+        # These models deliberately have no ORM relationships. Persist the
+        # immutable parent before its children; SQLAlchemy's unit-of-work does
+        # not infer mapper ordering merely from their foreign-key columns.
+        self.session.add(projection)
+        self.session.flush()
+        self.session.add_all([*option_rows, delivery])
         self.session.flush()
         self.session.add(
             OutboxEvent(

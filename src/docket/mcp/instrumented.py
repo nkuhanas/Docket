@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from typing import Any, Literal, cast
 
 from mcp.server.fastmcp import FastMCP
-from mcp.types import ContentBlock, TextContent
+from mcp.types import ContentBlock, TextContent, Tool
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -32,6 +32,7 @@ INTERACTIVE_AUTHORITY_TOOLS = frozenset(
         "docket_review_changeset",
         "docket_commit_changeset",
         "docket_resolve_conflict",
+        "docket_request_clarification",
     }
 )
 INTERACTIVE_ATTACHMENT_TOOLS = frozenset(
@@ -39,11 +40,16 @@ INTERACTIVE_ATTACHMENT_TOOLS = frozenset(
         "docket_stage_changes",
         "docket_commit_changeset",
         "docket_resolve_conflict",
+        "docket_request_clarification",
     }
 )
 INTERACTIVE_CANONICAL_MUTATION_TOOLS = frozenset(
     {"docket_commit_changeset", "docket_resolve_conflict"}
 )
+INFRASTRUCTURE_ARGUMENT_NAMES = frozenset({
+    "assembly_operation_token", "assembly_argument_hash", "utterance_ref",
+    "request_key", "operator_utterance_ref",
+})
 
 _LIST_RESULT_KEYS = (
     "accounts",
@@ -193,9 +199,7 @@ def _terminalize_invalid_assembly_operation(
     elif name == "docket_review_changeset":
         operation_kind = "review"
     elif name == "docket_commit_changeset":
-        submission = arguments.get("submission")
-        if isinstance(submission, dict) and submission.get("commit_mode") == "assembled":
-            operation_kind = "commit"
+        operation_kind = "commit"
     token = arguments.get("assembly_operation_token")
     admitted_hash = arguments.get("assembly_argument_hash")
     utterance_ref = arguments.get("utterance_ref")
@@ -365,6 +369,12 @@ class ProvenanceFastMCP(FastMCP[Any]):
         self.caller_profile = caller_profile
         super().__init__(name, **kwargs)
 
+    async def list_tools(self) -> list[Tool]:
+        registered = await super().list_tools()
+        for tool in registered:
+            tool.inputSchema["additionalProperties"] = False
+        return registered
+
     @staticmethod
     def _finish_invocation(
         session: Session,
@@ -414,7 +424,7 @@ class ProvenanceFastMCP(FastMCP[Any]):
         public_arguments = {
             key: value
             for key, value in arguments.items()
-            if key not in {"assembly_operation_token", "assembly_argument_hash"}
+            if key not in INFRASTRUCTURE_ARGUMENT_NAMES
         }
         received_hash = sha256_json(public_arguments)
         context = self.get_context()
@@ -474,6 +484,12 @@ class ProvenanceFastMCP(FastMCP[Any]):
         tool = self._tool_manager.get_tool(name)
         if tool is not None:
             try:
+                unexpected = set(arguments) - set(tool.fn_metadata.arg_model.model_fields)
+                if unexpected:
+                    raise ValidationError.from_exception_data(name, [
+                        {"type": "extra_forbidden", "loc": (field,), "input": None}
+                        for field in sorted(unexpected)
+                    ])
                 preparsed = tool.fn_metadata.pre_parse_json(arguments)
                 normalized = tool.fn_metadata.arg_model.model_validate(preparsed)
                 normalized_arguments = normalized.model_dump(mode="json", by_alias=True)
@@ -481,7 +497,7 @@ class ProvenanceFastMCP(FastMCP[Any]):
                     {
                         key: value
                         for key, value in normalized_arguments.items()
-                        if key not in {"assembly_operation_token", "assembly_argument_hash"}
+                        if key not in INFRASTRUCTURE_ARGUMENT_NAMES
                     }
                 )
             except Exception as exc:

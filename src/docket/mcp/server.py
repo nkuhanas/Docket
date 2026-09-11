@@ -17,9 +17,7 @@ from docket.models import ReminderPlan
 from docket.providers.google.gmail_runtime import get_gmail_read_provider
 from docket.providers.google.runtime import get_calendar_read_provider
 from docket.schemas.assembly import (
-    AssembledChangeSetSubmission,
     AssemblyAuthorityScopeInput,
-    ChangeSetSubmission,
     ReviewChangesInput,
     StageChangesInput,
     StagePatchInput,
@@ -28,10 +26,12 @@ from docket.schemas.authority import (
     CanonicalChangeInput,
     ConflictRef,
     ConflictResolve,
+    SemanticOptionDraft,
     SessionRef,
     SourceRef,
     StatementInput,
     StatementRef,
+    StatementRelationInput,
     UtteranceRef,
 )
 from docket.schemas.calendar import (
@@ -75,6 +75,12 @@ mcp = ProvenanceFastMCP(
 )
 
 RequestKey = Annotated[str, Field(min_length=1, max_length=512)]
+TrustedUtterance = Annotated[
+    UtteranceRef | None, Field(default=None, json_schema_extra={"x-docket-internal": True})
+]
+TrustedRequestKey = Annotated[
+    RequestKey | None, Field(default=None, json_schema_extra={"x-docket-internal": True})
+]
 ExpectedVersion = Annotated[int, Field(ge=1)]
 CalendarId = Annotated[str, Field(min_length=1, max_length=1024)]
 CalendarLimit = Annotated[int, Field(ge=1, le=100)]
@@ -698,11 +704,11 @@ def docket_list_reminder_plans(
 
 @mcp.tool()
 def docket_stage_changes(
-    utterance_ref: UtteranceRef,
-    request_key: RequestKey,
     patch: StagePatchInput,
     assembly_scope: AssemblyAuthorityScopeInput | None = None,
     expected_versions: dict[PublicRef, ExpectedVersion] | None = None,
+    utterance_ref: TrustedUtterance = None,
+    request_key: TrustedRequestKey = None,
     assembly_operation_token: Annotated[
         str | None,
         Field(
@@ -727,6 +733,10 @@ def docket_stage_changes(
     binding; never invent or request it.
     """
     try:
+        if utterance_ref is None or request_key is None:
+            raise DocketError(
+                code="operator_context_required", message="Resume the authenticated request."
+            )
         if assembly_operation_token is None or assembly_argument_hash is None:
             raise DocketError(
                 code="assembly_admission_required",
@@ -761,13 +771,13 @@ def docket_stage_changes(
 
 @mcp.tool()
 def docket_review_changeset(
-    utterance_ref: UtteranceRef,
-    request_key: RequestKey,
     view: Literal["summary", "actions", "entries", "diagnostics", "diff"] = "summary",
     mutation_types: list[str] | None = None,
     normalized_entry_types: list[str] | None = None,
     cursor: str | None = None,
     limit: Annotated[int, Field(ge=1, le=100)] = 25,
+    utterance_ref: TrustedUtterance = None,
+    request_key: TrustedRequestKey = None,
     assembly_operation_token: Annotated[
         str | None,
         Field(
@@ -787,6 +797,10 @@ def docket_review_changeset(
 ) -> dict[str, Any]:
     """Review one compact revision-consistent view of the implicit draft."""
     try:
+        if utterance_ref is None or request_key is None:
+            raise DocketError(
+                code="operator_context_required", message="Resume the authenticated request."
+            )
         if assembly_operation_token is None or assembly_argument_hash is None:
             raise DocketError(
                 code="assembly_admission_required",
@@ -823,9 +837,8 @@ def docket_review_changeset(
 
 @mcp.tool()
 def docket_commit_changeset(
-    utterance_ref: UtteranceRef,
-    request_key: RequestKey,
-    submission: ChangeSetSubmission,
+    utterance_ref: TrustedUtterance = None,
+    request_key: TrustedRequestKey = None,
     assembly_operation_token: Annotated[
         str | None,
         Field(
@@ -843,58 +856,78 @@ def docket_commit_changeset(
         ),
     ] = None,
 ) -> dict[str, Any]:
-    """Commit either one complete direct payload or the current assembled draft.
+    """Atomically commit only the trusted execution's observed staged revision.
 
-    The assembled form retransmits no staged content. The direct form remains
-    available for a small complete request. Canonical effects and required
-    provider Operation intents commit atomically; provider application remains
-    asynchronous. Direct dependent creates use *_change_id; existing objects use
-    *_ref.
+    No model arguments or canonical-content payload. Stage first; review is
+    optional. The server atomically checks the execution's observed revision,
+    commits canonical effects and required provider intents, and returns a small
+    durable receipt. Provider delivery remains asynchronous. A stale execution
+    cannot commit a newer draft, and a lost response recovers the existing receipt.
     """
     try:
-        if isinstance(submission, AssembledChangeSetSubmission):
-            if assembly_operation_token is None or assembly_argument_hash is None:
-                raise DocketError(
-                    code="assembly_admission_required",
-                    message="Assembled commit requires the infrastructure binding.",
-                )
-            with session_scope() as session:
-                service = ChangeSetAssemblyService(session)
-                try:
-                    with session.begin_nested():
-                        return service.commit(
-                            utterance_ref=utterance_ref,
-                            request_key=request_key,
-                            assembly_operation_token=assembly_operation_token,
-                            assembly_argument_hash=assembly_argument_hash,
-                        )
-                except DocketError as exc:
-                    return service.reject_admitted_operation(
-                        token=assembly_operation_token,
-                        argument_hash=assembly_argument_hash,
-                        operation_kind="commit",
-                        utterance_ref=utterance_ref,
-                        error=exc,
-                    ) or _error(exc)
-        direct = submission
+        if utterance_ref is None or request_key is None:
+            raise DocketError(
+                code="operator_context_required", message="Resume the authenticated request."
+            )
+        if assembly_operation_token is None or assembly_argument_hash is None:
+            raise DocketError(
+                code="assembly_admission_required",
+                message="Commit requires the authenticated execution binding.",
+            )
+        with session_scope() as session:
+            service = ChangeSetAssemblyService(session)
+            try:
+                with session.begin_nested():
+                    return service.commit(
+                        utterance_ref=utterance_ref, request_key=request_key,
+                        assembly_operation_token=assembly_operation_token,
+                        assembly_argument_hash=assembly_argument_hash,
+                    )
+            except DocketError as exc:
+                return service.reject_admitted_operation(
+                    token=assembly_operation_token, argument_hash=assembly_argument_hash,
+                    operation_kind="commit", utterance_ref=utterance_ref, error=exc,
+                ) or _error(exc)
+    except Exception as exc:
+        return _error(exc)
+
+
+@mcp.tool()
+def docket_request_clarification(
+    question: Annotated[str, Field(min_length=1, max_length=1000)],
+    semantic_options: Annotated[list[SemanticOptionDraft], Field(min_length=1, max_length=4)],
+    statements: Annotated[list[StatementInput] | None, Field(max_length=100)] = None,
+    relations: Annotated[list[StatementRelationInput] | None, Field(max_length=100)] = None,
+    intent_session_ref: SessionRef | None = None,
+    expected_session_version: Annotated[int | None, Field(ge=1)] = None,
+    utterance_ref: TrustedUtterance = None,
+    request_key: TrustedRequestKey = None,
+) -> dict[str, Any]:
+    """Persist exact typed choices for unresolved intent, without canonical effects.
+
+    Docket renders the persisted semantic scopes as visible choices. Selection
+    records an authenticated utterance and binds the same IntentSession. This
+    tool cannot commit a ChangeSet; do not use it for an implementation failure
+    or to request equivalent authorization again.
+    """
+    try:
+        if utterance_ref is None or request_key is None:
+            raise DocketError(
+                code="operator_context_required", message="Resume the authenticated request."
+            )
         with session_scope() as session:
             return InteractiveAuthorityService(session).process_turn(
-                utterance_ref=utterance_ref,
-                request_key=request_key,
+                utterance_ref=utterance_ref, request_key=request_key,
                 actor_id=str(get_settings().operator_discord_user_id),
-                intent_session_ref=direct.intent_session_ref,
-                expected_session_version=direct.expected_session_version,
-                statements=direct.statements,
-                relations=direct.relations,
-                resolved_intent_json=direct.resolved_intent,
-                blocking_clarifications=direct.blocking_clarifications,
-                semantic_options=direct.semantic_options,
-                content=(direct.content.to_internal() if direct.content is not None else None),
-                changeset_ref=direct.changeset_ref,
-                expected_changeset_version=direct.expected_changeset_version,
-                semantic_request_ref=direct.semantic_request_ref,
-                authority_scope_hash=direct.authority_scope_hash,
-                precondition_hash=direct.precondition_hash,
+                intent_session_ref=intent_session_ref,
+                expected_session_version=expected_session_version,
+                statements=statements or [], relations=relations or [],
+                resolved_intent_json={},
+                blocking_clarifications=[{
+                    "blocking": True, "code": "operator_choice_required", "question": question,
+                }],
+                semantic_options=semantic_options, content=None,
+                changeset_ref=None, expected_changeset_version=None,
             )
     except Exception as exc:
         return _error(exc)

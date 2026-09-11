@@ -103,14 +103,18 @@ Pinned outbound assumptions to revalidate:
   redacted argument preview of at most 768 UTF-8 bytes is forwarded into the
   operational Discord trace for operator diagnostics; secrets, verbatim text,
   raw bodies, deep nesting, and excess fields/items are replaced or omitted.
-  A canonical SHA-256 of the complete received arguments is forwarded
+  A canonical SHA-256 of the received model arguments (excluding trusted
+  message/request/admission fields) is forwarded
   separately so the authenticated trace can bind to the `call_` created at
   Docket's MCP boundary.
 * `tool_describe` also receives that namespaced registry name. The Docket
-  extension must recognize `mcp__docket__docket_commit_changeset` and return
+  extension must recognize `mcp__docket__docket_stage_changes` and return
   the exact reference-closed schema for the requested mutation types; matching
   only the unprefixed public name silently falls back to Hermes's generic
   truncated description and is a release-blocking compatibility failure.
+  Commit disclosure exposes no model arguments; clarification discloses only the
+  requested typed option variants. Trusted message/request fields are injected
+  after disclosure from the current authenticated execution, never model text.
 * the plugin sends hook observations to Docket through a bounded background
   queue so trace telemetry does not add one network round trip to each tool's
   critical path. Docket validates monotonicity and projects the one trace

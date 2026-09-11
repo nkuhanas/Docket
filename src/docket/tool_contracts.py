@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-09-06-v20"
+CONTRACT_VERSION = "docket-tools-2026-09-11-v21"
 
 
 class ToolContractEntry(TypedDict):
@@ -103,7 +103,7 @@ _INTERACTIVE_READS: dict[str, tuple[str, str]] = {
 _INTERACTIVE_MUTATIONS: dict[str, tuple[str, str]] = {
     "docket_commit_changeset": (
         "ONT-TOOL-0011",
-        "Compile and atomically commit resolved authenticated Operator intent.",
+        "Atomically commit the trusted execution's observed staged revision.",
     ),
     "docket_resolve_conflict": (
         "ONT-TOOL-0009",
@@ -112,6 +112,10 @@ _INTERACTIVE_MUTATIONS: dict[str, tuple[str, str]] = {
 }
 
 _INTERACTIVE_ASSEMBLY: dict[str, tuple[str, str]] = {
+    "docket_request_clarification": (
+        "ONT-UX-TOOL-0001",
+        "Persist typed semantic choices for genuinely unresolved intent; no canonical effects.",
+    ),
     "docket_stage_changes": (
         "ONT-CS-TOOL-0001",
         "Add, replace, or remove a bounded, durably ordered implicit-draft patch.",
@@ -154,7 +158,9 @@ def _interactive_entries() -> tuple[ToolContractEntry, ...]:
                 "tool_name": name,
                 "purpose": purpose,
                 "use_when": (
-                    "Current authenticated Operator intent is resolved and requests this effect."
+                    "Current authenticated intent genuinely needs an Operator choice."
+                    if name == "docket_request_clarification"
+                    else "Current authenticated intent is resolved and requests this effect."
                     if mutation or assembly
                     else "Answer requires this exact bounded Docket state."
                 ),
@@ -173,7 +179,9 @@ def _interactive_entries() -> tuple[ToolContractEntry, ...]:
                     "Commits canonical state and required provider Operations atomically."
                     if mutation
                     else (
-                        "Mutates only noncanonical durable draft workflow state."
+                        "Persists versioned semantic options and queues their projection only."
+                        if name == "docket_request_clarification"
+                        else "Mutates only noncanonical durable draft workflow state."
                         if name == "docket_stage_changes"
                         else "Observes a draft revision; no canonical or provider effects."
                     )
@@ -181,7 +189,9 @@ def _interactive_entries() -> tuple[ToolContractEntry, ...]:
                     else "None."
                 ),
                 "success_dispositions": (
-                    "staged|no_op|draft_revision_conflict|already_committed"
+                    "needs_clarification"
+                    if name == "docket_request_clarification"
+                    else "staged|no_op|draft_revision_conflict|already_committed"
                     if name == "docket_stage_changes"
                     else "reviewed"
                     if name == "docket_review_changeset"
@@ -318,14 +328,14 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
                     "authorization again."
                 ),
                 (
-                    "For larger work, describe docket_stage_changes with only the exact "
+                    "For every canonical request, describe docket_stage_changes with the exact "
                     "mutation_types or normalized_entry_types needed, stage bounded batches, "
                     "with at most 25 normalized-entry upserts per call, "
-                    "optionally review, then describe docket_commit_changeset with "
-                    "commit_mode=assembled and commit without retransmitting content. No begin "
-                    "call, draft ID, revision, or idempotency key is model-supplied. Use direct "
-                    "commit only for a small complete request, with commit_mode=direct and the "
-                    "exact mutation_types. Never request or reconstruct a full union."
+                    "optionally review, then call docket_commit_changeset with no model arguments. "
+                    "No begin call, direct payload, mode, draft ID, revision, request key or "
+                    "utterance ref is model-supplied. The gateway binds the observed draft. "
+                    "Use docket_request_clarification only for a genuine unresolved choice, "
+                    "never for implementation failures. Never reconstruct a full mutation union."
                 ),
                 (
                     "Calendar local datetimes are offset-free wall-clock values with a separate "

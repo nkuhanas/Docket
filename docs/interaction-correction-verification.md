@@ -157,3 +157,30 @@ relative-date capture, database trigger enforcement, governance restore, and
 migration downgrade/re-upgrade. Large scoped summaries paginate within the output
 budget without losing the remaining rows. Mandatory
 staging, exact repair, delivery recovery, and latency gates remain open.
+
+## Staged-only MCP boundary
+
+The Operator explicitly authorized the MCP API cutover. The interactive registry
+now contains 23 tools: stage/review retain infrastructure-supplied utterance and
+request bindings, commit exposes no model payload, and clarification persists
+typed choices without canonical effects. All top-level MCP schemas reject unknown
+fields. Removed direct/assembled payloads are rejected, never decoded or ignored.
+Hermes scopes staging/choice schemas to requested variants and supplies execution
+bindings from the captured message. Missing or stale execution context fails closed.
+
+End-to-end MCP fixtures stage and commit without review, reject an old direct
+recipe while preserving the draft, terminalize its admitted operation, and recover
+the same receipt on commit retry. Clarification tests prove zero canonical changes.
+The PostgreSQL smoke exposed child-before-parent flushing in semantic option
+persistence; the service now flushes the immutable projection before its children
+within the same transaction. The isolated ingress role can read the resulting
+option but still cannot update the utterance ledger.
+
+Local verification passed 410 tests, Ruff, and strict mypy. Isolated Compose smoke
+passed the new 23-tool MCP flow, PostgreSQL races, governance restore, and migration
+downgrade/re-upgrade. No production data, deployment, or historical replay changed.
+The older tool count in the governing `AGENTS.md` was not rewritten: an automated
+safety check requires separate authorization to change that governing guide.
+The signed amendment and generated runtime contract define this API cutover.
+Exact semantic repair, compact compilation, delivery recovery, diffs, and timing
+acceptance remain open; this is not full-amendment completion evidence.

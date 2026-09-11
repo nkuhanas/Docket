@@ -8,10 +8,6 @@ from pydantic import Field, field_validator, model_validator
 
 from docket.schemas.authority import (
     CanonicalChangeInput,
-    OperatorChangeSetContent,
-    SemanticOptionDraft,
-    StatementInput,
-    StatementRelationInput,
     UtteranceRef,
 )
 from docket.schemas.calendar import StandaloneCalendarEventInput
@@ -290,32 +286,3 @@ class ReviewChangesInput(StrictModel):
     normalized_entry_types: list[str] = Field(default_factory=list, max_length=3)
     cursor: str | None = Field(default=None, max_length=4096)
     limit: int = Field(default=25, ge=1, le=100)
-
-
-class DirectChangeSetSubmission(StrictModel):
-    commit_mode: Literal["direct"] = "direct"
-    statements: list[StatementInput] = Field(default_factory=list, max_length=100)
-    relations: list[StatementRelationInput] = Field(default_factory=list, max_length=100)
-    resolved_intent: dict[str, Any]
-    blocking_clarifications: list[dict[str, Any]] = Field(default_factory=list, max_length=25)
-    content: OperatorChangeSetContent | None
-    intent_session_ref: Annotated[str, Field(pattern=r"^ses_[0-9A-HJKMNP-TV-Z]{26}$")] | None = None
-    expected_session_version: int | None = Field(default=None, ge=1)
-    changeset_ref: Annotated[str, Field(pattern=r"^chg_[0-9A-HJKMNP-TV-Z]{26}$")] | None = None
-    expected_changeset_version: int | None = Field(default=None, ge=1)
-    semantic_options: list[SemanticOptionDraft] | None = Field(default=None, max_length=10)
-    semantic_request_ref: Annotated[str, Field(pattern=r"^sreq_[0-9A-HJKMNP-TV-Z]{26}$")] | None = (
-        None
-    )
-    authority_scope_hash: str | None = Field(default=None, pattern=_HASH_PATTERN)
-    precondition_hash: str | None = Field(default=None, pattern=_HASH_PATTERN)
-
-
-class AssembledChangeSetSubmission(StrictModel):
-    commit_mode: Literal["assembled"] = "assembled"
-
-
-ChangeSetSubmission = Annotated[
-    DirectChangeSetSubmission | AssembledChangeSetSubmission,
-    Field(discriminator="commit_mode"),
-]

@@ -20,15 +20,15 @@ def _module():
     return module
 
 
-def _commit_definition(
-    name: str = "docket_commit_changeset",
+def _definition(
+    tool_name: str, name: str | None = None,
 ) -> dict[str, object]:
     tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
-    tool = tools["docket_commit_changeset"]
+    tool = tools[tool_name]
     return {
         "type": "function",
         "function": {
-            "name": name,
+            "name": name or tool_name,
             "description": tool.description or "",
             "parameters": tool.inputSchema,
         },
@@ -36,27 +36,17 @@ def _commit_definition(
 
 
 def _stage_definition(name: str = "docket_stage_changes") -> dict[str, object]:
-    tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
-    tool = tools["docket_stage_changes"]
-    return {
-        "type": "function",
-        "function": {
-            "name": name,
-            "description": tool.description or "",
-            "parameters": tool.inputSchema,
-        },
-    }
+    return _definition("docket_stage_changes", name)
 
 
 def test_tracked_work_scope_is_exact_reference_closed_and_bounded() -> None:
     module = _module()
-    definition = _commit_definition()
+    definition = _definition("docket_request_clarification")
     full_schema = definition["function"]["parameters"]
 
     described = module.scoped_tool_description(
         definition,
         ["item_create", "task_create", "temporal_binding_create"],
-        commit_mode="direct",
     )
 
     scoped = described["parameters"]
@@ -64,7 +54,6 @@ def test_tracked_work_scope_is_exact_reference_closed_and_bounded() -> None:
     assert len(json.dumps(full_schema, separators=(",", ":")).encode()) > 100_000
     assert len(encoded) < 20_000
     assert described["schema_scope"]["complete_for_selected_mutations"] is True
-    assert described["schema_scope"]["commit_mode"] == "direct"
     assert described["schema_scope"]["mutation_types"] == [
         "item_create",
         "task_create",
@@ -90,24 +79,27 @@ def test_tracked_work_scope_is_exact_reference_closed_and_bounded() -> None:
             assert reference in scoped["$defs"]
 
 
-def test_commit_description_requires_an_explicit_known_scope() -> None:
+def test_clarification_description_requires_an_explicit_known_scope() -> None:
     module = _module()
-    definition = _commit_definition()
+    definition = _definition("docket_request_clarification")
     with pytest.raises(module.SchemaScopeError, match="unknown mutation types"):
         module.scoped_tool_description(
-            definition, ["made_up_create"], commit_mode="direct"
+            definition, ["made_up_create"]
         )
 
 
-def test_assembled_commit_schema_is_minimal_and_hides_gateway_binding() -> None:
+def test_commit_schema_has_no_model_arguments_and_hides_gateway_binding() -> None:
     module = _module()
     described = module.scoped_tool_description(
-        _commit_definition(), commit_mode="assembled"
+        _definition("docket_commit_changeset")
     )
     scoped = described["parameters"]
     assert len(json.dumps(described, separators=(",", ":")).encode()) < 3_000
-    assert set(scoped["properties"]) == {"utterance_ref", "request_key", "submission"}
-    assert set(scoped["$defs"]) == {"AssembledChangeSetSubmission"}
+    assert scoped["properties"] == {}
+    assert not scoped.get("$defs")
+    assert scoped["additionalProperties"] is False
+    with pytest.raises(module.SchemaScopeError, match="commit accepts no mutation"):
+        module.scoped_tool_description(_definition("docket_commit_changeset"), ["item_create"])
 
 
 def test_normalized_entry_stage_schema_is_exact_and_bounded() -> None:
@@ -164,37 +156,36 @@ def test_pinned_hermes_bridge_requires_and_applies_mutation_scope(monkeypatch) -
     assert module.install_hermes_progressive_schema_patch() is True
     bridge = tool_search.bridge_tool_schemas(20)[0]["function"]
     assert "mutation_types" in bridge["parameters"]["properties"]
-    assert "commit_mode" in bridge["parameters"]["properties"]
+    assert "commit_mode" not in bridge["parameters"]["properties"]
     assert "normalized_entry_types" in bridge["parameters"]["properties"]
 
     missing_scope = json.loads(
         tool_search.dispatch_tool_describe(
-            {"name": "docket_commit_changeset"},
-            current_tool_defs=[_commit_definition()],
+            {"name": "docket_stage_changes"},
+            current_tool_defs=[_stage_definition()],
         )
     )
-    assert "commit_mode is required" in missing_scope["error"]
+    assert "mutation_types or normalized_entry_types is required" in missing_scope["error"]
     assert "item_create" in missing_scope["available_mutation_types"]
 
     described = json.loads(
         tool_search.dispatch_tool_describe(
             {
-                "name": "docket_commit_changeset",
-                "commit_mode": "direct",
+                "name": "docket_request_clarification",
                 "mutation_types": [
                     "item_create",
                     "task_create",
                     "temporal_binding_create",
                 ],
             },
-            current_tool_defs=[_commit_definition()],
+            current_tool_defs=[_definition("docket_request_clarification")],
         )
     )
     assert described["schema_scope"]["complete_for_selected_mutations"] is True
     assert len(json.dumps(described, separators=(",", ":")).encode()) < 20_000
 
 
-def test_pinned_hermes_bridge_scopes_namespaced_commit_tool(monkeypatch) -> None:
+def test_pinned_hermes_bridge_scopes_namespaced_clarification_tool(monkeypatch) -> None:
     module = _module()
     tool_search = ModuleType("tools.tool_search")
     tool_search.dispatch_tool_describe = lambda args, *, current_tool_defs: json.dumps(
@@ -207,19 +198,18 @@ def test_pinned_hermes_bridge_scopes_namespaced_commit_tool(monkeypatch) -> None
     monkeypatch.setitem(sys.modules, "tools.tool_search", tool_search)
 
     assert module.install_hermes_progressive_schema_patch() is True
-    namespaced = module.NAMESPACED_COMMIT_TOOL_NAME
+    namespaced = "mcp__docket__docket_request_clarification"
     described = json.loads(
         tool_search.dispatch_tool_describe(
             {
                 "name": namespaced,
-                "commit_mode": "direct",
                 "mutation_types": [
                     "item_create",
                     "task_create",
                     "temporal_binding_create",
                 ],
             },
-            current_tool_defs=[_commit_definition(namespaced)],
+            current_tool_defs=[_definition("docket_request_clarification", namespaced)],
         )
     )
 

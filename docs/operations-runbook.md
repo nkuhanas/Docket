@@ -23,7 +23,7 @@ authenticated Operator input
   -> asynchronous provider execution and reconciliation
 ```
 
-The interactive MCP profile exposes exactly 20 tools. Only
+The interactive MCP profile exposes exactly 23 tools. Only
 `docket_commit_changeset` and `docket_resolve_conflict` can mutate canonical
 state. The isolated triage profile exposes four non-authoritative tools;
 `docket_get_attention_case` is the sole shared read.
@@ -99,12 +99,15 @@ the production `.env` or production credentials.
 When Hermes appears to use the wrong schema:
 
 1. Confirm the running Docket and Hermes image revisions.
-2. Confirm the interactive profile reports 19 tools and triage reports four.
+2. Confirm the interactive profile reports 23 tools and triage reports four.
 3. Compare the injected contract version, hash, and profile with the generated
    repository artifacts.
-   Confirm a namespaced `mcp__docket__docket_commit_changeset` description with
+   Confirm a namespaced `mcp__docket__docket_stage_changes` description with
    exact `mutation_types` returns the scoped Task/Time field definitions rather
    than Hermes's generic truncated description.
+   Commit has no model arguments or direct-content mode; clarification has its
+   own noncanonical tool. The gateway binds stage/review/commit/clarification to
+   the captured message. A resumed old recipe must be rejected, not translated.
 4. Inspect the `call_` lifecycle:
    `transport_state`, `domain_state`, and `result_disposition` are distinct.
 5. Reload MCP only after the server and generated contract agree.

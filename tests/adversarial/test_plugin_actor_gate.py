@@ -305,10 +305,9 @@ def test_changeset_argument_preview_is_semantic_and_never_raw(plugin_module) -> 
             },
         },
     )
-    assert "case_01ARZ3NDEKTSV4RRFFQ69G5FAV" in preview
-    assert "caserev_01ARZ3NDEKTSV4RRFFQ69G5FAV" in preview
-    assert '"case_outcome":"resolved"' in preview
-    assert '"explicit_item_dispositions":1' in preview
+    assert "commit_bound_staged_revision" in preview
+    assert "case_01ARZ3NDEKTSV4RRFFQ69G5FAV" not in preview
+    assert "commit_mode" not in preview
     assert "I already applied" not in preview
     assert "item_01ARZ3NDEKTSV4RRFFQ69G5FAV" not in preview
 
@@ -401,7 +400,7 @@ def test_local_commit_preflight_blocks_before_docket_transport(plugin_module, mo
     )
     assert directive is not None
     assert directive["action"] == "block"
-    assert "local_schema_validation" in directive["message"]
+    assert "Resume the authenticated Docket request" in directive["message"]
     assert (
         plugin_module._validate_authority_arguments_locally(
             "docket_commit_changeset",
@@ -418,6 +417,10 @@ def test_local_commit_rejection_is_traced_as_completed_domain_result(
     emitted: list[dict[str, object]] = []
     plugin_module._TRACE_CONTEXTS["session-local-rejection"] = {
         "trace_ref": f"trace_{'2' * 26}",
+        "utterance_ref": f"utt_{'0' * 26}",
+        "guild_id": "222222222222222222",
+        "source_channel_id": "333333333333333333",
+        "source_message_id": "444444444444444444",
         "turn_id": None,
         "next_ordinal": 1,
         "calls": {},
@@ -442,7 +445,7 @@ def test_local_commit_rejection_is_traced_as_completed_domain_result(
 
     directive = plugin_module._on_pre_tool_call(
         tool_name="mcp__docket__docket_commit_changeset",
-        args={},
+        args={"submission": {"commit_mode": "direct"}},
         task_id="session-local-rejection",
         session_id="session-local-rejection",
         tool_call_id="local-call",
@@ -501,7 +504,11 @@ def test_assembly_admission_injects_hidden_server_bookkeeping(
         lambda _tool_name: {
             "type": "object",
             "additionalProperties": True,
-            "properties": {},
+            "properties": {
+                "utterance_ref": {"type": "string"},
+                "request_key": {"type": "string"},
+                "patch": {"type": "object"},
+            },
         },
     )
     args = {
@@ -511,7 +518,7 @@ def test_assembly_admission_injects_hidden_server_bookkeeping(
     }
     expected_hash = hashlib.sha256(
         json.dumps(
-            args,
+            {"patch": args["patch"]},
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,
@@ -548,6 +555,9 @@ def test_assembly_admission_injects_hidden_server_bookkeeping(
     ]
     assert args["assembly_operation_token"] == "a" * 64
     assert args["assembly_argument_hash"] == expected_hash
+    assert args["request_key"] == (
+        "discord:222222222222222222:333333333333333333:444444444444444444:0"
+    )
 
 
 @pytest.mark.adversarial
