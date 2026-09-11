@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import func, select
@@ -15,6 +17,7 @@ from docket.models import (
     Operation,
     OperationTarget,
     ProviderAccount,
+    ProviderEventBinding,
 )
 from docket.models.base import utc_now
 from docket.providers.google.calendar import CalendarProviderError
@@ -59,6 +62,7 @@ def _seed_failed_operations(
             target_ref = f"evt_01M1Q0000000000000000000{index}"
             parameters = {
                 "calendar_id": "academic@example.com",
+                "external_event_id": uuid.uuid4().hex,
                 "event": {
                     "title": f"Recovery event {index}",
                     "timing": {
@@ -248,3 +252,200 @@ def test_requeue_auth_failures_rolls_back_the_whole_scope_on_invalid_target(
             for operation in operations
         )
         assert session.scalar(select(func.count(AuditEvent.id))) == 0
+
+
+@pytest.mark.parametrize("transient", [True, False])
+def test_failed_reconciliation_read_never_returns_unknown_write_to_execution(
+    session_factory, monkeypatch, transient
+):
+    changeset_ref, operation_ids, _keys = _seed_failed_operations(
+        session_factory, ["google_auth_invalid"]
+    )
+    provider = FakeCalendarProvider()
+    runner = OperationRunner(session_factory, provider)
+    runner.requeue_auth_failures(changeset_ref)
+    provider.next_create_outcome = "unknown_after_write"
+    assert runner.run_due_once()
+
+    def unavailable(request):
+        raise CalendarProviderError(
+            "read_unavailable", "Injected read failure", transient=transient
+        )
+
+    monkeypatch.setattr(provider, "find_by_correlation", unavailable)
+    resumed = OperationRunner(session_factory, provider)
+    assert resumed.reconcile_once()
+    assert not resumed.run_due_once()
+    assert len(provider.events) == 1
+    with session_factory() as session:
+        operation = session.get(Operation, operation_ids[0])
+        assert operation.status == "reconciliation_required"
+        assert operation.last_error_code == "read_unavailable"
+        assert session.scalar(select(ChangeSet)).state == "committed"
+        assert (
+            session.scalar(
+                select(AuditEvent).where(
+                    AuditEvent.event_type == "operation.reconciliation_read_failed"
+                )
+            )
+            is not None
+        )
+
+
+def test_create_response_lost_and_worker_restart_reconcile_exactly_once(session_factory):
+    changeset_ref, operation_ids, keys = _seed_failed_operations(
+        session_factory, ["google_auth_invalid"]
+    )
+    provider = FakeCalendarProvider()
+    runner = OperationRunner(session_factory, provider)
+    runner.requeue_auth_failures(changeset_ref)
+    original_claim = runner.claim_due()
+    assert original_claim is not None
+    runner.mark_provider_call_started(original_claim)
+    remote_result = provider.create_event(original_claim.calendar_request())
+    # Crash after transmission, before any response/outcome is recorded locally.
+    with session_factory.begin() as session:
+        operation = session.get(Operation, operation_ids[0])
+        operation.leased_until = utc_now() - timedelta(seconds=1)
+        target = session.scalar(select(OperationTarget))
+        target.leased_until = operation.leased_until
+
+    resumed = OperationRunner(session_factory, provider)
+    assert resumed.recover_expired_leases() == 1
+    assert not resumed.run_due_once()
+    assert resumed.reconcile_once()
+    assert not resumed.reconcile_once()
+    assert len(provider.events) == 1
+    with session_factory() as session:
+        operation = session.get(Operation, operation_ids[0])
+        assert operation.status == "succeeded"
+        assert operation.idempotency_key == keys[0]
+        assert operation.result["provider_event_id"] == remote_result.external_event_id
+        attempts = list(
+            session.scalars(select(ExecutionAttempt).order_by(ExecutionAttempt.attempt_number))
+        )
+        assert [item.kind for item in attempts] == ["execute", "execute", "reconcile"]
+        assert [item.status for item in attempts] == ["failed", "unknown", "succeeded"]
+        assert session.scalar(select(func.count(ProviderEventBinding.id))) == 1
+    # A late result from the dead owner cannot replace the reconciled outcome.
+    runner._finish_error(
+        original_claim, CalendarProviderError("late", "Late failure", transient=False)
+    )
+    runner._finish_unknown(original_claim, "Late unknown")
+    runner._finish_event_success(original_claim, remote_result)
+    with session_factory() as session:
+        operation = session.get(Operation, operation_ids[0])
+        assert operation.status == "succeeded"
+        assert session.get(ExecutionAttempt, original_claim.attempt_id).status == "unknown"
+        assert (
+            session.scalar(
+                select(func.count(AuditEvent.id)).where(
+                    AuditEvent.event_type == "operation.succeeded"
+                )
+            )
+            == 1
+        )
+
+
+def test_transient_missing_reconciliation_match_reuses_same_creation_id(
+    session_factory, monkeypatch
+):
+    changeset_ref, operation_ids, _keys = _seed_failed_operations(
+        session_factory, ["google_auth_invalid"]
+    )
+    provider = FakeCalendarProvider()
+    runner = OperationRunner(session_factory, provider)
+    runner.requeue_auth_failures(changeset_ref)
+    provider.next_create_outcome = "unknown_after_write"
+    assert runner.run_due_once()
+    event_id = next(iter(provider.events))
+    monkeypatch.setattr(provider, "find_by_correlation", lambda request: [])
+    assert runner.reconcile_once()
+    assert runner.run_due_once()
+    assert list(provider.events) == [event_id]
+    with session_factory() as session:
+        operation = session.get(Operation, operation_ids[0])
+        assert operation.status == "succeeded"
+        assert operation.result["provider_event_id"] == event_id
+
+
+def test_partial_delivery_recovery_retries_only_failed_operation(session_factory, monkeypatch):
+    changeset_ref, operation_ids, keys = _seed_failed_operations(
+        session_factory, ["google_auth_invalid"] * 3
+    )
+    provider = FakeCalendarProvider()
+    runner = OperationRunner(session_factory, provider)
+    runner.requeue_auth_failures(changeset_ref)
+    create = provider.create_event
+    calls = []
+
+    def fail_third(request):
+        calls.append(request.external_event_id)
+        if len(calls) == 3:
+            raise CalendarProviderError(
+                "google_auth_invalid", "Injected revoked authorization", transient=False
+            )
+        return create(request)
+
+    monkeypatch.setattr(provider, "create_event", fail_third)
+    assert all(runner.run_due_once() for _ in range(3))
+    before = runner.auth_failure_recovery_status(changeset_ref)
+    assert (before.succeeded, before.failed_auth, before.total) == (2, 1, 3)
+    recovered = OperationRunner(session_factory, provider).requeue_auth_failures(changeset_ref)
+    assert recovered.requeued == 1
+    assert runner.run_due_once()
+    assert not runner.run_due_once()
+    assert calls == [calls[0], calls[1], calls[2], calls[2]]
+    assert len(provider.events) == 3
+    with session_factory() as session:
+        operations = [session.get(Operation, ref) for ref in operation_ids]
+        assert [operation.idempotency_key for operation in operations] == keys
+        assert all(operation.status == "succeeded" for operation in operations)
+        assert [operation.attempt_count for operation in operations] == [2, 2, 3]
+        assert session.scalar(select(func.count(ChangeSet.id))) == 1
+
+
+def test_mismatching_correlated_event_stays_in_reconciliation(session_factory):
+    changeset_ref, operation_ids, _keys = _seed_failed_operations(
+        session_factory, ["google_auth_invalid"]
+    )
+    provider = FakeCalendarProvider()
+    runner = OperationRunner(session_factory, provider)
+    runner.requeue_auth_failures(changeset_ref)
+    provider.next_create_outcome = "unknown_after_write"
+    assert runner.run_due_once()
+    event_id = next(iter(provider.events))
+    original = provider.events[event_id]
+    provider.events[event_id] = replace(
+        original, snapshot={**original.snapshot, "summary": "Changed remotely"}
+    )
+    assert runner.reconcile_once()
+    assert not runner.run_due_once()
+    with session_factory() as session:
+        operation = session.get(Operation, operation_ids[0])
+        assert operation.status == "reconciliation_required"
+        assert operation.last_error_code == "reconciliation_ambiguous"
+    assert len(provider.events) == 1
+
+
+def test_unknown_create_without_pinned_identity_cannot_retry_on_absent_match(session_factory):
+    _changeset_ref, operation_ids, _keys = _seed_failed_operations(
+        session_factory, ["google_auth_invalid"]
+    )
+    with session_factory.begin() as session:
+        operation = session.get(Operation, operation_ids[0])
+        target = session.scalar(select(OperationTarget))
+        target.parameters = {
+            key: value for key, value in target.parameters.items() if key != "external_event_id"
+        }
+        target.parameters_sha256 = sha256_json(target.parameters)
+        operation.status = target.status = "reconciliation_required"
+    provider = FakeCalendarProvider()
+    runner = OperationRunner(session_factory, provider)
+    assert runner.reconcile_once()
+    assert not runner.run_due_once()
+    with session_factory() as session:
+        operation = session.get(Operation, operation_ids[0])
+        assert operation.status == "reconciliation_required"
+        assert "external_event_id" not in session.scalar(select(OperationTarget)).parameters
+    assert not provider.events

@@ -277,6 +277,19 @@ Only retry when the durable state machine proves no transmitted request can be
 duplicated. Unknown-after-transmission uses reconciliation. Never mark an
 operation succeeded to clear a queue or make a deployment pass.
 
+New Calendar creation intents retain their provider event ID in the Operation
+target before transmission. Recovery uses that same identity. Read failures
+stay in reconciliation; a duplicate-ID response requires verification, not an
+overwrite or another ID. A callback from an older execution lease cannot change
+the current operation's outcome. Partial delivery recovery preserves successful
+siblings and the original operation identities.
+
+Pre-cutover creation Operations lacking a durable event ID cannot be blindly
+executed after this change. A known matching correlation can still reconcile to
+its existing provider event; a missing match remains unresolved. Inventory such
+pending/uncertain operations and establish their exact disposition before
+deployment. There is no automatic identity backfill or historical replay.
+
 External write gates in production fail closed. Enabling a gate does not itself
 authorize a new semantic effect.
 

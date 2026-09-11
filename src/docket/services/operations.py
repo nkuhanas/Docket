@@ -429,23 +429,38 @@ class OperationRunner:
 
     def mark_provider_call_started(self, claim: ClaimedOperation) -> None:
         with self.session_factory.begin() as session:
-            operation = session.get(Operation, claim.operation_id)
-            target = session.get(OperationTarget, claim.operation_target_id)
-            attempt = session.get(ExecutionAttempt, claim.attempt_id)
-            if (
-                operation is None
-                or target is None
-                or attempt is None
-                or operation.lease_token != claim.lease_token
-                or target.lease_token != claim.lease_token
-                or operation.status != OperationStatus.RUNNING.value
-                or target.status != "running"
-            ):
+            rows = self._owned_claim(session, claim)
+            if rows is None:
                 raise DocketError(
                     code="operation_lease_lost",
                     message="Provider Operation execution lease was lost.",
                 )
-            attempt.provider_request_id = f"call-started:{claim.lease_token}"
+            rows[2].provider_request_id = f"call-started:{claim.lease_token}"
+
+    @staticmethod
+    def _owned_claim(
+        session: Session, claim: ClaimedOperation
+    ) -> tuple[Operation, OperationTarget, ExecutionAttempt] | None:
+        operation = session.scalar(
+            select(Operation).where(Operation.id == claim.operation_id).with_for_update()
+        )
+        target = session.get(OperationTarget, claim.operation_target_id)
+        attempt = session.get(ExecutionAttempt, claim.attempt_id)
+        if (
+            operation is None
+            or target is None
+            or attempt is None
+            or target.operation_id != operation.id
+            or attempt.operation_id != operation.id
+            or attempt.operation_target_id != target.id
+            or operation.lease_token != claim.lease_token
+            or target.lease_token != claim.lease_token
+            or operation.status != OperationStatus.RUNNING.value
+            or target.status != "running"
+            or attempt.status != AttemptStatus.STARTED.value
+        ):
+            return None
+        return operation, target, attempt
 
     @staticmethod
     def _clear_lease(operation: Operation, target: OperationTarget) -> None:
@@ -602,14 +617,10 @@ class OperationRunner:
         result: CalendarEventResult,
     ) -> None:
         with self.session_factory.begin() as session:
-            operation = session.get(Operation, claim.operation_id)
-            target = session.get(OperationTarget, claim.operation_target_id)
-            attempt = session.get(ExecutionAttempt, claim.attempt_id)
-            if operation is None or target is None or attempt is None:
-                raise DocketError(
-                    code="invalid_operation_state",
-                    message="Provider Operation state disappeared during execution.",
-                )
+            rows = self._owned_claim(session, claim)
+            if rows is None:
+                return
+            operation, target, attempt = rows
             self._upsert_binding(session, operation, target, result)
             self._upsert_cache(session, operation, target, result)
             operation.status = OperationStatus.SUCCEEDED.value
@@ -635,14 +646,10 @@ class OperationRunner:
         result: CalendarLaneProviderResult | CalendarLaneDeleteResult,
     ) -> None:
         with self.session_factory.begin() as session:
-            operation = session.get(Operation, claim.operation_id)
-            target = session.get(OperationTarget, claim.operation_target_id)
-            attempt = session.get(ExecutionAttempt, claim.attempt_id)
-            if operation is None or target is None or attempt is None:
-                raise DocketError(
-                    code="invalid_operation_state",
-                    message="Provider Operation state disappeared during execution.",
-                )
+            rows = self._owned_claim(session, claim)
+            if rows is None:
+                return
+            operation, target, attempt = rows
             lane = session.scalar(
                 select(CalendarLane).where(
                     CalendarLane.ref_id == target.canonical_target_ref
@@ -680,13 +687,14 @@ class OperationRunner:
         self,
         claim: ClaimedOperation,
         error: CalendarProviderError,
+        *,
+        reconciling: bool = False,
     ) -> None:
         with self.session_factory.begin() as session:
-            operation = session.get(Operation, claim.operation_id)
-            target = session.get(OperationTarget, claim.operation_target_id)
-            attempt = session.get(ExecutionAttempt, claim.attempt_id)
-            if operation is None or target is None or attempt is None:
+            rows = self._owned_claim(session, claim)
+            if rows is None:
                 return
+            operation, target, attempt = rows
             retry = error.transient and operation.attempt_count < self.max_attempts
             operation.status = (
                 OperationStatus.PENDING.value
@@ -694,12 +702,19 @@ class OperationRunner:
                 else OperationStatus.FAILED.value
             )
             target.status = "pending" if retry else "failed"
+            if reconciling:
+                # Failure to read the outcome is not evidence that the original
+                # write failed. Never return uncertain work to the execute queue.
+                operation.status = OperationStatus.RECONCILIATION_REQUIRED.value
+                target.status = "reconciliation_required"
             operation.last_error_code = error.code
             operation.last_error_message = error.safe_message
             target.last_error_code = error.code
             delay = min(300, 2 ** max(0, operation.attempt_count - 1))
             operation.next_attempt_at = (
-                utc_now() + timedelta(seconds=delay) if retry else None
+                utc_now() + timedelta(seconds=max(30, delay) if reconciling else delay)
+                if retry or reconciling
+                else None
             )
             target.next_attempt_at = operation.next_attempt_at
             attempt.status = AttemptStatus.FAILED.value
@@ -711,16 +726,17 @@ class OperationRunner:
                 session,
                 operation,
                 target,
-                "operation.retry_scheduled" if retry else "operation.failed",
+                "operation.reconciliation_read_failed"
+                if reconciling
+                else ("operation.retry_scheduled" if retry else "operation.failed"),
             )
 
     def _finish_unknown(self, claim: ClaimedOperation, message: str) -> None:
         with self.session_factory.begin() as session:
-            operation = session.get(Operation, claim.operation_id)
-            target = session.get(OperationTarget, claim.operation_target_id)
-            attempt = session.get(ExecutionAttempt, claim.attempt_id)
-            if operation is None or target is None or attempt is None:
+            rows = self._owned_claim(session, claim)
+            if rows is None:
                 return
+            operation, target, attempt = rows
             operation.status = OperationStatus.RECONCILIATION_REQUIRED.value
             target.status = "reconciliation_required"
             operation.last_error_code = "calendar_unknown_outcome"
@@ -780,11 +796,10 @@ class OperationRunner:
 
     def _finish_no_reconciliation_match(self, claim: ClaimedOperation) -> None:
         with self.session_factory.begin() as session:
-            operation = session.get(Operation, claim.operation_id)
-            target = session.get(OperationTarget, claim.operation_target_id)
-            attempt = session.get(ExecutionAttempt, claim.attempt_id)
-            if operation is None or target is None or attempt is None:
+            rows = self._owned_claim(session, claim)
+            if rows is None:
                 return
+            operation, target, attempt = rows
             operation.status = OperationStatus.PENDING.value
             target.status = "pending"
             operation.next_attempt_at = utc_now()
@@ -801,11 +816,10 @@ class OperationRunner:
         match_count: int,
     ) -> None:
         with self.session_factory.begin() as session:
-            operation = session.get(Operation, claim.operation_id)
-            target = session.get(OperationTarget, claim.operation_target_id)
-            attempt = session.get(ExecutionAttempt, claim.attempt_id)
-            if operation is None or target is None or attempt is None:
+            rows = self._owned_claim(session, claim)
+            if rows is None:
                 return
+            operation, target, attempt = rows
             operation.status = OperationStatus.RECONCILIATION_REQUIRED.value
             target.status = "reconciliation_required"
             operation.last_error_code = "reconciliation_ambiguous"
@@ -833,14 +847,10 @@ class OperationRunner:
             self.mark_provider_call_started(claim)
             request = claim.calendar_request()
             if claim.operation_type == "calendar_create_event":
-                matches = [
-                    item
-                    for item in self.provider.find_by_correlation(request)
-                    if event_matches_request(item, request)
-                ]
-                if len(matches) == 1:
+                matches = self.provider.find_by_correlation(request)
+                if len(matches) == 1 and event_matches_request(matches[0], request):
                     self._finish_event_success(claim, matches[0])
-                elif not matches:
+                elif not matches and request.external_event_id is not None:
                     self._finish_no_reconciliation_match(claim)
                 else:
                     self._finish_reconciliation_conflict(claim, len(matches))
@@ -862,7 +872,7 @@ class OperationRunner:
         except CalendarUnknownOutcome as exc:
             self._finish_unknown(claim, exc.safe_message)
         except CalendarProviderError as exc:
-            self._finish_error(claim, exc)
+            self._finish_error(claim, exc, reconciling=True)
         return True
 
     def recover_expired_leases(self) -> int:

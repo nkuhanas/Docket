@@ -31,14 +31,18 @@ from docket.models import (
     ChangeSetRevision,
     DeferredIngress,
     EventOccurrence,
+    ExecutionAttempt,
     ExecutionLease,
     LaneRoutingDecision,
     Operation,
+    OperationTarget,
     OperatorUtterance,
     ProviderAccount,
     ProviderEventBinding,
     Source,
 )
+from docket.providers.google.calendar import CalendarProviderError
+from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.schemas.assembly import ReviewChangesInput, StageChangesInput
 from docket.schemas.calendar import StandaloneCalendarEventInput
 from docket.services.changeset_assembly import (
@@ -51,6 +55,7 @@ from docket.services.event_occurrences import (
     occurrence_timing,
 )
 from docket.services.gateway_lifetimes import GatewayLifetimeService
+from docket.services.operations import OperationRunner
 from docket.services.provenance import ProvenanceService
 
 
@@ -1026,6 +1031,59 @@ def test_thirty_entry_schedule_commits_once(factory: sessionmaker[Session]) -> N
             )
             == 30
         )
+
+    # Exercise real PostgreSQL ownership locking around a lost provider response.
+    # The remote endpoint here is only a stateful fake, never Google.
+    provider = FakeCalendarProvider()
+    original_runner = OperationRunner(factory, provider)
+    original = original_runner.claim_due()
+    assert original is not None
+    with factory() as session:
+        operation = session.get(Operation, original.operation_id)
+        assert (
+            operation is not None and operation.originating_changeset_ref == result["changeset_ref"]
+        )
+    original_runner.mark_provider_call_started(original)
+    remote_result = provider.create_event(original.calendar_request())
+    with factory.begin() as session:
+        operation = session.get(Operation, original.operation_id)
+        target = session.get(OperationTarget, original.operation_target_id)
+        assert operation is not None and target is not None
+        operation.leased_until = datetime.now(UTC) - timedelta(seconds=1)
+        target.leased_until = operation.leased_until
+    resumed_runner = OperationRunner(factory, provider)
+    assert resumed_runner.recover_expired_leases() == 1
+    resumed = resumed_runner.claim_reconciliation()
+    assert resumed is not None and resumed.operation_id == original.operation_id
+    barrier = threading.Barrier(2)
+
+    def late_original() -> None:
+        barrier.wait(timeout=10)
+        original_runner._finish_error(
+            original,
+            CalendarProviderError("late_callback", "Synthetic late failure", transient=False),
+        )
+
+    def reconcile_current() -> None:
+        barrier.wait(timeout=10)
+        matches = provider.find_by_correlation(resumed.calendar_request())
+        assert len(matches) == 1
+        resumed_runner._finish_event_success(resumed, matches[0])
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        late = pool.submit(late_original)
+        current = pool.submit(reconcile_current)
+        late.result(timeout=20)
+        current.result(timeout=20)
+    with factory() as session:
+        operation = session.get(Operation, original.operation_id)
+        prior_attempt = session.get(ExecutionAttempt, original.attempt_id)
+        current_attempt = session.get(ExecutionAttempt, resumed.attempt_id)
+        assert operation is not None and operation.status == "succeeded"
+        assert operation.result["provider_event_id"] == remote_result.external_event_id
+        assert prior_attempt is not None and prior_attempt.status == "unknown"
+        assert current_attempt is not None and current_attempt.status == "succeeded"
+    assert len(provider.events) == 1
 
 
 def main() -> None:

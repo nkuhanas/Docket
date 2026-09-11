@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 
 import httpx
 import pytest
@@ -26,6 +27,7 @@ def event_request() -> CalendarEventRequest:
         calendar_id="calendar@group.calendar.google.com",
         provider_correlation="11111111-1111-4111-8111-111111111111",
         summary="CSC 101 - Fundamentals",
+        external_event_id="11111111111141118111111111111111",
         schedule={
             "meeting_type": "lecture",
             "days": ["MO", "WE"],
@@ -65,7 +67,7 @@ def test_calendar_body_uses_local_recurrence_and_private_correlation() -> None:
 
 def test_google_offset_response_normalizes_to_immutable_request(monkeypatch) -> None:
     request = event_request()
-    document = request.event_body() | {"id": "event-1", "etag": '"etag-1"'}
+    document = request.event_body() | {"id": request.external_event_id, "etag": '"etag-1"'}
     document["start"] = {
         "dateTime": "2026-08-24T10:30:00-07:00",
         "timeZone": "America/Los_Angeles",
@@ -80,7 +82,7 @@ def test_google_offset_response_normalizes_to_immutable_request(monkeypatch) -> 
 
     result = provider.create_event(request)
 
-    assert result.external_event_id == "event-1"
+    assert result.external_event_id == request.external_event_id
     assert event_matches_request(result, request)
 
 
@@ -106,6 +108,61 @@ def test_http_timeout_is_unknown_but_rate_limit_is_definite_transient(monkeypatc
     assert raised.value.code == "google_calendar_transient"
 
 
+def test_google_creation_reuses_durable_id_and_checks_conflicting_existing_event(monkeypatch):
+    request = event_request()
+    events = {}
+    methods = []
+
+    def remote(method, url, **kwargs):
+        methods.append(method)
+        if method == "POST":
+            body = kwargs["json"]
+            assert body["id"] == request.external_event_id
+            if body["id"] in events:
+                return response(409, {"error": {"code": 409}})
+            events[body["id"]] = body
+            # The server accepted the write; the caller never received it.
+            raise httpx.ReadTimeout("lost response")
+        assert method == "GET" and url.endswith("/" + request.external_event_id)
+        return response(200, events[request.external_event_id])
+
+    monkeypatch.setattr(httpx, "request", remote)
+    provider = GoogleCalendarProvider("unused")
+    monkeypatch.setattr(provider, "_authorization_header", lambda: "Bearer test")
+    with pytest.raises(CalendarUnknownOutcome):
+        provider.create_event(request)
+    # A fresh adapter receives the same durable identity after a worker restart.
+    resumed = GoogleCalendarProvider("unused")
+    monkeypatch.setattr(resumed, "_authorization_header", lambda: "Bearer test")
+    assert resumed.create_event(request).external_event_id == request.external_event_id
+    assert methods == ["POST", "POST", "GET"]
+    assert len(events) == 1
+    with pytest.raises(CalendarProviderError) as error:
+        resumed.create_event(replace(request, summary="An unrelated event"))
+    assert error.value.code == "google_calendar_identity_conflict"
+    assert len(events) == 1
+
+
+@pytest.mark.parametrize("document", [{}, {"id": "unexpected"}])
+def test_unverifiable_creation_response_stays_unknown(monkeypatch, document):
+    provider = GoogleCalendarProvider("unused")
+    monkeypatch.setattr(provider, "_authorization_header", lambda: "Bearer test")
+    monkeypatch.setattr(httpx, "request", lambda *args, **kwargs: response(200, document))
+    with pytest.raises(CalendarUnknownOutcome):
+        provider.create_event(event_request())
+
+
+def test_creation_requires_persisted_id_and_write_server_errors_are_unknown(monkeypatch):
+    provider = GoogleCalendarProvider("unused")
+    monkeypatch.setattr(provider, "_authorization_header", lambda: "Bearer test")
+    monkeypatch.setattr(httpx, "request", lambda *args, **kwargs: response(503, {}))
+    with pytest.raises(CalendarProviderError) as missing:
+        provider.create_event(replace(event_request(), external_event_id=None))
+    assert missing.value.code == "calendar_creation_identity_missing"
+    with pytest.raises(CalendarUnknownOutcome):
+        provider.create_event(event_request())
+
+
 def test_normalization_drops_unneeded_google_response_fields() -> None:
     request = event_request()
     body = request.event_body() | {
@@ -123,18 +180,10 @@ def test_normalization_drops_unneeded_google_response_fields() -> None:
 
 def test_normalization_ignores_google_rrule_property_order() -> None:
     intended = normalize_event_body(
-        {
-            "recurrence": [
-                "RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=WE;UNTIL=20261219T075959Z"
-            ]
-        }
+        {"recurrence": ["RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=WE;UNTIL=20261219T075959Z"]}
     )
     google = normalize_event_body(
-        {
-            "recurrence": [
-                "RRULE:FREQ=WEEKLY;UNTIL=20261219T075959Z;INTERVAL=1;BYDAY=WE"
-            ]
-        }
+        {"recurrence": ["RRULE:FREQ=WEEKLY;UNTIL=20261219T075959Z;INTERVAL=1;BYDAY=WE"]}
     )
 
     assert google["recurrence"] == intended["recurrence"]

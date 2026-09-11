@@ -456,6 +456,10 @@ class ProviderIntentService:
             )
 
         operation_id = uuid.uuid4()
+        if intent.operation_type == "calendar_create_event":
+            # Persist before any transmission; retries reuse the same provider ID.
+            # UUID hex is a valid Calendar base32hex-subset event identifier.
+            parameters["external_event_id"] = operation_id.hex
         operation = Operation(
             id=operation_id,
             originating_changeset_ref=changeset.ref_id,

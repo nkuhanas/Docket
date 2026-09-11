@@ -622,9 +622,19 @@ Lane provisioning uses `calendars.insert` or `calendars.patch` plus
 bounded lane mutation tool can reach those administration methods.
 
 Every write stores `docket_correlation=<operation UUID>` in
-`extendedProperties.private`. Reconciliation calls `events.list` with the
+`extendedProperties.private`. New creation Operations also persist the UUID's
+hexadecimal representation as their provider event ID before any transmission.
+`events.insert` receives that exact ID on every retry. A duplicate-ID response
+requires an exact read and matching committed content/correlation; it is never
+permission to overwrite an event or choose another ID. Google documents
+[client-generated event IDs](https://developers.google.com/workspace/calendar/api/guides/create-events#add_event_metadata)
+for avoiding duplicate creation after response loss.
+
+Reconciliation exact-reads a known provider ID. When no provider ID is known,
+the bounded correlation lookup remains read-only: `events.list` with the
 `privateExtendedProperty` constraint, `singleEvents=false`, and a bounded result
-count. This behavior follows Google's documented
+count. A missing correlation match without a previously pinned creation ID
+does not permit a new write. This lookup follows Google's documented
 [private extended-property search contract](https://developers.google.com/workspace/calendar/api/guides/extended-properties).
 Changing Calendar API behavior, OAuth libraries, recurrence
 serialization, or HTTP transport requires rerunning the zero/one/multiple-match
@@ -672,6 +682,11 @@ recovery, no marker permits the same operation to return to pending; a marker
 requires reconciliation. A crash between writing the marker and the HTTP call
 therefore takes the conservative reconciliation path and may cost a read, but
 cannot justify a blind duplicate write.
+Reconciliation read failures remain uncertain and back off in the reconciliation
+queue, not the write queue. Completion handlers lock the operation and require
+the current lease/target/attempt identity. A late callback from a recovered lease
+cannot overwrite a newer outcome. An unverifiable successful create response or
+write-side timeout/server error is also uncertain, not proof of write failure.
 
 ## Source provenance boundary
 
