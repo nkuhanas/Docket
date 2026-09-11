@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
 from typing import Any, Protocol, cast
@@ -39,6 +40,17 @@ class CalendarEventRequest:
     origin_kind: str | None = None
     operation_type: str = "calendar_create_event"
     destination_calendar_id: str | None = None
+
+    def creation_id(self) -> str:
+        if self.external_event_id is None or re.fullmatch(
+            r"[0-9a-v]{5,1024}", self.external_event_id
+        ) is None:
+            raise CalendarProviderError(
+                "calendar_creation_identity_missing",
+                "Calendar creation requires its durable provider event identity.",
+                transient=False,
+            )
+        return self.external_event_id
 
     def event_body(self) -> dict[str, Any]:
         if self.event_spec is not None:
@@ -425,6 +437,8 @@ def event_matches_request(event: CalendarEventResult, request: CalendarEventRequ
     expected = request.snapshot()
     if request.operation_type == "calendar_cancel_event":
         return event.snapshot.get("status") == "cancelled"
+    if event.snapshot.get("status") == "cancelled":
+        return False
     keys: tuple[str, ...]
     if request.operation_type == "calendar_update_reminders":
         keys = ("reminders", "docket_correlation", "docket_reminder_plan_sha256")
@@ -497,6 +511,7 @@ class GoogleCalendarProvider:
         params: dict[str, str] | None = None,
         etag: str | None = None,
         allow_not_found: bool = False,
+        allow_conflict: bool = False,
     ) -> httpx.Response:
         headers = {"Authorization": self._authorization_header()}
         if etag:
@@ -520,6 +535,10 @@ class GoogleCalendarProvider:
             raise CalendarUnknownOutcome() from exc
         if response.status_code == 404 and allow_not_found:
             return response
+        if response.status_code == 409 and allow_conflict:
+            return response
+        if method != "GET" and (response.status_code == 408 or response.status_code >= 500):
+            raise CalendarUnknownOutcome("Calendar write returned an uncertain server response.")
         if response.status_code in {408, 429} or response.status_code >= 500:
             raise CalendarProviderError(
                 "google_calendar_transient",
@@ -558,13 +577,41 @@ class GoogleCalendarProvider:
         )
 
     def create_event(self, request: CalendarEventRequest) -> CalendarEventResult:
+        event_id = request.creation_id()
         response = self._request(
             "POST",
             self._event_url(request.calendar_id),
-            body=request.event_body(),
+            body={**request.event_body(), "id": event_id},
             params={"sendUpdates": "none"},
+            allow_conflict=True,
         )
-        return self._result(response)
+        if response.status_code == 409:
+            try:
+                existing = self.get_event(request)
+            except CalendarProviderError as exc:
+                raise CalendarUnknownOutcome(
+                    "Existing Calendar event could not be verified."
+                ) from exc
+            if existing is None:
+                raise CalendarUnknownOutcome("Existing Calendar event is not yet readable.")
+            if not event_matches_request(existing, request):
+                raise CalendarProviderError(
+                    "google_calendar_identity_conflict",
+                    "The existing Calendar event does not match the committed intent.",
+                    transient=False,
+                )
+            return existing
+        try:
+            result = self._result(response)
+        except (ValueError, CalendarProviderError) as exc:
+            # A successful POST with a damaged response may already have created
+            # the event. Do not turn missing response evidence into a failed write.
+            raise CalendarUnknownOutcome(
+                "Calendar creation response could not be verified."
+            ) from exc
+        if result.external_event_id != event_id:
+            raise CalendarUnknownOutcome("Calendar creation returned a different event identity.")
+        return result
 
     def update_event(self, request: CalendarEventRequest) -> CalendarEventResult:
         if request.external_event_id is None:
@@ -640,6 +687,9 @@ class GoogleCalendarProvider:
         return self._result(response)
 
     def find_by_correlation(self, request: CalendarEventRequest) -> list[CalendarEventResult]:
+        if request.external_event_id is not None:
+            event = self.get_event(request)
+            return [event] if event is not None else []
         response = self._request(
             "GET",
             self._event_url(request.calendar_id),

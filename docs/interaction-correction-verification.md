@@ -271,3 +271,34 @@ Ruff and strict mypy. Isolated Compose smoke passed, including PostgreSQL
 pin/revision enforcement, concurrency, governance restore and migration
 downgrade/re-upgrade. Explicit migration/adoption and semantic repair remain
 separate open gates, so this does not establish full amendment readiness.
+
+## Provider creation identity and recovered execution ownership
+
+New Calendar creation Operations persist a provider event ID in their target
+parameters in the canonical transaction. The adapter sends that same ID on
+each insert; a duplicate-ID response requires an exact read matching the
+committed snapshot and correlation. It never changes the ID or overwrites a
+conflicting event. An unreadable/malformed successful response or uncertain
+write-side server error enters reconciliation. Failed reconciliation reads stay
+in reconciliation rather than being reclassified as permission to execute.
+
+Completion now locks the Operation and checks the exact lease, target and
+attempt. Late success/error/unknown callbacks from an expired owner cannot
+overwrite a newer result. A mismatched correlated event remains unresolved;
+it is not filtered away and mistaken for an absent event.
+
+Deterministic fixtures cover provider acceptance followed by a lost response,
+worker restart, temporary missing reads, stale callbacks, failed reconciliation
+reads, and three deliveries with recovery of only the failed sibling. The
+Google REST mock verifies the same insert ID and duplicate-ID verification.
+The PostgreSQL smoke races a dead worker's late failure against the replacement
+worker's successful reconciliation and checks one provider event and preserved
+attempt outcomes. Local verification passed 432 tests, Ruff and strict mypy.
+Isolated Compose smoke passed, including that PostgreSQL race, immutable draft
+pins, governance restore and migration downgrade/re-upgrade.
+
+This slice does not claim the per-entry delivery-status UX complete or any live
+Google result. Pre-cutover pending/uncertain creation Operations without a
+pinned provider ID need disposition inventory before deployment. Their existing
+correlation may prove a prior success, but an absent match cannot authorize a
+new creation; no automatic backfill or historical request replay is introduced.

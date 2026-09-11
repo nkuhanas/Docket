@@ -10,6 +10,7 @@ from docket.providers.google.calendar import (
     CalendarSnapshotEvent,
     CalendarSnapshotPage,
     CalendarUnknownOutcome,
+    event_matches_request,
 )
 
 
@@ -69,6 +70,14 @@ class FakeCalendarProvider:
         )
 
     def create_event(self, request: CalendarEventRequest) -> CalendarEventResult:
+        event_id = request.creation_id()
+        existing = self.events.get(event_id)
+        if existing is not None:
+            if not event_matches_request(existing, request):
+                raise CalendarProviderError(
+                    "google_calendar_identity_conflict", "Existing event differs.", transient=False
+                )
+            return existing
         outcome, self.next_create_outcome = self.next_create_outcome, "success"
         if outcome == "transient":
             raise CalendarProviderError(
@@ -78,7 +87,7 @@ class FakeCalendarProvider:
             raise CalendarProviderError(
                 "fake_permanent", "Injected permanent Calendar failure.", transient=False
             )
-        result = self._result(request, f"fake-event-{uuid.uuid4()}")
+        result = self._result(request, event_id)
         self.events[result.external_event_id] = result
         if outcome == "unknown_after_write":
             raise CalendarUnknownOutcome("Injected unknown outcome after Calendar creation.")
