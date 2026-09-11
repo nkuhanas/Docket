@@ -4,6 +4,8 @@ Start here when operating or changing the deployed stack:
 
 * [Operations runbook](operations-runbook.md) — current clean-runtime diagnosis,
   authority/projection recovery, provider reconciliation, and safe deployment.
+* [Interaction correction verification](interaction-correction-verification.md) —
+  September 11 candidate registration, sign-off gate, and implementation boundary.
 * [Ontology rollout verification](ontology-rollout-verification.md) — signed
   authority, current clean tracked-context verification, PostgreSQL rehearsal,
   and explicitly historical rollout evidence.

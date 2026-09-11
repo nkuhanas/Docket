@@ -15,6 +15,7 @@ def test_specification_artifact_manifest_is_unique_and_packaged() -> None:
         "ONT-DELTA-2026-08-28-INTERACTIVE-CONTINUITY",
         "ONT-DELTA-2026-08-29-TRACKED-CONTEXT",
         "ONT-DELTA-2026-09-06-INCREMENTAL-CHANGESET-ASSEMBLY",
+        "ONT-DELTA-2026-09-11-INTERACTION-CORRECTION",
     ]
     assert all(item.document_ref in item.signoff_text for item in manifest.artifacts)
     assert all(item.frozen_artifact_hash in item.signoff_text for item in manifest.artifacts)
@@ -107,6 +108,36 @@ def test_incremental_changeset_candidate_requires_exact_specification_dag() -> N
         item.decision_kind == "specification_signoff" for item in artifact.prerequisites
     )
     assert all(item.architecture_authority is True for item in artifact.prerequisites)
+
+
+def test_interaction_correction_binds_five_prerequisites_without_reset_authority() -> None:
+    artifact = specification_artifact(
+        "ONT-DELTA-2026-09-11-INTERACTION-CORRECTION",
+        "39ca596f2ff00e70cad28fe6e3750f284efde53d4db47d8490531d61ae9fd23a",
+    )
+    assert artifact is not None
+    assert artifact.status == "frozen_candidate"
+    assert artifact.implementation_authority == "amendment_scope"
+    assert artifact.authorized_scope == (
+        "scoped_interaction_occurrence_safety_staging_repair_"
+        "instruction_control_and_delivery_observability"
+    )
+    assert artifact.bootstrap_authority is None
+    assert artifact.production_reset_authority is False
+    assert [item.decision_ref for item in artifact.prerequisites] == [
+        "dec_01M13MANM19BX22EW8QC8AH9DT",
+        "dec_01M1587SE1JX3BVQ1QZBQKX6T7",
+        "dec_01M15EHKNXVKRBM7MZ3FN39X3E",
+        "dec_01M18DYEYJVVJ7TW5VQQBCA6NC",
+        "dec_01M1W7648P7YJZ22GRD114WSBV",
+    ]
+    for prerequisite in artifact.prerequisites:
+        prior = specification_artifact(
+            prerequisite.document_ref, prerequisite.frozen_artifact_hash
+        )
+        assert prior is not None
+        assert prerequisite.decision_kind == "specification_signoff"
+        assert prerequisite.architecture_authority is True
 
 
 def test_signed_implementation_activates_only_the_clean_namespace() -> None:
