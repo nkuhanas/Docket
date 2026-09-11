@@ -186,3 +186,27 @@ only its tool count and mutation-protocol description; the guide now matches the
 The signed amendment and generated runtime contract define this API cutover.
 Exact semantic repair, compact compilation, delivery recovery, diffs, and timing
 acceptance remain open; this is not full-amendment completion evidence.
+
+## Compact scheduled-occurrence compiler
+
+The scheduled-entry input now contains one title, one timed/all-day interval,
+location, exact lane reference (or same-draft lane create), and source evidence.
+Docket derives the Item, TemporalBinding, Event, routing and provider intent.
+The entry scope names semantic entry types instead of requiring enumeration of
+compiler-owned mutations. Duplicate Item/Event title and time payloads are not
+accepted as aliases. The compiler resolves the provider lane slug from canonical
+or same-draft lane state; it does not infer dates, recurrence or missing intervals.
+
+Compiler/input schema version 2 records the new entry representation. The
+instruction bundle and generated v22 contracts describe this shape. Replacing a
+scheduled entry with a no-occurrence entry removes the complete derived Event and
+route set; direct edits to compiler-owned actions remain prohibited.
+
+Local verification passed 411 tests, Ruff and strict mypy, plus isolated Compose
+smoke including a 30-entry PostgreSQL commit. The three-entry career-fair fixture
+asserts exact September 16/17/18 titles, times, location, Meetings destination,
+linked Item/Time values and three pending provider Operations. It uses one stage
+and one commit with no review. These are synthetic deterministic fixtures, not
+live Calendar delivery or latency evidence. Saved-error retention, immutable
+semantic repair, compiler-deployment continuity and other remaining amendment
+gates are still open; this compiler slice has not been deployed.

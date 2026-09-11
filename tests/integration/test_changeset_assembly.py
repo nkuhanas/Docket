@@ -26,6 +26,7 @@ from docket.models import (
     ProviderAccount,
     Source,
     Task,
+    TemporalBinding,
     ToolInvocation,
 )
 from docket.schemas.assembly import (
@@ -48,19 +49,16 @@ def _utterance(message_id: str) -> OperatorUtterance:
         actor_ref=f"discord_user:{settings.operator_discord_user_id}",
         transport="discord",
         source_message_ref=(
-            f"discord_message:{settings.discord_guild_id}:"
-            f"{settings.chat_channel_id}:{message_id}"
+            f"discord_message:{settings.discord_guild_id}:{settings.chat_channel_id}:{message_id}"
         ),
         conversation_ref=(
-            f"discord_conversation:{settings.discord_guild_id}:"
-            f"{settings.chat_channel_id}"
+            f"discord_conversation:{settings.discord_guild_id}:{settings.chat_channel_id}"
         ),
         said_at=datetime.now(UTC),
         verbatim_text=text,
         content_hash=hashlib.sha256(text.encode()).hexdigest(),
         request_key=(
-            f"discord:{settings.discord_guild_id}:"
-            f"{settings.chat_channel_id}:{message_id}:0"
+            f"discord:{settings.discord_guild_id}:{settings.chat_channel_id}:{message_id}:0"
         ),
     )
 
@@ -185,32 +183,14 @@ def _schedule_stage(
                         "extractor_identifier": "docket.attachment-text",
                         "extractor_version": "1",
                     },
-                    "item": {
-                        "title": f"MATH 1263 — Topic {index + 1}",
-                        "kind": "academic.lecture_topic",
-                    },
-                    "temporal": {
-                        "role": "window",
-                        "temporal_value": {
-                            "kind": "datetime_interval",
-                            "start_local": start.isoformat(),
-                            "end_local": end.isoformat(),
-                            "timezone": "America/Los_Angeles",
-                        },
-                    },
-                    "calendar": {
-                        "kind": "canonical_event",
-                        "lane_ref": lane_ref,
-                        "event_spec": {
-                            "title": f"MATH 1263 — Topic {index + 1}",
-                            "calendar_lane": "math-1263",
-                            "timing": {
-                                "kind": "timed",
-                                "start_local": start.isoformat(),
-                                "end_local": end.isoformat(),
-                                "timezone": "America/Los_Angeles",
-                            },
-                        },
+                    "title": f"MATH 1263 — Topic {index + 1}",
+                    "kind": "academic.lecture_topic",
+                    "lane_ref": lane_ref,
+                    "timing": {
+                        "kind": "timed",
+                        "start_local": start.isoformat(),
+                        "end_local": end.isoformat(),
+                        "timezone": "America/Los_Angeles",
                     },
                 },
             }
@@ -219,20 +199,9 @@ def _schedule_stage(
     if include_scope:
         scope = {
             "resolved_intent": {"intent": "replace course schedule", "entry_count": 30},
-            "allowed_mutation_types": [
-                "canonical_event_create",
-                "item_create",
-                "lane_routing_decision_create",
-                "temporal_binding_create",
-            ],
+            "normalized_entry_types": ["scheduled_occurrence_entry", "schedule_exception_entry"],
             "target_refs": [lane_ref],
             "source_refs": [source_ref],
-            "planned_create_types": [
-                "canonical_event",
-                "item",
-                "lane_routing_decision",
-                "temporal_binding",
-            ],
             "explicit_exclusions": ["generic recurrence"],
         }
     return StageChangesInput.model_validate(
@@ -452,11 +421,14 @@ def test_concurrently_admitted_stale_stage_cannot_overwrite_newer_revision(sessi
         argument_hash="2" * 64,
     )
     service = ChangeSetAssemblyService(session)
-    assert service.stage(
-        _item_stage(utterance),
-        assembly_operation_token=first_token,
-        assembly_argument_hash="1" * 64,
-    )["disposition"] == "staged"
+    assert (
+        service.stage(
+            _item_stage(utterance),
+            assembly_operation_token=first_token,
+            assembly_argument_hash="1" * 64,
+        )["disposition"]
+        == "staged"
+    )
     conflict = service.stage(
         _task_stage(utterance),
         assembly_operation_token=stale_token,
@@ -533,6 +505,109 @@ def test_thirty_entry_schedule_stages_in_batches_and_commits_once(session) -> No
     assert session.scalar(select(func.count(CanonicalEvent.id))) == 30
     assert session.scalar(select(func.count(Operation.id))) == 30
     assert session.scalar(select(func.count(ChangeSet.id))) == 1
+
+
+@pytest.mark.integration
+def test_three_career_fair_entries_compile_once_without_review(session) -> None:
+    utterance = _utterance("1542799000000000840")
+    utterance.verbatim_text = "Add these three career fair occurrences to my Meetings lane."
+    utterance.content_hash = hashlib.sha256(utterance.verbatim_text.encode()).hexdigest()
+    source, lane = _schedule_context(session, utterance, suffix="career-fair")
+    lane.lane = "meetings"
+    lane.display_name = "Meetings"
+    session.flush()
+    request = _schedule_stage(
+        utterance,
+        source_ref=source.ref_id,
+        lane_ref=lane.ref_id,
+        start_index=0,
+        count=3,
+        include_scope=True,
+    ).model_dump(mode="json", exclude_none=True)
+    request["assembly_scope"]["resolved_intent"] = {
+        "intent": "add the three source career-fair occurrences",
+        "entry_count": 3,
+    }
+    request["assembly_scope"]["normalized_entry_types"] = ["scheduled_occurrence_entry"]
+    expected = []
+    for index, operation in enumerate(request["patch"]["operations"]):
+        entry = operation["entry"]
+        entry["import_entry_id"] = f"career-fair-{index + 1}"
+        entry["title"] = "2026 Fall Career Fair" if index < 2 else "2026 Business Career Fair"
+        entry["kind"] = "career.fair"
+        entry["location"] = "Cal Poly Recreation Center, Building 43"
+        entry["timing"]["start_local"] = f"2026-09-{16 + index}T10:00:00"
+        entry["timing"]["end_local"] = f"2026-09-{16 + index}T{15 if index < 2 else 14}:00:00"
+        expected.append(entry)
+
+    stage = StageChangesInput.model_validate(request)
+    # No hand-authored Item/Time/Event/route support variants are needed.
+    assert stage.assembly_scope is not None
+    assert stage.assembly_scope.allowed_mutation_types == []
+    assert stage.assembly_scope.planned_create_types == []
+    service = ChangeSetAssemblyService(session)
+    trace_ref = new_public_ref("trace")
+    token = _admit(
+        session,
+        utterance=utterance,
+        trace_ref=trace_ref,
+        call_id="career-stage",
+        ordinal=1,
+        tool_name="docket_stage_changes",
+        argument_hash="a" * 64,
+    )
+    staged = service.stage(stage, assembly_operation_token=token, assembly_argument_hash="a" * 64)
+    assert staged["assembly_ready"] is True, staged
+    assert session.scalar(select(func.count(CanonicalEvent.id))) == 0
+    assert session.scalar(select(func.count(Operation.id))) == 0
+    token = _admit(
+        session,
+        utterance=utterance,
+        trace_ref=trace_ref,
+        call_id="career-commit",
+        ordinal=2,
+        tool_name="docket_commit_changeset",
+        argument_hash="b" * 64,
+    )
+    committed = service.commit(
+        utterance_ref=utterance.ref_id,
+        request_key=utterance.request_key,
+        assembly_operation_token=token,
+        assembly_argument_hash="b" * 64,
+    )
+    assert committed["disposition"] == "committed", committed
+    assert committed["provider_operation_count"] == 3
+    events = sorted(
+        session.scalars(select(CanonicalEvent)),
+        key=lambda row: row.event_spec["timing"]["start_local"],
+    )
+    assert len(events) == 3
+    for event, entry in zip(events, expected, strict=True):
+        assert event.title == event.event_spec["title"] == entry["title"]
+        assert {
+            key: value for key, value in event.event_spec["timing"].items() if value is not None
+        } == entry["timing"]
+        assert event.event_spec["location"] == entry["location"]
+        assert not event.event_spec.get("recurrence")
+        assert event.lane_ref == lane.ref_id
+        assert event.event_spec["calendar_lane"] == "meetings"
+    items = {item.ref_id: item for item in session.scalars(select(Item))}
+    times = sorted(
+        session.scalars(select(TemporalBinding)), key=lambda row: row.temporal_value["start_local"]
+    )
+    assert len(items) == len(times) == 3
+    for temporal, entry in zip(times, expected, strict=True):
+        assert items[temporal.subject_ref].title == entry["title"]
+        assert temporal.temporal_value["start_local"] == entry["timing"]["start_local"]
+        assert temporal.temporal_value["end_local"] == entry["timing"]["end_local"]
+        assert temporal.temporal_value["timezone"] == "America/Los_Angeles"
+    operations = list(session.scalars(select(Operation)))
+    assert len(operations) == 3
+    assert all(operation.status == "pending" for operation in operations)
+    assert {ref for operation in operations for ref in operation.canonical_target_refs} == {
+        event.ref_id for event in events
+    }
+    assert session.scalar(select(func.count(AssemblyOperation.id))) == 2
 
 
 @pytest.mark.integration
@@ -681,8 +756,9 @@ def test_normalized_entry_replacement_removes_all_obsolete_owned_actions(session
     replacement_payload.pop("assembly_scope", None)
     entry = replacement_payload["patch"]["operations"][0]["entry"]
     entry["entry_type"] = "schedule_exception_entry"
-    entry["item"]["title"] = "No Class"
-    entry["item"]["kind"] = "schedule.exception"
+    for field in ("title", "kind", "timing", "lane_ref", "context_entity_refs"):
+        entry.pop(field, None)
+    entry["item"] = {"title": "No Class", "kind": "schedule.exception"}
     entry["temporal"] = {
         "role": "scheduled_on",
         "binding_key": "default",
@@ -732,9 +808,7 @@ def test_normalized_entry_replacement_removes_all_obsolete_owned_actions(session
 
     forbidden_payload = replacement.model_dump(mode="json", exclude_none=True)
     forbidden_payload["patch"] = {
-        "operations": [
-            {"operation": "action_remove", "change_id": "math-1263-entry-00.item"}
-        ]
+        "operations": [{"operation": "action_remove", "change_id": "math-1263-entry-00.item"}]
     }
     forbidden = StageChangesInput.model_validate(forbidden_payload)
     forbidden_token = _admit(
@@ -1049,16 +1123,15 @@ def test_mcp_schema_rejection_terminalizes_admission_and_next_stage_proceeds(
     with session_factory.begin() as session:
         session.add(utterance)
         session.flush()
-        invalid_arguments = _item_stage(utterance).model_dump(
-            mode="json", exclude_none=True
+        invalid_arguments = _item_stage(utterance).model_dump(mode="json", exclude_none=True)
+        invalid_arguments["patch"]["operations"][0]["action"]["create_spec"]["title"] = ""
+        invalid_hash = sha256_json(
+            {
+                key: value
+                for key, value in invalid_arguments.items()
+                if key not in {"utterance_ref", "request_key"}
+            }
         )
-        invalid_arguments["patch"]["operations"][0]["action"]["create_spec"][
-            "title"
-        ] = ""
-        invalid_hash = sha256_json({
-            key: value for key, value in invalid_arguments.items()
-            if key not in {"utterance_ref", "request_key"}
-        })
         invalid_token = _admit(
             session,
             utterance=utterance,
@@ -1092,10 +1165,13 @@ def test_mcp_schema_rejection_terminalizes_admission_and_next_stage_proceeds(
         assert rejected.result_disposition == "rejected_validation"
 
     valid_arguments = _item_stage(utterance).model_dump(mode="json", exclude_none=True)
-    valid_hash = sha256_json({
-        key: value for key, value in valid_arguments.items()
-        if key not in {"utterance_ref", "request_key"}
-    })
+    valid_hash = sha256_json(
+        {
+            key: value
+            for key, value in valid_arguments.items()
+            if key not in {"utterance_ref", "request_key"}
+        }
+    )
     with session_factory.begin() as session:
         valid_token = _admit(
             session,
@@ -1130,35 +1206,53 @@ def test_mcp_stage_then_payload_free_commit_and_replay_without_review(session_fa
         stage_arguments = _item_stage(utterance).model_dump(mode="json", exclude_none=True)
 
     def invoke(name: str, arguments: dict, ordinal: int) -> dict:
-        model_hash = sha256_json({
-            key: value for key, value in arguments.items()
-            if key not in {"utterance_ref", "request_key"}
-        })
+        model_hash = sha256_json(
+            {
+                key: value
+                for key, value in arguments.items()
+                if key not in {"utterance_ref", "request_key"}
+            }
+        )
         with session_factory.begin() as session:
             token = _admit(
-                session, utterance=utterance, trace_ref=trace_ref,
-                call_id=f"mcp-{ordinal}", ordinal=ordinal,
-                tool_name=name, argument_hash=model_hash,
+                session,
+                utterance=utterance,
+                trace_ref=trace_ref,
+                call_id=f"mcp-{ordinal}",
+                ordinal=ordinal,
+                tool_name=name,
+                argument_hash=model_hash,
             )
-        result = asyncio.run(mcp.call_tool(name, {
-            **arguments, "assembly_operation_token": token,
-            "assembly_argument_hash": model_hash,
-        }))
+        result = asyncio.run(
+            mcp.call_tool(
+                name,
+                {
+                    **arguments,
+                    "assembly_operation_token": token,
+                    "assembly_argument_hash": model_hash,
+                },
+            )
+        )
         assert isinstance(result, tuple)
         return result[1]
 
     assert invoke("docket_stage_changes", stage_arguments, 1)["disposition"] == "staged"
     binding = {"utterance_ref": utterance.ref_id, "request_key": utterance.request_key}
     # A resumed pre-cutover recipe must be rejected, not ignored or decoded.
-    rejected = invoke("docket_commit_changeset", {
-        **binding, "submission": {"commit_mode": "direct", "content": {}},
-    }, 2)
+    rejected = invoke(
+        "docket_commit_changeset",
+        {
+            **binding,
+            "submission": {"commit_mode": "direct", "content": {}},
+        },
+        2,
+    )
     assert rejected["error"]["code"] == "validation_error"
     with session_factory() as session:
         assert session.scalar(select(func.count(Item.id))) == 0
-        obsolete = session.scalar(select(AssemblyOperation).where(
-            AssemblyOperation.upstream_tool_call_id == "mcp-2"
-        ))
+        obsolete = session.scalar(
+            select(AssemblyOperation).where(AssemblyOperation.upstream_tool_call_id == "mcp-2")
+        )
         assert obsolete.state == "rejected"
     receipt = invoke("docket_commit_changeset", binding, 3)
     assert receipt["disposition"] == "committed"
@@ -1181,13 +1275,26 @@ def test_mcp_clarification_persists_choices_without_canonical_effects(session_fa
         session.add(utterance)
         session.flush()
         action = _item_stage(utterance).patch.operations[0].action.model_dump(mode="json")
-    result = asyncio.run(mcp.call_tool("docket_request_clarification", {
-        "utterance_ref": utterance.ref_id, "request_key": utterance.request_key,
-        "question": "Track this item?", "semantic_options": [{
-            "option_id": "track-item", "selection_authority_ref": utterance.ref_id,
-            "content": {"basis_refs": [utterance.ref_id], "tracked_context_changes": [action]},
-        }],
-    }))
+    result = asyncio.run(
+        mcp.call_tool(
+            "docket_request_clarification",
+            {
+                "utterance_ref": utterance.ref_id,
+                "request_key": utterance.request_key,
+                "question": "Track this item?",
+                "semantic_options": [
+                    {
+                        "option_id": "track-item",
+                        "selection_authority_ref": utterance.ref_id,
+                        "content": {
+                            "basis_refs": [utterance.ref_id],
+                            "tracked_context_changes": [action],
+                        },
+                    }
+                ],
+            },
+        )
+    )
     assert isinstance(result, tuple)
     assert result[1]["disposition"] == "needs_clarification"
     with session_factory() as session:
