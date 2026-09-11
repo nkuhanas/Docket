@@ -142,6 +142,15 @@ do not re-add the other entries or request renewed approval. A retry of the exac
 old operation returns its recorded result; repair is a new stage operation.
 Do not equate a saved draft, ready draft, canonical commit and provider delivery.
 
+Optional `diff` review compares the selected immutable draft revision with its
+predecessor. It reports changed values and removed entries, including target
+scope; it is not a comparison with live Google Calendar or proof of execution.
+Entry-owned compiler boilerplate is represented once by its semantic entry.
+Follow the returned cursor to keep both sides of the comparison fixed. Large
+details use lossless `json_utf8` fragments with offsets and a digest, rather than
+transport truncation. Counts distinguish logical details from fragment rows.
+Do not page through a diff as a mandatory pre-commit ceremony.
+
 `provider_intents` is deliberately absent from the model-facing ChangeSet. Docket
 derives provider Operations from canonical mutations after validating the complete
 scope. Hermes never formulates, retries, or repairs provider Operations.

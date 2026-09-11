@@ -302,3 +302,32 @@ Google result. Pre-cutover pending/uncertain creation Operations without a
 pinned provider ID need disposition inventory before deployment. Their existing
 correlation may prove a prior success, but an absent match cannot authorize a
 new creation; no automatic backfill or historical request replay is introduced.
+
+## Actual draft-revision diffs and lossless bounded review
+
+Optional diff review now compares semantic staged inputs with the preceding
+immutable revision. Rows contain actual before/after values and presence flags,
+including removed entries, changed titles/timing/destination and occurrence
+scope. Compiler-owned support records are represented by their owning entry,
+not repeated as duplicated Item/Time/Event values. Type filters match either side
+so removed or reclassified entries remain visible. Provenance/compiler
+bookkeeping alone does not masquerade as a semantic edit.
+
+The response explicitly identifies the draft comparison and its base revision;
+it does not claim comparison with live canonical or provider state. Both sides
+remain fixed across cursor pages. Cursor formats are versioned and malformed
+positions fail closed. Large individual details are losslessly fragmented as
+UTF-8 JSON with offsets/digests, while samples and pages remain bounded. Exact
+logical-detail and transport-row counts distinguish pagination from omission.
+
+Local verification passed 439 tests, Ruff and strict mypy. Isolated Compose
+smoke passed, including a fresh-connection PostgreSQL diff read spanning another
+attempt's edit; subsequent pages kept the original values, and the old reader's
+commit received a revision conflict. Other fixtures cover removals, type/scope
+changes, absent versus null values, large Unicode fields and reconstruction of
+all fragments. Contracts and the reviewed skill describe the optional flow.
+
+This is partial ONT-UX-ACC-0008 evidence. Pinned canonical-before/after previews
+and explicit compiler-migration effect diffs remain open, alongside exact
+source-grounded semantic repair, one-time adoption, delivery status and timing.
+No production changes, provider calls or historical replay were performed.

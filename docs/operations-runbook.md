@@ -125,6 +125,20 @@ provides details. A compiler failure must not lead to a new authorization reques
 or manual edits of production rows. Pre-cutover drafts without an independent
 input snapshot require explicit adoption, not an automatic backfill.
 
+Optional `docket_review_changeset(view="diff")` reports actual staged field
+changes against the preceding immutable draft revision. It distinguishes added,
+removed and modified entries/actions, including occurrence/series scope, and
+names both revisions. This is a draft-to-draft comparison, not live canonical
+or Google state. Compiler-owned records appear once through their source entry.
+Continue with the same cursor even if another attempt edits the draft. Reading
+old pages does not observe that newer revision or permit committing it.
+
+Oversized review details are losslessly split into `json_utf8` fragments with
+UTF-8 byte offsets, total bytes and a SHA-256 digest. `logical_detail_count`
+counts fields/details; `total_if_known` counts transport rows after splitting.
+No first-row exception bypasses the page budget. Cursor format mismatches require
+restarting review, not a compatibility decoder. Review is still optional.
+
 Draft revisions also retain an executable pin in their compiler manifest: the
 compiler and input-schema versions, input/ownership digest, compiled-effect
 digest, execution preconditions and authority binding. Commit checks the

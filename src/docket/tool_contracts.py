@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-09-11-v23"
+CONTRACT_VERSION = "docket-tools-2026-09-11-v24"
 
 
 class ToolContractEntry(TypedDict):
@@ -123,7 +123,9 @@ _INTERACTIVE_ASSEMBLY: dict[str, tuple[str, str]] = {
     ),
     "docket_review_changeset": (
         "ONT-CS-TOOL-0002",
-        "Read a compact revision-consistent view of the implicit durable draft.",
+        "Optionally read the draft; diff shows actual staged before/after fields against the "
+        "previous immutable revision, including removals and occurrence/series scope. "
+        "Oversized detail uses lossless json_utf8 fragments and a revision-bound cursor.",
     ),
 }
 

@@ -293,7 +293,15 @@ class StageChangesInput(StrictModel):
 class ReviewChangesInput(StrictModel):
     utterance_ref: UtteranceRef
     request_key: RequestKey
-    view: Literal["summary", "actions", "entries", "diagnostics", "diff"] = "summary"
+    view: Literal["summary", "actions", "entries", "diagnostics", "diff"] = Field(
+        default="summary",
+        description=(
+            "Optional review. Diff compares this immutable draft revision with its predecessor, "
+            "returning actual staged field values, additions/removals and scope changes; "
+            "it does not claim canonical or provider state changed. Oversized detail is "
+            "losslessly paginated as json_utf8 fragments."
+        ),
+    )
     mutation_types: list[str] = Field(default_factory=list, max_length=64)
     normalized_entry_types: list[str] = Field(default_factory=list, max_length=3)
     cursor: str | None = Field(default=None, max_length=4096)
