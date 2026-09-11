@@ -193,6 +193,7 @@ class CalendarEventCache(TimestampMixin, Base):
     snapshot_generation: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
     recurring_event_id: Mapped[str | None] = mapped_column(String(1024))
     original_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    original_start_date: Mapped[date | None] = mapped_column(Date)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     summary: Mapped[str | None] = mapped_column(String(512))
     location: Mapped[str | None] = mapped_column(String(1000))

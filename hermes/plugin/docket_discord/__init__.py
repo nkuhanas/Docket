@@ -1034,6 +1034,9 @@ def _on_pre_tool_call(
             ordinal = int(existing_call["ordinal"])
         payload_context = dict(context)
         call = dict(context["calls"][stable_call_id])
+    if public_name == "docket_list_provider_calendar_events" and isinstance(args, dict):
+        # Never resolve "tomorrow" from a model-supplied timestamp or a retry's clock.
+        args["operator_utterance_ref"] = payload_context["utterance_ref"]
     needs_assembly_admission = public_name in {
         "docket_stage_changes",
         "docket_review_changeset",

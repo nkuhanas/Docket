@@ -680,11 +680,19 @@ class ChangeSetAssemblyService:
 
     @staticmethod
     def _draft_actions(changeset: ChangeSet) -> dict[str, dict[str, Any]]:
-        return {
+        actions = {
             str(item["change_id"]): dict(item)
             for group_name in _SNAPSHOT_GROUPS[:-1]
             for item in cast(list[dict[str, Any]], getattr(changeset, group_name))
         }
+        for plan in changeset.compiler_manifest_json.get("occurrence_plans", []):
+            for change_id in plan["action_hashes"]:
+                actions.pop(change_id, None)
+            replacement_id = plan.get("replacement_change_id")
+            if replacement_id:
+                actions.pop(replacement_id.removesuffix("-replacement") + "-route", None)
+            actions[plan["source_change_id"]] = dict(plan["source_change"])
+        return actions
 
     @staticmethod
     def _remove_owned_actions(

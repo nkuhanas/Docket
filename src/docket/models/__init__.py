@@ -40,6 +40,7 @@ from docket.models.core import (
 )
 from docket.models.discord import ConversationalToolTrace, DiscordDailyThread
 from docket.models.entities import Entity, EntityAlias, EntityResolution
+from docket.models.event_occurrences import CalendarDateBinding, EventOccurrence
 from docket.models.events import CanonicalEvent, ProviderEventBinding
 from docket.models.gmail import ConnectorCheckpoint, GmailSource
 from docket.models.intelligence import (
@@ -100,6 +101,7 @@ __all__ = [
     "BackupRun",
     "Base",
     "BriefEntry",
+    "CalendarDateBinding",
     "CalendarEventCache",
     "CalendarLane",
     "CalendarSyncState",
@@ -124,6 +126,7 @@ __all__ = [
     "EntityAlias",
     "EntityResolution",
     "EventItemLink",
+    "EventOccurrence",
     "ExecutionAttempt",
     "ExecutionLease",
     "Fact",

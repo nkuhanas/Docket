@@ -8,6 +8,11 @@ from pydantic import Field, field_validator, model_validator
 
 from docket.domain.public_refs import is_public_ref
 from docket.schemas.common import ProviderAccountRef, PublicRef, StrictModel, validate_refs
+from docket.schemas.event_occurrences import (
+    CompiledOccurrenceEdit,
+    EventMutationScope,
+    OneTimeEventScope,
+)
 from docket.schemas.events import CanonicalEventCreateSpec, CanonicalEventPatchSpec
 from docket.schemas.policy import (
     CalendarLaneCreateSpec,
@@ -934,6 +939,7 @@ class CanonicalEventModify(MutationBase):
     object_ref: Annotated[str, Field(pattern=r"^evt_[0-9A-HJKMNP-TV-Z]{26}$")]
     create_spec: None = None
     payload: CanonicalEventPatchSpec
+    scope: EventMutationScope = Field(default_factory=OneTimeEventScope)
 
 
 class CanonicalEventCancel(MutationBase):
@@ -943,6 +949,7 @@ class CanonicalEventCancel(MutationBase):
     object_ref: Annotated[str, Field(pattern=r"^evt_[0-9A-HJKMNP-TV-Z]{26}$")]
     create_spec: None = None
     payload: EmptyMutationSpec = Field(default_factory=EmptyMutationSpec)
+    scope: EventMutationScope = Field(default_factory=OneTimeEventScope)
 
 
 type RegistryMutation = (
@@ -1192,7 +1199,7 @@ class OperatorChangeSetContent(StrictModel):
 
     @classmethod
     def from_internal(cls, content: ChangeSetContent) -> OperatorChangeSetContent:
-        payload = content.model_dump(mode="json", exclude={"provider_intents"})
+        payload = content.model_dump(mode="json", exclude={"provider_intents", "occurrence_plans"})
         if payload.get("import_scope") is not None:
             payload["import_scope"].pop("authority_statement_refs", None)
         return cls.model_validate(payload)
@@ -1213,6 +1220,7 @@ class ChangeSetContent(StrictModel):
     )
     resolution_changes: list[ResolutionChangeInput] = Field(default_factory=list, max_length=100)
     provider_intents: list[ProviderIntentInput] = Field(default_factory=list, max_length=100)
+    occurrence_plans: list[CompiledOccurrenceEdit] = Field(default_factory=list, max_length=100)
 
     @field_validator("basis_refs")
     @classmethod
@@ -1240,6 +1248,7 @@ class ChangeSetContent(StrictModel):
                 self.tracked_context_changes,
                 self.resolution_changes,
                 self.provider_intents,
+                self.occurrence_plans,
             )
         ):
             raise ValueError("a ChangeSet must contain at least one canonical or provider change")

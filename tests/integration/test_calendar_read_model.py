@@ -188,6 +188,7 @@ def test_calendar_series_read_resolves_clean_binding_and_reminder(
                         summary="MATH 1263",
                         is_all_day=False,
                         start_at=base + timedelta(days=index),
+                        original_start_at=base + timedelta(days=index - 1),
                         end_at=base + timedelta(days=index, hours=1),
                         timezone=settings.timezone,
                         synced_at=base,
@@ -231,6 +232,21 @@ def test_calendar_series_read_resolves_clean_binding_and_reminder(
         "docket_queue",
     ]
     assert projected["reminder_plan"]["lead_seconds"] == [600]
+    occurrences = read.list_events(
+        account_id=account_id, calendar_id=calendar_id, start=base,
+        end=base + timedelta(days=4), text_filter=None, limit=25,
+        freshness="prefer_cache", result_view="occurrences",
+    )["events"]
+    # The provider instance moved one day later; its original identity did not.
+    assert occurrences[0]["occurrence_identity"] == {
+        "series_ref": event_ref, "original_date": "2026-08-30",
+        "timezone": settings.timezone, "original_start_local": "2026-08-30T09:00:00", "fold": 0,
+    }
+    from docket.mcp.server import _calendar_event_summary
+    assert (
+        _calendar_event_summary(occurrences[0])["mutation_target"]["scope"]["identity"]
+        == occurrences[0]["occurrence_identity"]
+    )
 
 
 @pytest.mark.integration

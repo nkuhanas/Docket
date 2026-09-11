@@ -1,6 +1,44 @@
 from docket.mcp.server import _calendar_events_summary
 
 
+def test_calendar_summary_paginates_large_selectors_without_losing_rows() -> None:
+    import json
+
+    events = [
+        {
+            "ref": f"evt_{index:026d}",
+            "summary": "A" * 500,
+            "location": "B" * 1000,
+            "start_local": "2026-09-08T15:00:00",
+            "end_local": "2026-09-08T15:50:00",
+            "local_timezone": "America/Los_Angeles",
+            "mutation_target": {
+                "ref": f"evt_{index:026d}",
+                "version": 2,
+                "scope": {
+                    "kind": "occurrence",
+                    "identity": {
+                        "series_ref": f"evt_{index:026d}",
+                        "original_date": "2026-09-08",
+                        "original_start_local": "2026-09-08T15:00:00",
+                        "timezone": "America/Los_Angeles",
+                        "fold": 0,
+                    },
+                },
+            },
+        }
+        for index in range(25)
+    ]
+    page = _calendar_events_summary(
+        {"events": events, "count": 25, "total_if_known": 100}, offset=25
+    )
+    assert 0 < page["count"] < 25
+    assert len(page["items"]) == page["count"]
+    assert page["cursor"] == str(25 + page["count"])
+    assert page["truncated"]
+    assert len(json.dumps(page, ensure_ascii=False).encode()) <= 14 * 1024
+
+
 def test_calendar_summary_omits_provider_and_duplicate_timing_details() -> None:
     result = _calendar_events_summary(
         {

@@ -87,7 +87,8 @@ _INTERACTIVE_READS: dict[str, tuple[str, str]] = {
     ),
     "docket_list_provider_calendar_events": (
         "ONT-TRACK-TOOL-0005",
-        "Read one bounded provider Calendar page with bound canonical refs and versions.",
+        "Read a bounded Calendar page with canonical versions and stable occurrence selectors; "
+        "relative dates are pinned to the gateway-bound original utterance.",
     ),
     "docket_get_calendar_sync_status": (
         "ONT-TRACK-TOOL-0006",

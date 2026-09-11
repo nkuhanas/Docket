@@ -16,6 +16,7 @@ from docket.schemas.authority import (
 )
 from docket.schemas.calendar import StandaloneCalendarEventInput
 from docket.schemas.common import PublicRef, StrictModel, validate_refs
+from docket.schemas.event_occurrences import EventMutationScope
 from docket.schemas.tracked_context import (
     ItemInput,
     TemporalRole,
@@ -40,6 +41,9 @@ class AssemblyAuthorityScopeInput(StrictModel):
     )
     planned_create_types: list[str] = Field(default_factory=list, max_length=32)
     explicit_exclusions: list[str] = Field(default_factory=list, max_length=25)
+    event_scopes: dict[
+        Annotated[str, Field(pattern=r"^evt_[0-9A-HJKMNP-TV-Z]{26}$")], EventMutationScope
+    ] = Field(default_factory=dict, max_length=100)
 
     @field_validator("target_refs", "source_refs")
     @classmethod

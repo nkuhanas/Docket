@@ -17,6 +17,7 @@ from docket.models import (
     CalendarLane,
     CalendarSyncState,
     CanonicalEvent,
+    EventOccurrence,
     ProviderAccount,
     ProviderEventBinding,
     ReminderPlan,
@@ -29,7 +30,9 @@ from docket.providers.google.calendar import (
     CalendarReadProvider,
     CalendarSnapshotEvent,
 )
+from docket.schemas.event_occurrences import OccurrenceIdentity
 from docket.services.calendar_lanes import CalendarLaneService
+from docket.services.event_occurrences import bind_calendar_date
 
 
 def _aware(value: datetime) -> datetime:
@@ -291,6 +294,7 @@ class CalendarSyncService:
                 row.event_type = event.event_type
                 row.recurring_event_id = event.recurring_event_id
                 row.original_start_at = event.original_start_at
+                row.original_start_date = event.original_start_date
                 row.status = event.status
                 row.summary = event.summary
                 row.location = event.location
@@ -505,6 +509,7 @@ class CalendarReadService:
         start: datetime | None,
         end: datetime | None,
         relative_day: str | None,
+        operator_utterance_ref: str | None = None,
     ) -> tuple[datetime, datetime, dict[str, Any]]:
         now = _aware(self.clock()).astimezone(UTC)
         zone = ZoneInfo(self.settings.timezone)
@@ -515,9 +520,18 @@ class CalendarReadService:
                     code="invalid_calendar_range",
                     message="Relative day must stand alone and be today or tomorrow.",
                 )
-            local_date = now.astimezone(zone).date()
-            if relative_day == "tomorrow":
-                local_date += timedelta(days=1)
+            if operator_utterance_ref is not None:
+                with self.session_factory.begin() as session:
+                    resolved = bind_calendar_date(
+                        session, utterance_ref=operator_utterance_ref,
+                        timezone=self.settings.timezone,
+                        relative_day="today" if relative_day == "today" else "tomorrow",
+                    )
+                local_date, zone = resolved.date, ZoneInfo(resolved.timezone)
+            else:
+                local_date = now.astimezone(zone).date()
+                if relative_day == "tomorrow":
+                    local_date += timedelta(days=1)
             start = datetime.combine(local_date, time.min, tzinfo=zone)
             end = datetime.combine(local_date + timedelta(days=1), time.min, tzinfo=zone)
             mode = "relative_day"
@@ -547,7 +561,11 @@ class CalendarReadService:
                 "mode": mode,
                 "relative_day": relative_day,
                 "local_date": local_date.isoformat() if local_date else None,
-                "timezone": self.settings.timezone,
+                "timezone": str(zone),
+                **(
+                    {"source_utterance_ref": operator_utterance_ref}
+                    if operator_utterance_ref else {}
+                ),
                 "as_of": now.isoformat(),
             },
         )
@@ -565,8 +583,11 @@ class CalendarReadService:
         freshness: str,
         result_view: str = "occurrences",
         offset: int = 0,
+        operator_utterance_ref: str | None = None,
     ) -> dict[str, Any]:
-        start_utc, end_utc, resolution = self._range(start, end, relative_day)
+        start_utc, end_utc, resolution = self._range(
+            start, end, relative_day, operator_utterance_ref
+        )
         if freshness == "require_fresh":
             self.sync_service.require_fresh(account_id, calendar_id)
         elif freshness != "prefer_cache":
@@ -669,6 +690,18 @@ class CalendarReadService:
                     )
                 )
             }
+            moved_occurrences = {
+                item.replacement_event_ref: item for item in session.scalars(
+                    select(EventOccurrence).where(EventOccurrence.replacement_event_ref.in_(canonical_refs))
+                )
+            }
+            parent_series = {
+                parent.ref_id: parent for parent in session.scalars(select(CanonicalEvent).where(
+                    CanonicalEvent.ref_id.in_(
+                        item.series_ref for item in moved_occurrences.values()
+                    )
+                ))
+            }
             temporal_bindings = {
                 temporal.ref_id: temporal
                 for temporal in session.scalars(
@@ -730,7 +763,40 @@ class CalendarReadService:
                     if temporal_projection is not None
                     else None
                 )
+                occurrence_identity = None
+                moved = moved_occurrences.get(canonical_ref)
+                if moved is not None:
+                    occurrence_identity = moved.identity_json
+                elif (
+                    canonical is not None and row.recurring_event_id
+                    and result_view == "occurrences"
+                ):
+                    series_zone = canonical.event_spec["timing"]["timezone"]
+                    if row.original_start_at is not None:
+                        original = _aware(row.original_start_at).astimezone(ZoneInfo(series_zone))
+                        occurrence_identity = OccurrenceIdentity(
+                            series_ref=canonical.ref_id, original_date=original.date(),
+                            timezone=series_zone,
+                            original_start_local=original.replace(tzinfo=None),
+                            fold=original.fold,
+                        ).model_dump(mode="json", exclude_none=True)
+                    elif row.original_start_date is not None:
+                        occurrence_identity = OccurrenceIdentity(
+                            series_ref=canonical.ref_id, original_date=row.original_start_date,
+                            timezone=series_zone,
+                        ).model_dump(mode="json", exclude_none=True)
                 return {
+                    **({"occurrence_identity": occurrence_identity} if occurrence_identity else {}),
+                    **(
+                        {"mutation_target": {
+                            "ref": occurrence_identity["series_ref"],
+                            "version": (
+                                parent_series[moved.series_ref].version
+                                if moved is not None else canonical.version if canonical else None
+                            ),
+                            "scope": {"kind": "occurrence", "identity": occurrence_identity},
+                        }} if occurrence_identity else {}
+                    ),
                     "provider_event_id": (
                         series_identity if result_view == "series" else row.provider_event_id
                     ),
@@ -847,6 +913,7 @@ class CalendarReadService:
         freshness: str,
         result_view: str = "occurrences",
         offset: int = 0,
+        operator_utterance_ref: str | None = None,
     ) -> dict[str, Any]:
         ordered_calendar_ids = list(dict.fromkeys(calendar_ids))
         if not ordered_calendar_ids:
@@ -882,6 +949,7 @@ class CalendarReadService:
                     freshness=freshness if calendar_offset == 0 else "prefer_cache",
                     result_view=result_view,
                     offset=calendar_offset,
+                    operator_utterance_ref=operator_utterance_ref,
                 )
                 if calendar_offset == 0:
                     pages.append(page)

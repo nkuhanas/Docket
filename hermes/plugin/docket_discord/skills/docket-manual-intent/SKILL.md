@@ -50,6 +50,15 @@ Use the smallest read projection that resolves the current decision. Default
 summary views are intentional. Request routing, details, or audit only when a
 specific field in that view is required; never load broad state speculatively.
 
+For a dated recurring-class change, use the Calendar row's `mutation_target`
+and original `occurrence_identity`, even when that occurrence has moved.
+Stage `scope.kind=occurrence` against its canonical series reference and version;
+bind that same scope in `assembly_scope.event_scopes`. Docket derives the
+exception and replacement actions. Never cancel a recurring master merely
+because a dated row exposes its `evt_`. `scope.kind=entire_series` is reserved
+for explicit whole-series intent. For "today"/"tomorrow", the gateway binds the
+original captured message; preserve the returned date/timezone on recovery.
+
 ## Interpretation and conflict path
 
 Derive zero or more typed statements from the current utterance. Preserve what the
