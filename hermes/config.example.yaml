@@ -82,6 +82,10 @@ plugins:
   enabled:
     - docket-discord
 
+# Only the read-only repository skill bundle may define Docket protocols.
+skills:
+  external_dirs: []
+
 mcp_servers:
   docket:
     url: "http://docket:8000/mcp/"

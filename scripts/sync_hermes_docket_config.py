@@ -158,6 +158,10 @@ def synchronize(active: str, template: str) -> str:
         updated = _replace_or_append_top_level(updated, template, section)
     for parent, child in (("tools", "tool_search"), ("auxiliary", "compression")):
         updated = _replace_or_insert_nested(updated, template, parent, child)
+    # This is security policy, not an optional preference from an old config.
+    updated = _replace_or_append_top_level(
+        updated, "skills:\n  external_dirs: []\n", "skills"
+    )
     return updated
 
 

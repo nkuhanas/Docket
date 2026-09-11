@@ -173,7 +173,7 @@ services:
     volumes:
       - ./.runtime/hermes:/opt/data
       - ./hermes/plugin/docket_discord:/opt/data/plugins/docket-discord:ro
-      - ./hermes/plugin/docket_discord/skills/docket-manual-intent:/opt/data/skills/docket-manual-intent:ro
+      - ./hermes/plugin/docket_discord/skills:/opt/data/skills:ro
       - ${DOCKET_CREDENTIALS_DIR:-./secrets/smoke}:/run/docket-secrets:ro
     expose:
       - "8787"

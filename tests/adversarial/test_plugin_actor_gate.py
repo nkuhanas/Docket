@@ -968,6 +968,41 @@ def test_recovery_rebinds_execution_without_discarding_trace(plugin_module) -> N
     assert context["next_ordinal"] == 2
 
 
+@pytest.mark.parametrize("name", ["docket-schedule-management", "new-protocol", "../elsewhere"])
+def test_unreviewed_skills_cannot_activate_protocols(plugin_module, name) -> None:
+    assert plugin_module._on_pre_tool_call(tool_name="skill_view", args={"name": name})[
+        "action"
+    ] == "block"
+    assert plugin_module._on_pre_tool_call(
+        tool_name="skill_manage", args={"action": "create", "name": name}
+    )["action"] == "block"
+    assert plugin_module._on_pre_tool_call(
+        tool_name="skill_view", args={"name": "docket-manual-intent"}
+    ) is None
+
+
+def test_changed_or_missing_instruction_bundle_blocks_mutation(plugin_module, monkeypatch) -> None:
+    monkeypatch.setattr(plugin_module, "_REVIEWED_INSTRUCTION_HASH", "0" * 64)
+    assert plugin_module._on_pre_tool_call(
+        tool_name="mcp__docket__docket_commit_changeset", args={}
+    )["action"] == "block"
+
+    def missing():
+        raise OSError("unavailable mount")
+
+    monkeypatch.setattr(plugin_module, "_reviewed_instruction_hash", missing)
+    assert plugin_module._instructions_current() is False
+
+
+def test_extra_skill_is_not_implicitly_reviewed(plugin_module, monkeypatch, tmp_path) -> None:
+    for name in (*plugin_module._REVIEWED_SKILL_NAMES, "unreviewed-new-recipe"):
+        root = tmp_path / name
+        root.mkdir()
+        (root / "SKILL.md").write_text("Proposed protocol")
+    monkeypatch.setattr(plugin_module, "_REVIEWED_SKILLS_ROOT", tmp_path)
+    assert plugin_module._instructions_current() is False
+
+
 @pytest.mark.asyncio
 async def test_mcp_trace_projection_creates_then_edits_one_system_message(
     plugin_module, monkeypatch

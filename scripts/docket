@@ -579,6 +579,7 @@ deploy() {
     wait_for_operational_idle
     backup=$(backup_database)
     printf 'Drained database backup created: %s\n' "$backup"
+    python3 "$ROOT/scripts/quarantine-hermes-skills.py" "$ROOT/.runtime/hermes"
     compose run --rm --no-deps docket sh -c \
         './.venv/bin/alembic upgrade head && ./.venv/bin/docket-provision-ingress-role'
     compose up -d --no-build --force-recreate docket hermes

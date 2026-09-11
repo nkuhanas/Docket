@@ -88,3 +88,31 @@ smoke, including a two-connection PostgreSQL race with exactly one execution
 claim and one utterance audit. The first race run exposed an additional
 deterministic-audit insertion race; serializing before audit creation fixed it,
 and the complete smoke passed on rerun. No production deployment is implied.
+
+## Reviewed instruction isolation
+
+The Docket deployment mounts the entire Hermes discovery root read-only with
+exactly `docket-manual-intent` and `docket-triage`. External discovery directories
+are cleared by configuration synchronization. Runtime skill edits are rejected;
+proposed improvements require repository review. Each gateway lifetime pins the
+reviewed bundle's content hash, records it in trace context, and stops new model
+dispatch/mutation calls if that bundle changes in place. This is instruction
+isolation, not a substitute for the service-side semantic guards below.
+
+After draining and backing up, deployment moves runtime-authored skills into
+`.runtime/hermes/protocol-quarantine/skills-<random-id>` before starting the new
+workers. Original files are retained, not deleted or translated. The quarantine
+is outside skill retrieval. Repeating the operation on an empty root is a no-op;
+redirected roots are rejected. This step has not been run against production.
+
+Tests cover blocked skill tools, allowlist drift, bundle changes, config sync,
+read-only mount configuration, and recoverable/idempotent quarantine ordering.
+An isolated network-disabled container of the pinned Hermes image, without
+credentials or production runtime volumes, discovered exactly the two reviewed
+skills and rejected a write to its skill root with a read-only-filesystem error.
+
+Local verification passed 386 tests, Ruff, strict mypy, and isolated Compose
+smoke (MCP/authentication, governance preservation, PostgreSQL concurrency, and
+migration downgrade/re-upgrade). The remaining occurrence, mandatory-staging,
+semantic-repair, and delivery/latency acceptance gates are still open. This slice
+does not claim the full amendment implemented or production changed.
