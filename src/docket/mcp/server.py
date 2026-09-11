@@ -795,7 +795,12 @@ def docket_review_changeset(
         ),
     ] = None,
 ) -> dict[str, Any]:
-    """Review one compact revision-consistent view of the implicit draft."""
+    """Optionally review one revision-consistent view of the immutable draft.
+
+    Diff returns staged before/after fields against its preceding revision, not
+    a claim of canonical/provider changes. Follow the same cursor for all pages;
+    oversized details have lossless json_utf8 fragments with byte offsets.
+    """
     try:
         if utterance_ref is None or request_key is None:
             raise DocketError(

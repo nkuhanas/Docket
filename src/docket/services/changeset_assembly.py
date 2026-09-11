@@ -58,6 +58,7 @@ from docket.services.changeset_compiler import (
     entry_mutation_types,
     normalized_entry_record,
 )
+from docket.services.changeset_diff import bounded_details, bounded_sample, draft_diff
 from docket.services.changeset_pins import effect_hash, migration_required, pin_snapshot
 from docket.services.intent_sessions import IntentSessionService
 from docket.services.interactive_authority import InteractiveAuthorityService
@@ -1575,6 +1576,7 @@ class ChangeSetAssemblyService:
         if request.cursor is not None:
             cursor_payload = _cursor_decode(request.cursor)
             expected = {
+                "format_version": 1,
                 "changeset_ref": changeset.ref_id,
                 "view": request.view,
                 "mutation_types": sorted(request.mutation_types),
@@ -1585,8 +1587,18 @@ class ChangeSetAssemblyService:
                     code="review_cursor_mismatch",
                     message="Review cursor does not match this bounded review request.",
                 )
-            revision_number = int(cursor_payload.get("revision", 0))
-            position = int(cursor_payload.get("position", 0))
+            revision_value = cursor_payload.get("revision")
+            position_value = cursor_payload.get("position")
+            if (
+                type(revision_value) is not int or revision_value < 1
+                or type(position_value) is not int or position_value < 0
+            ):
+                raise DocketError(
+                    code="invalid_review_cursor",
+                    message="Restart review; the cursor revision or position is invalid.",
+                )
+            revision_number = revision_value
+            position = position_value
         else:
             revision_number = changeset.current_revision
             position = 0
@@ -1639,7 +1651,23 @@ class ChangeSetAssemblyService:
             ]
         elif request.view == "diagnostics":
             details = list(snapshot["validation_errors"])
-        elif request.view in {"actions", "diff"}:
+        elif request.view == "diff":
+            previous_revision = self.session.scalar(
+                select(ChangeSetRevision)
+                .where(
+                    ChangeSetRevision.change_set_id == changeset.id,
+                    ChangeSetRevision.revision < revision_number,
+                )
+                .order_by(ChangeSetRevision.revision.desc())
+                .limit(1)
+            )
+            details, diff_counts = draft_diff(
+                previous_revision,
+                revision,
+                mutation_types=request.mutation_types,
+                entry_types=request.normalized_entry_types,
+            )
+        elif request.view == "actions":
             details = [
                 {
                     "change_id": action.get("change_id"),
@@ -1652,10 +1680,17 @@ class ChangeSetAssemblyService:
         else:
             details = []
         details.sort(key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")))
+        logical_detail_count = len(details)
+        details = bounded_details(details)
+        if position > len(details):
+            raise DocketError(
+                code="invalid_review_cursor",
+                message="Restart review; cursor exceeds this revision.",
+            )
         page: list[dict[str, Any]] = []
         for detail in details[position : position + request.limit]:
             candidate = [*page, detail]
-            if page and len(json.dumps(candidate, ensure_ascii=False).encode()) > 8_000:
+            if len(json.dumps(candidate, ensure_ascii=False).encode()) > 8_000:
                 break
             page = candidate
         next_position = position + len(page)
@@ -1663,6 +1698,7 @@ class ChangeSetAssemblyService:
         if next_position < len(details):
             next_cursor = _cursor_encode(
                 {
+                    "format_version": 1,
                     "changeset_ref": changeset.ref_id,
                     "revision": revision_number,
                     "view": request.view,
@@ -1702,10 +1738,21 @@ class ChangeSetAssemblyService:
                 )
             ),
             "diagnostic_count": len(snapshot["validation_errors"]),
-            "diagnostic_sample": snapshot["validation_errors"][:5],
+            "diagnostic_sample": bounded_sample(snapshot["validation_errors"]),
             "items": page,
             "count": len(page),
             "total_if_known": len(details),
+            "logical_detail_count": logical_detail_count,
+            "omitted_detail_count": len(details) - next_position,
+            **(
+                {
+                    "diff_basis": "previous_draft_revision",
+                    "base_revision": previous_revision.revision if previous_revision else None,
+                    "diff_subject_counts": diff_counts,
+                }
+                if request.view == "diff"
+                else {}
+            ),
             "truncated": next_cursor is not None,
             **({"cursor": next_cursor} if next_cursor is not None else {}),
             "next": {

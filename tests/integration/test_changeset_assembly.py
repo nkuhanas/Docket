@@ -1274,7 +1274,10 @@ def test_normalized_entry_replacement_removes_all_obsolete_owned_actions(session
 
 
 @pytest.mark.integration
-def test_review_cursor_stays_on_one_revision_and_does_not_advance_observation(session) -> None:
+@pytest.mark.parametrize("view", ["actions", "diff"])
+def test_review_cursor_stays_on_one_revision_and_does_not_advance_observation(
+    session, view
+) -> None:
     utterance = _utterance("1542799000000000806")
     session.add(utterance)
     session.flush()
@@ -1321,7 +1324,7 @@ def test_review_cursor_stays_on_one_revision_and_does_not_advance_observation(se
         ReviewChangesInput(
             utterance_ref=utterance.ref_id,
             request_key=utterance.request_key,
-            view="actions",
+            view=view,
             limit=1,
         ),
         assembly_operation_token=page_one_token,
@@ -1380,7 +1383,7 @@ def test_review_cursor_stays_on_one_revision_and_does_not_advance_observation(se
         ReviewChangesInput(
             utterance_ref=utterance.ref_id,
             request_key=utterance.request_key,
-            view="actions",
+            view=view,
             limit=1,
             cursor=page_one["cursor"],
         ),
@@ -1392,6 +1395,12 @@ def test_review_cursor_stays_on_one_revision_and_does_not_advance_observation(se
     assert page_two["is_current_revision"] is False
     assert page_two["totals"] == {"item": 1, "task": 1}
     assert page_one["items"] != page_two["items"]
+    if view == "diff":
+        assert page_one["diff_basis"] == page_two["diff_basis"] == "previous_draft_revision"
+        assert page_one["base_revision"] == page_two["base_revision"] == 1
+        assert page_one["diff_subject_counts"] == {"added": 1, "removed": 0, "modified": 0}
+        assert page_one["total_if_known"] == page_two["total_if_known"]
+        assert "Concurrent V3" not in json.dumps([page_one, page_two])
 
     commit_token = _admit(
         session,
@@ -1410,6 +1419,88 @@ def test_review_cursor_stays_on_one_revision_and_does_not_advance_observation(se
     )
     assert conflict["disposition"] == "draft_revision_conflict"
     assert conflict["error"]["details"]["observed_revision"] == 2
+
+
+@pytest.mark.integration
+def test_diff_exposes_entry_values_removal_and_lossless_large_field(session) -> None:
+    utterance = _utterance("1542799000000000898")
+    source, lane = _schedule_context(session, utterance, suffix="diff-values")
+    service = ChangeSetAssemblyService(session)
+    trace_ref = new_public_ref("trace")
+    ordinal = 0
+
+    def stage(request):
+        nonlocal ordinal
+        ordinal += 1
+        digest = sha256_json({"stage": ordinal})
+        token = _admit(
+            session, utterance=utterance, trace_ref=trace_ref,
+            call_id=f"diff-stage-{ordinal}", ordinal=ordinal,
+            tool_name="docket_stage_changes", argument_hash=digest,
+        )
+        return service.stage(request, assembly_operation_token=token, assembly_argument_hash=digest)
+
+    initial = _schedule_stage(
+        utterance, source_ref=source.ref_id, lane_ref=lane.ref_id,
+        start_index=0, count=3, include_scope=True,
+    )
+    assert stage(initial)["disposition"] == "ready_to_commit"
+    replacement = initial.model_dump(mode="json", exclude_none=True)
+    replacement.pop("assembly_scope")
+    operations = replacement["patch"]["operations"]
+    entry = operations[0]["entry"]
+    entry["title"] = "Exact lecture topic"
+    entry["description"] = "🙂é" * 2_000
+    entry["location"] = "Building 43"
+    operations[1] = {
+        "operation": "normalized_entry_remove",
+        "import_entry_id": operations[1]["entry"]["import_entry_id"],
+    }
+    replacement["patch"]["operations"] = operations[:2]
+    assert stage(StageChangesInput.model_validate(replacement))["disposition"] == "ready_to_commit"
+    rows = []
+    cursor = None
+    while True:
+        ordinal += 1
+        digest = sha256_json({"review": ordinal})
+        token = _admit(
+            session, utterance=utterance, trace_ref=trace_ref,
+            call_id=f"diff-page-{ordinal}", ordinal=ordinal,
+            tool_name="docket_review_changeset", argument_hash=digest,
+        )
+        page = service.review(
+            ReviewChangesInput(
+                utterance_ref=utterance.ref_id, request_key=utterance.request_key,
+                view="diff", limit=2, cursor=cursor,
+            ),
+            assembly_operation_token=token, assembly_argument_hash=digest,
+        )
+        assert page["revision"] == 2 and page["base_revision"] == 1
+        assert page["diff_subject_counts"] == {"added": 0, "removed": 1, "modified": 1}
+        assert 0 < page["count"] <= 2
+        assert len(json.dumps(page, ensure_ascii=False).encode()) < 16 * 1024
+        rows.extend(page["items"])
+        assert page["omitted_detail_count"] == page["total_if_known"] - len(rows)
+        cursor = page.get("cursor")
+        if cursor is None:
+            break
+    assert len(rows) == page["total_if_known"]
+    fields = {
+        tuple(row["field_path"]): row for row in rows
+        if "field_path" in row and row["change"] == "modified"
+    }
+    assert fields[("title",)]["before"] == "MATH 1263 — Topic 1"
+    assert fields[("title",)]["after"] == "Exact lecture topic"
+    assert fields[("location",)]["after"] == "Building 43"
+    fragments = [row["detail_fragment"] for row in rows if "detail_fragment" in row]
+    fragments.sort(key=lambda fragment: fragment["byte_offset"])
+    reconstructed = json.loads("".join(fragment["text"] for fragment in fragments))
+    assert reconstructed["field_path"] == ["description"]
+    assert reconstructed["after"] == "🙂é" * 2_000
+    assert any(row.get("change") == "removed" for row in rows)
+    assert all(row.get("subject_kind", "entry") == "entry" for row in rows)
+    assert session.scalar(select(func.count(CanonicalEvent.id))) == 0
+    assert session.scalar(select(func.count(Operation.id))) == 0
 
 
 @pytest.mark.integration

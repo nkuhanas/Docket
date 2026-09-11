@@ -10,7 +10,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from datetime import UTC, date, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import patch
 
 from sqlalchemy import func, select, text
@@ -506,6 +506,9 @@ def _review(
     call_id: str,
     ordinal: int,
     argument_hash: str,
+    view: Literal["summary", "diff"] = "summary",
+    cursor: str | None = None,
+    limit: int = 25,
 ) -> dict[str, Any]:
     token = _admit_committed(
         factory,
@@ -521,6 +524,9 @@ def _review(
             ReviewChangesInput(
                 utterance_ref=utterance_ref,
                 request_key=request_key,
+                view=view,
+                cursor=cursor,
+                limit=limit,
             ),
             assembly_operation_token=token,
             assembly_argument_hash=argument_hash,
@@ -1086,6 +1092,69 @@ def test_thirty_entry_schedule_commits_once(factory: sessionmaker[Session]) -> N
     assert len(provider.events) == 1
 
 
+def test_diff_pages_keep_both_revisions_across_connections(factory: sessionmaker[Session]) -> None:
+    utterance_ref, request_key = _create_utterance(
+        factory, "1542799000000000919", "Track a test item for revision-bound diff verification."
+    )
+    trace_a, trace_b = new_public_ref("trace"), new_public_ref("trace")
+
+    def stage(trace: str, ordinal: int, title: str, include_scope: bool) -> None:
+        digest = hashlib.sha256(title.encode()).hexdigest()
+        token = _admit_committed(
+            factory, utterance_ref=utterance_ref, trace_ref=trace,
+            call_id=f"diff-stage-{title}", ordinal=ordinal,
+            tool_name="docket_stage_changes", argument_hash=digest,
+        )
+        with factory() as session:
+            request = _item_stage(
+                _load_utterance(session, utterance_ref), change_id="diff-item",
+                title=title, include_scope=include_scope,
+            )
+        assert _stage(
+            factory, utterance_ref=utterance_ref, token=token,
+            argument_hash=digest, request=request,
+        )["disposition"] == "ready_to_commit"
+
+    stage(trace_a, 1, "Original diff title", True)
+    page = _review(
+        factory, utterance_ref=utterance_ref, request_key=request_key, trace_ref=trace_a,
+        call_id="diff-first", ordinal=2, argument_hash="a" * 64, view="diff", limit=1,
+    )
+    assert page["revision"] == 1 and page["truncated"]
+    rows = list(page["items"])
+    _review(
+        factory, utterance_ref=utterance_ref, request_key=request_key, trace_ref=trace_b,
+        call_id="diff-observe-b", ordinal=1, argument_hash="b" * 64,
+    )
+    stage(trace_b, 2, "New concurrent title", False)
+    ordinal = 2
+    while page.get("cursor"):
+        ordinal += 1
+        page = _review(
+            factory, utterance_ref=utterance_ref, request_key=request_key, trace_ref=trace_a,
+            call_id=f"diff-page-{ordinal}", ordinal=ordinal,
+            argument_hash=hashlib.sha256(str(ordinal).encode()).hexdigest(),
+            view="diff", limit=1, cursor=page["cursor"],
+        )
+        assert page["revision"] == 1 and page["current_revision"] == 2
+        assert page["base_revision"] is None
+        rows.extend(page["items"])
+    assert len(rows) == page["total_if_known"]
+    titles = [row["after"] for row in rows if row["field_path"] == ["create_spec", "title"]]
+    assert titles == ["Original diff title"]
+    token = _admit_committed(
+        factory, utterance_ref=utterance_ref, trace_ref=trace_a, call_id="diff-stale-commit",
+        ordinal=ordinal + 1, tool_name="docket_commit_changeset", argument_hash="c" * 64,
+    )
+    with factory.begin() as session:
+        result = ChangeSetAssemblyService(session).commit(
+            utterance_ref=utterance_ref, request_key=request_key,
+            assembly_operation_token=token, assembly_argument_hash="c" * 64,
+        )
+        assert result["disposition"] == "draft_revision_conflict"
+        assert result["error"]["details"]["observed_revision"] == 1
+
+
 def main() -> None:
     database_url = os.environ["DOCKET_DATABASE_URL"]
     engine = configure_database(database_url)
@@ -1099,6 +1168,7 @@ def main() -> None:
         test_native_and_deferred_ingress_claim_once,
         test_relative_date_capture_serializes,
         test_occurrence_commits_serialize_and_identity_is_immutable,
+        test_diff_pages_keep_both_revisions_across_connections,
     )
     for check in checks:
         check(factory)
