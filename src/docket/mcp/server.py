@@ -825,7 +825,9 @@ def docket_review_changeset(
     """Optionally review one revision-consistent view of the immutable draft.
 
     Diff returns staged before/after fields against its preceding revision, not
-    a claim of canonical/provider changes. Follow the same cursor for all pages;
+    a claim of canonical/provider changes. Canonical effect rows separately
+    compare fields captured at staging with the planned target changes, never
+    live objects at review time. Follow the same cursor for all pages;
     oversized details have lossless json_utf8 fragments with byte offsets.
     """
     try:

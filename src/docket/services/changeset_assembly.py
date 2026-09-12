@@ -52,6 +52,7 @@ from docket.schemas.authority import (
     StatementInput,
     mutation_input_json,
 )
+from docket.services.canonical_patch_previews import capture_canonical_patch_preview
 from docket.services.changeset_compiler import (
     COMPILER_IDENTIFIER,
     COMPILER_VERSION,
@@ -1159,6 +1160,7 @@ class ChangeSetAssemblyService:
         changeset.compiler_manifest_json = {
             **(changeset.compiler_manifest_json or {}),
             "canonical_event_preview": capture_event_preview(self.session, content),
+            "canonical_patch_preview": capture_canonical_patch_preview(self.session, content),
         }
         if content is None:
             self._sync_empty(changeset)
@@ -2007,6 +2009,10 @@ class ChangeSetAssemblyService:
                     "canonical_event_diff_basis": "canonical_staging_snapshot",
                     "canonical_event_preview_available": revision.compiler_manifest_json.get(
                         "canonical_event_preview", {}
+                    ).get("available", False),
+                    "canonical_target_diff_basis": "canonical_staging_snapshot",
+                    "canonical_target_preview_available": revision.compiler_manifest_json.get(
+                        "canonical_patch_preview", {}
                     ).get("available", False),
                 }
                 if request.view == "diff"

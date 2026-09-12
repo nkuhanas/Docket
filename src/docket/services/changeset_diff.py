@@ -297,4 +297,40 @@ def draft_diff(
     details.extend(event_preview_diff(
         after, mutation_types=mutation_types, entry_types=entry_types,
     ))
+    details.extend(canonical_patch_preview_diff(
+        after, mutation_types=mutation_types, entry_types=entry_types,
+    ))
     return details, counts
+
+
+def canonical_patch_preview_diff(
+    revision: ChangeSetRevision, *, mutation_types: list[str], entry_types: list[str],
+) -> list[dict[str, Any]]:
+    """Compare a targeted canonical field snapshot, never read a live ORM row."""
+    snapshot = revision.compiler_manifest_json.get("canonical_patch_preview", {})
+    if not snapshot.get("available"):
+        return []
+    entry_type_by_action = {
+        action_id: entry["entry_type"]
+        for entry in revision.normalized_entries_json
+        for owner in revision.compiled_action_ownership_json
+        if owner["owner_import_entry_id"] == entry["import_entry_id"]
+        for action_id in owner["change_ids"]
+    }
+    details: list[dict[str, Any]] = []
+    for effect in snapshot.get("effects", []):
+        if mutation_types and effect["mutation_type"] not in mutation_types:
+            continue
+        if entry_types and entry_type_by_action.get(effect["change_id"]) not in entry_types:
+            continue
+        header = {"subject_kind": "canonical_target_effect",
+                  **{key: value for key, value in effect.items() if key not in {"before", "after"}}}
+        if not effect["available"]:
+            details.append(header)
+            continue
+        changes = list(_fields(effect["before"], effect["after"], []))
+        if changes:
+            details.extend({**header, **change} for change in changes)
+        else:
+            details.append({**header, "presentation_changed": False})
+    return details
