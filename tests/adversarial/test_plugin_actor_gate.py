@@ -251,6 +251,7 @@ def test_docket_mcp_hooks_emit_only_bounded_trace_metadata(plugin_module, monkey
         "call_id": "call-1",
         "ordinal": 1,
         "tool_name": "docket_search_entities",
+        "execution_boundary": "mcp_attempted",
         "transport_state": "running",
         "elapsed_ms": 0,
         "disposition": None,
@@ -1031,7 +1032,7 @@ def test_extra_skill_is_not_implicitly_reviewed(plugin_module, monkeypatch, tmp_
 
 @pytest.mark.asyncio
 async def test_mcp_trace_projection_creates_then_edits_one_system_message(
-    plugin_module, monkeypatch
+    plugin_module, monkeypatch, session_factory
 ) -> None:
     guild_id = "222222222222222222"
     channel_id = "333333333333333333"
@@ -1083,7 +1084,10 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
         fetch_channel=lambda _channel_id: None,
     )
 
+    fetched_channels = []
+
     async def fetch_channel(_channel_id):
+        fetched_channels.append(_channel_id)
         return channel
 
     client.fetch_channel = fetch_channel
@@ -1113,6 +1117,7 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
                 "tool_name": "docket_search_history",
                 "transport_state": "completed",
                 "domain_state": "succeeded",
+                "origin": "authenticated_docket",
                 "elapsed_ms": 42,
                 "outcome": "succeeded",
                 "tool_call_ref": "call_01ARZ3NDEKTSV4RRFFQ69G5FAV",
@@ -1122,10 +1127,28 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
         ],
         "timing": {
             "total_elapsed_ms": 4000,
-            "before_first_tool_ms": 3500,
-            "tool_execution_ms": 42,
-            "outside_tool_ms": 3958,
+            "before_first_docket_call_ms": 3500,
+            "docket_execution_ms": 42,
+            "wrapper_elapsed_sum_ms": 42,
+            "unattributed_ms": 3958,
+            "queue_ms": None,
+            "context_schema_ms": None,
+            "model_ms": None,
+            "local_validation_ms": None,
+            "provider_wait_ms": None,
         },
+        "counts": {
+            "attempts": 1,
+            "authenticated_invocations": 1,
+            "local_rejections": 0,
+            "unreconciled_attempts": 0,
+            "unfinished_invocations": 0,
+        },
+        "tool_counts": [{
+            "tool_name": "docket_search_history",
+            "attempts": 1,
+            "authenticated_invocations": 1,
+        }],
         "overflow_count": 0,
         "updated_at": "<t:1784940000:F> · <t:1784940000:R>",
     }
@@ -1157,14 +1180,100 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
     assert len(channel.messages) == 1
     assert channel.messages[0].edit_count == 1
     assert channel.messages[0].embeds[0].fields[1]["name"] == "Turn timing"
-    assert "Before first tool: 3500 ms" in (
+    assert "Before first Docket call: 3500 ms" in (
         channel.messages[0].embeds[0].fields[1]["value"]
     )
-    assert channel.messages[0].embeds[0].fields[2]["name"] == ("1. docket_search_history")
-    value = channel.messages[0].embeds[0].fields[2]["value"]
+    assert channel.messages[0].embeds[0].fields[2]["name"] == "Workflow attempts (entire trace)"
+    assert channel.messages[0].embeds[0].fields[3]["name"] == ("1. docket_search_history")
+    value = channel.messages[0].embeds[0].fields[3]["value"]
     assert value.startswith("Outcome: Succeeded")
     assert "Transport: Completed" in value
     assert "Domain: Succeeded" in value
+
+    # Rejections must happen before even fetching Discord. A valid digest does
+    # not make contradictory totals, origins, timing or oversized previews valid.
+    before = len(fetched_channels)
+    for field, value in (
+        ("counts", {**render["counts"], "attempts": 2}),
+        ("timing", {**render["timing"], "unattributed_ms": 4000}),
+        ("calls", [{**render["calls"][0], "origin": "local_rejection"}]),
+        ("calls", [{**render["calls"][0], "ordinal": True}]),
+        ("calls", [render["calls"][0]] * 20),
+    ):
+        invalid = {**render, field: value}
+        digest = hashlib.sha256(json.dumps(
+            invalid, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode()).hexdigest()
+        with pytest.raises(plugin_module.PluginAPIError):
+            await plugin_module._put_mcp_trace(trace_ref, {
+                **payload, "render": invalid, "render_sha256": digest,
+            })
+        assert len(fetched_channels) == before
+
+    # Exercise the actual Docket renderer, including a late stage/commit and
+    # byte-heavy preview, through the plugin's strict digest/field validation.
+    from docket.config import get_settings
+    from docket.internal_api.schemas import McpTraceUpdate
+    from docket.models import ConversationalToolTrace
+    from docket.providers.discord import FakeDiscordBackend, FakeDiscordProjectionAdapter
+    from docket.services.discord_projection import DiscordProjectionRunner
+    from docket.services.mcp_traces import McpTraceService
+    from docket.tool_contracts import CONTRACT_VERSION, contract_hash
+
+    settings = get_settings()
+    stamp = datetime.now(UTC)
+    long_ref = plugin_module._new_trace_ref()
+    with session_factory.begin() as session:
+        calls = []
+        for ordinal in range(1, 101):
+            tool = (
+                "docket_commit_changeset" if ordinal == 100 else
+                "docket_stage_changes" if ordinal == 99 else "docket_search_history"
+            )
+            calls.append({
+                "call_id": f"long-{ordinal}", "ordinal": ordinal, "tool_name": tool,
+                "execution_boundary": "mcp_attempted", "transport_state": "completed",
+                "elapsed_ms": 42, "argument_preview": json.dumps(
+                    {"fields": ["界" * 180]}, ensure_ascii=False
+                ),
+            })
+        session.add(ConversationalToolTrace(
+            ref_id=long_ref, guild_id=settings.discord_guild_id,
+            source_channel_id=settings.chat_channel_id, source_message_id="777777777777777777",
+            actor_id=settings.operator_discord_user_id, tool_contract_version=CONTRACT_VERSION,
+            tool_contract_hash=contract_hash("interactive"), started_at=stamp,
+            calls=calls, last_ordinal=100,
+        ))
+        session.flush()
+        McpTraceService(session).update(long_ref, McpTraceUpdate(
+            request_id=uuid.uuid4(), guild_id=settings.discord_guild_id,
+            source_channel_id=settings.chat_channel_id, source_message_id="777777777777777777",
+            actor_id=settings.operator_discord_user_id, tool_contract_version=CONTRACT_VERSION,
+            tool_contract_hash=contract_hash("interactive"), caller_profile="interactive",
+            turn_started_at=stamp, updated_at=datetime.now(UTC), turn_status="completed",
+        ))
+    backend = FakeDiscordBackend()
+    runner = DiscordProjectionRunner(
+        session_factory, FakeDiscordProjectionAdapter(backend), settings
+    )
+    while runner.run_due_once():
+        pass
+    actual = backend.mcp_traces[long_ref]["render"]
+    digest = hashlib.sha256(json.dumps(
+        actual, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode()).hexdigest()
+    await plugin_module._put_mcp_trace(long_ref, {
+        **payload, "trace_ref": long_ref, "render": actual, "render_sha256": digest,
+    })
+    embed = channel.messages[-1].embeds[0]
+    size = len(embed.kwargs["title"]) + len(embed.kwargs["description"]) + len(embed.footer.text)
+    size += sum(len(field["name"]) + len(field["value"]) for field in embed.fields)
+    assert size <= 6000
+    assert len(embed.fields) <= 25
+    assert "Stage: 1" in embed.fields[2]["value"]
+    assert "Commit: 1" in embed.fields[2]["value"]
+    assert any(field["name"] == "100. docket_commit_changeset" for field in embed.fields)
+    assert any("omitted; showing recent attempts" in field["value"] for field in embed.fields)
 
 
 @pytest.mark.adversarial

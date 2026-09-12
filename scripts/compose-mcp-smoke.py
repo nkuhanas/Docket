@@ -205,6 +205,7 @@ async def smoke() -> None:
             "updated_at": datetime.now(UTC).isoformat(),
         }
         running_call = {
+            "execution_boundary": "mcp_attempted",
             "call_id": "compose-smoke-call",
             "ordinal": 1,
             "tool_name": "docket_request_clarification",

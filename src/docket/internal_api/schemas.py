@@ -13,6 +13,7 @@ class McpTraceCallUpdate(InternalModel):
     call_id: str = Field(min_length=1, max_length=255)
     ordinal: int = Field(ge=1, le=100)
     tool_name: str = Field(min_length=1, max_length=128)
+    execution_boundary: Literal["mcp_attempted", "local_rejection"]
     transport_state: Literal["running", "completed", "failed", "timed_out"]
     elapsed_ms: int = Field(default=0, ge=0, le=600_000)
     disposition: str | None = Field(default=None, min_length=1, max_length=64)

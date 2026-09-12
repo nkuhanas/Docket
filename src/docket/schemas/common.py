@@ -52,6 +52,7 @@ HistoryObjectType = Literal[
     "case_item",
     "operation",
     "tool_invocation",
+    "conversational_tool_trace",
     "audit_event",
     "runtime_log_entry",
     "triage_brief_entry",

@@ -441,17 +441,21 @@ def docket_search_history(
 @mcp.tool()
 def docket_get_history_entry(
     ref: str,
-    view: Literal["summary", "audit", "delivery"] = "summary",
+    view: Literal["summary", "audit", "delivery", "calls"] = "summary",
     text_offset: Annotated[int, Field(ge=0)] = 0,
     text_limit: Annotated[int, Field(ge=1, le=65536)] = 32768,
     cursor: Annotated[str | None, Field(max_length=4096)] = None,
     limit: Annotated[int, Field(ge=1, le=100)] = 25,
 ) -> dict[str, Any]:
-    """Read exact history; audit exposes text, delivery follows a committed chg_.
+    """Read exact history; calls paginates trace_, delivery follows committed chg_.
 
     Delivery is a bounded live status read with exact request-wide operation
     counts and per-target title/time/lane/error. Follow existing operations, never
     restage a committed request. A delivery read does not retry provider work.
+    Calls shows whole-trace counts, local/confirmed/unreconciled origins and
+    measured Docket intervals; other time is unattributed, not model time.
+    Call cursors bind the trace revision; restart if it advances. Invocation
+    outcomes are live observations, not a frozen snapshot of provider state.
     """
     try:
         with session_scope() as session:

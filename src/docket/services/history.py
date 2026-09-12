@@ -65,6 +65,7 @@ from docket.services.source_identities import (
     gmail_sender_identity,
     sender_handles_for_email,
 )
+from docket.services.trace_views import TraceViewService
 
 DEFAULT_PAGE_SIZE = 25
 HARD_PAGE_SIZE = 100
@@ -791,6 +792,12 @@ class HistoryService:
             item = self.session.scalar(select(Source).where(Source.ref_id == ref_id))
         if item is None:
             raise DocketError(code="history_entry_not_found", message="Public reference not found.")
+        if view == "calls":
+            if not isinstance(item, ConversationalToolTrace):
+                raise DocketError(
+                    code="trace_view_requires_trace", message="Call details require a trace_ ref."
+                )
+            return TraceViewService(self.session).read(item, cursor=cursor, limit=limit)
         if view == "delivery":
             if not isinstance(item, ChangeSet):
                 raise DocketError(
@@ -801,7 +808,7 @@ class HistoryService:
         if cursor is not None:
             raise DocketError(
                 code="history_cursor_view_invalid",
-                message="A delivery cursor requires delivery view.",
+                message="Use cursors only with their delivery or calls view.",
             )
         entry = self._summary(object_type, item)
         if isinstance(item, InterpretedStatement):

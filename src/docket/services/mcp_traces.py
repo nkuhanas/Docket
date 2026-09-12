@@ -152,6 +152,7 @@ class McpTraceService:
             "call_id": call.call_id,
             "ordinal": call.ordinal,
             "tool_name": call.tool_name,
+            "execution_boundary": call.execution_boundary,
             "transport_state": call.transport_state,
             "domain_state": "unknown",
             "elapsed_ms": call.elapsed_ms,
@@ -169,6 +170,7 @@ class McpTraceService:
             "call_id": call.call_id,
             "ordinal": call.ordinal,
             "tool_name": call.tool_name,
+            "execution_boundary": call.execution_boundary,
             "transport_state": call.transport_state,
             "elapsed_ms": call.elapsed_ms,
             "disposition": call.disposition,
@@ -219,7 +221,10 @@ class McpTraceService:
                 code="mcp_trace_call_conflict",
                 message="The MCP trace call identifier or ordinal was reused.",
             )
-        if match.get("tool_name") != call.tool_name:
+        if (
+            match.get("tool_name") != call.tool_name
+            or match.get("execution_boundary") != call.execution_boundary
+        ):
             raise DocketError(
                 code="mcp_trace_call_conflict",
                 message="The MCP trace call tool binding changed.",
@@ -255,6 +260,8 @@ class McpTraceService:
         )
         if existing is not None:
             return existing
+        if call.execution_boundary == "local_rejection":
+            return None
         if call.received_argument_hash is None:
             return None
         invocation = self.session.scalar(
@@ -306,7 +313,10 @@ class McpTraceService:
                 )
             )
             received_hash = call.get("received_argument_hash")
-            if invocation is None and isinstance(received_hash, str):
+            if (
+                invocation is None and isinstance(received_hash, str)
+                and call.get("execution_boundary") != "local_rejection"
+            ):
                 invocation = self.session.scalar(
                     select(ToolInvocation)
                     .where(
