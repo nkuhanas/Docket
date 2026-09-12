@@ -276,6 +276,7 @@ class TraceExecutionService:
         execution_completion_token: str,
         gateway_instance_ref: str,
         active: bool = False,
+        completing: bool = False,
     ) -> tuple[ConversationalToolTrace, TraceExecutionSegment]:
         # Source-first locking agrees with admission, MCP binding and staging.
         trace = self.session.scalar(
@@ -300,7 +301,8 @@ class TraceExecutionService:
         if source is None:
             raise self._invalid()
         lease = self._lease(
-            execution_completion_token, source.ref_id, gateway_instance_ref, active=active
+            execution_completion_token, source.ref_id, gateway_instance_ref,
+            active=active or completing,
         )
         trace = self.session.scalar(
             select(ConversationalToolTrace)

@@ -1,5 +1,30 @@
 # Interaction correction verification
 
+## Post-deployment response ownership regression
+
+The first September 12 deployment passed its deterministic gates and service
+health checks, but observation caught an old source being re-admitted repeatedly.
+Its commits recovered an existing receipt; provider operation counts did not
+change. Final response capture was rejecting the replacement gateway against
+the original IntentTurn's gateway (which may also be unrecorded). No `rsp_` was
+stored, so ingress completion returned `agent_turn_not_finalized` and retried.
+A supported durable drain stopped new execution while the repair was verified.
+
+Plugin 0.31.1 binds response/no-response callbacks to the admitted execution.
+The historical turn is not rebound. New output must own the active claim;
+exact response replay remains valid after lease completion. An earlier execution
+cannot finalize a newer claim even within the same live gateway. Response keys
+and audit metadata identify the producing execution, and response tool-call
+provenance excludes other executions on the same source-wide trace.
+
+`test_deployment_continuity.py` covers cold replacement with an old or unrecorded
+turn gateway, response loss/replay, failed Discord delivery without re-execution,
+and stale same-gateway final/no-response callbacks. The authenticated HTTP Compose
+smoke supplies the exact binding; the PostgreSQL assembly smoke includes
+`test_recovered_response_finalizes_original_turn_without_reexecution` across
+separate transactions. These tests supplement, not replace, post-release checks
+for terminal ingress, a persisted response and no repeated admissions.
+
 `ONT-DELTA-2026-09-11-INTERACTION-CORRECTION` is signed at SHA-256
 `39ca596f2ff00e70cad28fe6e3750f284efde53d4db47d8490531d61ae9fd23a`.
 Its private source remains under `deltas/`. The packaged artifact manifest

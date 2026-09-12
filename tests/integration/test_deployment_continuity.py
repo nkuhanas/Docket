@@ -8,24 +8,35 @@ from trace_support import segment_for
 from docket.config import get_settings
 from docket.domain.errors import DocketError
 from docket.domain.public_refs import new_public_ref
-from docket.internal_api.schemas import AgentResponseCapture, OperatorUtteranceCapture
+from docket.internal_api.schemas import (
+    AgentResponseCapture,
+    AgentTurnNoResponse,
+    GatewayAgentResponseCapture,
+    OperatorUtteranceCapture,
+)
 from docket.models import (
+    AgentResponse,
+    AuditEvent,
     ConversationalToolTrace,
     DeferredIngress,
     ExecutionLease,
     GatewayLifetime,
     IntentSession,
+    IntentTurn,
     OperatorUtterance,
     OutboxEvent,
     ToolInvocation,
     TraceExecutionSegment,
 )
 from docket.providers.discord import FakeDiscordProjectionAdapter
+from docket.schemas.authority import IntentSessionOpen, IntentTurnAppend
 from docket.services.continuity import ContinuityService
 from docket.services.deferred_ingress import DeferredIngressRunner
 from docket.services.gateway_lifetimes import GatewayLifetimeService
 from docket.services.ingress_ledger import IngressIdentity, IngressLedgerService
+from docket.services.intent_sessions import IntentSessionService
 from docket.services.provenance import ProvenanceService
+from docket.services.trace_executions import TraceExecutionService
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash
 
 
@@ -47,6 +58,22 @@ def _claimed_message(session_factory):
     return request, captured
 
 
+def _bind_captured_execution(session, gateway_ref, captured):
+    binding = captured["deferred_ingress"]
+    result = TraceExecutionService(session).bind(
+        utterance_ref=captured["ref"],
+        execution_completion_token=binding["execution_completion_token"],
+        gateway_instance_ref=gateway_ref,
+        tool_contract_version=CONTRACT_VERSION,
+        tool_contract_hash=contract_hash("interactive"),
+        turn_started_at=datetime.now(UTC),
+    )
+    return {
+        "trace_ref": result["trace_ref"], "execution_index": result["execution_index"],
+        "execution_completion_token": binding["execution_completion_token"],
+    }
+
+
 def _retained_trace(session, **values):
     """Exact pre-cutover trace evidence; no inferred execution lease."""
     fields = {
@@ -64,6 +91,130 @@ def _retained_trace(session, **values):
     ))
     session.flush()
     return trace
+
+
+def _response_request(request, captured, execution):
+    return GatewayAgentResponseCapture(
+        request_id=uuid.uuid4(), guild_id=request.guild_id, channel_id=request.channel_id,
+        source_message_id=request.message_id, actor_id=request.actor_id,
+        utterance_ref=captured["ref"], turn_id="synthetic-final", session_id="synthetic-session",
+        model_identifier="test", verbatim_text="Recovered the existing result.",
+        generated_at=datetime.now(UTC), gateway_instance_ref=request.gateway_instance_ref,
+        **execution,
+    )
+
+
+@pytest.mark.parametrize("old_turn_gateway", ["original", "unrecorded"])
+def test_recovered_response_uses_admitted_execution_not_old_intent_turn(
+    session_factory, old_turn_gateway
+):
+    request, captured = _claimed_message(session_factory)
+    with session_factory.begin() as session:
+        original = _bind_captured_execution(session, request.gateway_instance_ref, captured)
+        intents = IntentSessionService(session)
+        intent, _ = intents.open(IntentSessionOpen(source_utterance_ref=captured["ref"]))
+        intents.append_turn(IntentTurnAppend(
+            intent_session_ref=intent.ref_id, utterance_ref=captured["ref"],
+            gateway_instance_ref=(request.gateway_instance_ref
+                                  if old_turn_gateway == "original" else None),
+        ))
+        old = session.scalar(select(GatewayLifetime))
+        old.lease_expires_at = datetime.now(UTC) - timedelta(seconds=10)
+    with session_factory.begin() as session:
+        replacement = GatewayLifetimeService(session).register(
+            registration_key=uuid.uuid4(), instance_kind="hermes_discord_gateway"
+        )
+        resumed_request = request.model_copy(update={"gateway_instance_ref": replacement["ref"]})
+        resumed_capture = ProvenanceService(session).capture_operator_utterance(resumed_request)
+        recovered = _bind_captured_execution(session, replacement["ref"], resumed_capture)
+        assert recovered["trace_ref"] == original["trace_ref"]
+        assert recovered["execution_index"] == 2
+        segment_for(session, recovered["trace_ref"], 2).status = "completed"
+        response_request = _response_request(resumed_request, resumed_capture, recovered)
+        result = ProvenanceService(session).capture_agent_response(response_request)
+        assert result["disposition"] == "created"
+        ContinuityService(session).complete_interactive_ingress(
+            completion_token=recovered["execution_completion_token"],
+            ingress_ref=resumed_capture["deferred_ingress"]["ref"],
+            gateway_instance_ref=replacement["ref"], outcome="failed",
+            error_code="discord_delivery_failed",
+        )
+    with session_factory.begin() as session:
+        replay = ProvenanceService(session).capture_agent_response(response_request.model_copy(
+            update={"turn_id": "different-hermes-turn-id-after-lost-response"}
+        ))
+        assert replay["ref"] == result["ref"]
+        assert replay["disposition"] == "replayed_request"
+        assert session.scalar(select(func.count(AgentResponse.id))) == 1
+        turn = session.scalar(select(IntentTurn))
+        assert turn.gateway_instance_ref == (
+            request.gateway_instance_ref if old_turn_gateway == "original" else None
+        )
+        assert turn.response_disposition == "final_response"
+        assert session.scalar(select(DeferredIngress)).status == "completed"
+        audit = session.scalar(select(AuditEvent).where(
+            AuditEvent.event_type == "agent_response.submitted"
+        ))
+        assert audit.data["execution_index"] == 2
+        assert "execution_completion_token" not in audit.data
+        duplicate = ProvenanceService(session).capture_operator_utterance(resumed_request)
+        assert duplicate["deferred_ingress"]["state"] == "completed"
+        assert duplicate["deferred_ingress"]["execution_completion_token"] is None
+        assert session.scalar(select(func.count(ExecutionLease.id))) == 2
+        assert session.scalar(select(func.count(OperatorUtterance.id))) == 1
+    assert DeferredIngressRunner(
+        session_factory, FakeDiscordProjectionAdapter()
+    ).run_once() is False
+
+
+@pytest.mark.parametrize("final_kind", ["response", "no_response"])
+def test_stale_response_cannot_finalize_replacement_claim_in_same_gateway(
+    session_factory, final_kind
+):
+    request, captured = _claimed_message(session_factory)
+    with session_factory.begin() as session:
+        original = _bind_captured_execution(session, request.gateway_instance_ref, captured)
+        stale = _response_request(request, captured, original)
+        ContinuityService(session).complete_interactive_ingress(
+            completion_token=original["execution_completion_token"],
+            ingress_ref=captured["deferred_ingress"]["ref"],
+            gateway_instance_ref=request.gateway_instance_ref,
+            outcome="failed", error_code="agent_turn_not_finalized",
+        )
+    with session_factory.begin() as session:
+        retry = ProvenanceService(session).capture_operator_utterance(request)
+        _bind_captured_execution(session, request.gateway_instance_ref, retry)
+    with session_factory.begin() as session:
+        with pytest.raises(DocketError) as error:
+            service = ProvenanceService(session)
+            if final_kind == "response":
+                service.capture_agent_response(stale)
+            else:
+                service.finalize_agent_turn_without_response(AgentTurnNoResponse.model_validate(
+                    stale.model_dump(exclude={
+                        "model_identifier", "verbatim_text", "generated_at", "finalize_intent_turn"
+                    })
+                ))
+        assert error.value.code == "trace_execution_binding_mismatch"
+        assert session.scalar(select(func.count(AgentResponse.id))) == 0
+        ingress = session.scalar(select(DeferredIngress))
+        assert ingress.status == "claimed"
+        assert str(ingress.claim_token) == retry["deferred_ingress"]["claim_token"]
+
+
+def test_gateway_response_rejects_unbound_schema_at_service_boundary(session_factory):
+    request, captured = _claimed_message(session_factory)
+    with session_factory.begin() as session:
+        execution = _bind_captured_execution(session, request.gateway_instance_ref, captured)
+        unbound = AgentResponseCapture.model_validate(
+            _response_request(request, captured, execution).model_dump(
+                exclude={"execution_index", "execution_completion_token"}
+            )
+        )
+        with pytest.raises(DocketError) as error:
+            ProvenanceService(session).capture_agent_response(unbound)
+        assert error.value.code == "response_execution_required"
+        assert session.scalar(select(func.count(AgentResponse.id))) == 0
 
 
 @pytest.mark.integration
@@ -115,13 +266,14 @@ def test_final_response_fences_pending_ingress_and_failed_callback(
     request, captured = _claimed_message(session_factory)
     binding = captured["deferred_ingress"]
     with session_factory.begin() as session:
-        ProvenanceService(session).capture_agent_response(AgentResponseCapture(
+        execution = _bind_captured_execution(session, request.gateway_instance_ref, captured)
+        ProvenanceService(session).capture_agent_response(GatewayAgentResponseCapture(
             request_id=uuid.uuid4(), guild_id=request.guild_id, channel_id=request.channel_id,
             source_message_id=request.message_id, actor_id=request.actor_id,
             utterance_ref=captured["ref"], turn_id="original", session_id="session",
             model_identifier="test", verbatim_text="Finished; delivery is still pending.",
             generated_at=datetime.now(UTC), gateway_instance_ref=request.gateway_instance_ref,
-            trace_ref=new_public_ref("trace"),
+            **execution,
         ))
         # Reproduce a stale pending row, without changing immutable evidence.
         if replay_before_completion:
@@ -284,8 +436,9 @@ def test_drained_replacement_terminalizes_trace_without_replaying_finalized_utte
             )
         )
         session.flush()
+        execution = _bind_captured_execution(session, str(prior["ref"]), capture)
         ProvenanceService(session).capture_agent_response(
-            AgentResponseCapture(
+            GatewayAgentResponseCapture(
                 request_id=uuid.uuid4(),
                 guild_id=settings.discord_guild_id,
                 channel_id=settings.chat_channel_id,
@@ -297,7 +450,7 @@ def test_drained_replacement_terminalizes_trace_without_replaying_finalized_utte
                 model_identifier="test-model",
                 verbatim_text="The request could not be committed.",
                 generated_at=now,
-                trace_ref=trace_ref,
+                **execution,
                 gateway_instance_ref=str(prior["ref"]),
             )
         )
@@ -333,7 +486,7 @@ def test_drained_replacement_terminalizes_trace_without_replaying_finalized_utte
                 OutboxEvent.event_type == "discord.mcp_trace.requested",
                 OutboxEvent.aggregate_id == trace.id,
             )
-        ) == 1
+        ) == 3  # bind refresh plus reconciliation of retained and admitted executions
 
     assert DeferredIngressRunner(
         session_factory,

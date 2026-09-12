@@ -704,6 +704,8 @@ def test_empty_model_turn_is_reported_as_no_response(plugin_module, monkeypatch)
     )
 
     assert requests[-1][0] == "/internal/v1/discord/agent-turns/no-response"
+    assert requests[-1][1]["execution_index"] == 1
+    assert requests[-1][1]["execution_completion_token"] == "a" * 32
     assert requests[-1][1]["utterance_ref"].startswith("utt_")
     assert requests[-1][1]["source_message_id"] == message_id
 
@@ -771,6 +773,8 @@ def test_empty_signoff_turn_persists_deterministic_response(plugin_module, monke
 
     assert requests[-1][0] == "/internal/v1/discord/agent-responses"
     assert requests[-1][1]["model_identifier"] == "docket-deterministic-response-v1"
+    assert requests[-1][1]["execution_index"] == 1
+    assert requests[-1][1]["execution_completion_token"] == "a" * 32
     assert decision_ref in str(requests[-1][1]["verbatim_text"])
     assert not any(path.endswith("/no-response") for path, _payload in requests)
 

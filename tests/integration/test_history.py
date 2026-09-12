@@ -4,11 +4,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
+from trace_support import bind_execution
 
 from docket.config import get_settings
 from docket.domain.errors import DocketError
-from docket.domain.public_refs import new_public_ref
-from docket.internal_api.schemas import AgentResponseCapture, OperatorUtteranceCapture
+from docket.internal_api.schemas import GatewayAgentResponseCapture, OperatorUtteranceCapture
 from docket.models import (
     AttentionCase,
     AttentionCaseRevision,
@@ -175,9 +175,9 @@ def test_exact_history_lookup_and_conversation_reconstruction_are_public_and_bou
         session.add(statement)
         session.flush()
         statement_ref = statement.ref_id
-        trace_ref = new_public_ref("trace")
+        execution = bind_execution(session, utterance)
         response = ProvenanceService(session).capture_agent_response(
-            AgentResponseCapture.model_validate(
+            GatewayAgentResponseCapture.model_validate(
                 {
                     "request_id": str(uuid.uuid4()),
                     "guild_id": settings.discord_guild_id,
@@ -190,7 +190,10 @@ def test_exact_history_lookup_and_conversation_reconstruction_are_public_and_bou
                     "model_identifier": "test-model",
                     "verbatim_text": "I preserved it.",
                     "generated_at": datetime.now(UTC).isoformat(),
-                    "trace_ref": trace_ref,
+                    **{key: execution[key] for key in (
+                        "trace_ref", "gateway_instance_ref", "execution_index",
+                        "execution_completion_token",
+                    )},
                 }
             )
         )
