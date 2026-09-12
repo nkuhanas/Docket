@@ -63,6 +63,7 @@ from docket.models import (
     OutboxEvent,
     ProviderAccount,
     ProviderEventBinding,
+    RequestAssemblyAdoption,
     SemanticRequest,
     SemanticRequestAttempt,
     SemanticRequestSpecification,
@@ -915,6 +916,150 @@ def test_direct_receipt_resume_admissions_serialize(factory: sessionmaker[Sessio
         assert sorted(attempt.attempt_number for attempt in attempts) == [1, 2, 3]
 
 
+def test_direct_request_adoption_serializes_and_preserves_proof(
+    factory: sessionmaker[Session],
+) -> None:
+    with factory.begin() as session:
+        utterance = _utterance("1542799000000000688", "Track the adoption fixture.")
+        session.add(utterance)
+        session.flush()
+        staged = _item_stage(utterance, change_id="adopt-item", title="Adoption fixture",
+                             include_scope=True)
+        service = InteractiveAuthorityService(session)
+        with patch.object(service.changesets, "_validate", return_value=[{
+            "code": "fixture_implementation_validation", "category": "implementation_validation",
+        }]):
+            outcome = service.process_turn(
+                utterance_ref=utterance.ref_id, request_key=utterance.request_key,
+                actor_id=str(get_settings().operator_discord_user_id), intent_session_ref=None,
+                expected_session_version=None, statements=[], relations=[],
+                resolved_intent_json={"kind": "adoption_fixture"}, blocking_clarifications=[],
+                content=ChangeSetContent(
+                    basis_refs=[utterance.ref_id],
+                    tracked_context_changes=[staged.patch.operations[0].action],
+                ), changeset_ref=None, expected_changeset_version=None,
+            )
+        assert outcome["state"] == "blocked_validation"
+        request_ref = outcome["semantic_request_ref"]
+        request = session.scalar(select(SemanticRequest).where(
+            SemanticRequest.ref_id == request_ref,
+        ))
+        assert request is not None
+        binding = deepcopy(request.selected_option_binding)
+        authority_hash = request.authority_scope_hash
+        changeset = session.scalar(select(ChangeSet).where(
+            ChangeSet.semantic_request_ref == request_ref,
+        ))
+        assert changeset is not None
+        changeset_id = changeset.id
+        original = session.scalar(select(ChangeSetRevision).where(
+            ChangeSetRevision.change_set_id == changeset.id,
+        ))
+        assert original is not None
+        original_id, original_hash = original.id, original.parameter_hash
+        utterance_ref, request_key = utterance.ref_id, utterance.request_key
+        original_item_count = session.scalar(select(func.count(Item.id)))
+    payload = StageChangesInput(
+        utterance_ref=utterance_ref, request_key=request_key,
+        patch={"operations": [{"operation": "draft_adopt"}]},
+    )
+    digest = sha256_json(payload.model_dump(mode="json"))
+    admitted: list[tuple[str, str]] = []
+    for index in range(2):
+        trace_ref = new_public_ref("trace")
+        _review(
+            factory, utterance_ref=utterance_ref, request_key=request_key, trace_ref=trace_ref,
+            call_id=f"adopt-review-{index}", ordinal=1, argument_hash="a" * 64,
+        )
+        token = _admit_committed(
+            factory, utterance_ref=utterance_ref, trace_ref=trace_ref, call_id=f"adopt-{index}",
+            ordinal=2, tool_name="docket_stage_changes", argument_hash=digest,
+        )
+        admitted.append((trace_ref, token))
+    barrier = threading.Barrier(2)
+
+    def adopt(values: tuple[str, str]) -> dict[str, Any]:
+        barrier.wait(timeout=10)
+        return _stage(factory, utterance_ref=utterance_ref, token=values[1],
+                      argument_hash=digest, request=payload)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(adopt, values) for values in admitted]
+        results = [future.result(timeout=30) for future in futures]
+    assert sorted(result["disposition"] for result in results) == [
+        "draft_revision_conflict", "ready_to_commit",
+    ]
+    winner = next(index for index, row in enumerate(results)
+                  if row["disposition"] == "ready_to_commit")
+    assert results[winner]["observation_required"] is True
+    trace_ref, token = admitted[winner]
+    with factory.begin() as session:
+        proof = session.get(RequestAssemblyAdoption, request_ref)
+        assert proof is not None and proof.original_revision_id == original_id
+        assert proof.proof_hash == sha256_json(proof.proof_json)
+        assert session.scalar(select(func.count(Item.id))) == original_item_count
+        request = session.scalar(select(SemanticRequest).where(
+            SemanticRequest.ref_id == request_ref,
+        ))
+        assert request is not None and request.selected_option_binding == binding
+        assert request.authority_scope_hash == authority_hash
+        assert session.scalar(select(func.count(ChangeSetRevision.id)).where(
+            ChangeSetRevision.change_set_id == changeset_id,
+        )) == 2
+    commit_token = _admit_committed(
+        factory, utterance_ref=utterance_ref, trace_ref=trace_ref, call_id="adopt-stale-commit",
+        ordinal=3, tool_name="docket_commit_changeset", argument_hash="b" * 64,
+    )
+    with factory.begin() as session:
+        result = ChangeSetAssemblyService(session).commit(
+            utterance_ref=utterance_ref, request_key=request_key,
+            assembly_operation_token=commit_token, assembly_argument_hash="b" * 64,
+        )
+        assert result["disposition"] == "draft_revision_conflict"
+    _review(
+        factory, utterance_ref=utterance_ref, request_key=request_key, trace_ref=trace_ref,
+        call_id="adopt-observe-new", ordinal=4, argument_hash="c" * 64,
+    )
+    commit_token = _admit_committed(
+        factory, utterance_ref=utterance_ref, trace_ref=trace_ref, call_id="adopt-commit",
+        ordinal=5, tool_name="docket_commit_changeset", argument_hash="d" * 64,
+    )
+    with factory.begin() as session:
+        receipt = ChangeSetAssemblyService(session).commit(
+            utterance_ref=utterance_ref, request_key=request_key,
+            assembly_operation_token=commit_token, assembly_argument_hash="d" * 64,
+        )
+        assert receipt["canonical_disposition"] == "committed"
+    replay = _stage(factory, utterance_ref=utterance_ref, token=token,
+                    argument_hash=digest, request=payload)
+    assert replay == {**results[winner], "replayed": True}
+    with factory() as session:
+        assert session.scalar(select(func.count(Item.id))) == original_item_count + 1
+        original = session.get(ChangeSetRevision, original_id)
+        assert original is not None and original.parameter_hash == original_hash
+    for sql in (
+        "UPDATE request_assembly_adoptions SET proof_hash = :hash "
+        "WHERE semantic_request_ref = :ref",
+        "DELETE FROM request_assembly_adoptions WHERE semantic_request_ref = :ref",
+    ):
+        try:
+            with factory.begin() as session:
+                session.execute(text(sql), {"ref": request_ref, "hash": "0" * 64})
+        except DBAPIError:
+            pass
+        else:
+            raise AssertionError("PostgreSQL allowed rewriting an immutable adoption proof")
+    try:
+        command.downgrade(Config("alembic.ini"), "20260911e4b3")
+    except RuntimeError as exc:
+        assert "Request adoption proofs exist" in str(exc)
+    else:
+        raise AssertionError("Downgrade discarded adoption evidence")
+    with factory() as session:
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260911f5c4"
+        assert session.get(RequestAssemblyAdoption, request_ref) is not None
+
+
 def _schedule_stage(
     utterance: OperatorUtterance,
     *,
@@ -1765,7 +1910,7 @@ def test_trace_history_survives_call_one_hundred_and_blocks_lossy_downgrade(
     else:
         raise AssertionError("Downgrade should preserve the longer trace by refusing to proceed")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260911e4b3"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260911f5c4"
         assert session.scalar(select(ConversationalToolTrace.last_ordinal).where(
             ConversationalToolTrace.id == trace_id
         )) == 103
@@ -1967,13 +2112,19 @@ def test_request_specifications_are_immutable_and_block_lossy_downgrade(
         else:
             raise AssertionError("PostgreSQL allowed rewriting immutable request evidence")
     try:
-        command.downgrade(Config("alembic.ini"), "20260911d3a2")
+        migration = ScriptDirectory.from_config(Config("alembic.ini")).get_revision("20260911e4b3")
+        assert migration is not None
+        with (
+            factory.kw["bind"].begin() as connection,
+            Operations.context(MigrationContext.configure(connection)),
+        ):
+            migration.module.downgrade()
     except RuntimeError as exc:
         assert "discard evidence" in str(exc)
     else:
         raise AssertionError("Downgrade discarded immutable request specifications")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260911e4b3"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260911f5c4"
         assert session.get(SemanticRequestSpecification, (key["ref"], key["version"])) is not None
 
 
@@ -1988,6 +2139,7 @@ def main() -> None:
         test_one_changeset_lineage_per_semantic_request,
         test_pre_admitted_initial_stages_share_one_request,
         test_direct_receipt_resume_admissions_serialize,
+        test_direct_request_adoption_serializes_and_preserves_proof,
         test_thirty_entry_schedule_commits_once,
         test_native_and_deferred_ingress_claim_once,
         test_relative_date_capture_serializes,

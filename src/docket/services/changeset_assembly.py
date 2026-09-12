@@ -38,6 +38,7 @@ from docket.schemas.assembly import (
     StageActionRemove,
     StageActionUpsert,
     StageChangesInput,
+    StageDraftAdopt,
     StageDraftRecompile,
     StageNormalizedEntryRemove,
     StageNormalizedEntryUpsert,
@@ -67,6 +68,7 @@ from docket.services.changeset_recompile import recompile_draft
 from docket.services.intent_sessions import IntentSessionService
 from docket.services.interactive_authority import InteractiveAuthorityService
 from docket.services.reply_bindings import ReplyBindingService
+from docket.services.request_adoption import adopt_request, read_adoption, verify_adopted_content
 from docket.services.request_specifications import record_request_proposal
 from docket.services.statements import StatementService
 
@@ -220,7 +222,9 @@ def _bind_execution_request(
     execution.semantic_request_attempt_ref = attempt.ref_id
 
 
-def _require_assembly_request(request: SemanticRequest) -> None:
+def _require_assembly_request(
+    session: Session, request: SemanticRequest, *, adopting: bool = False,
+) -> None:
     if request.authority_availability != "available":
         raise DocketError(
             code="semantic_request_authority_unavailable",
@@ -231,7 +235,9 @@ def _require_assembly_request(request: SemanticRequest) -> None:
                 "next_action": "inspect_request_disposition",
             },
         )
-    if (request.selected_option_binding or {}).get("kind") != "freeform_assembly":
+    if (request.selected_option_binding or {}).get("kind") != "freeform_assembly" and (
+        not adopting and read_adoption(session, request) is None
+    ):
         raise DocketError(
             code="semantic_request_migration_required",
             message="Resume the preserved request through explicit adoption before editing it.",
@@ -811,6 +817,12 @@ class ChangeSetAssemblyService:
         if semantic_request.authority_availability != "available" or (
             (semantic_request.selected_option_binding or {}).get("kind") != "freeform_assembly"
         ):
+            adopted = read_adoption(self.session, semantic_request)
+            if scope is not None and adopted is not None and scope != adopted[1].assembly_boundary:
+                raise DocketError(
+                    code="assembly_scope_mismatch",
+                    message="A later stage operation cannot change the adopted request boundary.",
+                )
             return bound_session, semantic_request, attempt
         persisted_scope = (semantic_request.selected_option_binding or {}).get("scope")
         if (
@@ -825,8 +837,10 @@ class ChangeSetAssemblyService:
         operation.semantic_request_attempt_ref = attempt.ref_id
         return bound_session, semantic_request, attempt
 
-    @staticmethod
-    def _scope(semantic_request: SemanticRequest) -> AssemblyAuthorityScopeInput:
+    def _scope(self, semantic_request: SemanticRequest) -> AssemblyAuthorityScopeInput:
+        adopted = read_adoption(self.session, semantic_request)
+        if adopted is not None:
+            return adopted[1].assembly_boundary
         payload = (semantic_request.selected_option_binding or {}).get("scope")
         if not isinstance(payload, dict):
             raise DocketError(
@@ -1093,6 +1107,31 @@ class ChangeSetAssemblyService:
             resolution_changes=grouped["resolution_changes"],
             provider_intents=[],
         )
+        # An adopted request retains its original provenance/import contract,
+        # not a newly inferred interpretation assembled from action labels.
+        request = self.session.scalar(select(SemanticRequest).where(
+            SemanticRequest.ref_id == changeset.semantic_request_ref,
+        ))
+        adopted = read_adoption(self.session, request) if request else None
+        if adopted is not None:
+            if entries:
+                raise DocketError(
+                    code="adopted_request_scope_conflict",
+                    message="Adoption cannot replace preserved effects with a new import.",
+                    details={
+                        "authority_preserved": True, "next_action": "reconcile_semantic_scope",
+                    },
+                )
+            original = self.session.get(ChangeSetRevision, adopted[0].original_revision_id)
+            if original is None:
+                raise DocketError(
+                    code="request_adoption_unproven",
+                    message="Original adoption evidence is missing.",
+                )
+            raw = ChangeSetContent.model_validate({
+                **mutation_input_json(raw), "basis_refs": original.basis_refs,
+                "import_scope": original.import_scope_json,
+            })
         return raw
 
     @staticmethod
@@ -1107,6 +1146,7 @@ class ChangeSetAssemblyService:
         changeset: ChangeSet,
         content: ChangeSetContent | None,
         operation: AssemblyOperation,
+        request_boundary: AssemblyAuthorityScopeInput | None = None,
     ) -> ChangeSetRevision:
         if changeset.current_revision >= MAX_DRAFT_REVISIONS:
             raise DocketError(
@@ -1173,7 +1213,9 @@ class ChangeSetAssemblyService:
             revision.compiler_manifest_json = changeset.compiler_manifest_json
             revision.validation_errors_json = changeset.validation_errors
             revision.assembly_operation_id = operation.id
-        record_request_proposal(self.session, changeset=changeset, revision=revision)
+        record_request_proposal(
+            self.session, changeset=changeset, revision=revision, request_boundary=request_boundary,
+        )
         return revision
 
     @staticmethod
@@ -1257,10 +1299,11 @@ class ChangeSetAssemblyService:
         operation.state = "running"
         utterance = self._authority_utterance(request)
         recompiling = isinstance(request.patch.operations[0], StageDraftRecompile)
-        if recompiling and execution.semantic_request_ref is None:
+        adopting = isinstance(request.patch.operations[0], StageDraftAdopt)
+        if (recompiling or adopting) and execution.semantic_request_ref is None:
             raise DocketError(
                 code="assembly_not_started",
-                message="There is no bound draft to recompile; stage the request first.",
+                message="There is no bound request to migrate; stage the request first.",
                 details={"next_action": "stage_changes"},
             )
         intent_session, semantic_request, attempt = self._bind_request_and_attempt(
@@ -1280,7 +1323,13 @@ class ChangeSetAssemblyService:
                 operation,
                 {**changeset.commit_receipt_json, "disposition": "already_committed"},
             )
-        _require_assembly_request(semantic_request)
+        _require_assembly_request(self.session, semantic_request, adopting=adopting)
+        if adopting and changeset is None:
+            raise DocketError(
+                code="request_adoption_unproven",
+                message="The preserved request has no immutable draft revision to adopt.",
+                details={"authority_preserved": True, "next_action": "reconcile_preserved_request"},
+            )
         created = changeset is None
         if changeset is None:
             changeset = ChangeSet(
@@ -1339,6 +1388,11 @@ class ChangeSetAssemblyService:
                     state="rejected",
                 )
 
+        if adopting:
+            return adopt_request(
+                self, changeset=changeset, operation=operation, request=semantic_request,
+                attempt=attempt, utterance=utterance, intent_session=intent_session,
+            )
         scope = self._scope(semantic_request)
         if recompiling:
             return recompile_draft(
@@ -1535,6 +1589,7 @@ class ChangeSetAssemblyService:
                     ownership=ownership,
                     expected_versions=expected_versions,
                 )
+                verify_adopted_content(self.session, changeset, content, compiled=False)
                 if content is not None:
                     content = self.changesets._compile_required_provider_intents(
                         content,
@@ -1554,7 +1609,19 @@ class ChangeSetAssemblyService:
                         }
                     )
         except (DocketError, ValidationError) as exc:
+            if isinstance(exc, DocketError) and exc.code in {
+                "adopted_request_scope_conflict", "request_adoption_unproven",
+            }:
+                raise
             errors.extend(self._compilation_diagnostics(exc))
+            if read_adoption(self.session, semantic_request) is not None:
+                # The input scope was checked above. A compiler failure is
+                # uncompiled input, not evidence of a changed Operator decision.
+                content = None
+        # Unlike an implementation diagnostic, a changed authorized effect
+        # cannot replace the adopted draft. Guard before mutating its inputs.
+        if content is not None:
+            verify_adopted_content(self.session, changeset, content)
         after_hash = sha256_json(
             {
                 "actions": actions,
@@ -2053,7 +2120,7 @@ class ChangeSetAssemblyService:
         )
         if changeset is not None and changeset.state == "committed":
             return self._terminal(operation, dict(changeset.commit_receipt_json))
-        _require_assembly_request(semantic_request)
+        _require_assembly_request(self.session, semantic_request)
         if changeset is None:
             raise DocketError(code="assembly_not_started", message="No staged request exists.")
         if (

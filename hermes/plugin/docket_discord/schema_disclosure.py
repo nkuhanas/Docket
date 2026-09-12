@@ -255,7 +255,9 @@ def scoped_stage_schema(
     definitions = scoped["$defs"]
     patch_items = definitions["StagePatchInput"]["properties"]["operations"]["items"]
     patch_mapping = patch_items["discriminator"]["mapping"]
-    selected_patch: dict[str, str] = {"draft_recompile": patch_mapping["draft_recompile"]}
+    selected_patch: dict[str, str] = {
+        name: patch_mapping[name] for name in ("draft_recompile", "draft_adopt")
+    }
     if requested_mutations:
         selected_patch["action_upsert"] = patch_mapping["action_upsert"]
         selected_patch["action_remove"] = patch_mapping["action_remove"]

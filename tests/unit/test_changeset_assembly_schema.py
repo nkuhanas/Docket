@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from docket.schemas.assembly import (
+    StageChangesInput,
     StagePatchInput,
 )
 from docket.services.changeset_assembly import (
@@ -68,3 +69,25 @@ def test_workload_limits_are_independent_of_output_budget() -> None:
     assert MAX_CANONICAL_ACTIONS == 1_000
     assert MAX_PROVIDER_OPERATIONS == 500
     assert MAX_DRAFT_ENTRIES > 30
+
+
+def test_explicit_adoption_has_no_payload_scope_or_precondition_replacement():
+    request = {
+        "utterance_ref": "utt_01ARZ3NDEKTSV4RRFFQ69G5FAV", "request_key": "fixture",
+        "patch": {"operations": [{"operation": "draft_adopt"}]},
+    }
+    assert StageChangesInput.model_validate(request).patch.operations[0].operation == "draft_adopt"
+    with pytest.raises(ValidationError):
+        StagePatchInput(operations=[{"operation": "draft_adopt"}, _item_operation(1)])
+    with pytest.raises(ValidationError):
+        StagePatchInput(operations=[{"operation": "draft_adopt", "content": {}}])
+    with pytest.raises(ValidationError):
+        StageChangesInput.model_validate({
+            **request, "expected_versions": {"ent_01ARZ3NDEKTSV4RRFFQ69G5FAV": 2},
+        })
+    with pytest.raises(ValidationError):
+        StageChangesInput.model_validate({
+            **request, "assembly_scope": {
+                "resolved_intent": {}, "allowed_mutation_types": ["item_create"],
+            },
+        })

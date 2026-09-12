@@ -23,8 +23,10 @@ from docket.models import (
     SemanticRequestSpecification,
     Source,
 )
+from docket.schemas.assembly import AssemblyAuthorityScopeInput
 from docket.schemas.authority import mutation_input_json
 from docket.schemas.request_specifications import RequestSpecificationProposal
+from docket.services.request_adoption import read_adoption
 
 _ENTRY_METADATA = {
     "statement_ref", "compiler_identifier", "compiler_version", "input_schema_version",
@@ -63,6 +65,7 @@ def read_request_proposal(
 
 def record_request_proposal(
     session: Session, *, changeset: ChangeSet, revision: ChangeSetRevision,
+    request_boundary: AssemblyAuthorityScopeInput | None = None,
 ) -> SemanticRequestSpecification:
     request = session.scalar(select(SemanticRequest).where(
         SemanticRequest.ref_id == changeset.semantic_request_ref,
@@ -76,7 +79,12 @@ def record_request_proposal(
         raise DocketError(
             code="request_origin_evidence_missing", message="Original request evidence is missing.",
         )
-    boundary = (request.selected_option_binding or {}).get("scope")
+    adopted = read_adoption(session, request)
+    request_boundary = request_boundary or (adopted[1].assembly_boundary if adopted else None)
+    boundary = (
+        request_boundary.model_dump(mode="json", exclude_none=True)
+        if request_boundary else (request.selected_option_binding or {}).get("scope")
+    )
     entries = [
         {key: value for key, value in row.items() if key not in _ENTRY_METADATA}
         for row in changeset.normalized_entries_json

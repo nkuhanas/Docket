@@ -171,6 +171,17 @@ not observe a subsequently newer revision. Migration diffs expose actual
 compiler products and pins as well as input changes. Ordinary staging still
 does not require review, and migration never commits canonical effects itself.
 
+For `semantic_request_migration_required` on a preserved direct request, first
+read its bounded current summary. A sole stage patch
+`{"operations":[{"operation":"draft_adopt"}]}` explicitly adopts that same request
+without new scope, expected versions or replacement content. Docket must verify
+current typed, hash-matching effects and retained evidence; it does not decode an
+unversioned request or assume that evidence hashes prove a new interpretation.
+Observe the adopted revision as directed above, then commit when ready. If
+`request_adoption_unproven` is returned, report its exact constraint; do not
+create a second request, repeat failed adoption indefinitely or ask for the same
+authorization again. A committed request always returns its existing receipt.
+
 An empty `diagnostic_sample` can mean a diagnostic exceeded the sample budget,
 not that validation succeeded. Trust `diagnostic_count` and
 `omitted_diagnostic_count`. When needed, follow `diagnostic_review` with its exact

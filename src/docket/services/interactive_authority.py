@@ -17,6 +17,7 @@ from docket.models import (
     InterpretedStatement,
     OperatorUtterance,
     PersistedSemanticOption,
+    RequestAssemblyAdoption,
     SemanticRequest,
     SemanticRequestAttempt,
 )
@@ -60,8 +61,8 @@ from docket.services.semantic_options import (
     complete_selection_provenance,
 )
 from docket.services.semantic_scope import (
+    freeform_authority_scope,
     require_current_semantic_scope,
-    semantic_authority_scope,
 )
 from docket.services.tracked_context import TrackedContextService
 
@@ -132,15 +133,7 @@ class InteractiveAuthorityService:
         content: ChangeSetContent,
         resolved_intent_json: dict[str, Any],
     ) -> dict[str, Any]:
-        return {
-            "resolved_intent": resolved_intent_json,
-            **semantic_authority_scope(
-                mutation_input_json(
-                    content, exclude_none=False, exclude={"provider_intents", "occurrence_plans"},
-                ),
-                [],
-            ),
-        }
+        return freeform_authority_scope(content, resolved_intent_json)
 
     @staticmethod
     def _freeform_preconditions(
@@ -452,14 +445,17 @@ class InteractiveAuthorityService:
             gateway_instance_ref = active_gateway.ref_id if active_gateway is not None else None
         semantic_request: SemanticRequest | None = None
         semantic_attempt: SemanticRequestAttempt | None = None
-        if content is not None and semantic_request_ref is None:
+        if content is not None:
             assembly_request = next(
                 (
                     candidate
                     for candidate in self.session.scalars(select(SemanticRequest))
                     if utterance.ref_id in candidate.origin_utterance_refs
-                    and (candidate.selected_option_binding or {}).get("kind")
-                    == "freeform_assembly"
+                    and (semantic_request_ref is None or candidate.ref_id == semantic_request_ref)
+                    and (
+                        (candidate.selected_option_binding or {}).get("kind") == "freeform_assembly"
+                        or self.session.get(RequestAssemblyAdoption, candidate.ref_id) is not None
+                    )
                 ),
                 None,
             )

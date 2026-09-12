@@ -746,6 +746,9 @@ def docket_stage_changes(
     for explicit migration of unchanged pinned inputs; no new scope or versions.
     It can repair duplicated Event titles from the recorded entry and retained
     literal PDF evidence, but cannot change any other selected effect.
+    A sole draft_adopt migrates an observed unfinished direct request only when
+    current typed effects and original evidence prove unchanged scope. It cannot
+    include new content/scope/versions or decode an unversioned request.
     An observation_required receipt needs a fresh summary/diff before commit.
     """
     try:
