@@ -5,14 +5,14 @@ from datetime import date, datetime
 from typing import Annotated, Any, Literal, cast
 
 from mcp.server.transport_security import TransportSecuritySettings
-from pydantic import Field
+from pydantic import Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from docket.config import get_settings
 from docket.database import get_session_factory, session_scope
 from docket.domain.errors import DocketError
-from docket.mcp.instrumented import ProvenanceFastMCP
+from docket.mcp.instrumented import ProvenanceFastMCP, _validation_issues
 from docket.models import ReminderPlan
 from docket.providers.google.gmail_runtime import get_gmail_read_provider
 from docket.providers.google.runtime import get_calendar_read_provider
@@ -742,7 +742,9 @@ def docket_stage_changes(
 
     The first valid patch creates the draft automatically. Staging changes only
     noncanonical workflow state. The gateway supplies the hidden operation
-    binding; never invent or request it.
+    binding; never invent or request it. Use a sole draft_recompile patch only
+    for explicit migration of unchanged pinned inputs; no new scope or versions.
+    An observation_required receipt needs a fresh summary/diff before commit.
     """
     try:
         if utterance_ref is None or request_key is None:
@@ -769,14 +771,22 @@ def docket_stage_changes(
                         assembly_operation_token=assembly_operation_token,
                         assembly_argument_hash=assembly_argument_hash,
                     )
-            except DocketError as exc:
+            except (DocketError, ValidationError) as exc:
+                error = exc if isinstance(exc, DocketError) else DocketError(
+                    code="validation_error",
+                    message="The stage request violates its cross-field constraints.",
+                    details={
+                        "category": "structural_validation", "issues": _validation_issues(exc),
+                        "next_action": "correct_stage_request",
+                    },
+                )
                 return service.reject_admitted_operation(
                     token=assembly_operation_token,
                     argument_hash=assembly_argument_hash,
                     operation_kind="stage",
                     utterance_ref=utterance_ref,
-                    error=exc,
-                ) or _error(exc)
+                    error=error,
+                ) or _error(error)
     except Exception as exc:
         return _error(exc)
 

@@ -492,3 +492,41 @@ This closes the prior heuristic-correlation gap, not all of ONT-UX-REQ-0016.
 Pre-dispatch trace coverage, the retained-call safety limit and separate phase
 instrumentation remain open. No live latency improvement, production deployment
 or historical request replay is claimed.
+
+## Explicit compiler migration and renewed revision observation
+
+A sole `draft_recompile` stage operation recompiles unchanged pinned inputs with
+the current schemas. It cannot include edits, changed scope or expected versions.
+The original immutable revision, input/effect hashes and authority bindings are
+verified first. Only the executable-version equality check is relaxed for this
+explicit migration; no old-schema decoder or unpinned draft backfill is added.
+
+Typed canonical semantics and provider targets/parameters must remain equal.
+Complete owned action sets are rebuilt, so removed compiler products cannot
+linger. A changed title, date, provider account, added event or removal of all
+effects preserves the old draft and returns a semantic conflict. Successful
+equivalence writes a new immutable revision and audit, retaining authority and
+original statements. It creates no canonical objects or provider Operations.
+
+Migration invalidates observation even for its requesting attempt. A bounded
+fresh summary or the receipt's first diff page can observe that exact revision
+when still current; later or older pages cannot observe a newer draft. Diffs
+expose actual compiler products and executable-pin changes. Ordinary staging
+still permits immediate commit without review. Lost-response replay recovers
+the original migration receipt, including after a later canonical commit.
+
+Cross-field stage validation also terminalizes its admitted operation, so a
+malformed migration request cannot strand subsequent corrected attempts behind
+a running admission. Generated contract v29 and the reviewed skill describe the
+new operation without changing the 23/4 tool counts.
+
+Local verification passed 501 tests, Ruff and strict mypy. Isolated Compose
+smoke passed explicit PostgreSQL migration across fresh connections, stale
+commit rejection, new-revision observation, receipt replay and database rejection
+of an attempted rewrite of the old revision. Existing MCP, concurrency,
+governance restore and migration downgrade/re-upgrade checks also passed.
+
+This implements the equality-preserving recompilation branch of ONT-UX-REQ-0017,
+not independent source verification. Exact source-grounded request/repair,
+unsupported-input adoption, canonical-before/after preview and complete timing
+remain open. No production deployment or historical replay was performed.

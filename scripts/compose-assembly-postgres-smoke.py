@@ -27,6 +27,7 @@ from docket.domain.public_refs import new_public_ref
 from docket.internal_api.schemas import OperatorUtteranceCapture
 from docket.models import (
     AttachmentEvidence,
+    AuditEvent,
     CalendarDateBinding,
     CalendarLane,
     CanonicalEvent,
@@ -1228,6 +1229,89 @@ def test_invocation_binding_transport_retries_serialize(factory: sessionmaker[Se
         assert all(item.trace_ordinal == 1 for item in invocations)
 
 
+def test_explicit_compiler_migration_requires_reobservation(factory: sessionmaker[Session]) -> None:
+    utterance_ref, request_key = _create_utterance(
+        factory, "1542799000000000680", "Track this PostgreSQL migration fixture.",
+    )
+    trace = new_public_ref("trace")
+
+    def admit(name: str, ordinal: int) -> str:
+        return _admit_committed(
+            factory, utterance_ref=utterance_ref, trace_ref=trace, call_id=f"migration-{ordinal}",
+            ordinal=ordinal, tool_name=name, argument_hash="a" * 64,
+        )
+
+    token = admit("docket_stage_changes", 1)
+    with factory.begin() as session:
+        request = _item_stage(_load_utterance(session, utterance_ref), change_id="pinned",
+                              title="Pinned compiler fixture", include_scope=True)
+        initial = ChangeSetAssemblyService(session).stage(
+            request, assembly_operation_token=token, assembly_argument_hash="a" * 64,
+        )
+        draft = session.scalar(select(ChangeSet).where(ChangeSet.ref_id == initial["draft_ref"]))
+        assert draft is not None
+        old_revision = session.scalar(select(ChangeSetRevision).where(
+            ChangeSetRevision.change_set_id == draft.id,
+            ChangeSetRevision.revision == 1,
+        ))
+        assert old_revision is not None
+        old_pin = old_revision.compiler_manifest_json
+        old_id = old_revision.id
+    migration_token = admit("docket_stage_changes", 2)
+    with patch("docket.services.changeset_pins.EXECUTABLE_SCHEMA_VERSION", 2):
+        with factory.begin() as session:
+            migrated = ChangeSetAssemblyService(session).stage(
+                StageChangesInput(utterance_ref=utterance_ref, request_key=request_key,
+                                  patch={"operations": [{"operation": "draft_recompile"}]}),
+                assembly_operation_token=migration_token, assembly_argument_hash="a" * 64,
+            )
+            assert migrated["observation_required"] is True
+            assert migrated["current_revision"] == 2
+        commit_token = admit("docket_commit_changeset", 3)
+        with factory.begin() as session:
+            blocked = ChangeSetAssemblyService(session).commit(
+                utterance_ref=utterance_ref, request_key=request_key,
+                assembly_operation_token=commit_token, assembly_argument_hash="a" * 64,
+            )
+            assert blocked["disposition"] == "draft_revision_conflict"
+            old_revision = session.get(ChangeSetRevision, old_id)
+            assert old_revision is not None and old_revision.compiler_manifest_json == old_pin
+        reviewed = _review(
+            factory, utterance_ref=utterance_ref, request_key=request_key,
+            trace_ref=trace, call_id="migration-review", ordinal=4,
+            argument_hash="a" * 64, view="diff",
+        )
+        assert any(row["subject_kind"] == "compiler_pin" for row in reviewed["items"])
+        commit_token = admit("docket_commit_changeset", 5)
+        with factory.begin() as session:
+            receipt = ChangeSetAssemblyService(session).commit(
+                utterance_ref=utterance_ref, request_key=request_key,
+                assembly_operation_token=commit_token, assembly_argument_hash="a" * 64,
+            )
+            assert receipt["disposition"] == "committed"
+        with factory.begin() as session:
+            replay = ChangeSetAssemblyService(session).stage(
+                StageChangesInput(utterance_ref=utterance_ref, request_key=request_key,
+                                  patch={"operations": [{"operation": "draft_recompile"}]}),
+                assembly_operation_token=migration_token, assembly_argument_hash="a" * 64,
+            )
+            assert replay["replayed"] is True
+            assert replay["compiler_migration"] == migrated["compiler_migration"]
+            assert session.scalar(select(func.count(AuditEvent.id)).where(
+                AuditEvent.primary_ref == initial["draft_ref"],
+                AuditEvent.event_type == "changeset.recompiled",
+            )) == 1
+    try:
+        with factory.begin() as session:
+            session.execute(text(
+                "UPDATE change_set_revisions SET compiler_manifest_json = '{}' WHERE id = :id"
+            ), {"id": old_id})
+    except DBAPIError:
+        pass
+    else:
+        raise AssertionError("Migration allowed mutation of the previous executable evidence")
+
+
 def main() -> None:
     database_url = os.environ["DOCKET_DATABASE_URL"]
     engine = configure_database(database_url)
@@ -1243,6 +1327,7 @@ def main() -> None:
         test_occurrence_commits_serialize_and_identity_is_immutable,
         test_diff_pages_keep_both_revisions_across_connections,
         test_invocation_binding_transport_retries_serialize,
+        test_explicit_compiler_migration_requires_reobservation,
     )
     for check in checks:
         check(factory)

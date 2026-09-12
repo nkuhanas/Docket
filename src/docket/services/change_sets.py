@@ -1327,14 +1327,16 @@ class ChangeSetService:
         self.session.add(item)
         return item
 
-    def verify_execution_revision(self, changeset: ChangeSet) -> ChangeSetContent | None:
+    def verify_execution_revision(
+        self, changeset: ChangeSet, *, for_migration: bool = False,
+    ) -> ChangeSetContent | None:
         revision = self.session.scalar(
             select(ChangeSetRevision).where(
                 ChangeSetRevision.change_set_id == changeset.id,
                 ChangeSetRevision.revision == changeset.current_revision,
             )
         )
-        pin = verify_snapshot(changeset, revision, None)
+        pin = verify_snapshot(changeset, revision, None, for_migration=for_migration)
         if pin.compiled_effect_hash is None:
             return None
         try:
@@ -1343,7 +1345,7 @@ class ChangeSetService:
             raise migration_required() from exc
         # Even changing a Pydantic default must not alter previously observed
         # meaning. Current schemas parse stored effects; they never migrate them.
-        verify_snapshot(changeset, revision, _content_payload(content))
+        verify_snapshot(changeset, revision, _content_payload(content), for_migration=for_migration)
         return content
 
     def _session_utterance_refs(self, intent_session: IntentSession) -> set[str]:

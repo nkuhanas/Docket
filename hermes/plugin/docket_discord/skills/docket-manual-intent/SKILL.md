@@ -135,12 +135,28 @@ A revision conflict means review and reconcile the current draft; it does not me
 reauthorize or start a second request. Never describe an unscoped union or
 reconstruct omitted mutation shapes from memory.
 
-`ready_to_commit` permits immediate commit without review. `saved_with_errors`
+Ordinary `ready_to_commit` permits immediate commit without review. `saved_with_errors`
 means the whole staged batch is retained but no canonical part may commit yet.
 Use the entry/field diagnostic to submit a corrected patch in the same request;
 do not re-add the other entries or request renewed approval. A retry of the exact
 old operation returns its recorded result; repair is a new stage operation.
 Do not equate a saved draft, ready draft, canonical commit and provider delivery.
+
+For `draft_migration_required`, a sole stage patch
+`{"operations":[{"operation":"draft_recompile"}]}` requests an explicit audited
+recompile of unchanged pinned inputs. Do not combine it with edits, a new scope,
+or expected versions. Docket must prove canonical and provider semantic equality;
+it does not treat an old source interpretation as correct merely because it was
+staged. A semantic conflict preserves the previous draft and authority; report
+the exact unresolved constraint rather than inventing a broader repair.
+
+A migration receipt with `observation_required=true` is the explicit exception
+to immediate commit: take a fresh summary or diff review to observe its new
+revision. A bounded summary suffices; reading every detail is not mandatory.
+The receipt's `diff_review` cursor reads the specific migration revision but does
+not observe a subsequently newer revision. Migration diffs expose actual
+compiler products and pins as well as input changes. Ordinary staging still
+does not require review, and migration never commits canonical effects itself.
 
 An empty `diagnostic_sample` can mean a diagnostic exceeded the sample budget,
 not that validation succeeded. Trust `diagnostic_count` and

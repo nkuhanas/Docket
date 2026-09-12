@@ -12,6 +12,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from docket.models import ChangeSetRevision
+from docket.schemas.authority import ChangeSetContent
 
 _MISSING = object()
 _ACTION_GROUPS = (
@@ -125,6 +126,44 @@ def _actions(revision: ChangeSetRevision | None) -> list[dict[str, Any]]:
     return [item for group in _ACTION_GROUPS for item in getattr(revision, group)]
 
 
+def compiled_diff(
+    before: ChangeSetContent | ChangeSetRevision, after: ChangeSetContent | ChangeSetRevision,
+) -> list[dict[str, Any]]:
+    """Actual compiler products, including formerly hidden owned actions.
+
+    Canonical refs, values and provider targets are relevant scoped data. Basis
+    chains are excluded rather than copied into an unsolicited diff.
+    """
+    details: list[dict[str, Any]] = []
+    for group in (*_ACTION_GROUPS, "provider_intents"):
+        id_field = "intent_id" if group == "provider_intents" else "change_id"
+
+        def values(
+            snapshot: ChangeSetContent | ChangeSetRevision,
+            group: str = group, id_field: str = id_field,
+        ) -> dict[str, Any]:
+            rows = getattr(snapshot, group)
+            payloads = [
+                row.model_dump(mode="json", exclude_none=True)
+                if hasattr(row, "model_dump") else row
+                for row in rows
+            ]
+            return {
+                str(row[id_field]): {
+                    key: value for key, value in row.items() if key != "basis_refs"
+                }
+                for row in payloads
+            }
+
+        old, new = values(before), values(after)
+        for identifier in sorted(old.keys() | new.keys()):
+            differences = _fields(old.get(identifier, _MISSING), new.get(identifier, _MISSING), [])
+            details.extend({
+                "subject_kind": "compiled_effect", "group": group, id_field: identifier, **change,
+            } for change in differences)
+    return details
+
+
 def draft_diff(
     before: ChangeSetRevision | None,
     after: ChangeSetRevision,
@@ -199,4 +238,17 @@ def draft_diff(
             counts[disposition] += 1
             header = {"subject_kind": kind, id_field: identifier, "change": disposition}
             details.extend({**header, **change} for change in changes)
+    migration = after.compiler_manifest_json.get("migration")
+    if before is not None and isinstance(migration, dict) and (
+        migration.get("from_revision") == before.revision
+        and migration.get("to_revision") == after.revision
+    ):
+        # Migration is an explicit whole-draft operation. Do not let an input
+        # filter hide compiler products or changed executable pins.
+        details.extend(compiled_diff(before, after))
+        for change in _fields(
+            before.compiler_manifest_json.get("execution_pin"),
+            after.compiler_manifest_json.get("execution_pin"), [],
+        ):
+            details.append({"subject_kind": "compiler_pin", **change})
     return details, counts

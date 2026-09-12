@@ -165,6 +165,7 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
         "action_remove",
         "normalized_entry_upsert",
         "normalized_entry_remove",
+        "draft_recompile",
     }
     assert "implicit" in (tools["docket_stage_changes"].description or "")
     assert "revision-consistent" in (tools["docket_review_changeset"].description or "")
