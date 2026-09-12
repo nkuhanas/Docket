@@ -3703,7 +3703,7 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
         + " · ".join(
             f"{label}: {timing[key]} ms" if timing[key] is not None else f"{label}: not measured"
             for label, key in (
-                ("Queue", "queue_ms"), ("Context/schema", "context_schema_ms"),
+                ("Initial ingress queue", "queue_ms"), ("Context/schema", "context_schema_ms"),
                 ("Model requests", "model_ms"), ("Local validation", "local_validation_ms"),
                 ("Provider wait", "provider_wait_ms"),
             )

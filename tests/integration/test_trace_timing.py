@@ -9,7 +9,12 @@ from docket.config import get_settings
 from docket.domain.errors import DocketError
 from docket.domain.public_refs import new_public_ref
 from docket.internal_api.schemas import McpTraceCheckpoint, McpTraceUpdate, TraceTimingInput
-from docket.models import ConversationalToolTrace, OperatorUtterance, TraceTimingObservation
+from docket.models import (
+    ConversationalToolTrace,
+    ExecutionLease,
+    OperatorUtterance,
+    TraceTimingObservation,
+)
 from docket.services.mcp_traces import McpTraceService
 from docket.services.trace_views import TraceViewService, _partition_intervals
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash
@@ -25,7 +30,8 @@ def _context(factory):
                 f"discord_message:{settings.discord_guild_id}:{settings.chat_channel_id}:"
                 "777777777777777765"
             ), conversation_ref=f"discord_conversation:{settings.chat_channel_id}",
-            said_at=start, verbatim_text="Timing fixture only.", content_hash="b" * 64,
+            said_at=start, recorded_at=start - timedelta(seconds=10),
+            verbatim_text="Timing fixture only.", content_hash="b" * 64,
             request_key="trace-timing-fixture",
         )
         session.add(utterance)
@@ -56,7 +62,86 @@ def test_partition_attributes_nested_and_parallel_intervals_once():
         "model_ms": [(10, 60), (25, 65)],
         "local_validation_ms": [(20, 25)],
     }) == {"docket_execution_ms": 20, "model_ms": 30,
-           "context_schema_ms": 15, "local_validation_ms": 5}
+           "context_schema_ms": 15, "local_validation_ms": 5, "queue_ms": 0}
+
+
+def _claim(session, context, gateway, *, seconds=-3, kind="interactive_turn"):
+    claimed = context["turn_started_at"] + timedelta(seconds=seconds)
+    session.add(ExecutionLease(
+        lease_key=f"fixture:{uuid.uuid4()}", lease_kind=kind,
+        subject_ref=context["utterance_ref"], gateway_instance_ref=gateway,
+        claimed_at=claimed, heartbeat_at=claimed,
+        lease_expires_at=claimed + timedelta(minutes=10), status="completed",
+        completed_at=claimed + timedelta(seconds=1),
+    ))
+
+
+def test_ingress_queue_uses_original_receipt_and_first_claim_after_restart(session_factory):
+    context = _context(session_factory)
+    trace_ref, gateway = new_public_ref("trace"), new_public_ref("gwy")
+    with session_factory.begin() as session:
+        McpTraceService(session).checkpoint(trace_ref, McpTraceCheckpoint(
+            **context, timings=[_span(context)], turn_status="completed",
+        ))
+        trace = session.scalar(select(ConversationalToolTrace))
+        trace.gateway_instance_ref = gateway
+        _claim(session, context, gateway)
+        # An unrelated lease and a later recovery must not move the boundary.
+        _claim(session, context, gateway, seconds=-5, kind="outbox_delivery")
+        _claim(session, context, gateway, seconds=12)
+    with session_factory.begin() as session:
+        trace = session.scalar(select(ConversationalToolTrace))
+        view = TraceViewService(session).snapshot(trace)
+        timing = view["timing"]
+        assert timing["queue_ms"] == 7000
+        trace_elapsed = int((trace.completed_at.replace(tzinfo=UTC)
+                             - context["turn_started_at"]).total_seconds() * 1000)
+        assert timing["total_elapsed_ms"] == pytest.approx(trace_elapsed + 10000, abs=1)
+        assert timing["model_ms"] == 2000
+        assert timing["unattributed_ms"] == timing["total_elapsed_ms"] - 9000
+        assert timing["provider_wait_ms"] is None
+        assert view["timing_scope"].startswith("durable_receipt_to_trace_end")
+        assert view["rows"] == []
+        assert session.scalar(select(func.count(TraceTimingObservation.id))) == 1
+        assert session.scalar(select(func.count(ExecutionLease.id))) == 3
+
+
+@pytest.mark.parametrize("failure", [
+    "other_gateway", "missing_gateway", "other_actor", "other_source",
+    "claim_before_receipt", "claim_after_trace_start", "trace_end_before_claim",
+])
+def test_queue_measurement_does_not_guess_missing_or_inconsistent_evidence(
+    session_factory, failure,
+):
+    context = _context(session_factory)
+    gateway = new_public_ref("gwy")
+    with session_factory.begin() as session:
+        McpTraceService(session).checkpoint(new_public_ref("trace"), McpTraceCheckpoint(
+            **context, timings=[_span(context)], turn_status="completed",
+        ))
+        trace = session.scalar(select(ConversationalToolTrace))
+        trace.gateway_instance_ref = None if failure == "missing_gateway" else gateway
+        if failure == "other_actor":
+            trace.actor_id = "777777777777777799"
+        if failure == "other_source":
+            trace.source_message_id = "777777777777777799"
+        if failure == "trace_end_before_claim":
+            trace.completed_at = context["turn_started_at"] - timedelta(seconds=4)
+        _claim(session, context, new_public_ref("gwy") if failure == "other_gateway" else gateway,
+               seconds=-11 if failure == "claim_before_receipt" else (
+                   1 if failure == "claim_after_trace_start" else -3
+               ))
+        if failure == "other_gateway":
+            # Selecting a later matching claim would invent an initial queue.
+            _claim(session, context, gateway, seconds=-1)
+    with session_factory.begin() as session:
+        trace = session.scalar(select(ConversationalToolTrace))
+        view = TraceViewService(session).snapshot(trace)
+        assert view["timing"]["queue_ms"] is None
+        assert view["timing"]["total_elapsed_ms"] == max(0, int((
+            trace.completed_at.replace(tzinfo=UTC) - context["turn_started_at"]
+        ).total_seconds() * 1000))
+        assert view["timing_scope"] == "trace_window_closed_intervals_exclusive_attribution"
 
 
 def test_timing_checkpoint_recovery_is_durable_replayable_and_payload_free(session_factory):

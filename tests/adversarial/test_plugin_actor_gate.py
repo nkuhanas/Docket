@@ -1308,7 +1308,17 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
     assert "Model requests: 2000 ms" in measured_text
     assert "Context/schema: 500 ms" in measured_text
     assert "Local validation: 25 ms" in measured_text
-    assert "Queue: not measured" in measured_text
+    assert "Initial ingress queue: not measured" in measured_text
+    queued_render = {**measured_render, "timing": {
+        **measured_render["timing"], "queue_ms": 1000, "unattributed_ms": 433,
+    }}
+    await plugin_module._put_mcp_trace(trace_ref, {
+        **payload, "request_id": str(uuid.uuid4()), "render": queued_render,
+        "render_sha256": hashlib.sha256(json.dumps(
+            queued_render, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        ).encode()).hexdigest(),
+    })
+    assert "Initial ingress queue: 1000 ms" in channel.messages[0].embeds[0].fields[1]["value"]
 
     # Rejections must happen before even fetching Discord. A valid digest does
     # not make contradictory totals, origins, timing or oversized previews valid.

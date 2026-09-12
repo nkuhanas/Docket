@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-09-11-v37"
+CONTRACT_VERSION = "docket-tools-2026-09-11-v38"
 
 
 class ToolContractEntry(TypedDict):
@@ -57,7 +57,10 @@ _INTERACTIVE_READS: dict[str, tuple[str, str]] = {
         "local/confirmed/unreconciled origins and measured Docket intervals; unmeasured time "
         "is not model time. Calls remain visible without wrapper callbacks; transport_layer "
         "distinguishes Docket processing from wrapper observations, with absent wrapper latency "
-        "left unmeasured. Restart a call cursor if its trace or invocation snapshot changes; "
+        "left unmeasured. When exact ledger evidence exists, the timing window includes the "
+        "initial ingress queue from durable receipt to first execution claim; later recovery "
+        "downtime is not silently called queueing or provider waiting. "
+        "Restart a call cursor if its trace or invocation snapshot changes; "
         "domain outcomes remain live observations.",
     ),
     "docket_get_conflict": (
