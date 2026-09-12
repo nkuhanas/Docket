@@ -160,6 +160,7 @@ def test_occurrence_commits_serialize_and_identity_is_immutable(
         identity = identity_for_timing(series_ref, occurrence_timing(spec, date(2026, 9, 8)))
         requests = [(first.ref_id, first.request_key), (second.ref_id, second.request_key)]
     pending = []
+    staged_draft_refs: list[str] = []
     for utterance_ref, request_key in requests:
         trace_ref = new_public_ref("trace")
         token = _admit_committed(
@@ -210,6 +211,9 @@ def test_occurrence_commits_serialize_and_identity_is_immutable(
             request=request,
         )
         assert staged["assembly_ready"], staged
+        assert staged["event_effect_count"] == 1
+        assert staged["event_preview"][0]["scope"]["kind"] == "occurrence"
+        staged_draft_refs.append(staged["draft_ref"])
         commit_token = _admit_committed(
             factory,
             utterance_ref=utterance_ref,
@@ -254,6 +258,16 @@ def test_occurrence_commits_serialize_and_identity_is_immutable(
         series = session.scalar(select(CanonicalEvent).where(CanonicalEvent.ref_id == series_ref))
         assert series.status == "active"
         assert series.event_spec["recurrence"]["excluded_dates"] == ["2026-09-07", "2026-09-08"]
+        for revision in session.scalars(
+            select(ChangeSetRevision).join(ChangeSet).where(ChangeSet.ref_id.in_(staged_draft_refs))
+        ):
+            preview = revision.compiler_manifest_json["canonical_event_preview"]
+            assert preview["effect_count"] == 1
+            effect = preview["effects"][0]
+            assert effect["before"]["status"] == "active"
+            assert effect["after"]["status"] == "cancelled"
+            assert effect["before"]["timing"]["start_local"] == "2026-09-08T15:00:00"
+            assert effect["observed_version"] == 1 < series.version
         assert (
             session.scalar(
                 select(func.count(EventOccurrence.id)).where(
@@ -274,6 +288,16 @@ def test_occurrence_commits_serialize_and_identity_is_immutable(
             pass
         else:
             raise AssertionError("PostgreSQL permitted an occurrence identity rewrite")
+    try:
+        with factory.begin() as session:
+            session.execute(text(
+                "UPDATE changeset_revisions SET compiler_manifest_json='{}'::json "
+                "WHERE change_set_id IN (SELECT id FROM changesets WHERE ref_id=:ref)"
+            ), {"ref": staged_draft_refs[0]})
+    except DBAPIError:
+        pass
+    else:
+        raise AssertionError("PostgreSQL permitted rewriting a pinned canonical preview")
 
 
 def test_relative_date_capture_serializes(factory: sessionmaker[Session]) -> None:
