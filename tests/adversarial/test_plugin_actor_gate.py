@@ -1204,6 +1204,7 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
                 "transport_state": "completed",
                 "domain_state": "succeeded",
                 "origin": "authenticated_docket",
+                "transport_layer": "wrapper",
                 "elapsed_ms": 42,
                 "outcome": "succeeded",
                 "tool_call_ref": "call_01ARZ3NDEKTSV4RRFFQ69G5FAV",
@@ -1273,7 +1274,7 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
     assert channel.messages[0].embeds[0].fields[3]["name"] == ("1. docket_search_history")
     value = channel.messages[0].embeds[0].fields[3]["value"]
     assert value.startswith("Outcome: Succeeded")
-    assert "Transport: Completed" in value
+    assert "Transport (wrapper): Completed" in value
     assert "Domain: Succeeded" in value
 
     # Rejections must happen before even fetching Discord. A valid digest does
@@ -1284,6 +1285,8 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
         ("timing", {**render["timing"], "unattributed_ms": 4000}),
         ("calls", [{**render["calls"][0], "origin": "local_rejection"}]),
         ("calls", [{**render["calls"][0], "ordinal": True}]),
+        ("calls", [{**render["calls"][0], "transport_layer": "docket"}]),
+        ("calls", [{**render["calls"][0], "elapsed_ms": None}]),
         ("calls", [render["calls"][0]] * 20),
     ):
         invalid = {**render, field: value}
@@ -1295,6 +1298,24 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
                 **payload, "render": invalid, "render_sha256": digest,
             })
         assert len(fetched_channels) == before
+
+    missing_wrapper = {
+        **render,
+        "calls": [{**render["calls"][0], "transport_layer": "docket", "elapsed_ms": None,
+                   "argument_preview": '{"availability":"not_recorded"}'}],
+        "timing": {**render["timing"], "wrapper_elapsed_sum_ms": 0},
+    }
+    missing_digest = hashlib.sha256(json.dumps(
+        missing_wrapper, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode()).hexdigest()
+    await plugin_module._put_mcp_trace(trace_ref, {
+        **payload, "request_id": str(uuid.uuid4()), "render": missing_wrapper,
+        "render_sha256": missing_digest,
+    })
+    missing_text = channel.messages[0].embeds[0].fields[3]["value"]
+    assert "Transport (docket): Completed" in missing_text
+    assert "wrapper response/latency not observed" in missing_text
+    assert "wrapper 0 ms" not in missing_text
 
     # Exercise the actual Docket renderer, including a late stage/commit and
     # byte-heavy preview, through the plugin's strict digest/field validation.

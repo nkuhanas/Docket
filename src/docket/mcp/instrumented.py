@@ -440,10 +440,9 @@ class ProvenanceFastMCP(FastMCP[Any]):
             ) if operation is not None else None
             if attempt is not None:
                 attempt.tool_call_ref = invocation.ref_id
-        if late_outcome and invocation.trace_ref is not None:
-            # A gateway can time out while Docket is still finishing. Preserve
-            # the interrupted conversation, but re-render its newly known
-            # domain outcome without needing a callback from the dead gateway.
+        if invocation.trace_ref is not None:
+            # Do not depend on a later wrapper callback to show an authenticated
+            # outcome. Preserve the conversation's separate delivery state.
             trace = session.scalar(select(ConversationalToolTrace).where(
                 ConversationalToolTrace.ref_id == invocation.trace_ref,
             ).with_for_update())

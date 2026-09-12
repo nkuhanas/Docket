@@ -711,3 +711,26 @@ Validation for this slice: all 557 tests, Ruff, strict mypy (135 source files)
 and isolated Compose/PostgreSQL smoke passed, including both contention orders,
 governance restore and migration downgrade/re-upgrade. No new migration,
 production state change or provider call was required.
+
+## Trace rows without wrapper callbacks
+
+The v32 contract preserves signed stage/review/commit invocation rows in both
+bounded history and Discord projections even if no wrapper call record arrives.
+One upstream call remains one attempt while authenticated retransmissions retain
+their separate invocation count. The projection labels whether transport state
+comes from the wrapper or Docket; it neither adds a ToolInvocation state nor
+claims response delivery from successful server processing. Missing wrapper
+latency remains null and absent argument previews are explicitly unrecorded.
+
+MCP finalization requests a projection refresh independently of wrapper callbacks.
+Call cursors pin the projected invocation snapshot as well as the trace version;
+newly recovered rows cannot shift an ongoing page silently. Old cursors require a
+fresh read, not a compatibility decoder. Optional draft review and the 23-tool
+registry are unchanged. These projections do not reconstruct lost local-only
+pre-MCP rejections; durable delivery of those callbacks remains separate work.
+
+Validation: all 558 tests, Ruff, strict mypy and isolated Compose/PostgreSQL
+smoke passed. Tests cover late rows appearing without a trace-version update,
+retry deduplication, exact full counts and bounded pages, strict rendering of
+unmeasured wrapper latency, and finalization-triggered refresh without a callback.
+No production deployment or provider action occurred.
