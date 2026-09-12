@@ -249,6 +249,8 @@ def test_docket_mcp_hooks_emit_only_bounded_trace_metadata(plugin_module, monkey
         assistant_response="secret model response",
     )
 
+    assert len([row for row in emitted if "timing" in row[1]]) == 1
+    emitted = [row for row in emitted if "call" in row[1]]
     assert len(emitted) == 2
     assert emitted[0][0]["tool_contract_version"] == plugin_module._TOOL_CONTRACT_VERSION
     assert emitted[0][0]["tool_contract_hash"] == plugin_module._TOOL_CONTRACT_HASH
@@ -449,7 +451,9 @@ def test_local_commit_rejection_is_traced_as_completed_domain_result(
     monkeypatch.setattr(
         plugin_module,
         "_enqueue_trace_update",
-        lambda _context, **kwargs: emitted.append(dict(kwargs["call"])),
+        lambda _context, **kwargs: (
+            emitted.append(dict(kwargs["call"])) if "call" in kwargs else None
+        ),
     )
 
     directive = plugin_module._on_pre_tool_call(
@@ -1040,7 +1044,9 @@ def test_predispatch_rejections_close_without_post_hook(plugin_module, monkeypat
     plugin_module._TRACE_CONTEXTS["rejection"] = context
     emitted = []
     monkeypatch.setattr(plugin_module, "_enqueue_trace_update",
-                        lambda _context, **kwargs: emitted.append(dict(kwargs["call"])))
+                        lambda _context, **kwargs: (
+                            emitted.append(dict(kwargs["call"])) if "call" in kwargs else None
+                        ))
     monkeypatch.setattr(plugin_module, "_validate_authority_arguments_locally", lambda *_args: None)
     dispatched = []
 
@@ -1099,7 +1105,9 @@ def test_plugin_traces_and_binds_calls_beyond_one_hundred(plugin_module, monkeyp
     plugin_module._TRACE_CONTEXTS["long-run"] = context
     emitted = []
     monkeypatch.setattr(plugin_module, "_enqueue_trace_update",
-                        lambda _context, **kwargs: emitted.append(dict(kwargs["call"])))
+                        lambda _context, **kwargs: (
+                            emitted.append(dict(kwargs["call"])) if "call" in kwargs else None
+                        ))
     for ordinal in range(1, 151):
         args = {"query": "test"}
         keywords = dict(tool_name="mcp__docket__docket_search_history", task_id="long-run",
@@ -1284,6 +1292,23 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
     assert value.startswith("Outcome: Succeeded")
     assert "Transport (wrapper): Completed" in value
     assert "Domain: Succeeded" in value
+
+    measured_render = {**render, "timing": {
+        **render["timing"], "model_ms": 2000, "context_schema_ms": 500,
+        "local_validation_ms": 25, "unattributed_ms": 1433,
+    }}
+    measured_digest = hashlib.sha256(json.dumps(
+        measured_render, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode()).hexdigest()
+    await plugin_module._put_mcp_trace(trace_ref, {
+        **payload, "request_id": str(uuid.uuid4()), "render": measured_render,
+        "render_sha256": measured_digest,
+    })
+    measured_text = channel.messages[0].embeds[0].fields[1]["value"]
+    assert "Model requests: 2000 ms" in measured_text
+    assert "Context/schema: 500 ms" in measured_text
+    assert "Local validation: 25 ms" in measured_text
+    assert "Queue: not measured" in measured_text
 
     # Rejections must happen before even fetching Discord. A valid digest does
     # not make contradictory totals, origins, timing or oversized previews valid.

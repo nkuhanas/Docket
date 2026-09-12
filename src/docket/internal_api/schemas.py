@@ -9,6 +9,21 @@ class InternalModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class TraceTimingInput(InternalModel):
+    span_id: UUID
+    phase: Literal["model_request", "context_schema", "local_validation"]
+    started_at: datetime
+    ended_at: datetime
+
+    @model_validator(mode="after")
+    def closed_interval(self) -> "TraceTimingInput":
+        if self.started_at.tzinfo is None or self.ended_at.tzinfo is None:
+            raise ValueError("timing observations require zoned instants")
+        if not 0 <= (self.ended_at - self.started_at).total_seconds() <= 86_400:
+            raise ValueError("timing interval exceeds its bound")
+        return self
+
+
 class McpTraceCallUpdate(InternalModel):
     call_id: str = Field(min_length=1, max_length=255)
     ordinal: int = Field(ge=1, le=2_147_483_647)
@@ -66,11 +81,12 @@ class McpTraceContext(InternalModel):
 
 class McpTraceUpdate(McpTraceContext):
     call: McpTraceCallUpdate | None = None
+    timing: TraceTimingInput | None = None
 
     @model_validator(mode="after")
     def require_update(self) -> "McpTraceUpdate":
-        if self.call is None and self.turn_status == "running":
-            raise ValueError("a running trace update requires a call")
+        if self.call is None and self.timing is None and self.turn_status == "running":
+            raise ValueError("a running trace update requires an observation")
         return self
 
 
@@ -79,13 +95,20 @@ class McpTraceCheckpoint(McpTraceContext):
 
     utterance_ref: str = Field(pattern=r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")
     calls: list[McpTraceCallUpdate] = Field(default_factory=list, max_length=25)
+    timings: list[TraceTimingInput] = Field(default_factory=list, max_length=25)
 
     @model_validator(mode="after")
     def bounded_ordered_observations(self) -> "McpTraceCheckpoint":
         ordinals = [call.ordinal for call in self.calls]
         if ordinals != sorted(set(ordinals)):
             raise ValueError("checkpoint observations require unique ascending ordinals")
-        if not self.calls and self.turn_status == "running":
+        if len({row.span_id for row in self.timings}) != len(self.timings):
+            raise ValueError("checkpoint timings require unique span identifiers")
+        if len(self.calls) + len(self.timings) > 25:
+            raise ValueError("checkpoint exceeds its observation count bound")
+        if any(row.ended_at > self.updated_at for row in self.timings):
+            raise ValueError("timing observation cannot end after checkpoint creation")
+        if not self.calls and not self.timings and self.turn_status == "running":
             raise ValueError("a running checkpoint requires observations")
         if len(self.model_dump_json().encode("utf-8")) > 16_384:
             raise ValueError("checkpoint exceeds its serialized byte bound")

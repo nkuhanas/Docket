@@ -31,8 +31,39 @@ traceability marker only.
 ## Hermes plugin contract
 
 The Docket plugin depends on the user-plugin loader plus
-`pre_gateway_dispatch`, `pre_tool_call`, `post_tool_call`, and `post_llm_call`
+`pre_gateway_dispatch`, `pre_tool_call`, `post_tool_call`, `post_llm_call`,
+`pre_api_request`, `post_api_request`, and `api_request_error`
 hooks in Hermes `v2026.7.20`.
+
+The API hooks bind each measured request to task/session, turn, API request ID
+and runtime start identity. Retries can reuse the API request ID, so it alone
+is not a span identity. Docket measures closed hook intervals, including error
+returns; missing terminal hooks, retry backoff and wall-clock discontinuities
+remain unmeasured. The plugin ignores raw prompts, histories, responses, error
+messages and provider credentials supplied by those hooks. It sends only an
+opaque span identity, allowlisted phase and start/end instants.
+Plugin `0.27.0` declares these additional hooks in its manifest; the model-facing
+tool contract and 23/4 profile counts are unchanged.
+
+Context timing wraps this pin's `agent.conversation_loop.build_turn_context`
+call without changing its arguments, return value or exceptions. The first five
+parameters must remain `agent, user_message, system_message,
+conversation_history, task_id`. Repeated discovery updates the observer binding
+without wrapping twice or retaining an old plugin's context map. The gateway's
+own trusted-context rewrite and scoped Docket `tool_describe` calls are measured
+separately. In this pin the catalog bridge bypasses `post_tool_call`; schema
+timing wraps `model_tools.handle_function_call` and its exact runtime-shim alias,
+not an assumed pair of tool hooks. It leaves other tools and all arguments/results
+unchanged. Nested model requests are not double-counted as context preparation.
+Local validation measures the validation function, not the subsequent admission
+HTTP call or trace delivery.
+
+`scripts/verify-hermes-timing-pin.py` runs offline inside the pinned image with
+only the plugin directory and that script mounted read-only. It verifies the
+actual hook names/call-site bindings and exercises the real context builder up
+to its first controlled callback, without invoking a model/provider or reading
+production state. This pin check and deterministic timing fixtures do not
+establish live latency or a speedup.
 
 Milestone 2.5 also depends on a private outbound seam in that exact image. The
 plugin resolves `gateway.run._gateway_runner_ref()`, selects the Discord adapter

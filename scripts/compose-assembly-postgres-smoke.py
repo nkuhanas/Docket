@@ -40,6 +40,7 @@ from docket.internal_api.schemas import (
     McpTraceCheckpoint,
     McpTraceUpdate,
     OperatorUtteranceCapture,
+    TraceTimingInput,
 )
 from docket.mcp.instrumented import ProvenanceFastMCP
 from docket.models import (
@@ -71,6 +72,7 @@ from docket.models import (
     Source,
     Task,
     ToolInvocation,
+    TraceTimingObservation,
 )
 from docket.providers.google.calendar import CalendarProviderError
 from docket.providers.google.fake_calendar import FakeCalendarProvider
@@ -1057,7 +1059,7 @@ def test_direct_request_adoption_serializes_and_preserves_proof(
     else:
         raise AssertionError("Downgrade discarded adoption evidence")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260911f5c4"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260911a6d5"
         assert session.get(RequestAssemblyAdoption, request_ref) is not None
 
 
@@ -1932,7 +1934,7 @@ def test_trace_history_survives_call_one_hundred_and_blocks_lossy_downgrade(
     else:
         raise AssertionError("Downgrade should preserve the longer trace by refusing to proceed")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260911f5c4"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260911a6d5"
         assert session.scalar(select(ConversationalToolTrace.last_ordinal).where(
             ConversationalToolTrace.id == trace_id
         )) == 103
@@ -2231,8 +2233,67 @@ def test_request_specifications_are_immutable_and_block_lossy_downgrade(
     else:
         raise AssertionError("Downgrade discarded immutable request specifications")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260911f5c4"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260911a6d5"
         assert session.get(SemanticRequestSpecification, (key["ref"], key["version"])) is not None
+
+
+def test_timing_observations_serialize_and_preserve_evidence(
+    factory: sessionmaker[Session],
+) -> None:
+    settings = get_settings()
+    message = "1542799000000000690"
+    start = datetime.now(UTC) - timedelta(seconds=3)
+    ref = new_public_ref("trace")
+    with factory.begin() as session:
+        source = _utterance(message, "Synthetic timing-only fixture.")
+        session.add(source)
+        session.flush()
+        utterance_ref = source.ref_id
+    span = TraceTimingInput(span_id=uuid.uuid4(), phase="model_request",
+                           started_at=start, ended_at=start + timedelta(seconds=1))
+    checkpoint = McpTraceCheckpoint(
+        request_id=uuid.uuid4(), guild_id=settings.discord_guild_id,
+        source_channel_id=settings.chat_channel_id, source_message_id=message,
+        actor_id=settings.operator_discord_user_id, utterance_ref=utterance_ref,
+        caller_profile="interactive", tool_contract_version=CONTRACT_VERSION,
+        tool_contract_hash=contract_hash("interactive"),
+        turn_started_at=start, updated_at=datetime.now(UTC), timings=[span],
+    )
+    barrier = threading.Barrier(2)
+
+    def capture() -> str:
+        barrier.wait(timeout=10)
+        with factory.begin() as session:
+            return str(McpTraceService(session).checkpoint(ref, checkpoint)["disposition"])
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: capture(), range(2)))
+    assert sorted(results) == ["replayed_request", "updated"]
+    with factory() as session:
+        assert session.scalar(select(func.count(TraceTimingObservation.id)).where(
+            TraceTimingObservation.trace_ref == ref,
+        )) == 1
+    for sql in (
+        "UPDATE trace_timing_observations SET phase = 'context_schema' WHERE id = :id",
+        "DELETE FROM trace_timing_observations WHERE id = :id",
+    ):
+        try:
+            with factory.begin() as session:
+                session.execute(text(sql), {"id": span.span_id})
+        except DBAPIError:
+            pass
+        else:
+            raise AssertionError("PostgreSQL allowed rewriting a timing observation")
+    migration = ScriptDirectory.from_config(Config("alembic.ini")).get_revision("20260911a6d5")
+    assert migration is not None
+    try:
+        with (factory.kw["bind"].begin() as connection,
+              Operations.context(MigrationContext.configure(connection))):
+            migration.module.downgrade()
+    except RuntimeError as exc:
+        assert "discard observations" in str(exc)
+    else:
+        raise AssertionError("A lossy timing downgrade was permitted")
 
 
 def main() -> None:
@@ -2261,6 +2322,7 @@ def main() -> None:
         test_lost_admission_response_recovers_from_exact_local_trace,
         test_gateway_recovery_and_late_completion_serialize,
         test_request_specifications_are_immutable_and_block_lossy_downgrade,
+        test_timing_observations_serialize_and_preserve_evidence,
     )
     for check in checks:
         check(factory)

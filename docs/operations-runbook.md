@@ -95,13 +95,26 @@ backfill, or claim that an unacknowledged observation survived a process crash.
 the trace window; overlapping calls are not double-counted. Running calls do not
 prove uninterrupted execution. `wrapper_elapsed_sum_ms` is a separate aggregate
 over all attempts, not a wall-clock partition. `unattributed_ms` is the remaining
-trace time, not model time. Queue, context/schema, model, local-validation and
-provider-wait fields remain null until separately instrumented. A large
+trace time, not model time. Closed gateway observations now measure model-request
+intervals, context/schema preparation, and local argument validation. These
+payload-free observations are immutable and recover through the same bounded
+checkpoint path, including turns with no Docket tool calls. Nested/parallel
+intervals are attributed once, with Docket execution, local validation, model
+requests, then context/schema taking precedence. A phase without observations
+is null, not zero. Model-request time includes network/provider response and
+the pinned hook-boundary overhead; it is not a claim of pure model compute.
+Queue and provider-wait fields remain null until their boundaries are measured;
+provider delivery status does not prove Hermes was waiting. A large
 `before_first_docket_call_ms` identifies a delay, not its cause. Statuses are live
 observations; call cursors bind the trace revision and projected invocation
 snapshot and explicitly require a restart if either advances. Historical callback
 formats are not decoded into the
 new contract; coordinated deployment drains active execution first.
+
+Migration `20260911a6d5` adds `trace_timing_observations` with no historical
+timing reconstruction. PostgreSQL rejects updates/deletes of observations. A
+nonempty table blocks downgrade; preserve it through forward repair or the
+verified backup procedure. Do not delete evidence to permit an image rollback.
 
 The gateway now supplies an infrastructure-only signed `invocation_binding` on
 MCP dispatch. It binds trace/call/ordinal, captured utterance, gateway lifetime,

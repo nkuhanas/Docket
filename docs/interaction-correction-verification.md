@@ -997,3 +997,47 @@ report intact; it neither erases that evidence nor manufactures a new report.
 This advances ONT-UX-REQ-0016 but does not measure queue/model/context/provider
 phases or claim a latency speedup. Those measurements and the remaining semantic
 authority/readiness gates are still required. No production deployment occurred.
+
+## Measured gateway execution phases
+
+Plugin `0.27.0` captures closed model-request, context/schema and local-validation
+intervals. The model-request hooks distinguish retries by the runtime request ID
+and start identity, suppress duplicate notifications and omit retry backoff.
+Missing starts/ends, interrupted requests and material clock discontinuities
+are not inferred as continuous execution. Model-request time includes the
+network/provider round trip and hook-boundary overhead, not just model compute.
+The pinned context-builder wrapper preserves arguments, results and errors;
+repeat plugin discovery replaces its observer without double wrapping.
+The schema bridge returns before the normal post-tool hook in this pinned
+Hermes version. Its measurement wraps the actual dispatcher and runtime alias;
+the offline pin check exercises a real scoped description through that path.
+
+Only the infrastructure span identity, allowlisted phase, and start/end instants
+cross the callback boundary. No prompt, response, history, schema contents or
+error body is retained. Timing-only turns can create a trace without inventing
+tool calls. Async observations and final checkpoints share exact replay, source
+binding and transactional semantics. Mixed pages contain at most 25 observations
+total and remain under 16 KiB. Migration `20260911a6d5` adds immutable PostgreSQL
+observations with an index on the owning trace and refuses a lossy downgrade.
+It neither backfills earlier traces nor changes any canonical/provider state.
+
+Trace projections partition closed intervals once, with Docket execution, local
+validation, model requests and context/schema in specificity order. Parallel
+spans are not summed twice. Unmeasured phases remain null; the remainder stays
+unattributed. Actual non-null phase values render in the Discord trace, whose
+validator rejects contradictory totals. The model tool registry remains 23/4
+and contract v36 is unchanged.
+
+Validation passed **691 tests, Ruff and strict mypy (142 source files)**.
+Isolated Compose smoke passed authenticated HTTP timing/checkpoint replay,
+PostgreSQL concurrent capture, immutable-row protection, loss-preserving
+downgrade rejection and empty-database upgrade/downgrade/re-upgrade. An offline
+run of `scripts/verify-hermes-timing-pin.py` in the exact pinned Hermes image
+verified the real hook/call-site identities and context-builder seam without
+network access, production state or a model invocation.
+
+This is measured instrumentation, not live latency evidence or a speedup claim.
+Durable-ingress queue time and explicit provider-wait boundaries still need
+separate instrumentation; asynchronous provider execution does not by itself
+prove the conversational agent was waiting. Exact semantic authority/repair,
+remaining acceptance mapping, clean-archive/CI and production gates remain open.

@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
-from docket.models import ConversationalToolTrace, ToolInvocation
+from docket.models import ConversationalToolTrace, ToolInvocation, TraceTimingObservation
 from docket.models.base import utc_now
 from docket.services.trace_correlation import correlated_calls
 
@@ -26,14 +26,29 @@ def _milliseconds(start: datetime, end: datetime) -> int:
     return max(0, int((_utc(end) - _utc(start)).total_seconds() * 1000))
 
 
-def _interval_union(intervals: list[tuple[int, int]]) -> int:
-    total = 0
-    end = 0
-    for left, right in sorted(intervals):
-        if right > end:
-            total += right - max(left, end)
-            end = right
-    return total
+def _partition_intervals(intervals: dict[str, list[tuple[int, int]]]) -> dict[str, int]:
+    """Exclusive wall-clock attribution, most specific measured boundary first.
+
+    Docket execution inside another measured span is Docket time. Nested model
+    requests inside context preparation are model-request time. Neither a sum
+    of concurrent intervals nor an open interval can inflate elapsed time.
+    """
+    priority = ("docket_execution_ms", "local_validation_ms", "model_ms", "context_schema_ms")
+    edges: dict[int, Counter[str]] = {}
+    for phase, spans in intervals.items():
+        for left, right in spans:
+            edges.setdefault(left, Counter())[phase] += 1
+            edges.setdefault(right, Counter())[phase] -= 1
+    active: Counter[str] = Counter()
+    totals = dict.fromkeys(priority, 0)
+    previous = 0
+    for position, changes in sorted(edges.items()):
+        selected = next((phase for phase in priority if active[phase] > 0), None)
+        if selected is not None:
+            totals[selected] += position - previous
+        active.update(changes)
+        previous = position
+    return totals
 
 
 class TraceViewService:
@@ -59,7 +74,20 @@ class TraceViewService:
                 right = min(total_ms, _milliseconds(trace.started_at, item.completed_at))
                 if right >= left:
                     intervals.append((left, right))
-        execution_ms = _interval_union(intervals)
+        observations = list(self.session.scalars(select(TraceTimingObservation).where(
+            TraceTimingObservation.trace_ref == trace.ref_id,
+        )))
+        phase_names = {
+            "model_request": "model_ms", "context_schema": "context_schema_ms",
+            "local_validation": "local_validation_ms",
+        }
+        phase_intervals = {"docket_execution_ms": intervals}
+        for observation in observations:
+            left = min(total_ms, _milliseconds(trace.started_at, observation.started_at))
+            right = min(total_ms, _milliseconds(trace.started_at, observation.ended_at))
+            phase_intervals.setdefault(phase_names[observation.phase], []).append((left, right))
+        measured = _partition_intervals(phase_intervals)
+        execution_ms = measured["docket_execution_ms"]
         first = min((item.started_at for item in invocations), default=None)
         rows: list[dict[str, Any]] = []
         wrapper_call_ids = {str(call.get("call_id", "")) for call in trace.calls}
@@ -146,11 +174,10 @@ class TraceViewService:
                 # This aggregate can overlap both itself and Docket intervals.
                 # It is deliberately NOT subtracted from wall-clock elapsed.
                 "wrapper_elapsed_sum_ms": sum(row["elapsed_ms"] or 0 for row in rows),
-                "unattributed_ms": total_ms - execution_ms,
+                "unattributed_ms": total_ms - sum(measured.values()),
                 "queue_ms": None,
-                "context_schema_ms": None,
-                "model_ms": None,
-                "local_validation_ms": None,
+                **{name: measured[name] if name in phase_intervals else None
+                   for name in phase_names.values()},
                 "provider_wait_ms": None,
             },
             "rows": rows,
@@ -232,5 +259,5 @@ class TraceViewService:
             "omitted_detail_count": len(rows) - end,
             "truncated": end < len(rows),
             **({"cursor": next_cursor} if end < len(rows) else {}),
-            "timing_scope": "trace_window_closed_docket_intervals_only",
+            "timing_scope": "trace_window_closed_intervals_exclusive_attribution",
         }

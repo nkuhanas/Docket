@@ -38,7 +38,11 @@ from docket.models.core import (
     OutboxEvent,
     ProviderAccount,
 )
-from docket.models.discord import ConversationalToolTrace, DiscordDailyThread
+from docket.models.discord import (
+    ConversationalToolTrace,
+    DiscordDailyThread,
+    TraceTimingObservation,
+)
 from docket.models.entities import Entity, EntityAlias, EntityResolution
 from docket.models.event_occurrences import CalendarDateBinding, EventOccurrence
 from docket.models.events import CanonicalEvent, ProviderEventBinding
@@ -173,6 +177,7 @@ __all__ = [
     "TemporalBinding",
     "TemporalCalendarProjection",
     "ToolInvocation",
+    "TraceTimingObservation",
     "TriageRun",
     "TriageWindow",
     "TriageWindowMembership",

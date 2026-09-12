@@ -1,10 +1,13 @@
 name: docket-discord
-version: 0.26.0
+version: 0.27.0
 description: Trusted Discord utterance, response, tool-call, projection, semantic-option, and ChangeSet bridge for Docket
 provides_hooks:
   - pre_gateway_dispatch
   - pre_tool_call
   - post_tool_call
+  - pre_api_request
+  - post_api_request
+  - api_request_error
   - post_llm_call
 requires_env:
   - name: DOCKET_INTERNAL_URL

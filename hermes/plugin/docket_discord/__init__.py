@@ -19,6 +19,7 @@ import errno
 import hashlib
 import hmac
 import importlib.util
+import inspect
 import json
 import logging
 import os
@@ -31,7 +32,9 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, date, datetime
+from functools import wraps
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -720,6 +723,7 @@ def _enqueue_trace_update(
     context: dict[str, Any],
     *,
     call: dict[str, Any] | None = None,
+    timing: dict[str, Any] | None = None,
     turn_status: str = "running",
 ) -> None:
     payload = {
@@ -737,6 +741,7 @@ def _enqueue_trace_update(
         "updated_at": datetime.now(UTC).isoformat(),
         "turn_status": turn_status,
         "call": call,
+        **({"timing": timing} if timing is not None else {}),
     }
     try:
         _TRACE_DELIVERY_QUEUE.put_nowait(payload)
@@ -753,6 +758,7 @@ def _checkpoint_trace(context: dict[str, Any], *, turn_status: str = "running") 
                 key=lambda call: call["ordinal"],
             )
             binding = dict(context)
+            timings = list(context.get("timings", {}).values())
         try:
             base = {
                 key: binding[key] for key in (
@@ -764,7 +770,11 @@ def _checkpoint_trace(context: dict[str, Any], *, turn_status: str = "running") 
             base["gateway_instance_ref"] = binding.get("gateway_instance_ref")
             path = f"/internal/v1/discord/mcp-traces/{binding['trace_ref']}/checkpoint"
             position = 0
-            while position < len(calls) or (position == 0 and turn_status != "running"):
+            timing_position = 0
+            first_page = True
+            while (position < len(calls) or timing_position < len(timings)
+                   or (first_page and turn_status != "running")):
+                first_page = False
                 payload = {
                     **base, "request_id": str(uuid.uuid4()),
                     "updated_at": datetime.now(UTC).isoformat(),
@@ -780,7 +790,16 @@ def _checkpoint_trace(context: dict[str, Any], *, turn_status: str = "running") 
                 if not payload["calls"] and position < len(calls):
                     raise RuntimeError("trace observation exceeds its checkpoint byte bound")
                 position += len(payload["calls"])
-                if position == len(calls):
+                for timing in timings[timing_position:timing_position + 25 - len(payload["calls"])]:
+                    candidate = {**payload, "timings": [*payload.get("timings", []), timing]}
+                    if len(json.dumps(candidate, separators=(",", ":")).encode()) > 16_000:
+                        break
+                    payload = candidate
+                added_timings = len(payload.get("timings", []))
+                if not payload["calls"] and not added_timings and timing_position < len(timings):
+                    raise RuntimeError("timing observation exceeds checkpoint byte bound")
+                timing_position += added_timings
+                if position == len(calls) and timing_position == len(timings):
                     payload["turn_status"] = turn_status
                 for attempt in range(3):
                     try:
@@ -794,8 +813,6 @@ def _checkpoint_trace(context: dict[str, Any], *, turn_status: str = "running") 
                     except (OSError, RuntimeError, urllib.error.URLError):
                         if attempt == 2:
                             raise
-                if not calls:
-                    break
         except (KeyError, OSError, RuntimeError, urllib.error.URLError):
             # Do not log the source, observations or response body. Unpersisted
             # local rejections must be captured before another Docket dispatch.
@@ -982,6 +999,164 @@ def _trace_context(task_id: str, session_id: str) -> dict[str, Any] | None:
     return None
 
 
+def _timing_context(task_id: str, session_id: str, turn_id: str) -> dict[str, Any] | None:
+    with _TRACE_CONTEXT_LOCK:
+        context = _trace_context(task_id, session_id)
+        if context is None or context.get("terminal") or (
+            turn_id and context.get("turn_id") not in {None, turn_id}
+        ):
+            return None
+        if turn_id and context.get("turn_id") is None:
+            context["turn_id"] = turn_id
+        return context
+
+
+def _start_timing(context: dict[str, Any] | None, phase: str, key: object) -> None:
+    if context is None:
+        return
+    with _TRACE_CONTEXT_LOCK:
+        if context.get("terminal") or key in context.get("closed_timing_keys", set()):
+            return
+        context.setdefault("open_timings", {}).setdefault(key, {
+            "span_id": str(uuid.uuid4()), "phase": phase,
+            "started_at": datetime.now(UTC), "monotonic_start": time.monotonic(),
+        })
+
+
+def _end_timing(context: dict[str, Any] | None, key: object) -> None:
+    if context is None:
+        return
+    with _TRACE_CONTEXT_LOCK:
+        pending = context.get("open_timings", {}).pop(key, None)
+        if pending is None or context.get("terminal"):
+            return  # Missing beginnings/ends and abandoned requests are not measured intervals.
+        context.setdefault("closed_timing_keys", set()).add(key)
+        ended_at = datetime.now(UTC)
+        elapsed = (ended_at - pending["started_at"]).total_seconds()
+        monotonic_elapsed = time.monotonic() - pending["monotonic_start"]
+        if not 0 <= elapsed <= 86_400 or abs(elapsed - monotonic_elapsed) > 1:
+            return  # Clock discontinuities remain unattributed rather than distorting a phase.
+        timing = {
+            "span_id": pending["span_id"], "phase": pending["phase"],
+            "started_at": pending["started_at"].isoformat(), "ended_at": ended_at.isoformat(),
+        }
+        context.setdefault("timings", {})[timing["span_id"]] = timing
+        context["started"] = True
+    _enqueue_trace_update(context, timing=timing)
+
+
+@contextmanager
+def _measure_timing(context: dict[str, Any] | None, phase: str):
+    key = object()
+    _start_timing(context, phase, key)
+    try:
+        yield
+    finally:
+        _end_timing(context, key)
+
+
+def _on_pre_api_request(
+    task_id: str = "", session_id: str = "", turn_id: str = "",
+    api_request_id: str = "", started_at: float | None = None, **_ignored: Any,
+) -> None:
+    # Runtime start identity disambiguates retries that reuse api_request_id.
+    # No request/history/model output or error payload is retained or hashed.
+    if not api_request_id or type(started_at) not in {int, float}:
+        return
+    context = _timing_context(task_id, session_id, turn_id)
+    _start_timing(context, "model_request", ("api", turn_id, api_request_id, started_at))
+
+
+def _on_api_request_finished(
+    task_id: str = "", session_id: str = "", turn_id: str = "",
+    api_request_id: str = "", started_at: float | None = None, **_ignored: Any,
+) -> None:
+    if not api_request_id or type(started_at) not in {int, float}:
+        return
+    context = _timing_context(task_id, session_id, turn_id)
+    _end_timing(context, ("api", turn_id, api_request_id, started_at))
+
+
+def _install_context_timing_hook() -> bool:
+    """Measure the pinned once-per-turn context builder, not the whole tool loop."""
+    try:
+        from agent import conversation_loop
+    except ImportError:
+        return False
+    original = conversation_loop.build_turn_context
+    if not getattr(original, "_docket_context_timing", False):
+        parameters = list(inspect.signature(original).parameters)
+        if parameters[:5] != [
+            "agent", "user_message", "system_message", "conversation_history", "task_id",
+        ]:
+            raise RuntimeError("Pinned Hermes turn-context timing seam changed")
+
+        @wraps(original)
+        def measured(*args, **kwargs):
+            agent = args[0] if args else kwargs.get("agent")
+            task_id = args[4] if len(args) > 4 else kwargs.get("task_id")
+            observer = measured._docket_timing_observer
+            with observer(str(task_id or ""), str(getattr(agent, "session_id", "") or "")):
+                return original(*args, **kwargs)
+
+        measured._docket_context_timing = True
+        conversation_loop.build_turn_context = measured
+    # Discovery may load a new plugin module: do not keep the first module's
+    # stale trace-context map inside the process-wide wrapper.
+    conversation_loop.build_turn_context._docket_timing_observer = (
+        lambda task_id, session_id: _measure_timing(
+            _timing_context(task_id, session_id, ""), "context_schema",
+        )
+    )
+    return True
+
+
+def _install_schema_timing_hook() -> bool:
+    """Catalog bridge reads return before the pin's ordinary post-tool hook."""
+    try:
+        import model_tools
+    except ImportError:
+        return False
+    original = model_tools.handle_function_call
+    if not getattr(original, "_docket_schema_timing", False):
+        if list(inspect.signature(original).parameters)[:6] != [
+            "function_name", "function_args", "task_id", "tool_call_id", "session_id", "turn_id",
+        ]:
+            raise RuntimeError("Pinned Hermes schema-dispatch timing seam changed")
+
+        @wraps(original)
+        def measured(*args, **kwargs):
+            def value(index, name):
+                return args[index] if len(args) > index else kwargs.get(name)
+
+            parameters = value(1, "function_args")
+            name = parameters.get("name") if isinstance(parameters, dict) else None
+            if value(0, "function_name") != "tool_describe" or not isinstance(
+                name, str,
+            ) or not name.startswith(("docket_", "mcp__docket__docket_")):
+                return original(*args, **kwargs)
+            with measured._docket_timing_observer(
+                str(value(2, "task_id") or ""), str(value(4, "session_id") or ""),
+                str(value(5, "turn_id") or ""),
+            ):
+                return original(*args, **kwargs)
+
+        measured._docket_schema_timing = True
+        model_tools.handle_function_call = measured
+        # The sequential and concurrent executors use the runtime shim's
+        # imported alias; replace only the exact original function identity.
+        for module_name in ("run_agent", "__main__"):
+            runtime = sys.modules.get(module_name)
+            if runtime is not None and getattr(runtime, "handle_function_call", None) is original:
+                runtime.handle_function_call = measured
+    model_tools.handle_function_call._docket_timing_observer = (
+        lambda task_id, session_id, turn_id: _measure_timing(
+            _timing_context(task_id, session_id, turn_id), "context_schema",
+        )
+    )
+    return True
+
+
 _INFRASTRUCTURE_ARGUMENT_NAMES = frozenset({
     "assembly_operation_token", "assembly_argument_hash", "utterance_ref",
     "request_key", "operator_utterance_ref",
@@ -1071,17 +1246,15 @@ def _on_pre_tool_call(
                     f"discord:{trusted['guild_id']}:{trusted['source_channel_id']}:"
                     f"{trusted['source_message_id']}:0"
                 )
-    validation_error = (
-        _validate_authority_arguments_locally(public_name, args)
-        if directive is None and public_name
-        in {
+    validation_error = None
+    if directive is None and public_name in {
             "docket_stage_changes",
             "docket_review_changeset",
             "docket_commit_changeset",
             "docket_request_clarification",
-        }
-        else None
-    )
+    }:
+        with _measure_timing(_timing_context(task_id, session_id, turn_id), "local_validation"):
+            validation_error = _validate_authority_arguments_locally(public_name, args)
     if validation_error is not None:
         directive = {"action": "block", "message": validation_error}
         rejection_disposition = "rejected_validation"
@@ -2444,18 +2617,19 @@ def _pre_gateway_dispatch(
             else:
                 context["terminal"] = True
                 return {"action": "skip", "reason": deterministic_response_reason}
-    return _rewrite_with_source_context(
-        event,
-        utterance_ref,
-        reply_binding,
-        signoff_result,
-        (
-            list(ingress_binding.get("attachments", []))
-            if isinstance(ingress_binding, dict)
-            else None
-        ),
-        reset_authorization_result,
-    )
+    with _measure_timing(_trace_context_for_event(event), "context_schema"):
+        return _rewrite_with_source_context(
+            event,
+            utterance_ref,
+            reply_binding,
+            signoff_result,
+            (
+                list(ingress_binding.get("attachments", []))
+                if isinstance(ingress_binding, dict)
+                else None
+            ),
+            reset_authorization_result,
+        )
 
 
 def _read_outbound_token() -> str:
@@ -3246,7 +3420,10 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
         for key, value in timing.items()
     ):
         raise PluginAPIError("invalid_mcp_trace", "Trace timing exceeds its bound", 422)
-    if timing["docket_execution_ms"] + timing["unattributed_ms"] != timing["total_elapsed_ms"]:
+    if sum(timing[key] or 0 for key in (
+        "docket_execution_ms", "unattributed_ms", "queue_ms", "context_schema_ms", "model_ms",
+        "local_validation_ms", "provider_wait_ms",
+    )) != timing["total_elapsed_ms"]:
         raise PluginAPIError("invalid_mcp_trace", "Trace timing double-counts elapsed time", 422)
     counts = raw_render.get("counts")
     if not isinstance(counts, dict) or set(counts) != {
@@ -3332,7 +3509,14 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
         f"Closed Docket intervals (union): {timing['docket_execution_ms']} ms · "
         f"Unattributed: {timing['unattributed_ms']} ms\n"
         f"Wrapper elapsed sum (may overlap): {timing['wrapper_elapsed_sum_ms']} ms\n"
-        "Queue/context/model/local validation/provider wait: not measured separately"
+        + " · ".join(
+            f"{label}: {timing[key]} ms" if timing[key] is not None else f"{label}: not measured"
+            for label, key in (
+                ("Queue", "queue_ms"), ("Context/schema", "context_schema_ms"),
+                ("Model requests", "model_ms"), ("Local validation", "local_validation_ms"),
+                ("Provider wait", "provider_wait_ms"),
+            )
+        )
     )
     embed.add_field(name="Turn timing", value=timing_text, inline=False)
     attempted = {total["tool_name"]: total["attempts"] for total in tool_counts}
@@ -4368,11 +4552,16 @@ def register(ctx: object) -> None:
     _validate_channel_lanes()
     if not _SCHEMA_DISCLOSURE.install_hermes_progressive_schema_patch():
         logger.debug("Hermes scoped-schema adapter is inactive outside the gateway runtime")
+    _install_context_timing_hook()
+    _install_schema_timing_hook()
     if _owns_discord_gateway_lifetime(ctx):
         _start_gateway_lifetime()
     ctx.register_hook("pre_gateway_dispatch", _pre_gateway_dispatch)
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)
     ctx.register_hook("post_tool_call", _on_post_tool_call)
+    ctx.register_hook("pre_api_request", _on_pre_api_request)
+    ctx.register_hook("post_api_request", _on_api_request_finished)
+    ctx.register_hook("api_request_error", _on_api_request_finished)
     ctx.register_hook("post_llm_call", _on_post_llm_call)
     _start_trace_delivery_worker()
     _start_projection_server()
