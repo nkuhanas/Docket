@@ -530,3 +530,41 @@ This implements the equality-preserving recompilation branch of ONT-UX-REQ-0017,
 not independent source verification. Exact source-grounded request/repair,
 unsupported-input adoption, canonical-before/after preview and complete timing
 remain open. No production deployment or historical replay was performed.
+
+## Pre-dispatch rejections and complete retained trace history
+
+The gateway records early instruction, trusted-binding, schema, signing and
+admission failures in the live request's trace and closes those local attempts
+without waiting for a post-tool callback. A replay of that rejected attempt
+cannot start executing after configuration changes; correction uses a new call.
+No live captured request means fail closed, not untraced execution or attachment
+to another turn. Non-Docket instruction restrictions remain unchanged.
+
+Signing now precedes assembly admission. A lost admission response can still
+leave a durable predecessor without a Docket invocation; later assembly recovers
+that exact undispatched operation from terminal local trace evidence. Source,
+tool, call identity and argument digest must all match. Foreign-source,
+changed-argument and MCP-attempted evidence cannot release the predecessor.
+Started/committed operations remain governed by their durable domain outcome.
+
+The old 100-call limit could stop tracing while permitting dispatch. It is now
+removed from gateway, authenticated invocation/admission schemas, persistence
+and projection validation. Ordinals still obey monotonicity and database integer
+bounds. Cards remain byte-bounded recent samples, and pages retain their 100-row
+and output-budget limits with exact whole-trace totals. No aliases or backfill
+are introduced. Migration `20260911d3a2` preserves all existing rows and refuses
+a downgrade that would require discarding a trace longer than 100 calls.
+
+Local verification passed 516 tests, Ruff and strict mypy. Fixtures exercise
+150 calls through actual plugin signing/rendering and complete history pages,
+MCP binding at ordinal 150, no-post-hook rejection, and exact predecessor
+recovery. Isolated Compose smoke passed fresh-connection PostgreSQL history
+past ordinal 100, refusal of lossy downgrade with evidence intact, rejection of
+negative ordinals, and lost-admission recovery without creating an invocation
+or canonical effect. The subsequent safe migration round-trip and existing
+concurrency/governance/MCP checks also passed.
+
+This advances ONT-UX-REQ-0016; asynchronous telemetry delivery/recovery and
+separate queue/context/model/validation/provider timing remain open. Unmeasured
+time is still unattributed. This does not establish live latency improvement,
+full amendment readiness or production deployment.

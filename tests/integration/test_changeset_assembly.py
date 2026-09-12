@@ -561,6 +561,59 @@ def test_mcp_recompile_cross_field_rejection_terminalizes_admission(session_fact
             assert session.scalar(select(func.count(Item.id))) == 0
 
 
+@pytest.mark.parametrize("binding", ["exact", "other_message", "other_hash", "dispatched"])
+def test_local_admission_loss_recovers_only_exact_undispatched_predecessor(session, binding):
+    from docket.internal_api.schemas import McpTraceCallUpdate, McpTraceUpdate
+    from docket.services.mcp_traces import McpTraceService
+    from docket.tool_contracts import CONTRACT_VERSION, contract_hash
+
+    settings = get_settings()
+    utterance = _utterance("1542799000000000880")
+    session.add(utterance)
+    session.flush()
+    trace_ref = new_public_ref("trace")
+    first = _admit(session, utterance=utterance, trace_ref=trace_ref, call_id="lost-admission",
+                   ordinal=1, tool_name="docket_stage_changes", argument_hash="a" * 64)
+    # Admission committed but its response was lost. The gateway did not invoke MCP.
+    for state in ("running", "completed"):
+        McpTraceService(session).update(trace_ref, McpTraceUpdate(
+            request_id="00000000-0000-0000-0000-000000000001",
+            guild_id=settings.discord_guild_id, source_channel_id=settings.chat_channel_id,
+            source_message_id=("1542799000000000881" if binding == "other_message"
+                               else "1542799000000000880"),
+            actor_id=settings.operator_discord_user_id, tool_contract_version=CONTRACT_VERSION,
+            tool_contract_hash=contract_hash("interactive"), caller_profile="interactive",
+            turn_started_at=utterance.said_at, updated_at=datetime.now(UTC),
+            call=McpTraceCallUpdate(
+                call_id="lost-admission", ordinal=1, tool_name="docket_stage_changes",
+                execution_boundary=(
+                    "mcp_attempted" if binding == "dispatched" else "local_rejection"
+                ),
+                transport_state=state,
+                disposition="failed" if state == "completed" else None,
+                received_argument_hash="b" * 64 if binding == "other_hash" else "a" * 64,
+            ),
+        ))
+    second = _admit(session, utterance=utterance, trace_ref=trace_ref, call_id="corrected-new-call",
+                    ordinal=2, tool_name="docket_stage_changes", argument_hash="c" * 64)
+    service = ChangeSetAssemblyService(session)
+    if binding == "exact":
+        result = service.stage(_item_stage(utterance), assembly_operation_token=second,
+                               assembly_argument_hash="c" * 64)
+        assert result["disposition"] == "ready_to_commit"
+    else:
+        with pytest.raises(DocketError) as failure:
+            service.stage(_item_stage(utterance), assembly_operation_token=second,
+                          assembly_argument_hash="c" * 64)
+        assert failure.value.code == "assembly_operation_out_of_order"
+    predecessor = session.scalar(select(AssemblyOperation).where(
+        AssemblyOperation.operation_key == first
+    ))
+    assert predecessor.state == ("rejected" if binding == "exact" else "admitted")
+    assert session.scalar(select(func.count(Item.id))) == 0
+    assert session.scalar(select(func.count(ToolInvocation.id))) == 0
+
+
 def _utterance(message_id: str) -> OperatorUtterance:
     settings = get_settings()
     text = "Track this item and its follow-up task."

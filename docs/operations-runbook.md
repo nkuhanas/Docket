@@ -221,6 +221,23 @@ Local schema rejection is a completed transport with
 such a rejection indicates a trace-callback contract failure, not live Docket
 work.
 
+Early instruction, binding, schema and admission rejections in a live request
+are recorded and terminalized by the gateway before returning to Hermes; they
+do not need a post-tool hook. A call with no live captured request is blocked,
+not executed or attached to another turn. Local signing precedes admission.
+When an admission response is lost, a subsequent new operation can reconcile
+its predecessor only from exact, terminal, pre-dispatch trace evidence matching
+the original source, tool and arguments. A started or committed operation is
+never reclassified from local telemetry.
+
+Trace retention no longer stops at 100 calls. The card still shows a bounded
+recent sample, and history pages still cap at 100 rows/16 KiB. Exact totals and
+omitted counts describe the complete retained trace, including late staging and
+commit calls. Migration `20260911d3a2` removes the database's 100-call constraint;
+it changes no existing trace or governance evidence. Downgrade refuses to run
+if any longer trace exists rather than truncating it. Use a reviewed forward
+repair or the verified pre-migration backup for production recovery.
+
 ## Operator input and response failures
 
 If an Operator message receives only a reaction or no final response:

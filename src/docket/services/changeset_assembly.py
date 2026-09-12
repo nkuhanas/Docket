@@ -359,7 +359,10 @@ class ChangeSetAssemblyService:
                     ToolInvocation.trace_call_id == predecessor.upstream_tool_call_id,
                 )
             )
-            if invocation is None or invocation.transport_state == "running":
+            if invocation is None:
+                self._reconcile_local_predecessor(predecessor)
+                continue
+            if invocation.transport_state == "running":
                 continue
             if invocation.domain_state == "rejected":
                 disposition = invocation.result_disposition or "rejected_validation"
@@ -383,6 +386,45 @@ class ChangeSetAssemblyService:
                 continue
             predecessor.state = "unknown"
             self._replay(predecessor)
+
+    def _reconcile_local_predecessor(self, predecessor: AssemblyOperation) -> None:
+        """A lost admission response can fail locally without any MCP dispatch."""
+        from docket.models import ConversationalToolTrace
+
+        if predecessor.state != "admitted":
+            return  # Local telemetry cannot erase started or committed domain execution.
+        trace = self.session.scalar(select(ConversationalToolTrace).where(
+            ConversationalToolTrace.ref_id == predecessor.trace_ref
+        ))
+        utterance = self.session.scalar(select(OperatorUtterance).where(
+            OperatorUtterance.ref_id == predecessor.source_utterance_ref
+        ))
+        if trace is None or utterance is None or (
+            utterance.source_message_ref != (
+                f"discord_message:{trace.guild_id}:{trace.source_channel_id}:{trace.source_message_id}"
+            )
+            or utterance.actor_ref != f"discord_user:{trace.actor_id}"
+        ):
+            return
+        call = next((row for row in trace.calls if (
+            row.get("call_id") == predecessor.upstream_tool_call_id
+            and row.get("tool_name") == predecessor.tool_name
+            and row.get("received_argument_hash") == predecessor.argument_hash
+            and row.get("execution_boundary") == "local_rejection"
+            and row.get("transport_state") == "completed"
+        )), None)
+        if call is not None:
+            self._terminal(predecessor, {
+                "ok": False, "disposition": "rejected_validation", "reconciled": True,
+                "error": {
+                    "code": "assembly_not_dispatched",
+                    "message": "The gateway rejected this attempt before MCP dispatch.",
+                    "details": {
+                        "category": "implementation_validation", "authority_preserved": True,
+                        "next_action": "retry_new_operation",
+                    },
+                },
+            }, state="rejected")
 
     def _operation(
         self,

@@ -21,7 +21,6 @@ from docket.services.gateway_lifetimes import GatewayLifetimeService
 from docket.services.trace_correlation import correlated_calls
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash, contract_tool_names
 
-MAX_TRACE_CALLS = 100
 VISIBLE_TRACE_CALLS = 20
 
 DOCKET_MCP_TOOL_NAMES = contract_tool_names("interactive")
@@ -205,11 +204,6 @@ class McpTraceService:
                 raise DocketError(
                     code="nonmonotonic_mcp_trace",
                     message="MCP trace calls must begin in monotonic ordinal order.",
-                )
-            if len(calls) >= MAX_TRACE_CALLS:
-                raise DocketError(
-                    code="mcp_trace_limit_exceeded",
-                    message="The MCP trace exceeded its bounded call limit.",
                 )
             calls.append(self._stored_call(call))
             trace.calls = calls

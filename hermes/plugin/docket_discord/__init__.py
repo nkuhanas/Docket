@@ -957,20 +957,22 @@ def _on_pre_tool_call(
     **_kwargs: Any,
 ) -> dict[str, str] | None:
     instruction_guard = _instruction_tool_guard(tool_name, args)
-    if instruction_guard is not None:
-        return instruction_guard
     public_name = _docket_public_tool_name(tool_name)
     if public_name is None:
-        return None
+        return instruction_guard
+    started = time.monotonic()
+    directive = instruction_guard
+    rejection_disposition = "rejected_authority"
     if isinstance(args, dict):
         # Always regenerate from the trusted context; never forward a model's
         # correlation token or a token retained from a previous hook invocation.
         args.pop("invocation_binding", None)
-    if not _instructions_current():
-        return {
+    if directive is None and not _instructions_current():
+        directive = {
             "action": "block",
             "message": "Docket instructions changed during execution; resume after deployment.",
         }
+        rejection_disposition = "rejected_conflict"
     if public_name in _TRUSTED_CONTEXT_TOOLS and isinstance(args, dict):
         with _TRACE_CONTEXT_LOCK:
             trusted = _trace_context(task_id, session_id)
@@ -981,15 +983,18 @@ def _on_pre_tool_call(
             ) or (
                 turn_id and trusted.get("turn_id") not in {None, turn_id}
             ):
-                return {"action": "block", "message": "Resume the authenticated Docket request."}
-            args["utterance_ref"] = trusted["utterance_ref"]
-            args["request_key"] = (
-                f"discord:{trusted['guild_id']}:{trusted['source_channel_id']}:"
-                f"{trusted['source_message_id']}:0"
-            )
+                directive = directive or {
+                    "action": "block", "message": "Resume the authenticated Docket request."
+                }
+            else:
+                args["utterance_ref"] = trusted["utterance_ref"]
+                args["request_key"] = (
+                    f"discord:{trusted['guild_id']}:{trusted['source_channel_id']}:"
+                    f"{trusted['source_message_id']}:0"
+                )
     validation_error = (
         _validate_authority_arguments_locally(public_name, args)
-        if public_name
+        if directive is None and public_name
         in {
             "docket_stage_changes",
             "docket_review_changeset",
@@ -998,9 +1003,9 @@ def _on_pre_tool_call(
         }
         else None
     )
-    directive = (
-        {"action": "block", "message": validation_error} if validation_error is not None else None
-    )
+    if validation_error is not None:
+        directive = {"action": "block", "message": validation_error}
+        rejection_disposition = "rejected_validation"
     model_arguments = {
         key: value
         for key, value in (args.items() if isinstance(args, dict) else [])
@@ -1017,11 +1022,17 @@ def _on_pre_tool_call(
     with _TRACE_CONTEXT_LOCK:
         context = _trace_context(task_id, session_id)
         if context is None or context.get("terminal"):
-            return directive
+            # Do not execute an untraceable call or attribute it to a different
+            # request. Without a live captured message there is no safe ledger binding.
+            return directive or {
+                "action": "block", "message": "Resume the authenticated Docket request."
+            }
         if context["turn_id"] is None:
             context["turn_id"] = turn_id
         elif turn_id and context["turn_id"] != turn_id:
-            return directive
+            return directive or {
+                "action": "block", "message": "Resume the authenticated Docket request."
+            }
         stable_call_id = str(tool_call_id)[:255]
         if not stable_call_id:
             stable_call_id = str(
@@ -1033,9 +1044,6 @@ def _on_pre_tool_call(
         existing_call = context["calls"].get(stable_call_id)
         if existing_call is None:
             ordinal = int(context["next_ordinal"])
-            if ordinal > 100:
-                logger.error("Docket MCP trace exceeded its 100-call safety bound")
-                return directive
             context["next_ordinal"] = ordinal + 1
             context["started"] = True
             context["calls"][stable_call_id] = {
@@ -1054,11 +1062,30 @@ def _on_pre_tool_call(
             }
         else:
             ordinal = int(existing_call["ordinal"])
+            if existing_call.get("execution_boundary") == "local_rejection":
+                # A replay must not dispatch a call already rejected locally,
+                # even if a registry/configuration problem has since been fixed.
+                return {"action": "block", "message": (
+                    "This tool attempt was rejected before dispatch; retry with a new tool call."
+                )}
         payload_context = dict(context)
         call = dict(context["calls"][stable_call_id])
     if public_name == "docket_list_provider_calendar_events" and isinstance(args, dict):
         # Never resolve "tomorrow" from a model-supplied timestamp or a retry's clock.
         args["operator_utterance_ref"] = payload_context["utterance_ref"]
+    if directive is None and isinstance(args, dict):
+        try:
+            # Sign before durable assembly admission, so a local signer failure
+            # cannot leave an admitted operation that was never dispatched.
+            args["invocation_binding"] = _invocation_binding(payload_context, call)
+        except (KeyError, OSError, RuntimeError):
+            rejection_disposition = "failed"
+            directive = {
+                "action": "block",
+                "message": (
+                    "The gateway could not bind this call; resume the authenticated request."
+                ),
+            }
     needs_assembly_admission = public_name in {
         "docket_stage_changes",
         "docket_review_changeset",
@@ -1092,6 +1119,7 @@ def _on_pre_tool_call(
                 args["assembly_argument_hash"] = admission["canonical_model_argument_hash"]
             except (KeyError, OSError, PluginAPIError, RuntimeError) as exc:
                 code = getattr(exc, "code", "assembly_admission_failed")
+                rejection_disposition = "failed"
                 directive = {
                     "action": "block",
                     "message": (
@@ -1099,22 +1127,25 @@ def _on_pre_tool_call(
                         f"({code}); no draft change was sent."
                     ),
                 }
-    if directive is None and isinstance(args, dict):
-        try:
-            args["invocation_binding"] = _invocation_binding(payload_context, call)
-        except (KeyError, OSError, RuntimeError):
-            directive = {
-                "action": "block",
-                "message": (
-                    "The gateway could not bind this call; resume the authenticated request."
-                ),
-            }
+    if directive is not None and isinstance(args, dict):
+        args.pop("invocation_binding", None)
     # Capture the boundary before dispatch, rather than inferring a local
     # rejection later from a missing call_ or from arbitrary error prose.
     call["execution_boundary"] = "local_rejection" if directive is not None else "mcp_attempted"
     with _TRACE_CONTEXT_LOCK:
         context["calls"][stable_call_id]["execution_boundary"] = call["execution_boundary"]
     _enqueue_trace_update(payload_context, call=call)
+    if directive is not None:
+        # Some Hermes wrappers do not run post-tool hooks for a blocked call.
+        # Close this local attempt now, without guessing a Docket domain outcome.
+        terminal_call = {
+            **call, "transport_state": "completed",
+            "elapsed_ms": min(max(int((time.monotonic() - started) * 1000), 0), 600_000),
+            "disposition": rejection_disposition,
+        }
+        with _TRACE_CONTEXT_LOCK:
+            context["calls"][stable_call_id] = terminal_call
+        _enqueue_trace_update(payload_context, call=terminal_call)
     return directive
 
 
@@ -3059,7 +3090,7 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
             raw_call.get("argument_preview", "{}"), 768, "argument_preview"
         )
         if (
-            not previous_ordinal < ordinal <= 100
+            not previous_ordinal < ordinal <= 2_147_483_647
             or tool_name not in _DOCKET_MCP_TOOL_NAMES
             or transport_state not in {"running", "completed", "failed", "timed_out"}
             or domain_state not in {"succeeded", "rejected", "failed", "unknown"}
@@ -3097,7 +3128,7 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
             raise ValueError
     except (TypeError, ValueError) as exc:
         raise PluginAPIError("invalid_mcp_trace", "overflow_count is invalid", 422) from exc
-    if overflow_count < 0 or overflow_count > 100:
+    if overflow_count < 0 or overflow_count > 2_147_483_647:
         raise PluginAPIError("invalid_mcp_trace", "overflow_count exceeds its bound", 422)
     raw_timing = raw_render.get("timing")
     timing_keys = {
@@ -3147,7 +3178,7 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
             or total["tool_name"] not in _DOCKET_MCP_TOOL_NAMES
             or total["tool_name"] in seen_tools
             or any(
-                type(total[key]) is not int or not 0 <= total[key] <= 100
+                type(total[key]) is not int or not 0 <= total[key] <= 2_147_483_647
                 for key in ("attempts",)
             )
             or type(total["authenticated_invocations"]) is not int

@@ -34,7 +34,7 @@ class InvocationBinding(BaseModel):
     format: Literal[1]
     trace_ref: str = Field(pattern=r"^trace_[0-9A-HJKMNP-TV-Z]{26}$")
     call_id: str = Field(min_length=1, max_length=255)
-    ordinal: int = Field(ge=1, le=100)
+    ordinal: int = Field(ge=1, le=2_147_483_647)
     utterance_ref: str = Field(pattern=r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")
     gateway_instance_ref: str | None = Field(pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
     tool_name: str = Field(min_length=1, max_length=128)
