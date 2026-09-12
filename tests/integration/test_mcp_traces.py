@@ -241,6 +241,7 @@ def test_mcp_trace_is_monotonic_redacted_and_projected(
                 "transport_state": "completed",
                 "domain_state": "unknown",
                 "elapsed_ms": 125,
+                "reported_disposition": "succeeded",
                 "disposition": None,
                 "transport_error_code": None,
                 "domain_error_code": None,

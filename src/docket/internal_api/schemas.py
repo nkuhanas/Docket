@@ -41,7 +41,7 @@ class McpTraceCallUpdate(InternalModel):
         return self
 
 
-class McpTraceUpdate(InternalModel):
+class McpTraceContext(InternalModel):
     request_id: UUID
     guild_id: str = Field(min_length=1, max_length=64)
     source_channel_id: str = Field(min_length=1, max_length=64)
@@ -54,16 +54,41 @@ class McpTraceUpdate(InternalModel):
     turn_started_at: datetime
     updated_at: datetime
     turn_status: Literal["running", "completed", "failed", "interrupted"] = "running"
+
+    @model_validator(mode="after")
+    def valid_timestamps(self) -> "McpTraceContext":
+        if self.turn_started_at.tzinfo is None or self.updated_at.tzinfo is None:
+            raise ValueError("trace timestamps must include a UTC offset")
+        if self.turn_started_at > self.updated_at:
+            raise ValueError("turn_started_at cannot follow updated_at")
+        return self
+
+
+class McpTraceUpdate(McpTraceContext):
     call: McpTraceCallUpdate | None = None
 
     @model_validator(mode="after")
     def require_update(self) -> "McpTraceUpdate":
         if self.call is None and self.turn_status == "running":
             raise ValueError("a running trace update requires a call")
-        if self.turn_started_at.tzinfo is None or self.updated_at.tzinfo is None:
-            raise ValueError("trace timestamps must include a UTC offset")
-        if self.turn_started_at > self.updated_at:
-            raise ValueError("turn_started_at cannot follow updated_at")
+        return self
+
+
+class McpTraceCheckpoint(McpTraceContext):
+    """Bounded trusted observation recovery, never an invocation or authority grant."""
+
+    utterance_ref: str = Field(pattern=r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")
+    calls: list[McpTraceCallUpdate] = Field(default_factory=list, max_length=25)
+
+    @model_validator(mode="after")
+    def bounded_ordered_observations(self) -> "McpTraceCheckpoint":
+        ordinals = [call.ordinal for call in self.calls]
+        if ordinals != sorted(set(ordinals)):
+            raise ValueError("checkpoint observations require unique ascending ordinals")
+        if not self.calls and self.turn_status == "running":
+            raise ValueError("a running checkpoint requires observations")
+        if len(self.model_dump_json().encode("utf-8")) > 16_384:
+            raise ValueError("checkpoint exceeds its serialized byte bound")
         return self
 
 

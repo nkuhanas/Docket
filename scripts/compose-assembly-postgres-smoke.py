@@ -37,6 +37,7 @@ from docket.domain.public_refs import new_public_ref
 from docket.internal_api.schemas import (
     AttachmentManifest,
     McpTraceCallUpdate,
+    McpTraceCheckpoint,
     McpTraceUpdate,
     OperatorUtteranceCapture,
 )
@@ -1953,6 +1954,91 @@ def test_trace_history_survives_call_one_hundred_and_blocks_lossy_downgrade(
         ))
 
 
+def test_trace_checkpoints_serialize_with_callbacks_and_rollback_pages(
+    factory: sessionmaker[Session],
+) -> None:
+    utterance_ref, _request_key = _create_utterance(
+        factory, "1542799000000000689", "Retain trace recovery evidence, not domain effects.",
+    )
+    settings = get_settings()
+    trace_ref = new_public_ref("trace")
+    started = datetime.now(UTC)
+    context: dict[str, Any] = dict(
+        request_id=uuid.uuid4(), guild_id=settings.discord_guild_id,
+        source_channel_id=settings.chat_channel_id, source_message_id="1542799000000000689",
+        actor_id=settings.operator_discord_user_id, caller_profile="interactive",
+        tool_contract_version=CONTRACT_VERSION, tool_contract_hash=contract_hash("interactive"),
+        turn_started_at=started, updated_at=started,
+    )
+    running = McpTraceCallUpdate(
+        call_id="checkpoint-local", ordinal=1, tool_name="docket_stage_changes",
+        execution_boundary="local_rejection", transport_state="running",
+        received_argument_hash="a" * 64,
+    )
+    terminal = running.model_copy(update={
+        "transport_state": "completed", "elapsed_ms": 7, "disposition": "rejected_validation",
+    })
+    checkpoint = McpTraceCheckpoint(
+        **context, utterance_ref=utterance_ref, calls=[terminal],
+    )
+    barrier = threading.Barrier(2)
+
+    def recover(is_checkpoint: bool) -> dict[str, Any]:
+        with factory.begin() as session:
+            barrier.wait(timeout=5)
+            service = McpTraceService(session)
+            if is_checkpoint:
+                return service.checkpoint(trace_ref, checkpoint)
+            return service.update(trace_ref, McpTraceUpdate(**context, call=running))
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(recover, value) for value in (True, False)]
+        for future in futures:
+            assert future.result(timeout=10)["trace_ref"] == trace_ref
+    with factory.begin() as session:
+        service = McpTraceService(session)
+        assert service.checkpoint(trace_ref, checkpoint)["disposition"] == "replayed_request"
+        row = session.scalar(select(ConversationalToolTrace).where(
+            ConversationalToolTrace.ref_id == trace_ref,
+        ))
+        assert row is not None and row.calls[0]["transport_state"] == "completed"
+        version = row.version
+        # One valid new observation followed by a gap must roll back the whole
+        # page even if the caller handles the rejection inside its transaction.
+        try:
+            service.checkpoint(trace_ref, McpTraceCheckpoint(
+                **context, utterance_ref=utterance_ref, calls=[
+                    terminal.model_copy(update={"call_id": "second", "ordinal": 2}),
+                    terminal.model_copy(update={"call_id": "fourth", "ordinal": 4}),
+                ],
+            ))
+        except DocketError as exc:
+            assert exc.code == "nonmonotonic_mcp_trace"
+        else:
+            raise AssertionError("Checkpoint accepted a missing observed ordinal")
+        session.refresh(row)
+        assert row.version == version and row.last_ordinal == 1
+    for offset in (1, 26, 51):
+        with factory.begin() as session:
+            page = [terminal.model_copy(update={"call_id": f"recovered-{i}", "ordinal": i})
+                    for i in range(offset + 1, min(offset + 26, 55))]
+            McpTraceService(session).checkpoint(trace_ref, McpTraceCheckpoint(
+                **context, utterance_ref=utterance_ref, calls=page,
+                turn_status="completed" if offset == 51 else "running",
+            ))
+    with factory() as session:
+        row = session.scalar(select(ConversationalToolTrace).where(
+            ConversationalToolTrace.ref_id == trace_ref,
+        ))
+        assert row is not None and row.status == "completed" and row.last_ordinal == 54
+        assert all(call["disposition"] == "rejected_validation" for call in row.calls)
+        assert session.scalar(select(func.count(ToolInvocation.id)).where(
+            ToolInvocation.trace_ref == trace_ref,
+        )) == 0
+        page = HistoryService(session).get_entry(trace_ref, view="calls", limit=25)
+        assert page["counts"]["local_rejections"] == 54 and page["omitted_detail_count"] == 29
+
+
 def test_lost_admission_response_recovers_from_exact_local_trace(
     factory: sessionmaker[Session],
 ) -> None:
@@ -2171,6 +2257,7 @@ def main() -> None:
         test_explicit_clear_patches_survive_postgresql_revision_and_recompile,
         test_source_title_repair_survives_restart_and_replays_once,
         test_trace_history_survives_call_one_hundred_and_blocks_lossy_downgrade,
+        test_trace_checkpoints_serialize_with_callbacks_and_rollback_pages,
         test_lost_admission_response_recovers_from_exact_local_trace,
         test_gateway_recovery_and_late_completion_serialize,
         test_request_specifications_are_immutable_and_block_lossy_downgrade,

@@ -73,6 +73,24 @@ own trace refresh instead of depending on a later callback.
 Local wrapper rejections are not authenticated Docket invocations. Unlinked
 attempts stay unreconciled rather than becoming evidence of domain success.
 
+Local rejection and turn completion now checkpoint the gateway's observations
+through the authenticated internal trace endpoint, in pages of at most 25 calls
+and 16 KiB. This recovers a dropped callback prefix without inventing missing
+calls or waiting for the global telemetry queue. A checkpoint page commits all
+of its observations or none, and exact replay is safe after a lost response.
+It binds the original captured utterance, trace, gateway and contract. Delayed
+start callbacks cannot regress a completed observation. A wrapper-reported
+disposition is retained separately from the authoritative Docket disposition;
+neither a checkpoint nor a local rejection can manufacture a successful `call_`.
+
+Successful tool calls retain asynchronous telemetry on their normal critical
+path. If local-rejection capture is unavailable, the next Docket dispatch waits
+for durable checkpoint recovery and reports that specific blocker; it does not
+request renewed authorization. Final response persistence remains independent:
+a trace-capture failure must not suppress a committed domain result. PostgreSQL
+is still the only durable store—there is no local payload spool, historical
+backfill, or claim that an unacknowledged observation survived a process crash.
+
 `docket_execution_ms` is the union of closed durable invocation intervals within
 the trace window; overlapping calls are not double-counted. Running calls do not
 prove uninterrupted execution. `wrapper_elapsed_sum_ms` is a separate aggregate

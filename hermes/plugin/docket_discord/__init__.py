@@ -313,6 +313,7 @@ _TRACE_CONTEXT_LOCK = threading.Lock()
 _TRACE_DELIVERY_QUEUE: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1000)
 _TRACE_DELIVERY_STARTED = False
 _TRACE_DELIVERY_START_LOCK = threading.Lock()
+_TRACE_CHECKPOINT_LOCK = threading.Lock()
 _TOOL_SCHEMA_LOCK = threading.Lock()
 _TOOL_SCHEMAS: dict[str, dict[str, Any]] = {}
 _PREFERENCE_NAMES = ("AGENT.md", "TRIAGE.md")
@@ -743,6 +744,70 @@ def _enqueue_trace_update(
         logger.error("Docket MCP trace delivery queue is full")
 
 
+def _checkpoint_trace(context: dict[str, Any], *, turn_status: str = "running") -> bool:
+    """Durably recover bounded observations; never persist a local payload spool."""
+    with _TRACE_CHECKPOINT_LOCK:
+        with _TRACE_CONTEXT_LOCK:
+            calls = sorted(
+                (dict(call) for call in context.get("calls", {}).values()),
+                key=lambda call: call["ordinal"],
+            )
+            binding = dict(context)
+        try:
+            base = {
+                key: binding[key] for key in (
+                    "guild_id", "source_channel_id", "source_message_id", "actor_id",
+                    "tool_contract_version", "tool_contract_hash", "caller_profile",
+                    "turn_started_at", "utterance_ref",
+                )
+            }
+            base["gateway_instance_ref"] = binding.get("gateway_instance_ref")
+            path = f"/internal/v1/discord/mcp-traces/{binding['trace_ref']}/checkpoint"
+            position = 0
+            while position < len(calls) or (position == 0 and turn_status != "running"):
+                payload = {
+                    **base, "request_id": str(uuid.uuid4()),
+                    "updated_at": datetime.now(UTC).isoformat(),
+                    "turn_status": "running", "calls": [],
+                }
+                for call in calls[position:position + 25]:
+                    candidate = {**payload, "calls": [*payload["calls"], call]}
+                    # Use the same ASCII transport serialization as the client;
+                    # Unicode escaping must not evade the wire-byte bound.
+                    if len(json.dumps(candidate, separators=(",", ":")).encode()) > 16_000:
+                        break
+                    payload = candidate
+                if not payload["calls"] and position < len(calls):
+                    raise RuntimeError("trace observation exceeds its checkpoint byte bound")
+                position += len(payload["calls"])
+                if position == len(calls):
+                    payload["turn_status"] = turn_status
+                for attempt in range(3):
+                    try:
+                        result = _docket_internal_request(path, payload, method="PUT", timeout=5)
+                        if (
+                            result.get("trace_ref") != binding["trace_ref"]
+                            or result.get("disposition") not in {"updated", "replayed_request"}
+                        ):
+                            raise RuntimeError("invalid trace checkpoint acknowledgement")
+                        break
+                    except (OSError, RuntimeError, urllib.error.URLError):
+                        if attempt == 2:
+                            raise
+                if not calls:
+                    break
+        except (KeyError, OSError, RuntimeError, urllib.error.URLError):
+            # Do not log the source, observations or response body. Unpersisted
+            # local rejections must be captured before another Docket dispatch.
+            logger.error("Docket trace checkpoint unavailable; observation recovery pending")
+            with _TRACE_CONTEXT_LOCK:
+                context["trace_checkpoint_pending"] = True
+            return False
+        with _TRACE_CONTEXT_LOCK:
+            context["trace_checkpoint_pending"] = False
+        return True
+
+
 def _rebind_trace_execution(
     context: dict[str, Any], event: object, ingress_binding: dict[str, Any] | None
 ) -> None:
@@ -967,6 +1032,20 @@ def _on_pre_tool_call(
         # Always regenerate from the trusted context; never forward a model's
         # correlation token or a token retained from a previous hook invocation.
         args.pop("invocation_binding", None)
+    with _TRACE_CONTEXT_LOCK:
+        pending_context = _trace_context(task_id, session_id)
+        checkpoint_pending = bool(
+            pending_context and pending_context.get("trace_checkpoint_pending")
+        )
+    if checkpoint_pending and not _checkpoint_trace(pending_context):
+        return {
+            "action": "block",
+            "message": (
+                "Docket cannot durably capture the preceding local tool result yet; "
+                "no new Docket call was dispatched. Resume when trace capture is available. "
+                "The existing request does not need renewed authorization."
+            ),
+        }
     if directive is None and not _instructions_current():
         directive = {
             "action": "block",
@@ -1146,6 +1225,13 @@ def _on_pre_tool_call(
         with _TRACE_CONTEXT_LOCK:
             context["calls"][stable_call_id] = terminal_call
         _enqueue_trace_update(payload_context, call=terminal_call)
+        if not _checkpoint_trace(context):
+            directive = {
+                **directive,
+                "message": directive["message"] + (
+                    " Local trace capture is also pending; no Docket call was dispatched."
+                ),
+            }
     return directive
 
 
@@ -1417,10 +1503,11 @@ def _on_post_llm_call(
         context["terminal"] = True
         payload_context = dict(context)
     if payload_context.get("started"):
-        _enqueue_trace_update(payload_context, turn_status="completed")
-        deadline = time.monotonic() + 5
-        while _TRACE_DELIVERY_QUEUE.unfinished_tasks and time.monotonic() < deadline:
-            time.sleep(0.01)
+        # A quiet/dropped queue is not proof of delivery. Checkpoint the exact
+        # bounded call observations before closing, without a global queue drain.
+        # Telemetry failure must not erase a committed domain result or suppress
+        # its separately persisted final response.
+        _checkpoint_trace(context, turn_status="completed")
     if not assistant_response and payload_context.get("deterministic_response_text"):
         try:
             response_ref = _persist_deterministic_response(payload_context)

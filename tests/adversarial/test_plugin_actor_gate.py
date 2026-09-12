@@ -36,6 +36,9 @@ def plugin_module(monkeypatch):
         return {"ok": True}
 
     monkeypatch.setattr(module, "_docket_internal_request", fake_internal_request)
+    # These tests isolate dispatch/projection behavior. Real checkpoint recovery
+    # and failure gating are exercised in test_trace_checkpoints.py.
+    monkeypatch.setattr(module, "_checkpoint_trace", lambda *_args, **_kwargs: True)
     return module
 
 
@@ -189,6 +192,11 @@ def test_docket_mcp_hooks_emit_only_bounded_trace_metadata(plugin_module, monkey
         "_enqueue_trace_update",
         lambda context, **kwargs: emitted.append((dict(context), kwargs)),
     )
+    checkpoints = []
+    monkeypatch.setattr(
+        plugin_module, "_checkpoint_trace",
+        lambda context, **kwargs: checkpoints.append((dict(context), kwargs)) or True,
+    )
     event = SimpleNamespace(
         text="Find my term.",
         message_id=message_id,
@@ -241,7 +249,7 @@ def test_docket_mcp_hooks_emit_only_bounded_trace_metadata(plugin_module, monkey
         assistant_response="secret model response",
     )
 
-    assert len(emitted) == 3
+    assert len(emitted) == 2
     assert emitted[0][0]["tool_contract_version"] == plugin_module._TOOL_CONTRACT_VERSION
     assert emitted[0][0]["tool_contract_hash"] == plugin_module._TOOL_CONTRACT_HASH
     assert emitted[0][0]["caller_profile"] == "interactive"
@@ -263,7 +271,7 @@ def test_docket_mcp_hooks_emit_only_bounded_trace_metadata(plugin_module, monkey
     }
     assert terminal["transport_state"] == "completed"
     assert terminal["elapsed_ms"] == 42
-    assert emitted[2][1] == {"turn_status": "completed"}
+    assert checkpoints[0][1] == {"turn_status": "completed"}
     assert "Cal Poly Mustang Shop" not in str(emitted)
     assert "secret bearer value" not in str(emitted)
     assert "secret result body" not in str(emitted)
@@ -275,7 +283,7 @@ def test_docket_mcp_hooks_emit_only_bounded_trace_metadata(plugin_module, monkey
         tool_call_id="call-2",
         turn_id="turn-1",
     )
-    assert len(emitted) == 3
+    assert len(emitted) == 2
 
 
 @pytest.mark.adversarial

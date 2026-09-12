@@ -8,7 +8,12 @@ from sqlalchemy.orm import Session
 from docket.config import get_settings
 from docket.domain.enums import OutboxStatus
 from docket.domain.errors import DocketError
-from docket.internal_api.schemas import McpTraceCallUpdate, McpTraceUpdate
+from docket.internal_api.schemas import (
+    McpTraceCallUpdate,
+    McpTraceCheckpoint,
+    McpTraceContext,
+    McpTraceUpdate,
+)
 from docket.models import (
     ConversationalToolTrace,
     DiscordDailyThread,
@@ -77,7 +82,7 @@ class McpTraceService:
     def __init__(self, session: Session) -> None:
         self.session = session
 
-    def _validate_context(self, trace_ref: str, request: McpTraceUpdate) -> None:
+    def _validate_context(self, trace_ref: str, request: McpTraceContext) -> None:
         settings = get_settings()
         trusted_channel = request.source_channel_id == settings.chat_channel_id
         if not trusted_channel:
@@ -121,8 +126,6 @@ class McpTraceService:
                 code="invalid_tool_contract",
                 message="The MCP trace is not bound to the repository interactive contract.",
             )
-        if request.gateway_instance_ref is not None:
-            GatewayLifetimeService(self.session).require_live(request.gateway_instance_ref)
 
     @staticmethod
     def _validate_call(call: McpTraceCallUpdate) -> None:
@@ -135,6 +138,13 @@ class McpTraceService:
             raise DocketError(
                 code="invalid_mcp_trace_disposition",
                 message="The MCP trace disposition is not allowlisted.",
+            )
+        if call.execution_boundary == "local_rejection" and call.disposition not in {
+            None, "failed", "rejected_validation", "rejected_authority", "rejected_conflict",
+        }:
+            raise DocketError(
+                code="invalid_mcp_trace_disposition",
+                message="A local rejection cannot claim a successful domain effect.",
             )
         if (
             call.transport_error_code is not None
@@ -155,6 +165,7 @@ class McpTraceService:
             "transport_state": call.transport_state,
             "domain_state": "unknown",
             "elapsed_ms": call.elapsed_ms,
+            "reported_disposition": call.disposition,
             "disposition": call.disposition,
             "transport_error_code": call.transport_error_code,
             "domain_error_code": None,
@@ -172,7 +183,7 @@ class McpTraceService:
             "execution_boundary": call.execution_boundary,
             "transport_state": call.transport_state,
             "elapsed_ms": call.elapsed_ms,
-            "disposition": call.disposition,
+            "reported_disposition": call.disposition,
             "transport_error_code": call.transport_error_code,
             "argument_preview": call.argument_preview,
             "received_argument_hash": call.received_argument_hash,
@@ -182,6 +193,8 @@ class McpTraceService:
         self,
         trace: ConversationalToolTrace,
         call: McpTraceCallUpdate,
+        *,
+        checkpoint: bool = False,
     ) -> bool:
         self._validate_call(call)
         calls = [dict(item) for item in trace.calls]
@@ -200,7 +213,9 @@ class McpTraceService:
                     code="mcp_trace_terminal",
                     message="A terminal MCP trace cannot accept another call.",
                 )
-            if call.ordinal != trace.last_ordinal + 1 or call.transport_state != "running":
+            if call.ordinal != trace.last_ordinal + 1 or (
+                call.transport_state != "running" and not checkpoint
+            ):
                 raise DocketError(
                     code="nonmonotonic_mcp_trace",
                     message="MCP trace calls must begin in monotonic ordinal order.",
@@ -218,12 +233,18 @@ class McpTraceService:
         if (
             match.get("tool_name") != call.tool_name
             or match.get("execution_boundary") != call.execution_boundary
+            or match.get("received_argument_hash") != call.received_argument_hash
+            or match.get("argument_preview") != call.argument_preview
         ):
             raise DocketError(
                 code="mcp_trace_call_conflict",
-                message="The MCP trace call tool binding changed.",
+                message="The MCP trace call tool or argument binding changed.",
             )
         current_state = str(match.get("transport_state", match.get("state")))
+        if current_state != "running" and call.transport_state == "running":
+            # An acknowledged checkpoint can overtake its asynchronous start
+            # callback. The old observation cannot regress durable completion.
+            return False
         if current_state == call.transport_state:
             if any(match.get(key) != value for key, value in self._incoming_call(call).items()):
                 raise DocketError(
@@ -237,6 +258,7 @@ class McpTraceService:
                 message="An MCP trace call cannot regress or change terminal state.",
             )
         match.update(self._incoming_call(call))
+        match["disposition"] = call.disposition
         trace.calls = calls
         return True
 
@@ -325,11 +347,15 @@ class McpTraceService:
                 authoritative["disposition"] = (
                     invocation.result_disposition if domain_state != "unknown" else None
                 )
+            elif call.get("execution_boundary") == "local_rejection":
+                if "reported_disposition" in call:
+                    authoritative["disposition"] = call["reported_disposition"]
+                # Do not erase older retained local evidence or invent a
+                # separate report when no such observation was captured.
             elif call.get("disposition") != "rejected_validation":
-                # A local schema rejection is a terminal Hermes result that
-                # deliberately never crosses Docket's authenticated MCP
-                # boundary. All other domain dispositions require a linked
-                # ToolInvocation before they may be treated as authoritative.
+                # Unlinked transport observations cannot establish Docket's
+                # domain outcome. Keep the original report separately so a
+                # checkpoint replay need not contradict reconciliation.
                 authoritative["disposition"] = None
             if any(call.get(key) != value for key, value in authoritative.items()):
                 call.update(authoritative)
@@ -358,14 +384,26 @@ class McpTraceService:
             trace.calls = calls
         return changed
 
-    def update(self, trace_ref: str, request: McpTraceUpdate) -> dict[str, Any]:
+    def _trace(self, trace_ref: str, request: McpTraceContext) -> ConversationalToolTrace:
         self._validate_context(trace_ref, request)
+        # Serialize creation as well as updates. The immutable source row
+        # exists before any real gateway tool; SELECT FOR UPDATE changes no
+        # evidence and uses the same source-first order as invocation binding.
+        self.session.scalar(select(OperatorUtterance.id).where(
+            OperatorUtterance.source_message_ref == (
+                f"discord_message:{request.guild_id}:{request.source_channel_id}:"
+                f"{request.source_message_id}"
+            ),
+            OperatorUtterance.actor_ref == f"discord_user:{request.actor_id}",
+            OperatorUtterance.transport == "discord",
+        ).with_for_update())
+        if request.gateway_instance_ref is not None:
+            GatewayLifetimeService(self.session).require_live(request.gateway_instance_ref)
         trace = self.session.scalar(
             select(ConversationalToolTrace)
             .where(ConversationalToolTrace.ref_id == trace_ref)
             .with_for_update()
         )
-        now = utc_now()
         if trace is None:
             source_trace = self.session.scalar(
                 select(ConversationalToolTrace)
@@ -416,7 +454,10 @@ class McpTraceService:
                 code="mcp_trace_binding_mismatch",
                 message="The MCP trace source binding changed.",
             )
+        return trace
 
+    def update(self, trace_ref: str, request: McpTraceUpdate) -> dict[str, Any]:
+        trace = self._trace(trace_ref, request)
         changed = False
         tool_call_ref: str | None = None
         if request.call is not None:
@@ -424,12 +465,48 @@ class McpTraceService:
             invocation = self._link_tool_invocation(trace, request.call)
             tool_call_ref = invocation.ref_id if invocation is not None else None
             changed = self._reconcile_calls(trace) or changed
+        return self._finish_update(trace, request, changed, tool_call_ref)
+
+    def checkpoint(self, trace_ref: str, request: McpTraceCheckpoint) -> dict[str, Any]:
+        # A dropped callback queue is not durable evidence. Recover the actual
+        # bounded observations from the same captured utterance, in one page
+        # transaction. Never fill ordinal gaps or manufacture call_ records.
+        source_ref = (
+            f"discord_message:{request.guild_id}:{request.source_channel_id}:"
+            f"{request.source_message_id}"
+        )
+        utterance = self.session.scalar(select(OperatorUtterance).where(
+            OperatorUtterance.ref_id == request.utterance_ref,
+            OperatorUtterance.source_message_ref == source_ref,
+            OperatorUtterance.actor_ref == f"discord_user:{request.actor_id}",
+            OperatorUtterance.transport == "discord",
+        ))
+        if utterance is None:
+            raise DocketError(
+                code="mcp_trace_binding_mismatch",
+                message="Trace checkpoint does not match its captured Operator utterance.",
+            )
+        with self.session.begin_nested():
+            trace = self._trace(trace_ref, request)
+            changed = False
+            for call in request.calls:
+                self._link_tool_invocation(trace, call)
+                changed = self._apply_call(trace, call, checkpoint=True) or changed
+            return self._finish_update(trace, request, changed, None)
+
+    def _finish_update(
+        self,
+        trace: ConversationalToolTrace,
+        request: McpTraceContext,
+        changed: bool,
+        tool_call_ref: str | None,
+    ) -> dict[str, Any]:
         if request.turn_status != "running":
             target_status = request.turn_status
             if trace.status == "running":
                 changed = self._finish_running_calls(trace) or changed
                 trace.status = target_status
-                trace.completed_at = now
+                trace.completed_at = utc_now()
                 changed = True
             elif trace.status != target_status:
                 raise DocketError(

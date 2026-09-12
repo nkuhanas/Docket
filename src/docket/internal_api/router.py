@@ -17,6 +17,7 @@ from docket.internal_api.schemas import (
     GatewayLifetimeHeartbeat,
     GatewayLifetimeRegister,
     GatewayLifetimeShutdown,
+    McpTraceCheckpoint,
     McpTraceUpdate,
     OperatorUtteranceCapture,
     ProductionResetAuthorizationCapture,
@@ -159,19 +160,29 @@ def mcp_trace_update(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={"code": "invalid_trace_ref", "message": "trace_ref must be trace_..."},
         )
-    failure: DocketError | None = None
-    result: dict[str, object] | None = None
-    with session_scope() as session:
-        try:
+    try:
+        with session_scope() as session:
             result = McpTraceService(session).update(trace_ref, payload)
-        except DocketError as exc:
-            failure = exc
-    if failure is not None:
+    except DocketError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=failure.as_dict()["error"],
-        )
-    assert result is not None
+            detail=exc.as_dict()["error"],
+        ) from exc
+    _wake_projection_worker(request)
+    return result
+
+
+@router.put("/mcp-traces/{trace_ref}/checkpoint")
+def mcp_trace_checkpoint(
+    request: Request, trace_ref: str, payload: McpTraceCheckpoint,
+) -> dict[str, object]:
+    try:
+        with session_scope() as session:
+            result = McpTraceService(session).checkpoint(trace_ref, payload)
+    except DocketError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=exc.as_dict()["error"],
+        ) from exc
     _wake_projection_worker(request)
     return result
 
