@@ -14,6 +14,7 @@ from docket.internal_api.schemas import (
     AgentTurnNoResponse,
     AssemblyOperationAdmission,
     ExecutionLeaseComplete,
+    GatewayAgentResponseCapture,
     GatewayLifetimeHeartbeat,
     GatewayLifetimeRegister,
     GatewayLifetimeShutdown,
@@ -643,7 +644,7 @@ def production_reset_authorization_capture(
 
 
 @router.post("/agent-responses")
-def agent_response_capture(payload: AgentResponseCapture) -> dict[str, object]:
+def agent_response_capture(payload: GatewayAgentResponseCapture) -> dict[str, object]:
     try:
         with session_scope() as session:
             return ProvenanceService(session).capture_agent_response(payload)

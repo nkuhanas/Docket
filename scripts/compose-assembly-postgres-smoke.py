@@ -36,6 +36,7 @@ from docket.domain.errors import DocketError
 from docket.domain.public_refs import new_public_ref
 from docket.internal_api.schemas import (
     AttachmentManifest,
+    GatewayAgentResponseCapture,
     McpTraceCallUpdate,
     McpTraceCheckpoint,
     McpTraceUpdate,
@@ -44,6 +45,7 @@ from docket.internal_api.schemas import (
 )
 from docket.mcp.instrumented import ProvenanceFastMCP
 from docket.models import (
+    AgentResponse,
     AssemblyExecution,
     AssemblyOperation,
     AttachmentEvidence,
@@ -59,6 +61,7 @@ from docket.models import (
     ExecutionAttempt,
     ExecutionLease,
     GatewayLifetime,
+    IntentTurn,
     Item,
     LaneRoutingDecision,
     Operation,
@@ -80,7 +83,7 @@ from docket.models import (
 from docket.providers.google.calendar import CalendarProviderError
 from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.schemas.assembly import ReviewChangesInput, StageChangesInput
-from docket.schemas.authority import ChangeSetContent
+from docket.schemas.authority import ChangeSetContent, IntentSessionOpen, IntentTurnAppend
 from docket.schemas.calendar import StandaloneCalendarEventInput
 from docket.services.attachment_evidence import AttachmentEvidenceService, AttachmentTextService
 from docket.services.changeset_assembly import (
@@ -95,6 +98,7 @@ from docket.services.event_occurrences import (
 )
 from docket.services.gateway_lifetimes import GatewayLifetimeService
 from docket.services.history import HistoryService
+from docket.services.intent_sessions import IntentSessionService
 from docket.services.interactive_authority import InteractiveAuthorityService
 from docket.services.invocation_binding import bind_invocation
 from docket.services.mcp_traces import McpTraceService
@@ -2630,6 +2634,87 @@ def test_queue_boundary_survives_ingress_reclaim(factory: sessionmaker[Session])
         assert view["timing_scope"].startswith("durable_receipt_to_trace_end")
 
 
+def test_recovered_response_finalizes_original_turn_without_reexecution(
+    factory: sessionmaker[Session],
+) -> None:
+    """Production failure sequence: old turn, replacement gateway, final callback."""
+    settings = get_settings()
+    message = "1542799000000000692"
+    with factory.begin() as session:
+        old = session.scalar(select(GatewayLifetime).where(
+            GatewayLifetime.instance_kind == "hermes_discord_gateway",
+            GatewayLifetime.status == "active",
+        ))
+        assert old is not None
+        old_ref = old.ref_id
+        request = OperatorUtteranceCapture(
+            request_id=uuid.uuid4(), guild_id=settings.discord_guild_id,
+            channel_id=settings.chat_channel_id, message_id=message,
+            actor_id=settings.operator_discord_user_id,
+            gateway_instance_ref=old_ref, verbatim_text="Synthetic response recovery.",
+            request_key=f"discord:{settings.discord_guild_id}:{settings.chat_channel_id}:{message}:0",
+        )
+        captured = ProvenanceService(session).capture_operator_utterance(request)
+        utterance_ref = captured["ref"]
+        original = TraceExecutionService(session).bind(
+            utterance_ref=utterance_ref,
+            execution_completion_token=captured["deferred_ingress"]["execution_completion_token"],
+            gateway_instance_ref=old_ref, tool_contract_version=CONTRACT_VERSION,
+            tool_contract_hash=contract_hash("interactive"), turn_started_at=datetime.now(UTC),
+        )
+        intents = IntentSessionService(session)
+        intent, _ = intents.open(IntentSessionOpen(source_utterance_ref=utterance_ref))
+        intents.append_turn(IntentTurnAppend(
+            intent_session_ref=intent.ref_id, utterance_ref=utterance_ref,
+            gateway_instance_ref=old_ref,
+        ))
+        old.lease_expires_at = datetime.now(UTC) - timedelta(seconds=10)
+        operation_count = session.scalar(select(func.count(Operation.id)))
+    with factory.begin() as session:
+        new_ref = GatewayLifetimeService(session).register(
+            registration_key=uuid.uuid4(), instance_kind="hermes_discord_gateway"
+        )["ref"]
+        resumed_request = request.model_copy(update={"gateway_instance_ref": new_ref})
+        resumed = ProvenanceService(session).capture_operator_utterance(resumed_request)
+        token = resumed["deferred_ingress"]["execution_completion_token"]
+        binding = TraceExecutionService(session).bind(
+            utterance_ref=utterance_ref, execution_completion_token=token,
+            gateway_instance_ref=new_ref, tool_contract_version=CONTRACT_VERSION,
+            tool_contract_hash=contract_hash("interactive"), turn_started_at=datetime.now(UTC),
+        )
+        assert binding["trace_ref"] == original["trace_ref"]
+        assert binding["execution_index"] == 2
+        response_request = GatewayAgentResponseCapture(
+            request_id=uuid.uuid4(), guild_id=request.guild_id, channel_id=request.channel_id,
+            source_message_id=message, actor_id=request.actor_id, utterance_ref=utterance_ref,
+            turn_id="recovered", session_id="response-smoke", model_identifier="smoke",
+            verbatim_text="Recovered synthetic result.", generated_at=datetime.now(UTC),
+            trace_ref=binding["trace_ref"], execution_index=binding["execution_index"],
+            execution_completion_token=token, gateway_instance_ref=new_ref,
+        )
+        response = ProvenanceService(session).capture_agent_response(response_request)
+    # The response arrives durably before its acknowledgement; a failed delivery
+    # and a repeated capture cannot create another response or model admission.
+    with factory.begin() as session:
+        result = ContinuityService(session).complete_interactive_ingress(
+            completion_token=token, ingress_ref=resumed["deferred_ingress"]["ref"],
+            gateway_instance_ref=new_ref, outcome="failed", error_code="discord_delivery_failed",
+        )
+        assert result["disposition"] == "completed"
+        replay = ProvenanceService(session).capture_agent_response(response_request)
+        assert replay["ref"] == response["ref"] and replay["disposition"] == "replayed_request"
+        duplicate = ProvenanceService(session).capture_operator_utterance(resumed_request)
+        assert duplicate["deferred_ingress"]["state"] == "completed"
+        assert duplicate["deferred_ingress"]["execution_completion_token"] is None
+        turn = session.scalar(select(IntentTurn).where(IntentTurn.utterance_ref == utterance_ref))
+        assert turn is not None and turn.gateway_instance_ref == old_ref
+        assert turn.response_disposition == "final_response"
+        assert session.scalar(select(func.count(AgentResponse.id)).where(
+            AgentResponse.responds_to_utterance_refs[0].as_string() == utterance_ref
+        )) == 1
+        assert session.scalar(select(func.count(Operation.id))) == operation_count
+
+
 def main() -> None:
     database_url = os.environ["DOCKET_DATABASE_URL"]
     engine = configure_database(database_url)
@@ -2661,6 +2746,7 @@ def main() -> None:
         test_initial_source_interpretations_are_immutable_across_connections,
         test_timing_observations_serialize_and_preserve_evidence,
         test_queue_boundary_survives_ingress_reclaim,
+        test_recovered_response_finalizes_original_turn_without_reexecution,
     )
     for check in checks:
         check(factory)

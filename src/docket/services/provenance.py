@@ -25,6 +25,7 @@ from docket.internal_api.schemas import (
     AgentResponseCapture,
     AgentResponseDeliveryUpdate,
     AgentTurnNoResponse,
+    GatewayAgentResponseCapture,
     OperatorUtteranceCapture,
     ProductionResetAuthorizationCapture,
     SpecificationSignoffCapture,
@@ -43,6 +44,7 @@ from docket.models import (
     ProjectionDelivery,
     SemanticRequest,
     ToolInvocation,
+    TraceExecutionSegment,
 )
 from docket.models.base import utc_now
 from docket.schemas.authority import IntentTurnFinalize
@@ -51,6 +53,7 @@ from docket.services.continuity import ContinuityService
 from docket.services.gateway_lifetimes import GatewayLifetimeService
 from docket.services.intent_sessions import IntentSessionService
 from docket.services.reply_bindings import ReplyBindingService
+from docket.services.trace_executions import TraceExecutionService
 from docket.specification_artifacts import specification_artifact
 
 FROZEN_DOCUMENT_REF = "ONT-DELTA-2026-08-27"
@@ -479,6 +482,29 @@ class ProvenanceService:
             "claim_token": str(ingress.claim_token) if ingress.claim_token else None,
         }
 
+    def _response_execution(
+        self,
+        request: GatewayAgentResponseCapture | AgentTurnNoResponse,
+        utterance: OperatorUtterance,
+        *,
+        completing: bool,
+    ) -> TraceExecutionSegment:
+        trace, segment = TraceExecutionService(self.session).require(
+            trace_ref=request.trace_ref,
+            execution_index=request.execution_index,
+            execution_completion_token=request.execution_completion_token,
+            gateway_instance_ref=request.gateway_instance_ref,
+            completing=completing,
+        )
+        if utterance.source_message_ref != (
+            f"discord_message:{trace.guild_id}:{trace.source_channel_id}:{trace.source_message_id}"
+        ) or utterance.actor_ref != f"discord_user:{trace.actor_id}":
+            raise DocketError(
+                code="response_utterance_binding_invalid",
+                message="Agent response execution belongs to a different source utterance.",
+            )
+        return segment
+
     def capture_agent_response(self, request: AgentResponseCapture) -> dict[str, Any]:
         self._validate_discord_surface(
             guild_id=request.guild_id,
@@ -489,7 +515,9 @@ class ProvenanceService:
         if request.gateway_instance_ref is not None:
             GatewayLifetimeService(self.session).require_live(request.gateway_instance_ref)
         utterance = self.session.scalar(
-            select(OperatorUtterance).where(OperatorUtterance.ref_id == request.utterance_ref)
+            select(OperatorUtterance).where(
+                OperatorUtterance.ref_id == request.utterance_ref
+            ).with_for_update()
         )
         if utterance is None:
             raise DocketError(
@@ -514,6 +542,22 @@ class ProvenanceService:
             f"discord:{request.guild_id}:{request.channel_id}:"
             f"{request.source_message_id}:response:{request.turn_id}"
         )
+        segment = None
+        if isinstance(request, GatewayAgentResponseCapture):
+            segment = self._response_execution(request, utterance, completing=False)
+            # Hermes turn IDs may change on recovery, or repeat in another
+            # execution. Neither defines the identity of the durable response.
+            response_key = (
+                f"discord:{request.guild_id}:{request.channel_id}:"
+                f"{request.source_message_id}:response:{request.trace_ref}:{request.execution_index}"
+            )
+        elif not utterance.source_message_ref.startswith("discord_interaction:"):
+            # Only the in-process deterministic selection path can omit a model
+            # execution. The gateway endpoint requires the stronger schema.
+            raise DocketError(
+                code="response_execution_required",
+                message="A gateway response requires its exact admitted execution.",
+            )
         existing = self.session.scalar(
             select(AgentResponse).where(AgentResponse.response_key == response_key)
         )
@@ -539,23 +583,24 @@ class ProvenanceService:
                 "disposition": "replayed_request",
             }
 
+        if isinstance(request, GatewayAgentResponseCapture):
+            # An existing exact response may be recovered after completion; new
+            # output must still own the active source claim. Checkpointing can
+            # already have closed the trace without completing that lease.
+            segment = self._response_execution(request, utterance, completing=True)
+        invocation_query = select(ToolInvocation.ref_id).where(
+            ToolInvocation.trace_ref == request.trace_ref
+        )
+        if segment is not None:
+            invocation_query = invocation_query.where(
+                ToolInvocation.trace_execution_id == segment.id
+            )
         tool_call_refs = list(
             self.session.scalars(
-                select(ToolInvocation.ref_id)
-                .where(ToolInvocation.trace_ref == request.trace_ref)
-                .order_by(ToolInvocation.trace_ordinal, ToolInvocation.started_at)
+                invocation_query.order_by(ToolInvocation.trace_ordinal, ToolInvocation.started_at)
             )
         )
         intent_turn, intent_session = self._intent_turn_for_utterance(utterance)
-        if (
-            intent_turn is not None
-            and request.gateway_instance_ref is not None
-            and intent_turn.gateway_instance_ref != request.gateway_instance_ref
-        ):
-            raise DocketError(
-                code="gateway_lifetime_binding_mismatch",
-                message="Agent response does not belong to the turn's gateway lifetime.",
-            )
         context_packet_refs = (
             [ref for ref in intent_turn.context_refs if ref.startswith("ctx_")]
             if intent_turn is not None
@@ -636,6 +681,10 @@ class ProvenanceService:
                 data={
                     "projection_ref": projection_ref,
                     "model_identifier": response.model_identifier,
+                    **(
+                        {"trace_ref": segment.trace_ref, "execution_index": segment.execution_index}
+                        if segment is not None else {}
+                    ),
                 },
             )
         )
@@ -688,6 +737,7 @@ class ProvenanceService:
                 code="response_utterance_binding_invalid",
                 message="Agent turn does not bind to the authenticated source utterance.",
             )
+        self._response_execution(request, utterance, completing=True)
         turn = self._finalize_intent_turn(
             utterance=utterance,
             trace_ref=request.trace_ref,

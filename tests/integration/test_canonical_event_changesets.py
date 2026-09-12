@@ -3,10 +3,11 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import func, select
+from trace_support import bind_execution
 
 from docket.config import get_settings
 from docket.domain.public_refs import new_public_ref
-from docket.internal_api.schemas import AgentResponseCapture, OperatorUtteranceCapture
+from docket.internal_api.schemas import GatewayAgentResponseCapture, OperatorUtteranceCapture
 from docket.models import (
     AgentResponse,
     AttentionCase,
@@ -19,6 +20,7 @@ from docket.models import (
     Interaction,
     LaneRoutingDecision,
     Operation,
+    OperatorUtterance,
     ProviderAccount,
     ProviderEventBinding,
     SemanticRequestAttempt,
@@ -599,6 +601,9 @@ def test_package_pickup_case_reply_commits_event_route_and_resolution_first_try(
         }
         assert session.scalar(select(func.count(ChangeSet.id))) == 1
         assert session.scalar(select(func.count(SemanticRequestAttempt.id))) == 1
+        execution = bind_execution(session, session.scalar(select(OperatorUtterance).where(
+            OperatorUtterance.ref_id == utterance_ref
+        )), label=trace_ref)
         invocation = ToolInvocation(
             tool_name="docket_commit_changeset",
             tool_contract_version="test",
@@ -617,6 +622,7 @@ def test_package_pickup_case_reply_commits_event_route_and_resolution_first_try(
             completed_at=datetime.now(UTC),
             trace_ref=trace_ref,
             trace_call_id="package-pickup-commit",
+            trace_execution_id=execution["trace_execution_id"],
             trace_ordinal=1,
             utterance_refs=[utterance_ref],
             intent_session_ref=intent_session.ref_id,
@@ -626,7 +632,7 @@ def test_package_pickup_case_reply_commits_event_route_and_resolution_first_try(
         call_ref = invocation.ref_id
         operation_ref = operation.ref_id
 
-    capture = AgentResponseCapture.model_validate(
+    capture = GatewayAgentResponseCapture.model_validate(
         {
             "request_id": str(uuid.uuid4()),
             "guild_id": settings.discord_guild_id,
@@ -635,6 +641,9 @@ def test_package_pickup_case_reply_commits_event_route_and_resolution_first_try(
             "actor_id": settings.operator_discord_user_id,
             "utterance_ref": utterance_ref,
             "turn_id": "package-pickup-final-response",
+            **{key: execution[key] for key in (
+                "gateway_instance_ref", "execution_index", "execution_completion_token",
+            )},
             "session_id": "package-pickup-session",
             "model_identifier": "test-model",
             "verbatim_text": "The event is on your calendar.",

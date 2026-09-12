@@ -455,6 +455,17 @@ or Discord message. A skipped duplicate cannot release the owner's lease. The
 deferred path records its own response delivery/completion, and a persisted final
 response prevents another model execution even if delivery remains pending.
 
+A repeated `agent_turn_not_finalized` loop is an execution/provenance failure,
+not a reason to reauthorize the request. Establish a durable drain before
+investigating repeated admissions. Check final-response capture errors as well
+as the trace: a completed trace does not prove an `rsp_` was recorded. In plugin
+0.31.1, capture validates the exact admitted execution, rather than comparing
+the current gateway with the historical IntentTurn's gateway. After a repair,
+verify one persisted response, terminal ingress, no further execution admissions,
+and unchanged provider intents for an already-committed request before calling
+the deployment verified. Never manually complete the ingress or invent a reply
+to hide a capture failure.
+
 ## Attention and brief diagnosis
 
 Triage may suppress under an existing Preference, create `bentry_` informational

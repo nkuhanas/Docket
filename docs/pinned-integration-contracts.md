@@ -30,7 +30,7 @@ traceability marker only.
 
 ## Hermes plugin contract
 
-Plugin `0.31.0`/contract v39 separate a source-wide conversational trace from
+Plugin `0.31.1`/contract v39 separate a source-wide conversational trace from
 its admitted executions. After durable ingress claim and before model dispatch,
 the plugin calls `/internal/v1/discord/mcp-traces/bind` with the original `utt_`,
 opaque completion token, gateway lifetime and current contract. Docket returns
@@ -264,6 +264,18 @@ is durably finalized, projection failure terminalizes the ingress execution and
 must not make the same `utt_` eligible for another model run. The plugin's
 listener is installed on the adapter instance and must be revalidated whenever
 the pinned Hermes gateway lifecycle changes.
+
+The final-response and no-response callbacks require the admitted execution's
+index and opaque completion token, not just the message-wide trace and gateway.
+The old IntentTurn's gateway remains historical evidence; it must not veto a
+response from a properly admitted replacement execution. New response capture
+checks the active claim even if its final trace checkpoint has already landed.
+Lost acknowledgements recover the execution-keyed response after completion;
+the same gateway's earlier completed claim cannot finalize a replacement claim.
+Response provenance cites only that execution's tool calls. The in-process
+deterministic semantic-selection response path is separate and cannot be used
+through the gateway callback to omit its binding. This callback change requires
+coordinated drained Docket/plugin deployment; unbound gateway payloads fail closed.
 
 A drained gateway replacement and an expired gateway both reconcile unfinished
 trace/ingress bookkeeping against durable outcomes. A persisted `rsp_` or

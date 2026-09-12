@@ -258,6 +258,14 @@ class AgentResponseCapture(InternalModel):
     finalize_intent_turn: bool = True
 
 
+class GatewayAgentResponseCapture(AgentResponseCapture):
+    """Final model output belongs to an admitted execution, not its old turn."""
+
+    gateway_instance_ref: str = Field(pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
+    execution_index: int = Field(ge=1)
+    execution_completion_token: str = Field(pattern=r"^[0-9a-f]{32}$")
+
+
 class AgentTurnNoResponse(InternalModel):
     request_id: UUID
     guild_id: DiscordSnowflake = Field(pattern=r"^[0-9]{17,20}$")
@@ -269,7 +277,9 @@ class AgentTurnNoResponse(InternalModel):
     turn_id: str = Field(min_length=1, max_length=255)
     session_id: str = Field(min_length=1, max_length=255)
     trace_ref: str = Field(pattern=r"^trace_[0-9A-HJKMNP-TV-Z]{26}$")
-    gateway_instance_ref: str | None = Field(default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
+    gateway_instance_ref: str = Field(pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
+    execution_index: int = Field(ge=1)
+    execution_completion_token: str = Field(pattern=r"^[0-9a-f]{32}$")
 
 
 class AgentResponseDeliveryUpdate(InternalModel):
