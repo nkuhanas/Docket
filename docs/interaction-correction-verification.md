@@ -331,3 +331,27 @@ This is partial ONT-UX-ACC-0008 evidence. Pinned canonical-before/after previews
 and explicit compiler-migration effect diffs remain open, alongside exact
 source-grounded semantic repair, one-time adoption, delivery status and timing.
 No production changes, provider calls or historical replay were performed.
+
+## Receipt-bound provider delivery status
+
+New commit receipts now identify the bounded `docket_get_history_entry` delivery
+read for their exact `chg_`. This read uses only that request's durable provider
+Operations/targets, returning current counts and per-target committed title,
+timing, lane, public Operation reference, error and next action. No staging,
+provider call, retry or authorization mutation occurs. Counts and page rows use
+one SQL statement snapshot; pagination orders immutable target identities while
+allowing status to advance between reads. Provider IDs, correlation tokens, raw
+parameters and source/provenance dumps are not projected.
+
+Local verification passed 441 tests, Ruff and strict mypy. Isolated Compose
+smoke passed the PostgreSQL status query for one confirmed and 29 queued
+deliveries, including a fresh-connection second page with no repeated targets.
+The partial-failure fixture confirms two deliveries and identifies the failed
+third by exact title/time/error; recovery reuses its Operation and the next read
+confirms all three. Thirty-target pagination, no-provider-work receipts,
+uncommitted requests and wrong-object/malformed-cursor reads are also covered.
+
+These results establish deterministic delivery-status and partial-recovery
+behavior, not live Google or Discord outcomes. The exact semantic-request,
+adoption/migration, canonical-preview and timing gates remain open. No production
+deployment or historical request replay was performed.

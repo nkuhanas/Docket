@@ -441,15 +441,23 @@ def docket_search_history(
 @mcp.tool()
 def docket_get_history_entry(
     ref: str,
-    view: HistoryView = "summary",
+    view: Literal["summary", "audit", "delivery"] = "summary",
     text_offset: Annotated[int, Field(ge=0)] = 0,
     text_limit: Annotated[int, Field(ge=1, le=65536)] = 32768,
+    cursor: Annotated[str | None, Field(max_length=4096)] = None,
+    limit: Annotated[int, Field(ge=1, le=100)] = 25,
 ) -> dict[str, Any]:
-    """Fetch one exact referenced history object; text requires audit view."""
+    """Read exact history; audit exposes text, delivery follows a committed chg_.
+
+    Delivery is a bounded live status read with exact request-wide operation
+    counts and per-target title/time/lane/error. Follow existing operations, never
+    restage a committed request. A delivery read does not retry provider work.
+    """
     try:
         with session_scope() as session:
             return HistoryService(session).get_entry(
-                ref, view=view, text_offset=text_offset, text_limit=text_limit
+                ref, view=view, text_offset=text_offset, text_limit=text_limit,
+                cursor=cursor, limit=limit,
             )
     except Exception as exc:
         return _error(exc)

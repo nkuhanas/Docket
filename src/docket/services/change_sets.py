@@ -179,6 +179,11 @@ class ChangeSetApplicationReceipt:
             "affected_refs": self.affected_refs[:limit],
             "affected_ref_count": len(self.affected_refs),
             "affected_refs_truncated": len(self.affected_refs) > limit,
+            "delivery_status": {
+                "tool": "docket_get_history_entry",
+                "arguments": {"ref": changeset_ref, "view": "delivery"},
+                "when": "provider_status_needed",
+            },
         }
 
 

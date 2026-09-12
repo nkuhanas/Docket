@@ -835,6 +835,11 @@ def test_three_career_fair_entries_compile_once_without_review(session) -> None:
     )
     assert committed["disposition"] == "committed", committed
     assert committed["provider_operation_count"] == 3
+    assert committed["delivery_status"] == {
+        "tool": "docket_get_history_entry",
+        "arguments": {"ref": committed["changeset_ref"], "view": "delivery"},
+        "when": "provider_status_needed",
+    }
     events = sorted(
         session.scalars(select(CanonicalEvent)),
         key=lambda row: row.event_spec["timing"]["start_local"],

@@ -151,6 +151,17 @@ details use lossless `json_utf8` fragments with offsets and a digest, rather tha
 transport truncation. Counts distinguish logical details from fragment rows.
 Do not page through a diff as a mandatory pre-commit ceremony.
 
+After a canonical commit, use the receipt's `delivery_status` read only when
+provider confirmation or failure diagnosis is needed: `docket_get_history_entry`
+with that `chg_` and `view="delivery"`. It returns current whole-request counts
+and a bounded page identifying each target by title, timing, lane and `op_`.
+For partial delivery, name the failed target and its error; successful siblings
+must not be resubmitted. Follow the same Operations through recovery. Do not
+stage the original request again or confuse the receipt's initial queued state
+with current provider confirmation. Each delivery page is a fresh status read;
+its statuses may advance while paging. Avoid repeated polling during ordinary
+turns: a queued receipt can be reported as queued without waiting on Google.
+
 `provider_intents` is deliberately absent from the model-facing ChangeSet. Docket
 derives provider Operations from canonical mutations after validating the complete
 scope. Hermes never formulates, retries, or repairs provider Operations.
