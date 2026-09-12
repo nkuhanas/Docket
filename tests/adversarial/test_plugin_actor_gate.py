@@ -857,7 +857,7 @@ async def test_processing_completion_delivers_persisted_signoff_fallback(
         "chat_id": "333333333333333333",
         "content": "Signed and recorded.",
         "reply_to": "444444444444444444",
-        "metadata": {"notify": True},
+        "metadata": {"notify": True, "docket_response_ref": context["response_ref"]},
     }
     assert len(deliveries) == 1
     assert deliveries[0][0]["response_ref"] == context["response_ref"]

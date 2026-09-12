@@ -504,6 +504,31 @@ terminal ingest and retention disposition without printing plaintext. The
 encryption key must be retained with credential backups or retained blobs
 cannot be restored.
 
+Images use the image-capable main Hermes/Codex model's native input path, not a
+separate OCR service or a lossy auxiliary-model caption. Docket checks the
+original inline image bytes and their order against the captured attachment
+digests before interpretation. Existing limits remain ten attachments, 8 MiB per
+attachment and 16 MiB total by default; no GPU service or new OCR dependency is
+required. Native vision remains fallible, particularly for small text and table
+layout. Model-extracted entries are interpretations backed by a source, not
+independent authority or a proof that their semantic values are correct.
+
+For `docket_native_image_input_unavailable`, inspect the retained source's ingest
+state, the deployed plugin pin and the native input path without printing image
+payloads. Recover that path before resuming the same authorized request. Do not
+substitute a text-only caption, ask for renewed authorization, or restage an
+already committed ChangeSet. The failed execution stays failed; a fresh admitted
+execution must verify the images again. A durable failure `rsp_` has its own
+delivery recovery, so a generic gateway exception must not generate a second
+reply. Merely mentioning an older retained image in a new message does not prove
+that it was attached to the model input.
+
+Local OCR is not installed or enabled by this path. If it is introduced later,
+record the ROCm-compatible runtime/model pin, memory and concurrency budgets,
+timeouts/cancellation, retention policy and failure behavior before enabling it.
+Native image preparation and PDF text extraction are separate capabilities;
+do not advertise scanned-PDF support without an independently verified path.
+
 When Hermes cannot natively consume a retained PDF, it reads the exact `src_`
 through `docket_read_attachment_text`. The tool returns bounded, paginated,
 untrusted text with page/character locators, fragment hashes, and the extractor

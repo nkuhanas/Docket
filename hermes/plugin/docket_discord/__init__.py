@@ -831,6 +831,11 @@ def _rebind_trace_execution(
     token = ingress_binding.get("execution_completion_token") if ingress_binding else None
     if token and token != context.get("execution_completion_token"):
         # Retain trace identity/history but bind recovery to its NEW execution.
+        if context.get("native_image_state") == "failed":
+            context["native_image_state"] = "pending"
+            context.pop("deterministic_delivery_scheduled", None)
+            if context.get("deterministic_response_text") == _NATIVE_IMAGE_FAILURE:
+                context.pop("deterministic_response_text", None)
         context.update(
             execution_completion_token=token,
             processing_event_id=id(event),
@@ -1011,6 +1016,141 @@ def _timing_context(task_id: str, session_id: str, turn_id: str) -> dict[str, An
         return context
 
 
+_NATIVE_IMAGE_FAILURE = (
+    "Docket retained your request, but the original attached image was not available "
+    "intact at the model-input boundary. I did not interpret or apply this request without it. "
+    "The image-input path needs recovery; resume this same request afterward. "
+    "No renewed authorization is needed."
+)
+
+
+def _attachment_media_type(attachment: dict[str, Any]) -> str:
+    media_type = str(attachment.get("media_type") or "").casefold()
+    if media_type in {"", "application/octet-stream"}:
+        # A filename is only a routing hint. Exact retained bytes are checked
+        # independently, and the model/provider still validates image decoding.
+        return {
+            ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+            ".webp": "image/webp", ".gif": "image/gif",
+        }.get(Path(str(attachment.get("filename") or "")).suffix.casefold(), media_type)
+    return media_type
+
+
+def _native_image_bindings(attachments: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Use authenticated ledger metadata, never a model's attachment claims."""
+    if len(attachments) > 10:
+        raise RuntimeError("Docket native image manifest exceeds its bound")
+    bindings = []
+    for attachment in attachments:
+        if not _attachment_media_type(attachment).startswith("image/"):
+            continue
+        ref = attachment.get("ref")
+        digest = attachment.get("content_hash")
+        if (attachment.get("ingest_state") != "available" or not isinstance(ref, str)
+                or not ref.startswith("src_") or _PUBLIC_REF.fullmatch(ref) is None
+                or not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None):
+            raise RuntimeError("Docket native image evidence is unavailable")
+        bindings.append({"source_ref": ref, "content_hash": digest})
+    if len({row["source_ref"] for row in bindings}) != len(bindings):
+        raise RuntimeError("Docket native image manifest has duplicate sources")
+    return bindings
+
+
+def _native_image_hashes(user_message: Any) -> list[str]:
+    """Check the actual inline bytes without retaining images, URLs or captions."""
+    hashes = []
+    total = 0
+    max_bytes = int(os.environ.get("DOCKET_ATTACHMENT_MAX_BYTES", str(8 * 1024 * 1024)))
+    total_max = int(os.environ.get("DOCKET_ATTACHMENT_TOTAL_MAX_BYTES", str(16 * 1024 * 1024)))
+    for part in user_message if isinstance(user_message, list) else []:
+        if not isinstance(part, dict) or part.get("type") not in {"image_url", "input_image"}:
+            continue
+        value = part.get("image_url")
+        url = value.get("url") if isinstance(value, dict) else value
+        if not isinstance(url, str) or len(url) > 4 * ((max_bytes + 2) // 3) + 64:
+            raise ValueError("native_image_input_invalid")
+        header, separator, encoded = url.partition(",")
+        if not separator or header not in {
+            "data:image/png;base64", "data:image/jpeg;base64", "data:image/webp;base64",
+            "data:image/gif;base64",
+        }:
+            raise ValueError("native_image_input_invalid")
+        raw = base64.b64decode(encoded, validate=True)
+        total += len(raw)
+        if not raw or len(raw) > max_bytes or total > total_max or len(hashes) >= 10:
+            raise ValueError("native_image_input_invalid")
+        hashes.append(hashlib.sha256(raw).hexdigest())
+    return hashes
+
+
+def _record_native_image_failure(context: dict[str, Any]) -> None:
+    context["native_image_state"] = "failed"
+    context["deterministic_response_text"] = _NATIVE_IMAGE_FAILURE
+    try:
+        if not context.get("response_ref"):
+            context["response_ref"] = _persist_deterministic_response(context)
+        context["response_persistence_failed"] = False
+        context["turn_finalized"] = True
+        if not (
+            context.get("deterministic_delivery_scheduled") or context.get("delivery_recorded")
+        ):
+            _schedule_persisted_deterministic_response(context)
+    except (OSError, RuntimeError, urllib.error.URLError):
+        context["response_persistence_failed"] = not bool(context.get("response_ref"))
+        logger.error("Docket native-image failure response needs delivery recovery")
+
+
+def _verify_native_image_input(task_id: str, session_id: str, user_message: Any) -> None:
+    # A failed execution stays failed even after its terminal callback. Only a
+    # separately admitted execution may reset the binding for recovery.
+    context = _trace_context(task_id, session_id)
+    if context is None or not context.get("native_image_bindings"):
+        return
+    if context.get("native_image_state") == "failed":
+        raise RuntimeError("docket_native_image_input_unavailable")
+    try:
+        actual = _native_image_hashes(user_message)
+        expected = [row["content_hash"] for row in context["native_image_bindings"]]
+        if actual != expected:
+            raise ValueError("native_image_input_mismatch")
+    except (ValueError, binascii.Error):
+        # Do not let the upstream text-only fallback start an interpretation.
+        # The separately persisted response survives failure of the model turn.
+        _record_native_image_failure(context)
+        raise RuntimeError("docket_native_image_input_unavailable") from None
+    context["native_image_state"] = "prepared"
+    logger.info("Docket native image input verified: %d source(s)", len(expected))
+
+
+def _install_native_image_routing() -> bool:
+    """Docket's image-capable main model sees pixels, not auxiliary summaries."""
+    try:
+        from gateway.run import GatewayRunner
+    except ImportError:
+        return False
+    original = GatewayRunner._decide_image_input_mode
+    if not getattr(original, "_docket_native_image_routing", False):
+        if list(inspect.signature(original).parameters) != [
+            "self", "source", "session_key", "user_config", "provider", "model",
+        ]:
+            raise RuntimeError("Pinned Hermes native-image routing seam changed")
+
+        @wraps(original)
+        def routed(self, *, source=None, session_key=None, user_config=None,
+                   provider=None, model=None):
+            if routed._docket_source_guard(source):
+                return "native"
+            return original(self, source=source, session_key=session_key, user_config=user_config,
+                            provider=provider, model=model)
+
+        routed._docket_native_image_routing = True
+        GatewayRunner._decide_image_input_mode = routed
+    GatewayRunner._decide_image_input_mode._docket_source_guard = (
+        lambda source: _trusted_ingress_context(source) is not None
+    )
+    return True
+
+
 def _start_timing(context: dict[str, Any] | None, phase: str, key: object) -> None:
     if context is None:
         return
@@ -1097,6 +1237,10 @@ def _install_context_timing_hook() -> bool:
             task_id = args[4] if len(args) > 4 else kwargs.get("task_id")
             observer = measured._docket_timing_observer
             with observer(str(task_id or ""), str(getattr(agent, "session_id", "") or "")):
+                measured._docket_native_image_guard(
+                    str(task_id or ""), str(getattr(agent, "session_id", "") or ""),
+                    args[1] if len(args) > 1 else kwargs.get("user_message"),
+                )
                 return original(*args, **kwargs)
 
         measured._docket_context_timing = True
@@ -1108,6 +1252,7 @@ def _install_context_timing_hook() -> bool:
             _timing_context(task_id, session_id, ""), "context_schema",
         )
     )
+    conversation_loop.build_turn_context._docket_native_image_guard = _verify_native_image_input
     return True
 
 
@@ -1227,6 +1372,12 @@ def _on_pre_tool_call(
             "message": "Docket instructions changed during execution; resume after deployment.",
         }
         rejection_disposition = "rejected_conflict"
+    if (directive is None and pending_context and pending_context.get("native_image_bindings")
+            and pending_context.get("native_image_state") != "prepared" and public_name in {
+                "docket_stage_changes", "docket_commit_changeset", "docket_resolve_conflict",
+            }):
+        directive = {"action": "block", "message": _NATIVE_IMAGE_FAILURE}
+        rejection_disposition = "rejected_validation"
     if public_name in _TRUSTED_CONTEXT_TOOLS and isinstance(args, dict):
         with _TRACE_CONTEXT_LOCK:
             trusted = _trace_context(task_id, session_id)
@@ -1681,6 +1832,11 @@ def _on_post_llm_call(
         # Telemetry failure must not erase a committed domain result or suppress
         # its separately persisted final response.
         _checkpoint_trace(context, turn_status="completed")
+    if context.get("native_image_state") == "failed":
+        # A context-builder failure may produce a generic Hermes error. It is
+        # not a second semantic response and must not overwrite our durable one.
+        _record_native_image_failure(context)
+        return
     if not assistant_response and payload_context.get("deterministic_response_text"):
         try:
             response_ref = _persist_deterministic_response(payload_context)
@@ -1808,7 +1964,7 @@ async def _deliver_persisted_deterministic_response(context: dict[str, Any]) -> 
             chat_id=str(context["source_channel_id"]),
             content=response_text,
             reply_to=str(context["source_message_id"]),
-            metadata={"notify": True},
+            metadata={"notify": True, "docket_response_ref": response_ref},
         )
         delivered = bool(getattr(result, "success", False))
     except Exception:
@@ -1831,7 +1987,9 @@ async def _deliver_persisted_deterministic_response(context: dict[str, Any]) -> 
 
 
 def _schedule_persisted_deterministic_response(context: dict[str, Any]) -> None:
-    coroutine = _deliver_persisted_deterministic_response(context)
+    # A delayed projection still belongs to this response/execution even if a
+    # later admitted recovery reuses the in-memory source context.
+    coroutine = _deliver_persisted_deterministic_response(dict(context))
     try:
         loop, _adapter, _client = _discord_runtime()
     except Exception:
@@ -1881,6 +2039,8 @@ def _provenance_delivery_blocked(
     *,
     chat_id: str,
     reply_to: str | None,
+    persisted_response_ref: object = None,
+    content: object = None,
 ) -> bool:
     shared_contexts = getattr(adapter, "_docket_provenance_contexts", None)
     if not isinstance(shared_contexts, dict):
@@ -1893,8 +2053,21 @@ def _provenance_delivery_blocked(
             continue
         if reply_to and str(message_id) != reply_to:
             continue
+        if context.get("native_image_state") == "failed":
+            # Only the explicitly persisted failure projection may pass. A
+            # generic runtime error must not become an extra Discord response.
+            return not (
+                context.get("response_ref")
+                and persisted_response_ref == context["response_ref"]
+                and content == context.get("deterministic_response_text")
+                and not context.get("response_persistence_failed")
+            )
         if context.get("terminal") and context.get("response_persistence_failed") is True:
             return True
+        if not reply_to:
+            # Unthreaded gateway output belongs to the newest bound input, not
+            # to an older failed image request still retained for recovery.
+            return False
     return False
 
 
@@ -1960,12 +2133,17 @@ def _install_provenance_delivery_guard(adapter: object) -> None:
                 return SendResult(success=True)
             reply_to_value = kwargs.get("reply_to")
             reply_to = str(reply_to_value) if reply_to_value is not None else None
+            metadata = kwargs.get("metadata")
             if _provenance_delivery_blocked(
                 adapter,
                 chat_id=chat_id,
                 reply_to=reply_to,
+                persisted_response_ref=(
+                    metadata.get("docket_response_ref") if isinstance(metadata, dict) else None
+                ),
+                content=content,
             ):
-                logger.error("Blocked Discord delivery because AgentResponse persistence failed")
+                logger.error("Blocked Discord delivery without its exact persisted AgentResponse")
                 if __method_name == "send_multiple_images":
                     return None
                 return SendResult(
@@ -2078,7 +2256,7 @@ def _install_processing_outcome_listener(adapter: object) -> None:
                     chat_id=str(context["source_channel_id"]),
                     content=deterministic_text,
                     reply_to=str(context["source_message_id"]),
-                    metadata={"notify": True},
+                    metadata={"notify": True, "docket_response_ref": context["response_ref"]},
                 )
                 delivered = bool(getattr(result, "success", False))
             except Exception:
@@ -2555,6 +2733,15 @@ def _pre_gateway_dispatch(
             return {"action": "skip", "reason": "unauthorized-docket-thread"}
     if utterance_ref is None:
         return None
+    image_bindings = []
+    if deterministic_response_text is None:
+        try:
+            image_bindings = _native_image_bindings(
+                list(ingress_binding.get("attachments", [])) if ingress_binding else [],
+            )
+        except RuntimeError:
+            deterministic_response_text = _NATIVE_IMAGE_FAILURE
+            deterministic_response_reason = "docket-native-image-evidence-unavailable"
     if not _instructions_current():
         deterministic_response_text = (
             "Docket's reviewed instruction bundle changed during this gateway lifetime. "
@@ -2604,6 +2791,10 @@ def _pre_gateway_dispatch(
         deterministic_response_text=deterministic_response_text,
         ingress_binding=ingress_binding,
     )
+    image_context = _trace_context_for_event(event)
+    if image_context is not None and image_context.get("native_image_state") != "failed":
+        image_context["native_image_bindings"] = image_bindings
+        image_context["native_image_state"] = "pending" if image_bindings else "not_required"
     if deterministic_response_text is not None:
         context = _trace_context_for_event(event)
         if context is not None:
@@ -4245,7 +4436,7 @@ def _materialize_deferred_attachments(payload: dict[str, Any]) -> tuple[list[str
             temporary.write_bytes(plaintext)
             temporary.replace(path)
         media_urls.append(str(path))
-        media_types.append(str(attachment.get("media_type") or "application/octet-stream"))
+        media_types.append(_attachment_media_type(attachment) or "application/octet-stream")
     return media_urls, media_types
 
 
@@ -4552,9 +4743,12 @@ def register(ctx: object) -> None:
     _validate_channel_lanes()
     if not _SCHEMA_DISCLOSURE.install_hermes_progressive_schema_patch():
         logger.debug("Hermes scoped-schema adapter is inactive outside the gateway runtime")
-    _install_context_timing_hook()
+    context_guard_installed = _install_context_timing_hook()
     _install_schema_timing_hook()
+    native_routing_installed = _install_native_image_routing()
     if _owns_discord_gateway_lifetime(ctx):
+        if not context_guard_installed or not native_routing_installed:
+            raise RuntimeError("Pinned Hermes native-image boundary is unavailable")
         _start_gateway_lifetime()
     ctx.register_hook("pre_gateway_dispatch", _pre_gateway_dispatch)
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)

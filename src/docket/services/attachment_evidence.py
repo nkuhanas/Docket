@@ -322,6 +322,14 @@ class AttachmentEvidenceService:
                 "retention_disposition": evidence_by_ref[ref].retention_disposition,
                 "content_hash": evidence_by_ref[ref].content_hash,
                 "source_revision": 1,
+                **{
+                    name: value
+                    for name, value in {
+                        "media_type": evidence_by_ref[ref].media_type,
+                        "filename": evidence_by_ref[ref].filename,
+                    }.items()
+                    if value is not None
+                },
                 "untrusted_content": True,
             }
             for ref in utterance.attachment_source_refs
