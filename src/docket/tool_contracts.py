@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-09-11-v32"
+CONTRACT_VERSION = "docket-tools-2026-09-11-v33"
 
 
 class ToolContractEntry(TypedDict):
@@ -127,7 +127,9 @@ _INTERACTIVE_ASSEMBLY: dict[str, tuple[str, str]] = {
         "ONT-CS-TOOL-0001",
         "Stage bounded actions or normalized entries; scheduled entries carry one title/time/lane "
         "and Docket derives their complete support records. A sole draft_recompile operation "
-        "explicitly migrates unchanged pinned inputs; observe its new revision before commit.",
+        "explicitly migrates unchanged pinned inputs. It can coalesce a duplicated Event title "
+        "to the recorded entry title verified in retained PDF text, with all other effects fixed. "
+        "Observe its new revision before commit.",
     ),
     "docket_review_changeset": (
         "ONT-CS-TOOL-0002",

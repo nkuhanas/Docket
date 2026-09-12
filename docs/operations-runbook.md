@@ -225,7 +225,8 @@ For a draft whose pinned inputs and effects still parse exactly under the curren
 schemas, a sole stage patch `{"operations":[{"operation":"draft_recompile"}]}`
 requests audited recompilation. It cannot carry edits, new authority or expected
 versions. Docket requires equality of the typed canonical and provider semantic
-projections, retains the old revision, and writes a new executable pin and audit.
+projections, except for the exact source-proved title coalescence below. It retains
+the old revision and writes a new executable pin and audit.
 The receipt sets `observation_required=true`: a fresh bounded summary or the
 receipt's first diff page observes its exact still-current revision before
 commit. All older attempts remain stale. Migration diff pages include actual
@@ -234,8 +235,21 @@ compiler products and executable pins; ordinary stage/commit needs no review.
 A semantic difference, missing pin or unsupported input schema leaves the draft
 and authority intact. This equality path does not establish whether an earlier
 source interpretation was correct and cannot repair a wrong source-derived date
-or title. Source-grounded correction and one-time pre-cutover request adoption
-remain separate deployment gates. Never use a new request to bypass them.
+or title. General source-semantic validation and one-time pre-cutover request
+adoption remain separate deployment gates. Never use a new request to bypass them.
+
+For a compiler-owned Event/Item title mismatch, the same `draft_recompile` patch
+can coalesce both Event title fields to the unchanged recorded entry/Item title.
+This rule requires the exact immutable request revision, its original statement
+and attachment digest, and literal title text in the verified retained PDF
+fragment. Every other canonical/provider effect must remain identical. It cannot
+add an event, change dates, location or destination, expand recurrence, or reinterpret
+an image. Unproved evidence leaves the old draft intact with an exact constraint.
+The receipt carries a repair count and proof hash, not copied source text. Full
+proof bindings stay in the immutable revision; replay does not reapply the repair.
+Repeated same-title entries compare using exact pinned dependency IDs, not an
+assumed equivalence of distinct created objects. This comparison does not redefine
+semantic authority hashes. No historical request is automatically repaired.
 
 New persisted option/freeform scope hashes use typed semantic format 2. They
 retain policy JSON literally and normalize only declared mechanical fields;

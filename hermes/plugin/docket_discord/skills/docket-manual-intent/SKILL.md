@@ -154,9 +154,13 @@ stage operation with the unchanged patch revalidates the existing draft.
 For `draft_migration_required`, a sole stage patch
 `{"operations":[{"operation":"draft_recompile"}]}` requests an explicit audited
 recompile of unchanged pinned inputs. Do not combine it with edits, a new scope,
-or expected versions. Docket must prove canonical and provider semantic equality;
-it does not treat an old source interpretation as correct merely because it was
-staged. A semantic conflict preserves the previous draft and authority; report
+or expected versions. Docket must prove canonical and provider semantic equality,
+or verify its exact duplicated-title repair rule: the Event title coalesces to the
+unchanged recorded entry/Item title found literally in retained PDF text, with
+every other effect fixed. Use this same patch for a compiler-owned title mismatch;
+do not edit the derived Event or change the selected title. It does not verify
+arbitrary image interpretations or treat an old interpretation as correct merely
+because it was staged. A semantic conflict preserves the previous draft and authority; report
 the exact unresolved constraint rather than inventing a broader repair.
 
 A migration receipt with `observation_required=true` is the explicit exception

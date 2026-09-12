@@ -81,6 +81,8 @@ def test_manual_skill_defines_semantic_readiness_and_staged_protocol() -> None:
     assert "reads retained PDFs, not image attachments" in skill
     assert "unique `import_entry_id`" in skill
     assert "exact source-fragment locator/hash" in skill
+    assert "exact duplicated-title repair rule" in skill
+    assert "every other effect fixed" in skill
     assert "Never compress source entries" in skill
 
 
