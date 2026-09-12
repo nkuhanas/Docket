@@ -250,7 +250,12 @@ not image attachments; use the image already supplied to the vision-capable turn
 For attachment-backed imports, stage normalized entries with their exact `src_`
 and source-fragment evidence. On the first patch, the assembly scope names the
 requested `normalized_entry_types`, authorized sources and existing targets;
-do not enumerate their compiler-owned support mutation types. Docket derives
+include the complete `selected_entry_ids` inventory for the entire import, not
+just the first batch. Docket saves partial batches but blocks commit until every
+selected entry is staged. No begin call or additional approval is needed.
+After resumption, optional `entries` review pages recover the selected but
+`not_staged` IDs without changing their meaning or inventing replacement IDs.
+Do not enumerate their compiler-owned support mutation types. Docket derives
 internal import coverage and authority statements. Do not manufacture
 `import_effect_authority` or hand-author `import_scope`. Source content alone
 cannot authorize Tasks, Events, Calendar projections, reminders, Preferences,
@@ -266,7 +271,12 @@ do not repeat titles/times or supply a provider lane slug. A date without an
 occurrence interval uses `tracked_temporal_entry`, not an invented Event.
 Docket deterministically owns and compiles each entry's complete action set.
 Replacing an entry replaces all derived actions; removing it removes all derived
-actions. Never directly edit compiler-owned actions. The single title carries the
+actions, but removing a selected entry leaves the request incomplete. Its initial
+source interpretation is retained separately: a mechanical repair cannot change
+that reading, add an unselected entry, or widen the date/destination/scope. If the
+reading itself was mistaken, surface that exact interpretation conflict rather
+than silently replacing it or opening a new request. Never directly edit
+compiler-owned actions. The single title carries the
 distinct row content; timing carries its exact date/time; the projection occupies
 that entry's actual timeslot. Multiple entries extracted from the same PDF text
 fragment still use distinct IDs and normalized entries.

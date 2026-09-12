@@ -1072,3 +1072,55 @@ Validation passed **720 tests, Ruff and strict mypy (142 source files)**, plus
 isolated Compose/PostgreSQL smoke. Both native-image and existing timing-seam
 checks passed in the exact pinned Hermes image without network access. No
 production deployment, OCR installation or live model quality test occurred.
+
+## Initial source interpretations and bounded repair
+
+The accepted implementation boundary uses native vision for initial image
+interpretation, not a redundant local OCR service. The authenticated utterance
+remains the authority. A new source import records the complete selected-entry
+inventory once in its assembly scope; the initial values for those entries may
+arrive over multiple bounded stage calls. Their independent append-only records
+bind original utterance and source digests and say `recorded_interpretation`,
+never independently verified source truth. No partial batch implicitly becomes
+the complete request.
+
+Completeness is required for canonical commit, not staging. Missing entries leave
+the entire draft saved with errors. A removal clears all owned actions but leaves
+the selected entry missing until restored. Later patches cannot substitute a new
+title, date, destination or extra entry as a compilation repair. The exact original
+interpretations, failed drafts and operation outcomes survive. Correcting a
+fragment checksum is a narrowly allowed provenance correction with unchanged
+source/coordinates/semantic values; the extractor still validates the new checksum.
+
+Both staging and shared pre-commit validation compare actual Item/Time/Event
+products against the initial interpretations. Agreement between two identically
+wrong compiler-generated titles is insufficient. A failed compilation can be
+restaged with the same selected values through a new operation and committed
+without mandatory review. A previously ready revision cannot silently receive new
+compiler products; explicit migration and renewed observation still apply.
+
+Native-image title coalescence uses the original separate interpretation and
+verifies retained byte identity, recording `recorded_image_interpretation` and
+`independent_semantic_verification=false`. It does not pretend a checksum or a
+model reading certifies image meaning. All remaining compiled/provider effects
+must match during explicit recompilation. The PDF literal-text rule remains
+separate. The synthetic image fixture tests this trust boundary and exact
+Calendar values, not live model extraction accuracy.
+
+Migration `20260912a7e6` creates only `request_entry_interpretations`, with ORM and
+PostgreSQL immutability guards. It does not populate old drafts or execute old
+requests. Nonempty downgrade is refused; production recovery requires a verified
+backup or forward repair. Old inputs without this original binding require
+explicit evidence-grounded adoption, not a decoder or silently manufactured
+baseline. Contract v37/plugin `0.29.0` expose the new first-scope inventory only
+where staging needs it; the per-turn global contract budget remains unchanged.
+
+Validation passed **738 tests, Ruff and strict mypy (143 source files)**, plus
+isolated Compose smoke. PostgreSQL exercised immutable interpretation rows,
+loss-preserving downgrade rejection, empty-database upgrade/downgrade/re-upgrade,
+multi-batch assembly, restart/replay, and existing request/revision lock races.
+An interrupted partial import can recover its missing selected IDs through
+optional, revision-pinned entries pages; an older page never imports the values
+or observation state of a newer batch. The reviewed Hermes skill also passed its
+structural validation. No production deployment, historical request replay or
+live vision-quality claim is implied by these isolated checks.

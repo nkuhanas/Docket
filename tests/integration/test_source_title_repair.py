@@ -1,3 +1,4 @@
+import base64
 from copy import deepcopy
 from dataclasses import replace
 
@@ -28,21 +29,33 @@ TITLES = ["2026 Fall Career Fair", "2026 Fall Career Fair", "2026 Business Caree
 LOCATION = "Cal Poly Recreation Center, Building 43"
 
 
-def _fixture(session, monkeypatch, *, source_title=True, faulty_fields="both"):
+def _fixture(session, monkeypatch, *, source_title=True, faulty_fields="both", image=False):
     import docket.services.changeset_assembly as assembly
 
     texts = [f"{title}{'' if source_title else 'ness'} - September {16 + index}, 2026; "
              f"10:00 AM to {2 if index == 2 else 3}:00 PM; {LOCATION}."
              for index, title in enumerate(TITLES)]
+    # Synthetic retained image + fixed interpretation tests the provenance/repair
+    # contract, NOT OCR accuracy or a live native-vision request.
+    content = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII="
+    ) if image else _pdf_bytes(*texts)
     captured = ProvenanceService(session).capture_operator_utterance(_request(
-        message_id="1542999000000000621", content=_pdf_bytes(*texts),
-        filename="career-fairs.pdf", media_type="application/pdf",
+        message_id="1542999000000000621", content=content,
+        filename="career-fairs.png" if image else "career-fairs.pdf",
+        media_type="image/png" if image else "application/pdf",
     ).model_copy(update={"verbatim_text": "Add these three fairs to the Meetings calendar."}))
     utterance = session.scalar(select(OperatorUtterance).where(
         OperatorUtterance.ref_id == captured["ref"],
     ))
     source_ref = captured["attachments"][0]["ref"]
-    read = _text_service(session).read_pdf_text(
+    read = {
+        "items": [{
+            "source_fragment_locator": {"cell": index},
+            "source_fragment_hash": captured["attachments"][0]["content_hash"],
+        } for index in range(3)],
+        "extractor_identifier": "hermes.native-vision", "extractor_version": "fixture-v1",
+    } if image else _text_service(session).read_pdf_text(
         source_ref=source_ref, cursor=None, max_text_bytes=8192, page_limit=3,
     )
     account = ProviderAccount(
@@ -102,6 +115,7 @@ def _fixture(session, monkeypatch, *, source_title=True, faulty_fields="both"):
             "assembly_scope": {
                 "resolved_intent": {"intent": "add three source fairs"},
                 "normalized_entry_types": ["scheduled_occurrence_entry"],
+                "selected_entry_ids": [f"fair-{index}" for index in range(3)],
                 "source_refs": [source_ref], "target_refs": [lanes[0].ref_id],
             }, "patch": {"operations": operations},
         }), assembly_operation_token=admit(1, "docket_stage_changes"),
@@ -128,11 +142,12 @@ def _repair(utterance, service, admit):
 
 
 @pytest.mark.parametrize("faulty_fields", ["both", "canonical", "provider"])
+@pytest.mark.parametrize("image", [False, True])
 def test_source_title_coalescence_repairs_same_request_and_commits_exact_three_events(
-    session, monkeypatch, faulty_fields,
+    session, monkeypatch, faulty_fields, image,
 ):
     utterance, service, draft, lanes, admit, _ = _fixture(
-        session, monkeypatch, faulty_fields=faulty_fields,
+        session, monkeypatch, faulty_fields=faulty_fields, image=image,
     )
     request = session.scalar(select(SemanticRequest))
     authority_hash, request_ref = request.authority_scope_hash, request.ref_id
@@ -145,6 +160,9 @@ def test_source_title_coalescence_repairs_same_request_and_commits_exact_three_e
     proof = draft.compiler_manifest_json["source_title_repair_proofs"]
     assert sha256_json(proof) == result["compiler_migration"]["source_title_proof_hash"]
     assert "text" not in proof[0]["evidence"]
+    if image:
+        assert proof[0]["evidence"]["kind"] == "recorded_image_interpretation"
+        assert proof[0]["evidence"]["independent_semantic_verification"] is False
     assert session.scalar(select(ChangeSetRevision).where(
         ChangeSetRevision.change_set_id == draft.id, ChangeSetRevision.revision == 1,
     )).event_changes == original_effects
@@ -191,10 +209,13 @@ def test_source_title_coalescence_repairs_same_request_and_commits_exact_three_e
 
 
 @pytest.mark.parametrize("attack", ["title", "date", "destination", "fourth_event", "series"])
-def test_title_repair_cannot_expand_or_change_other_selected_effects(session, monkeypatch, attack):
+@pytest.mark.parametrize("image", [False, True])
+def test_title_repair_cannot_expand_or_change_other_selected_effects(
+    session, monkeypatch, attack, image,
+):
     import docket.services.changeset_recompile as recompile
 
-    utterance, service, draft, lanes, admit, compiler = _fixture(session, monkeypatch)
+    utterance, service, draft, lanes, admit, compiler = _fixture(session, monkeypatch, image=image)
     original = deepcopy(draft.event_changes)
 
     def changed_compiler(*args, **kwargs):
@@ -256,7 +277,8 @@ def test_title_coalescence_preserves_other_patch_field_presence(session, monkeyp
         "basis_refs": [utterance.ref_id],
     }))
     repaired, proof = coalesce_source_titles(
-        session, prior=original, proposal=read_request_proposal(
+        session, prior=original, semantic_request_ref=draft.semantic_request_ref,
+        proposal=read_request_proposal(
             session, semantic_request_ref=draft.semantic_request_ref, version=1,
         ),
     )

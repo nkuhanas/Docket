@@ -1348,6 +1348,9 @@ class ChangeSetService:
             )
         )
         pin = verify_snapshot(changeset, revision, None, for_migration=for_migration)
+        from docket.services.request_interpretations import verify_draft_interpretation
+
+        verify_draft_interpretation(self.session, changeset)
         if pin.compiled_effect_hash is None:
             return None
         try:
@@ -1848,6 +1851,11 @@ class ChangeSetService:
     ) -> list[dict[str, Any]]:
         errors: list[dict[str, Any]] = []
         provenance = ProvenanceRefService(self.session)
+        from docket.services.request_interpretations import compiled_interpretation_errors
+
+        errors.extend(compiled_interpretation_errors(
+            self.session, request_ref=intent_session.semantic_request_ref, content=content,
+        ))
         try:
             provenance.require_all(content.basis_refs)
             authority_refs = provenance.authority_utterance_refs(content.basis_refs)

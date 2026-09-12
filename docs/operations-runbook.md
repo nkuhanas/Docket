@@ -163,7 +163,26 @@ New staged revisions retain an immutable request interpretation under the exact
 `sreq_`/version pair in `semantic_request_specifications`. Its integrity digest
 and source hashes do not prove that the proposed interpretation is authorized:
 `pending_evidence_validation` remains explicit, separate from draft compilation
-readiness. Do not use an unverified proposal to justify a semantic repair.
+readiness. Do not use a mutable or later proposal to justify changed semantics.
+New source imports also retain their first, fallible interpretations in the
+append-only `request_entry_interpretations` table. The initial assembly scope
+contains the COMPLETE `selected_entry_ids` inventory, including later batches
+and no-occurrence entries. Each entry's first values are bound to original
+utterance/source digests separately from compiled actions. The receipt labels
+this `recorded_interpretation`, not independently verified source truth or a new
+authority grant. Native vision supplies that interpretation; no second OCR model
+is required. The original authenticated instruction remains the authority.
+
+An incomplete inventory remains `saved_with_errors`; stage the remaining selected
+entries. Removing an entry clears its owned draft actions but cannot silently
+remove it from the request. A date, destination, title, or selection change is
+`request_interpretation_conflict`, not mechanical repair. The old draft and
+authority survive; surface the exact conflicting reading rather than making a
+new request to bypass it. A corrected fragment checksum may be submitted with
+otherwise unchanged evidence coordinates/values; the extractor must still verify
+it. Compiler-only repair can restage the same entries in a NEW operation and
+commit without mandatory review. Replaying an old failed operation returns its
+old outcome. Ready revisions still require explicit migration for compiler drift.
 No old request is backfilled or executed by migration `20260911e4b3`. A nonempty
 specification table blocks downgrade; use a verified backup or forward repair,
 never delete evidence to make an image rollback work.
@@ -296,8 +315,12 @@ can coalesce both Event title fields to the unchanged recorded entry/Item title.
 This rule requires the exact immutable request revision, its original statement
 and attachment digest, and literal title text in the verified retained PDF
 fragment. Every other canonical/provider effect must remain identical. It cannot
-add an event, change dates, location or destination, expand recurrence, or reinterpret
-an image. Unproved evidence leaves the old draft intact with an exact constraint.
+add an event, change dates, location or destination, or expand recurrence.
+For native images the equivalent rule compares against the separately recorded
+initial interpretation and verifies the retained original bytes. Its proof is
+labeled `recorded_image_interpretation` with independent semantic verification
+false; it does not claim OCR-certified truth. Unproved evidence leaves the old
+draft intact with an exact constraint.
 The receipt carries a repair count and proof hash, not copied source text. Full
 proof bindings stay in the immutable revision; replay does not reapply the repair.
 Repeated same-title entries compare using exact pinned dependency IDs, not an

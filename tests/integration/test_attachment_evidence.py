@@ -265,6 +265,7 @@ def test_pdf_citation_failure_preserves_all_entries_and_repairs_same_request(ses
         "assembly_scope": {
             "resolved_intent": {"intent": "track lectures"},
             "normalized_entry_types": ["tracked_temporal_entry"], "source_refs": [source_ref],
+            "selected_entry_ids": [op["entry"]["import_entry_id"] for op in operations],
         },
         "patch": {"operations": operations},
     }), assembly_operation_token=admit(1, "docket_stage_changes"), assembly_argument_hash="1" * 64)

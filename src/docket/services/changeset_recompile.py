@@ -177,6 +177,7 @@ def recompile_draft(
     if old_scope != new_scope:
         permitted, repair_proofs = coalesce_source_titles(
             service.session, prior=prior,
+            semantic_request_ref=semantic_request.ref_id,
             proposal=read_request_proposal(
                 service.session, semantic_request_ref=semantic_request.ref_id,
                 version=before.revision,
