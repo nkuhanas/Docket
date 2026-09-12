@@ -1194,3 +1194,57 @@ PostgreSQL assembly/recovery checks. This is not a production deployment, live
 latency measurement, Calendar replay or local OCR installation. Docket and the
 plugin require coordinated drained deployment; after new executions exist,
 recovery is forward repair or the verified backup, not image-only rollback.
+
+## Final deterministic acceptance map
+
+The earlier sections are chronological slice evidence, not current open-gate
+lists. The final acceptance mapping below identifies executable tests rather
+than the placeholder names in the original private readiness plan. No live
+model or provider result is inferred from these deterministic fixtures.
+
+| Acceptance | Executable evidence (paths relative to the repository) |
+| --- | --- |
+| 0001: three exact career-fair entries | `tests/integration/test_changeset_assembly.py::test_three_career_fair_entries_compile_once_without_review` |
+| 0002: repair without semantic expansion | `tests/integration/test_source_title_repair.py`, `tests/integration/test_request_interpretations.py`, `tests/adversarial/test_semantic_scope.py` |
+| 0003: complete failed draft retained | `tests/integration/test_changeset_assembly.py::test_failed_entry_preserves_entire_draft_and_repairs_without_new_request` and schema/domain rejection tests in the same file |
+| 0004: stale and concurrent execution | `scripts/compose-assembly-postgres-smoke.py::test_same_attempt_concurrent_calls_bind_old_revision`, `test_cross_attempt_stale_edit_and_commit_are_rejected` |
+| 0005: stage/commit replay and restart | `tests/integration/test_changeset_assembly.py::test_old_stage_retry_cannot_undo_newer_replacement`, `test_mcp_stage_then_payload_free_commit_and_replay_without_review`; PostgreSQL `test_cold_restart_reuses_one_trace_and_staged_request` |
+| 0006: stable occurrence identity | `tests/integration/test_occurrence_mutations.py`, `tests/integration/test_occurrence_planning.py`, `tests/unit/test_event_occurrences.py` |
+| 0007: no whole-series authority through alternate paths | `tests/integration/test_occurrence_mutations.py::test_unscoped_recurring_master_mutation_is_blocked_in_handler`, `test_conflict_resolution_cannot_expand_occurrence_to_master_retraction`, `test_explicit_series_cancellation_includes_moved_child` |
+| 0008: actual bounded revision-consistent diffs | `tests/integration/test_changeset_assembly.py::test_diff_exposes_entry_values_removal_and_lossless_large_field`, `test_review_cursor_stays_on_one_revision_and_does_not_advance_observation`; PostgreSQL `test_diff_pages_keep_both_revisions_across_connections` |
+| 0009: uncertain and partial provider delivery | `tests/integration/test_calendar_operation_recovery.py::test_create_response_lost_and_worker_restart_reconcile_exactly_once`, `test_partial_delivery_recovery_retries_only_failed_operation`, `test_delivery_pages_scope_exact_counts_without_loading_other_requests` |
+| 0010: executable compiler pin/migration | `tests/integration/test_changeset_assembly.py::test_resumed_draft_executes_pinned_effects_without_current_compiler`, `test_calendar_recompile_cannot_expand_pinned_effects`; PostgreSQL `test_explicit_compiler_migration_requires_reobservation` |
+| 0011: explicit adoption, unchanged authority, no direct alias | `tests/integration/test_request_resumption.py` plus the old direct-recipe MCP rejection in `test_changeset_assembly.py` |
+| 0012: reviewed instruction isolation | `tests/unit/test_hermes_instruction_isolation.py`, instruction-bundle/skill and mutation-boundary tests in `tests/adversarial/test_plugin_actor_gate.py` |
+| 0013: honest trace counts/timing and actionable errors | `tests/integration/test_mcp_traces.py`, execution-bound history/checkpoint tests, gateway phase tests, and bounded diagnostic tests in `test_changeset_assembly.py` |
+| 0014: everyday stage then commit | `tests/integration/test_interaction_workflow.py::test_simple_event_stage_commit_without_review`, `test_homework_stage_commit_without_review` |
+
+The everyday fixtures exercise the authenticated MCP envelope with exactly two
+visible calls, one request and one committed ChangeSet. Event time, location and
+Meetings destination match the request; exactly one provider Operation is queued,
+not reported delivered. Homework produces one course-linked Item, an unfinished
+Task and the exact 9 AM September 8 temporal binding, with no fabricated Event
+or provider work. Staging alone creates none of those canonical objects.
+
+The conflict fixture invokes the shared service after an occurrence request has
+already been staged. Both an unscoped master retraction and a forged entire-series
+scope reject with a usable next action. The original draft, authority, recurring
+schedule and open conflict survive, with no provider Operation or resolution
+Decision committed. These are runtime-guard assertions, not instruction tests.
+
+Initial native-image interpretation remains the separately approved boundary:
+the model interprets the retained source; immutable selected-entry interpretations
+constrain later repairs. Hash equality does not prove the initial interpretation
+correct. Unprovable historical adoption stays blocked with evidence retained;
+there is no automatic replay or general old-schema translator.
+
+Release still requires clean-archive checks, both remote CI jobs, a fresh
+provider-disposition inventory, and the supported drain/backup/deploy lifecycle.
+Live extraction accuracy, receipt latency and Calendar delivery are separately
+measured after deployment with a concrete Operator request.
+
+The final acceptance slice passed **757 tests, Ruff and strict mypy (144 local
+source files)**. The preceding runtime commit `e2524d1` also passed a clean Git
+archive check (753 tests, 143 tracked source files) and the full isolated Compose
+smoke. The only subsequent changes are acceptance tests and this verification
+record; release checks still run against the final committed artifact.

@@ -13,7 +13,9 @@ from docket.models import (
     CalendarLane,
     CanonicalEvent,
     ChangeSet,
+    Decision,
     EventOccurrence,
+    IntentSession,
     LaneRoutingDecision,
     Operation,
     OperatorUtterance,
@@ -27,15 +29,21 @@ from docket.schemas.authority import (
     CanonicalEventCreate,
     CanonicalEventModify,
     ChangeSetContent,
+    ConflictOpen,
+    ConflictResolve,
+    StatementInput,
 )
 from docket.schemas.calendar import StandaloneCalendarEventInput
 from docket.services.canonical_events import CanonicalEventAuthorityService
+from docket.services.change_sets import ChangeSetService
 from docket.services.changeset_assembly import (
     ChangeSetAssemblyAdmissionService,
     ChangeSetAssemblyService,
 )
 from docket.services.changeset_previews import capture_event_preview, event_preview_sample
+from docket.services.conflicts import ConflictService
 from docket.services.event_occurrences import identity_for_timing, occurrence_timing
+from docket.services.statements import StatementService
 
 
 def _utterance(session, text, number, *, said_at=None):
@@ -542,6 +550,74 @@ def test_unscoped_recurring_master_mutation_is_blocked_in_handler(session, mutat
         CanonicalEventAuthorityService(session).apply_event(session, changeset, change)
     assert exc.value.code == "recurring_event_scope_required"
     assert series.status == "active"
+
+
+@pytest.mark.parametrize("claimed_scope", ["one_time", "entire_series"])
+def test_conflict_resolution_cannot_expand_occurrence_to_master_retraction(session, claimed_scope):
+    series, identity = _world(session)
+    scope = {"kind": "occurrence", "identity": identity.model_dump(mode="json")}
+    utterance, _trace, staged = _stage_cancel(session, series, scope)
+    assert staged["assembly_ready"]
+    draft = session.scalars(select(ChangeSet)).one()
+    before_effects = deepcopy(draft.event_changes)
+    before_spec = deepcopy(series.event_spec)
+    before_revision = draft.current_revision
+    intent = session.get(IntentSession, draft.intent_session_id)
+    request = session.scalars(select(SemanticRequest)).one()
+    before_hash = request.authority_scope_hash
+    prior_utterance = session.scalar(select(OperatorUtterance).where(
+        OperatorUtterance.ref_id == series.basis_refs[0]
+    ))
+    statements = []
+    for source, value in ((prior_utterance, "scheduled"), (utterance, "cancelled")):
+        statements.append(StatementService(session).derive(source.ref_id, [StatementInput(
+            statement_kind="assertion", subject_refs=[series.ref_id],
+            predicate="occurrence_status", value_json={"date": "2026-09-08", "status": value},
+            affected_fields=["status"], interpreter_version="occurrence-conflict-fixture",
+        )])[0])
+    conflict = ConflictService(session).open(ConflictOpen(
+        subject_refs=[series.ref_id], affected_fields=["status"],
+        prior_statement_refs=[statements[0].ref_id], incoming_statement_refs=[statements[1].ref_id],
+        conflicting_effects_json={"date": "2026-09-08"},
+    ))
+    resolution = ConflictResolve(
+        conflict_ref=conflict.ref_id, expected_version=conflict.version,
+        authority_utterance_ref=utterance.ref_id, resolution="resolved_supersession",
+        chosen_interpretation={"date": "2026-09-08", "status": "cancelled"},
+        statements_superseded=[statements[0].ref_id], statements_retained=[statements[1].ref_id],
+        effective_scope=scope, expected_versions={series.ref_id: series.version},
+        canonical_effects=[CanonicalEventCancel(
+            change_id="bad-master-retraction", object_type="canonical_event", action="retract",
+            object_ref=series.ref_id, affected_fields=["status"], basis_refs=[utterance.ref_id],
+            scope={"kind": claimed_scope},
+        )],
+    )
+    decision_count = session.scalar(select(func.count(Decision.id)))
+    with pytest.raises(DocketError) as failure:
+        ChangeSetService(
+            session, handlers=CanonicalEventAuthorityService(session).handlers()
+        ).resolve_conflict(
+            intent_session=intent, request=resolution,
+            idempotency_key="invalid-occurrence-conflict",
+        )
+    assert failure.value.code == "changeset_validation_failed"
+    expected = {
+        "one_time": "recurring_event_scope_required",
+        "entire_series": "event_scope_authority_mismatch",
+    }[claimed_scope]
+    errors = failure.value.details["errors"]
+    assert any(
+        error["code"] == expected and error["details"]["next_action"] for error in errors
+    ), errors
+    assert series.status == "active" and series.event_spec == before_spec
+    assert draft.current_revision == before_revision and draft.event_changes == before_effects
+    assert request.authority_scope_hash == before_hash
+    assert request.authority_availability == "available"
+    assert intent.semantic_state == "ready" and intent.commit_state == "blocked_validation"
+    assert conflict.status == "open" and conflict.version == 1
+    assert session.scalar(select(func.count(ChangeSet.id))) == 1
+    assert session.scalar(select(func.count(Decision.id))) == decision_count
+    assert session.scalar(select(func.count(Operation.id))) == 0
 
 
 def test_moved_occurrence_edits_and_cancellation_share_one_child(session) -> None:
