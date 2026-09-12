@@ -514,7 +514,11 @@ class ChangeSetAssemblyService:
                 if operation.change_set_ref is not None
                 else None
             )
-            if changeset is not None and changeset.state == "committed":
+            if (
+                operation.operation_kind == "commit"
+                and changeset is not None
+                and changeset.state == "committed"
+            ):
                 return self._terminal(
                     operation,
                     {**changeset.commit_receipt_json, "reconciled": True},
@@ -524,7 +528,7 @@ class ChangeSetAssemblyService:
                     ChangeSetRevision.assembly_operation_id == operation.id
                 )
             )
-            if revision is not None:
+            if operation.operation_kind == "stage" and revision is not None:
                 return self._terminal(
                     operation,
                     {
