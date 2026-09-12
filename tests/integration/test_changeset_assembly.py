@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 from copy import deepcopy
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -1057,6 +1058,287 @@ def test_global_compilation_failure_retains_action_inputs_for_new_operation(
     assert repaired["disposition"] == "ready_to_commit"
     assert repaired["current_revision"] == 2
     assert session.scalar(select(func.count(SemanticRequest.id))) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("long_title", [False, True])
+def test_import_title_error_identifies_fields_and_preserves_entire_draft(
+    session, monkeypatch, long_title
+) -> None:
+    import docket.services.changeset_assembly as assembly_module
+    from docket.mcp.instrumented import _compact_result
+
+    utterance = _utterance("1542799000000000901")
+    source, lane = _schedule_context(session, utterance, suffix="title-diagnostic")
+    service = ChangeSetAssemblyService(session)
+    trace_ref = new_public_ref("trace")
+    compiler = assembly_module.compile_normalized_entry
+    wrong_title = "🙃" * 512 if long_title else "Incorrect generic class"
+
+    def broken_title(entry, **kwargs):
+        compiled = compiler(entry, **kwargs)
+        actions = deepcopy(compiled.actions)
+        for action in actions:
+            if action["mutation_type"] == "canonical_event_create":
+                action["create_spec"]["event_spec"]["title"] = wrong_title
+        return replace(compiled, actions=actions)
+
+    monkeypatch.setattr(assembly_module, "compile_normalized_entry", broken_title)
+    initial = _schedule_stage(
+        utterance, source_ref=source.ref_id, lane_ref=lane.ref_id,
+        start_index=0, count=3, include_scope=True,
+    )
+    token = _admit(
+        session, utterance=utterance, trace_ref=trace_ref, call_id="title-stage",
+        ordinal=1, tool_name="docket_stage_changes", argument_hash="1" * 64,
+    )
+    saved = service.stage(initial, assembly_operation_token=token, assembly_argument_hash="1" * 64)
+    assert saved["disposition"] == "saved_with_errors"
+    draft = session.scalar(select(ChangeSet))
+    original_request, original_authority = draft.semantic_request_ref, draft.authority_scope_hash
+    assert len(draft.normalized_entries_json) == 3
+    errors = [
+        row for row in draft.validation_errors
+        if row["code"] == "import_entry_calendar_title_mismatch"
+    ]
+    assert len(errors) == 3
+    for index, error in enumerate(errors):
+        entry = initial.patch.operations[index].entry
+        assert error["entry_id"] == entry.import_entry_id
+        assert error["change_id"] == f"{entry.import_entry_id}.event"
+        assert error["field_path"] == ["create_spec", "event_spec", "title"]
+        assert error["constraint"] == "event_title_equals_linked_item_title"
+        assert error["category"] == "domain_validation"
+        assert error["next_action"] == "repair_staged_entry"
+        assert error["details"]["comparison"] == {
+            "actual": wrong_title,
+            "expected": entry.title,
+            "expected_change_id": f"{entry.import_entry_id}.item",
+            "expected_field_path": ["create_spec", "title"],
+            "basis": "staged_item_not_independent_source_verification",
+        }
+    assert saved["omitted_diagnostic_count"] == (
+        saved["diagnostic_count"] - len(saved["diagnostic_sample"])
+    )
+    if long_title:
+        assert saved["diagnostic_sample"] == [] and saved["diagnostic_count"] > 0
+    _, exposed = _compact_result(saved, saved, audit=False, page_limit=25)
+    assert exposed["disposition"] == "saved_with_errors"
+    assert len(json.dumps(exposed, ensure_ascii=False).encode()) <= 16384
+
+    token = _admit(
+        session, utterance=utterance, trace_ref=trace_ref, call_id="title-commit",
+        ordinal=2, tool_name="docket_commit_changeset", argument_hash="2" * 64,
+    )
+    blocked = service.commit(
+        utterance_ref=utterance.ref_id, request_key=utterance.request_key,
+        assembly_operation_token=token, assembly_argument_hash="2" * 64,
+    )
+    assert blocked["disposition"] == "rejected_validation"
+    assert blocked["error"]["details"]["diagnostic_review"] == saved["diagnostic_review"]
+    _, exposed = _compact_result(blocked, blocked, audit=False, page_limit=25)
+    assert exposed["disposition"] == "rejected_validation"
+    assert session.scalar(select(func.count(CanonicalEvent.id))) == 0
+    assert session.scalar(select(func.count(Operation.id))) == 0
+
+    token = _admit(
+        session, utterance=utterance, trace_ref=trace_ref, call_id="old-title-diagnostics",
+        ordinal=3, tool_name="docket_review_changeset", argument_hash="3" * 64,
+    )
+    review = service.review(
+        ReviewChangesInput(
+            utterance_ref=utterance.ref_id, request_key=utterance.request_key,
+            **saved["diagnostic_review"]["arguments"],
+        ),
+        assembly_operation_token=token, assembly_argument_hash="3" * 64,
+    )
+    assert review["revision"] == review["current_revision"] == 1
+    assert review["diagnostic_count"] == saved["diagnostic_count"]
+    assert review["items"] and review["state"] == "draft"
+    assert draft.semantic_request_ref == original_request
+    assert draft.authority_scope_hash == original_authority
+    assert session.scalar(select(SemanticRequest)).authority_availability == "available"
+    assert session.scalar(select(func.count(SemanticRequest.id))) == 1
+
+
+@pytest.mark.integration
+def test_oversized_diagnostic_is_saved_and_losslessly_reviewable(session, monkeypatch) -> None:
+    from docket.mcp.instrumented import _compact_result
+
+    utterance = _utterance("1542799000000000902")
+    session.add(utterance)
+    session.flush()
+    service = ChangeSetAssemblyService(session)
+    diagnostic = {
+        "code": "fixture_compound_validation",
+        "category": "domain_validation",
+        "change_id": "tracked-request",
+        "field_path": ["create_spec", "title"],
+        "constraint": "fixture_text_comparison",
+        "next_action": "repair_staged_actions",
+        "details": {"comparison": {"actual": "🙂é" * 6000, "expected": "Fixture"}},
+    }
+    validator = service.changesets._validate
+    monkeypatch.setattr(service.changesets, "_validate", lambda *a, **kw: [diagnostic])
+    trace_ref = new_public_ref("trace")
+    token = _admit(
+        session, utterance=utterance, trace_ref=trace_ref, call_id="huge-error",
+        ordinal=1, tool_name="docket_stage_changes", argument_hash="1" * 64,
+    )
+    saved = service.stage(
+        _item_stage(utterance), assembly_operation_token=token, assembly_argument_hash="1" * 64,
+    )
+    assert saved["disposition"] == "saved_with_errors"
+    assert saved["diagnostic_count"] == saved["omitted_diagnostic_count"] == 1
+    assert saved["diagnostic_sample"] == []
+    draft = session.scalar(select(ChangeSet))
+    assert draft.validation_errors == [diagnostic]
+    assert session.scalar(select(ChangeSetRevision)).validation_errors_json == [diagnostic]
+    cursor = saved["diagnostic_review"]["arguments"]["cursor"]
+    fragments = []
+    # A new successful validation does not erase the failed receipt's snapshot.
+    monkeypatch.setattr(service.changesets, "_validate", validator)
+    token = _admit(
+        session, utterance=utterance, trace_ref=trace_ref, call_id="corrected-validation",
+        ordinal=2, tool_name="docket_stage_changes", argument_hash="2" * 64,
+    )
+    repaired = service.stage(
+        _item_stage(utterance), assembly_operation_token=token, assembly_argument_hash="2" * 64,
+    )
+    assert repaired["disposition"] == "ready_to_commit" and repaired["current_revision"] == 2
+    assert repaired["diagnostic_count"] == repaired["omitted_diagnostic_count"] == 0
+    assert "diagnostic_review" not in repaired
+    ordinal = 2
+    while cursor:
+        ordinal += 1
+        digest = sha256_json({"diagnostic_page": ordinal})
+        token = _admit(
+            session, utterance=utterance, trace_ref=trace_ref, call_id=f"diagnostic-{ordinal}",
+            ordinal=ordinal, tool_name="docket_review_changeset", argument_hash=digest,
+        )
+        page = service.review(
+            ReviewChangesInput(
+                utterance_ref=utterance.ref_id, request_key=utterance.request_key,
+                view="diagnostics", cursor=cursor,
+            ),
+            assembly_operation_token=token, assembly_argument_hash=digest,
+        )
+        assert page["logical_detail_count"] == 1 and page["revision"] == 1
+        assert page["current_revision"] == 2 and page["state"] == "draft"
+        assert page["items"] and page["count"] == len(page["items"])
+        _, exposed = _compact_result(page, page, audit=False, page_limit=25)
+        assert exposed["disposition"] == "reviewed"
+        assert exposed["count"] == page["count"]  # no transport-side row loss
+        assert len(json.dumps(exposed, ensure_ascii=False).encode()) <= 16384
+        fragments.extend(row["detail_fragment"] for row in page["items"])
+        cursor = page.get("cursor")
+    encoded = "".join(fragment["text"] for fragment in fragments).encode()
+    assert json.loads(encoded) == diagnostic
+    assert all(hashlib.sha256(encoded).hexdigest() == f["sha256"] for f in fragments)
+    assert len(fragments) == page["total_if_known"]
+    assert session.scalar(select(func.count(Item.id))) == 0
+    assert session.scalar(select(SemanticRequest)).authority_availability == "available"
+
+
+def test_compiler_error_preserves_qualified_category_and_constraint():
+    rows = ChangeSetAssemblyService._compilation_diagnostics(
+        DocketError(
+            code="semantic_projection_unresolved", message="Do not copy exception prose",
+            details={
+                "category": "implementation_validation",
+                "entry_id": "entry-1", "change_id": "event-1",
+                "field_path": ["create_spec", "item_change_ids"],
+                "constraint": "dependency_target_exists", "next_action": "repair_staged_entry",
+                "unsafe_exception_payload": "DO NOT COPY",
+            },
+        )
+    )
+    assert rows == [{
+        "code": "semantic_projection_unresolved", "category": "implementation_validation",
+        "entry_id": "entry-1", "change_id": "event-1",
+        "field_path": ["create_spec", "item_change_ids"],
+        "constraint": "dependency_target_exists", "next_action": "repair_staged_entry",
+    }]
+
+
+@pytest.mark.parametrize(
+    ("broken_field", "field_path", "constraint"),
+    [
+        ("item", ["create_spec", "item_change_ids"], "event_links_entry_item"),
+        (
+            "time", ["create_spec", "realizes_temporal_binding_change_ids"],
+            "event_realizes_entry_time",
+        ),
+        (
+            "recurrence", ["create_spec", "event_spec", "recurrence"],
+            "source_entry_is_one_occurrence",
+        ),
+        ("basis", ["basis_refs"], "calendar_has_entry_statement_basis"),
+        ("type", ["mutation_type"], "calendar_mutation_matches_representation"),
+    ],
+)
+def test_calendar_import_constraints_have_distinct_repair_paths(
+    broken_field, field_path, constraint
+) -> None:
+    from docket.models import InterpretedStatement
+    from docket.schemas.authority import (
+        CanonicalEventCreate,
+        ImportScope,
+        ItemCreate,
+        TemporalBindingCreate,
+    )
+    from docket.services.change_sets import ChangeSetService
+    from docket.services.changeset_compiler import compile_normalized_entry
+
+    utterance = _utterance("1542799000000000903")
+    utterance.ref_id = new_public_ref("utt")
+    source_ref, lane_ref, statement_ref = (
+        new_public_ref("src"), new_public_ref("lane"), new_public_ref("stm")
+    )
+    entry = _schedule_stage(
+        utterance, source_ref=source_ref, lane_ref=lane_ref,
+        start_index=0, count=1, include_scope=True,
+    ).patch.operations[0].entry
+    compiled = compile_normalized_entry(
+        entry, utterance_ref=utterance.ref_id, statement_ref=statement_ref,
+        calendar_lane="meetings",
+    )
+    raw = deepcopy(compiled.actions[2])
+    if broken_field == "item":
+        raw["create_spec"]["item_change_ids"] = []
+    elif broken_field == "time":
+        raw["create_spec"]["realizes_temporal_binding_change_ids"] = []
+    elif broken_field == "recurrence":
+        raw["create_spec"]["event_spec"]["recurrence"] = {
+            "frequency": "daily", "interval": 1, "count": 2,
+        }
+    elif broken_field == "basis":
+        raw["basis_refs"] = [utterance.ref_id]
+    coverage = compiled.coverage.model_copy(update={
+        "calendar_change_id": compiled.coverage.item_change_id
+    }) if broken_field == "type" else compiled.coverage
+    errors = ChangeSetService._import_entry_coverage_errors(
+        scope=ImportScope(source_refs=[source_ref], entry_coverage=[coverage]),
+        changes=[
+            ItemCreate.model_validate(compiled.actions[0]),
+            TemporalBindingCreate.model_validate(compiled.actions[1]),
+            CanonicalEventCreate.model_validate(raw),
+        ],
+        statements={statement_ref: InterpretedStatement(
+            ref_id=statement_ref, source_ref=source_ref,
+            interpretation_json={"import_entry_id": entry.import_entry_id},
+            source_fragment_locator=entry.evidence.source_fragment_locator,
+            source_fragment_hash=entry.evidence.source_fragment_hash,
+        )},
+        attachment_source_refs={source_ref},
+    )
+    diagnostic = next(row for row in errors if row.get("constraint") == constraint)
+    assert diagnostic["entry_id"] == entry.import_entry_id
+    assert diagnostic["change_id"] == coverage.calendar_change_id
+    assert diagnostic["field_path"] == field_path
+    assert diagnostic["category"] == "domain_validation"
+    assert diagnostic["next_action"] == "repair_staged_entry"
+    assert "comparison" not in diagnostic["details"]
 
 
 @pytest.mark.integration

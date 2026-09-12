@@ -45,6 +45,7 @@ from docket.schemas.authority import (
     ChangeSetPrepare,
     ChangeSetRevise,
     ConflictResolve,
+    ImportEntryCoverage,
     ItemCreate,
     ProviderIntentInput,
     ProviderOperationType,
@@ -1486,43 +1487,110 @@ class ChangeSetService:
             if entry.calendar_representation == "none":
                 continue
             calendar_change = changes_by_id.get(entry.calendar_change_id or "")
-            calendar_valid = False
-            if (
-                entry.calendar_representation == "temporal_projection"
-                and isinstance(calendar_change, TemporalCalendarProjectionCreate)
-            ):
-                calendar_valid = (
-                    calendar_change.create_spec.temporal_binding_change_id
-                    == entry.temporal_binding_change_id
-                    and calendar_change.create_spec.enabled
-                    and statement.ref_id in calendar_change.basis_refs
-                )
-            elif (
-                entry.calendar_representation == "canonical_event"
-                and isinstance(calendar_change, CanonicalEventCreate)
-                and isinstance(item_change, ItemCreate)
-            ):
-                event_spec = calendar_change.create_spec.event_spec
-                calendar_valid = (
-                    entry.item_change_id in calendar_change.create_spec.item_change_ids
-                    and entry.temporal_binding_change_id
-                    in calendar_change.create_spec.realizes_temporal_binding_change_ids
-                    and event_spec.recurrence is None
-                    and event_spec.title == item_change.create_spec.title
-                    and statement.ref_id in calendar_change.basis_refs
-                )
-            if not calendar_valid:
-                errors.append(
+            calendar_errors: list[dict[str, Any]] = []
+
+            def require_calendar(
+                valid: bool,
+                *,
+                field_path: list[str],
+                constraint: str,
+                code: str = "import_entry_calendar_representation_invalid",
+                comparison: dict[str, Any] | None = None,
+                entry: ImportEntryCoverage = entry,
+                calendar_errors: list[dict[str, Any]] = calendar_errors,
+            ) -> None:
+                if valid:
+                    return
+                calendar_errors.append(
                     {
-                        "code": "import_entry_calendar_representation_invalid",
+                        "code": code,
+                        "category": "domain_validation",
+                        "entry_id": entry.entry_id,
+                        "change_id": entry.calendar_change_id,
+                        "field_path": field_path,
+                        "constraint": constraint,
+                        "next_action": "repair_staged_entry",
                         "details": {
                             "entry_id": entry.entry_id,
                             "change_id": entry.calendar_change_id,
                             "representation": entry.calendar_representation,
+                            **({"comparison": comparison} if comparison else {}),
                         },
                     }
                 )
-            elif entry.calendar_change_id is not None:
+
+            if (
+                entry.calendar_representation == "temporal_projection"
+                and isinstance(calendar_change, TemporalCalendarProjectionCreate)
+            ):
+                require_calendar(
+                    calendar_change.create_spec.temporal_binding_change_id
+                    == entry.temporal_binding_change_id,
+                    field_path=["create_spec", "temporal_binding_change_id"],
+                    constraint="projection_targets_entry_time",
+                )
+                require_calendar(
+                    calendar_change.create_spec.enabled,
+                    field_path=["create_spec", "enabled"],
+                    constraint="entry_projection_enabled",
+                )
+            elif (
+                entry.calendar_representation == "canonical_event"
+                and isinstance(calendar_change, CanonicalEventCreate)
+            ):
+                event_spec = calendar_change.create_spec.event_spec
+                require_calendar(
+                    entry.item_change_id in calendar_change.create_spec.item_change_ids,
+                    field_path=["create_spec", "item_change_ids"],
+                    constraint="event_links_entry_item",
+                )
+                require_calendar(
+                    entry.temporal_binding_change_id
+                    in calendar_change.create_spec.realizes_temporal_binding_change_ids,
+                    field_path=["create_spec", "realizes_temporal_binding_change_ids"],
+                    constraint="event_realizes_entry_time",
+                )
+                require_calendar(
+                    event_spec.recurrence is None,
+                    field_path=["create_spec", "event_spec", "recurrence"],
+                    constraint="source_entry_is_one_occurrence",
+                )
+                if isinstance(item_change, ItemCreate):
+                    require_calendar(
+                        event_spec.title == item_change.create_spec.title,
+                        field_path=["create_spec", "event_spec", "title"],
+                        constraint="event_title_equals_linked_item_title",
+                        code="import_entry_calendar_title_mismatch",
+                        comparison={
+                            "actual": event_spec.title,
+                            "expected": item_change.create_spec.title,
+                            "expected_change_id": entry.item_change_id,
+                            "expected_field_path": ["create_spec", "title"],
+                            "basis": "staged_item_not_independent_source_verification",
+                        },
+                    )
+                else:
+                    require_calendar(
+                        False,
+                        field_path=["create_spec", "item_change_ids"],
+                        constraint="entry_item_create_exists",
+                    )
+            else:
+                require_calendar(
+                    False,
+                    field_path=["mutation_type"],
+                    constraint="calendar_mutation_matches_representation",
+                )
+            if isinstance(
+                calendar_change, (CanonicalEventCreate, TemporalCalendarProjectionCreate)
+            ):
+                require_calendar(
+                    statement.ref_id in calendar_change.basis_refs,
+                    field_path=["basis_refs"],
+                    constraint="calendar_has_entry_statement_basis",
+                )
+            errors.extend(calendar_errors)
+            if not calendar_errors and entry.calendar_change_id is not None:
                 covered_calendar_ids.add(entry.calendar_change_id)
 
         source_refs = set(scope.source_refs)

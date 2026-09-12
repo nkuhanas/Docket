@@ -391,3 +391,35 @@ or canonical object.
 This is comparison infrastructure, not proof of source-grounded authority. The
 exact immutable freeform request specification, evidence-grounded title repair
 and audited adoption remain open. No production change or historical replay ran.
+
+## Actionable import diagnostics and bounded error receipts
+
+Calendar import validation now distinguishes the linked Item, realized Time,
+single-occurrence, representation type and statement-basis constraints. Title
+mismatches identify the entry/action, exact field path and compared staged
+values instead of reporting only `import_entry_calendar_representation_invalid`.
+The expected title is explicitly the linked staged Item's title, not a claim of
+independent verification against attachment bytes. Compiler exceptions retain
+their qualified category and constraint without copying arbitrary exception
+payloads or prose into the diagnostic.
+
+Stage, no-op, review and blocked-commit receipts use a byte-bounded diagnostic
+sample, exact omitted count and `diagnostic_review` arguments bound to the failed
+immutable revision. A diagnostic too large for the sample remains retained and
+readable through lossless paginated detail. It cannot turn a saved draft into an
+output-budget failure or cause transport compaction to silently drop page rows.
+An old error receipt still reads its original diagnostics after a new revision
+passes validation. Review remains optional for a ready draft.
+
+Local verification passed 475 tests, Ruff and strict mypy. Isolated Compose
+smoke passed MCP/profile checks, existing PostgreSQL assembly and occurrence
+races, governance restore, and migration downgrade/re-upgrade. New fixtures
+cover three title-mismatched entries with zero canonical/provider effects,
+large Unicode title diagnostics, distinct dependency/recurrence/basis errors,
+and reconstruction of a 36 KB diagnostic after a later successful validation.
+Generated contract v26 and the reviewed skill describe the diagnostic cursor.
+
+This advances ONT-UX-REQ-0012; it does not establish source-grounded repair or
+complete diagnostic coverage of every mutation. In particular, replacing
+compiler products for an unchanged retained entry still needs the explicit
+audited migration/recompile path. No production deployment or provider call ran.

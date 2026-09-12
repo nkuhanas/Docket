@@ -125,6 +125,16 @@ provides details. A compiler failure must not lead to a new authorization reques
 or manual edits of production rows. Pre-cutover drafts without an independent
 input snapshot require explicit adoption, not an automatic backfill.
 
+Diagnostic samples are byte-bounded independently of draft validity. A nonzero
+`diagnostic_count` with an empty sample requires the receipt's `diagnostic_review`
+read, not another commit or a new request. That read's cursor is pinned to the
+failed immutable revision, even after later repair. `omitted_diagnostic_count`
+counts complete diagnostics absent from the sample; detail pages may contain
+lossless fragments for a single oversized diagnostic. Calendar import errors
+name the entry, action-relative field path and violated constraint. A title
+comparison explicitly names its linked staged Item; it is not independent
+source verification and does not authorize guessing a different title.
+
 Optional `docket_review_changeset(view="diff")` reports actual staged field
 changes against the preceding immutable draft revision. It distinguishes added,
 removed and modified entries/actions, including occurrence/series scope, and

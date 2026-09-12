@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-09-11-v25"
+CONTRACT_VERSION = "docket-tools-2026-09-11-v26"
 
 
 class ToolContractEntry(TypedDict):
@@ -341,6 +341,14 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
                     "utterance ref is model-supplied. The gateway binds the observed draft. "
                     "Use docket_request_clarification only for a genuine unresolved choice, "
                     "never for implementation failures. Never reconstruct a full mutation union."
+                ),
+                (
+                    "Stage/error receipts include bounded diagnostic_sample and exact "
+                    "omitted_diagnostic_count. A missing sample is not zero errors. "
+                    "Use diagnostic_review's exact arguments when more detail is needed; "
+                    "its cursor reads the failed immutable revision even after repair. "
+                    "Field paths are relative to the named action/entry. Title comparison "
+                    "identifies the linked staged Item, not independently verified source truth."
                 ),
                 (
                     "Calendar local datetimes are offset-free wall-clock values with a separate "
