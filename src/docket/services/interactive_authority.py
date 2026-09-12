@@ -114,7 +114,7 @@ class InteractiveAuthorityService:
             select(OperatorUtterance).where(
                 OperatorUtterance.ref_id == utterance_ref,
                 OperatorUtterance.request_key == authority_key,
-            )
+            ).with_for_update()
         )
         if (
             utterance is None

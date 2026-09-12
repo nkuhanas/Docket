@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-09-11-v33"
+CONTRACT_VERSION = "docket-tools-2026-09-11-v34"
 
 
 class ToolContractEntry(TypedDict):
@@ -110,7 +110,11 @@ _INTERACTIVE_READS: dict[str, tuple[str, str]] = {
 _INTERACTIVE_MUTATIONS: dict[str, tuple[str, str]] = {
     "docket_commit_changeset": (
         "ONT-TOOL-0011",
-        "Atomically commit the trusted execution's observed staged revision.",
+        "Atomically commit the trusted execution's observed staged revision. Resumption binds "
+        "the original request, including pre-staging work. Recover a committed receipt without "
+        "restaging. semantic_request_migration_required preserves unfinished work for explicit "
+        "adoption, not another request or renewed approval. Cancelled/superseded authority "
+        "stays unavailable.",
     ),
     "docket_resolve_conflict": (
         "ONT-TOOL-0009",
