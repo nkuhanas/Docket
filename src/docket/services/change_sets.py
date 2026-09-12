@@ -1565,6 +1565,19 @@ class ChangeSetService:
                 )
                 if isinstance(item_change, ItemCreate):
                     require_calendar(
+                        calendar_change.create_spec.title == item_change.create_spec.title,
+                        field_path=["create_spec", "title"],
+                        constraint="canonical_title_equals_linked_item_title",
+                        code="import_entry_calendar_title_mismatch",
+                        comparison={
+                            "actual": calendar_change.create_spec.title,
+                            "expected": item_change.create_spec.title,
+                            "expected_change_id": entry.item_change_id,
+                            "expected_field_path": ["create_spec", "title"],
+                            "basis": "staged_item_not_independent_source_verification",
+                        },
+                    )
+                    require_calendar(
                         event_spec.title == item_change.create_spec.title,
                         field_path=["create_spec", "event_spec", "title"],
                         constraint="event_title_equals_linked_item_title",

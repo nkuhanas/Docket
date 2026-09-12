@@ -222,7 +222,11 @@ class StageNormalizedEntryRemove(StrictModel):
 
 
 class StageDraftRecompile(StrictModel):
-    """Explicitly migrate unchanged inputs; cannot be combined with semantic edits."""
+    """Migrate unchanged inputs, including source-proved duplicated-title repair.
+
+    No input edits or scope expansion. Docket verifies retained evidence and
+    compares all remaining effects before saving a new revision.
+    """
 
     operation: Literal["draft_recompile"] = "draft_recompile"
 

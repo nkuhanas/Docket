@@ -11,7 +11,10 @@ import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
+from copy import deepcopy
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
+from io import BytesIO
 from typing import Any, Literal
 from unittest.mock import patch
 
@@ -20,6 +23,8 @@ from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from alembic.script import ScriptDirectory
+from pypdf import PdfWriter
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
@@ -29,7 +34,12 @@ from docket.database import configure_database
 from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
 from docket.domain.public_refs import new_public_ref
-from docket.internal_api.schemas import McpTraceCallUpdate, McpTraceUpdate, OperatorUtteranceCapture
+from docket.internal_api.schemas import (
+    AttachmentManifest,
+    McpTraceCallUpdate,
+    McpTraceUpdate,
+    OperatorUtteranceCapture,
+)
 from docket.mcp.instrumented import ProvenanceFastMCP
 from docket.models import (
     AssemblyOperation,
@@ -60,6 +70,7 @@ from docket.providers.google.calendar import CalendarProviderError
 from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.schemas.assembly import ReviewChangesInput, StageChangesInput
 from docket.schemas.calendar import StandaloneCalendarEventInput
+from docket.services.attachment_evidence import AttachmentEvidenceService, AttachmentTextService
 from docket.services.changeset_assembly import (
     ChangeSetAssemblyAdmissionService,
     ChangeSetAssemblyService,
@@ -1347,6 +1358,160 @@ def test_explicit_compiler_migration_requires_reobservation(factory: sessionmake
         raise AssertionError("Migration allowed mutation of the previous executable evidence")
 
 
+def test_source_title_repair_survives_restart_and_replays_once(
+    factory: sessionmaker[Session],
+) -> None:
+    import docket.services.changeset_assembly as assembly_module
+
+    settings = get_settings()
+    titles = ["2026 Fall Career Fair", "2026 Fall Career Fair", "2026 Business Career Fair"]
+    writer = PdfWriter()
+    font = writer._add_object(DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica"),
+    }))
+    for title in titles:
+        page = writer.add_blank_page(width=612, height=792)
+        page[NameObject("/Resources")] = DictionaryObject({
+            NameObject("/Font"): DictionaryObject({NameObject("/F1"): font}),
+        })
+        stream = DecodedStreamObject()
+        stream.set_data(f"BT /F1 12 Tf 72 720 Td ({title}) Tj ET".encode())
+        page[NameObject("/Contents")] = writer._add_object(stream)
+    pdf = BytesIO()
+    writer.write(pdf)
+    raw = pdf.getvalue()
+    message_id = "1542799000000000681"
+    request_key = f"discord:{settings.discord_guild_id}:{settings.chat_channel_id}:{message_id}:0"
+    with factory.begin() as session:
+        captured = ProvenanceService(session).capture_operator_utterance(OperatorUtteranceCapture(
+            request_id=uuid.uuid4(), guild_id=settings.discord_guild_id,
+            channel_id=settings.chat_channel_id, message_id=message_id,
+            actor_id=settings.operator_discord_user_id, request_key=request_key,
+            verbatim_text="Add the three source fairs to this fixture's Meetings lane.",
+            attachments=[AttachmentManifest(
+                transport_attachment_ref="1542799000000000682", filename="fairs.pdf",
+                media_type="application/pdf", byte_size=len(raw), received_at=datetime.now(UTC),
+                plaintext_base64=base64.b64encode(raw).decode(),
+            )],
+        ))
+        utterance_ref = captured["ref"]
+        source_ref = captured["attachments"][0]["ref"]
+        account = ProviderAccount(provider="google", external_account_id="title-repair-smoke",
+                                  capabilities=["google_calendar"], enabled=True)
+        session.add(account)
+        session.flush()
+        lane = CalendarLane(
+            account_id=account.id, lane="title-repair-meetings", display_name="Meetings",
+            color_hex="#3367D6", calendar_id="title-repair@example.com", status="active",
+            basis_refs=[utterance_ref], created_by_changeset_ref=new_public_ref("chg"),
+        )
+        session.add(lane)
+        session.flush()
+        lane_ref = lane.ref_id
+        fragments = AttachmentTextService(AttachmentEvidenceService(
+            session, encryption_key=settings.attachment_encryption_key(),
+            encryption_key_ref=settings.attachment_encryption_key_ref,
+            max_attachment_bytes=settings.attachment_max_bytes,
+            max_total_bytes=settings.attachment_total_max_bytes,
+        )).read_pdf_text(source_ref=source_ref, cursor=None, max_text_bytes=8192, page_limit=3)
+
+    trace_ref = new_public_ref("trace")
+
+    def admit(tool: str, ordinal: int) -> str:
+        return _admit_committed(
+            factory, utterance_ref=utterance_ref, trace_ref=trace_ref,
+            call_id=f"source-title-{ordinal}", ordinal=ordinal, tool_name=tool,
+            argument_hash="a" * 64,
+        )
+
+    operations = [{"operation": "normalized_entry_upsert", "entry": {
+        "entry_type": "scheduled_occurrence_entry", "import_entry_id": f"fair-{index}",
+        "title": title, "lane_ref": lane_ref, "location": "Fixture Recreation Center",
+        "timing": {"kind": "timed", "start_local": f"2026-09-{16 + index}T10:00:00",
+                   "end_local": f"2026-09-{16 + index}T{14 if index == 2 else 15}:00:00",
+                   "timezone": "America/Los_Angeles"},
+        "evidence": {"source_ref": source_ref,
+                     "source_fragment_locator": (
+                         fragments["items"][index]["source_fragment_locator"]
+                     ),
+                     "source_fragment_hash": fragments["items"][index]["source_fragment_hash"],
+                     "extractor_identifier": fragments["extractor_identifier"],
+                     "extractor_version": fragments["extractor_version"]},
+    }} for index, title in enumerate(titles)]
+    compiler = assembly_module.compile_normalized_entry
+
+    def faulty_compiler(*args: Any, **kwargs: Any) -> Any:
+        compiled = compiler(*args, **kwargs)
+        actions = deepcopy(list(compiled.actions))
+        for action in actions:
+            if action["mutation_type"] == "canonical_event_create":
+                action["create_spec"]["title"] = "Incorrect duplicated title"
+                action["create_spec"]["event_spec"]["title"] = "Incorrect duplicated title"
+        return replace(compiled, actions=tuple(actions))
+
+    token = admit("docket_stage_changes", 1)
+    with (
+        patch.object(assembly_module, "compile_normalized_entry", faulty_compiler),
+        factory.begin() as session,
+    ):
+        staged = ChangeSetAssemblyService(session).stage(StageChangesInput.model_validate({
+            "utterance_ref": utterance_ref, "request_key": request_key,
+            "assembly_scope": {
+                "resolved_intent": {"intent": "add the three source fairs"},
+                "source_refs": [source_ref], "target_refs": [lane_ref],
+                "normalized_entry_types": ["scheduled_occurrence_entry"],
+            }, "patch": {"operations": operations},
+        }), assembly_operation_token=token, assembly_argument_hash="a" * 64)
+        assert staged["disposition"] == "saved_with_errors"
+        draft_ref = staged["draft_ref"]
+
+    migration_token = admit("docket_stage_changes", 2)
+    migration = StageChangesInput(utterance_ref=utterance_ref, request_key=request_key,
+                                 patch={"operations": [{"operation": "draft_recompile"}]})
+    with factory.begin() as session:
+        repaired = ChangeSetAssemblyService(session).stage(
+            migration, assembly_operation_token=migration_token, assembly_argument_hash="a" * 64,
+        )
+        assert repaired["compiler_migration"]["source_title_repair_count"] == 3
+        assert repaired["disposition"] == "ready_to_commit"
+    _review(factory, utterance_ref=utterance_ref, request_key=request_key, trace_ref=trace_ref,
+            call_id="title-repair-review", ordinal=3, argument_hash="a" * 64)
+    token = admit("docket_commit_changeset", 4)
+    with factory.begin() as session:
+        committed = ChangeSetAssemblyService(session).commit(
+            utterance_ref=utterance_ref, request_key=request_key,
+            assembly_operation_token=token, assembly_argument_hash="a" * 64,
+        )
+        assert committed["disposition"] == "committed"
+    with factory.begin() as session:
+        replay = ChangeSetAssemblyService(session).stage(
+            migration, assembly_operation_token=migration_token, assembly_argument_hash="a" * 64,
+        )
+        assert replay == {**repaired, "replayed": True}
+        events = sorted(session.scalars(select(CanonicalEvent).where(
+            CanonicalEvent.lane_ref == lane_ref,
+        )), key=lambda event: event.event_spec["timing"]["start_local"])
+        assert [event.title for event in events] == titles
+        assert all(event.event_spec["title"] == event.title for event in events)
+        assert [event.event_spec["timing"]["start_local"] for event in events] == [
+            f"2026-09-{day}T10:00:00" for day in (16, 17, 18)
+        ]
+        assert session.scalar(select(func.count(Operation.id)).where(
+            Operation.originating_changeset_ref == draft_ref,
+        )) == 3
+        assert session.scalar(select(func.count(AuditEvent.id)).where(
+            AuditEvent.primary_ref == draft_ref, AuditEvent.event_type == "changeset.recompiled",
+        )) == 1
+        versions = list(session.scalars(select(ChangeSetRevision).join(ChangeSet).where(
+            ChangeSet.ref_id == draft_ref,
+        ).order_by(ChangeSetRevision.revision)))
+        assert len(versions) == 2
+        assert versions[0].event_changes[0]["create_spec"]["title"] == "Incorrect duplicated title"
+        assert versions[1].compiler_manifest_json["source_title_repair_proofs"]
+
+
 def test_trace_history_survives_call_one_hundred_and_blocks_lossy_downgrade(
     factory: sessionmaker[Session],
 ) -> None:
@@ -1625,6 +1790,7 @@ def main() -> None:
         test_diff_pages_keep_both_revisions_across_connections,
         test_invocation_binding_transport_retries_serialize,
         test_explicit_compiler_migration_requires_reobservation,
+        test_source_title_repair_survives_restart_and_replays_once,
         test_trace_history_survives_call_one_hundred_and_blocks_lossy_downgrade,
         test_lost_admission_response_recovers_from_exact_local_trace,
         test_gateway_recovery_and_late_completion_serialize,

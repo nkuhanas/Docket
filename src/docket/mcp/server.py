@@ -744,6 +744,8 @@ def docket_stage_changes(
     noncanonical workflow state. The gateway supplies the hidden operation
     binding; never invent or request it. Use a sole draft_recompile patch only
     for explicit migration of unchanged pinned inputs; no new scope or versions.
+    It can repair duplicated Event titles from the recorded entry and retained
+    literal PDF evidence, but cannot change any other selected effect.
     An observation_required receipt needs a fresh summary/diff before commit.
     """
     try:

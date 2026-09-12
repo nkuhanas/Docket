@@ -767,3 +767,49 @@ isolated Compose/PostgreSQL smoke. Fixtures cover retained invalid entries,
 same-operation replay, exact-version reads, digest mismatch, rejected promotion
 to a verified state, ORM/database immutability, downgrade refusal and the empty
 database round trip. Source-semantic correctness is not claimed by these tests.
+
+## Source-grounded duplicated-title repair
+
+The v33 contract adds one deterministic repair rule to explicit `draft_recompile`.
+The immutable request proposal and original normalized statement must agree on
+the selected entry and title. Original utterance hashes, retained attachment
+digest, extractor version and fragment coordinates/hash are checked, and the
+selected title must occur literally in that PDF fragment at a word boundary.
+Only the duplicated canonical/provider Event titles may be coalesced to the
+already selected Item title. Every other effect remains fixed, including
+cardinality, dependencies, dates, timezone, location, lane and recurrence.
+
+Two indistinguishable Item creates can legitimately represent the same named fair
+on different dates. Their already pinned graph is compared using exact existing
+change IDs; rewiring or renaming one is non-equivalent in this fallback. Ordinary
+semantic authority hashing still rejects ambiguous shared-target inference and
+does not include those execution IDs. Its existing representation is unchanged.
+The separate compiler comparator normalizes creation defaults but preserves
+explicit null patches; deep typed copies keep that field-presence meaning too.
+
+Both Event title fields are validated against the linked Item, so an outer
+canonical-title mismatch cannot commit merely because its provider title agrees.
+The rule records source coordinates/digests and a request-entry digest, not source
+text. Compact receipts expose the count and proof hash; immutable revisions keep
+the full proof bindings and original failed effects. Replaying the operation
+after commit returns its recorded result without another repair or provider intent.
+Explicit migration still requires a fresh observation; a bounded summary suffices.
+
+The integration fixture verifies all three selected fairs, exact times/location/
+Meetings lane, failures in either or both title fields, and rejection of an extra
+event, changed title/date/destination or series expansion. A substring such as
+`Fairness` does not prove the selected title `Fair`. PostgreSQL coverage stages a
+faulty batch, repairs/observes/commits through separate connections, and replays
+after commit with exactly three Operations and one repair audit.
+
+This is not a general source-interpretation oracle: proposal records remain
+`pending_evidence_validation`, arbitrary image interpretations are not certified,
+and the exact semantic-authority binding/adoption gates remain open. The 23-tool
+registry and signed artifact are unchanged. No new migration, automatic historical
+execution or production deployment is part of this slice.
+
+Validation passed all 577 tests, Ruff and strict mypy (139 source files), plus
+isolated Compose/PostgreSQL smoke including source repair across fresh sessions,
+existing concurrency/reconciliation cases, governance restore and migration
+downgrade/re-upgrade. These are local implementation results, not live Calendar
+or screenshot-interpretation verification.

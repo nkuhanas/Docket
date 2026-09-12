@@ -12,7 +12,7 @@ from docket.services.semantic_options import (
     _replace_authority_slot,
     complete_selection_provenance,
 )
-from docket.services.semantic_scope import semantic_authority_scope
+from docket.services.semantic_scope import pinned_semantic_projection, semantic_authority_scope
 
 
 def _entity(utterance, change_id="organization", name="Cal Poly"):
@@ -105,6 +105,47 @@ def test_missing_dependency_does_not_claim_semantic_equivalence():
     assert error.value.details["constraint"] == "dependency_target_exists"
 
 
+def test_pinned_comparison_preserves_identity_of_indistinguishable_creates():
+    utterance = new_public_ref("utt")
+    first = _entity(utterance, "first")
+    second = _entity(utterance, "second")
+    child = _entity(utterance, "child", "Department")
+    child["create_spec"]["parent_entity_change_id"] = "first"
+    content = {"basis_refs": [utterance], "registry_changes": [first, second, child]}
+    # Authority hashing still refuses ambiguous targets. Only comparison of an
+    # already pinned graph can use exact existing IDs as identity witnesses.
+    with pytest.raises(DocketError):
+        _scope(content)
+    original = pinned_semantic_projection(content, [], fixed_change_ids=True)
+    reordered = deepcopy(content)
+    reordered["registry_changes"].reverse()
+    assert pinned_semantic_projection(reordered, [], fixed_change_ids=True) == original
+    child["create_spec"]["parent_entity_change_id"] = "second"
+    assert pinned_semantic_projection(content, [], fixed_change_ids=True) != original
+    child["create_spec"]["parent_entity_change_id"] = "first"
+    second["change_id"] = "renamed-second"
+    assert pinned_semantic_projection(content, [], fixed_change_ids=True) != original
+
+
+def test_pinned_comparison_does_not_erase_opaque_fields():
+    utterance = new_public_ref("utt")
+    content = {"basis_refs": [utterance], "preference_changes": [_policy(utterance)]}
+    original = pinned_semantic_projection(content, [], fixed_change_ids=True)
+    content["preference_changes"][0]["create_spec"]["policy_json"] = {"change_id": "semantic"}
+    assert pinned_semantic_projection(content, [], fixed_change_ids=True) != original
+
+
+def test_comparison_normalizes_create_defaults_without_redefining_authority_representation():
+    utterance = new_public_ref("utt")
+    content = {"basis_refs": [utterance], "registry_changes": [_entity(utterance)]}
+    authority, compared = _scope(content), pinned_semantic_projection(content, [])
+    content["registry_changes"][0]["create_spec"]["parent_entity_ref"] = None
+    # Authority hashing retains the original typed representation. Only the
+    # explicitly separate compiler comparison may normalize creation defaults.
+    assert _scope(content) != authority
+    assert pinned_semantic_projection(content, []) == compared
+
+
 def test_cyclic_draft_can_be_described_without_claiming_it_is_valid():
     utterance = new_public_ref("utt")
     action = _entity(utterance)
@@ -171,6 +212,27 @@ def test_null_patch_and_missing_patch_field_have_different_semantic_effects():
     original = _scope(content)
     content["tracked_context_changes"][0]["payload"]["description"] = None
     assert _scope(content) != original
+
+
+@pytest.mark.parametrize("fixed_change_ids", [False, True])
+def test_recompile_comparison_retains_explicit_clear_patch_semantics(fixed_change_ids):
+    from docket.schemas.authority import ChangeSetContent
+    from docket.services.changeset_recompile import _semantic_projection
+
+    utterance = new_public_ref("utt")
+    content = {"basis_refs": [utterance], "tracked_context_changes": [{
+        "mutation_type": "item_modify", "change_id": "edit", "action": "update",
+        "object_type": "item", "object_ref": new_public_ref("item"),
+        "payload": {"title": "Retitled", "description": None},
+        "affected_fields": ["title", "description"], "basis_refs": [utterance],
+    }]}
+    original = _semantic_projection(
+        ChangeSetContent.model_validate(content), [], fixed_change_ids=fixed_change_ids,
+    )
+    del content["tracked_context_changes"][0]["payload"]["description"]
+    assert _semantic_projection(
+        ChangeSetContent.model_validate(content), [], fixed_change_ids=fixed_change_ids,
+    ) != original
 
 
 def test_occurrence_date_timezone_and_series_scope_are_semantic():

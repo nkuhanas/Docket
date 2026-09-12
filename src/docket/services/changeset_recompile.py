@@ -1,8 +1,8 @@
 """Explicit current-schema recompilation, never an old-protocol decoder.
 
-This path proves equality with an already pinned semantic projection. It does
-not prove that an earlier interpretation matched source evidence. Corrections
-requiring that separate proof cannot use this path to widen their scope.
+This path proves equality with an already pinned semantic projection, or one
+specific source-verified title coalescence with every other effect unchanged.
+It is not a general verifier of source interpretation or permission to widen scope.
 """
 
 from __future__ import annotations
@@ -34,7 +34,9 @@ from docket.services.changeset_compiler import (
 )
 from docket.services.changeset_diff import bounded_sample, compiled_diff
 from docket.services.changeset_pins import effect_hash
-from docket.services.semantic_scope import semantic_authority_scope
+from docket.services.request_specifications import read_request_proposal
+from docket.services.semantic_scope import pinned_semantic_projection
+from docket.services.source_title_repair import coalesce_source_titles
 
 if TYPE_CHECKING:
     from docket.services.changeset_assembly import ChangeSetAssemblyService
@@ -76,9 +78,10 @@ def _entry(record: dict[str, Any]) -> NormalizedEntryInput:
     return parsed
 
 
-def _semantic_projection(content: ChangeSetContent, exclusions: list[str]) -> dict[str, Any]:
-    payload = content.model_dump(mode="json", exclude_none=True)
-    projection = semantic_authority_scope(payload, exclusions)
+def _semantic_projection(
+    content: ChangeSetContent, exclusions: list[str], *, fixed_change_ids: bool = False,
+) -> dict[str, Any]:
+    projection = pinned_semantic_projection(content, exclusions, fixed_change_ids=fixed_change_ids)
     # Provider account, target, kind and opaque parameters are NOT bookkeeping.
     # Only the compiler's operation identity/provenance slots may differ here.
     projection["provider_effects"] = sorted([
@@ -153,8 +156,35 @@ def recompile_draft(
     content = service.changesets._compile_required_provider_intents(
         content, changeset_idempotency_key=changeset.idempotency_key,
     )
-    old_scope = _semantic_projection(prior, scope.explicit_exclusions)
-    new_scope = _semantic_projection(content, scope.explicit_exclusions)
+    fixed_change_ids = False
+    try:
+        old_scope = _semantic_projection(prior, scope.explicit_exclusions)
+        new_scope = _semantic_projection(content, scope.explicit_exclusions)
+    except DocketError as exc:
+        if exc.code != "semantic_projection_unresolved" or (
+            (exc.details or {}).get("constraint") != "unambiguous_planned_target_identity"
+        ):
+            raise
+        fixed_change_ids = True
+        old_scope = _semantic_projection(prior, scope.explicit_exclusions, fixed_change_ids=True)
+        new_scope = _semantic_projection(content, scope.explicit_exclusions, fixed_change_ids=True)
+    semantic_request = service.session.scalar(select(SemanticRequest).where(
+        SemanticRequest.ref_id == attempt.semantic_request_ref
+    ))
+    assert semantic_request is not None  # locked/bound by the calling service
+    repair_proofs: list[dict[str, Any]] = []
+    if old_scope != new_scope:
+        permitted, repair_proofs = coalesce_source_titles(
+            service.session, prior=prior,
+            proposal=read_request_proposal(
+                service.session, semantic_request_ref=semantic_request.ref_id,
+                version=before.revision,
+            ),
+        )
+        if repair_proofs:
+            old_scope = _semantic_projection(
+                permitted, scope.explicit_exclusions, fixed_change_ids=fixed_change_ids,
+            )
     if old_scope != new_scope:
         differences = compiled_diff(prior, content)
         raise DocketError(
@@ -180,19 +210,25 @@ def recompile_draft(
         "authority_scope_hash": changeset.authority_scope_hash,
         "semantic_projection_hash": sha256_json(new_scope),
         "semantic_scope_changed": False,
+        "dependency_comparison": (
+            "exact_existing_change_ids" if fixed_change_ids else "semantic_slots"
+        ),
         "old_compiled_effect_hash": effect_hash(prior.model_dump(mode="json", exclude_none=True)),
         "new_compiled_effect_hash": effect_hash(content.model_dump(mode="json", exclude_none=True)),
     }
+    if repair_proofs:
+        migration.update({
+            "comparison_rule": "source_title_coalescence_v1_and_remaining_effect_equality_v2",
+            "source_title_repair_count": len(repair_proofs),
+            "source_title_proof_hash": sha256_json(repair_proofs),
+        })
     changeset.compiler_manifest_json = {
         "identifier": COMPILER_IDENTIFIER, "version": COMPILER_VERSION,
         "entry_count": len(entries), "migration": migration,
+        **({"source_title_repair_proofs": repair_proofs} if repair_proofs else {}),
     }
     changeset.validation_errors = errors
     changeset.state = "draft" if errors else "validated"
-    semantic_request = service.session.scalar(select(SemanticRequest).where(
-        SemanticRequest.ref_id == attempt.semantic_request_ref
-    ))
-    assert semantic_request is not None  # locked/bound by the calling service
     if not errors:
         semantic_request.commit_state = "pending"
         intent_session.commit_state = "pending"
