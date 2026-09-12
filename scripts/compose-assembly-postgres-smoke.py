@@ -63,6 +63,8 @@ from docket.models import (
     OutboxEvent,
     ProviderAccount,
     ProviderEventBinding,
+    SemanticRequest,
+    SemanticRequestAttempt,
     SemanticRequestSpecification,
     Source,
     Task,
@@ -71,6 +73,7 @@ from docket.models import (
 from docket.providers.google.calendar import CalendarProviderError
 from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.schemas.assembly import ReviewChangesInput, StageChangesInput
+from docket.schemas.authority import ChangeSetContent
 from docket.schemas.calendar import StandaloneCalendarEventInput
 from docket.services.attachment_evidence import AttachmentEvidenceService, AttachmentTextService
 from docket.services.changeset_assembly import (
@@ -84,6 +87,7 @@ from docket.services.event_occurrences import (
 )
 from docket.services.gateway_lifetimes import GatewayLifetimeService
 from docket.services.history import HistoryService
+from docket.services.interactive_authority import InteractiveAuthorityService
 from docket.services.invocation_binding import bind_invocation
 from docket.services.mcp_traces import McpTraceService
 from docket.services.operations import OperationRunner
@@ -800,6 +804,115 @@ def test_one_changeset_lineage_per_semantic_request(
             session.rollback()
         else:
             raise AssertionError("PostgreSQL accepted two ChangeSets for one semantic request")
+
+
+def test_pre_admitted_initial_stages_share_one_request(factory: sessionmaker[Session]) -> None:
+    utterance_ref, _request_key = _create_utterance(
+        factory, "1542799000000000686", "Track the initial-stage concurrency fixture.",
+    )
+    inputs = []
+    for index in range(2):
+        trace_ref = new_public_ref("trace")
+        digest = str(index + 1) * 64
+        token = _admit_committed(
+            factory, utterance_ref=utterance_ref, trace_ref=trace_ref,
+            call_id=f"initial-race-{index}", ordinal=1, tool_name="docket_stage_changes",
+            argument_hash=digest,
+        )
+        with factory.begin() as session:
+            request = _item_stage(
+                _load_utterance(session, utterance_ref), change_id="same-item",
+                title=f"Interpretation {index}", include_scope=True,
+            )
+        inputs.append((token, digest, request))
+    barrier = threading.Barrier(2)
+
+    def execute(values: tuple[str, str, StageChangesInput]) -> dict[str, Any]:
+        token, digest, request = values
+        barrier.wait(timeout=10)
+        return _stage(
+            factory, utterance_ref=utterance_ref, token=token,
+            argument_hash=digest, request=request,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(execute, values) for values in inputs]
+        results = [future.result(timeout=30) for future in futures]
+    assert sorted(result["disposition"] for result in results) == [
+        "draft_revision_conflict", "ready_to_commit",
+    ]
+    with factory.begin() as session:
+        requests = [row for row in session.scalars(select(SemanticRequest))
+                    if utterance_ref in row.origin_utterance_refs]
+        assert len(requests) == 1
+        draft = session.scalar(select(ChangeSet).where(
+            ChangeSet.semantic_request_ref == requests[0].ref_id,
+        ))
+        assert draft is not None and draft.current_revision == 1
+        assert session.scalar(select(func.count(ChangeSetRevision.id)).where(
+            ChangeSetRevision.change_set_id == draft.id,
+        )) == 1
+        attempts = list(session.scalars(select(SemanticRequestAttempt).where(
+            SemanticRequestAttempt.semantic_request_id == requests[0].id,
+        )))
+        assert sorted(attempt.attempt_number for attempt in attempts) == [1, 2]
+
+
+def test_direct_receipt_resume_admissions_serialize(factory: sessionmaker[Session]) -> None:
+    with factory.begin() as session:
+        utterance = _utterance("1542799000000000687", "Track the receipt recovery fixture.")
+        session.add(utterance)
+        session.flush()
+        staged = _item_stage(utterance, change_id="receipt-item", title="Receipt fixture",
+                             include_scope=True)
+        outcome = InteractiveAuthorityService(session).process_turn(
+            utterance_ref=utterance.ref_id, request_key=utterance.request_key,
+            actor_id=str(get_settings().operator_discord_user_id), intent_session_ref=None,
+            expected_session_version=None, statements=[], relations=[],
+            resolved_intent_json={"kind": "receipt_fixture"}, blocking_clarifications=[],
+            content=ChangeSetContent(
+                basis_refs=[utterance.ref_id],
+                tracked_context_changes=[staged.patch.operations[0].action],
+            ), changeset_ref=None, expected_changeset_version=None,
+        )
+        assert outcome["state"] == "committed"
+        request_ref = outcome["semantic_request_ref"]
+        changeset = session.scalar(select(ChangeSet).where(
+            ChangeSet.semantic_request_ref == request_ref,
+        ))
+        assert changeset is not None
+        receipt = deepcopy(changeset.commit_receipt_json)
+        utterance_ref, request_key = utterance.ref_id, utterance.request_key
+        original_item_count = session.scalar(select(func.count(Item.id)))
+    barrier = threading.Barrier(2)
+
+    def resume(index: int) -> dict[str, Any]:
+        barrier.wait(timeout=10)
+        digest = str(index + 3) * 64
+        token = _admit_committed(
+            factory, utterance_ref=utterance_ref, trace_ref=new_public_ref("trace"),
+            call_id=f"direct-resume-{index}", ordinal=1, tool_name="docket_commit_changeset",
+            argument_hash=digest,
+        )
+        with factory.begin() as session:
+            return ChangeSetAssemblyService(session).commit(
+                utterance_ref=utterance_ref, request_key=request_key,
+                assembly_operation_token=token, assembly_argument_hash=digest,
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(resume, index) for index in range(2)]
+        results = [future.result(timeout=30) for future in futures]
+    assert results == [receipt, receipt]
+    with factory.begin() as session:
+        assert session.scalar(select(func.count(Item.id))) == original_item_count
+        assert session.scalar(select(func.count(ChangeSet.id)).where(
+            ChangeSet.semantic_request_ref == request_ref,
+        )) == 1
+        attempts = list(session.scalars(select(SemanticRequestAttempt).where(
+            SemanticRequestAttempt.semantic_request_ref == request_ref,
+        )))
+        assert sorted(attempt.attempt_number for attempt in attempts) == [1, 2, 3]
 
 
 def _schedule_stage(
@@ -1873,6 +1986,8 @@ def main() -> None:
         test_same_attempt_concurrent_calls_bind_old_revision,
         test_cross_attempt_stale_edit_and_commit_are_rejected,
         test_one_changeset_lineage_per_semantic_request,
+        test_pre_admitted_initial_stages_share_one_request,
+        test_direct_receipt_resume_admissions_serialize,
         test_thirty_entry_schedule_commits_once,
         test_native_and_deferred_ingress_claim_once,
         test_relative_date_capture_serializes,

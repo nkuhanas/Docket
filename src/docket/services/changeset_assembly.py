@@ -166,6 +166,84 @@ def _request_authority_receipt(request: SemanticRequest) -> dict[str, Any]:
     }
 
 
+def _bound_request(session: Session, utterance_ref: str) -> SemanticRequest | None:
+    """An old protocol/state cannot make an existing request disappear.
+
+    The caller holds the originating utterance lock. Do not infer a request
+    from the latest conversation, title similarity, or another utterance.
+    """
+    candidates = [
+        request for request in session.scalars(select(SemanticRequest))
+        if utterance_ref in request.origin_utterance_refs
+    ]
+    if len(candidates) > 1:
+        raise DocketError(
+            code="assembly_resume_ambiguous",
+            message="More than one semantic request is bound to this utterance.",
+            details={
+                "category": "semantic_conflict", "authority_preserved": True,
+                "next_action": "resolve_request_binding", "request_count": len(candidates),
+            },
+        )
+    return candidates[0] if candidates else None
+
+
+def _bind_execution_request(
+    session: Session, execution: AssemblyExecution, request: SemanticRequest,
+) -> None:
+    # Attempt numbers are shared across executions, so an execution-row lock
+    # alone is insufficient. All resumption paths use this request lock.
+    request = session.execute(
+        select(SemanticRequest).where(SemanticRequest.id == request.id)
+        .with_for_update().execution_options(populate_existing=True)
+    ).scalar_one()
+    attempt = session.scalar(select(SemanticRequestAttempt).where(
+        SemanticRequestAttempt.semantic_request_id == request.id,
+        SemanticRequestAttempt.execution_trace_ref == execution.trace_ref,
+    ))
+    if attempt is None:
+        next_attempt = int(session.scalar(
+            select(func.max(SemanticRequestAttempt.attempt_number)).where(
+                SemanticRequestAttempt.semantic_request_id == request.id,
+            )
+        ) or 0) + 1
+        attempt = SemanticRequestAttempt(
+            semantic_request_id=request.id, semantic_request_ref=request.ref_id,
+            attempt_number=next_attempt, authority_scope_hash=request.authority_scope_hash,
+            precondition_hash=request.current_precondition_hash,
+            case_revision_ref=request.current_case_revision_ref,
+            execution_trace_ref=execution.trace_ref, state="pending",
+        )
+        session.add(attempt)
+        session.flush()
+    execution.semantic_request_ref = request.ref_id
+    execution.semantic_request_attempt_ref = attempt.ref_id
+
+
+def _require_assembly_request(request: SemanticRequest) -> None:
+    if request.authority_availability != "available":
+        raise DocketError(
+            code="semantic_request_authority_unavailable",
+            message="The original request no longer has available authority.",
+            details={
+                "semantic_request_ref": request.ref_id,
+                "authority_availability": request.authority_availability,
+                "next_action": "inspect_request_disposition",
+            },
+        )
+    if (request.selected_option_binding or {}).get("kind") != "freeform_assembly":
+        raise DocketError(
+            code="semantic_request_migration_required",
+            message="Resume the preserved request through explicit adoption before editing it.",
+            details={
+                "category": "implementation_validation", "authority_preserved": True,
+                "semantic_request_ref": request.ref_id,
+                "constraint": "preserved_request_requires_assembly_adoption",
+                "next_action": "adopt_preserved_request",
+            },
+        )
+
+
 class ChangeSetAssemblyAdmissionService:
     """Persist infrastructure-owned ordering and retry identity before MCP delivery."""
 
@@ -200,6 +278,7 @@ class ChangeSetAssemblyAdmissionService:
             )
         utterance = self.session.scalar(
             select(OperatorUtterance).where(OperatorUtterance.ref_id == utterance_ref)
+            .with_for_update()
         )
         expected_request_key = f"discord:{guild_id}:{channel_id}:{source_message_id}:0"
         if (
@@ -247,53 +326,9 @@ class ChangeSetAssemblyAdmissionService:
             )
             self.session.add(execution)
             self.session.flush()
-            resumable = [
-                request
-                for request in self.session.scalars(select(SemanticRequest))
-                if utterance.ref_id in request.origin_utterance_refs
-                and (request.selected_option_binding or {}).get("kind") == "freeform_assembly"
-                and request.authority_availability in {"available", "consumed_committed"}
-            ]
-            if len(resumable) > 1:
-                raise DocketError(
-                    code="assembly_resume_ambiguous",
-                    message="More than one assembly request is bound to this utterance.",
-                )
-            if resumable:
-                semantic_request = resumable[0]
-                attempt = self.session.scalar(
-                    select(SemanticRequestAttempt).where(
-                        SemanticRequestAttempt.semantic_request_id == semantic_request.id,
-                        SemanticRequestAttempt.execution_trace_ref == trace_ref,
-                    )
-                )
-                if attempt is None:
-                    next_attempt = (
-                        int(
-                            self.session.scalar(
-                                select(func.max(SemanticRequestAttempt.attempt_number)).where(
-                                    SemanticRequestAttempt.semantic_request_id
-                                    == semantic_request.id
-                                )
-                            )
-                            or 0
-                        )
-                        + 1
-                    )
-                    attempt = SemanticRequestAttempt(
-                        semantic_request_id=semantic_request.id,
-                        semantic_request_ref=semantic_request.ref_id,
-                        attempt_number=next_attempt,
-                        authority_scope_hash=semantic_request.authority_scope_hash,
-                        precondition_hash=semantic_request.current_precondition_hash,
-                        case_revision_ref=semantic_request.current_case_revision_ref,
-                        execution_trace_ref=trace_ref,
-                        state="pending",
-                    )
-                    self.session.add(attempt)
-                    self.session.flush()
-                execution.semantic_request_ref = semantic_request.ref_id
-                execution.semantic_request_attempt_ref = attempt.ref_id
+            semantic_request = _bound_request(self.session, utterance.ref_id)
+            if semantic_request is not None:
+                _bind_execution_request(self.session, execution, semantic_request)
         attempt = (
             self.session.scalar(
                 select(SemanticRequestAttempt).where(
@@ -445,6 +480,12 @@ class ChangeSetAssemblyService:
         operation_kind: Literal["stage", "review", "commit"],
         utterance_ref: str,
     ) -> tuple[AssemblyOperation, AssemblyExecution]:
+        # Admission and execution take locks in the same order. Recheck the
+        # request after this lock: another admitted execution may have created
+        # it since this operation was admitted.
+        self.session.scalar(select(OperatorUtterance).where(
+            OperatorUtterance.ref_id == utterance_ref,
+        ).with_for_update())
         operation = self.session.scalar(
             select(AssemblyOperation)
             .where(AssemblyOperation.operation_key == token)
@@ -474,6 +515,14 @@ class ChangeSetAssemblyService:
                 code="assembly_execution_missing",
                 message="Assembly operation lost its durable execution binding.",
             )
+        if execution.semantic_request_ref is None and operation.state not in {
+            "completed", "rejected",
+        }:
+            preserved = _bound_request(self.session, utterance_ref)
+            if preserved is not None:
+                _bind_execution_request(self.session, execution, preserved)
+                operation.semantic_request_ref = execution.semantic_request_ref
+                operation.semantic_request_attempt_ref = execution.semantic_request_attempt_ref
         self._reconcile_terminal_predecessors(
             execution=execution,
             before_sequence=operation.attempt_sequence,
@@ -756,6 +805,13 @@ class ChangeSetAssemblyService:
                 code="intent_session_not_found",
                 message="The assembly request lost its IntentSession.",
             )
+        # A committed receipt is recoverable independently of obsolete or
+        # stale model payloads. Neither those payloads nor this recovery can
+        # modify the original request or create another ChangeSet.
+        if semantic_request.authority_availability != "available" or (
+            (semantic_request.selected_option_binding or {}).get("kind") != "freeform_assembly"
+        ):
+            return bound_session, semantic_request, attempt
         persisted_scope = (semantic_request.selected_option_binding or {}).get("scope")
         if (
             scope is not None
@@ -765,8 +821,6 @@ class ChangeSetAssemblyService:
                 code="assembly_scope_mismatch",
                 message="A later stage operation cannot change the authorized semantic scope.",
             )
-        if semantic_request.authority_availability != "available":
-            return bound_session, semantic_request, attempt
         operation.semantic_request_ref = semantic_request.ref_id
         operation.semantic_request_attempt_ref = attempt.ref_id
         return bound_session, semantic_request, attempt
@@ -1226,6 +1280,7 @@ class ChangeSetAssemblyService:
                 operation,
                 {**changeset.commit_receipt_json, "disposition": "already_committed"},
             )
+        _require_assembly_request(semantic_request)
         created = changeset is None
         if changeset is None:
             changeset = ChangeSet(
@@ -1996,10 +2051,11 @@ class ChangeSetAssemblyService:
             .where(ChangeSet.semantic_request_ref == semantic_request.ref_id)
             .with_for_update()
         )
+        if changeset is not None and changeset.state == "committed":
+            return self._terminal(operation, dict(changeset.commit_receipt_json))
+        _require_assembly_request(semantic_request)
         if changeset is None:
             raise DocketError(code="assembly_not_started", message="No staged request exists.")
-        if changeset.state == "committed":
-            return self._terminal(operation, dict(changeset.commit_receipt_json))
         if (
             attempt.observed_changeset_ref != changeset.ref_id
             or attempt.observed_draft_revision != changeset.current_revision

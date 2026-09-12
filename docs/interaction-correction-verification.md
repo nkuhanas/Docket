@@ -842,3 +842,40 @@ Validation passed all 586 tests, Ruff, strict mypy (139 source files) and the
 isolated Compose/PostgreSQL smoke, including the new clear/reopen fixture,
 existing source repair, concurrency and migration round-trip checks. No live
 provider verification or production deployment is claimed.
+
+## Exact request resumption across protocol cutover
+
+Admission now finds the request bound to the exact originating utterance without
+filtering out pre-staging or unavailable authority. Execution rechecks that
+binding under the same utterance lock: a request created after admission cannot
+be bypassed by a second implicit draft. Request-level locking also serializes
+attempt-number allocation. Competing first stages bind one request; the stale
+execution must reconcile rather than treating the other's revision as observed.
+
+A committed direct request recovers its original receipt through stage or commit
+without compilation, canonical mutation, new revisions or another request.
+Cancelled, superseded and state-invalidated requests cannot be reopened by a new
+trace. Multiple requests bound to the original message produce an exact binding
+conflict, not a latest-request guess. Replaying a terminal failed operation does
+not attach that historical failure to a request created afterward.
+
+Integration coverage uses actual service-produced direct commits and failed
+drafts, restart/reload, early admission, terminal authority and ambiguous bindings.
+PostgreSQL fixtures race two pre-admitted initial stages and two resumptions of a
+direct committed request. They assert one request/ChangeSet, distinct attempt
+numbers, stable receipt recovery and no duplicate canonical effects.
+
+The v34 contract keeps the 23/4 tool registries and the existing 8 KiB injected
+context bound. Recovery guidance lives in the relevant tool's scoped description,
+not another paragraph injected into every turn. No migration, compatibility
+decoder, production change or historical auto-execution is introduced.
+
+This closes the request-discovery and committed-receipt portions of REQ-0018.
+Unfinished direct work remains preserved with `semantic_request_migration_required`;
+the explicit evidence-checked adoption transition is still required before full
+amendment deployment. The broader semantic-request and timing gates remain open.
+
+Validation passed 598 tests, Ruff and strict mypy (139 source files), plus the
+isolated Compose/PostgreSQL smoke with both new races, the existing occurrence,
+recovery, governance and migration round-trip checks. These are local results;
+no production deployment or live provider verification is claimed.

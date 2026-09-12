@@ -268,10 +268,20 @@ cardinality, dates, destinations and occurrence scope remain bound. Symbolic
 selection substitution applies only to declared provenance slots, never arbitrary
 policy text/data. A comparison digest does not independently establish authority.
 
-`semantic_request_migration_required` means a preserved unversioned binding needs
+`semantic_request_migration_required` means a preserved pre-staging or unversioned binding needs
 the explicit audited adoption path. Do not create a second request, edit its hash
 in production, or ask for the same authorization again. Completion of that
 migration path remains a deployment prerequisite; there is no automatic backfill.
+
+Assembly admission and execution resolve the exact originating utterance's
+existing request, including when that request was created after tool admission.
+They do not pick the latest request or drop cancelled/superseded requests from
+the lookup. A committed request recovers its stored receipt without compiling or
+executing again; an unfinished direct request remains bound while adoption is
+required. Multiple request bindings return `assembly_resume_ambiguous` and must
+be reconciled. Retrying a recorded failed operation keeps its original binding
+and result even when a later attempt has progressed. PostgreSQL locks serialize
+initial binding and attempt-number allocation across concurrent executions.
 
 Every authenticated tool invocation receives one `call_`, including validation
 and authority rejection. Tool logs retain hashes and bounded references, not raw
