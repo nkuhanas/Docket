@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -18,11 +19,11 @@ from docket.models import (
     OutboxEvent,
     PersistedSemanticOption,
     ProjectionDelivery,
-    ToolInvocation,
 )
 from docket.models.base import utc_now
 from docket.providers.discord import DiscordProjectionAdapter, DiscordProjectionError
 from docket.security import issue_semantic_option_token
+from docket.services.trace_views import TraceViewService
 
 _SUPPORTED_EVENTS = {
     "discord.projection.requested",
@@ -381,64 +382,34 @@ class DiscordProjectionRunner:
             trace = session.get(ConversationalToolTrace, event.aggregate_id)
             if trace is None:
                 raise DiscordProjectionError("mcp_trace_missing", "MCP trace is missing")
-            calls: list[dict[str, Any]] = [
-                {
-                    "ordinal": int(call["ordinal"]),
-                    "tool_name": self._bounded(call["tool_name"], 128),
-                    "transport_state": str(call.get("transport_state", "completed")),
-                    "domain_state": str(call.get("domain_state", "unknown")),
-                    "outcome": self._bounded(
-                        call.get("disposition") or call.get("domain_error_code") or "unknown",
-                        128,
-                    ),
-                    "transport_error_code": self._bounded(
-                        call.get("transport_error_code") or "none",
-                        64,
-                    ),
-                    "elapsed_ms": min(max(int(call.get("elapsed_ms", 0)), 0), 600000),
-                    "tool_call_ref": self._bounded(call.get("tool_call_ref") or "unreconciled", 40),
-                    "argument_preview": self._bounded(call.get("argument_preview", "{}"), 768),
-                }
-                for call in trace.calls[:20]
-            ]
-            invocations = list(
-                session.scalars(
-                    select(ToolInvocation).where(
-                        ToolInvocation.trace_ref == trace.ref_id
-                    )
-                )
-            )
-            rendered_at = trace.completed_at or trace.updated_at
-            total_elapsed_ms = max(
-                int((rendered_at - trace.started_at).total_seconds() * 1000),
-                0,
-            )
-            first_tool_at = min(
-                (invocation.started_at for invocation in invocations),
-                default=None,
-            )
-            tool_execution_ms = sum(int(call["elapsed_ms"]) for call in calls)
-            timing = {
-                "total_elapsed_ms": total_elapsed_ms,
-                "before_first_tool_ms": (
-                    max(
-                        int((first_tool_at - trace.started_at).total_seconds() * 1000),
-                        0,
-                    )
-                    if first_tool_at is not None
-                    else None
-                ),
-                "tool_execution_ms": tool_execution_ms,
-                "outside_tool_ms": max(total_elapsed_ms - tool_execution_ms, 0),
-            }
+            snapshot = TraceViewService(session).snapshot(trace)
+            calls: list[dict[str, Any]] = []
+            # Show the recent end of the workflow, with explicit full counts and
+            # a paginated read for every omitted attempt. Bound the Discord
+            # embed as well as the transport; 20 full previews can exceed 6000
+            # Discord characters even while satisfying a row-count limit.
+            for call in reversed(snapshot["rows"][-20:]):
+                compact = {**call, "argument_preview": call["argument_preview"][:160]}
+                candidate = [compact, *calls]
+                if len(json.dumps(candidate, ensure_ascii=False).encode()) > 3300:
+                    break
+                calls = candidate
+            counts = snapshot["counts"]
             render = {
                 "title": "Docket tool activity",
-                "summary": f"{trace.last_ordinal} authenticated Docket calls",
+                "summary": (
+                    f"{counts['attempts']} tool attempts · "
+                    f"{counts['authenticated_invocations']} confirmed Docket invocations · "
+                    f"{counts['local_rejections']} rejected before MCP · "
+                    f"{counts['unreconciled_attempts']} unreconciled"
+                ),
                 "status": trace.status.title(),
                 "calls": calls,
-                "timing": timing,
-                "overflow_count": max(0, trace.last_ordinal - len(calls)),
-                "updated_at": rendered_at.astimezone(UTC).isoformat(),
+                "timing": snapshot["timing"],
+                "counts": counts,
+                "tool_counts": snapshot["tool_counts"],
+                "overflow_count": len(snapshot["rows"]) - len(calls),
+                "updated_at": snapshot["as_of"],
             }
             payload = {
                 "request_id": str(event.id),

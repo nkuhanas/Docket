@@ -1018,6 +1018,7 @@ def _on_pre_tool_call(
                 "call_id": stable_call_id,
                 "ordinal": ordinal,
                 "tool_name": public_name,
+                "execution_boundary": "mcp_attempted",
                 "transport_state": "running",
                 "elapsed_ms": 0,
                 "disposition": None,
@@ -1074,6 +1075,11 @@ def _on_pre_tool_call(
                         f"({code}); no draft change was sent."
                     ),
                 }
+    # Capture the boundary before dispatch, rather than inferring a local
+    # rejection later from a missing call_ or from arbitrary error prose.
+    call["execution_boundary"] = "local_rejection" if directive is not None else "mcp_attempted"
+    with _TRACE_CONTEXT_LOCK:
+        context["calls"][stable_call_id]["execution_boundary"] = call["execution_boundary"]
     _enqueue_trace_update(payload_context, call=call)
     return directive
 
@@ -2986,14 +2992,18 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
     raw_calls = raw_render.get("calls")
     if not isinstance(raw_calls, list) or len(raw_calls) > 20:
         raise PluginAPIError("invalid_mcp_trace", "Trace calls exceed their bound", 422)
+    if len(json.dumps(raw_calls, ensure_ascii=False).encode()) > 3300:
+        raise PluginAPIError("invalid_mcp_trace", "Trace previews exceed their byte bound", 422)
     calls: list[dict[str, Any]] = []
-    expected_ordinal = 1
+    previous_ordinal = 0
     for raw_call in raw_calls:
         if not isinstance(raw_call, dict):
             raise PluginAPIError("invalid_mcp_trace", "Trace call must be an object", 422)
         try:
-            ordinal = int(raw_call.get("ordinal"))
-            elapsed_ms = int(raw_call.get("elapsed_ms"))
+            ordinal = raw_call.get("ordinal")
+            elapsed_ms = raw_call.get("elapsed_ms")
+            if type(ordinal) is not int or type(elapsed_ms) is not int:
+                raise ValueError
         except (TypeError, ValueError) as exc:
             raise PluginAPIError(
                 "invalid_mcp_trace", "Trace call numeric fields are invalid", 422
@@ -3001,6 +3011,7 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
         tool_name = _safe_text(raw_call.get("tool_name"), 128, "tool_name")
         transport_state = _safe_text(raw_call.get("transport_state"), 16, "transport_state")
         domain_state = _safe_text(raw_call.get("domain_state"), 16, "domain_state")
+        origin = _safe_text(raw_call.get("origin"), 32, "origin")
         outcome = _safe_text(raw_call.get("outcome"), 128, "outcome")
         tool_call_ref = _safe_text(
             raw_call.get("tool_call_ref", "unreconciled"), 40, "tool_call_ref"
@@ -3014,10 +3025,13 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
             raw_call.get("argument_preview", "{}"), 768, "argument_preview"
         )
         if (
-            ordinal != expected_ordinal
+            not previous_ordinal < ordinal <= 100
             or tool_name not in _DOCKET_MCP_TOOL_NAMES
             or transport_state not in {"running", "completed", "failed", "timed_out"}
             or domain_state not in {"succeeded", "rejected", "failed", "unknown"}
+            or origin not in {"authenticated_docket", "local_rejection", "unreconciled"}
+            or (origin == "authenticated_docket") != (tool_call_ref != "unreconciled")
+            or (origin != "authenticated_docket" and domain_state != "unknown")
             or not _SAFE_ERROR_CODE.fullmatch(outcome)
             or (
                 tool_call_ref != "unreconciled"
@@ -3034,6 +3048,7 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
                 "tool_name": tool_name,
                 "transport_state": transport_state,
                 "domain_state": domain_state,
+                "origin": origin,
                 "elapsed_ms": elapsed_ms,
                 "outcome": outcome,
                 "tool_call_ref": tool_call_ref,
@@ -3041,45 +3056,81 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
                 "argument_preview": argument_preview,
             }
         )
-        expected_ordinal += 1
+        previous_ordinal = ordinal
     try:
-        overflow_count = int(raw_render.get("overflow_count", 0))
+        overflow_count = raw_render.get("overflow_count", 0)
+        if type(overflow_count) is not int:
+            raise ValueError
     except (TypeError, ValueError) as exc:
         raise PluginAPIError("invalid_mcp_trace", "overflow_count is invalid", 422) from exc
-    if overflow_count < 0 or overflow_count > 80:
+    if overflow_count < 0 or overflow_count > 100:
         raise PluginAPIError("invalid_mcp_trace", "overflow_count exceeds its bound", 422)
     raw_timing = raw_render.get("timing")
-    if not isinstance(raw_timing, dict) or set(raw_timing) != {
+    timing_keys = {
         "total_elapsed_ms",
-        "before_first_tool_ms",
-        "tool_execution_ms",
-        "outside_tool_ms",
-    }:
+        "before_first_docket_call_ms",
+        "docket_execution_ms",
+        "wrapper_elapsed_sum_ms",
+        "unattributed_ms",
+        "queue_ms", "context_schema_ms", "model_ms", "local_validation_ms", "provider_wait_ms",
+    }
+    if not isinstance(raw_timing, dict) or set(raw_timing) != timing_keys:
         raise PluginAPIError("invalid_mcp_trace", "Trace timing is invalid", 422)
-    try:
-        timing = {
-            key: (
-                None
-                if key == "before_first_tool_ms" and raw_timing[key] is None
-                else int(raw_timing[key])
-            )
-            for key in (
-                "total_elapsed_ms",
-                "before_first_tool_ms",
-                "tool_execution_ms",
-                "outside_tool_ms",
-            )
-        }
-    except (KeyError, TypeError, ValueError) as exc:
-        raise PluginAPIError("invalid_mcp_trace", "Trace timing values are invalid", 422) from exc
-    if any(value is not None and (value < 0 or value > 86_400_000) for value in timing.values()):
+    nullable = {
+        "before_first_docket_call_ms", "queue_ms", "context_schema_ms", "model_ms",
+        "local_validation_ms", "provider_wait_ms",
+    }
+    timing = dict(raw_timing)
+    if any(
+        not (key in nullable and value is None)
+        and (type(value) is not int or value < 0 or value > 86_400_000)
+        for key, value in timing.items()
+    ):
         raise PluginAPIError("invalid_mcp_trace", "Trace timing exceeds its bound", 422)
+    if timing["docket_execution_ms"] + timing["unattributed_ms"] != timing["total_elapsed_ms"]:
+        raise PluginAPIError("invalid_mcp_trace", "Trace timing double-counts elapsed time", 422)
+    counts = raw_render.get("counts")
+    if not isinstance(counts, dict) or set(counts) != {
+        "attempts", "authenticated_invocations", "local_rejections",
+        "unreconciled_attempts", "unfinished_invocations",
+    } or any(type(value) is not int or not 0 <= value <= 100 for value in counts.values()):
+        raise PluginAPIError("invalid_mcp_trace", "Trace totals are invalid", 422)
+    if (
+        counts["attempts"] != len(calls) + overflow_count
+        or counts["local_rejections"] + counts["unreconciled_attempts"] > counts["attempts"]
+        or counts["unfinished_invocations"] > counts["authenticated_invocations"]
+    ):
+        raise PluginAPIError("invalid_mcp_trace", "Trace totals disagree", 422)
+    tool_counts = raw_render.get("tool_counts")
+    if not isinstance(tool_counts, list) or len(tool_counts) > len(_DOCKET_MCP_TOOL_NAMES):
+        raise PluginAPIError("invalid_mcp_trace", "Trace tool totals are invalid", 422)
+    seen_tools = set()
+    for total in tool_counts:
+        if (
+            not isinstance(total, dict)
+            or set(total) != {"tool_name", "attempts", "authenticated_invocations"}
+            or total["tool_name"] not in _DOCKET_MCP_TOOL_NAMES
+            or total["tool_name"] in seen_tools
+            or any(
+                type(total[key]) is not int or not 0 <= total[key] <= 100
+                for key in ("attempts", "authenticated_invocations")
+            )
+        ):
+            raise PluginAPIError("invalid_mcp_trace", "Trace tool totals are invalid", 422)
+        seen_tools.add(total["tool_name"])
+    if any(
+        sum(total[key] for total in tool_counts) != counts[key]
+        for key in ("attempts", "authenticated_invocations")
+    ):
+        raise PluginAPIError("invalid_mcp_trace", "Trace tool totals disagree", 422)
     render = {
         "title": _safe_text(raw_render.get("title"), 256, "title"),
         "summary": _safe_text(raw_render.get("summary"), 2000, "summary"),
         "status": status,
         "calls": calls,
         "timing": timing,
+        "counts": counts,
+        "tool_counts": tool_counts,
         "overflow_count": overflow_count,
         "updated_at": _safe_text(raw_render.get("updated_at"), 64, "updated_at"),
     }
@@ -3111,15 +3162,27 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
         color=colors[status],
     )
     embed.add_field(name="Status", value=status, inline=False)
-    before_first_tool = timing["before_first_tool_ms"]
+    before_first_tool = timing["before_first_docket_call_ms"]
     before_first_tool_text = str(before_first_tool) if before_first_tool is not None else "n/a"
     timing_text = (
         f"Total: {timing['total_elapsed_ms']} ms · "
-        f"Before first tool: {before_first_tool_text} ms\n"
-        f"Tool execution: {timing['tool_execution_ms']} ms · "
-        f"Outside tools: {timing['outside_tool_ms']} ms"
+        f"Before first Docket call: {before_first_tool_text} ms\n"
+        f"Closed Docket intervals (union): {timing['docket_execution_ms']} ms · "
+        f"Unattributed: {timing['unattributed_ms']} ms\n"
+        f"Wrapper elapsed sum (may overlap): {timing['wrapper_elapsed_sum_ms']} ms\n"
+        "Queue/context/model/local validation/provider wait: not measured separately"
     )
     embed.add_field(name="Turn timing", value=timing_text, inline=False)
+    attempted = {total["tool_name"]: total["attempts"] for total in tool_counts}
+    embed.add_field(
+        name="Workflow attempts (entire trace)",
+        value=(
+            f"Stage: {attempted.get('docket_stage_changes', 0)} · "
+            f"Review: {attempted.get('docket_review_changeset', 0)} · "
+            f"Commit: {attempted.get('docket_commit_changeset', 0)}"
+        ),
+        inline=False,
+    )
     transport_labels = {
         "running": "Running",
         "completed": "Completed",
@@ -3138,10 +3201,11 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
         if terminal:
             outcome_label = call["outcome"].replace("_", " ").capitalize()
             details = f"Outcome: {outcome_label} · "
+        details += f"Origin: {call['origin'].replace('_', ' ')} · "
         details += f"Transport: {transport_labels[call['transport_state']]}"
         details += f" · Domain: {domain_labels[call['domain_state']]}"
         if terminal:
-            details += f" · {call['elapsed_ms']} ms"
+            details += f" · wrapper {call['elapsed_ms']} ms"
         details += f" · {call['tool_call_ref']}"
         if call["transport_error_code"] != "none":
             details += f" · transport {call['transport_error_code'].replace('_', ' ')}"
@@ -3154,7 +3218,10 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
     if overflow_count:
         embed.add_field(
             name="Additional calls",
-            value=f"{overflow_count} omitted from this bounded view",
+            value=(
+                f"{overflow_count} omitted; showing recent attempts. "
+                f'All details: docket_get_history_entry(ref="{trace_ref}", view="calls").'
+            ),
             inline=False,
         )
     embed.add_field(name="Updated", value=_escaped(render["updated_at"], 64), inline=False)

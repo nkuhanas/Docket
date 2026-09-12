@@ -423,3 +423,39 @@ This advances ONT-UX-REQ-0012; it does not establish source-grounded repair or
 complete diagnostic coverage of every mutation. In particular, replacing
 compiler products for an unchanged retained entry still needs the explicit
 audited migration/recompile path. No production deployment or provider call ran.
+
+## Trace attempt visibility and measured invocation intervals
+
+Trace cards no longer label every wrapper attempt as an authenticated Docket
+call or compute timing from just the first 20 visible rows. They report exact
+counts across the retained trace and separate local pre-MCP rejections,
+authenticated invocations and unreconciled attempts. Stage/review/commit totals
+cover the whole retained trace. The byte-bounded card preview shows recent
+attempts with an omitted count; `docket_get_history_entry(view="calls")` provides
+bounded details for a `trace_` reference. Cursors bind the trace revision and
+reject mixed-revision pagination. Invocation outcomes are live observations.
+
+The trusted callback carries an explicit execution-boundary marker. A known
+local rejection cannot claim an unrelated invocation with matching arguments.
+Old callback formats are not compatibility-decoded. Docket's measured duration
+is the union of closed durable invocation intervals, clipped to the trace
+window. Wrapper duration is reported separately across all retained attempts;
+it is not subtracted from wall time. Unfinished invocation intervals and time
+not covered by measured Docket intervals remain unattributed. Queue, schema,
+model, local-validation and provider-wait attribution are explicitly unmeasured,
+not fabricated zeroes or guesses about the cause of delay.
+
+Local verification passed 479 tests, Ruff and strict mypy. New fixtures cover
+100-attempt complete pagination and a visible late commit, Unicode/byte bounds,
+overlapping invocation intervals, unrelated invocation exclusion, stale/foreign
+cursors, and the actual Docket renderer through the plugin's digest and Discord
+field validation. Inconsistent totals, origins, timing and oversized previews
+reject before Discord access. Isolated Compose smoke passed the updated trace
+callback, PostgreSQL assembly/occurrence checks, governance restore and migration
+round-trip. Generated contract v27 and the reviewed skill describe calls view.
+
+This is partial ONT-UX-REQ-0016 evidence, not complete telemetry or a measured
+latency improvement. Exact cross-transport invocation correlation, trace-bound
+pre-dispatch rejections, the retained-call safety limit and separate phase hooks
+still require completion/audit. The existing nonlocal argument-hash correlation
+must not be mistaken for a transport-bound proof. No production changes ran.

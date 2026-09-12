@@ -60,11 +60,23 @@ Keep log output bounded. For a reported tool problem, begin with its `call_`,
 bounded history tools or trusted internal history API. Do not start by dumping
 all utterances or provider payloads.
 
-The Docket tool-activity projection includes compact turn timing. A large
-`before_first_tool_ms` indicates gateway/session/model preparation such as
-compression or queueing, while `tool_execution_ms` is the sum of bounded Docket
-tool calls. `outside_tool_ms` includes all non-tool model/agent time and is
-diagnostic only; it is not evidence that a provider or canonical mutation ran.
+The Docket tool-activity projection reports exact whole-trace attempt and
+authenticated-invocation counts. Its byte-bounded preview shows recent attempts;
+the omitted count and `docket_get_history_entry(ref="trace_...", view="calls")`
+provide the rest. Stage/review/commit totals always describe the entire trace.
+Local wrapper rejections are not authenticated Docket invocations. Unlinked
+attempts stay unreconciled rather than becoming evidence of domain success.
+
+`docket_execution_ms` is the union of closed durable invocation intervals within
+the trace window; overlapping calls are not double-counted. Running calls do not
+prove uninterrupted execution. `wrapper_elapsed_sum_ms` is a separate aggregate
+over all attempts, not a wall-clock partition. `unattributed_ms` is the remaining
+trace time, not model time. Queue, context/schema, model, local-validation and
+provider-wait fields remain null until separately instrumented. A large
+`before_first_docket_call_ms` identifies a delay, not its cause. Statuses are live
+observations; call cursors bind the trace revision and explicitly require a
+restart if it advances. Historical callback formats are not decoded into the
+new contract; coordinated deployment drains active execution first.
 
 Health endpoints distinguish liveness from readiness:
 

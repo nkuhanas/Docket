@@ -169,6 +169,15 @@ with current provider confirmation. Each delivery page is a fresh status read;
 its statuses may advance while paging. Avoid repeated polling during ordinary
 turns: a queued receipt can be reported as queued without waiting on Google.
 
+For a reported trace, `docket_get_history_entry(ref="trace_...", view="calls")`
+returns exact whole-trace tool counts and bounded call pages. Discord shows a
+recent sample, not the whole list; use its omitted count instead of assuming
+stage or commit never ran. Local rejections are not authenticated Docket calls.
+Follow the cursor; restart if the trace revision changes. Domain outcomes are
+live observations. Closed Docket intervals are measured without overlap; the
+remaining time is unattributed, not proof of model generation or provider wait.
+Do not add trace reads to an ordinary successful workflow.
+
 `provider_intents` is deliberately absent from the model-facing ChangeSet. Docket
 derives provider Operations from canonical mutations after validating the complete
 scope. Hermes never formulates, retries, or repairs provider Operations.
