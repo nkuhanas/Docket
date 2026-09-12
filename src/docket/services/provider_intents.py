@@ -28,6 +28,7 @@ from docket.models import (
 )
 from docket.models.base import utc_now
 from docket.schemas.authority import ProviderIntentInput
+from docket.services.calendar_projection_invariants import missing_event_binding_diagnostic
 
 _LANE_OPERATION_TYPES = frozenset(
     {"calendar_configure_lane", "calendar_delete_lane"}
@@ -156,6 +157,9 @@ class ProviderIntentService:
             raise DocketError(
                 code="provider_event_binding_required",
                 message="Provider event update requires an exact active binding.",
+                details=missing_event_binding_diagnostic(
+                    self.session, target_ref=canonical_target_ref, target_kind=target_kind,
+                ),
             )
         return binding
 

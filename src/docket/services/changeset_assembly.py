@@ -156,6 +156,14 @@ def _diagnostic_projection(
     return result
 
 
+def _request_authority_receipt(request: SemanticRequest) -> dict[str, Any]:
+    """Recorded authority state, not a claim that an old replay is current."""
+    return {
+        "semantic_request_ref": request.ref_id,
+        "authority_availability_at_operation": request.authority_availability,
+    }
+
+
 class ChangeSetAssemblyAdmissionService:
     """Persist infrastructure-owned ordering and retry identity before MCP delivery."""
 
@@ -1505,6 +1513,7 @@ class ChangeSetAssemblyService:
             result = {
                 "ok": True,
                 "disposition": "no_op",
+                **_request_authority_receipt(semantic_request),
                 "draft_ref": changeset.ref_id,
                 "current_revision": changeset.current_revision,
                 "staged_count": 0,
@@ -1579,6 +1588,7 @@ class ChangeSetAssemblyService:
         result = {
             "ok": True,
             "disposition": "saved_with_errors" if errors else "ready_to_commit",
+            **_request_authority_receipt(semantic_request),
             "draft_ref": changeset.ref_id,
             "current_revision": changeset.current_revision,
             "staged_count": staged,
@@ -1832,6 +1842,7 @@ class ChangeSetAssemblyService:
         result = {
             "ok": True,
             "disposition": "reviewed",
+            **_request_authority_receipt(semantic_request),
             "draft_ref": changeset.ref_id,
             "revision": revision_number,
             "current_revision": changeset.current_revision,
@@ -1992,6 +2003,7 @@ class ChangeSetAssemblyService:
                 {
                     "ok": False,
                     "disposition": "draft_revision_conflict",
+                    **_request_authority_receipt(semantic_request),
                     "error": {
                         "code": "draft_revision_conflict",
                         "message": "Review the current draft before committing it.",
@@ -2018,6 +2030,7 @@ class ChangeSetAssemblyService:
                 {
                     "ok": False,
                     "disposition": "rejected_validation",
+                    **_request_authority_receipt(semantic_request),
                     "error": {
                         "code": "changeset_validation_failed",
                         "message": "The assembled draft is not commit-ready.",

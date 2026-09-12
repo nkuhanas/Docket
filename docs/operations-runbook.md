@@ -177,6 +177,18 @@ through their source entry.
 Continue with the same cursor even if another attempt edits the draft. Reading
 old pages does not observe that newer revision or permit committing it.
 
+If staging an event change reports `provider_event_binding_required`, inspect its
+bounded diagnostic before treating the connection as missing. It identifies an
+exact original create operation when one exists and provides `status_read` for
+that committed request. Pending/executing creation, uncertain creation, failed
+creation, and a confirmed operation missing its binding are distinct recovery
+states. Preserve the new draft; never duplicate the initial event or ask for
+equivalent authorization. Once the original binding is restored, a new staging
+operation with unchanged inputs revalidates the same request. No historical
+provider operation is automatically replayed by this diagnostic. Receipt fields
+`semantic_request_ref` and `authority_availability_at_operation` describe the
+recorded operation, not a current-state guarantee when an old receipt is replayed.
+
 Oversized review details are losslessly split into `json_utf8` fragments with
 UTF-8 byte offsets, total bytes and a SHA-256 digest. `logical_detail_count`
 counts fields/details; `total_if_known` counts transport rows after splitting.

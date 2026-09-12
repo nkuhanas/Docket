@@ -19,6 +19,7 @@ from docket.models import (
     OperatorUtterance,
     ProviderAccount,
     ProviderEventBinding,
+    SemanticRequest,
 )
 from docket.schemas.assembly import ReviewChangesInput, StageChangesInput
 from docket.schemas.authority import (
@@ -299,6 +300,96 @@ def test_uncompiled_occurrence_never_previews_master_cancellation(session):
     assert effect["reason"] == "occurrence_compilation_required"
     assert "after" not in effect
     assert series.status == "active"
+
+
+@pytest.mark.parametrize(("state", "next_action"), [
+    ("pending", "follow_original_provider_delivery"),
+    ("running", "follow_original_provider_delivery"),
+    ("reconciliation_required", "await_original_provider_reconciliation"),
+    ("failed", "recover_original_provider_operation"),
+    ("succeeded", "inspect_confirmed_operation_missing_binding"),
+])
+def test_pending_occurrence_projection_has_exact_recovery_not_new_authority(
+    session, state, next_action,
+):
+    series, identity = _world(session)
+    scope = {"kind": "occurrence", "identity": identity.model_dump(mode="json")}
+    replacement = {
+        **series.event_spec, "recurrence": None,
+        "timing": {
+            "kind": "timed", "start_local": "2026-09-09T16:00:00",
+            "end_local": "2026-09-09T16:50:00", "timezone": "America/Los_Angeles",
+        },
+    }
+    utterance, trace, _staged = _stage_cancel(session, series, scope, event_spec=replacement)
+    move_receipt = _commit(session, utterance, trace)
+    assert move_receipt["disposition"] == "committed"
+    create = session.scalar(select(Operation).where(
+        Operation.operation_type == "calendar_create_event",
+    ))
+    create.status = state
+    create.last_error_code = "google_auth_invalid" if state == "failed" else None
+    session.flush()
+    before_operations = session.scalar(select(func.count(Operation.id)))
+    before_events = session.scalar(select(func.count(CanonicalEvent.id)))
+    utterance2, trace2, staged = _stage_cancel(session, series, scope, number=3)
+    assert staged["disposition"] == "saved_with_errors", staged
+    error = next(row for row in staged["diagnostic_sample"]
+                 if row["code"] == "provider_event_binding_required")
+    detail = error["details"]
+    assert detail["category"] == "provider_readiness"
+    assert detail["creation_operation_ref"] == create.ref_id
+    assert detail["creation_operation_state"] == state
+    assert detail["next_action"] == next_action
+    assert detail["status_read"] == {
+        "tool": "docket_get_history_entry",
+        "arguments": {"ref": move_receipt["changeset_ref"], "view": "delivery"},
+    }
+    rejected = _commit(session, utterance2, trace2)
+    assert rejected["disposition"] == "rejected_validation"
+    draft = session.scalar(select(ChangeSet).where(ChangeSet.ref_id == staged["draft_ref"]))
+    request = session.scalar(select(SemanticRequest).where(
+        SemanticRequest.ref_id == draft.semantic_request_ref,
+    ))
+    assert request.authority_availability == "available"
+    assert staged["semantic_request_ref"] == rejected["semantic_request_ref"] == request.ref_id
+    assert staged["authority_availability_at_operation"] == "available"
+    assert rejected["authority_availability_at_operation"] == "available"
+    assert draft.state == "draft" and draft.staged_actions_json
+    assert session.scalar(select(func.count(Operation.id))) == before_operations
+    assert session.scalar(select(func.count(CanonicalEvent.id))) == before_events
+
+    # A subsequently completed projection is represented explicitly in this
+    # isolated fixture. Retry the same semantic patch as a NEW stage operation.
+    occurrence = session.scalar(select(EventOccurrence))
+    master_binding = session.scalar(select(ProviderEventBinding))
+    session.add(ProviderEventBinding(
+        canonical_target_ref=occurrence.replacement_event_ref, target_kind="event",
+        account_id=master_binding.account_id, calendar_id=master_binding.calendar_id,
+        provider_event_id="recovered-child", status="active",
+    ))
+    session.flush()
+    restaged = ChangeSetAssemblyService(session).stage(
+        StageChangesInput(
+            utterance_ref=utterance2.ref_id, request_key=utterance2.request_key,
+            patch={"operations": [{"operation": "action_upsert", "action": action}
+                                  for action in draft.staged_actions_json]},
+        ),
+        assembly_operation_token=_admit(session, utterance2, trace2, "stage_changes", 3),
+        assembly_argument_hash="3" * 64,
+    )
+    assert restaged["disposition"] == "ready_to_commit", restaged
+    assert restaged["draft_ref"] == draft.ref_id
+    assert restaged["semantic_request_ref"] == request.ref_id
+    receipt = ChangeSetAssemblyService(session).commit(
+        utterance_ref=utterance2.ref_id, request_key=utterance2.request_key,
+        assembly_operation_token=_admit(session, utterance2, trace2, "commit_changeset", 4),
+        assembly_argument_hash="4" * 64,
+    )
+    assert receipt["disposition"] == "committed", receipt
+    assert receipt["semantic_request_ref"] == request.ref_id
+    assert occurrence.status == "cancelled" and series.status == "active"
+    assert session.scalar(select(func.count(CanonicalEvent.id))) == before_events
 
 
 def test_manual_event_preview_is_scoped_and_preserves_title_disagreement(session):

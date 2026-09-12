@@ -649,3 +649,29 @@ readiness; infrastructure failure does not imply missing Operator intent. The
 23-tool surface, optional review and parameterless commit are unchanged. All
 534 tests, Ruff, strict mypy and isolated Compose/PostgreSQL smoke passed. No
 runtime instruction was edited and no production deployment occurred.
+
+## Missing provider binding recovery diagnostics
+
+The shared event validator and provider-intent service now distinguish missing
+bindings from pending, executing, uncertain, failed or confirmed original create
+operations. Diagnostics name only the exact canonical target and operation, with
+an executable bounded delivery-status read. Ambiguous or absent create history
+does not select an arbitrary operation. No provider work is retried or fabricated.
+
+Five moved-occurrence fixtures preserve the entire cancellation draft and its
+available authority, block canonical commit while the binding is absent, then
+revalidate the unchanged patch as a new operation after fixture binding recovery.
+They commit under the same `sreq_`, keep the series active and create no extra
+event. This is an actionable wait/recovery path, not support for committing an
+unbound dependent provider mutation before initial delivery.
+
+Bound stage/review, migration and failed-commit receipts expose the actual
+`semantic_request_ref` and `authority_availability_at_operation`. Replaying a
+receipt preserves its historical observation; it does not promise the authority
+is still available now. The generated v31 contract removes remaining internal
+import-scope/coverage instructions from model protocol guidance. The existing
+turn-context budget remains unchanged and passes its real rewritten-turn test.
+
+All 539 tests, Ruff, strict mypy and isolated Compose/PostgreSQL smoke passed.
+No migration, provider action or production deployment was performed by this
+slice. Full amendment acceptance and deployment readiness remain incomplete.
