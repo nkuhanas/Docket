@@ -42,6 +42,7 @@ from docket.models import (
 )
 from docket.providers.discord import FakeDiscordProjectionAdapter
 from docket.providers.google.fake_calendar import FakeCalendarProvider
+from docket.schemas.assembly import StageChangesInput
 from docket.schemas.authority import (
     CURRENT_IMPORT_AUTHORITY_STATEMENT,
     ChangeSetCommit,
@@ -57,6 +58,10 @@ from docket.services.attachment_evidence import (
     AttachmentTextService,
 )
 from docket.services.change_sets import ChangeSetService
+from docket.services.changeset_assembly import (
+    ChangeSetAssemblyAdmissionService,
+    ChangeSetAssemblyService,
+)
 from docket.services.deferred_ingress import DeferredIngressRunner
 from docket.services.history import HistoryService
 from docket.services.ingress_ledger import IngressIdentity, IngressLedgerService
@@ -126,6 +131,181 @@ def _pdf_bytes(*pages: str) -> bytes:
     output = BytesIO()
     writer.write(output)
     return output.getvalue()
+
+
+def _text_service(session):
+    settings = get_settings()
+    return AttachmentTextService(AttachmentEvidenceService(
+        session,
+        encryption_key=settings.attachment_encryption_key(),
+        encryption_key_ref=settings.attachment_encryption_key_ref,
+        max_attachment_bytes=settings.attachment_max_bytes,
+        max_total_bytes=settings.attachment_total_max_bytes,
+    ))
+
+
+@pytest.mark.parametrize("problem", [
+    None, "digest", "version", "extractor", "page", "reversed", "overshoot",
+    "boolean", "string", "copied_text", "zero_length", "large_fragment",
+])
+def test_pdf_fragment_verification_recomputes_pinned_retained_text(session, problem):
+    text = "Private café schedule " + ("topic " * (1600 if problem == "large_fragment" else 20))
+    pdf = _pdf_bytes(text)
+    capture = ProvenanceService(session).capture_operator_utterance(_request(
+        message_id="1542999000000000611", content=pdf,
+        filename="fragment.pdf", media_type="application/pdf",
+    ))
+    source_ref = capture["attachments"][0]["ref"]
+    reader = _text_service(session)
+    read = reader.read_pdf_text(
+        source_ref=source_ref, cursor=None, max_text_bytes=8192, page_limit=1,
+    )
+    citation = read["items"][0]
+    values = dict(
+        source_ref=source_ref,
+        locator=dict(citation["source_fragment_locator"]),
+        fragment_hash=citation["source_fragment_hash"],
+        extractor_identifier=read["extractor_identifier"],
+        extractor_version=read["extractor_version"],
+    )
+    expected = "source_fragment_locator_invalid"
+    if problem == "digest":
+        values["fragment_hash"] = "a" * 64
+        expected = "source_fragment_hash_mismatch"
+    elif problem in {"version", "extractor"}:
+        values[f"extractor_{'version' if problem == 'version' else 'identifier'}"] = "invented"
+        expected = "source_fragment_extractor_mismatch"
+    elif problem == "page":
+        values["locator"]["page"] = 2
+    elif problem == "reversed":
+        values["locator"]["text_character_start"] = values["locator"]["text_character_end"] + 1
+    elif problem == "overshoot":
+        values["locator"]["text_character_end"] += 1
+    elif problem == "boolean":
+        values["locator"]["page"] = True
+    elif problem == "string":
+        values["locator"]["page"] = "1"
+    elif problem == "copied_text":
+        values["locator"]["text"] = "private source content must not leak"
+    elif problem == "zero_length":
+        values["locator"]["text_character_end"] = 0
+    elif problem == "large_fragment":
+        remainder = reader.read_pdf_text(
+            source_ref=source_ref, cursor=read["cursor"], max_text_bytes=8192, page_limit=1,
+        )
+        values["locator"]["text_character_end"] = (
+            remainder["items"][-1]["source_fragment_locator"]["text_character_end"]
+        )
+        expected = "source_fragment_too_large"
+    # A fresh reader verifies again from encrypted storage, not the read response.
+    if problem:
+        with pytest.raises(DocketError) as failure:
+            _text_service(session).verify_fragment(**values)
+        assert failure.value.code == expected
+        assert "Private" not in str(failure.value)
+        assert "private source content" not in str(failure.value.details)
+        assert failure.value.details["next_action"] == "read_attachment_text"
+    else:
+        verified = _text_service(session).verify_fragment(**values)
+        assert verified.text == citation["text"]
+        assert "Private" not in repr(verified)
+        assert "Private" not in str(verified.binding())
+        assert verified.attachment_content_hash == hashlib.sha256(pdf).hexdigest()
+        assert verified.fragment_hash == citation["source_fragment_hash"]
+
+
+def test_pdf_citation_failure_preserves_all_entries_and_repairs_same_request(session):
+    settings = get_settings()
+    capture = ProvenanceService(session).capture_operator_utterance(_request(
+        message_id="1542999000000000612", content=_pdf_bytes("Lecture one", "Lecture two"),
+        filename="schedule.pdf", media_type="application/pdf",
+    ))
+    utterance = session.scalar(select(OperatorUtterance).where(
+        OperatorUtterance.ref_id == capture["ref"]
+    ))
+    source_ref = capture["attachments"][0]["ref"]
+    read = _text_service(session).read_pdf_text(
+        source_ref=source_ref, cursor=None, max_text_bytes=8192, page_limit=2,
+    )
+    operations = []
+    for index, fragment in enumerate(read["items"]):
+        operations.append({
+            "operation": "normalized_entry_upsert",
+            "entry": {
+                "entry_type": "tracked_temporal_entry", "import_entry_id": f"lecture-{index}",
+                "item": {"title": fragment["text"]},
+                "temporal": {"role": "scheduled_on", "temporal_value": {
+                    "kind": "date", "date": f"2026-09-{16 + index}",
+                    "timezone": "America/Los_Angeles",
+                }},
+                "evidence": {
+                    "source_ref": source_ref,
+                    "source_fragment_locator": fragment["source_fragment_locator"],
+                    "source_fragment_hash": "b" * 64 if index else fragment["source_fragment_hash"],
+                    "extractor_identifier": read["extractor_identifier"],
+                    "extractor_version": read["extractor_version"],
+                },
+            },
+        })
+    trace_ref = new_public_ref("trace")
+    service = ChangeSetAssemblyService(session)
+
+    def admit(ordinal, tool):
+        result = ChangeSetAssemblyAdmissionService(session).admit(
+            utterance_ref=utterance.ref_id, trace_ref=trace_ref,
+            upstream_tool_call_id=f"call-{ordinal}", trace_ordinal=ordinal, tool_name=tool,
+            argument_hash=str(ordinal) * 64, guild_id=settings.discord_guild_id,
+            channel_id=settings.chat_channel_id, source_message_id="1542999000000000612",
+            actor_id=settings.operator_discord_user_id,
+        )
+        return result["assembly_operation_token"]
+
+    first = service.stage(StageChangesInput.model_validate({
+        "utterance_ref": utterance.ref_id, "request_key": utterance.request_key,
+        "assembly_scope": {
+            "resolved_intent": {"intent": "track lectures"},
+            "normalized_entry_types": ["tracked_temporal_entry"], "source_refs": [source_ref],
+        },
+        "patch": {"operations": operations},
+    }), assembly_operation_token=admit(1, "docket_stage_changes"), assembly_argument_hash="1" * 64)
+    assert first["disposition"] == "saved_with_errors"
+    draft = session.scalar(select(ChangeSet))
+    original_request_ref = draft.semantic_request_ref
+    assert len(draft.normalized_entries_json) == 2
+    assert draft.validation_errors[0]["code"] == "source_fragment_hash_mismatch"
+    assert draft.validation_errors[0]["entry_id"] == "lecture-1"
+    assert session.scalar(select(func.count(Item.id))) == 0
+    rejected = service.commit(
+        utterance_ref=utterance.ref_id, request_key=utterance.request_key,
+        assembly_operation_token=admit(2, "docket_commit_changeset"),
+        assembly_argument_hash="2" * 64,
+    )
+    assert rejected["disposition"] == "rejected_validation"
+    assert session.scalar(select(func.count(Item.id))) == 0
+    # Correct the citation under a NEW stage operation, not the failed operation's key.
+    operations[1]["entry"]["evidence"]["source_fragment_hash"] = (
+        read["items"][1]["source_fragment_hash"]
+    )
+    second = service.stage(StageChangesInput.model_validate({
+        "utterance_ref": utterance.ref_id, "request_key": utterance.request_key,
+        "patch": {"operations": [operations[1]]},
+    }), assembly_operation_token=admit(3, "docket_stage_changes"), assembly_argument_hash="3" * 64)
+    assert second["disposition"] == "ready_to_commit"
+    assert draft.semantic_request_ref == original_request_ref
+    assert len(draft.normalized_entries_json) == 2
+    assert draft.current_revision == 2
+    assert session.scalar(select(func.count(Item.id))) == 0
+    assert session.scalar(select(func.count(Operation.id))) == 0
+    receipt = service.commit(
+        utterance_ref=utterance.ref_id, request_key=utterance.request_key,
+        assembly_operation_token=admit(4, "docket_commit_changeset"),
+        assembly_argument_hash="4" * 64,
+    )
+    assert receipt["disposition"] == "committed"
+    assert draft.semantic_request_ref == original_request_ref
+    assert sorted(session.scalars(select(Item.title))) == ["Lecture one", "Lecture two"]
+    assert session.scalar(select(func.count(ChangeSet.id))) == 1
+    assert session.scalar(select(func.count(Operation.id))) == 0
 
 
 def _commit_tracked_content(

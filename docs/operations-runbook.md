@@ -240,6 +240,14 @@ repair or the verified pre-migration backup for production recovery.
 
 ## Operator input and response failures
 
+An import error such as `source_fragment_hash_mismatch` or
+`source_fragment_extractor_mismatch` preserves its staged entries. Read the
+retained PDF with `docket_read_attachment_text` and submit a new staging operation
+with the exact returned extractor version and fragment coordinates/digest.
+Do not replay the rejected operation key with changed content, invent a digest,
+or ask the Operator to authorize the same request again. This check establishes
+the cited text's integrity; it is not independent proof of its interpretation.
+
 If an Operator message receives only a reaction or no final response:
 
 1. Verify that one `utt_` exists for the exact Discord message/interaction.
