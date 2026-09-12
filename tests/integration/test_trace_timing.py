@@ -1,0 +1,158 @@
+import uuid
+from datetime import UTC, datetime, timedelta
+
+import pytest
+from pydantic import ValidationError
+from sqlalchemy import func, select
+
+from docket.config import get_settings
+from docket.domain.errors import DocketError
+from docket.domain.public_refs import new_public_ref
+from docket.internal_api.schemas import McpTraceCheckpoint, McpTraceUpdate, TraceTimingInput
+from docket.models import ConversationalToolTrace, OperatorUtterance, TraceTimingObservation
+from docket.services.mcp_traces import McpTraceService
+from docket.services.trace_views import TraceViewService, _partition_intervals
+from docket.tool_contracts import CONTRACT_VERSION, contract_hash
+
+
+def _context(factory):
+    settings = get_settings()
+    start = datetime.now(UTC) - timedelta(seconds=20)
+    with factory.begin() as session:
+        utterance = OperatorUtterance(
+            actor_ref=f"discord_user:{settings.operator_discord_user_id}", transport="discord",
+            source_message_ref=(
+                f"discord_message:{settings.discord_guild_id}:{settings.chat_channel_id}:"
+                "777777777777777765"
+            ), conversation_ref=f"discord_conversation:{settings.chat_channel_id}",
+            said_at=start, verbatim_text="Timing fixture only.", content_hash="b" * 64,
+            request_key="trace-timing-fixture",
+        )
+        session.add(utterance)
+        session.flush()
+        ref = utterance.ref_id
+    return dict(
+        request_id=uuid.uuid4(), guild_id=settings.discord_guild_id,
+        source_channel_id=settings.chat_channel_id, source_message_id="777777777777777765",
+        actor_id=settings.operator_discord_user_id, utterance_ref=ref,
+        caller_profile="interactive", tool_contract_version=CONTRACT_VERSION,
+        tool_contract_hash=contract_hash("interactive"), turn_started_at=start,
+        updated_at=start + timedelta(seconds=10),
+    )
+
+
+def _span(context, phase="model_request", left=1, right=3):
+    return TraceTimingInput(
+        span_id=uuid.uuid4(), phase=phase,
+        started_at=context["turn_started_at"] + timedelta(seconds=left),
+        ended_at=context["turn_started_at"] + timedelta(seconds=right),
+    )
+
+
+def test_partition_attributes_nested_and_parallel_intervals_once():
+    assert _partition_intervals({
+        "docket_execution_ms": [(30, 45), (40, 50)],
+        "context_schema_ms": [(0, 70)],
+        "model_ms": [(10, 60), (25, 65)],
+        "local_validation_ms": [(20, 25)],
+    }) == {"docket_execution_ms": 20, "model_ms": 30,
+           "context_schema_ms": 15, "local_validation_ms": 5}
+
+
+def test_timing_checkpoint_recovery_is_durable_replayable_and_payload_free(session_factory):
+    context = _context(session_factory)
+    trace_ref = new_public_ref("trace")
+    spans = [_span(context), _span(context, "context_schema", 0, 5),
+             _span(context, "local_validation", 6, 7)]
+    with session_factory.begin() as session:
+        result = McpTraceService(session).checkpoint(trace_ref, McpTraceCheckpoint(
+            **context, timings=spans, turn_status="completed",
+        ))
+        assert result["disposition"] == "updated"
+    with session_factory.begin() as session:
+        result = McpTraceService(session).checkpoint(trace_ref, McpTraceCheckpoint(
+            **context, timings=spans, turn_status="completed",
+        ))
+        assert result["disposition"] == "replayed_request"
+        # A delayed async observation cannot change the recorded interval or final state.
+        ordinary = {key: value for key, value in context.items() if key != "utterance_ref"}
+        assert McpTraceService(session).update(trace_ref, McpTraceUpdate(
+            **ordinary, timing=spans[0],
+        ))["disposition"] == "replayed_request"
+        assert session.scalar(select(func.count(TraceTimingObservation.id))) == 3
+        trace = session.scalar(select(ConversationalToolTrace))
+        view = TraceViewService(session).snapshot(trace)
+        timing = view["timing"]
+        assert timing["model_ms"] == 2000 and timing["context_schema_ms"] == 3000
+        assert timing["local_validation_ms"] == 1000 and timing["docket_execution_ms"] == 0
+        assert timing["unattributed_ms"] == timing["total_elapsed_ms"] - 6000
+        assert timing["queue_ms"] is None and timing["provider_wait_ms"] is None
+        assert view["rows"] == [] and view["counts"]["authenticated_invocations"] == 0
+        assert set(TraceTimingObservation.__table__.columns.keys()) == {
+            "id", "trace_ref", "phase", "started_at", "ended_at",
+        }
+
+
+def test_failed_timing_page_rolls_back_all_new_observations(session_factory):
+    context = _context(session_factory)
+    ref = new_public_ref("trace")
+    original = _span(context)
+    with session_factory.begin() as session:
+        McpTraceService(session).checkpoint(ref, McpTraceCheckpoint(**context, timings=[original]))
+    with session_factory.begin() as session:
+        with pytest.raises(DocketError) as error:
+            McpTraceService(session).checkpoint(ref, McpTraceCheckpoint(**context, timings=[
+                _span(context), original.model_copy(update={"phase": "local_validation"}),
+            ]))
+        assert error.value.code == "trace_timing_conflict"
+        assert session.scalar(select(func.count(TraceTimingObservation.id))) == 1
+
+
+@pytest.mark.parametrize("change", [
+    {"phase": "docket_execution"}, {"ended_at": None}, {"prompt": "not permitted"},
+    {"started_at": "2026-01-01T00:00:00"},
+    {"ended_at": "2026-01-02T00:00:00Z"},
+    {"ended_at": "2026-09-01T00:00:00Z"},
+])
+def test_timing_schema_rejects_unmeasured_or_payload_bearing_inputs(change):
+    with pytest.raises(ValidationError):
+        TraceTimingInput.model_validate({
+            "span_id": str(uuid.uuid4()), "phase": "model_request",
+            "started_at": "2026-01-03T00:00:00Z", "ended_at": "2026-01-03T00:00:01Z",
+            **change,
+        })
+
+
+@pytest.mark.parametrize("mode", ["before_turn", "future", "terminal", "other_source"])
+def test_timing_is_bound_to_captured_running_turn(session_factory, mode):
+    context = _context(session_factory)
+    ref = new_public_ref("trace")
+    with session_factory.begin() as session:
+        McpTraceService(session).checkpoint(ref, McpTraceCheckpoint(
+            **context, timings=[_span(context)],
+            turn_status="completed" if mode == "terminal" else "running",
+        ))
+    span = _span(context, left=-1 if mode == "before_turn" else 3, right=4)
+    if mode == "future":
+        span = _span(context, right=11)
+    if mode == "other_source":
+        context["utterance_ref"] = new_public_ref("utt")
+    with session_factory.begin() as session:
+        with pytest.raises((ValidationError, DocketError)):
+            McpTraceService(session).checkpoint(ref, McpTraceCheckpoint(**context, timings=[span]))
+        assert session.scalar(select(func.count(TraceTimingObservation.id))) == 1
+
+
+@pytest.mark.parametrize("mode", ["update", "delete"])
+def test_timing_rows_are_immutable(session_factory, mode):
+    context = _context(session_factory)
+    with session_factory.begin() as session:
+        McpTraceService(session).checkpoint(new_public_ref("trace"), McpTraceCheckpoint(
+            **context, timings=[_span(context)],
+        ))
+    with pytest.raises(ValueError, match="immutable"), session_factory.begin() as session:
+        row = session.scalar(select(TraceTimingObservation))
+        if mode == "update":
+            row.phase = "context_schema"
+        else:
+            session.delete(row)

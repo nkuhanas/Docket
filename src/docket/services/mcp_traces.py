@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -13,6 +14,7 @@ from docket.internal_api.schemas import (
     McpTraceCheckpoint,
     McpTraceContext,
     McpTraceUpdate,
+    TraceTimingInput,
 )
 from docket.models import (
     ConversationalToolTrace,
@@ -20,6 +22,7 @@ from docket.models import (
     OperatorUtterance,
     OutboxEvent,
     ToolInvocation,
+    TraceTimingObservation,
 )
 from docket.models.base import utc_now
 from docket.services.gateway_lifetimes import GatewayLifetimeService
@@ -465,7 +468,50 @@ class McpTraceService:
             invocation = self._link_tool_invocation(trace, request.call)
             tool_call_ref = invocation.ref_id if invocation is not None else None
             changed = self._reconcile_calls(trace) or changed
+        if request.timing is not None:
+            changed = self._apply_timing(trace, request.timing, request.updated_at) or changed
         return self._finish_update(trace, request, changed, tool_call_ref)
+
+    def _apply_timing(
+        self, trace: ConversationalToolTrace, timing: TraceTimingInput, captured_at: datetime,
+    ) -> bool:
+        def utc(value: datetime) -> datetime:
+            return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+        if (
+            timing.started_at < utc(trace.started_at) or timing.ended_at > utc(captured_at)
+            or self.session.scalar(select(OperatorUtterance.id).where(
+                OperatorUtterance.source_message_ref == (
+                    f"discord_message:{trace.guild_id}:{trace.source_channel_id}:"
+                    f"{trace.source_message_id}"
+                ), OperatorUtterance.actor_ref == f"discord_user:{trace.actor_id}",
+                OperatorUtterance.transport == "discord",
+            )) is None
+        ):
+            raise DocketError(
+                code="invalid_trace_timing", message="Timing is outside its captured turn.",
+            )
+        prior = self.session.get(TraceTimingObservation, timing.span_id)
+        if prior is not None:
+            if (
+                prior.trace_ref != trace.ref_id or prior.phase != timing.phase
+                or utc(prior.started_at) != timing.started_at
+                or utc(prior.ended_at) != timing.ended_at
+            ):
+                raise DocketError(
+                    code="trace_timing_conflict", message="Timing evidence cannot be rewritten.",
+                )
+            return False
+        if trace.status != "running":
+            raise DocketError(
+                code="mcp_trace_terminal", message="A terminal trace cannot add timing.",
+            )
+        self.session.add(TraceTimingObservation(
+            id=timing.span_id, trace_ref=trace.ref_id, phase=timing.phase,
+            started_at=timing.started_at, ended_at=timing.ended_at,
+        ))
+        self.session.flush()
+        return True
 
     def checkpoint(self, trace_ref: str, request: McpTraceCheckpoint) -> dict[str, Any]:
         # A dropped callback queue is not durable evidence. Recover the actual
@@ -492,6 +538,8 @@ class McpTraceService:
             for call in request.calls:
                 self._link_tool_invocation(trace, call)
                 changed = self._apply_call(trace, call, checkpoint=True) or changed
+            for timing in request.timings:
+                changed = self._apply_timing(trace, timing, request.updated_at) or changed
             return self._finish_update(trace, request, changed, None)
 
     def _finish_update(

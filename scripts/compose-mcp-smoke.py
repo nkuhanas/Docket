@@ -264,6 +264,10 @@ async def smoke() -> None:
             checkpoint = {
                 **trace_context, "request_id": str(uuid.uuid4()),
                 "utterance_ref": utterance_ref, "turn_status": "completed",
+                "timings": [{
+                    "span_id": str(uuid.uuid4()), "phase": "model_request",
+                    "started_at": turn_started_at, "ended_at": trace_context["updated_at"],
+                }],
                 "calls": [
                     {**running_call, "transport_state": "completed", "elapsed_ms": 1,
                      "disposition": "succeeded"},

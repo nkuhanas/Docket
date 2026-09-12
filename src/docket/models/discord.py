@@ -7,10 +7,12 @@ from sqlalchemy import (
     CheckConstraint,
     Date,
     DateTime,
+    ForeignKey,
     Integer,
     String,
     UniqueConstraint,
     Uuid,
+    event,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -88,3 +90,33 @@ class ConversationalToolTrace(TimestampMixin, Base):
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TraceTimingObservation(Base):
+    """Immutable, payload-free closed intervals observed by the trusted gateway."""
+
+    __tablename__ = "trace_timing_observations"
+    __table_args__ = (
+        CheckConstraint(
+            "phase IN ('model_request', 'context_schema', 'local_validation')",
+            name="ck_trace_timing_observations_phase",
+        ),
+        CheckConstraint("ended_at >= started_at", name="ck_trace_timing_observations_order"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
+    trace_ref: Mapped[str] = mapped_column(
+        ForeignKey("conversational_tool_traces.ref_id", ondelete="RESTRICT"),
+        nullable=False, index=True,
+    )
+    phase: Mapped[str] = mapped_column(String(32), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+def _reject_timing_rewrite(_mapper: object, _connection: object, target: object) -> None:
+    raise ValueError(f"{type(target).__name__} is immutable")
+
+
+event.listen(TraceTimingObservation, "before_update", _reject_timing_rewrite)
+event.listen(TraceTimingObservation, "before_delete", _reject_timing_rewrite)
