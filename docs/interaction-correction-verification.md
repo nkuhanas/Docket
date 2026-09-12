@@ -634,3 +634,18 @@ Validation for this slice: all 533 tests, Ruff and strict mypy (134 source
 files) passed. The isolated Compose/PostgreSQL smoke passed, including the
 immutable snapshot assertions and migration downgrade/re-upgrade checks. No
 production or live-provider operation was performed.
+
+## Executable reviewed instruction example
+
+The repository-managed manual-intent skill now describes the actual staged patch
+shape rather than internal grouped ChangeSet arrays. Its sender example includes
+the exact `identity_handle` discriminator, required provenance/field metadata,
+same-draft dependency, initial scope and expected versions. A regression test
+substitutes fixture public refs and validates the complete example against
+`StageChangesInput`. Top-level request bindings remain infrastructure-only.
+
+Semantic readiness is explicitly distinct from schema/provider execution
+readiness; infrastructure failure does not imply missing Operator intent. The
+23-tool surface, optional review and parameterless commit are unchanged. All
+534 tests, Ruff, strict mypy and isolated Compose/PostgreSQL smoke passed. No
+runtime instruction was edited and no production deployment occurred.
