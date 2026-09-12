@@ -459,3 +459,36 @@ latency improvement. Exact cross-transport invocation correlation, trace-bound
 pre-dispatch rejections, the retained-call safety limit and separate phase hooks
 still require completion/audit. The existing nonlocal argument-hash correlation
 must not be mistaken for a transport-bound proof. No production changes ran.
+
+## Exact invocation correlation and retry-safe receipt recovery
+
+The gateway now binds each MCP dispatch to its captured utterance, trace,
+upstream call/ordinal, gateway lifetime, tool, public argument digest and loaded
+contract through a short-lived signed infrastructure envelope. The model does
+not supply or retain it. Docket verifies it after authenticated `call_` creation
+and before dispatch; invalid envelopes produce a durable rejection without
+executing the tool. A later trace callback must agree with that binding,
+including the original message. No argument-hash/time-window fallback remains.
+
+Transport retries receive separate `call_` records under the original exact
+binding. Correlation does not suppress service execution or replace operation
+idempotency: replayed stage and commit calls recover the original durable
+receipts. One known committed outcome takes precedence over a still-running
+retry in the displayed attempt. All authenticated invocations remain counted
+and individually inspectable, even when several belong to one upstream attempt.
+The envelope grants no semantic authority and is neither logged nor persisted.
+
+Local verification passed 492 tests, Ruff and strict mypy. The assembled MCP
+fixture replays staging and commit without review and still creates exactly one
+Item and one ChangeSet. Additional fixtures cover identical arguments in
+different traces, invalid/tampered/expired/foreign bindings, signer parity with
+the actual plugin, late callback source/hash mismatch, and a running retry that
+cannot erase a committed outcome. Isolated Compose smoke passed authenticated
+MCP correlation before its callback, simultaneous PostgreSQL transport retries,
+the existing assembly/occurrence races, governance restore and migration
+round-trip. The generated contracts are v28; profile counts remain 23/4.
+
+This closes the prior heuristic-correlation gap, not all of ONT-UX-REQ-0016.
+Pre-dispatch trace coverage, the retained-call safety limit and separate phase
+instrumentation remain open. No live latency improvement, production deployment
+or historical request replay is claimed.

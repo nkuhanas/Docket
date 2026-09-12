@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from docket.domain.errors import DocketError
 from docket.models import ConversationalToolTrace, ToolInvocation
 from docket.models.base import utc_now
+from docket.services.trace_correlation import correlated_calls
 
 
 def _utc(value: datetime) -> datetime:
@@ -44,7 +45,7 @@ class TraceViewService:
                 select(ToolInvocation).where(ToolInvocation.trace_ref == trace.ref_id)
             )
         )
-        by_call = {item.trace_call_id: item for item in invocations if item.trace_call_id}
+        by_call = correlated_calls(invocations)
         as_of = utc_now()
         total_ms = _milliseconds(trace.started_at, trace.completed_at or as_of)
         intervals = []

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
+import hmac
 import json
 from copy import deepcopy
 from dataclasses import replace
@@ -2020,6 +2022,8 @@ def test_mcp_schema_rejection_terminalizes_admission_and_next_stage_proceeds(
 
 @pytest.mark.integration
 def test_mcp_stage_then_payload_free_commit_and_replay_without_review(session_factory) -> None:
+    from docket.tool_contracts import CONTRACT_VERSION, contract_hash
+
     utterance = _utterance("1542799000000000840")
     trace_ref = new_public_ref("trace")
     with session_factory.begin() as session:
@@ -2045,6 +2049,18 @@ def test_mcp_stage_then_payload_free_commit_and_replay_without_review(session_fa
                 tool_name=name,
                 argument_hash=model_hash,
             )
+        now = int(datetime.now(UTC).timestamp())
+        encoded = base64.urlsafe_b64encode(json.dumps({
+            "format": 1, "trace_ref": trace_ref, "call_id": f"mcp-{ordinal}",
+            "ordinal": ordinal, "utterance_ref": utterance.ref_id, "gateway_instance_ref": None,
+            "tool_name": name, "argument_hash": model_hash,
+            "contract_version": CONTRACT_VERSION, "contract_hash": contract_hash("interactive"),
+            "issued_at": now, "expires_at": now + 900,
+        }, sort_keys=True, separators=(",", ":")).encode()).decode().rstrip("=")
+        signature = hmac.new(
+            get_settings().hermes_to_docket_token().encode(),
+            b"docket-mcp-invocation-v1:" + encoded.encode(), hashlib.sha256,
+        ).hexdigest()
         result = asyncio.run(
             mcp.call_tool(
                 name,
@@ -2052,6 +2068,7 @@ def test_mcp_stage_then_payload_free_commit_and_replay_without_review(session_fa
                     **arguments,
                     "assembly_operation_token": token,
                     "assembly_argument_hash": model_hash,
+                    "invocation_binding": f"{encoded}.{signature}",
                 },
             )
         )
@@ -2059,6 +2076,7 @@ def test_mcp_stage_then_payload_free_commit_and_replay_without_review(session_fa
         return result[1]
 
     assert invoke("docket_stage_changes", stage_arguments, 1)["disposition"] == "ready_to_commit"
+    assert invoke("docket_stage_changes", stage_arguments, 1)["replayed"] is True
     binding = {"utterance_ref": utterance.ref_id, "request_key": utterance.request_key}
     # A resumed pre-cutover recipe must be rejected, not ignored or decoded.
     rejected = invoke(
@@ -2078,6 +2096,8 @@ def test_mcp_stage_then_payload_free_commit_and_replay_without_review(session_fa
         assert obsolete.state == "rejected"
     receipt = invoke("docket_commit_changeset", binding, 3)
     assert receipt["disposition"] == "committed"
+    transport_replay = invoke("docket_commit_changeset", binding, 3)
+    assert transport_replay["changeset_ref"] == receipt["changeset_ref"]
     replay = invoke("docket_commit_changeset", binding, 4)
     assert replay == receipt
     with session_factory() as session:
@@ -2085,7 +2105,9 @@ def test_mcp_stage_then_payload_free_commit_and_replay_without_review(session_fa
         assert session.scalar(select(Item.title)) == "Tracked request"
         assert session.scalar(select(func.count(ChangeSet.id))) == 1
         calls = list(session.scalars(select(ToolInvocation)))
-        assert len(calls) == 4
+        assert len(calls) == 6
+        assert all(call.trace_ref == trace_ref for call in calls)
+        assert sum(call.trace_call_id is None for call in calls) == 2
         assert all(call.transport_state == "completed" for call in calls)
         assert all(call.normalized_argument_hash == sha256_json({}) for call in calls[-2:])
 

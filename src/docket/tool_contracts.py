@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-09-11-v27"
+CONTRACT_VERSION = "docket-tools-2026-09-11-v28"
 
 
 class ToolContractEntry(TypedDict):

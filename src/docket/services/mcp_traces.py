@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -19,6 +18,7 @@ from docket.models import (
 )
 from docket.models.base import utc_now
 from docket.services.gateway_lifetimes import GatewayLifetimeService
+from docket.services.trace_correlation import correlated_calls
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash, contract_tool_names
 
 MAX_TRACE_CALLS = 100
@@ -246,54 +246,49 @@ class McpTraceService:
         trace.calls = calls
         return True
 
+    def _validate_invocation_context(
+        self, trace: ConversationalToolTrace, invocation: ToolInvocation,
+    ) -> None:
+        expected_source = (
+            f"discord_message:{trace.guild_id}:{trace.source_channel_id}:{trace.source_message_id}"
+        )
+        utterance = self.session.scalar(select(OperatorUtterance).where(
+            OperatorUtterance.ref_id.in_(invocation.utterance_refs),
+            OperatorUtterance.source_message_ref == expected_source,
+            OperatorUtterance.actor_ref == f"discord_user:{trace.actor_id}",
+            OperatorUtterance.transport == "discord",
+        ))
+        if (
+            len(invocation.utterance_refs) != 1 or utterance is None
+            or invocation.actor_ref != utterance.actor_ref
+            or invocation.gateway_instance_ref != trace.gateway_instance_ref
+        ):
+            raise DocketError(
+                code="mcp_trace_binding_mismatch",
+                message="The trace source disagrees with its authenticated invocation binding.",
+            )
+
     def _link_tool_invocation(
         self,
         trace: ConversationalToolTrace,
         call: McpTraceCallUpdate,
-        now: datetime,
     ) -> ToolInvocation | None:
-        existing = self.session.scalar(
-            select(ToolInvocation).where(
-                ToolInvocation.trace_ref == trace.ref_id,
-                ToolInvocation.trace_call_id == call.call_id,
+        existing = correlated_calls(list(self.session.scalars(
+            select(ToolInvocation).where(ToolInvocation.trace_ref == trace.ref_id)
+        ))).get(call.call_id)
+        if existing is not None and (
+            existing.tool_name != call.tool_name
+            or existing.trace_ordinal != call.ordinal
+            or existing.received_argument_hash != call.received_argument_hash
+            or call.execution_boundary == "local_rejection"
+        ):
+            raise DocketError(
+                code="mcp_trace_call_conflict",
+                message="The callback disagrees with its authenticated invocation binding.",
             )
-        )
         if existing is not None:
-            return existing
-        if call.execution_boundary == "local_rejection":
-            return None
-        if call.received_argument_hash is None:
-            return None
-        invocation = self.session.scalar(
-            select(ToolInvocation)
-            .where(
-                ToolInvocation.caller_profile == "interactive",
-                ToolInvocation.tool_name == call.tool_name,
-                ToolInvocation.received_argument_hash == call.received_argument_hash,
-                ToolInvocation.trace_ref.is_(None),
-                ToolInvocation.started_at >= now - timedelta(minutes=10),
-            )
-            .order_by(ToolInvocation.started_at.desc())
-            .limit(1)
-            .with_for_update()
-        )
-        if invocation is None:
-            return None
-        source_message_ref = (
-            f"discord_message:{trace.guild_id}:{trace.source_channel_id}:{trace.source_message_id}"
-        )
-        utterance = self.session.scalar(
-            select(OperatorUtterance).where(
-                OperatorUtterance.source_message_ref == source_message_ref
-            )
-        )
-        invocation.trace_ref = trace.ref_id
-        invocation.trace_call_id = call.call_id
-        invocation.trace_ordinal = call.ordinal
-        invocation.gateway_instance_ref = trace.gateway_instance_ref
-        invocation.actor_ref = f"discord_user:{trace.actor_id}"
-        invocation.utterance_refs = [utterance.ref_id] if utterance is not None else []
-        return invocation
+            self._validate_invocation_context(trace, existing)
+        return existing
 
     @staticmethod
     def _domain_state(invocation: ToolInvocation | None) -> str:
@@ -301,51 +296,27 @@ class McpTraceService:
             return "unknown"
         return invocation.domain_state
 
-    def _reconcile_calls(self, trace: ConversationalToolTrace, now: datetime) -> bool:
+    def _reconcile_calls(self, trace: ConversationalToolTrace) -> bool:
         changed = False
         calls = [dict(item) for item in trace.calls]
+        invocations = correlated_calls(list(self.session.scalars(
+            select(ToolInvocation).where(ToolInvocation.trace_ref == trace.ref_id)
+        )))
         for call in calls:
             call_id = str(call.get("call_id", ""))
-            invocation = self.session.scalar(
-                select(ToolInvocation).where(
-                    ToolInvocation.trace_ref == trace.ref_id,
-                    ToolInvocation.trace_call_id == call_id,
-                )
-            )
-            received_hash = call.get("received_argument_hash")
-            if (
-                invocation is None and isinstance(received_hash, str)
-                and call.get("execution_boundary") != "local_rejection"
+            invocation = invocations.get(call_id)
+            if invocation is not None and (
+                invocation.tool_name != call.get("tool_name")
+                or invocation.trace_ordinal != call.get("ordinal")
+                or invocation.received_argument_hash != call.get("received_argument_hash")
+                or call.get("execution_boundary") == "local_rejection"
             ):
-                invocation = self.session.scalar(
-                    select(ToolInvocation)
-                    .where(
-                        ToolInvocation.caller_profile == "interactive",
-                        ToolInvocation.tool_name == call.get("tool_name"),
-                        ToolInvocation.received_argument_hash == received_hash,
-                        ToolInvocation.trace_ref.is_(None),
-                        ToolInvocation.started_at >= now - timedelta(minutes=10),
-                    )
-                    .order_by(ToolInvocation.started_at.desc())
-                    .limit(1)
-                    .with_for_update()
+                raise DocketError(
+                    code="mcp_trace_call_conflict",
+                    message="The retained trace disagrees with its invocation binding.",
                 )
-                if invocation is not None:
-                    invocation.trace_ref = trace.ref_id
-                    invocation.trace_call_id = call_id
-                    invocation.trace_ordinal = int(call.get("ordinal", 0))
-                    invocation.gateway_instance_ref = trace.gateway_instance_ref
-                    invocation.actor_ref = f"discord_user:{trace.actor_id}"
-                    source_message_ref = (
-                        f"discord_message:{trace.guild_id}:{trace.source_channel_id}:"
-                        f"{trace.source_message_id}"
-                    )
-                    utterance = self.session.scalar(
-                        select(OperatorUtterance).where(
-                            OperatorUtterance.source_message_ref == source_message_ref
-                        )
-                    )
-                    invocation.utterance_refs = [utterance.ref_id] if utterance is not None else []
+            if invocation is not None:
+                self._validate_invocation_context(trace, invocation)
             domain_state = self._domain_state(invocation)
             authoritative = {
                 "domain_state": domain_state,
@@ -456,9 +427,9 @@ class McpTraceService:
         tool_call_ref: str | None = None
         if request.call is not None:
             changed = self._apply_call(trace, request.call)
-            invocation = self._link_tool_invocation(trace, request.call, now)
+            invocation = self._link_tool_invocation(trace, request.call)
             tool_call_ref = invocation.ref_id if invocation is not None else None
-            changed = self._reconcile_calls(trace, now) or changed
+            changed = self._reconcile_calls(trace) or changed
         if request.turn_status != "running":
             target_status = request.turn_status
             if trace.status == "running":
@@ -471,7 +442,7 @@ class McpTraceService:
                     code="mcp_trace_state_regression",
                     message="A terminal MCP trace cannot change terminal state.",
                 )
-        changed = self._reconcile_calls(trace, now) or changed
+        changed = self._reconcile_calls(trace) or changed
         if not changed:
             return {
                 "ok": True,

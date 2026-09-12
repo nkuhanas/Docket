@@ -1,6 +1,6 @@
 # Docket Interactive Tool Contract
 
-contract_version: docket-tools-2026-09-11-v27
+contract_version: docket-tools-2026-09-11-v28
 contract_hash: 122aa910b857f8c6d68c85815a9687d6f7d0bd688cd630bf0cad15a24e14857a
 profile: interactive
 

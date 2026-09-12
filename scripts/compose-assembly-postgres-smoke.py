@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import hmac
 import json
 import os
 import threading
@@ -19,6 +21,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from docket.config import get_settings
 from docket.database import configure_database
+from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
 from docket.domain.public_refs import new_public_ref
 from docket.internal_api.schemas import OperatorUtteranceCapture
@@ -40,6 +43,7 @@ from docket.models import (
     ProviderAccount,
     ProviderEventBinding,
     Source,
+    ToolInvocation,
 )
 from docket.providers.google.calendar import CalendarProviderError
 from docket.providers.google.fake_calendar import FakeCalendarProvider
@@ -56,8 +60,10 @@ from docket.services.event_occurrences import (
 )
 from docket.services.gateway_lifetimes import GatewayLifetimeService
 from docket.services.history import HistoryService
+from docket.services.invocation_binding import bind_invocation
 from docket.services.operations import OperationRunner
 from docket.services.provenance import ProvenanceService
+from docket.tool_contracts import CONTRACT_VERSION, contract_hash
 
 
 def test_occurrence_commits_serialize_and_identity_is_immutable(
@@ -1173,6 +1179,55 @@ def test_diff_pages_keep_both_revisions_across_connections(factory: sessionmaker
         assert result["error"]["details"]["observed_revision"] == 1
 
 
+def test_invocation_binding_transport_retries_serialize(factory: sessionmaker[Session]) -> None:
+    with factory.begin() as session:
+        utterance = _utterance("1542799000000000679", "Read this smoke context.")
+        session.add(utterance)
+        session.flush()
+        utterance_ref = utterance.ref_id
+    trace_ref = new_public_ref("trace")
+    now = int(datetime.now(UTC).timestamp())
+    payload = {
+        "format": 1, "trace_ref": trace_ref, "call_id": "same-transport-call", "ordinal": 1,
+        "utterance_ref": utterance_ref, "gateway_instance_ref": None,
+        "tool_name": "docket_search_history", "argument_hash": sha256_json({}),
+        "contract_version": CONTRACT_VERSION, "contract_hash": contract_hash("interactive"),
+        "issued_at": now, "expires_at": now + 900,
+    }
+    encoded = base64.urlsafe_b64encode(json.dumps(
+        payload, sort_keys=True, separators=(",", ":")
+    ).encode()).decode().rstrip("=")
+    signature = hmac.new(
+        get_settings().hermes_to_docket_token().encode(),
+        b"docket-mcp-invocation-v1:" + encoded.encode(), hashlib.sha256,
+    ).hexdigest()
+    barrier = threading.Barrier(2)
+
+    def dispatch(_index: int) -> None:
+        with factory.begin() as session:
+            session.execute(text("SET LOCAL lock_timeout = '5s'"))
+            invocation = ToolInvocation(
+                tool_name="docket_search_history", tool_contract_version=CONTRACT_VERSION,
+                caller_profile="interactive", received_argument_hash=sha256_json({}),
+                transport_state="completed", completed_at=datetime.now(UTC),
+            )
+            session.add(invocation)
+            session.flush()
+            barrier.wait(timeout=10)
+            bind_invocation(session, invocation, f"{encoded}.{signature}", arguments={})
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(dispatch, (0, 1)))
+    with factory() as session:
+        invocations = list(session.scalars(select(ToolInvocation).where(
+            ToolInvocation.trace_ref == trace_ref
+        )))
+        assert len(invocations) == 2
+        assert {item.trace_call_id for item in invocations} == {"same-transport-call", None}
+        assert all(item.utterance_refs == [utterance_ref] for item in invocations)
+        assert all(item.trace_ordinal == 1 for item in invocations)
+
+
 def main() -> None:
     database_url = os.environ["DOCKET_DATABASE_URL"]
     engine = configure_database(database_url)
@@ -1187,6 +1242,7 @@ def main() -> None:
         test_relative_date_capture_serializes,
         test_occurrence_commits_serialize_and_identity_is_immutable,
         test_diff_pages_keep_both_revisions_across_connections,
+        test_invocation_binding_transport_retries_serialize,
     )
     for check in checks:
         check(factory)

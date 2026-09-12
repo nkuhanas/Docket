@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
 import json
 import os
 import uuid
@@ -156,6 +159,26 @@ async def smoke() -> None:
                 }],
             }
 
+        trace_ref = new_public_ref("trace")
+        argument_hash = sha256_json({
+            key: value for key, value in changeset_arguments.items()
+            if key not in {"utterance_ref", "request_key"}
+        })
+        issued_at = int(datetime.now(UTC).timestamp())
+        binding_payload = {
+            "format": 1, "trace_ref": trace_ref, "call_id": "compose-smoke-call",
+            "ordinal": 1, "utterance_ref": utterance_ref, "gateway_instance_ref": None,
+            "tool_name": "docket_request_clarification", "argument_hash": argument_hash,
+            "contract_version": CONTRACT_VERSION, "contract_hash": contract_hash("interactive"),
+            "issued_at": issued_at, "expires_at": issued_at + 900,
+        }
+        encoded_binding = base64.urlsafe_b64encode(json.dumps(
+            binding_payload, sort_keys=True, separators=(",", ":")
+        ).encode()).decode().rstrip("=")
+        binding_signature = hmac.new(
+            _service_token().encode(), b"docket-mcp-invocation-v1:" + encoded_binding.encode(),
+            hashlib.sha256,
+        ).hexdigest()
         async with streamable_http_client(f"{base_url}/mcp/", http_client=client) as streams:
             read_stream, write_stream, _ = streams
             async with ClientSession(read_stream, write_stream) as session:
@@ -181,17 +204,13 @@ async def smoke() -> None:
 
                 clarification = await session.call_tool(
                     "docket_request_clarification",
-                    changeset_arguments,
+                    {**changeset_arguments,
+                     "invocation_binding": f"{encoded_binding}.{binding_signature}"},
                 )
                 assert not clarification.isError, clarification
                 clarification_payload = json.loads(clarification.content[0].text)
                 assert clarification_payload["disposition"] == "needs_clarification"
 
-        trace_ref = new_public_ref("trace")
-        argument_hash = sha256_json({
-            key: value for key, value in changeset_arguments.items()
-            if key not in {"utterance_ref", "request_key"}
-        })
         turn_started_at = datetime.now(UTC).isoformat()
         trace_context = {
             "guild_id": "000000000000000002",
@@ -240,6 +259,8 @@ async def smoke() -> None:
                     },
                 )
                 trace.raise_for_status()
+                if call is not None:
+                    assert trace.json()["tool_call_ref"].startswith("call_")
 
             response = await service_client.post(
                 f"{base_url}/internal/v1/discord/agent-responses",
