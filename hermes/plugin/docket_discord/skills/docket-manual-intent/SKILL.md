@@ -142,6 +142,15 @@ do not re-add the other entries or request renewed approval. A retry of the exac
 old operation returns its recorded result; repair is a new stage operation.
 Do not equate a saved draft, ready draft, canonical commit and provider delivery.
 
+Bound stage/review and failed-commit receipts identify `semantic_request_ref` and
+`authority_availability_at_operation`. These are recorded observations, not fields
+to copy into the next call; an old replay does not assert today's availability.
+For `provider_event_binding_required`, follow the diagnostic's exact `status_read`.
+A moved occurrence may be waiting for its original Google creation to finish.
+Do not recreate it, ask for renewed authority, or poll indefinitely. Report the
+specific queued/reconciling/failed operation. After its binding is restored, a new
+stage operation with the unchanged patch revalidates the existing draft.
+
 For `draft_migration_required`, a sole stage patch
 `{"operations":[{"operation":"draft_recompile"}]}` requests an explicit audited
 recompile of unchanged pinned inputs. Do not combine it with edits, a new scope,

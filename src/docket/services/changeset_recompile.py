@@ -189,11 +189,11 @@ def recompile_draft(
     }
     changeset.validation_errors = errors
     changeset.state = "draft" if errors else "validated"
+    semantic_request = service.session.scalar(select(SemanticRequest).where(
+        SemanticRequest.ref_id == attempt.semantic_request_ref
+    ))
+    assert semantic_request is not None  # locked/bound by the calling service
     if not errors:
-        semantic_request = service.session.scalar(select(SemanticRequest).where(
-            SemanticRequest.ref_id == attempt.semantic_request_ref
-        ))
-        assert semantic_request is not None  # locked/bound by the calling service
         semantic_request.commit_state = "pending"
         intent_session.commit_state = "pending"
         attempt.state = "pending"
@@ -208,10 +208,15 @@ def recompile_draft(
         affected_refs=[changeset.ref_id, attempt.semantic_request_ref],
         basis_refs=[utterance.ref_id], data=migration,
     ))
-    from docket.services.changeset_assembly import _cursor_encode, _diagnostic_projection
+    from docket.services.changeset_assembly import (
+        _cursor_encode,
+        _diagnostic_projection,
+        _request_authority_receipt,
+    )
 
     return service._terminal(operation, {
         "ok": True, "disposition": "saved_with_errors" if errors else "ready_to_commit",
+        **_request_authority_receipt(semantic_request),
         "draft_ref": changeset.ref_id, "current_revision": revision.revision,
         "readiness": "saved_with_errors" if errors else "ready_to_commit",
         "assembly_ready": not errors, "observation_required": True,

@@ -57,6 +57,7 @@ from docket.services.attachment_evidence import (
     AttachmentEvidenceService,
     AttachmentTextService,
 )
+from docket.services.calendar_projection_invariants import missing_event_binding_diagnostic
 from docket.services.case_resolutions import AttentionCaseResolutionService
 from docket.services.changeset_pins import migration_required, pin_snapshot, verify_snapshot
 from docket.services.conflicts import ConflictService
@@ -2369,7 +2370,12 @@ class ChangeSetService:
                     errors.append(
                         {
                             "code": "provider_event_binding_required",
-                            "details": {"change_id": event_change.change_id},
+                            "details": {
+                                "change_id": event_change.change_id,
+                                **missing_event_binding_diagnostic(
+                                    self.session, target_ref=target_ref, target_kind="event",
+                                ),
+                            },
                         }
                     )
 
