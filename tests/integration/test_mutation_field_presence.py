@@ -70,6 +70,14 @@ def test_staged_patch_retains_exact_fields_through_restart_and_commit(session, k
     proposal = read_request_proposal(session, semantic_request_ref=draft.semantic_request_ref,
                                     version=revision.revision)
     assert proposal.direct_actions[0].payload.model_dump(exclude_unset=True) == payload
+    preview = revision.compiler_manifest_json["canonical_patch_preview"]["effects"][0]
+    assert preview["after"] == payload
+    assert preview["observed_version"] == preview["expected_version"] == 1
+    if kind == "reopen_task":
+        assert preview["before"]["task_state"] == "completed"
+        assert preview["before"]["completed_at"] is not None
+    elif "description" in payload:
+        assert preview["before"]["description"] == "Keep unless explicitly cleared"
     session.commit()
     session.expire_all()
 
@@ -82,6 +90,8 @@ def test_staged_patch_retains_exact_fields_through_restart_and_commit(session, k
     session.flush()
     session.refresh(target)
     assert target.version == 2
+    for field, value in preview["after"].items():
+        assert getattr(target, field) == value
     if kind == "reopen_task":
         assert target.task_state == "in_progress" and target.completed_at is None
         assert target.title == "Follow up" and target.description == "Task description"

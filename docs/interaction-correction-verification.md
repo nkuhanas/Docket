@@ -923,3 +923,36 @@ the isolated Compose/PostgreSQL smoke. The Calendar fixture preserves the exact
 title, location, lane and provider intent through adoption and recompilation,
 then queues one Operation on commit; it does not claim provider delivery. These
 are local results, with no production mutation or deployment.
+
+## Scoped canonical patch before/after previews
+
+New staged revisions retain `canonical_patch_preview` alongside the existing
+Calendar presentation snapshot. Optional diff pages use only those immutable
+fields. Item, Task, Time, Reminder, temporal projection, policy, lane and registry
+patches show the actual targeted canonical values and proposed replacements.
+Identity bindings expose public refs rather than internal UUIDs; sender email
+membership changes expose the exact ref set. Unrelated object attributes and
+provenance chains are not copied into the preview.
+
+Retraction follows each object's actual lifecycle field. Supersession shows the
+old assertion becoming historical rather than falsely overwriting it with the
+replacement's values. Same-draft dependencies remain explicit symbolic targets.
+Case closure separates selected dispositions from system-derived `not_pursued`,
+with stale/unresolved prerequisites marked unavailable rather than resolved.
+Adds and replacement specifications remain in the ordinary input diff; no
+duplicate compiler-owned create records or invented future IDs are introduced.
+
+These are planned presentation effects, not commit success or new semantic
+authority. Commit continues to validate exact versions. Preview fields live in
+the existing versioned immutable revision manifest; this introduces no migration,
+backfill or legacy decoder. Revisions without a capture stay unavailable; paging
+never reconstructs their history from current state. Ordinary review stays
+optional, and the tool registry remains 23/4 under contract v36.
+
+Validation passed 641 tests, Ruff and strict mypy (142 files), plus isolated
+Compose/PostgreSQL smoke. Tests cover explicit clears, Task reopening, eleven
+distinct lifecycle mappings, identity association/binding, case dispositions,
+filtering, lossless bounded Unicode detail, and stable pagination after another
+canonical change. Stage-to-commit fixtures match captured planned fields against
+the actual committed Item/Task with no review. PostgreSQL recompile/reconnect and
+post-commit reads retain the original snapshot. No production change occurred.

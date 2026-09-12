@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-09-11-v35"
+CONTRACT_VERSION = "docket-tools-2026-09-11-v36"
 
 
 class ToolContractEntry(TypedDict):
@@ -141,8 +141,9 @@ _INTERACTIVE_ASSEMBLY: dict[str, tuple[str, str]] = {
         "ONT-CS-TOOL-0002",
         "Optionally read the draft; diff shows actual staged before/after fields against the "
         "previous immutable revision, including removals and occurrence/series scope. "
-        "Calendar effect rows separately compare the captured canonical state with the planned "
-        "result; paging never rereads live state. These are not provider confirmations. "
+        "Canonical effect rows compare captured targeted fields with the planned result, including "
+        "Calendar occurrences, work/context, policy and registry patches; paging never rereads "
+        "live state. These are not provider confirmations. "
         "Explicit migration diffs also show compiler products and executable pins. "
         "Oversized detail uses lossless json_utf8 fragments and a revision-bound cursor.",
     ),

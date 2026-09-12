@@ -1669,6 +1669,13 @@ def test_explicit_clear_patches_survive_postgresql_revision_and_recompile(
         changeset = session.scalar(select(ChangeSet).where(ChangeSet.ref_id == staged["draft_ref"]))
         assert changeset is not None
         request_ref = changeset.semantic_request_ref
+        original_preview = deepcopy(changeset.compiler_manifest_json["canonical_patch_preview"])
+        assert original_preview["effect_count"] == 2
+        effects = {effect["change_id"]: effect for effect in original_preview["effects"]}
+        assert effects["item"]["before"] == {"description": "Clear this"}
+        assert effects["item"]["after"] == {"description": None}
+        assert effects["task"]["before"]["task_state"] == "completed"
+        assert effects["task"]["after"] == payloads[1]
     token = admit(2, "docket_stage_changes")
     with factory.begin() as session:
         migrated = ChangeSetAssemblyService(session).stage(
@@ -1704,6 +1711,20 @@ def test_explicit_clear_patches_survive_postgresql_revision_and_recompile(
         assert item.title == "Keep title" and item.kind == "smoke.request" and item.version == 2
         assert task is not None and task.completed_at is None
         assert task.title == "Follow up" and task.task_state == "in_progress" and task.version == 2
+        revision = session.scalar(select(ChangeSetRevision).join(ChangeSet).where(
+            ChangeSet.ref_id == staged["draft_ref"], ChangeSetRevision.revision == 1,
+        ))
+        assert revision is not None
+        assert revision.compiler_manifest_json["canonical_patch_preview"] == original_preview
+    # Paging the old revision after commit still reports its captured before-state.
+    page = _review(
+        factory, utterance_ref=utterance_ref, request_key=request_key, trace_ref=trace_ref,
+        call_id="patch-historical-diff", ordinal=5, argument_hash="5" * 64, view="diff", limit=100,
+    )
+    rows = [row for row in page["items"] if row["subject_kind"] == "canonical_target_effect"]
+    assert any(row.get("before") == "Clear this" and row.get("after") is None for row in rows)
+    assert any(row.get("before") == "completed" and row.get("after") == "in_progress"
+               for row in rows)
 
 
 def test_source_title_repair_survives_restart_and_replays_once(

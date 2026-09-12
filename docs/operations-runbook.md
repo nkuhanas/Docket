@@ -200,6 +200,18 @@ cancellations. Additional non-presentation inputs stay in the ordinary input
 diff. Old revisions without a captured preview report it unavailable; reads do
 not reconstruct one from live state. Compiler-owned new records appear once
 through their source entry.
+`canonical_target_effect` rows extend the same staging-time comparison to
+Item/Task/Time, Reminder, temporal projection, policy, lane and registry patches.
+They contain only affected fields, not whole object profiles or provenance
+chains. An explicit null is a clear, not an omitted value. Retraction shows the
+type's actual lifecycle effect (for example, disabling a lane is not deleting
+it); supersession retires the old assertion while its proposed replacement stays
+in the input diff. Same-draft dependencies retain their change ID rather than an
+invented future public ref. Case-resolution rows distinguish Operator dispositions
+from system-derived `not_pursued`; they do not expose CaseItem payloads or claim
+a future Decision timestamp. Unavailable targets and stale case revisions are
+explicitly unavailable, not predicted success. Preview availability never
+overrides validation or the commit's expected-version checks.
 Continue with the same cursor even if another attempt edits the draft. Reading
 old pages does not observe that newer revision or permit committing it.
 

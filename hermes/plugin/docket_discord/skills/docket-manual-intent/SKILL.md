@@ -197,6 +197,11 @@ planned-after Calendar presentation fields, pinned at staging. They retain
 original occurrence identity and the current moved time when applicable;
 an unavailable preview is not a no-op. Non-presentation input changes remain
 in the ordinary draft diff. Never treat either preview as a provider confirmation.
+`canonical_target_effect` rows likewise show affected work/context, policy and
+registry fields captured at staging. Case rows distinguish explicit dispositions
+from system-derived `not_pursued`. Null clears and supersession retirement are
+literal changes, not evidence that a target disappeared. Missing snapshots are
+unavailable; neither snapshot availability nor an unchanged field proves readiness.
 Entry-owned compiler boilerplate is represented once by its semantic entry.
 Follow the returned cursor to keep both sides of the comparison fixed. Large
 details use lossless `json_utf8` fragments with offsets and a digest, rather than
