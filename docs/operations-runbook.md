@@ -103,8 +103,15 @@ intervals are attributed once, with Docket execution, local validation, model
 requests, then context/schema taking precedence. A phase without observations
 is null, not zero. Model-request time includes network/provider response and
 the pinned hook-boundary overhead; it is not a claim of pure model compute.
-Queue and provider-wait fields remain null until their boundaries are measured;
-provider delivery status does not prove Hermes was waiting. A large
+`queue_ms` covers only the initial durable receipt-to-first-interactive-claim
+interval when the original source/actor, first claim's gateway and timestamp
+order agree. That evidence expands the elapsed window to ledger receipt time.
+The current DeferredIngress claim is not used: retries may replace it. Missing
+or contradictory evidence leaves queue time null and retains the trace window;
+later recovery downtime and Hermes-internal scheduling after the claim remain
+unattributed unless separately measured. Provider-wait time remains null without
+an explicit waiting observation; provider delivery status does not prove Hermes
+was waiting. A large
 `before_first_docket_call_ms` identifies a delay, not its cause. Statuses are live
 observations; call cursors bind the trace revision and projected invocation
 snapshot and explicitly require a restart if either advances. Historical callback

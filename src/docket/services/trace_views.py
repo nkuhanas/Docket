@@ -13,7 +13,13 @@ from sqlalchemy.orm import Session
 
 from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
-from docket.models import ConversationalToolTrace, ToolInvocation, TraceTimingObservation
+from docket.models import (
+    ConversationalToolTrace,
+    ExecutionLease,
+    OperatorUtterance,
+    ToolInvocation,
+    TraceTimingObservation,
+)
 from docket.models.base import utc_now
 from docket.services.trace_correlation import correlated_calls
 
@@ -33,7 +39,9 @@ def _partition_intervals(intervals: dict[str, list[tuple[int, int]]]) -> dict[st
     requests inside context preparation are model-request time. Neither a sum
     of concurrent intervals nor an open interval can inflate elapsed time.
     """
-    priority = ("docket_execution_ms", "local_validation_ms", "model_ms", "context_schema_ms")
+    priority = (
+        "docket_execution_ms", "local_validation_ms", "model_ms", "context_schema_ms", "queue_ms",
+    )
     edges: dict[int, Counter[str]] = {}
     for phase, spans in intervals.items():
         for left, right in spans:
@@ -55,6 +63,39 @@ class TraceViewService:
     def __init__(self, session: Session) -> None:
         self.session = session
 
+    def _ingress_window(
+        self, trace: ConversationalToolTrace,
+    ) -> tuple[datetime, datetime] | None:
+        """The initial durable receipt-to-claim interval, not later retry downtime.
+
+        The source message owns one trace. Its first interactive execution claim
+        is the closed queue boundary; the mutable DeferredIngress claim cannot
+        be used because recovery replaces it. No clock, gateway or source guess
+        may turn missing evidence into a zero or an invented waiting interval.
+        """
+        row = self.session.execute(select(
+            OperatorUtterance.recorded_at, ExecutionLease.claimed_at,
+            ExecutionLease.gateway_instance_ref,
+        ).join(
+            ExecutionLease, ExecutionLease.subject_ref == OperatorUtterance.ref_id,
+        ).where(
+            OperatorUtterance.transport == "discord",
+            OperatorUtterance.actor_ref == f"discord_user:{trace.actor_id}",
+            OperatorUtterance.source_message_ref == (
+                f"discord_message:{trace.guild_id}:{trace.source_channel_id}:"
+                f"{trace.source_message_id}"
+            ),
+            ExecutionLease.lease_kind == "interactive_turn",
+        ).order_by(ExecutionLease.claimed_at, ExecutionLease.id).limit(1)).first()
+        if row is None or trace.gateway_instance_ref is None or (
+            row.gateway_instance_ref != trace.gateway_instance_ref
+        ):
+            return None
+        start, end = _utc(row.recorded_at), _utc(row.claimed_at)
+        if not start <= end <= _utc(trace.started_at):
+            return None
+        return start, end
+
     def snapshot(self, trace: ConversationalToolTrace) -> dict[str, Any]:
         invocations = list(
             self.session.scalars(
@@ -63,15 +104,19 @@ class TraceViewService:
         )
         by_call = correlated_calls(invocations)
         as_of = utc_now()
-        total_ms = _milliseconds(trace.started_at, trace.completed_at or as_of)
+        ingress = self._ingress_window(trace)
+        if ingress is not None and ingress[1] > _utc(trace.completed_at or as_of):
+            ingress = None  # A clock discontinuity is not a negative unattributed interval.
+        window_start = ingress[0] if ingress else trace.started_at
+        total_ms = _milliseconds(window_start, trace.completed_at or as_of)
         intervals = []
         for item in invocations:
             # A running/uncertain invocation is not proof of uninterrupted CPU,
             # provider waiting or even a live process. Only closed intervals are
             # measured here; pending evidence remains explicitly unmeasured.
             if item.completed_at is not None:
-                left = min(total_ms, _milliseconds(trace.started_at, item.started_at))
-                right = min(total_ms, _milliseconds(trace.started_at, item.completed_at))
+                left = min(total_ms, _milliseconds(window_start, item.started_at))
+                right = min(total_ms, _milliseconds(window_start, item.completed_at))
                 if right >= left:
                     intervals.append((left, right))
         observations = list(self.session.scalars(select(TraceTimingObservation).where(
@@ -82,9 +127,11 @@ class TraceViewService:
             "local_validation": "local_validation_ms",
         }
         phase_intervals = {"docket_execution_ms": intervals}
+        if ingress is not None:
+            phase_intervals["queue_ms"] = [(0, _milliseconds(*ingress))]
         for observation in observations:
-            left = min(total_ms, _milliseconds(trace.started_at, observation.started_at))
-            right = min(total_ms, _milliseconds(trace.started_at, observation.ended_at))
+            left = min(total_ms, _milliseconds(window_start, observation.started_at))
+            right = min(total_ms, _milliseconds(window_start, observation.ended_at))
             phase_intervals.setdefault(phase_names[observation.phase], []).append((left, right))
         measured = _partition_intervals(phase_intervals)
         execution_ms = measured["docket_execution_ms"]
@@ -168,18 +215,22 @@ class TraceViewService:
             "timing": {
                 "total_elapsed_ms": total_ms,
                 "before_first_docket_call_ms": (
-                    min(total_ms, _milliseconds(trace.started_at, first)) if first else None
+                    min(total_ms, _milliseconds(window_start, first)) if first else None
                 ),
                 "docket_execution_ms": execution_ms,
                 # This aggregate can overlap both itself and Docket intervals.
                 # It is deliberately NOT subtracted from wall-clock elapsed.
                 "wrapper_elapsed_sum_ms": sum(row["elapsed_ms"] or 0 for row in rows),
                 "unattributed_ms": total_ms - sum(measured.values()),
-                "queue_ms": None,
+                "queue_ms": measured["queue_ms"] if ingress is not None else None,
                 **{name: measured[name] if name in phase_intervals else None
                    for name in phase_names.values()},
                 "provider_wait_ms": None,
             },
+            "timing_scope": (
+                "durable_receipt_to_trace_end_initial_ingress_queue_closed_intervals"
+                if ingress else "trace_window_closed_intervals_exclusive_attribution"
+            ),
             "rows": rows,
         }
 
@@ -259,5 +310,4 @@ class TraceViewService:
             "omitted_detail_count": len(rows) - end,
             "truncated": end < len(rows),
             **({"cursor": next_cursor} if end < len(rows) else {}),
-            "timing_scope": "trace_window_closed_intervals_exclusive_attribution",
         }

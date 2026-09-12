@@ -57,6 +57,7 @@ from docket.models import (
     EventOccurrence,
     ExecutionAttempt,
     ExecutionLease,
+    GatewayLifetime,
     Item,
     LaneRoutingDecision,
     Operation,
@@ -2338,6 +2339,60 @@ def test_timing_observations_serialize_and_preserve_evidence(
         raise AssertionError("A lossy timing downgrade was permitted")
 
 
+def test_queue_boundary_survives_ingress_reclaim(factory: sessionmaker[Session]) -> None:
+    from docket.services.continuity import ContinuityService
+    from docket.services.trace_views import TraceViewService
+
+    settings = get_settings()
+    message, ref = "1542799000000000691", new_public_ref("trace")
+    with factory.begin() as session:
+        # The shared isolated database already has a live fixture gateway.
+        lifetime = session.scalar(select(GatewayLifetime).where(
+            GatewayLifetime.instance_kind == "hermes_discord_gateway",
+            GatewayLifetime.status == "active",
+        ))
+        gateway = lifetime.ref_id if lifetime is not None else str(
+            GatewayLifetimeService(session).register(
+                registration_key=uuid.uuid4(), instance_kind="hermes_discord_gateway",
+            )["ref"],
+        )
+        source = _utterance(message, "Synthetic queued timing fixture.")
+        source.recorded_at = datetime.now(UTC) - timedelta(seconds=10)
+        session.add(source)
+        session.flush()
+        lease = ContinuityService(session).acquire_execution_lease(
+            lease_key=f"timing-first:{ref}", lease_kind="interactive_turn",
+            subject_ref=source.ref_id, gateway_instance_ref=str(gateway),
+        )
+        expected_queue = int((lease.claimed_at - source.recorded_at).total_seconds() * 1000)
+        utterance_ref, token = source.ref_id, lease.completion_token
+    start = datetime.now(UTC)
+    with factory.begin() as session:
+        McpTraceService(session).checkpoint(ref, McpTraceCheckpoint(
+            request_id=uuid.uuid4(), guild_id=settings.discord_guild_id,
+            source_channel_id=settings.chat_channel_id, source_message_id=message,
+            actor_id=settings.operator_discord_user_id, utterance_ref=utterance_ref,
+            gateway_instance_ref=str(gateway), caller_profile="interactive",
+            tool_contract_version=CONTRACT_VERSION, tool_contract_hash=contract_hash("interactive"),
+            turn_started_at=start, updated_at=datetime.now(UTC), turn_status="completed",
+        ))
+        ContinuityService(session).complete_execution_lease(token)
+        ContinuityService(session).acquire_execution_lease(
+            lease_key=f"timing-recovery:{ref}", lease_kind="interactive_turn",
+            subject_ref=utterance_ref, gateway_instance_ref=str(gateway),
+        )
+    with factory() as session:
+        trace = session.scalar(select(ConversationalToolTrace).where(
+            ConversationalToolTrace.ref_id == ref,
+        ))
+        assert trace is not None
+        view = TraceViewService(session).snapshot(trace)
+        assert view["timing"]["queue_ms"] == expected_queue
+        assert view["timing"]["total_elapsed_ms"] >= expected_queue
+        assert view["timing"]["model_ms"] is None
+        assert view["timing_scope"].startswith("durable_receipt_to_trace_end")
+
+
 def main() -> None:
     database_url = os.environ["DOCKET_DATABASE_URL"]
     engine = configure_database(database_url)
@@ -2366,6 +2421,7 @@ def main() -> None:
         test_request_specifications_are_immutable_and_block_lossy_downgrade,
         test_initial_source_interpretations_are_immutable_across_connections,
         test_timing_observations_serialize_and_preserve_evidence,
+        test_queue_boundary_survives_ingress_reclaim,
     )
     for check in checks:
         check(factory)

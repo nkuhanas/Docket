@@ -1124,3 +1124,29 @@ optional, revision-pinned entries pages; an older page never imports the values
 or observation state of a newer batch. The reviewed Hermes skill also passed its
 structural validation. No production deployment, historical request replay or
 live vision-quality claim is implied by these isolated checks.
+
+## Initial ingress queue attribution
+
+Contract v38/plugin `0.30.0` expose the initial queue interval from the original
+OperatorUtterance's durable recorded timestamp to its first interactive execution
+claim. The query binds exact source/actor and checks the first claim's gateway
+and clock order against the trace. A later matching claim cannot replace an
+earlier mismatched claim. Retrying or completing the current DeferredIngress
+does not rewrite the initial interval. No payload or completion token is exposed.
+
+With coherent evidence, elapsed time begins at that ledger receipt; all closed
+model/context/validation/Docket intervals use the same expanded window and
+exclusive partition. Otherwise the existing trace window remains and queue time
+is unmeasured, not zero. The claim-to-context gap, Hermes-internal scheduling,
+later recovery downtime and provider waiting are not inferred from this interval.
+Trace completion is not response-delivery confirmation; live receipt and Calendar
+latencies still require separate operator-present measurements.
+
+This read projection reuses existing durable evidence without schema migration,
+new observations, history backfill or model-facing tools. Validation passed
+**746 tests, Ruff and strict mypy (143 source files)**, plus isolated Compose
+smoke. The PostgreSQL fixture uses real execution claims, reloads the trace in
+a new connection after a subsequent claim, and preserves the original interval.
+Adversarial fixtures cover wrong source/actor/gateway and inconsistent clocks;
+Discord rendering retains the exclusive timing total and explicit queue label.
+These checks are not live latency measurements or production deployment.

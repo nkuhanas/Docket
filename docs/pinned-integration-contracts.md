@@ -30,6 +30,14 @@ traceability marker only.
 
 ## Hermes plugin contract
 
+Plugin `0.30.0`/contract v38 label the initial ingress-queue interval separately.
+It is derived from the exact original ledger receipt and first interactive
+execution claim, never the mutable current claim or a later matching gateway.
+The trace window expands to that receipt only with a coherent source/actor,
+gateway and timestamp binding. Existing context/model/validation intervals are
+partitioned on that window without double-counting. This does not measure
+Hermes-internal scheduling after the claim or infer provider waiting.
+
 Plugin `0.29.0` packages contract v37 and the reviewed source-selection guidance.
 Normalized source imports declare the complete selected-entry ID inventory once;
 stage receipts distinguish partial drafts from ready work. Initial interpretations
