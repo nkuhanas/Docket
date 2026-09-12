@@ -66,6 +66,7 @@ from docket.services.changeset_recompile import recompile_draft
 from docket.services.intent_sessions import IntentSessionService
 from docket.services.interactive_authority import InteractiveAuthorityService
 from docket.services.reply_bindings import ReplyBindingService
+from docket.services.request_specifications import record_request_proposal
 from docket.services.statements import StatementService
 
 MAX_DRAFT_ENTRIES = 250
@@ -1117,6 +1118,7 @@ class ChangeSetAssemblyService:
             revision.compiler_manifest_json = changeset.compiler_manifest_json
             revision.validation_errors_json = changeset.validation_errors
             revision.assembly_operation_id = operation.id
+        record_request_proposal(self.session, changeset=changeset, revision=revision)
         return revision
 
     @staticmethod

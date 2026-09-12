@@ -128,6 +128,15 @@ the production `.env` or production credentials.
 
 ## Tool and contract diagnosis
 
+New staged revisions retain an immutable request interpretation under the exact
+`sreq_`/version pair in `semantic_request_specifications`. Its integrity digest
+and source hashes do not prove that the proposed interpretation is authorized:
+`pending_evidence_validation` remains explicit, separate from draft compilation
+readiness. Do not use an unverified proposal to justify a semantic repair.
+No old request is backfilled or executed by migration `20260911e4b3`. A nonempty
+specification table blocks downgrade; use a verified backup or forward repair,
+never delete evidence to make an image rollback work.
+
 When Hermes appears to use the wrong schema:
 
 1. Confirm the running Docket and Hermes image revisions.

@@ -77,6 +77,7 @@ from docket.models.registry import (
     SenderIdentityEmail,
     Source,
 )
+from docket.models.request_specifications import SemanticRequestSpecification
 from docket.models.tracked_context import (
     AttachmentEvidence,
     EncryptedAttachmentBlob,
@@ -160,6 +161,7 @@ __all__ = [
     "ScheduledNotification",
     "SemanticRequest",
     "SemanticRequestAttempt",
+    "SemanticRequestSpecification",
     "SenderIdentityEmail",
     "Source",
     "StatementRelation",

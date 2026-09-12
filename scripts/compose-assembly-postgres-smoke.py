@@ -17,6 +17,9 @@ from unittest.mock import patch
 
 from alembic import command
 from alembic.config import Config
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
+from alembic.script import ScriptDirectory
 from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
@@ -49,6 +52,7 @@ from docket.models import (
     OutboxEvent,
     ProviderAccount,
     ProviderEventBinding,
+    SemanticRequestSpecification,
     Source,
     ToolInvocation,
 )
@@ -1379,13 +1383,21 @@ def test_trace_history_survives_call_one_hundred_and_blocks_lossy_downgrade(
         assert page["total_if_known"] == 103
         assert len(page["items"]) <= 25 and page["cursor"]
     try:
-        command.downgrade(Config("alembic.ini"), "20260911c2f1")
+        # Test this specific guard even when a newer migration independently
+        # refuses to discard its evidence. Keep the whole transaction rolled back.
+        migration = ScriptDirectory.from_config(Config("alembic.ini")).get_revision("20260911d3a2")
+        assert migration is not None
+        with (
+            factory.kw["bind"].begin() as connection,
+            Operations.context(MigrationContext.configure(connection)),
+        ):
+            migration.module.downgrade()
     except RuntimeError as exc:
         assert "discard evidence" in str(exc)
     else:
         raise AssertionError("Downgrade should preserve the longer trace by refusing to proceed")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260911d3a2"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260911e4b3"
         assert session.scalar(select(ConversationalToolTrace.last_ordinal).where(
             ConversationalToolTrace.id == trace_id
         )) == 103
@@ -1565,6 +1577,38 @@ def test_gateway_recovery_and_late_completion_serialize(factory: sessionmaker[Se
             )) == 1
 
 
+def test_request_specifications_are_immutable_and_block_lossy_downgrade(
+    factory: sessionmaker[Session],
+) -> None:
+    with factory() as session:
+        row = session.scalar(select(SemanticRequestSpecification))
+        assert row is not None
+        key = {"ref": row.semantic_request_ref, "version": row.version}
+        assert row.specification_hash == sha256_json(row.specification_json)
+    for sql in (
+        "UPDATE semantic_request_specifications SET specification_hash = :hash "
+        "WHERE semantic_request_ref = :ref AND version = :version",
+        "DELETE FROM semantic_request_specifications "
+        "WHERE semantic_request_ref = :ref AND version = :version",
+    ):
+        try:
+            with factory.begin() as session:
+                session.execute(text(sql), {**key, "hash": "0" * 64})
+        except DBAPIError:
+            pass
+        else:
+            raise AssertionError("PostgreSQL allowed rewriting immutable request evidence")
+    try:
+        command.downgrade(Config("alembic.ini"), "20260911d3a2")
+    except RuntimeError as exc:
+        assert "discard evidence" in str(exc)
+    else:
+        raise AssertionError("Downgrade discarded immutable request specifications")
+    with factory() as session:
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260911e4b3"
+        assert session.get(SemanticRequestSpecification, (key["ref"], key["version"])) is not None
+
+
 def main() -> None:
     database_url = os.environ["DOCKET_DATABASE_URL"]
     engine = configure_database(database_url)
@@ -1584,6 +1628,7 @@ def main() -> None:
         test_trace_history_survives_call_one_hundred_and_blocks_lossy_downgrade,
         test_lost_admission_response_recovers_from_exact_local_trace,
         test_gateway_recovery_and_late_completion_serialize,
+        test_request_specifications_are_immutable_and_block_lossy_downgrade,
     )
     for check in checks:
         check(factory)
