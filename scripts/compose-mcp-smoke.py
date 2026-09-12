@@ -247,7 +247,6 @@ async def smoke() -> None:
                     },
                     "running",
                 ),
-                (None, "completed"),
             ):
                 trace = await service_client.put(
                     f"{base_url}/internal/v1/discord/mcp-traces/{trace_ref}",
@@ -261,6 +260,29 @@ async def smoke() -> None:
                 trace.raise_for_status()
                 if call is not None:
                     assert trace.json()["tool_call_ref"].startswith("call_")
+
+            checkpoint = {
+                **trace_context, "request_id": str(uuid.uuid4()),
+                "utterance_ref": utterance_ref, "turn_status": "completed",
+                "calls": [
+                    {**running_call, "transport_state": "completed", "elapsed_ms": 1,
+                     "disposition": "succeeded"},
+                    {"call_id": "compose-local-rejection", "ordinal": 2,
+                     "tool_name": "docket_stage_changes", "execution_boundary": "local_rejection",
+                     "transport_state": "completed", "elapsed_ms": 2,
+                     "disposition": "rejected_validation", "received_argument_hash": "c" * 64},
+                ],
+            }
+            checkpoint_url = f"{base_url}/internal/v1/discord/mcp-traces/{trace_ref}/checkpoint"
+            unauthenticated = await service_client.put(
+                checkpoint_url, json=checkpoint, headers={"Authorization": "Bearer wrong-fixture"},
+            )
+            assert unauthenticated.status_code == 401
+            for expected in ("updated", "replayed_request"):
+                checkpoint_result = await service_client.put(checkpoint_url, json=checkpoint)
+                checkpoint_result.raise_for_status()
+                assert checkpoint_result.json()["disposition"] == expected
+                assert checkpoint_result.json()["trace_status"] == "completed"
 
             response = await service_client.post(
                 f"{base_url}/internal/v1/discord/agent-responses",

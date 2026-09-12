@@ -956,3 +956,44 @@ filtering, lossless bounded Unicode detail, and stable pagination after another
 canonical change. Stage-to-commit fixtures match captured planned fields against
 the actual committed Item/Task with no review. PostgreSQL recompile/reconnect and
 post-commit reads retain the original snapshot. No production change occurred.
+
+## Durable recovery of dropped trace callbacks
+
+The gateway now checkpoints exact call observations before returning a local
+rejection and when the tool loop finishes. Each service-authenticated page binds
+the original `utt_`, source, trace, gateway and loaded contract, contains at most
+25 observations, and stays within 16 KiB. Lost acknowledgements replay the same
+page without adding an observation or erasing an authoritative domain outcome.
+A malformed page or ordinal gap rolls back all its changes, including when the
+caller handles its error inside an outer transaction. Source-first locking
+serializes first checkpoint/callback creation as well as later row updates.
+
+An asynchronous start may arrive after an acknowledged terminal checkpoint; it
+is an earlier observation, not permission to regress completion. Original
+wrapper reports are retained separately from reconciled Docket dispositions.
+Checkpoint metadata cannot create a `call_`, claim local success, change a tool's
+argument binding, override a signed invocation, or add a new call to a terminal
+trace. The ordinary callback route also rolls back before returning a rejection.
+
+Normal successful tools keep asynchronous telemetry. Local capture failure
+reports its own blocker and requires checkpoint recovery before another Docket
+dispatch. Turn completion checkpoints replace waiting for an empty global queue;
+response persistence remains independent, so a telemetry failure cannot suppress
+the final domain result. There is no local durable spool, old-format decoder or
+historical callback reconstruction. If PostgreSQL capture remains unavailable,
+unacknowledged observations are not claimed to survive a process crash.
+
+Validation passed **667 tests, Ruff and strict mypy (142 files)** and isolated
+Compose/PostgreSQL smoke. Fixtures cover lost callback prefixes, response loss
+after checkpoint commit, interrupted multi-page capture, bounded Unicode wire
+payloads, local rejection without a post hook, unchanged successful-tool critical
+paths, next-dispatch gating and separate final response persistence. PostgreSQL
+verifies concurrent start/checkpoint delivery, fresh-session page recovery and
+all-or-nothing page rollback. Real internal HTTP verifies authentication,
+checkpoint/replay, and separation from the MCP invocation's actual outcome.
+Reconciliation leaves older local evidence without a separately captured wrapper
+report intact; it neither erases that evidence nor manufactures a new report.
+
+This advances ONT-UX-REQ-0016 but does not measure queue/model/context/provider
+phases or claim a latency speedup. Those measurements and the remaining semantic
+authority/readiness gates are still required. No production deployment occurred.

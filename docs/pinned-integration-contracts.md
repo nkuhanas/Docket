@@ -121,7 +121,13 @@ Pinned outbound assumptions to revalidate:
   after disclosure from the current authenticated execution, never model text.
 * the plugin sends hook observations to Docket through a bounded background
   queue so trace telemetry does not add one network round trip to each tool's
-  critical path. Docket validates monotonicity and projects the one trace
+  successful critical path. Before returning a local rejection and when the
+  tool loop finishes, it checkpoints the exact observations in bounded pages
+  through the service-authenticated internal API. Page replay is idempotent;
+  successful capture, not an empty in-memory queue, establishes durability.
+  A failed local checkpoint blocks subsequent Docket dispatch until recovered.
+  Final response persistence is independent of telemetry failure. No local spool
+  becomes durable authority. Docket validates monotonicity and projects the one trace
   through its durable outbox; the plugin never posts hook output directly to
   Discord. The trace carries the authenticated gateway turn-start instant, so
   its compact timing projection distinguishes time before the first Docket tool,
