@@ -57,6 +57,9 @@ from docket.services.semantic_options import (
     CURRENT_SELECTION_UTTERANCE,
     SemanticOptionService,
     complete_selection_provenance,
+)
+from docket.services.semantic_scope import (
+    require_current_semantic_scope,
     semantic_authority_scope,
 )
 from docket.services.tracked_context import TrackedContextService
@@ -156,6 +159,18 @@ class InteractiveAuthorityService:
         content: ChangeSetContent,
         resolved_intent_json: dict[str, Any],
     ) -> SemanticRequest:
+        for preserved in self.session.scalars(
+            select(SemanticRequest).where(
+                SemanticRequest.intent_session_ref == intent_session.ref_id,
+                SemanticRequest.authority_availability == "available",
+            )
+        ):
+            binding = preserved.selected_option_binding or {}
+            if (
+                binding.get("kind") == "freeform_turn"
+                and utterance.ref_id in preserved.origin_utterance_refs
+            ):
+                require_current_semantic_scope(binding.get("scope") or {})
         scope = self._freeform_scope(content, resolved_intent_json)
         authority_scope_hash = sha256_json(scope)
         preconditions = self._freeform_preconditions(content, intent_session)
@@ -493,6 +508,7 @@ class InteractiveAuthorityService:
                 )
             binding = semantic_request.selected_option_binding or {}
             if binding.get("kind") == "freeform_turn":
+                require_current_semantic_scope(binding.get("scope") or {})
                 bound_session = self.session.get(IntentSession, semantic_request.intent_session_id)
                 if bound_session is None:
                     raise DocketError(
@@ -541,6 +557,8 @@ class InteractiveAuthorityService:
                         PersistedSemanticOption.precondition_hash == precondition_hash,
                     )
                 )
+                if option is not None:
+                    require_current_semantic_scope(option.authority_scope_json)
                 if option is None or complete_selection_provenance(
                     option.compilation_template_json, utterance.ref_id
                 ) != content.model_dump(
