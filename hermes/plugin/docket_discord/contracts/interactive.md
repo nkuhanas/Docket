@@ -1,7 +1,7 @@
 # Docket Interactive Tool Contract
 
-contract_version: docket-tools-2026-09-11-v25
-contract_hash: cf2add2abe6efba39fcda280094297d02cdebdb242746f8fca87a0e5495cb3d6
+contract_version: docket-tools-2026-09-11-v26
+contract_hash: 031bfc7f777df8eead995393427127ad43abd3582adaf900559add5d833f28fc
 profile: interactive
 
 Rules: MCP/Pydantic schemas define exact arguments. This contract defines selection, authority, side effects, and result handling.
@@ -20,6 +20,7 @@ Never compress structured source entries with distinct content into one generic 
 CalendarLane create uses the public acct_ returned by docket_list_provider_accounts. Omit provider_calendar_binding to have Docket provision and bind a new Google calendar before dependent events.
 A validation/runtime failure does not consume authority. Retry the same semantic_request_ref and exact authority scope; never ask for equivalent authorization again.
 For every canonical request, describe docket_stage_changes with the exact mutation_types or normalized_entry_types needed, stage bounded batches, with at most 25 normalized-entry upserts per call, optionally review, then call docket_commit_changeset with no model arguments. No begin call, direct payload, mode, draft ID, revision, request key or utterance ref is model-supplied. The gateway binds the observed draft. Use docket_request_clarification only for a genuine unresolved choice, never for implementation failures. Never reconstruct a full mutation union.
+Stage/error receipts include bounded diagnostic_sample and exact omitted_diagnostic_count. A missing sample is not zero errors. Use diagnostic_review's exact arguments when more detail is needed; its cursor reads the failed immutable revision even after repair. Field paths are relative to the named action/entry. Title comparison identifies the linked staged Item, not independently verified source truth.
 Calendar local datetimes are offset-free wall-clock values with a separate IANA timezone. Calendar summaries expose bound canonical refs and versions; do not fan out into per-event history reads to rediscover them.
 Entries:
 - tool_ref=ONT-TOOL-0011 | tool_name=docket_commit_changeset | purpose=Atomically commit the trusted execution's observed staged revision. | use_when=Current authenticated intent is resolved and requests this effect. | do_not_use_when=Never probe schemas, split one selected option, or retry as a new request. | authority=interactive_operator_utterance | preconditions=P-MUT | side_effects=Commits canonical state and required provider Operations atomically. | success_dispositions=S-CHANGESET | output_interpretation=O-STD | required_next_action=N-CHANGESET | important_errors=E-MUT

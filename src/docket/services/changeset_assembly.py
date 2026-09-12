@@ -120,6 +120,39 @@ def _cursor_decode(value: str) -> dict[str, Any]:
     return payload
 
 
+def _diagnostic_projection(
+    *, changeset_ref: str, revision: int, errors: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """A bounded receipt sample plus a read of this exact immutable revision.
+
+    A diagnostic may itself exceed the sample budget. Keep it in the revision
+    and return a cursor, never fail the saved operation or imply zero errors.
+    """
+    sample = bounded_sample(errors)
+    result: dict[str, Any] = {
+        "diagnostic_count": len(errors),
+        "diagnostic_sample": sample,
+        "omitted_diagnostic_count": len(errors) - len(sample),
+    }
+    if errors:
+        result["diagnostic_review"] = {
+            "tool": "docket_review_changeset",
+            "arguments": {
+                "view": "diagnostics",
+                "cursor": _cursor_encode({
+                    "format_version": 1,
+                    "changeset_ref": changeset_ref,
+                    "revision": revision,
+                    "view": "diagnostics",
+                    "mutation_types": [],
+                    "entry_types": [],
+                    "position": 0,
+                }),
+            },
+        }
+    return result
+
+
 class ChangeSetAssemblyAdmissionService:
     """Persist infrastructure-owned ordering and retry identity before MCP delivery."""
 
@@ -707,10 +740,11 @@ class ChangeSetAssemblyService:
             return [
                 {
                     "code": error.code,
-                    "category": "domain_validation",
-                    "entry_id": entry_id,
+                    "category": details.get("category", "domain_validation"),
+                    "entry_id": entry_id or details.get("entry_id"),
+                    **({"change_id": details["change_id"]} if "change_id" in details else {}),
                     "field_path": details.get("field_path", []),
-                    "constraint": error.code,
+                    "constraint": details.get("constraint", error.code),
                     "next_action": details.get(
                         "next_action",
                         "repair_staged_entry" if entry_id else "repair_staged_actions",
@@ -1416,7 +1450,11 @@ class ChangeSetAssemblyService:
                 "totals": self._counts(changeset),
                 "assembly_ready": changeset.state == "validated",
                 "readiness": "saved_with_errors" if errors else "ready_to_commit",
-                "diagnostic_count": len(changeset.validation_errors),
+                **_diagnostic_projection(
+                    changeset_ref=changeset.ref_id,
+                    revision=changeset.current_revision,
+                    errors=changeset.validation_errors,
+                ),
                 "next": {"action": "repair_staged_actions" if errors else "commit_changeset"},
             }
             return self._terminal(operation, result)
@@ -1489,8 +1527,11 @@ class ChangeSetAssemblyService:
             "omitted_entry_count": len(entries) - len(entry_previews),
             "predicted_provider_operation_count": len(changeset.provider_intents),
             "assembly_ready": not errors,
-            "diagnostic_count": len(errors),
-            "diagnostic_sample": errors[:5],
+            **_diagnostic_projection(
+                changeset_ref=changeset.ref_id,
+                revision=changeset.current_revision,
+                errors=errors,
+            ),
             "next": {"action": "commit_changeset" if not errors else "repair_staged_actions"},
         }
         self.session.add(
@@ -1737,8 +1778,11 @@ class ChangeSetAssemblyService:
                     ).items()
                 )
             ),
-            "diagnostic_count": len(snapshot["validation_errors"]),
-            "diagnostic_sample": bounded_sample(snapshot["validation_errors"]),
+            **_diagnostic_projection(
+                changeset_ref=changeset.ref_id,
+                revision=revision_number,
+                errors=snapshot["validation_errors"],
+            ),
             "items": page,
             "count": len(page),
             "total_if_known": len(details),
@@ -1903,8 +1947,11 @@ class ChangeSetAssemblyService:
                         "code": "changeset_validation_failed",
                         "message": "The assembled draft is not commit-ready.",
                         "details": {
-                            "diagnostic_count": len(changeset.validation_errors),
-                            "diagnostic_sample": changeset.validation_errors[:5],
+                            **_diagnostic_projection(
+                                changeset_ref=changeset.ref_id,
+                                revision=changeset.current_revision,
+                                errors=changeset.validation_errors,
+                            ),
                             "authority_preserved": True,
                         },
                     },

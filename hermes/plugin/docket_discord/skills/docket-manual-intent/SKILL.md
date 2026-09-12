@@ -142,6 +142,13 @@ do not re-add the other entries or request renewed approval. A retry of the exac
 old operation returns its recorded result; repair is a new stage operation.
 Do not equate a saved draft, ready draft, canonical commit and provider delivery.
 
+An empty `diagnostic_sample` can mean a diagnostic exceeded the sample budget,
+not that validation succeeded. Trust `diagnostic_count` and
+`omitted_diagnostic_count`. When needed, follow `diagnostic_review` with its exact
+arguments to read that receipt's immutable revision. Field paths are relative to
+the identified action or entry. A title mismatch names the actual and expected
+staged fields; the comparison does not independently verify the source title.
+
 Optional `diff` review compares the selected immutable draft revision with its
 predecessor. It reports changed values and removed entries, including target
 scope; it is not a comparison with live Google Calendar or proof of execution.
