@@ -166,6 +166,16 @@ provides details. A compiler failure must not lead to a new authorization reques
 or manual edits of production rows. Pre-cutover drafts without an independent
 input snapshot require explicit adoption, not an automatic backfill.
 
+Update payloads distinguish omission from an explicit `null`: omission leaves a
+field unchanged; an allowed explicit null clears it. Staged inputs, request
+proposals, executable revisions, optional diffs and commit must preserve that
+distinction. For example, reopening a completed Task requires the requested
+nonterminal state and `completed_at: null` together. Do not use output-oriented
+null stripping or materialize omitted patch fields as nulls during compilation.
+This correction cannot recover intent already stripped from an old stored patch;
+old evidence is not rewritten or executed automatically. Such a correction still
+needs the normal evidence-grounded repair/adoption path.
+
 Diagnostic samples are byte-bounded independently of draft validity. A nonzero
 `diagnostic_count` with an empty sample requires the receipt's `diagnostic_review`
 read, not another commit or a new request. That read's cursor is pinned to the

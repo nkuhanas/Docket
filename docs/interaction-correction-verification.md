@@ -813,3 +813,32 @@ isolated Compose/PostgreSQL smoke including source repair across fresh sessions,
 existing concurrency/reconciliation cases, governance restore and migration
 downgrade/re-upgrade. These are local implementation results, not live Calendar
 or screenshot-interpretation verification.
+
+## Exact update-field presence
+
+Input serialization now preserves explicit nulls inside typed update payloads
+without materializing absent fields. The old stripping path rejected valid
+clear-only Item and Task-reopen patches, and silently omitted the clear when
+combined with a non-null rename. This was reproduced before the fix. Conversely,
+unqualified model dumps could turn omitted patch fields into explicit clears.
+
+The same exact representation now passes through staging, immutable request
+proposals/revisions, executable hashes, source/provenance completion, occurrence
+compilation, optional compiled diffs and canonical application. Create/envelope
+defaults and opaque JSON retain their separate semantics; no new mutation type,
+schema alias or tool is introduced. Explicit clear and omitted input have
+different executable hashes. Stored omissions are not reconstructed as clears,
+and existing evidence/authority hashes are not rewritten.
+
+Fixtures verify clear-only, rename-and-clear, rename without clearing, and task
+reopening while keeping unrelated fields unchanged. PostgreSQL coverage stages
+two updates, reloads/recompiles them through separate connections, verifies both
+immutable proposals, observes the migrated revision and commits exactly once.
+Ordinary staging still permits immediate commit without review; explicit
+recompilation retains its fresh-observation requirement. No provider actions or
+production data repair are part of this slice.
+
+Validation passed all 586 tests, Ruff, strict mypy (139 source files) and the
+isolated Compose/PostgreSQL smoke, including the new clear/reopen fixture,
+existing source repair, concurrency and migration round-trip checks. No live
+provider verification or production deployment is claimed.

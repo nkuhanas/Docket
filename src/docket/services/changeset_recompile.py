@@ -25,7 +25,7 @@ from docket.models import (
     SemanticRequestAttempt,
 )
 from docket.schemas.assembly import AssemblyAuthorityScopeInput, NormalizedEntryInput
-from docket.schemas.authority import ChangeSetContent
+from docket.schemas.authority import ChangeSetContent, mutation_input_json
 from docket.services.changeset_compiler import (
     COMPILER_IDENTIFIER,
     COMPILER_VERSION,
@@ -213,8 +213,8 @@ def recompile_draft(
         "dependency_comparison": (
             "exact_existing_change_ids" if fixed_change_ids else "semantic_slots"
         ),
-        "old_compiled_effect_hash": effect_hash(prior.model_dump(mode="json", exclude_none=True)),
-        "new_compiled_effect_hash": effect_hash(content.model_dump(mode="json", exclude_none=True)),
+        "old_compiled_effect_hash": effect_hash(mutation_input_json(prior)),
+        "new_compiled_effect_hash": effect_hash(mutation_input_json(content)),
     }
     if repair_proofs:
         migration.update({

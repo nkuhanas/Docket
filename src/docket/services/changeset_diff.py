@@ -12,7 +12,7 @@ from collections.abc import Iterator
 from typing import Any
 
 from docket.models import ChangeSetRevision
-from docket.schemas.authority import ChangeSetContent
+from docket.schemas.authority import ChangeSetContent, mutation_input_json
 
 _MISSING = object()
 _ACTION_GROUPS = (
@@ -144,7 +144,7 @@ def compiled_diff(
         ) -> dict[str, Any]:
             rows = getattr(snapshot, group)
             payloads = [
-                row.model_dump(mode="json", exclude_none=True)
+                mutation_input_json(row)
                 if hasattr(row, "model_dump") else row
                 for row in rows
             ]

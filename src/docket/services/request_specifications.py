@@ -23,6 +23,7 @@ from docket.models import (
     SemanticRequestSpecification,
     Source,
 )
+from docket.schemas.authority import mutation_input_json
 from docket.schemas.request_specifications import RequestSpecificationProposal
 
 _ENTRY_METADATA = {
@@ -47,7 +48,7 @@ def read_request_proposal(
         raise DocketError(
             code="request_specification_invalid", message="The request specification is invalid.",
         ) from exc
-    computed = sha256_json(proposal.model_dump(mode="json", exclude_none=True))
+    computed = sha256_json(mutation_input_json(proposal))
     if (
         row.schema_version != proposal.schema_version
         or row.interpretation_state != proposal.interpretation_state
@@ -118,7 +119,7 @@ def record_request_proposal(
         ],
     }
     proposal = RequestSpecificationProposal.model_validate(payload)
-    specification = proposal.model_dump(mode="json", exclude_none=True)
+    specification = mutation_input_json(proposal)
     row = SemanticRequestSpecification(
         semantic_request_ref=request.ref_id, version=revision.revision,
         change_set_revision=revision, schema_version=proposal.schema_version,

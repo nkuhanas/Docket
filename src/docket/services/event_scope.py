@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
 from docket.models import CanonicalEvent, EventOccurrence, SemanticRequest
+from docket.schemas.authority import mutation_input_json
 from docket.schemas.event_occurrences import (
     CompiledOccurrenceEdit,
     EventMutationScope,
@@ -67,8 +68,8 @@ class EventScopeGuard:
             if isinstance(patch_spec, dict)
             else getattr(patch_spec, "recurrence", None)
         )
-        normalized = type(change).model_validate(change.model_dump(mode="json", warnings=False))
-        payload_hash = sha256_json(normalized.model_dump(mode="json", exclude_none=True))
+        normalized = type(change).model_validate(mutation_input_json(change, warnings=False))
+        payload_hash = sha256_json(mutation_input_json(normalized))
         occurrence = self.session.scalar(
             select(EventOccurrence).where(EventOccurrence.replacement_event_ref == event.ref_id)
         )

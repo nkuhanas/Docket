@@ -13,6 +13,7 @@ from docket.schemas.authority import (
     ChangeSetContent,
     EventChangeInput,
     LaneRoutingDecisionCreate,
+    mutation_input_json,
 )
 from docket.schemas.event_occurrences import (
     CompiledOccurrenceEdit,
@@ -71,13 +72,13 @@ def compile_occurrence_changes(session: Session, content: ChangeSetContent) -> C
                 plans.append(
                     CompiledOccurrenceEdit(
                         source_change_id=change.change_id,
-                        source_change=change.model_dump(mode="json", exclude_none=True),
+                        source_change=mutation_input_json(change),
                         source_scope=scope,
                         plan=plan,
                         replacement_change_id=cancel.change_id,
                         action_hashes={
                             cancel.change_id: sha256_json(
-                                cancel.model_dump(mode="json", exclude_none=True)
+                                mutation_input_json(cancel)
                             )
                         },
                         basis_refs=change.basis_refs,
@@ -246,12 +247,12 @@ def compile_occurrence_changes(session: Session, content: ChangeSetContent) -> C
         plans.append(
             CompiledOccurrenceEdit(
                 source_change_id=change.change_id,
-                source_change=change.model_dump(mode="json", exclude_none=True),
+                source_change=mutation_input_json(change),
                 source_scope=scope,
                 plan=plan,
                 replacement_change_id=child_change_id,
                 action_hashes={
-                    item.change_id: sha256_json(item.model_dump(mode="json", exclude_none=True))
+                    item.change_id: sha256_json(mutation_input_json(item))
                     for item in generated
                 },
                 basis_refs=change.basis_refs,
@@ -260,7 +261,7 @@ def compile_occurrence_changes(session: Session, content: ChangeSetContent) -> C
         events.extend(generated)
     return ChangeSetContent.model_validate(
         {
-            **content.model_dump(mode="json"),
+            **mutation_input_json(content, exclude_none=False),
             "event_changes": events,
             "lane_changes": routes,
             "expected_versions": versions,
