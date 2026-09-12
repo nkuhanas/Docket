@@ -40,6 +40,49 @@ from docket.services.provenance import ProvenanceService
 from docket.services.statements import StatementService
 
 
+def test_old_scope_requires_migration_without_creating_another_request(session) -> None:
+    utterance_ref = _capture_utterance(
+        session, message_id="1542799000000000899", text="Create the organization."
+    )
+    utterance = session.scalar(select(OperatorUtterance).where(
+        OperatorUtterance.ref_id == utterance_ref
+    ))
+    intent, _ = IntentSessionService(session).open(IntentSessionOpen(
+        source_utterance_ref=utterance_ref
+    ))
+    old = SemanticRequest(
+        intent_session_id=intent.id, intent_session_ref=intent.ref_id,
+        authority_scope_hash="a" * 64, current_precondition_hash="b" * 64,
+        origin_utterance_refs=[utterance_ref], authority_availability="available",
+        commit_state="blocked_validation",
+        selected_option_binding={"kind": "freeform_turn", "scope": {"effects": {}}},
+    )
+    session.add(old)
+    session.flush()
+    content = ChangeSetContent.model_validate({
+        "basis_refs": [utterance_ref], "registry_changes": [{
+            "mutation_type": "entity_create", "change_id": "organization", "action": "create",
+            "object_type": "entity", "create_spec": {
+                "entity_kind": "organization", "display_name": "Cal Poly",
+            }, "affected_fields": ["identity"], "basis_refs": [utterance_ref],
+        }],
+    })
+    with pytest.raises(DocketError) as error:
+        InteractiveAuthorityService(session)._ensure_freeform_semantic_request(
+            utterance=utterance, request_key=utterance.request_key,
+            intent_session=intent, content=content, resolved_intent_json={"kind": "registry"},
+        )
+    assert error.value.code == "semantic_request_migration_required"
+    assert error.value.details["category"] == "implementation_validation"
+    assert error.value.details["authority_preserved"] is True
+    assert old.authority_scope_hash == "a" * 64
+    assert old.authority_availability == "available"
+    assert old.commit_state == "blocked_validation"
+    assert session.scalar(select(func.count(SemanticRequest.id))) == 1
+    assert session.scalar(select(func.count(ChangeSet.id))) == 0
+    assert session.scalar(select(func.count(Entity.id))) == 0
+
+
 def _capture_utterance(session, *, message_id: str, text: str) -> str:
     settings = get_settings()
     request = OperatorUtteranceCapture.model_validate(

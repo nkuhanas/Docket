@@ -355,3 +355,39 @@ These results establish deterministic delivery-status and partial-recovery
 behavior, not live Google or Discord outcomes. The exact semantic-request,
 adoption/migration, canonical-preview and timing gates remain open. No production
 deployment or historical request replay was performed.
+
+## Typed semantic comparison and qualified provenance substitution
+
+The prior scope serializer recursively removed names such as `basis_refs`,
+`source_refs`, `change_id` and `expected_versions` from arbitrary domain JSON.
+Consequently different policy data could share a scope hash. Selection
+substitution likewise traversed opaque data and could rewrite a literal string
+as though it were an authority slot. Both operations now follow declared schema
+locations. Opaque policy data and dollar-prefixed strings remain literal.
+
+New scope format 2 retains semantic values, source identities, explicit patch
+presence, cardinality and occurrence scope. It normalizes action ordering and
+same-draft dependency names through structural planned-effect slots, retaining
+target sharing and multiplicity. Indistinguishable referenced creates fail
+comparison rather than guessing their identity. Cyclic drafts can be described
+without recursive failure; the existing transaction preflight still rejects
+their execution and preserves the failed request.
+
+An unfinished unversioned binding requires explicit migration. It is not silently
+rehash-bound to a new request, decoded through an old public protocol, or treated
+as missing Operator permission. Existing evidence/hashes are not rewritten.
+The complete audited migration/adoption path remains a deployment gate.
+
+Local verification passed 466 tests, Ruff and strict mypy. Isolated Compose
+smoke passed the current MCP/selection flow, PostgreSQL assembly/occurrence and
+delivery checks, governance restore and migration round-trip. New adversarial
+fixtures cover opaque-key collisions, literal authority symbols, dependency
+renaming, duplicate creates, cyclic graphs, missing/null patches, changed source
+identity, the three-event cardinality/date/time/title/location/lane boundary,
+and occurrence-to-series expansion. A retained old-request fixture proves
+migration rejection leaves its authority available and creates no second request
+or canonical object.
+
+This is comparison infrastructure, not proof of source-grounded authority. The
+exact immutable freeform request specification, evidence-grounded title repair
+and audited adoption remain open. No production change or historical replay ran.

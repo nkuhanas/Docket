@@ -31,78 +31,55 @@ from docket.schemas.authority import OperatorChangeSetContent, SemanticOptionDra
 from docket.security import decode_semantic_option_token, verify_semantic_option_token
 from docket.services.continuity import ContinuityService
 from docket.services.gateway_lifetimes import GatewayLifetimeService
+from docket.services.semantic_scope import semantic_authority_scope
 
 CURRENT_SELECTION_UTTERANCE = "$current_selection_utterance"
+
+
+def _substitute_selection_slots(
+    value: dict[str, Any], old: str, new: str
+) -> tuple[dict[str, Any], int]:
+    """Only declared authority slots can be substituted; domain JSON is opaque."""
+    result = copy.deepcopy(value)
+    replacements = 0
+
+    def basis(item: dict[str, Any]) -> None:
+        nonlocal replacements
+        refs = item.get("basis_refs", [])
+        replacements += sum(ref == old for ref in refs)
+        if "basis_refs" in item:
+            item["basis_refs"] = [new if ref == old else ref for ref in refs]
+
+    basis(result)
+    for group in (
+        "registry_changes", "preference_changes", "lane_changes", "event_changes",
+        "tracked_context_changes", "resolution_changes",
+    ):
+        for change in result.get(group, []):
+            basis(change)
+            if change.get("mutation_type") == "identity_binding_bind":
+                resolution = (change.get("payload") or {}).get("resolution_basis") or {}
+                if resolution.get("kind") == "operator_selection" and (
+                    resolution.get("utterance_ref") == old
+                ):
+                    resolution["utterance_ref"] = new
+                    replacements += 1
+    return result, replacements
 
 
 def _replace_authority_slot(value: Any, authority_ref: str) -> tuple[Any, int]:
     """Replace an existing utterance only in provenance-bearing fields."""
 
-    replacements = 0
-
-    def visit(item: Any, path: tuple[str, ...]) -> Any:
-        nonlocal replacements
-        if isinstance(item, dict):
-            return {key: visit(child, (*path, key)) for key, child in item.items()}
-        if isinstance(item, list):
-            return [visit(child, path) for child in item]
-        allowed = bool(path) and (
-            path[-1] == "basis_refs" or path[-2:] == ("resolution_basis", "utterance_ref")
-        )
-        if allowed and item == authority_ref:
-            replacements += 1
-            return CURRENT_SELECTION_UTTERANCE
-        return item
-
-    return visit(copy.deepcopy(value), ()), replacements
+    return _substitute_selection_slots(value, authority_ref, CURRENT_SELECTION_UTTERANCE)
 
 
 def complete_selection_provenance(template: dict[str, Any], utterance_ref: str) -> dict[str, Any]:
     """Complete the reserved selection-authority slot after ledger insertion."""
 
-    def visit(item: Any) -> Any:
-        if isinstance(item, dict):
-            return {key: visit(child) for key, child in item.items()}
-        if isinstance(item, list):
-            return [visit(child) for child in item]
-        if item == CURRENT_SELECTION_UTTERANCE:
-            return utterance_ref
-        if isinstance(item, str) and item.startswith("$"):
-            raise DocketError(
-                code="invalid_symbolic_authority",
-                message="Persisted option contains an unsupported authority symbol.",
-            )
-        return item
-
-    completed = visit(copy.deepcopy(template))
+    completed, _count = _substitute_selection_slots(
+        template, CURRENT_SELECTION_UTTERANCE, utterance_ref
+    )
     return OperatorChangeSetContent.model_validate(completed).model_dump(mode="json")
-
-
-def semantic_authority_scope(content: dict[str, Any], exclusions: list[str]) -> dict[str, Any]:
-    """Remove execution identity and preconditions from the authorized semantic scope."""
-
-    evidence_keys = {
-        "basis_refs",
-        "source_refs",
-        "expected_versions",
-        "idempotency_key",
-        "utterance_ref",
-        "case_revision_ref",
-    }
-    execution_keys = {"change_id", "intent_id"}
-
-    def semantic(value: Any) -> Any:
-        if isinstance(value, dict):
-            return {
-                key: semantic(child)
-                for key, child in sorted(value.items())
-                if key not in evidence_keys and key not in execution_keys
-            }
-        if isinstance(value, list):
-            return [semantic(child) for child in value]
-        return value
-
-    return {"effects": semantic(content), "explicit_exclusions": sorted(exclusions)}
 
 
 def _discord_message_ref(guild_id: str, channel_id: str, message_id: str) -> str:
@@ -245,7 +222,7 @@ class SemanticOptionService:
                     code="selection_authority_slot_missing",
                     message="Option did not contain a replaceable selection authority slot.",
                 )
-            scope = semantic_authority_scope(template, draft.explicit_exclusions)
+            scope = semantic_authority_scope(content, draft.explicit_exclusions)
             preconditions = {
                 "expected_versions": content.get("expected_versions", {}),
                 "case_ref": case_ref,

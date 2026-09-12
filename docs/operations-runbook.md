@@ -149,6 +149,18 @@ migration; a pin mismatch requires revision reconciliation. Neither permits
 editing production rows, reauthorizing the same request, or silently changing
 the draft. A committed receipt remains replayable without recompilation.
 
+New persisted option/freeform scope hashes use typed semantic format 2. They
+retain policy JSON literally and normalize only declared mechanical fields;
+renaming a same-draft dependency is not a new semantic effect. Source identities,
+cardinality, dates, destinations and occurrence scope remain bound. Symbolic
+selection substitution applies only to declared provenance slots, never arbitrary
+policy text/data. A comparison digest does not independently establish authority.
+
+`semantic_request_migration_required` means a preserved unversioned binding needs
+the explicit audited adoption path. Do not create a second request, edit its hash
+in production, or ask for the same authorization again. Completion of that
+migration path remains a deployment prerequisite; there is no automatic backfill.
+
 Every authenticated tool invocation receives one `call_`, including validation
 and authority rejection. Tool logs retain hashes and bounded references, not raw
 arguments or results. A conversational trace marked interrupted has
