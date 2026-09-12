@@ -73,6 +73,23 @@ def _server(calls):
     return server
 
 
+def test_authenticated_invocation_binding_retains_ordinal_after_one_hundred(session_factory):
+    with session_factory.begin() as session:
+        utterance = _evidence(session)
+    calls = []
+    payload = _payload(utterance, ordinal=150, call_id="late-call")
+    result = asyncio.run(_server(calls).call_tool("docket_search_history", {
+        "query": "same", "invocation_binding": _sign(payload),
+    }))
+    assert _result_envelope(result)["ok"] is True
+    assert calls == ["same"]
+    with session_factory() as session:
+        invocation = session.scalar(select(ToolInvocation))
+        assert invocation.trace_ordinal == 150
+        assert invocation.trace_call_id == "late-call"
+        assert invocation.domain_state == "succeeded"
+
+
 def test_same_arguments_bind_exactly_and_transport_retry_reaches_replay_service(session_factory):
     with session_factory.begin() as session:
         utterance = _evidence(session)

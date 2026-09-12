@@ -96,6 +96,10 @@ Pinned outbound assumptions to revalidate:
   identifiers before dispatch; `post_tool_call` receives those identities,
   bounded duration, status/error category, and result after dispatch.
   `post_llm_call` fires once after the tool loop for the completed turn.
+  Docket does not assume a blocked tool receives `post_tool_call`: the pre-hook
+  records and terminalizes its own local rejection. There must be a live captured
+  request before a Docket tool may dispatch. Late calls retain their ordinal
+  past 100; only rendered samples and detail pages have a 100-row-or-smaller cap.
 * `pre_gateway_dispatch` receives the synchronous session store. The plugin
   resolves the authorized chat message to the same session ID Hermes later
   supplies as the tool hook task ID. This is the trusted source-to-trace join.

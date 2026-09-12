@@ -15,7 +15,9 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
 from unittest.mock import patch
 
-from sqlalchemy import func, select, text
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -24,8 +26,9 @@ from docket.database import configure_database
 from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
 from docket.domain.public_refs import new_public_ref
-from docket.internal_api.schemas import OperatorUtteranceCapture
+from docket.internal_api.schemas import McpTraceCallUpdate, McpTraceUpdate, OperatorUtteranceCapture
 from docket.models import (
+    AssemblyOperation,
     AttachmentEvidence,
     AuditEvent,
     CalendarDateBinding,
@@ -33,6 +36,7 @@ from docket.models import (
     CanonicalEvent,
     ChangeSet,
     ChangeSetRevision,
+    ConversationalToolTrace,
     DeferredIngress,
     EventOccurrence,
     ExecutionAttempt,
@@ -41,6 +45,7 @@ from docket.models import (
     Operation,
     OperationTarget,
     OperatorUtterance,
+    OutboxEvent,
     ProviderAccount,
     ProviderEventBinding,
     Source,
@@ -62,6 +67,7 @@ from docket.services.event_occurrences import (
 from docket.services.gateway_lifetimes import GatewayLifetimeService
 from docket.services.history import HistoryService
 from docket.services.invocation_binding import bind_invocation
+from docket.services.mcp_traces import McpTraceService
 from docket.services.operations import OperationRunner
 from docket.services.provenance import ProvenanceService
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash
@@ -1312,6 +1318,122 @@ def test_explicit_compiler_migration_requires_reobservation(factory: sessionmake
         raise AssertionError("Migration allowed mutation of the previous executable evidence")
 
 
+def test_trace_history_survives_call_one_hundred_and_blocks_lossy_downgrade(
+    factory: sessionmaker[Session],
+) -> None:
+    settings = get_settings()
+    trace_ref = new_public_ref("trace")
+    started = datetime.now(UTC)
+    states: tuple[Literal["running", "completed"], ...] = ("running", "completed")
+    for ordinal in range(1, 104):
+        with factory.begin() as session:
+            service = McpTraceService(session)
+            for state in states:
+                service.update(trace_ref, McpTraceUpdate(
+                    request_id=uuid.uuid4(), guild_id=settings.discord_guild_id,
+                    source_channel_id=settings.chat_channel_id,
+                    source_message_id="1542799000000000681",
+                    actor_id=settings.operator_discord_user_id,
+                    tool_contract_version=CONTRACT_VERSION,
+                    tool_contract_hash=contract_hash("interactive"), caller_profile="interactive",
+                    turn_started_at=started, updated_at=datetime.now(UTC),
+                    call=McpTraceCallUpdate(
+                        call_id=f"long-call-{ordinal}", ordinal=ordinal,
+                        tool_name="docket_stage_changes", execution_boundary="local_rejection",
+                        transport_state=state,
+                        disposition="rejected_validation" if state == "completed" else None,
+                    ),
+                ))
+    with factory() as session:
+        trace = session.scalar(select(ConversationalToolTrace).where(
+            ConversationalToolTrace.ref_id == trace_ref
+        ))
+        assert trace is not None and trace.last_ordinal == len(trace.calls) == 103
+        trace_id = trace.id
+        page = HistoryService(session).get_entry(trace_ref, view="calls", limit=25)
+        assert page["total_if_known"] == 103
+        assert len(page["items"]) <= 25 and page["cursor"]
+    try:
+        command.downgrade(Config("alembic.ini"), "20260911c2f1")
+    except RuntimeError as exc:
+        assert "discard evidence" in str(exc)
+    else:
+        raise AssertionError("Downgrade should preserve the longer trace by refusing to proceed")
+    with factory() as session:
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260911d3a2"
+        assert session.scalar(select(ConversationalToolTrace.last_ordinal).where(
+            ConversationalToolTrace.id == trace_id
+        )) == 103
+    try:
+        with factory.begin() as session:
+            session.execute(text(
+                "UPDATE conversational_tool_traces SET last_ordinal = -1 WHERE id = :id"
+            ), {"id": trace_id})
+    except DBAPIError:
+        pass
+    else:
+        raise AssertionError("PostgreSQL accepted a negative trace ordinal")
+    # Remove only this synthetic fixture so the following no-loss roundtrip can
+    # rehearse the old constraint. Production downgrade never deletes anything.
+    with factory.begin() as session:
+        session.execute(delete(OutboxEvent).where(OutboxEvent.aggregate_id == trace_id))
+        session.execute(delete(ConversationalToolTrace).where(
+            ConversationalToolTrace.id == trace_id
+        ))
+
+
+def test_lost_admission_response_recovers_from_exact_local_trace(
+    factory: sessionmaker[Session],
+) -> None:
+    utterance_ref, _request_key = _create_utterance(
+        factory, "1542799000000000682", "Track the local-admission recovery fixture.",
+    )
+    trace_ref = new_public_ref("trace")
+    first = _admit_committed(
+        factory, utterance_ref=utterance_ref, trace_ref=trace_ref, call_id="lost-admission",
+        ordinal=1, tool_name="docket_stage_changes", argument_hash="a" * 64,
+    )
+    settings = get_settings()
+    started = datetime.now(UTC)
+    states: tuple[Literal["running", "completed"], ...] = ("running", "completed")
+    for state in states:
+        with factory.begin() as session:
+            McpTraceService(session).update(trace_ref, McpTraceUpdate(
+                request_id=uuid.uuid4(), guild_id=settings.discord_guild_id,
+                source_channel_id=settings.chat_channel_id,
+                source_message_id="1542799000000000682",
+                actor_id=settings.operator_discord_user_id,
+                tool_contract_version=CONTRACT_VERSION,
+                tool_contract_hash=contract_hash("interactive"), caller_profile="interactive",
+                turn_started_at=started, updated_at=datetime.now(UTC),
+                call=McpTraceCallUpdate(
+                    call_id="lost-admission", ordinal=1, tool_name="docket_stage_changes",
+                    execution_boundary="local_rejection", transport_state=state,
+                    disposition="failed" if state == "completed" else None,
+                    received_argument_hash="a" * 64,
+                ),
+            ))
+    second = _admit_committed(
+        factory, utterance_ref=utterance_ref, trace_ref=trace_ref, call_id="corrected-next-call",
+        ordinal=2, tool_name="docket_stage_changes", argument_hash="b" * 64,
+    )
+    with factory.begin() as session:
+        result = ChangeSetAssemblyService(session).stage(
+            _item_stage(_load_utterance(session, utterance_ref), change_id="local-recovery",
+                        title="Local recovery fixture", include_scope=True),
+            assembly_operation_token=second, assembly_argument_hash="b" * 64,
+        )
+        assert result["disposition"] == "ready_to_commit"
+        prior = session.scalar(select(AssemblyOperation).where(
+            AssemblyOperation.operation_key == first
+        ))
+        assert prior is not None and prior.state == "rejected"
+        assert prior.result_json["error"]["code"] == "assembly_not_dispatched"
+        assert session.scalar(select(func.count(ToolInvocation.id)).where(
+            ToolInvocation.trace_ref == trace_ref
+        )) == 0
+
+
 def main() -> None:
     database_url = os.environ["DOCKET_DATABASE_URL"]
     engine = configure_database(database_url)
@@ -1328,6 +1450,8 @@ def main() -> None:
         test_diff_pages_keep_both_revisions_across_connections,
         test_invocation_binding_transport_retries_serialize,
         test_explicit_compiler_migration_requires_reobservation,
+        test_trace_history_survives_call_one_hundred_and_blocks_lossy_downgrade,
+        test_lost_admission_response_recovers_from_exact_local_trace,
     )
     for check in checks:
         check(factory)

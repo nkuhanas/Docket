@@ -53,7 +53,7 @@ class ConversationalToolTrace(TimestampMixin, Base):
             name="ck_conversational_tool_traces_status",
         ),
         CheckConstraint(
-            "last_ordinal BETWEEN 0 AND 100",
+            "last_ordinal >= 0",
             name="ck_conversational_tool_traces_last_ordinal",
         ),
         UniqueConstraint(

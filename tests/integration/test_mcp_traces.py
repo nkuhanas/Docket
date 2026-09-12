@@ -530,15 +530,15 @@ def test_local_rejection_never_claims_an_unrelated_matching_invocation(session_f
         assert page["timing"]["before_first_docket_call_ms"] is None
 
 
-def _long_trace(session):
+def _long_trace(session, count=100):
     settings = get_settings()
     start = datetime.now(UTC) - timedelta(seconds=30)
     calls = []
-    for ordinal in range(1, 101):
+    for ordinal in range(1, count + 1):
         name = (
-            "docket_stage_changes" if ordinal == 98 else
-            "docket_review_changeset" if ordinal == 99 else
-            "docket_commit_changeset" if ordinal == 100 else "docket_search_history"
+            "docket_stage_changes" if ordinal == count - 2 else
+            "docket_review_changeset" if ordinal == count - 1 else
+            "docket_commit_changeset" if ordinal == count else "docket_search_history"
         )
         calls.append({
             "call_id": f"call-{ordinal}", "ordinal": ordinal, "tool_name": name,
@@ -551,7 +551,7 @@ def _long_trace(session):
         guild_id=settings.discord_guild_id, source_channel_id=settings.chat_channel_id,
         source_message_id="777777777777777777", actor_id=settings.operator_discord_user_id,
         tool_contract_version=CONTRACT_VERSION, tool_contract_hash=contract_hash("interactive"),
-        caller_profile="interactive", started_at=start, calls=calls, last_ordinal=100,
+        caller_profile="interactive", started_at=start, calls=calls, last_ordinal=count,
     )
     session.add(trace)
     session.flush()
@@ -559,7 +559,7 @@ def _long_trace(session):
         **_bound_evidence(session),
         tool_name="docket_commit_changeset", caller_profile="interactive",
         tool_contract_version=CONTRACT_VERSION, received_argument_hash="f" * 64,
-        trace_ref=trace.ref_id, trace_call_id="call-100", trace_ordinal=100,
+        trace_ref=trace.ref_id, trace_call_id=f"call-{count}", trace_ordinal=count,
         started_at=start + timedelta(seconds=20), completed_at=start + timedelta(seconds=21),
         transport_state="completed", domain_state="succeeded", result_disposition="committed",
     ))
@@ -568,24 +568,25 @@ def _long_trace(session):
 
 
 @pytest.mark.integration
-def test_whole_trace_counts_recent_commit_and_bounded_complete_pages(session_factory):
+@pytest.mark.parametrize("count", [100, 150])
+def test_whole_trace_counts_recent_commit_and_bounded_complete_pages(session_factory, count):
     with session_factory.begin() as session:
-        trace = _long_trace(session)
+        trace = _long_trace(session, count)
         trace_ref = trace.ref_id
         McpTraceService(session).update(trace_ref, _update(
             turn_status="completed", turn_started_at=trace.started_at,
         ))
     projected = _project_all(session_factory).mcp_traces[trace_ref]["render"]
-    assert projected["counts"]["attempts"] == 100
+    assert projected["counts"]["attempts"] == count
     assert projected["counts"]["authenticated_invocations"] == 1
-    assert projected["counts"]["unreconciled_attempts"] == 99
-    assert projected["timing"]["wrapper_elapsed_sum_ms"] == 12_500
+    assert projected["counts"]["unreconciled_attempts"] == count - 1
+    assert projected["timing"]["wrapper_elapsed_sum_ms"] == count * 125
     assert projected["timing"]["docket_execution_ms"] == 1000
-    assert projected["calls"][-1]["ordinal"] == 100
+    assert projected["calls"][-1]["ordinal"] == count
     assert projected["calls"][-1]["outcome"] == "committed"
-    assert projected["overflow_count"] == 100 - len(projected["calls"])
+    assert projected["overflow_count"] == count - len(projected["calls"])
     totals = {row["tool_name"]: row["attempts"] for row in projected["tool_counts"]}
-    assert totals == {"docket_search_history": 97, "docket_stage_changes": 1,
+    assert totals == {"docket_search_history": count - 3, "docket_stage_changes": 1,
                       "docket_review_changeset": 1, "docket_commit_changeset": 1}
     ordinals = []
     cursor = None
@@ -596,12 +597,34 @@ def test_whole_trace_counts_recent_commit_and_bounded_complete_pages(session_fac
                 trace_ref, view="calls", cursor=cursor, limit=100
             )
             assert len(json.dumps(page, ensure_ascii=False).encode()) < 16_384
-            assert page["total_if_known"] == 100
+            assert page["total_if_known"] == count
             ordinals.extend(row["ordinal"] for row in page["items"])
             cursor = page.get("cursor")
         if cursor is None:
             break
-    assert ordinals == list(range(1, 101))
+    assert ordinals == list(range(1, count + 1))
+
+
+def test_trace_updates_accept_late_calls_without_dropping_them(session_factory):
+    trace_ref = new_public_ref("trace")
+    started = datetime.now(UTC)
+    for ordinal in range(1, 104):
+        with session_factory.begin() as session:
+            service = McpTraceService(session)
+            for state in ("running", "completed"):
+                service.update(trace_ref, _update(
+                    ordinal=ordinal, transport_state=state, turn_started_at=started,
+                    tool_name="docket_stage_changes" if ordinal == 103 else "docket_search_history",
+                    execution_boundary="local_rejection", disposition="rejected_validation",
+                ))
+    with session_factory() as session:
+        trace = session.scalar(select(ConversationalToolTrace).where(
+            ConversationalToolTrace.ref_id == trace_ref
+        ))
+        assert trace.last_ordinal == len(trace.calls) == 103
+        assert trace.calls[-1]["tool_name"] == "docket_stage_changes"
+        assert trace.calls[-1]["transport_state"] == "completed"
+        assert session.scalar(select(func.count(ToolInvocation.id))) == 0
 
 
 @pytest.mark.integration

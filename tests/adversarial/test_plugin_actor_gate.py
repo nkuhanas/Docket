@@ -1021,6 +1021,92 @@ def test_changed_or_missing_instruction_bundle_blocks_mutation(plugin_module, mo
     assert plugin_module._instructions_current() is False
 
 
+@pytest.mark.parametrize("problem", ["instructions", "missing_binding", "admission", "signer"])
+def test_predispatch_rejections_close_without_post_hook(plugin_module, monkeypatch, problem):
+    context = {
+        "trace_ref": f"trace_{'2' * 26}", "utterance_ref": f"utt_{'0' * 26}",
+        "actor_id": "111111111111111111", "guild_id": "222222222222222222",
+        "source_channel_id": "333333333333333333", "source_message_id": "444444444444444444",
+        "turn_id": None, "next_ordinal": 1, "calls": {}, "started": False, "terminal": False,
+    }
+    plugin_module._TRACE_CONTEXTS["rejection"] = context
+    emitted = []
+    monkeypatch.setattr(plugin_module, "_enqueue_trace_update",
+                        lambda _context, **kwargs: emitted.append(dict(kwargs["call"])))
+    monkeypatch.setattr(plugin_module, "_validate_authority_arguments_locally", lambda *_args: None)
+    dispatched = []
+
+    def reject_admission(*_args, **_kwargs):
+        dispatched.append(True)
+        raise OSError("Unavailable internal admission")
+
+    monkeypatch.setattr(plugin_module, "_docket_internal_request", reject_admission)
+    expected = "failed"
+    if problem == "instructions":
+        monkeypatch.setattr(plugin_module, "_instructions_current", lambda: False)
+        expected = "rejected_conflict"
+    elif problem == "missing_binding":
+        context.pop("utterance_ref")
+        expected = "rejected_authority"
+    elif problem == "signer":
+        def broken_signer(*_args):
+            raise OSError("No signing material")
+
+        monkeypatch.setattr(plugin_module, "_invocation_binding", broken_signer)
+    args = {"patch": {"private": "do not log this"}}
+    keywords = dict(tool_name="mcp__docket__docket_stage_changes", args=args,
+                    task_id="rejection", tool_call_id="rejected-1", turn_id="turn")
+    directive = plugin_module._on_pre_tool_call(**keywords)
+    assert directive["action"] == "block"
+    assert "invocation_binding" not in args
+    assert [row["transport_state"] for row in emitted] == ["running", "completed"]
+    assert {row["execution_boundary"] for row in emitted} == {"local_rejection"}
+    assert emitted[-1]["disposition"] == expected
+    assert "do not log this" not in str(emitted)
+    assert bool(dispatched) == (problem == "admission")
+    # No post-tool callback is needed. A replay cannot start executing later.
+    monkeypatch.setattr(plugin_module, "_instructions_current", lambda: True)
+    assert plugin_module._on_pre_tool_call(**keywords)["action"] == "block"
+    assert len(emitted) == 2
+
+
+@pytest.mark.parametrize("problem", ["missing", "terminal", "wrong_turn"])
+def test_unbound_tools_cannot_execute_or_attach_to_another_turn(plugin_module, problem):
+    if problem != "missing":
+        plugin_module._TRACE_CONTEXTS["orphan"] = {
+            "turn_id": "original", "terminal": problem == "terminal",
+        }
+    directive = plugin_module._on_pre_tool_call(
+        tool_name="mcp__docket__docket_search_history", args={"query": "test"},
+        task_id="orphan", tool_call_id="wrong-call", turn_id="different",
+    )
+    assert directive["action"] == "block"
+
+
+def test_plugin_traces_and_binds_calls_beyond_one_hundred(plugin_module, monkeypatch):
+    context = {
+        "trace_ref": f"trace_{'2' * 26}", "utterance_ref": f"utt_{'0' * 26}",
+        "turn_id": None, "next_ordinal": 1, "calls": {}, "started": False, "terminal": False,
+    }
+    plugin_module._TRACE_CONTEXTS["long-run"] = context
+    emitted = []
+    monkeypatch.setattr(plugin_module, "_enqueue_trace_update",
+                        lambda _context, **kwargs: emitted.append(dict(kwargs["call"])))
+    for ordinal in range(1, 151):
+        args = {"query": "test"}
+        keywords = dict(tool_name="mcp__docket__docket_search_history", task_id="long-run",
+                        tool_call_id=f"call-{ordinal}", turn_id="long-turn")
+        assert plugin_module._on_pre_tool_call(**keywords, args=args) is None
+        assert "invocation_binding" in args
+        encoded = args["invocation_binding"].split(".")[0]
+        binding = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+        assert binding["ordinal"] == ordinal
+        plugin_module._on_post_tool_call(**keywords, result={"ok": True}, duration_ms=1)
+    assert len(emitted) == 300
+    assert list(context["calls"])[-1] == "call-150"
+    assert context["calls"]["call-150"]["transport_state"] == "completed"
+
+
 def test_extra_skill_is_not_implicitly_reviewed(plugin_module, monkeypatch, tmp_path) -> None:
     for name in (*plugin_module._REVIEWED_SKILL_NAMES, "unreviewed-new-recipe"):
         root = tmp_path / name
@@ -1225,10 +1311,10 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
     long_ref = plugin_module._new_trace_ref()
     with session_factory.begin() as session:
         calls = []
-        for ordinal in range(1, 101):
+        for ordinal in range(1, 151):
             tool = (
-                "docket_commit_changeset" if ordinal == 100 else
-                "docket_stage_changes" if ordinal == 99 else "docket_search_history"
+                "docket_commit_changeset" if ordinal == 150 else
+                "docket_stage_changes" if ordinal == 149 else "docket_search_history"
             )
             calls.append({
                 "call_id": f"long-{ordinal}", "ordinal": ordinal, "tool_name": tool,
@@ -1242,7 +1328,7 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
             source_channel_id=settings.chat_channel_id, source_message_id="777777777777777777",
             actor_id=settings.operator_discord_user_id, tool_contract_version=CONTRACT_VERSION,
             tool_contract_hash=contract_hash("interactive"), started_at=stamp,
-            calls=calls, last_ordinal=100,
+            calls=calls, last_ordinal=150,
         ))
         session.flush()
         McpTraceService(session).update(long_ref, McpTraceUpdate(
@@ -1272,7 +1358,7 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
     assert len(embed.fields) <= 25
     assert "Stage: 1" in embed.fields[2]["value"]
     assert "Commit: 1" in embed.fields[2]["value"]
-    assert any(field["name"] == "100. docket_commit_changeset" for field in embed.fields)
+    assert any(field["name"] == "150. docket_commit_changeset" for field in embed.fields)
     assert any("omitted; showing recent attempts" in field["value"] for field in embed.fields)
 
 

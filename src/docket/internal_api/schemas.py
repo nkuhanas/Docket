@@ -11,7 +11,7 @@ class InternalModel(BaseModel):
 
 class McpTraceCallUpdate(InternalModel):
     call_id: str = Field(min_length=1, max_length=255)
-    ordinal: int = Field(ge=1, le=100)
+    ordinal: int = Field(ge=1, le=2_147_483_647)
     tool_name: str = Field(min_length=1, max_length=128)
     execution_boundary: Literal["mcp_attempted", "local_rejection"]
     transport_state: Literal["running", "completed", "failed", "timed_out"]
@@ -76,7 +76,7 @@ class AssemblyOperationAdmission(InternalModel):
     utterance_ref: str = Field(pattern=r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")
     trace_ref: str = Field(pattern=r"^trace_[0-9A-HJKMNP-TV-Z]{26}$")
     upstream_tool_call_id: str = Field(min_length=1, max_length=255)
-    trace_ordinal: int = Field(ge=1, le=100)
+    trace_ordinal: int = Field(ge=1, le=2_147_483_647)
     tool_name: Literal[
         "docket_stage_changes",
         "docket_review_changeset",
