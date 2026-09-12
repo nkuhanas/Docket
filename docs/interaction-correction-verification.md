@@ -568,3 +568,29 @@ This advances ONT-UX-REQ-0016; asynchronous telemetry delivery/recovery and
 separate queue/context/model/validation/provider timing remain open. Unmeasured
 time is still unattributed. This does not establish live latency improvement,
 full amendment readiness or production deployment.
+
+## Retained PDF fragment verification
+
+The shared ChangeSet validator now recomputes citations claiming
+`docket.pypdf.text` from the retained encrypted attachment. It verifies the
+exact extractor version, strict page/character coordinates, nonempty bounded
+fragment and SHA-256. It does not accept copied locator text, model-computed
+digests that disagree with storage, or implicit version migration. A request-local
+reader cache avoids decrypting/parsing the same PDF once per cited field.
+
+An invalid citation keeps the complete staged batch and prior immutable
+revisions. Commitment is blocked with an entry, field, constraint and source-read
+repair action. A new operation can correct the citation under the same request,
+stage successfully and commit without renewed authorization or mandatory review.
+Tests cover this path through the shared service as well as malformed, stale,
+oversized and fabricated citation inputs, Unicode coordinates and bounded errors.
+Neither the proof object's representation nor its metadata copies source text.
+Local verification passed 529 tests, Ruff, strict mypy and isolated Compose smoke
+with the existing PostgreSQL locking, governance and migration round-trip checks.
+
+This proves fragment integrity, **not semantic interpretation**. It does not
+yet verify an image/vision extraction, infer that a date belongs to a title, or
+establish the exact immutable request specification of ONT-UX-REQ-0009/0010.
+Those remain open; an arbitrary extractor identifier does not become a verified
+source merely because it is present in an input. No new authority, schema alias,
+public tool, historical replay or production change is introduced.

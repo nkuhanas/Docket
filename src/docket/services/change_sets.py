@@ -52,6 +52,11 @@ from docket.schemas.authority import (
     TemporalBindingCreate,
     TemporalCalendarProjectionCreate,
 )
+from docket.services.attachment_evidence import (
+    PDF_TEXT_EXTRACTOR,
+    AttachmentEvidenceService,
+    AttachmentTextService,
+)
 from docket.services.case_resolutions import AttentionCaseResolutionService
 from docket.services.changeset_pins import migration_required, pin_snapshot, verify_snapshot
 from docket.services.conflicts import ConflictService
@@ -1629,6 +1634,52 @@ class ChangeSetService:
                 )
         return errors
 
+    def _source_fragment_errors(
+        self, statements: dict[str, InterpretedStatement],
+    ) -> list[dict[str, Any]]:
+        """Check claims of Docket extraction, not arbitrary model interpretations."""
+        pdf_statements = [
+            statement for statement in statements.values()
+            if statement.source_ref is not None
+            and statement.extractor_identifier == PDF_TEXT_EXTRACTOR
+        ]
+        if not pdf_statements:
+            return []
+        settings = get_settings()
+        text_service = AttachmentTextService(AttachmentEvidenceService(
+            self.session,
+            encryption_key=settings.attachment_encryption_key(),
+            encryption_key_ref=settings.attachment_encryption_key_ref,
+            max_attachment_bytes=settings.attachment_max_bytes,
+            max_total_bytes=settings.attachment_total_max_bytes,
+        ))
+        errors: list[dict[str, Any]] = []
+        for statement in pdf_statements:
+            assert statement.source_ref is not None
+            try:
+                text_service.verify_fragment(
+                    source_ref=statement.source_ref,
+                    locator=statement.source_fragment_locator or {},
+                    fragment_hash=statement.source_fragment_hash or "",
+                    extractor_identifier=statement.extractor_identifier or "",
+                    extractor_version=statement.extractor_version or "",
+                )
+            except DocketError as exc:
+                field_name = {
+                    "source_fragment_hash_mismatch": "source_fragment_hash",
+                    "source_fragment_extractor_mismatch": "extractor_version",
+                }.get(exc.code, "source_fragment_locator")
+                errors.append({
+                    "code": exc.code,
+                    "category": "evidence_validation",
+                    "entry_id": statement.interpretation_json.get("import_entry_id"),
+                    "field_path": ["evidence", field_name],
+                    "constraint": (exc.details or {}).get("constraint", exc.code),
+                    "next_action": "read_attachment_text_then_repair_entry",
+                    "details": {"statement_ref": statement.ref_id, **(exc.details or {})},
+                })
+        return errors
+
     def _import_scope_errors(
         self,
         *,
@@ -1670,6 +1721,8 @@ class ChangeSetService:
             ]
         if scope is None:
             return []
+
+        errors.extend(self._source_fragment_errors(statements))
 
         scope_source_refs = set(scope.source_refs)
         unknown_sources = sorted(scope_source_refs - set(sources))

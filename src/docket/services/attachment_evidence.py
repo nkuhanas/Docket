@@ -3,11 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from io import BytesIO
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from pydantic import Field, StrictInt, ValidationError
 from pypdf import PdfReader
 from pypdf import __version__ as pypdf_version
 from pypdf.errors import PdfReadError
@@ -18,10 +19,43 @@ from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError, IdempotencyConflict
 from docket.domain.public_refs import new_public_ref
 from docket.models import AttachmentEvidence, EncryptedAttachmentBlob, OperatorUtterance, Source
+from docket.schemas.common import StrictModel
 
 PDF_TEXT_EXTRACTOR = "docket.pypdf.text"
 PDF_TEXT_OUTPUT_BUDGET = 16 * 1024
 PDF_TEXT_MAX_PAGES = 200
+
+
+class PdfFragmentLocator(StrictModel):
+    """Coordinates into the exact versioned text returned by the PDF reader."""
+
+    page: StrictInt = Field(ge=1, le=PDF_TEXT_MAX_PAGES)
+    text_character_start: StrictInt = Field(ge=0, le=2_000_000)
+    text_character_end: StrictInt = Field(ge=1, le=2_000_000)
+
+
+@dataclass(frozen=True)
+class VerifiedTextFragment:
+    """Evidence integrity, not semantic agreement or Operator authorization."""
+
+    source_ref: str
+    attachment_content_hash: str
+    fragment_hash: str
+    locator: PdfFragmentLocator
+    extractor_version: str
+    text: str = field(repr=False)
+
+    def binding(self) -> dict[str, object]:
+        # Do not copy the text into statements, traces or diagnostic metadata.
+        return {
+            "kind": "verified_pdf_text_fragment",
+            "source_ref": self.source_ref,
+            "attachment_content_hash": self.attachment_content_hash,
+            "source_fragment_hash": self.fragment_hash,
+            "source_fragment_locator": self.locator.model_dump(),
+            "extractor_identifier": PDF_TEXT_EXTRACTOR,
+            "extractor_version": self.extractor_version,
+        }
 
 
 @dataclass(frozen=True)
@@ -377,6 +411,10 @@ class AttachmentTextService:
 
     def __init__(self, attachment_service: AttachmentEvidenceService) -> None:
         self.attachments = attachment_service
+        # Request-local only. Importing several fields from one retained PDF must
+        # not decrypt and parse the entire artifact once per field.
+        self._readers: dict[str, tuple[AttachmentEvidence, PdfReader]] = {}
+        self._pages: dict[tuple[str, int], str] = {}
 
     @staticmethod
     def _serialized_bytes(value: dict[str, object]) -> int:
@@ -384,14 +422,9 @@ class AttachmentTextService:
             json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         )
 
-    def read_pdf_text(
-        self,
-        *,
-        source_ref: str,
-        cursor: str | None,
-        max_text_bytes: int,
-        page_limit: int,
-    ) -> dict[str, object]:
+    def _reader(self, source_ref: str) -> tuple[AttachmentEvidence, PdfReader]:
+        if source_ref in self._readers:
+            return self._readers[source_ref]
         evidence = self.attachments.session.scalar(
             select(AttachmentEvidence).where(AttachmentEvidence.ref_id == source_ref)
         )
@@ -427,6 +460,93 @@ class AttachmentTextService:
                 message="The retained PDF exceeds the bounded extraction page limit.",
                 details={"source_ref": source_ref, "page_count": page_count},
             )
+        self._readers[source_ref] = evidence, reader
+        return evidence, reader
+
+    def _page_text(self, source_ref: str, reader: PdfReader, page_index: int) -> str:
+        key = source_ref, page_index
+        if key not in self._pages:
+            self._pages[key] = _normalized_pdf_text(reader, page_index)
+        return self._pages[key]
+
+    def verify_fragment(
+        self,
+        *,
+        source_ref: str,
+        locator: dict[str, object],
+        fragment_hash: str,
+        extractor_identifier: str,
+        extractor_version: str,
+    ) -> VerifiedTextFragment:
+        """Recompute a citation from retained bytes; caller separately binds authority."""
+        details: dict[str, object] = {
+            "source_ref": source_ref,
+            "category": "evidence_validation",
+            "next_action": "read_attachment_text",
+        }
+        if extractor_identifier != PDF_TEXT_EXTRACTOR or extractor_version != pypdf_version:
+            raise DocketError(
+                code="source_fragment_extractor_mismatch",
+                message="Re-read the source with the current pinned PDF text extractor.",
+                details={**details, "constraint": "exact_extractor_version"},
+            )
+        try:
+            coordinates = PdfFragmentLocator.model_validate(locator)
+        except ValidationError as exc:
+            raise DocketError(
+                code="source_fragment_locator_invalid",
+                message="Use exact PDF page and character coordinates from the source read.",
+                details={**details, "constraint": "pdf_character_coordinates"},
+            ) from exc
+        evidence, reader = self._reader(source_ref)
+        start, end = coordinates.text_character_start, coordinates.text_character_end
+        if coordinates.page > len(reader.pages) or start >= end:
+            raise DocketError(
+                code="source_fragment_locator_invalid",
+                message="The citation does not identify a nonempty retained PDF fragment.",
+                details={**details, "constraint": "nonempty_retained_fragment"},
+            )
+        text = self._page_text(source_ref, reader, coordinates.page - 1)
+        if end > len(text):
+            raise DocketError(
+                code="source_fragment_locator_invalid",
+                message="The cited fragment extends beyond the retained page text.",
+                details={**details, "constraint": "retained_page_bounds"},
+            )
+        fragment = text[start:end]
+        if len(fragment.encode("utf-8")) > 8192:
+            raise DocketError(
+                code="source_fragment_too_large",
+                message="Use a source fragment no larger than the attachment-text read limit.",
+                details={**details, "constraint": "fragment_utf8_bytes", "limit": 8192},
+            )
+        computed = hashlib.sha256(fragment.encode("utf-8")).hexdigest()
+        if computed != fragment_hash:
+            raise DocketError(
+                code="source_fragment_hash_mismatch",
+                message="The cited digest does not match the retained source fragment.",
+                details={**details, "constraint": "retained_fragment_sha256"},
+            )
+        assert evidence.content_hash is not None
+        return VerifiedTextFragment(
+            source_ref=source_ref,
+            attachment_content_hash=evidence.content_hash,
+            fragment_hash=computed,
+            locator=coordinates,
+            extractor_version=pypdf_version,
+            text=fragment,
+        )
+
+    def read_pdf_text(
+        self,
+        *,
+        source_ref: str,
+        cursor: str | None,
+        max_text_bytes: int,
+        page_limit: int,
+    ) -> dict[str, object]:
+        evidence, reader = self._reader(source_ref)
+        page_count = len(reader.pages)
         page_index, character_offset = _pdf_cursor(cursor)
         if page_index > page_count or (page_index == page_count and character_offset != 0):
             raise DocketError(code="invalid_cursor", message="Invalid attachment-text cursor.")
@@ -436,7 +556,7 @@ class AttachmentTextService:
         next_cursor: str | None = None
         while page_index < page_count and len(items) < page_limit and remaining_bytes > 0:
             next_cursor = None
-            page_text = _normalized_pdf_text(reader, page_index)
+            page_text = self._page_text(source_ref, reader, page_index)
             if character_offset > len(page_text):
                 raise DocketError(code="invalid_cursor", message="Invalid attachment-text cursor.")
             if not page_text[character_offset:]:
@@ -473,7 +593,7 @@ class AttachmentTextService:
             not items
             and cursor is None
             and all(
-                not _normalized_pdf_text(reader, index).strip()
+                not self._page_text(source_ref, reader, index).strip()
                 for index in range(page_count)
             )
         ):
