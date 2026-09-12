@@ -1,5 +1,40 @@
 # Interaction correction verification
 
+## Post-success native-image review regression
+
+The September 12 career-fair incident
+`trace_01M2BAN6YBB0XD0S65C46P7YQM` had one admitted execution, two reads, one stage
+and one successful commit. All three Google creations succeeded on their first
+attempt. The contradictory warning followed Hermes's background memory/skill
+review, which shares the foreground session for caching but has a separate task.
+The old image guard inherited the completed foreground context via session
+fallback. Its failure path reused the success response ref without persisting
+the new warning text. The ledger contained one successful response, not two
+authorized executions or an image-input failure before commit.
+
+Plugin `0.31.2` removes that session fallback across execution hooks and blocks
+late failure finalization. Successful capture pins the exact response ref/text;
+deterministic delivery cannot substitute text or report the original response as
+failed when the binding is invalid. Concurrent image-failure callbacks serialize
+capture and scheduling. No calendar correction, historical request replay,
+provider operation, schema migration or new mutation semantics are part of this
+repair.
+
+Regression fixtures cover background construction/hooks while the foreground is
+pending, prepared, failed or completed; success followed by review; late failure
+during response capture; concurrent failure callbacks; changed response text;
+delayed delivery snapshots; and genuine image-loss recovery. The offline pinned
+Hermes check exercises real context construction with a synthetic image, then
+the text-only review call, without network, credentials or model invocation.
+
+Local validation passed **776 tests, Ruff and strict mypy (144 source files)**,
+the isolated authenticated Compose/PostgreSQL smoke (including governance
+restore and migration round-trip), and both offline native-image and timing
+checks in the exact pinned Hermes image. These are deterministic verification
+results, not a new live model-quality or latency claim. Deployment verification
+must separately confirm the new plugin pin, healthy gateway, terminal incident
+ingress and unchanged committed career-fair/provider records.
+
 ## Post-deployment response ownership regression
 
 The first September 12 deployment passed its deterministic gates and service

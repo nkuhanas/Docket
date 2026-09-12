@@ -971,10 +971,11 @@ def _argument_preview(tool_name: str, arguments: dict[str, Any]) -> str:
 
 
 def _trace_context(task_id: str, session_id: str) -> dict[str, Any] | None:
-    for key in (task_id, session_id):
-        if key and (context := _TRACE_CONTEXTS.get(key)) is not None:
-            return context
-    return None
+    # The pinned gateway explicitly passes the admitted session as task_id.
+    # Auxiliary reviews share session_id for caching, but have no admitted task
+    # (and later generate their own task ID). Session fallback would let them
+    # inherit foreground authority, image requirements and response ownership.
+    return _TRACE_CONTEXTS.get(task_id) if task_id else None
 
 
 def _timing_context(task_id: str, session_id: str, turn_id: str) -> dict[str, Any] | None:
@@ -1057,20 +1058,32 @@ def _native_image_hashes(user_message: Any) -> list[str]:
 
 
 def _record_native_image_failure(context: dict[str, Any]) -> None:
-    context["native_image_state"] = "failed"
-    context["deterministic_response_text"] = _NATIVE_IMAGE_FAILURE
-    try:
-        if not context.get("response_ref"):
-            context["response_ref"] = _persist_deterministic_response(context)
-        context["response_persistence_failed"] = False
-        context["turn_finalized"] = True
-        if not (
-            context.get("deterministic_delivery_scheduled") or context.get("delivery_recorded")
-        ):
-            _schedule_persisted_deterministic_response(context)
-    except (OSError, RuntimeError, urllib.error.URLError):
-        context["response_persistence_failed"] = not bool(context.get("response_ref"))
-        logger.error("Docket native-image failure response needs delivery recovery")
+    # Serialize capture/recovery and scheduling for this execution, never all
+    # gateway traffic. The final-response hook reserves terminal under the same
+    # context lock before capture; a late failure cannot replace that outcome.
+    with _operation_lock(f"native-image-response:{id(context)}"):
+        with _TRACE_CONTEXT_LOCK:
+            if context.get("native_image_state") != "failed" and (
+                context.get("terminal") or context.get("response_ref")
+            ):
+                return
+            if context.get("response_ref") and context.get("persisted_response") != (
+                context["response_ref"], _NATIVE_IMAGE_FAILURE,
+            ):
+                return
+            context["native_image_state"] = "failed"
+            context["deterministic_response_text"] = _NATIVE_IMAGE_FAILURE
+        try:
+            if not context.get("response_ref"):
+                response_ref = _persist_deterministic_response(context)
+                _bind_persisted_response(context, response_ref, _NATIVE_IMAGE_FAILURE)
+            if not (
+                context.get("deterministic_delivery_scheduled") or context.get("delivery_recorded")
+            ):
+                _schedule_persisted_deterministic_response(context)
+        except (OSError, RuntimeError, urllib.error.URLError):
+            context["response_persistence_failed"] = not bool(context.get("response_ref"))
+            logger.error("Docket native-image failure response needs delivery recovery")
 
 
 def _verify_native_image_input(task_id: str, session_id: str, user_message: Any) -> None:
@@ -1081,6 +1094,10 @@ def _verify_native_image_input(task_id: str, session_id: str, user_message: Any)
         return
     if context.get("native_image_state") == "failed":
         raise RuntimeError("docket_native_image_input_unavailable")
+    if context.get("terminal"):
+        # This is a stale foreground construction, not a new admitted recovery.
+        # Do not reinterpret it or manufacture a second terminal response.
+        raise RuntimeError("docket_execution_already_finalized")
     try:
         actual = _native_image_hashes(user_message)
         expected = [row["content_hash"] for row in context["native_image_bindings"]]
@@ -1091,7 +1108,12 @@ def _verify_native_image_input(task_id: str, session_id: str, user_message: Any)
         # The separately persisted response survives failure of the model turn.
         _record_native_image_failure(context)
         raise RuntimeError("docket_native_image_input_unavailable") from None
-    context["native_image_state"] = "prepared"
+    with _TRACE_CONTEXT_LOCK:
+        if context.get("native_image_state") == "failed":
+            raise RuntimeError("docket_native_image_input_unavailable")
+        if context.get("terminal"):
+            raise RuntimeError("docket_execution_already_finalized")
+        context["native_image_state"] = "prepared"
     logger.info("Docket native image input verified: %d source(s)", len(expected))
 
 
@@ -1818,15 +1840,14 @@ def _on_post_llm_call(
     if not assistant_response and payload_context.get("deterministic_response_text"):
         try:
             response_ref = _persist_deterministic_response(payload_context)
+            _bind_persisted_response(
+                context, response_ref, str(payload_context["deterministic_response_text"]).strip(),
+            )
         except (OSError, RuntimeError, urllib.error.URLError):
             logger.exception("Docket deterministic AgentResponse persistence failed")
             with _TRACE_CONTEXT_LOCK:
                 context["response_persistence_failed"] = True
             return
-        with _TRACE_CONTEXT_LOCK:
-            context["response_ref"] = response_ref
-            context["response_persistence_failed"] = False
-            context["turn_finalized"] = True
         return
     if not assistant_response:
         payload = {
@@ -1885,15 +1906,48 @@ def _on_post_llm_call(
                 "Docket did not return a typed AgentResponse reference",
                 502,
             )
+        _bind_persisted_response(context, response_ref, assistant_response)
     except (OSError, RuntimeError, urllib.error.URLError):
         logger.exception("Docket AgentResponse persistence failed before projection")
         with _TRACE_CONTEXT_LOCK:
             context["response_persistence_failed"] = True
         return
+
+
+def _bind_persisted_response(context: dict[str, Any], response_ref: str, text: str) -> None:
+    """Pin the exact capture acknowledged by Docket, never a mutable message label."""
+    binding = (response_ref, text)
     with _TRACE_CONTEXT_LOCK:
+        if (
+            _RESPONSE_REF.fullmatch(response_ref) is None or not text
+            or context.get("persisted_response") not in (None, binding)
+            or context.get("response_ref") not in (None, response_ref)
+        ):
+            raise PluginAPIError(
+                "response_content_binding_invalid", "Persisted response binding changed", 409,
+            )
+        context["persisted_response"] = binding
         context["response_ref"] = response_ref
         context["response_persistence_failed"] = False
         context["turn_finalized"] = True
+
+
+def _deterministic_response_binding(context: dict[str, Any]) -> tuple[str, str]:
+    binding = context.get("persisted_response")
+    if (
+        not isinstance(binding, tuple) or len(binding) != 2
+        or binding != (
+            context.get("response_ref"),
+            str(context.get("deterministic_response_text") or "").strip(),
+        )
+        or not isinstance(binding[0], str) or _RESPONSE_REF.fullmatch(binding[0]) is None
+        or not binding[1] or context.get("response_persistence_failed")
+    ):
+        raise PluginAPIError(
+            "invalid_deterministic_response",
+            "Deterministic text does not match its persisted AgentResponse", 500,
+        )
+    return binding
 
 
 def _persist_deterministic_response(context: dict[str, Any]) -> str:
@@ -1934,15 +1988,8 @@ def _persist_deterministic_response(context: dict[str, Any]) -> str:
 async def _deliver_persisted_deterministic_response(context: dict[str, Any]) -> None:
     """Project an already-persisted deterministic response without an LLM turn."""
 
+    response_ref, response_text = _deterministic_response_binding(context)
     _loop, adapter, _client = _discord_runtime()
-    response_text = str(context.get("deterministic_response_text") or "").strip()
-    response_ref = str(context.get("response_ref") or "")
-    if not response_text or _RESPONSE_REF.fullmatch(response_ref) is None:
-        raise PluginAPIError(
-            "invalid_deterministic_response",
-            "Deterministic response was not durably persisted before projection",
-            500,
-        )
     try:
         result = await adapter.send(
             chat_id=str(context["source_channel_id"]),
@@ -1973,6 +2020,7 @@ async def _deliver_persisted_deterministic_response(context: dict[str, Any]) -> 
 def _schedule_persisted_deterministic_response(context: dict[str, Any]) -> None:
     # A delayed projection still belongs to this response/execution even if a
     # later admitted recovery reuses the in-memory source context.
+    _deterministic_response_binding(context)
     coroutine = _deliver_persisted_deterministic_response(dict(context))
     try:
         loop, _adapter, _client = _discord_runtime()
@@ -2037,15 +2085,16 @@ def _provenance_delivery_blocked(
             continue
         if reply_to and str(message_id) != reply_to:
             continue
+        if persisted_response_ref is not None:
+            return (
+                context.get("persisted_response") != (persisted_response_ref, content)
+                or context.get("response_ref") != persisted_response_ref
+                or bool(context.get("response_persistence_failed"))
+            )
         if context.get("native_image_state") == "failed":
             # Only the explicitly persisted failure projection may pass. A
             # generic runtime error must not become an extra Discord response.
-            return not (
-                context.get("response_ref")
-                and persisted_response_ref == context["response_ref"]
-                and content == context.get("deterministic_response_text")
-                and not context.get("response_persistence_failed")
-            )
+            return True
         if context.get("terminal") and context.get("response_persistence_failed") is True:
             return True
         if not reply_to:
@@ -2236,11 +2285,18 @@ def _install_processing_outcome_listener(adapter: object) -> None:
         deterministic_text = str(context.get("deterministic_response_text") or "").strip()
         if deterministic_text and _RESPONSE_REF.fullmatch(str(context.get("response_ref") or "")):
             try:
+                response_ref, deterministic_text = _deterministic_response_binding(context)
+            except PluginAPIError:
+                # An unrelated warning must neither send under the original
+                # response ref nor mark that response's delivery as failed.
+                logger.error("Blocked completion delivery with changed response content")
+                return
+            try:
                 result = await adapter.send(
                     chat_id=str(context["source_channel_id"]),
                     content=deterministic_text,
                     reply_to=str(context["source_message_id"]),
-                    metadata={"notify": True, "docket_response_ref": context["response_ref"]},
+                    metadata={"notify": True, "docket_response_ref": response_ref},
                 )
                 delivered = bool(getattr(result, "success", False))
             except Exception:
@@ -2789,8 +2845,7 @@ def _pre_gateway_dispatch(
         if context is not None:
             try:
                 response_ref = _persist_deterministic_response(context)
-                context["response_ref"] = response_ref
-                context["response_persistence_failed"] = False
+                _bind_persisted_response(context, response_ref, deterministic_response_text.strip())
                 _schedule_persisted_deterministic_response(context)
             except (OSError, RuntimeError, urllib.error.URLError):
                 logger.exception("Immediate deterministic response failed; using turn fallback")

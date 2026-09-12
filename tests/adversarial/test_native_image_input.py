@@ -3,6 +3,8 @@ import base64
 import hashlib
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -178,6 +180,9 @@ def test_delayed_failure_projection_keeps_original_execution_binding(plugin_modu
         response_ref="rsp_" + "1" * 26, deterministic_response_text="Original durable response",
         execution_completion_token="original-claim",
     )
+    plugin_module._bind_persisted_response(
+        context, context["response_ref"], context["deterministic_response_text"],
+    )
     queued = []
     delivered = []
 
@@ -328,6 +333,162 @@ def test_real_context_boundary_checks_images_before_calling_original(plugin_modu
     assert wrapper(SimpleNamespace(session_id="other"), "plain", None, [], "other") == (
         "original result"
     )
+
+
+@pytest.mark.parametrize("foreground_state", ["pending", "prepared", "failed", "completed"])
+@pytest.mark.parametrize("background_task", [None, "unadmitted-review-task"])
+def test_background_context_and_hooks_cannot_inherit_foreground_execution(
+    plugin_module, monkeypatch, foreground_state, background_task,
+):
+    context, persisted, scheduled = _context(plugin_module, monkeypatch)
+    context.update(
+        native_image_state="prepared" if foreground_state == "completed" else foreground_state,
+        terminal=foreground_state == "completed",
+    )
+    before = dict(context)
+    calls = []
+
+    def build_turn_context(agent, user_message, system_message, conversation_history, task_id):
+        calls.append(task_id)
+        return "background context"
+
+    module = ModuleType("agent")
+    module.conversation_loop = SimpleNamespace(build_turn_context=build_turn_context)
+    monkeypatch.setitem(sys.modules, "agent", module)
+    plugin_module._install_context_timing_hook()
+    assert module.conversation_loop.build_turn_context(
+        SimpleNamespace(session_id="image-turn"), "text-only review", None, [], background_task,
+    ) == "background context"
+    # The real background builder generates its own task before invoking hooks.
+    hook_binding = dict(task_id="unadmitted-review-task", session_id="image-turn",
+                        turn_id="background-turn")
+    plugin_module._on_pre_api_request(**hook_binding, api_request_id="bg-api", started_at=1.0)
+    plugin_module._on_post_llm_call(**hook_binding, assistant_response="background answer")
+    rejected = plugin_module._on_pre_tool_call(
+        **hook_binding, tool_name="mcp__docket__docket_commit_changeset", args={},
+        tool_call_id="unadmitted-commit",
+    )
+    assert rejected["action"] == "block"
+    assert context == before and not persisted and not scheduled
+    assert calls == [background_task]
+
+
+def test_successful_image_response_then_background_review_has_only_one_outcome(
+    plugin_module, monkeypatch,
+):
+    context, failures, scheduled = _context(plugin_module, monkeypatch)
+    context.update(execution_index=1, execution_completion_token="a" * 32)
+    captured = []
+
+    def capture(path, payload):
+        assert path == "/internal/v1/discord/agent-responses"
+        captured.append(payload["verbatim_text"])
+        return {"ref": "rsp_" + "4" * 26}
+
+    monkeypatch.setattr(plugin_module, "_docket_internal_request", capture)
+    plugin_module._verify_native_image_input("image-turn", "image-turn", _parts(b"image one"))
+    answer = "All three events committed. Google Calendar sync is queued."
+    plugin_module._on_post_llm_call(
+        task_id="image-turn", session_id="image-turn", turn_id="foreground-turn",
+        assistant_response=answer, model="fixture-model",
+    )
+    before = dict(context)
+    # Pin's background review reuses session_id but not the foreground task.
+    plugin_module._verify_native_image_input("", "image-turn", "Review the conversation")
+    plugin_module._on_post_llm_call(
+        task_id="review-task", session_id="image-turn", assistant_response="Review completed",
+    )
+    # Defense in depth: even a misrouted late failure cannot replace success.
+    plugin_module._record_native_image_failure(context)
+    with pytest.raises(RuntimeError, match="docket_execution_already_finalized"):
+        plugin_module._verify_native_image_input("image-turn", "image-turn", [])
+    assert context == before
+    assert captured == [answer] and failures == scheduled == []
+    assert context["persisted_response"] == (context["response_ref"], answer)
+
+
+def test_late_failure_cannot_race_foreground_response_capture(plugin_module, monkeypatch):
+    context, failures, scheduled = _context(plugin_module, monkeypatch)
+    context.update(native_image_state="prepared", execution_index=1,
+                   execution_completion_token="a" * 32)
+    capturing = Event()
+    finish_capture = Event()
+
+    def capture(_path, _payload):
+        capturing.set()
+        assert finish_capture.wait(5)
+        return {"ref": "rsp_" + "4" * 26}
+
+    monkeypatch.setattr(plugin_module, "_docket_internal_request", capture)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        response = pool.submit(plugin_module._on_post_llm_call, task_id="image-turn",
+                               assistant_response="Committed")
+        try:
+            assert capturing.wait(5)
+            plugin_module._record_native_image_failure(context)
+            assert context["native_image_state"] == "prepared"
+            assert context.get("deterministic_response_text") is None
+        finally:
+            finish_capture.set()
+        response.result(timeout=5)
+    assert context["persisted_response"] == (context["response_ref"], "Committed")
+    assert not failures and not scheduled
+
+
+def test_concurrent_native_failure_recovery_schedules_one_response(plugin_module, monkeypatch):
+    context, persisted, scheduled = _context(plugin_module, monkeypatch)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(plugin_module._record_native_image_failure, context) for _ in range(2)
+        ]
+        for future in futures:
+            future.result(timeout=5)
+    assert len(persisted) == len(scheduled) == 1
+
+
+@pytest.mark.parametrize("lost_context", [False, True])
+def test_success_ref_cannot_project_different_failure_text(
+    plugin_module, monkeypatch, lost_context,
+):
+    context, _persisted, _scheduled = _context(plugin_module, monkeypatch)
+    response_ref = "rsp_" + "4" * 26
+    plugin_module._bind_persisted_response(context, response_ref, "Committed")
+    before = dict(context)
+    with pytest.raises(RuntimeError, match="Persisted response binding changed"):
+        plugin_module._bind_persisted_response(
+            context, response_ref, plugin_module._NATIVE_IMAGE_FAILURE,
+        )
+    assert context == before
+    context.update(deterministic_response_text=plugin_module._NATIVE_IMAGE_FAILURE,
+                   native_image_state="failed")
+    monkeypatch.setattr(plugin_module, "_discord_runtime",
+                        lambda: pytest.fail("must validate before accessing Discord"))
+    if lost_context:
+        plugin_module._TRACE_CONTEXTS.clear()
+    with pytest.raises(RuntimeError, match="does not match its persisted"):
+        asyncio.run(plugin_module._deliver_persisted_deterministic_response(dict(context)))
+    adapter = SimpleNamespace(_docket_provenance_contexts={(
+        context["guild_id"], context["source_channel_id"], context["source_message_id"],
+    ): context})
+    assert plugin_module._provenance_delivery_blocked(
+        adapter, chat_id=context["source_channel_id"], reply_to=context["source_message_id"],
+        persisted_response_ref=response_ref, content=plugin_module._NATIVE_IMAGE_FAILURE,
+    )
+
+
+@pytest.mark.asyncio
+async def test_completion_content_mismatch_cannot_change_successful_delivery(
+    plugin_module, monkeypatch,
+):
+    context, _persisted, _scheduled = _context(plugin_module, monkeypatch)
+    plugin_module._bind_persisted_response(context, "rsp_" + "4" * 26, "Committed")
+    context["deterministic_response_text"] = plugin_module._NATIVE_IMAGE_FAILURE
+    monkeypatch.setattr(plugin_module, "_trace_context_for_event", lambda *_a: context)
+    monkeypatch.setattr(plugin_module, "_post_agent_response_delivery",
+                        lambda *_a, **_k: pytest.fail("must not change success delivery"))
+    adapter = SimpleNamespace(send=lambda **_kw: pytest.fail("must not send mismatched content"))
+    plugin_module._install_processing_outcome_listener(adapter)
+    await adapter.on_processing_complete(SimpleNamespace(), "success")
 
 
 def test_only_persisted_native_failure_is_projected_once(plugin_module, monkeypatch):
