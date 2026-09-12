@@ -65,6 +65,42 @@ to its first controlled callback, without invoking a model/provider or reading
 production state. This pin check and deterministic timing fixtures do not
 establish live latency or a speedup.
 
+Plugin `0.28.0` additionally binds native image preparation on authenticated
+Docket surfaces. It wraps the exact keyword-only
+`GatewayRunner._decide_image_input_mode(self, source, session_key, user_config,
+provider, model)` seam and returns `native` for those sources. Other sources
+retain Hermes routing. Repeated discovery refreshes the source/context observers
+without wrapping twice. The configured main model must support image input;
+Docket does not silently substitute an auxiliary vision summarizer when a
+capability lookup is unavailable.
+
+The trusted capture summary supplies each retained image's `src_`, digest and
+media type/filename. Immediately before the real context builder, the plugin
+checks the ordered inline image bytes against that ledger-bound manifest. It
+rejects dropped, changed, extra or reordered images, external image URLs and
+unsupported encodings rather than accepting the upstream text-only fallback.
+At most ten attachments are accepted, subject to `DOCKET_ATTACHMENT_MAX_BYTES`
+(8 MiB default) and `DOCKET_ATTACHMENT_TOTAL_MAX_BYTES` (16 MiB default). Filename
+fallback is only an image-routing hint when MIME metadata is absent/generic;
+it neither verifies image decoding nor changes source evidence. Deferred
+attachment materialization uses the same routing rule.
+
+A preparation failure blocks interpretation and mutation-capable dispatch and
+persists an explicit failure response. A later generic gateway error cannot
+replace or duplicate it. Delivery of that response and the failed input's
+authority are separate: the original evidence remains available, while a new
+execution claim must reestablish image preparation. Docket does not retain raw
+image bytes, base64, captions or local paths in this guard's operational logs.
+The `prepared` state verifies the context-builder input only; it does not prove
+provider acceptance or correct semantic interpretation. The upstream provider
+adapter may resize images on a rejected-request retry.
+
+`scripts/verify-hermes-native-image-pin.py` exercises the actual pinned native
+builder, context seam and Codex Responses image conversion offline. Its
+synthetic PNG round-trips byte-for-byte, and a missing image is stopped before
+the context builder's first callback. Mount only the plugin and script, read-only,
+with networking disabled. This is not a live vision/OCR quality benchmark.
+
 Milestone 2.5 also depends on a private outbound seam in that exact image. The
 plugin resolves `gateway.run._gateway_runner_ref()`, selects the Discord adapter
 from `GatewayRunner.adapters`, schedules work on `GatewayRunner._gateway_loop`,

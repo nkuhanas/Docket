@@ -363,6 +363,8 @@ def test_attachment_is_encrypted_bound_and_idempotent(session_factory) -> None:
         "retention_disposition": "retained_encrypted",
         "content_hash": hashlib.sha256(b"schedule bytes").hexdigest(),
         "source_revision": 1,
+        "media_type": "image/png",
+        "filename": "schedule.png",
         "untrusted_content": True,
     }
 

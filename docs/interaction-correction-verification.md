@@ -1041,3 +1041,34 @@ Durable-ingress queue time and explicit provider-wait boundaries still need
 separate instrumentation; asynchronous provider execution does not by itself
 prove the conversational agent was waiting. Exact semantic authority/repair,
 remaining acceptance mapping, clean-archive/CI and production gates remain open.
+
+## Native image preparation and explicit failure
+
+Plugin `0.28.0` selects native image input for authenticated Docket sources and
+checks the actual ordered inline bytes before Hermes constructs the model turn.
+Its comparison uses retained source digests, not a model-provided attachment
+claim. Missing, modified, reordered, extra, oversized or remote-URL inputs cannot
+silently become a text-only interpretation. The existing attachment limits apply;
+no OCR dependency, GPU service or provider-model change is introduced.
+
+An input failure retains the original utterance/evidence and persists an explicit
+response. The execution cannot proceed by retrying a corrected image locally;
+only a new authenticated execution claim resets preparation. Generic upstream
+errors are neither persisted nor projected as a second response. Failure-response
+persistence and projection can recover independently, without renewed authority.
+The guard covers the newly attached images for the current bound input; it does
+not automatically inject every historical retained source into later turns.
+
+Adversarial fixtures cover exact source order, fallback MIME routing, mutation
+blocking, failed response capture and recovery, one-response projection and
+subsequent unrelated inputs. The offline pinned-container test exercises real
+image construction and Codex `input_image` conversion and halts at the actual
+context builder's first controlled callback. It uses a synthetic PNG, no network,
+production data or model invocation. It establishes neither live OCR quality nor
+provider acceptance, and it does not close the exact semantic authority/repair
+gates. An image hash proves byte identity, not that an interpretation is correct.
+
+Validation passed **720 tests, Ruff and strict mypy (142 source files)**, plus
+isolated Compose/PostgreSQL smoke. Both native-image and existing timing-seam
+checks passed in the exact pinned Hermes image without network access. No
+production deployment, OCR installation or live model quality test occurred.

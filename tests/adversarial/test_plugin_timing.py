@@ -224,6 +224,7 @@ def test_registered_hooks_match_plugin_manifest(timing_plugin, monkeypatch):
         monkeypatch.setattr(plugin, name, lambda: None)
     monkeypatch.setattr(plugin, "_install_context_timing_hook", lambda: True)
     monkeypatch.setattr(plugin, "_install_schema_timing_hook", lambda: True)
+    monkeypatch.setattr(plugin, "_install_native_image_routing", lambda: True)
     monkeypatch.setattr(plugin, "_owns_discord_gateway_lifetime", lambda _ctx: False)
     monkeypatch.setattr(plugin._SCHEMA_DISCLOSURE, "install_hermes_progressive_schema_patch",
                         lambda: True)
