@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-09-11-v38"
+CONTRACT_VERSION = "docket-tools-2026-09-11-v39"
 
 
 class ToolContractEntry(TypedDict):
@@ -60,6 +60,9 @@ _INTERACTIVE_READS: dict[str, tuple[str, str]] = {
         "left unmeasured. When exact ledger evidence exists, the timing window includes the "
         "initial ingress queue from durable receipt to first execution claim; later recovery "
         "downtime is not silently called queueing or provider waiting. "
+        "One trace identifies the original message; execution_index identifies each admitted "
+        "execution within it. Executions view paginates immutable execution bindings, separate "
+        "statuses and closed-interval timing, including executions with no calls. "
         "Restart a call cursor if its trace or invocation snapshot changes; "
         "domain outcomes remain live observations.",
     ),

@@ -65,7 +65,9 @@ class McpTraceContext(InternalModel):
     tool_contract_version: str = Field(min_length=1, max_length=128)
     tool_contract_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     caller_profile: Literal["interactive"]
-    gateway_instance_ref: str | None = Field(default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
+    gateway_instance_ref: str = Field(pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
+    execution_index: int = Field(ge=1)
+    execution_completion_token: str = Field(pattern=r"^[0-9a-f]{32}$")
     turn_started_at: datetime
     updated_at: datetime
     turn_status: Literal["running", "completed", "failed", "interrupted"] = "running"
@@ -76,6 +78,21 @@ class McpTraceContext(InternalModel):
             raise ValueError("trace timestamps must include a UTC offset")
         if self.turn_started_at > self.updated_at:
             raise ValueError("turn_started_at cannot follow updated_at")
+        return self
+
+
+class TraceExecutionBind(InternalModel):
+    utterance_ref: str = Field(pattern=r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")
+    gateway_instance_ref: str = Field(pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
+    execution_completion_token: str = Field(pattern=r"^[0-9a-f]{32}$")
+    tool_contract_version: str = Field(min_length=1, max_length=128)
+    tool_contract_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    turn_started_at: datetime
+
+    @model_validator(mode="after")
+    def zoned_start(self) -> "TraceExecutionBind":
+        if self.turn_started_at.tzinfo is None:
+            raise ValueError("execution start must include a UTC offset")
         return self
 
 
@@ -123,6 +140,9 @@ class AssemblyOperationAdmission(InternalModel):
     actor_id: str = Field(pattern=r"^[0-9]{17,20}$")
     utterance_ref: str = Field(pattern=r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")
     trace_ref: str = Field(pattern=r"^trace_[0-9A-HJKMNP-TV-Z]{26}$")
+    execution_index: int = Field(ge=1)
+    gateway_instance_ref: str = Field(pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
+    execution_completion_token: str = Field(pattern=r"^[0-9a-f]{32}$")
     upstream_tool_call_id: str = Field(min_length=1, max_length=255)
     trace_ordinal: int = Field(ge=1, le=2_147_483_647)
     tool_name: Literal[

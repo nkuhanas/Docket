@@ -52,6 +52,7 @@ def test_active_migration_history_is_one_clean_baseline() -> None:
     revisions = list(script.walk_revisions())
 
     assert [revision.revision for revision in revisions] == [
+        "20260912b8f7",
         "20260912a7e6",
         "20260911a6d5",
         "20260911f5c4",
@@ -92,6 +93,7 @@ def test_clean_baseline_matches_current_metadata(
         "persisted_semantic_options",
         "operation_targets",
         "conversational_tool_traces",
+        "trace_execution_segments",
         "assembly_executions",
         "assembly_operations",
     }.issubset(migrated_tables)
@@ -131,6 +133,24 @@ def test_clean_namespace_columns_are_unambiguous(
         "result_disposition",
     }.issubset(invocation_columns)
     assert "status" not in invocation_columns
+    assert "trace_execution_id" in invocation_columns
+    trace_columns = {
+        column["name"] for column in inspector.get_columns("conversational_tool_traces")
+    }
+    assert (
+        not {"gateway_instance_ref", "tool_contract_version", "calls", "last_ordinal"}
+        & trace_columns
+    )
+    segment_columns = {
+        column["name"] for column in inspector.get_columns("trace_execution_segments")
+    }
+    assert {
+        "trace_ref",
+        "execution_index",
+        "execution_lease_id",
+        "binding_basis",
+    } <= segment_columns
+    assert "ref_id" not in segment_columns
     assert "import_scope_json" in {
         column["name"] for column in inspector.get_columns("change_sets")
     }

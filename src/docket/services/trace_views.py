@@ -18,6 +18,7 @@ from docket.models import (
     ExecutionLease,
     OperatorUtterance,
     ToolInvocation,
+    TraceExecutionSegment,
     TraceTimingObservation,
 )
 from docket.models.base import utc_now
@@ -87,8 +88,12 @@ class TraceViewService:
             ),
             ExecutionLease.lease_kind == "interactive_turn",
         ).order_by(ExecutionLease.claimed_at, ExecutionLease.id).limit(1)).first()
-        if row is None or trace.gateway_instance_ref is None or (
-            row.gateway_instance_ref != trace.gateway_instance_ref
+        first = self.session.scalar(select(TraceExecutionSegment).where(
+            TraceExecutionSegment.trace_ref == trace.ref_id,
+            TraceExecutionSegment.execution_index == 1,
+        ))
+        if row is None or first is None or first.gateway_instance_ref is None or (
+            row.gateway_instance_ref != first.gateway_instance_ref
         ):
             return None
         start, end = _utc(row.recorded_at), _utc(row.claimed_at)
@@ -103,6 +108,10 @@ class TraceViewService:
             )
         )
         by_call = correlated_calls(invocations)
+        segments = list(self.session.scalars(select(TraceExecutionSegment).where(
+            TraceExecutionSegment.trace_ref == trace.ref_id,
+        ).order_by(TraceExecutionSegment.execution_index)))
+        by_execution = {segment.id: segment for segment in segments}
         as_of = utc_now()
         ingress = self._ingress_window(trace)
         if ingress is not None and ingress[1] > _utc(trace.completed_at or as_of):
@@ -137,9 +146,14 @@ class TraceViewService:
         execution_ms = measured["docket_execution_ms"]
         first = min((item.started_at for item in invocations), default=None)
         rows: list[dict[str, Any]] = []
-        wrapper_call_ids = {str(call.get("call_id", "")) for call in trace.calls}
-        for call in sorted(trace.calls, key=lambda row: int(row["ordinal"])):
-            invocation = by_call.get(str(call.get("call_id", "")))
+        observed = [(segment, call) for segment in segments for call in segment.calls]
+        wrapper_call_ids = {
+            (segment.id, str(call.get("call_id", ""))) for segment, call in observed
+        }
+        for segment, call in sorted(observed, key=lambda row: (
+            row[0].execution_index, int(row[1]["ordinal"]),
+        )):
+            invocation = by_call.get((segment.id, str(call.get("call_id", ""))))
             if invocation is not None and (
                 invocation.tool_name != call["tool_name"]
                 or invocation.trace_ordinal != call["ordinal"]
@@ -160,6 +174,7 @@ class TraceViewService:
             rows.append(
                 {
                     "ordinal": int(call["ordinal"]),
+                    "execution_index": segment.execution_index,
                     "tool_name": str(call["tool_name"])[:128],
                     "origin": origin,
                     "transport_state": str(call.get("transport_state", "running")),
@@ -180,6 +195,8 @@ class TraceViewService:
             # latency or whether Hermes received the response.
             rows.append({
                 "ordinal": invocation.trace_ordinal, "tool_name": invocation.tool_name,
+                "execution_index": (by_execution[invocation.trace_execution_id].execution_index
+                                    if invocation.trace_execution_id in by_execution else None),
                 "origin": "authenticated_docket", "transport_state": invocation.transport_state,
                 "transport_layer": "docket",
                 "domain_state": invocation.domain_state,
@@ -188,10 +205,64 @@ class TraceViewService:
                 "tool_call_ref": invocation.ref_id,
                 "argument_preview": '{"availability":"not_recorded"}',
             })
-        rows.sort(key=lambda row: int(row["ordinal"]))
+        rows.sort(key=lambda row: (int(row["execution_index"] or 0), int(row["ordinal"])))
         origins = Counter(row["origin"] for row in rows)
         tools = Counter(row["tool_name"] for row in rows)
         confirmed_tools = Counter(item.tool_name for item in invocations)
+        execution_rows = []
+        for segment in segments:
+            calls = [item for item in invocations if item.trace_execution_id == segment.id]
+            spans = [item for item in observations if item.trace_execution_id == segment.id]
+            elapsed = (_milliseconds(segment.started_at, segment.completed_at)
+                       if segment.completed_at else None)
+            phase_intervals_for_execution: dict[str, list[tuple[int, int]]] = {
+                "docket_execution_ms": [],
+            }
+            for item in calls:
+                if item.completed_at is not None:
+                    phase_intervals_for_execution["docket_execution_ms"].append((
+                        _milliseconds(segment.started_at, item.started_at),
+                        _milliseconds(segment.started_at, item.completed_at),
+                    ))
+            for span in spans:
+                phase_intervals_for_execution.setdefault(phase_names[span.phase], []).append((
+                    _milliseconds(segment.started_at, span.started_at),
+                    _milliseconds(segment.started_at, span.ended_at),
+                ))
+            if elapsed is not None:
+                phase_intervals_for_execution = {
+                    key: [(min(left, elapsed), min(right, elapsed)) for left, right in values]
+                    for key, values in phase_intervals_for_execution.items()
+                }
+            partition = _partition_intervals(phase_intervals_for_execution)
+            execution_rows.append(
+                {
+                    "execution_index": segment.execution_index,
+                    "gateway_instance_ref": segment.gateway_instance_ref,
+                    "tool_contract_version": segment.tool_contract_version,
+                    "tool_contract_hash": segment.tool_contract_hash,
+                    "binding_basis": segment.binding_basis,
+                    "status": segment.status,
+                    "started_at": _utc(segment.started_at).isoformat(),
+                    "completed_at": _utc(segment.completed_at).isoformat()
+                    if segment.completed_at
+                    else None,
+                    "retained_wrapper_calls": len(segment.calls),
+                    "authenticated_invocations": len(calls),
+                    "timing": {
+                        "total_elapsed_ms": elapsed,
+                        "docket_execution_ms": partition["docket_execution_ms"],
+                        **{
+                            name: partition[name] if name in phase_intervals_for_execution else None
+                            for name in phase_names.values()
+                        },
+                        "unattributed_ms": elapsed - sum(partition.values())
+                        if elapsed is not None
+                        else None,
+                        "provider_wait_ms": None,
+                    },
+                }
+            )
         return {
             "trace_ref": trace.ref_id,
             "trace_version": trace.version,
@@ -199,6 +270,7 @@ class TraceViewService:
             "as_of": _utc(as_of).isoformat(),
             "counts": {
                 "attempts": len(rows),
+                "executions": len(segments),
                 "authenticated_invocations": len(invocations),
                 "local_rejections": origins["local_rejection"],
                 "unreconciled_attempts": origins["unreconciled"],
@@ -231,14 +303,22 @@ class TraceViewService:
                 "durable_receipt_to_trace_end_initial_ingress_queue_closed_intervals"
                 if ingress else "trace_window_closed_intervals_exclusive_attribution"
             ),
+            "execution_sample": execution_rows[-3:],
+            "omitted_execution_count": max(0, len(segments) - 3),
+            "execution_rows": execution_rows,
             "rows": rows,
         }
 
     def read(
-        self, trace: ConversationalToolTrace, *, cursor: str | None, limit: int
+        self, trace: ConversationalToolTrace, *, cursor: str | None, limit: int,
+        collection: str = "calls",
     ) -> dict[str, Any]:
         view = self.snapshot(trace)
-        snapshot_hash = sha256_json(view["rows"])
+        if collection not in {"calls", "executions"}:
+            raise DocketError(code="invalid_trace_view", message="Use calls or executions.")
+        snapshot_hash = sha256_json([view["rows"], view["execution_rows"]])
+        calls, executions = view.pop("rows"), view.pop("execution_rows")
+        rows = calls if collection == "calls" else executions
         position = 0
         if cursor is not None:
             try:
@@ -249,10 +329,12 @@ class TraceViewService:
                     "trace_version",
                     "snapshot_hash",
                     "position",
+                    "collection",
                 }:
                     raise ValueError
                 if (
-                    payload["format"] != 2
+                    payload["format"] != 3
+                    or payload["collection"] != collection
                     or type(payload["format"]) is not int
                     or payload["trace_ref"] != trace.ref_id
                     or type(payload["trace_version"]) is not int
@@ -273,7 +355,6 @@ class TraceViewService:
                 raise DocketError(
                     code="invalid_trace_cursor", message="Restart the trace call read."
                 ) from exc
-        rows = view.pop("rows")
         if position > len(rows):
             raise DocketError(code="invalid_trace_cursor", message="Cursor exceeds this trace.")
         page: list[dict[str, Any]] = []
@@ -286,7 +367,8 @@ class TraceViewService:
             base64.urlsafe_b64encode(
                 json.dumps(
                     {
-                        "format": 2,
+                        "format": 3,
+                        "collection": collection,
                         "trace_ref": trace.ref_id,
                         "trace_version": trace.version,
                         "snapshot_hash": snapshot_hash,
@@ -303,6 +385,7 @@ class TraceViewService:
             "ok": True,
             "ref": trace.ref_id,
             "object_type": "conversational_tool_trace",
+            "view": collection,
             **view,
             "items": page,
             "count": len(page),

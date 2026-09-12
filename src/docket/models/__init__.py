@@ -41,6 +41,7 @@ from docket.models.core import (
 from docket.models.discord import (
     ConversationalToolTrace,
     DiscordDailyThread,
+    TraceExecutionSegment,
     TraceTimingObservation,
 )
 from docket.models.entities import Entity, EntityAlias, EntityResolution
@@ -179,6 +180,7 @@ __all__ = [
     "TemporalBinding",
     "TemporalCalendarProjection",
     "ToolInvocation",
+    "TraceExecutionSegment",
     "TraceTimingObservation",
     "TriageRun",
     "TriageWindow",

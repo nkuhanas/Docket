@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import func, select
+from trace_support import bind_execution, callback_binding
 
 from docket.config import get_settings
 from docket.domain.errors import DocketError
@@ -13,6 +14,7 @@ from docket.models import (
     ConversationalToolTrace,
     ExecutionLease,
     OperatorUtterance,
+    TraceExecutionSegment,
     TraceTimingObservation,
 )
 from docket.services.mcp_traces import McpTraceService
@@ -20,7 +22,7 @@ from docket.services.trace_views import TraceViewService, _partition_intervals
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash
 
 
-def _context(factory):
+def _context(factory, trace_ref):
     settings = get_settings()
     start = datetime.now(UTC) - timedelta(seconds=20)
     with factory.begin() as session:
@@ -37,12 +39,13 @@ def _context(factory):
         session.add(utterance)
         session.flush()
         ref = utterance.ref_id
+        binding = bind_execution(session, utterance, label=trace_ref, started_at=start)
     return dict(
         request_id=uuid.uuid4(), guild_id=settings.discord_guild_id,
         source_channel_id=settings.chat_channel_id, source_message_id="777777777777777765",
         actor_id=settings.operator_discord_user_id, utterance_ref=ref,
         caller_profile="interactive", tool_contract_version=CONTRACT_VERSION,
-        tool_contract_hash=contract_hash("interactive"), turn_started_at=start,
+        tool_contract_hash=contract_hash("interactive"), **callback_binding(binding),
         updated_at=start + timedelta(seconds=10),
     )
 
@@ -77,14 +80,14 @@ def _claim(session, context, gateway, *, seconds=-3, kind="interactive_turn"):
 
 
 def test_ingress_queue_uses_original_receipt_and_first_claim_after_restart(session_factory):
-    context = _context(session_factory)
-    trace_ref, gateway = new_public_ref("trace"), new_public_ref("gwy")
+    trace_ref = new_public_ref("trace")
+    context = _context(session_factory, trace_ref)
+    gateway = context["gateway_instance_ref"]
     with session_factory.begin() as session:
         McpTraceService(session).checkpoint(trace_ref, McpTraceCheckpoint(
             **context, timings=[_span(context)], turn_status="completed",
         ))
         trace = session.scalar(select(ConversationalToolTrace))
-        trace.gateway_instance_ref = gateway
         _claim(session, context, gateway)
         # An unrelated lease and a later recovery must not move the boundary.
         _claim(session, context, gateway, seconds=-5, kind="outbox_delivery")
@@ -103,24 +106,24 @@ def test_ingress_queue_uses_original_receipt_and_first_claim_after_restart(sessi
         assert view["timing_scope"].startswith("durable_receipt_to_trace_end")
         assert view["rows"] == []
         assert session.scalar(select(func.count(TraceTimingObservation.id))) == 1
-        assert session.scalar(select(func.count(ExecutionLease.id))) == 3
+        assert session.scalar(select(func.count(ExecutionLease.id))) == 4
 
 
 @pytest.mark.parametrize("failure", [
-    "other_gateway", "missing_gateway", "other_actor", "other_source",
+    "other_gateway", "other_actor", "other_source",
     "claim_before_receipt", "claim_after_trace_start", "trace_end_before_claim",
 ])
 def test_queue_measurement_does_not_guess_missing_or_inconsistent_evidence(
     session_factory, failure,
 ):
-    context = _context(session_factory)
-    gateway = new_public_ref("gwy")
+    trace_ref = new_public_ref("trace")
+    context = _context(session_factory, trace_ref)
+    gateway = context["gateway_instance_ref"]
     with session_factory.begin() as session:
-        McpTraceService(session).checkpoint(new_public_ref("trace"), McpTraceCheckpoint(
+        McpTraceService(session).checkpoint(trace_ref, McpTraceCheckpoint(
             **context, timings=[_span(context)], turn_status="completed",
         ))
         trace = session.scalar(select(ConversationalToolTrace))
-        trace.gateway_instance_ref = None if failure == "missing_gateway" else gateway
         if failure == "other_actor":
             trace.actor_id = "777777777777777799"
         if failure == "other_source":
@@ -145,8 +148,8 @@ def test_queue_measurement_does_not_guess_missing_or_inconsistent_evidence(
 
 
 def test_timing_checkpoint_recovery_is_durable_replayable_and_payload_free(session_factory):
-    context = _context(session_factory)
     trace_ref = new_public_ref("trace")
+    context = _context(session_factory, trace_ref)
     spans = [_span(context), _span(context, "context_schema", 0, 5),
              _span(context, "local_validation", 6, 7)]
     with session_factory.begin() as session:
@@ -174,13 +177,13 @@ def test_timing_checkpoint_recovery_is_durable_replayable_and_payload_free(sessi
         assert timing["queue_ms"] is None and timing["provider_wait_ms"] is None
         assert view["rows"] == [] and view["counts"]["authenticated_invocations"] == 0
         assert set(TraceTimingObservation.__table__.columns.keys()) == {
-            "id", "trace_ref", "phase", "started_at", "ended_at",
+            "id", "trace_ref", "trace_execution_id", "phase", "started_at", "ended_at",
         }
 
 
 def test_failed_timing_page_rolls_back_all_new_observations(session_factory):
-    context = _context(session_factory)
     ref = new_public_ref("trace")
+    context = _context(session_factory, ref)
     original = _span(context)
     with session_factory.begin() as session:
         McpTraceService(session).checkpoint(ref, McpTraceCheckpoint(**context, timings=[original]))
@@ -210,8 +213,8 @@ def test_timing_schema_rejects_unmeasured_or_payload_bearing_inputs(change):
 
 @pytest.mark.parametrize("mode", ["before_turn", "future", "terminal", "other_source"])
 def test_timing_is_bound_to_captured_running_turn(session_factory, mode):
-    context = _context(session_factory)
     ref = new_public_ref("trace")
+    context = _context(session_factory, ref)
     with session_factory.begin() as session:
         McpTraceService(session).checkpoint(ref, McpTraceCheckpoint(
             **context, timings=[_span(context)],
@@ -230,9 +233,10 @@ def test_timing_is_bound_to_captured_running_turn(session_factory, mode):
 
 @pytest.mark.parametrize("mode", ["update", "delete"])
 def test_timing_rows_are_immutable(session_factory, mode):
-    context = _context(session_factory)
+    trace_ref = new_public_ref("trace")
+    context = _context(session_factory, trace_ref)
     with session_factory.begin() as session:
-        McpTraceService(session).checkpoint(new_public_ref("trace"), McpTraceCheckpoint(
+        McpTraceService(session).checkpoint(trace_ref, McpTraceCheckpoint(
             **context, timings=[_span(context)],
         ))
     with pytest.raises(ValueError, match="immutable"), session_factory.begin() as session:
@@ -241,3 +245,33 @@ def test_timing_rows_are_immutable(session_factory, mode):
             row.phase = "context_schema"
         else:
             session.delete(row)
+
+def test_retained_trace_with_unknown_gateway_does_not_invent_queue_time(session_factory):
+    with session_factory.begin() as session:
+        now = datetime.now(UTC)
+        trace = ConversationalToolTrace(
+            guild_id=get_settings().discord_guild_id,
+            source_channel_id=get_settings().chat_channel_id,
+            source_message_id="777777777777777765",
+            actor_id=get_settings().operator_discord_user_id,
+            started_at=now,
+            completed_at=now,
+        )
+        session.add(trace)
+        session.flush()
+        session.add(
+            TraceExecutionSegment(
+                trace_ref=trace.ref_id,
+                execution_index=1,
+                binding_basis="retained_trace",
+                gateway_instance_ref=None,
+                tool_contract_version="retained",
+                tool_contract_hash="a" * 64,
+                caller_profile="interactive",
+                started_at=now,
+                completed_at=now,
+                status="completed",
+            )
+        )
+        session.flush()
+        assert TraceViewService(session).snapshot(trace)["timing"]["queue_ms"] is None

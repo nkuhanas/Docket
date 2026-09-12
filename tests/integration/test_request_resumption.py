@@ -6,6 +6,7 @@ from hashlib import sha256
 
 import pytest
 from sqlalchemy import func, select
+from trace_support import bind_execution
 
 from docket.config import get_settings
 from docket.domain.canonical import sha256_json
@@ -60,10 +61,24 @@ def _utterance(message_id):
 
 def _admit(session, *, utterance, trace_ref, call_id, ordinal, tool_name, argument_hash):
     settings = get_settings()
+    binding = bind_execution(session, utterance, label=trace_ref)
     result = ChangeSetAssemblyAdmissionService(session).admit(
-        utterance_ref=utterance.ref_id, trace_ref=trace_ref, upstream_tool_call_id=call_id,
-        trace_ordinal=ordinal, tool_name=tool_name, argument_hash=argument_hash,
-        guild_id=settings.discord_guild_id, channel_id=settings.chat_channel_id,
+        utterance_ref=utterance.ref_id,
+        trace_ref=binding["trace_ref"],
+        upstream_tool_call_id=call_id,
+        **{
+            key: binding[key]
+            for key in (
+                "execution_index",
+                "execution_completion_token",
+                "gateway_instance_ref",
+            )
+        },
+        trace_ordinal=ordinal,
+        tool_name=tool_name,
+        argument_hash=argument_hash,
+        guild_id=settings.discord_guild_id,
+        channel_id=settings.chat_channel_id,
         source_message_id=utterance.request_key.split(":")[3],
         actor_id=settings.operator_discord_user_id,
     )
@@ -258,7 +273,7 @@ def test_preserved_direct_revision_remains_reviewable_without_mutation(session):
     )
     assert result["disposition"] == "reviewed"
     attempt = session.scalar(select(SemanticRequestAttempt).where(
-        SemanticRequestAttempt.execution_trace_ref.is_not(None),
+        SemanticRequestAttempt.trace_execution_id.is_not(None),
     ))
     assert attempt.observed_changeset_ref == changeset.ref_id
     assert attempt.observed_draft_revision == changeset.current_revision

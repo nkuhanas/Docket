@@ -1,18 +1,25 @@
 """Group transport retries only under an exact original invocation binding."""
 
 from datetime import UTC
+from uuid import UUID
 
 from docket.models import ToolInvocation
 
 
-def correlated_calls(invocations: list[ToolInvocation]) -> dict[str, ToolInvocation]:
-    originals = {item.trace_call_id: item for item in invocations if item.trace_call_id}
+def correlated_calls(
+    invocations: list[ToolInvocation],
+) -> dict[tuple[UUID | None, str], ToolInvocation]:
+    originals = {
+        (item.trace_execution_id, item.trace_call_id): item
+        for item in invocations if item.trace_call_id
+    }
     selected = {}
     for call_id, original in originals.items():
         candidates = [original] + [
             retry for retry in invocations
             if retry.trace_call_id is None
             and retry.trace_ref == original.trace_ref
+            and retry.trace_execution_id == original.trace_execution_id
             and retry.trace_ordinal == original.trace_ordinal
             and retry.tool_name == original.tool_name
             and retry.received_argument_hash == original.received_argument_hash

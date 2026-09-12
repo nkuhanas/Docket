@@ -25,7 +25,6 @@ import logging
 import os
 import queue
 import re
-import secrets
 import sys
 import threading
 import time
@@ -77,6 +76,7 @@ _SEMANTIC_PROMPT_QUIESCE_PATH = re.compile(
 )
 _UTTERANCE_REF = re.compile(r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")
 _RESPONSE_REF = re.compile(r"^rsp_[0-9A-HJKMNP-TV-Z]{26}$")
+_TRACE_REF = re.compile(r"^trace_[0-9A-HJKMNP-TV-Z]{26}$")
 _PUBLIC_REF = re.compile(r"^[a-z][a-z0-9]{1,7}_[0-9A-HJKMNP-TV-Z]{26}$")
 _SAFE_ERROR_CODE = re.compile(r"^[a-z][a-z0-9_.-]{0,127}$")
 _PRODUCTION_RESET_AUTHORIZATION = re.compile(
@@ -658,17 +658,6 @@ def _source_value(source: object, *names: str) -> str:
     return ""
 
 
-def _new_trace_ref() -> str:
-    timestamp_ms = int(time.time_ns() // 1_000_000)
-    value = (timestamp_ms << 80) | secrets.randbits(80)
-    alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-    encoded = ["0"] * 26
-    for index in range(25, -1, -1):
-        encoded[index] = alphabet[value & 31]
-        value >>= 5
-    return f"trace_{''.join(encoded)}"
-
-
 def _deliver_trace_update(payload: dict[str, Any]) -> None:
     trace_ref = str(payload["trace_ref"])
     body = {key: value for key, value in payload.items() if key != "trace_ref"}
@@ -737,6 +726,8 @@ def _enqueue_trace_update(
         "tool_contract_hash": context["tool_contract_hash"],
         "caller_profile": context["caller_profile"],
         "gateway_instance_ref": context.get("gateway_instance_ref"),
+        "execution_index": context["execution_index"],
+        "execution_completion_token": context["execution_completion_token"],
         "turn_started_at": context["turn_started_at"],
         "updated_at": datetime.now(UTC).isoformat(),
         "turn_status": turn_status,
@@ -768,6 +759,8 @@ def _checkpoint_trace(context: dict[str, Any], *, turn_status: str = "running") 
                 )
             }
             base["gateway_instance_ref"] = binding.get("gateway_instance_ref")
+            base["execution_index"] = binding["execution_index"]
+            base["execution_completion_token"] = binding["execution_completion_token"]
             path = f"/internal/v1/discord/mcp-traces/{binding['trace_ref']}/checkpoint"
             position = 0
             timing_position = 0
@@ -825,31 +818,6 @@ def _checkpoint_trace(context: dict[str, Any], *, turn_status: str = "running") 
         return True
 
 
-def _rebind_trace_execution(
-    context: dict[str, Any], event: object, ingress_binding: dict[str, Any] | None
-) -> None:
-    token = ingress_binding.get("execution_completion_token") if ingress_binding else None
-    if token and token != context.get("execution_completion_token"):
-        # Retain trace identity/history but bind recovery to its NEW execution.
-        if context.get("native_image_state") == "failed":
-            context["native_image_state"] = "pending"
-            context.pop("deterministic_delivery_scheduled", None)
-            if context.get("deterministic_response_text") == _NATIVE_IMAGE_FAILURE:
-                context.pop("deterministic_response_text", None)
-        context.update(
-            execution_completion_token=token,
-            processing_event_id=id(event),
-            deferred_ingress_ref=ingress_binding.get("ref"),
-            gateway_instance_ref=_GATEWAY_INSTANCE_REF,
-            terminal=False,
-            turn_finalized=False,
-            delivery_recorded=False,
-            response_persistence_failed=False,
-            turn_id=None,
-            response_ref=None,
-        )
-
-
 def _register_trace_context(
     event: object,
     session_store: object | None,
@@ -875,35 +843,42 @@ def _register_trace_context(
     except Exception:
         logger.exception("Could not bind Docket MCP trace to the Hermes session")
         return
-    prior: dict[str, Any] | None = None
+    token = ingress_binding.get("execution_completion_token") if ingress_binding else None
+    if not token or not _GATEWAY_INSTANCE_REF:
+        raise PluginAPIError("trace_execution_not_admitted",
+                             "Docket trace requires an admitted execution", 409)
     with _TRACE_CONTEXT_LOCK:
-        existing = _TRACE_CONTEXTS.get(session_id)
-        if existing is not None and existing.get("source_message_id") == message_id:
-            _rebind_trace_execution(existing, event, ingress_binding)
-            return
-        # A failed gateway/session attempt may be resumed under a new Hermes
-        # session id. The Discord source message still owns exactly one trace;
-        # reuse its in-memory lineage instead of minting a competing trace ref.
-        source_context = next(
-            (
-                candidate
-                for candidate in _TRACE_CONTEXTS.values()
-                if candidate.get("actor_id") == actor
-                and candidate.get("guild_id") == guild
-                and candidate.get("source_channel_id") == channel
-                and candidate.get("source_message_id") == message_id
-            ),
-            None,
-        )
+        source_context = next((
+            candidate for candidate in _TRACE_CONTEXTS.values()
+            if candidate.get("actor_id") == actor and candidate.get("guild_id") == guild
+            and candidate.get("source_channel_id") == channel
+            and candidate.get("source_message_id") == message_id
+            and candidate.get("execution_completion_token") == token
+        ), None)
         if source_context is not None:
-            _rebind_trace_execution(source_context, event, ingress_binding)
             _TRACE_CONTEXTS[session_id] = source_context
             return
-        if existing is not None and existing.get("started") and not existing.get("terminal"):
-            existing["terminal"] = True
-            prior = dict(existing)
+    # PostgreSQL supplies the source-wide identity and this exact execution.
+    # Never rebind an earlier context's gateway, ordinals, calls or response.
+    binding = _docket_internal_request("/internal/v1/discord/mcp-traces/bind", {
+        "utterance_ref": utterance_ref, "execution_completion_token": token,
+        "gateway_instance_ref": _GATEWAY_INSTANCE_REF,
+        "tool_contract_version": _TOOL_CONTRACT_VERSION,
+        "tool_contract_hash": _TOOL_CONTRACT_HASH,
+        "turn_started_at": datetime.now(UTC).isoformat(),
+    })
+    if (not _TRACE_REF.fullmatch(str(binding.get("trace_ref", "")))
+            or type(binding.get("execution_index")) is not int
+            or binding["execution_index"] < 1
+            or type(binding.get("next_ordinal")) is not int
+            or binding["next_ordinal"] < 1):
+        raise PluginAPIError(
+            "invalid_trace_binding", "Docket returned an invalid trace binding", 502
+        )
+    with _TRACE_CONTEXT_LOCK:
         context = {
-            "trace_ref": _new_trace_ref(),
+            "trace_ref": binding["trace_ref"],
+            "execution_index": binding["execution_index"],
             "guild_id": guild,
             "source_channel_id": channel,
             "source_message_id": message_id,
@@ -915,10 +890,10 @@ def _register_trace_context(
             "instruction_bundle_hash": _REVIEWED_INSTRUCTION_HASH,
             "caller_profile": _TOOL_CONTRACT_PROFILE,
             "gateway_instance_ref": _GATEWAY_INSTANCE_REF,
-            "turn_started_at": datetime.now(UTC).isoformat(),
+            "turn_started_at": binding["turn_started_at"],
             "session_key": session_key,
             "turn_id": None,
-            "next_ordinal": 1,
+            "next_ordinal": binding["next_ordinal"],
             "calls": {},
             "started": False,
             "terminal": False,
@@ -946,8 +921,6 @@ def _register_trace_context(
             shared_contexts = {}
             adapter._docket_provenance_contexts = shared_contexts
         shared_contexts[(guild, channel, message_id)] = context
-    if prior is not None:
-        _enqueue_trace_update(prior, turn_status="interrupted")
 
 
 def _docket_public_tool_name(tool_name: str) -> str | None:
@@ -1316,7 +1289,9 @@ _TRUSTED_CONTEXT_TOOLS = frozenset({
 def _invocation_binding(context: dict[str, Any], call: dict[str, Any]) -> str:
     now = int(time.time())
     payload = {
-        "format": 1, "trace_ref": context["trace_ref"], "call_id": call["call_id"],
+        "format": 2, "trace_ref": context["trace_ref"], "call_id": call["call_id"],
+        "execution_index": context["execution_index"],
+        "execution_completion_token": context["execution_completion_token"],
         "ordinal": call["ordinal"], "utterance_ref": context["utterance_ref"],
         "gateway_instance_ref": context.get("gateway_instance_ref"),
         "tool_name": call["tool_name"], "argument_hash": call["received_argument_hash"],
@@ -1327,7 +1302,7 @@ def _invocation_binding(context: dict[str, Any], call: dict[str, Any]) -> str:
         payload, sort_keys=True, separators=(",", ":")
     ).encode()).decode().rstrip("=")
     signature = hmac.new(
-        _read_token().encode(), b"docket-mcp-invocation-v1:" + encoded.encode(), hashlib.sha256
+        _read_token().encode(), b"docket-mcp-invocation-v2:" + encoded.encode(), hashlib.sha256
     ).hexdigest()
     return f"{encoded}.{signature}"
 
@@ -1512,6 +1487,9 @@ def _on_pre_tool_call(
                         "actor_id": payload_context["actor_id"],
                         "utterance_ref": payload_context["utterance_ref"],
                         "trace_ref": payload_context["trace_ref"],
+                        "execution_index": payload_context["execution_index"],
+                        "execution_completion_token": payload_context["execution_completion_token"],
+                        "gateway_instance_ref": payload_context["gateway_instance_ref"],
                         "upstream_tool_call_id": stable_call_id,
                         "trace_ordinal": ordinal,
                         "tool_name": public_name,
@@ -2784,13 +2762,18 @@ def _pre_gateway_dispatch(
                 f"(`{reset_authorization_result.get('error_code', 'unknown')}`): "
                 f"{reset_authorization_result.get('message', 'The request was rejected.')}"
             )
-    _register_trace_context(
-        event,
-        session_store,
-        utterance_ref,
-        deterministic_response_text=deterministic_response_text,
-        ingress_binding=ingress_binding,
-    )
+    try:
+        _register_trace_context(
+            event, session_store, utterance_ref,
+            deterministic_response_text=deterministic_response_text,
+            ingress_binding=ingress_binding,
+        )
+    except (OSError, RuntimeError, urllib.error.URLError):
+        logger.error("Docket execution trace binding unavailable; model dispatch deferred")
+        _complete_captured_ingress(
+            ingress_binding, outcome="failed", error_code="trace_execution_binding_unavailable",
+        )
+        return {"action": "skip", "reason": "docket-trace-binding-unavailable"}
     image_context = _trace_context_for_event(event)
     if image_context is not None and image_context.get("native_image_state") != "failed":
         image_context["native_image_bindings"] = image_bindings
@@ -3512,16 +3495,21 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
     if len(json.dumps(raw_calls, ensure_ascii=False).encode()) > 3300:
         raise PluginAPIError("invalid_mcp_trace", "Trace previews exceed their byte bound", 422)
     calls: list[dict[str, Any]] = []
-    previous_ordinal = 0
+    previous_position = (-1, 0)
     for raw_call in raw_calls:
         if not isinstance(raw_call, dict):
             raise PluginAPIError("invalid_mcp_trace", "Trace call must be an object", 422)
         try:
             ordinal = raw_call.get("ordinal")
+            execution_index = raw_call["execution_index"]
             elapsed_ms = raw_call.get("elapsed_ms")
             if type(ordinal) is not int or (elapsed_ms is not None and type(elapsed_ms) is not int):
                 raise ValueError
-        except (TypeError, ValueError) as exc:
+            if execution_index is not None and (
+                type(execution_index) is not int or not 1 <= execution_index <= 2_147_483_647
+            ):
+                raise ValueError
+        except (TypeError, ValueError, KeyError) as exc:
             raise PluginAPIError(
                 "invalid_mcp_trace", "Trace call numeric fields are invalid", 422
             ) from exc
@@ -3543,7 +3531,9 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
             raw_call.get("argument_preview", "{}"), 768, "argument_preview"
         )
         if (
-            not previous_ordinal < ordinal <= 2_147_483_647
+            not 1 <= ordinal <= 2_147_483_647
+            or not previous_position < (execution_index or 0, ordinal)
+            or (execution_index is None and transport_layer != "docket")
             or tool_name not in _DOCKET_MCP_TOOL_NAMES
             or transport_state not in {"running", "completed", "failed", "timed_out"}
             or transport_layer not in {"wrapper", "docket"}
@@ -3568,6 +3558,7 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
         calls.append(
             {
                 "ordinal": ordinal,
+                "execution_index": execution_index,
                 "tool_name": tool_name,
                 "transport_state": transport_state,
                 "transport_layer": transport_layer,
@@ -3580,7 +3571,7 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
                 "argument_preview": argument_preview,
             }
         )
-        previous_ordinal = ordinal
+        previous_position = (execution_index or 0, ordinal)
     try:
         overflow_count = raw_render.get("overflow_count", 0)
         if type(overflow_count) is not int:
@@ -3607,7 +3598,7 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
     timing = dict(raw_timing)
     if any(
         not (key in nullable and value is None)
-        and (type(value) is not int or value < 0 or value > 86_400_000)
+        and (type(value) is not int or value < 0 or value > 9_007_199_254_740_991)
         for key, value in timing.items()
     ):
         raise PluginAPIError("invalid_mcp_trace", "Trace timing exceeds its bound", 422)
@@ -3619,7 +3610,7 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
     counts = raw_render.get("counts")
     if not isinstance(counts, dict) or set(counts) != {
         "attempts", "authenticated_invocations", "local_rejections",
-        "unreconciled_attempts", "unfinished_invocations",
+        "unreconciled_attempts", "unfinished_invocations", "executions",
     } or any(type(value) is not int or not 0 <= value <= 2_147_483_647
              for value in counts.values()):
         raise PluginAPIError("invalid_mcp_trace", "Trace totals are invalid", 422)
@@ -3709,11 +3700,12 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
             )
         )
     )
-    embed.add_field(name="Turn timing", value=timing_text, inline=False)
+    embed.add_field(name="Conversation trace timing", value=timing_text, inline=False)
     attempted = {total["tool_name"]: total["attempts"] for total in tool_counts}
     embed.add_field(
         name="Workflow attempts (entire trace)",
         value=(
+            f"Executions: {counts['executions']} · "
             f"Stage: {attempted.get('docket_stage_changes', 0)} · "
             f"Review: {attempted.get('docket_review_changeset', 0)} · "
             f"Commit: {attempted.get('docket_commit_changeset', 0)}"
@@ -3752,7 +3744,7 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
             details += f" · transport {call['transport_error_code'].replace('_', ' ')}"
         details += f"\n`{call['argument_preview']}`"
         embed.add_field(
-            name=f"{call['ordinal']}. {call['tool_name']}",
+            name=f"E{call['execution_index'] or '?'}.{call['ordinal']} · {call['tool_name']}",
             value=_escaped(details, 1024),
             inline=False,
         )

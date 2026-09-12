@@ -352,8 +352,8 @@ class SemanticRequestAttempt(Base):
         UniqueConstraint("tool_call_ref", name="uq_semantic_request_attempts_call"),
         UniqueConstraint(
             "semantic_request_id",
-            "execution_trace_ref",
-            name="uq_semantic_request_attempts_execution_trace",
+            "trace_execution_id",
+            name="uq_semantic_request_attempts_execution",
         ),
         Index("ix_semantic_request_attempts_request", "semantic_request_id", "attempt_number"),
     )
@@ -375,7 +375,10 @@ class SemanticRequestAttempt(Base):
     change_set_ref: Mapped[str | None] = mapped_column(String(40))
     tool_call_ref: Mapped[str | None] = mapped_column(String(40))
     gateway_instance_ref: Mapped[str | None] = mapped_column(String(40))
-    execution_trace_ref: Mapped[str | None] = mapped_column(String(40))
+    trace_ref: Mapped[str | None] = mapped_column(String(40))
+    trace_execution_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("trace_execution_segments.id", ondelete="RESTRICT")
+    )
     observed_changeset_ref: Mapped[str | None] = mapped_column(String(40))
     observed_draft_revision: Mapped[int | None] = mapped_column(Integer)
     state: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
@@ -390,14 +393,13 @@ class SemanticRequestAttempt(Base):
 
 
 class AssemblyExecution(Base):
-    """Internal durable owner for one trace's causally ordered assembly calls."""
+    """Internal durable owner for one admitted execution's assembly calls."""
 
     __tablename__ = "assembly_executions"
     __table_args__ = (
         UniqueConstraint(
-            "source_utterance_ref",
-            "trace_ref",
-            name="uq_assembly_executions_utterance_trace",
+            "trace_execution_id",
+            name="uq_assembly_executions_trace_execution",
         ),
         UniqueConstraint(
             "semantic_request_attempt_ref",
@@ -411,6 +413,9 @@ class AssemblyExecution(Base):
         ForeignKey("operator_utterances.ref_id", ondelete="RESTRICT"), nullable=False
     )
     trace_ref: Mapped[str] = mapped_column(String(40), nullable=False)
+    trace_execution_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("trace_execution_segments.id", ondelete="RESTRICT")
+    )
     semantic_request_ref: Mapped[str | None] = mapped_column(
         ForeignKey("semantic_requests.ref_id", ondelete="RESTRICT")
     )
@@ -441,9 +446,9 @@ class AssemblyOperation(Base):
         ),
         UniqueConstraint("operation_key", name="uq_assembly_operations_key"),
         UniqueConstraint(
-            "source_utterance_ref",
+            "assembly_execution_id",
             "upstream_tool_call_id",
-            name="uq_assembly_operations_utterance_call",
+            name="uq_assembly_operations_execution_call",
         ),
         UniqueConstraint(
             "assembly_execution_id",

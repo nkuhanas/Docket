@@ -8,7 +8,6 @@ from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from docket.config import get_settings
-from docket.domain.enums import OutboxStatus
 from docket.domain.errors import DocketError
 from docket.models import (
     AgentResponse,
@@ -18,8 +17,8 @@ from docket.models import (
     ExecutionLease,
     GatewayLifetime,
     IntentTurn,
-    OutboxEvent,
     ToolInvocation,
+    TraceExecutionSegment,
 )
 from docket.services.invocation_outcomes import gateway_recovery_pending, recover_assembly_outcome
 from docket.services.trace_correlation import correlated_calls
@@ -201,13 +200,13 @@ class GatewayLifetimeService:
         lifetime.status = "clean_shutdown"
         return self._projection(lifetime, disposition="updated")
 
-    def _reconcile_trace(self, trace: ConversationalToolTrace, now: datetime) -> None:
+    def _reconcile_trace(self, trace: TraceExecutionSegment, now: datetime) -> None:
         calls = [dict(item) for item in trace.calls]
         invocations = correlated_calls(list(self.session.scalars(
-            select(ToolInvocation).where(ToolInvocation.trace_ref == trace.ref_id)
+            select(ToolInvocation).where(ToolInvocation.trace_execution_id == trace.id)
         )))
         for call in calls:
-            invocation = invocations.get(str(call.get("call_id", "")))
+            invocation = invocations.get((trace.id, str(call.get("call_id", ""))))
             if invocation is not None and (
                 invocation.tool_name != call.get("tool_name")
                 or invocation.trace_ordinal != call.get("ordinal")
@@ -236,19 +235,14 @@ class GatewayLifetimeService:
         if interrupted:
             trace.status = "interrupted"
             trace.completed_at = now
-        trace.version += 1
-        self.session.add(
-            OutboxEvent(
-                event_type="discord.mcp_trace.requested",
-                aggregate_type="conversational_tool_trace",
-                aggregate_id=trace.id,
-                deduplication_key=(
-                    f"conversational_tool_trace:{trace.ref_id}:v{trace.version}"
-                ),
-                payload={"trace_ref": trace.ref_id, "trace_version": trace.version},
-                status=OutboxStatus.PENDING.value,
-            )
-        )
+        from docket.services.trace_executions import refresh_trace
+
+        parent = self.session.scalar(select(ConversationalToolTrace).where(
+            ConversationalToolTrace.ref_id == trace.trace_ref,
+        ).with_for_update())
+        if parent is None:
+            raise RuntimeError("Trace source disappeared")
+        refresh_trace(self.session, parent)
 
     def utterance_execution_finalized(
         self,
@@ -336,21 +330,21 @@ class GatewayLifetimeService:
                 changed = True
             if changed and invocation.trace_ref is not None:
                 changed_trace_refs.add(invocation.trace_ref)
-        traces = list(
-            self.session.scalars(
-                select(ConversationalToolTrace)
-                .where(
-                    ConversationalToolTrace.gateway_instance_ref == lifetime.ref_id,
-                    or_(
-                        ConversationalToolTrace.status == "running",
-                        ConversationalToolTrace.ref_id.in_(changed_trace_refs),
-                    ),
-                )
-                .with_for_update()
-            )
-        )
-        for trace in traces:
-            self._reconcile_trace(trace, now)
+        # Parent-before-segment locking matches ordinary checkpoint updates.
+        parents = list(self.session.scalars(select(ConversationalToolTrace).where(
+            ConversationalToolTrace.ref_id.in_(select(TraceExecutionSegment.trace_ref).where(
+                TraceExecutionSegment.gateway_instance_ref == lifetime.ref_id,
+                or_(TraceExecutionSegment.status == "running",
+                    TraceExecutionSegment.trace_ref.in_(changed_trace_refs)),
+            )),
+        ).order_by(ConversationalToolTrace.id).with_for_update()))
+        for parent in parents:
+            segments = list(self.session.scalars(select(TraceExecutionSegment).where(
+                TraceExecutionSegment.trace_ref == parent.ref_id,
+                TraceExecutionSegment.gateway_instance_ref == lifetime.ref_id,
+            ).order_by(TraceExecutionSegment.execution_index).with_for_update()))
+            for segment in segments:
+                self._reconcile_trace(segment, now)
 
     def expire_and_reconcile(self) -> list[str]:
         now = self._database_now()
@@ -388,9 +382,9 @@ class GatewayLifetimeService:
                             )
                         ),
                         GatewayLifetime.ref_id.in_(
-                            select(ConversationalToolTrace.gateway_instance_ref).where(
-                                ConversationalToolTrace.status == "running",
-                                ConversationalToolTrace.gateway_instance_ref.is_not(None),
+                            select(TraceExecutionSegment.gateway_instance_ref).where(
+                                TraceExecutionSegment.status == "running",
+                                TraceExecutionSegment.gateway_instance_ref.is_not(None),
                             )
                         ),
                         GatewayLifetime.ref_id.in_(

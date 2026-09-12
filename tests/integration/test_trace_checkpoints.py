@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import func, select
+from trace_support import bind_execution, callback_binding, segment_for
 
 from docket.config import get_settings
 from docket.domain.errors import DocketError
@@ -15,7 +16,7 @@ from docket.services.trace_views import TraceViewService
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash
 
 
-def _context(factory):
+def _context(factory, ref=None):
     settings = get_settings()
     now = datetime.now(UTC)
     message = "777777777777777779"
@@ -31,12 +32,14 @@ def _context(factory):
         session.add(utterance)
         session.flush()
         utterance_ref = utterance.ref_id
+        binding = bind_execution(session, utterance, label=ref, started_at=now)
     return dict(
         request_id=uuid.uuid4(), guild_id=settings.discord_guild_id,
         source_channel_id=settings.chat_channel_id, source_message_id=message,
         actor_id=settings.operator_discord_user_id, utterance_ref=utterance_ref,
         caller_profile="interactive", tool_contract_version=CONTRACT_VERSION,
-        tool_contract_hash=contract_hash("interactive"), turn_started_at=now, updated_at=now,
+        tool_contract_hash=contract_hash("interactive"), updated_at=now,
+        **callback_binding(binding),
     )
 
 
@@ -56,8 +59,8 @@ def _row(session, ref):
 
 
 def test_checkpoint_recovers_lost_queue_and_replays_after_reconciliation(session_factory):
-    context = _context(session_factory)
     ref = new_public_ref("trace")
+    context = _context(session_factory, ref)
     local = _call(1)
     remote = {**_call(2), "execution_boundary": "mcp_attempted", "disposition": "succeeded"}
     calls = [local, remote]
@@ -65,12 +68,12 @@ def test_checkpoint_recovers_lost_queue_and_replays_after_reconciliation(session
     with session_factory.begin() as session:
         result = McpTraceService(session).checkpoint(ref, checkpoint)
         assert result["trace_status"] == "completed"
-        assert result["trace_version"] == 1
+        assert result["trace_version"] == 2
     with session_factory.begin() as session:
         trace = _row(session, ref)
-        assert trace.last_ordinal == 2
-        assert trace.calls[1]["disposition"] is None
-        assert trace.calls[1]["reported_disposition"] == "succeeded"
+        assert segment_for(session, ref).last_ordinal == 2
+        assert segment_for(session, ref).calls[1]["disposition"] is None
+        assert segment_for(session, ref).calls[1]["reported_disposition"] == "succeeded"
         replay = McpTraceService(session).checkpoint(ref, checkpoint)
         assert replay["disposition"] == "replayed_request"
         # Its delayed asynchronous start cannot erase completion or add an outbox row.
@@ -78,7 +81,7 @@ def test_checkpoint_recovers_lost_queue_and_replays_after_reconciliation(session
         update = McpTraceUpdate(**{k: v for k, v in context.items() if k != "utterance_ref"},
                                 call=start)
         assert McpTraceService(session).update(ref, update)["disposition"] == "replayed_request"
-        assert session.scalar(select(func.count(OutboxEvent.id))) == 1
+        assert session.scalar(select(func.count(OutboxEvent.id))) == 2
         assert session.scalar(select(func.count(ToolInvocation.id))) == 0
         view = TraceViewService(session).snapshot(trace)
         assert view["counts"]["local_rejections"] == 1
@@ -87,8 +90,8 @@ def test_checkpoint_recovers_lost_queue_and_replays_after_reconciliation(session
 
 
 def test_checkpoint_cannot_override_authenticated_domain_outcome(session_factory):
-    context = _context(session_factory)
     ref = new_public_ref("trace")
+    context = _context(session_factory, ref)
     remote = {**_call(1), "execution_boundary": "mcp_attempted", "disposition": "succeeded"}
     with session_factory.begin() as session:
         invocation = ToolInvocation(
@@ -96,7 +99,9 @@ def test_checkpoint_cannot_override_authenticated_domain_outcome(session_factory
             tool_contract_version=CONTRACT_VERSION, received_argument_hash="a" * 64,
             actor_ref=f"discord_user:{context['actor_id']}",
             utterance_refs=[context["utterance_ref"]],
-            trace_ref=ref, trace_call_id=remote["call_id"], trace_ordinal=1,
+            trace_ref=ref, trace_execution_id=segment_for(session, ref).id,
+            gateway_instance_ref=context["gateway_instance_ref"],
+            trace_call_id=remote["call_id"], trace_ordinal=1,
             transport_state="completed", domain_state="rejected",
             result_disposition="rejected_validation", completed_at=datetime.now(UTC),
         )
@@ -105,16 +110,16 @@ def test_checkpoint_cannot_override_authenticated_domain_outcome(session_factory
     with session_factory.begin() as session:
         service = McpTraceService(session)
         service.checkpoint(ref, checkpoint)
-        assert _row(session, ref).calls[0]["disposition"] == "rejected_validation"
+        assert segment_for(session, ref).calls[0]["disposition"] == "rejected_validation"
         assert service.checkpoint(ref, checkpoint)["disposition"] == "replayed_request"
-        assert _row(session, ref).calls[0]["reported_disposition"] == "succeeded"
+        assert segment_for(session, ref).calls[0]["reported_disposition"] == "succeeded"
     with session_factory.begin() as session:
         with pytest.raises(DocketError) as conflict:
             McpTraceService(session).checkpoint(ref, McpTraceCheckpoint(
                 **context, calls=[_call(1)],
             ))
         assert conflict.value.code == "mcp_trace_call_conflict"
-        assert _row(session, ref).calls[0]["disposition"] == "rejected_validation"
+        assert segment_for(session, ref).calls[0]["disposition"] == "rejected_validation"
 
 
 @pytest.mark.parametrize("field,value", [
@@ -123,8 +128,8 @@ def test_checkpoint_cannot_override_authenticated_domain_outcome(session_factory
     ("disposition", "rejected_authority"), ("elapsed_ms", 99),
 ])
 def test_checkpoint_conflicts_roll_back_complete_page(session_factory, field, value):
-    context = _context(session_factory)
     ref = new_public_ref("trace")
+    context = _context(session_factory, ref)
     original = _call(1)
     with session_factory.begin() as session:
         McpTraceService(session).checkpoint(ref, McpTraceCheckpoint(**context, calls=[original]))
@@ -134,27 +139,28 @@ def test_checkpoint_conflicts_roll_back_complete_page(session_factory, field, va
             service.checkpoint(ref, McpTraceCheckpoint(**context, calls=[
                 {**original, field: value}, _call(2),
             ]))
-        assert _row(session, ref).last_ordinal == 1
-        assert _row(session, ref).version == 1
-        assert session.scalar(select(func.count(OutboxEvent.id))) == 1
+        assert segment_for(session, ref).last_ordinal == 1
+        assert _row(session, ref).version == 2
+        assert session.scalar(select(func.count(OutboxEvent.id))) == 2
 
 
 def test_checkpoint_ordinal_gap_does_not_partially_persist_new_trace(session_factory):
-    context = _context(session_factory)
     ref = new_public_ref("trace")
+    context = _context(session_factory, ref)
     with session_factory.begin() as session:
         with pytest.raises(DocketError) as conflict:
             McpTraceService(session).checkpoint(ref, McpTraceCheckpoint(
                 **context, calls=[_call(1), _call(3)],
             ))
         assert conflict.value.code == "nonmonotonic_mcp_trace"
-        assert _row(session, ref) is None
-        assert session.scalar(select(func.count(OutboxEvent.id))) == 0
+        assert segment_for(session, ref).last_ordinal == 0
+        assert segment_for(session, ref).calls == []
+        assert session.scalar(select(func.count(OutboxEvent.id))) == 1
 
 
 def test_checkpoint_pages_resume_and_terminal_trace_does_not_admit_new_calls(session_factory):
-    context = _context(session_factory)
     ref = new_public_ref("trace")
+    context = _context(session_factory, ref)
     for offset in (0, 25, 50):
         page = [_call(ordinal) for ordinal in range(offset + 1, min(offset + 26, 54))]
         with session_factory.begin() as session:
@@ -163,22 +169,22 @@ def test_checkpoint_pages_resume_and_terminal_trace_does_not_admit_new_calls(ses
             ))
     with session_factory.begin() as session:
         trace = _row(session, ref)
-        assert trace.last_ordinal == 53 and trace.status == "completed"
-        assert trace.version == 3
+        assert segment_for(session, ref).last_ordinal == 53 and trace.status == "completed"
+        assert trace.version == 4
         with pytest.raises(DocketError) as conflict:
             McpTraceService(session).checkpoint(ref, McpTraceCheckpoint(
                 **context, calls=[_call(54)],
             ))
         assert conflict.value.code == "mcp_trace_terminal"
-        assert trace.last_ordinal == 53
+        assert segment_for(session, ref).last_ordinal == 53
 
 
 @pytest.mark.parametrize("disposition", ["failed", "rejected_authority", "rejected_conflict"])
 def test_local_rejection_reason_survives_reconciliation_without_domain_authority(
     session_factory, disposition,
 ):
-    context = _context(session_factory)
     ref = new_public_ref("trace")
+    context = _context(session_factory, ref)
     checkpoint = McpTraceCheckpoint(**context, calls=[{**_call(1), "disposition": disposition}])
     with session_factory.begin() as session:
         service = McpTraceService(session)
@@ -208,7 +214,7 @@ def test_checkpoint_rejects_wrong_evidence_or_success_claim(session_factory, pro
             McpTraceService(session).checkpoint(new_public_ref("trace"), McpTraceCheckpoint(
                 **context, calls=[call],
             ))
-        assert session.scalar(select(func.count(ConversationalToolTrace.id))) == 0
+        assert session.scalar(select(func.count(ConversationalToolTrace.id))) == 1
 
 
 def test_checkpoint_schema_caps_bytes_and_entries_and_rejects_duplicate_order(session_factory):
@@ -226,17 +232,20 @@ def test_checkpoint_schema_caps_bytes_and_entries_and_rejects_duplicate_order(se
 
 
 def test_reconciliation_preserves_uncopied_historical_local_observation(session_factory):
-    context = _context(session_factory)
     ref = new_public_ref("trace")
+    context = _context(session_factory, ref)
     with session_factory.begin() as session:
         service = McpTraceService(session)
         service.checkpoint(ref, McpTraceCheckpoint(**context, calls=[_call(1)]))
-        trace = _row(session, ref)
         # This older evidence was never captured as an independent report.
-        historical_call = {k: v for k, v in trace.calls[0].items() if k != "reported_disposition"}
-        trace.calls = [historical_call]
+        historical_call = {
+            k: v
+            for k, v in segment_for(session, ref).calls[0].items()
+            if k != "reported_disposition"
+        }
+        segment_for(session, ref).calls = [historical_call]
         session.flush()
-        assert service._reconcile_calls(trace) is False
-        assert trace.calls == [historical_call]
-        assert trace.calls[0]["disposition"] == "rejected_validation"
-        assert "reported_disposition" not in trace.calls[0]
+        assert service._reconcile_calls(segment_for(session, ref)) is False
+        assert segment_for(session, ref).calls == [historical_call]
+        assert segment_for(session, ref).calls[0]["disposition"] == "rejected_validation"
+        assert "reported_disposition" not in segment_for(session, ref).calls[0]
