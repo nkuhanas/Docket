@@ -875,6 +875,7 @@ async def test_processing_completion_delivers_persisted_signoff_fallback(
     context = {
         "response_ref": f"rsp_{'4' * 26}",
         "deterministic_response_text": "Signed and recorded.",
+        "persisted_response": (f"rsp_{'4' * 26}", "Signed and recorded."),
         "guild_id": "222222222222222222",
         "source_channel_id": "333333333333333333",
         "source_message_id": "444444444444444444",

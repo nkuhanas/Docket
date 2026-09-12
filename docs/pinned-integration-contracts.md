@@ -30,6 +30,26 @@ traceability marker only.
 
 ## Hermes plugin contract
 
+Plugin `0.31.2` requires the pinned foreground `task_id` to resolve an admitted
+execution. The gateway supplies its captured session as that task; the background
+memory/skill reviewer reuses `session_id` for caching but omits `task_id` before
+context construction and receives a separate generated task for later hooks.
+There is no session fallback for image checks, trace/timing hooks, response
+capture or tool admission. Background work cannot finalize or change an active
+or completed foreground execution, including after the same session admits a
+new request. A stale foreground construction cannot restart a terminal image
+execution; a genuine input failure still requires a new admitted recovery.
+
+Every acknowledged response capture pins the exact `(rsp_, text)` pair in its
+execution context. Deterministic scheduling, delivery and completion check that
+binding instead of trusting a mutable warning label beside an existing ref.
+Changing either part fails closed without changing the original delivery state.
+Terminal final-response reservation and native-failure capture exclude one
+another; concurrent failure callbacks share a single capture/scheduling owner.
+The offline native-image pin check verifies the foreground/review task seams and
+the real successful-image → terminal response → text-only-review boundary.
+No model-facing contract, tool count, schema migration or OCR service changes.
+
 Plugin `0.31.1`/contract v39 separate a source-wide conversational trace from
 its admitted executions. After durable ingress claim and before model dispatch,
 the plugin calls `/internal/v1/discord/mcp-traces/bind` with the original `utt_`,

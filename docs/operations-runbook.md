@@ -580,7 +580,14 @@ independent authority or a proof that their semantic values are correct.
 
 For `docket_native_image_input_unavailable`, inspect the retained source's ingest
 state, the deployed plugin pin and the native input path without printing image
-payloads. Recover that path before resuming the same authorized request. Do not
+payloads. First check the exact execution, committed ChangeSet, provider intents
+and persisted response: a warning after a successful response is not proof of
+failed interpretation. Plugin `0.31.2` fixes a background memory/skill review
+sharing the foreground session and falsely reporting image loss after success.
+An auxiliary review must not inherit its task binding, send under its `rsp_`, or
+change its delivery state. If the request committed, follow that receipt rather
+than re-executing it. For a genuine pre-interpretation failure, recover the input
+path before resuming the same authorized request. Do not
 substitute a text-only caption, ask for renewed authorization, or restage an
 already committed ChangeSet. The failed execution stays failed; a fresh admitted
 execution must verify the images again. A durable failure `rsp_` has its own
