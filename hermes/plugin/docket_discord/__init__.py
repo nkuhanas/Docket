@@ -920,11 +920,31 @@ def _trace_context(task_id: str, session_id: str) -> dict[str, Any] | None:
 _INFRASTRUCTURE_ARGUMENT_NAMES = frozenset({
     "assembly_operation_token", "assembly_argument_hash", "utterance_ref",
     "request_key", "operator_utterance_ref",
+    "invocation_binding",
 })
 _TRUSTED_CONTEXT_TOOLS = frozenset({
     "docket_stage_changes", "docket_review_changeset", "docket_commit_changeset",
     "docket_request_clarification",
 })
+
+
+def _invocation_binding(context: dict[str, Any], call: dict[str, Any]) -> str:
+    now = int(time.time())
+    payload = {
+        "format": 1, "trace_ref": context["trace_ref"], "call_id": call["call_id"],
+        "ordinal": call["ordinal"], "utterance_ref": context["utterance_ref"],
+        "gateway_instance_ref": context.get("gateway_instance_ref"),
+        "tool_name": call["tool_name"], "argument_hash": call["received_argument_hash"],
+        "contract_version": _TOOL_CONTRACT_VERSION, "contract_hash": _TOOL_CONTRACT_HASH,
+        "issued_at": now, "expires_at": now + 900,
+    }
+    encoded = base64.urlsafe_b64encode(json.dumps(
+        payload, sort_keys=True, separators=(",", ":")
+    ).encode()).decode().rstrip("=")
+    signature = hmac.new(
+        _read_token().encode(), b"docket-mcp-invocation-v1:" + encoded.encode(), hashlib.sha256
+    ).hexdigest()
+    return f"{encoded}.{signature}"
 
 
 def _on_pre_tool_call(
@@ -942,6 +962,10 @@ def _on_pre_tool_call(
     public_name = _docket_public_tool_name(tool_name)
     if public_name is None:
         return None
+    if isinstance(args, dict):
+        # Always regenerate from the trusted context; never forward a model's
+        # correlation token or a token retained from a previous hook invocation.
+        args.pop("invocation_binding", None)
     if not _instructions_current():
         return {
             "action": "block",
@@ -1075,6 +1099,16 @@ def _on_pre_tool_call(
                         f"({code}); no draft change was sent."
                     ),
                 }
+    if directive is None and isinstance(args, dict):
+        try:
+            args["invocation_binding"] = _invocation_binding(payload_context, call)
+        except (KeyError, OSError, RuntimeError):
+            directive = {
+                "action": "block",
+                "message": (
+                    "The gateway could not bind this call; resume the authenticated request."
+                ),
+            }
     # Capture the boundary before dispatch, rather than inferring a local
     # rejection later from a missing call_ or from arbitrary error prose.
     call["execution_boundary"] = "local_rejection" if directive is not None else "mcp_attempted"
@@ -3093,7 +3127,8 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
     if not isinstance(counts, dict) or set(counts) != {
         "attempts", "authenticated_invocations", "local_rejections",
         "unreconciled_attempts", "unfinished_invocations",
-    } or any(type(value) is not int or not 0 <= value <= 100 for value in counts.values()):
+    } or any(type(value) is not int or not 0 <= value <= 2_147_483_647
+             for value in counts.values()):
         raise PluginAPIError("invalid_mcp_trace", "Trace totals are invalid", 422)
     if (
         counts["attempts"] != len(calls) + overflow_count
@@ -3113,8 +3148,10 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
             or total["tool_name"] in seen_tools
             or any(
                 type(total[key]) is not int or not 0 <= total[key] <= 100
-                for key in ("attempts", "authenticated_invocations")
+                for key in ("attempts",)
             )
+            or type(total["authenticated_invocations"]) is not int
+            or not 0 <= total["authenticated_invocations"] <= 2_147_483_647
         ):
             raise PluginAPIError("invalid_mcp_trace", "Trace tool totals are invalid", 422)
         seen_tools.add(total["tool_name"])

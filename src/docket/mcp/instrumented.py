@@ -24,6 +24,7 @@ from docket.models import (
 from docket.models.base import utc_now
 from docket.services.changeset_assembly import ChangeSetAssemblyService
 from docket.services.continuity import ContinuityService
+from docket.services.invocation_binding import BINDING_ARGUMENT, bind_invocation
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash
 
 INTERACTIVE_AUTHORITY_TOOLS = frozenset(
@@ -49,6 +50,7 @@ INTERACTIVE_CANONICAL_MUTATION_TOOLS = frozenset(
 INFRASTRUCTURE_ARGUMENT_NAMES = frozenset({
     "assembly_operation_token", "assembly_argument_hash", "utterance_ref",
     "request_key", "operator_utterance_ref",
+    BINDING_ARGUMENT,
 })
 
 _LIST_RESULT_KEYS = (
@@ -373,6 +375,11 @@ class ProvenanceFastMCP(FastMCP[Any]):
         registered = await super().list_tools()
         for tool in registered:
             tool.inputSchema["additionalProperties"] = False
+            if self.caller_profile == "interactive":
+                tool.inputSchema.setdefault("properties", {})[BINDING_ARGUMENT] = {
+                    "type": "string", "maxLength": 4096, "x-docket-internal": True,
+                    "description": "Trusted gateway correlation envelope; never model supplied.",
+                }
         return registered
 
     @staticmethod
@@ -421,6 +428,9 @@ class ProvenanceFastMCP(FastMCP[Any]):
         name: str,
         arguments: dict[str, Any],
     ) -> Sequence[ContentBlock] | dict[str, Any]:
+        binding_provided = BINDING_ARGUMENT in arguments
+        binding_token = arguments.get(BINDING_ARGUMENT)
+        arguments = {key: value for key, value in arguments.items() if key != BINDING_ARGUMENT}
         public_arguments = {
             key: value
             for key, value in arguments.items()
@@ -434,7 +444,8 @@ class ProvenanceFastMCP(FastMCP[Any]):
             mcp_request_id = None
 
         execution_completion_token: str | None = None
-        drain_error: DocketError | None = None
+        admission_error: DocketError | None = None
+        admission_disposition = "rejected_validation"
         with session_scope() as session:
             invocation = ToolInvocation(
                 tool_name=name,
@@ -447,8 +458,13 @@ class ProvenanceFastMCP(FastMCP[Any]):
             session.add(invocation)
             session.flush()
             invocation_id = invocation.id
+            if binding_provided:
+                try:
+                    bind_invocation(session, invocation, binding_token, arguments=arguments)
+                except DocketError as exc:
+                    admission_error = exc
             try:
-                execution_completion_token = (
+                execution_completion_token = None if admission_error is not None else (
                     ContinuityService(session)
                     .acquire_execution_lease(
                         lease_key=f"tool:{invocation.ref_id}",
@@ -460,22 +476,25 @@ class ProvenanceFastMCP(FastMCP[Any]):
             except DocketError as exc:
                 if exc.code != "deployment_drain_active":
                     raise
-                drain_error = exc
+                admission_error = exc
+                admission_disposition = "deferred_drain"
+            if admission_error is not None:
                 self._finish_invocation(
                     session,
                     invocation_id,
-                    status="rejected_authority",
+                    status="rejected_validation",
                     normalized_argument_hash=None,
                     result_refs=[],
-                    result_disposition="deferred_drain",
-                    error_code=exc.code,
+                    result_disposition=admission_disposition,
+                    error_code=admission_error.code,
                 )
 
-        if drain_error is not None:
+        if admission_error is not None:
             return _domain_error_result(
-                code=drain_error.code,
-                message=drain_error.message,
-                disposition="deferred_drain",
+                code=admission_error.code,
+                message=admission_error.message,
+                disposition=admission_disposition,
+                details=admission_error.details,
             )
 
         normalized_hash: str | None = None

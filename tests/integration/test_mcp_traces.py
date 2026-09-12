@@ -13,6 +13,7 @@ from docket.internal_api.schemas import McpTraceUpdate
 from docket.models import (
     ConversationalToolTrace,
     DiscordDailyThread,
+    OperatorUtterance,
     OutboxEvent,
     ToolInvocation,
 )
@@ -22,6 +23,23 @@ from docket.services.history import HistoryService
 from docket.services.mcp_traces import McpTraceService
 from docket.services.trace_views import TraceViewService
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash
+
+
+def _bound_evidence(session: Session, message: str = "777777777777777777") -> dict:
+    settings = get_settings()
+    actor = f"discord_user:{settings.operator_discord_user_id}"
+    utterance = OperatorUtterance(
+        actor_ref=actor, transport="discord",
+        source_message_ref=(
+            f"discord_message:{settings.discord_guild_id}:{settings.chat_channel_id}:{message}"
+        ),
+        conversation_ref=f"discord_conversation:{settings.chat_channel_id}",
+        said_at=datetime.now(UTC), verbatim_text="Read my test context.",
+        content_hash="a" * 64, request_key=f"trace-test:{message}",
+    )
+    session.add(utterance)
+    session.flush()
+    return {"actor_ref": actor, "utterance_refs": [utterance.ref_id]}
 
 
 def _update(
@@ -288,6 +306,7 @@ def test_mcp_trace_reconciles_qualified_tool_lifecycle(
         )
     with session_factory.begin() as session:
         invocation = ToolInvocation(
+            **_bound_evidence(session),
             tool_name="docket_search_history",
             tool_contract_version=CONTRACT_VERSION,
             tool_contract_hash=contract_hash("interactive"),
@@ -296,6 +315,7 @@ def test_mcp_trace_reconciles_qualified_tool_lifecycle(
             result_refs=[],
             transport_state="completed",
             domain_state=domain_state,
+            trace_ref=trace_ref, trace_call_id="call-1", trace_ordinal=1,
             result_disposition=result_disposition,
             error_code=error_code,
             completed_at=datetime.now(UTC),
@@ -359,6 +379,7 @@ def test_mcp_trace_projects_semantic_disposition_as_primary_outcome(
             ),
         )
         invocation = ToolInvocation(
+            **_bound_evidence(session, source_message_id),
             tool_name="docket_commit_changeset",
             tool_contract_version=CONTRACT_VERSION,
             tool_contract_hash=contract_hash("interactive"),
@@ -368,6 +389,7 @@ def test_mcp_trace_projects_semantic_disposition_as_primary_outcome(
             transport_state="completed",
             domain_state="succeeded",
             result_disposition="needs_clarification",
+            trace_ref=trace_ref, trace_call_id="call-1", trace_ordinal=1,
             completed_at=datetime.now(UTC),
         )
         session.add(invocation)
@@ -420,6 +442,7 @@ def test_mcp_trace_timing_includes_gateway_to_first_tool_delay(
         )
         session.add(
             ToolInvocation(
+                **_bound_evidence(session),
                 tool_name="docket_search_history",
                 tool_contract_version=CONTRACT_VERSION,
                 tool_contract_hash=contract_hash("interactive"),
@@ -429,6 +452,7 @@ def test_mcp_trace_timing_includes_gateway_to_first_tool_delay(
                 transport_state="completed",
                 domain_state="succeeded",
                 result_disposition="succeeded",
+                trace_ref=trace_ref, trace_call_id="call-1", trace_ordinal=1,
                 completed_at=datetime.now(UTC),
             )
         )
@@ -520,6 +544,7 @@ def _long_trace(session):
             "call_id": f"call-{ordinal}", "ordinal": ordinal, "tool_name": name,
             "execution_boundary": "mcp_attempted", "transport_state": "completed",
             "elapsed_ms": 125, "disposition": None, "domain_state": "unknown",
+            "received_argument_hash": "f" * 64,
             "argument_preview": json.dumps({"fields": ["界" * 180]}, ensure_ascii=False),
         })
     trace = ConversationalToolTrace(
@@ -531,6 +556,7 @@ def _long_trace(session):
     session.add(trace)
     session.flush()
     session.add(ToolInvocation(
+        **_bound_evidence(session),
         tool_name="docket_commit_changeset", caller_profile="interactive",
         tool_contract_version=CONTRACT_VERSION, received_argument_hash="f" * 64,
         trace_ref=trace.ref_id, trace_call_id="call-100", trace_ordinal=100,

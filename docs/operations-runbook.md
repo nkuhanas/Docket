@@ -78,6 +78,19 @@ observations; call cursors bind the trace revision and explicitly require a
 restart if it advances. Historical callback formats are not decoded into the
 new contract; coordinated deployment drains active execution first.
 
+The gateway now supplies an infrastructure-only signed `invocation_binding` on
+MCP dispatch. It binds trace/call/ordinal, captured utterance, gateway lifetime,
+tool, argument digest and contract for at most 15 minutes. Docket verifies it
+before execution and stores the exact correlation on `call_`, including schema
+rejections. It grants no semantic authority and is not persisted or exposed to
+the model. Argument-hash/time-window matching has been removed. Missing bindings
+on non-gateway service calls leave them uncorrelated; they cannot be adopted by
+matching arguments later. Transport retries are distinct authenticated calls
+under the original signed trace ordinal; the durable assembly/ChangeSet service
+still owns operation replay and canonical idempotency. A running retry cannot
+erase a known committed outcome. Invalid bindings require runtime recovery,
+not renewed Operator authorization.
+
 Health endpoints distinguish liveness from readiness:
 
 ```bash

@@ -124,6 +124,17 @@ Pinned outbound assumptions to revalidate:
   tool execution time, and time outside tools without retaining model prompts or
   tool payloads.
 
+The same mutable `pre_tool_call.args` seam also carries `invocation_binding`,
+an infrastructure-only signed correlation envelope generated after trusted
+argument injection. Docket removes it before model-argument normalization and
+function validation. Progressive disclosure must omit this field; Hermes must
+forward the hook-mutated dictionary unchanged to MCP. The real pinned-plugin
+signer and authenticated Compose MCP path are tested independently. Trace
+callbacks can arrive after the invocation, but cannot change its source/tool/
+argument binding. Repeated transport delivery retains the original upstream
+ordinal and reaches the durable operation replay service; it is not a new
+semantic request or an argument-hash-based correlation guess.
+
 Plugin `0.26.0` retains the phase-one provenance boundary. For every
 authenticated operator message on the Docket chat root, Docket queue root, or
 a Docket-owned daily thread, `pre_gateway_dispatch` synchronously persists one
