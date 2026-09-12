@@ -34,6 +34,7 @@ from docket.schemas.authority import (
     SemanticOptionDraft,
     StatementInput,
     StatementRelationInput,
+    mutation_input_json,
 )
 from docket.services.canonical_events import CanonicalEventAuthorityService
 from docket.services.case_resolutions import AttentionCaseResolutionService
@@ -134,7 +135,9 @@ class InteractiveAuthorityService:
         return {
             "resolved_intent": resolved_intent_json,
             **semantic_authority_scope(
-                content.model_dump(mode="json", exclude={"provider_intents", "occurrence_plans"}),
+                mutation_input_json(
+                    content, exclude_none=False, exclude={"provider_intents", "occurrence_plans"},
+                ),
                 [],
             ),
         }
@@ -346,7 +349,7 @@ class InteractiveAuthorityService:
             ):
                 if change_id is not None:
                     entry_basis_by_change_id[change_id] = entry_statement_refs[0]
-        payload = content.model_dump(mode="json")
+        payload = mutation_input_json(content, exclude_none=False)
         payload["basis_refs"] = list(
             dict.fromkeys([*content.basis_refs, *completed_statement_refs])
         )
@@ -561,8 +564,8 @@ class InteractiveAuthorityService:
                     require_current_semantic_scope(option.authority_scope_json)
                 if option is None or complete_selection_provenance(
                     option.compilation_template_json, utterance.ref_id
-                ) != content.model_dump(
-                    mode="json", exclude={"provider_intents", "occurrence_plans"}
+                ) != mutation_input_json(
+                    content, exclude_none=False, exclude={"provider_intents", "occurrence_plans"}
                 ):
                     raise DocketError(
                         code="semantic_request_scope_mismatch",

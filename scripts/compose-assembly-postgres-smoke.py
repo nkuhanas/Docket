@@ -55,6 +55,7 @@ from docket.models import (
     EventOccurrence,
     ExecutionAttempt,
     ExecutionLease,
+    Item,
     LaneRoutingDecision,
     Operation,
     OperationTarget,
@@ -64,6 +65,7 @@ from docket.models import (
     ProviderEventBinding,
     SemanticRequestSpecification,
     Source,
+    Task,
     ToolInvocation,
 )
 from docket.providers.google.calendar import CalendarProviderError
@@ -1358,6 +1360,94 @@ def test_explicit_compiler_migration_requires_reobservation(factory: sessionmake
         raise AssertionError("Migration allowed mutation of the previous executable evidence")
 
 
+def test_explicit_clear_patches_survive_postgresql_revision_and_recompile(
+    factory: sessionmaker[Session],
+) -> None:
+    from docket.services.request_specifications import read_request_proposal
+
+    utterance_ref, request_key = _create_utterance(
+        factory, "1542799000000000742", "Clear the item description and reopen its task.",
+    )
+    trace_ref = new_public_ref("trace")
+    with factory.begin() as session:
+        item = Item(title="Keep title", description="Clear this", kind="smoke.request",
+                    basis_refs=[utterance_ref], created_by_changeset_ref=new_public_ref("chg"))
+        session.add(item)
+        session.flush()
+        task = Task(title="Follow up", item_ref=item.ref_id, task_state="completed",
+                    completed_at=datetime(2026, 9, 10, tzinfo=UTC),
+                    basis_refs=[utterance_ref], created_by_changeset_ref=new_public_ref("chg"))
+        session.add(task)
+        session.flush()
+        item_ref, task_ref = item.ref_id, task.ref_id
+    payloads = [{"description": None}, {"task_state": "in_progress", "completed_at": None}]
+    request = StageChangesInput.model_validate({
+        "utterance_ref": utterance_ref, "request_key": request_key,
+        "expected_versions": {item_ref: 1, task_ref: 1},
+        "assembly_scope": {"resolved_intent": {"intent": "clear description and reopen task"},
+                           "allowed_mutation_types": ["item_modify", "task_modify"],
+                           "target_refs": [item_ref, task_ref]},
+        "patch": {"operations": [{"operation": "action_upsert", "action": {
+            "mutation_type": f"{kind}_modify", "change_id": kind,
+            "object_type": kind, "action": "update", "object_ref": ref,
+            "payload": payload, "affected_fields": list(payload), "basis_refs": [utterance_ref],
+        }} for kind, ref, payload in zip(["item", "task"], [item_ref, task_ref], payloads,
+                                         strict=True)]},
+    })
+
+    def admit(ordinal: int, tool: str) -> str:
+        return _admit_committed(
+            factory, utterance_ref=utterance_ref, trace_ref=trace_ref,
+            call_id=f"patch-{ordinal}", ordinal=ordinal, tool_name=tool,
+            argument_hash=str(ordinal) * 64,
+        )
+
+    token = admit(1, "docket_stage_changes")
+    with factory.begin() as session:
+        staged = ChangeSetAssemblyService(session).stage(
+            request, assembly_operation_token=token, assembly_argument_hash="1" * 64,
+        )
+        assert staged["disposition"] == "ready_to_commit", staged
+        changeset = session.scalar(select(ChangeSet).where(ChangeSet.ref_id == staged["draft_ref"]))
+        assert changeset is not None
+        request_ref = changeset.semantic_request_ref
+    token = admit(2, "docket_stage_changes")
+    with factory.begin() as session:
+        migrated = ChangeSetAssemblyService(session).stage(
+            StageChangesInput.model_validate({
+                "utterance_ref": utterance_ref, "request_key": request_key,
+                "patch": {"operations": [{"operation": "draft_recompile"}]},
+            }), assembly_operation_token=token, assembly_argument_hash="2" * 64,
+        )
+        assert migrated["disposition"] == "ready_to_commit", migrated
+        assert migrated["observation_required"] is True
+        for version in (1, 2):
+            proposal = read_request_proposal(session, semantic_request_ref=request_ref,
+                                            version=version)
+            assert [action.payload.model_dump(exclude_unset=True)
+                    for action in proposal.direct_actions] == payloads
+    token = admit(3, "docket_review_changeset")
+    with factory.begin() as session:
+        ChangeSetAssemblyService(session).review(
+            ReviewChangesInput(utterance_ref=utterance_ref, request_key=request_key),
+            assembly_operation_token=token, assembly_argument_hash="3" * 64,
+        )
+    token = admit(4, "docket_commit_changeset")
+    with factory.begin() as session:
+        receipt = ChangeSetAssemblyService(session).commit(
+            utterance_ref=utterance_ref, request_key=request_key,
+            assembly_operation_token=token, assembly_argument_hash="4" * 64,
+        )
+        assert receipt["disposition"] == "committed", receipt
+    with factory() as session:
+        item = session.scalar(select(Item).where(Item.ref_id == item_ref))
+        task = session.scalar(select(Task).where(Task.ref_id == task_ref))
+        assert item is not None and item.description is None
+        assert item.title == "Keep title" and item.kind == "smoke.request" and item.version == 2
+        assert task is not None and task.completed_at is None
+        assert task.title == "Follow up" and task.task_state == "in_progress" and task.version == 2
+
+
 def test_source_title_repair_survives_restart_and_replays_once(
     factory: sessionmaker[Session],
 ) -> None:
@@ -1790,6 +1880,7 @@ def main() -> None:
         test_diff_pages_keep_both_revisions_across_connections,
         test_invocation_binding_transport_retries_serialize,
         test_explicit_compiler_migration_requires_reobservation,
+        test_explicit_clear_patches_survive_postgresql_revision_and_recompile,
         test_source_title_repair_survives_restart_and_replays_once,
         test_trace_history_survives_call_one_hundred_and_blocks_lossy_downgrade,
         test_lost_admission_response_recovers_from_exact_local_trace,

@@ -51,6 +51,7 @@ from docket.schemas.authority import (
     ProviderOperationType,
     TemporalBindingCreate,
     TemporalCalendarProjectionCreate,
+    mutation_input_json,
 )
 from docket.services.attachment_evidence import (
     PDF_TEXT_EXTRACTOR,
@@ -246,7 +247,7 @@ def _content_payload(content: ChangeSetContent) -> dict[str, Any]:
     # Mutation discriminators are defaulted literals in the Pydantic variants,
     # but they are required durable structure. Never strip them from a stored
     # ChangeSet snapshot and later attempt to infer them from object/action.
-    payload = content.model_dump(mode="json", exclude_none=True)
+    payload = mutation_input_json(content)
     payload.setdefault("expected_versions", {})
     payload.setdefault("import_scope", None)
     for key in (
@@ -280,7 +281,11 @@ def _change_payload(change: ChangeInput) -> dict[str, Any]:
             ],
         }
     payload = change.create_spec or change.payload
-    converted = _as_json(payload)
+    converted = (
+        mutation_input_json(payload, preserve_explicit_nulls=True)
+        if change.action == "update" and isinstance(payload, BaseModel)
+        else _as_json(payload)
+    )
     return converted if isinstance(converted, dict) else {}
 
 
@@ -591,7 +596,7 @@ class ChangeSetService:
                     )
                 if change.payload:
                     resolved_fields["payload"] = _resolved_create_spec(
-                        change.payload, refs_by_change_id
+                        _change_payload(change), refs_by_change_id
                     )
             if resolved_fields:
                 resolved_change = change.model_copy(update=resolved_fields)
@@ -1078,7 +1083,7 @@ class ChangeSetService:
 
         return ChangeSetContent.model_validate(
             {
-                **content.model_dump(mode="json"),
+                **mutation_input_json(content, exclude_none=False),
                 "provider_intents": [intent.model_dump(mode="json") for intent in provider_intents],
             }
         )
@@ -1090,7 +1095,7 @@ class ChangeSetService:
         request: ConflictResolve,
         idempotency_key: str,
     ) -> tuple[ChangeSet, ChangeSetApplicationReceipt, bool]:
-        payload = request.model_dump(mode="json", exclude_defaults=True, exclude_none=True)
+        payload = mutation_input_json(request, exclude_defaults=True)
         parameter_hash = sha256_json(payload)
         existing = self.session.scalar(
             select(ChangeSet).where(ChangeSet.idempotency_key == idempotency_key)

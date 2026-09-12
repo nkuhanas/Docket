@@ -4,7 +4,7 @@ import json
 from datetime import date
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from docket.domain.public_refs import is_public_ref
 from docket.schemas.common import ProviderAccountRef, PublicRef, StrictModel, validate_refs
@@ -485,6 +485,49 @@ class MutationBase(StrictModel):
     @classmethod
     def validate_basis_refs(cls, values: list[str]) -> list[str]:
         return _validate_refs(values, provenance_only=True)
+
+
+def mutation_input_json(
+    value: BaseModel, *, exclude_none: bool = True, exclude: set[str] | None = None,
+    preserve_explicit_nulls: bool = False, exclude_defaults: bool = False, warnings: bool = True,
+) -> dict[str, Any]:
+    """Serialize executable inputs without losing partial-update field presence.
+
+    Null envelope/create defaults follow the caller's ordinary dump policy.
+    Inside a typed update payload, absent null defaults stay absent and an
+    explicitly supplied null stays present. Opaque JSON is not reinterpreted.
+    Discriminators/default non-null structure are retained for round-trip parsing.
+    This is not the bounded output serializer or a legacy-data repair function.
+    """
+    result = value.model_dump(
+        mode="json", exclude_none=exclude_none, exclude=exclude,
+        exclude_defaults=exclude_defaults, warnings=warnings,
+    )
+
+    def retain(typed: Any, serialized: Any, *, patch: bool) -> None:
+        if isinstance(typed, BaseModel) and isinstance(serialized, dict):
+            for name in type(typed).model_fields:
+                child = getattr(typed, name)
+                if patch and child is None:
+                    if name in typed.model_fields_set:
+                        serialized[name] = None
+                    else:
+                        serialized.pop(name, None)
+                elif name in serialized:
+                    retain(child, serialized[name], patch=patch or (
+                        isinstance(typed, MutationBase)
+                        and getattr(typed, "action", None) == "update" and name == "payload"
+                    ))
+        elif isinstance(typed, list | tuple) and isinstance(serialized, list):
+            for child, dumped in zip(typed, serialized, strict=True):
+                retain(child, dumped, patch=patch)
+        elif isinstance(typed, dict) and isinstance(serialized, dict):
+            for key, child in typed.items():
+                if key in serialized:
+                    retain(child, serialized[key], patch=patch)
+
+    retain(value, result, patch=preserve_explicit_nulls)
+    return result
 
 
 class ItemCreate(MutationBase):
@@ -1192,14 +1235,16 @@ class OperatorChangeSetContent(StrictModel):
         return self
 
     def to_internal(self) -> ChangeSetContent:
-        payload = self.model_dump(mode="json")
+        payload = mutation_input_json(self, exclude_none=False)
         if self.import_scope is not None:
             payload["import_scope"] = self.import_scope.to_internal().model_dump(mode="json")
         return ChangeSetContent.model_validate(payload)
 
     @classmethod
     def from_internal(cls, content: ChangeSetContent) -> OperatorChangeSetContent:
-        payload = content.model_dump(mode="json", exclude={"provider_intents", "occurrence_plans"})
+        payload = mutation_input_json(
+            content, exclude_none=False, exclude={"provider_intents", "occurrence_plans"},
+        )
         if payload.get("import_scope") is not None:
             payload["import_scope"].pop("authority_statement_refs", None)
         return cls.model_validate(payload)

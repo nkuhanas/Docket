@@ -27,7 +27,11 @@ from docket.models import (
     SemanticRequest,
 )
 from docket.models.base import utc_now
-from docket.schemas.authority import OperatorChangeSetContent, SemanticOptionDraft
+from docket.schemas.authority import (
+    OperatorChangeSetContent,
+    SemanticOptionDraft,
+    mutation_input_json,
+)
 from docket.security import decode_semantic_option_token, verify_semantic_option_token
 from docket.services.continuity import ContinuityService
 from docket.services.gateway_lifetimes import GatewayLifetimeService
@@ -79,7 +83,9 @@ def complete_selection_provenance(template: dict[str, Any], utterance_ref: str) 
     completed, _count = _substitute_selection_slots(
         template, CURRENT_SELECTION_UTTERANCE, utterance_ref
     )
-    return OperatorChangeSetContent.model_validate(completed).model_dump(mode="json")
+    return mutation_input_json(
+        OperatorChangeSetContent.model_validate(completed), exclude_none=False,
+    )
 
 
 def _discord_message_ref(guild_id: str, channel_id: str, message_id: str) -> str:
@@ -213,7 +219,7 @@ class SemanticOptionService:
         option_components: list[dict[str, str]] = []
         option_render: list[dict[str, str]] = []
         for draft in drafts:
-            content = draft.content.model_dump(mode="json")
+            content = mutation_input_json(draft.content, exclude_none=False)
             template, replacements = _replace_authority_slot(
                 content, draft.selection_authority_ref
             )

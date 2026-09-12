@@ -9,6 +9,7 @@ from pydantic import Field, field_validator, model_validator
 from docket.schemas.authority import (
     CanonicalChangeInput,
     UtteranceRef,
+    mutation_input_json,
 )
 from docket.schemas.calendar import CalendarEventTiming
 from docket.schemas.common import PublicRef, StrictModel, validate_refs
@@ -299,7 +300,7 @@ class StageChangesInput(StrictModel):
         ):
             raise ValueError("draft_recompile cannot change authority or execution preconditions")
         encoded = json.dumps(
-            self.model_dump(mode="json", exclude_none=True),
+            mutation_input_json(self),
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,

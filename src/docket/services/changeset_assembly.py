@@ -49,6 +49,7 @@ from docket.schemas.authority import (
     ImportScope,
     IntentSessionOpen,
     StatementInput,
+    mutation_input_json,
 )
 from docket.services.changeset_compiler import (
     COMPILER_IDENTIFIER,
@@ -1314,7 +1315,7 @@ class ChangeSetAssemblyService:
         proposed_actions = {
             **actions,
             **{
-                op.action.change_id: op.action.model_dump(mode="json", exclude_none=True)
+                op.action.change_id: mutation_input_json(op.action)
                 for op in request.patch.operations
                 if isinstance(op, StageActionUpsert)
             },
@@ -1324,7 +1325,7 @@ class ChangeSetAssemblyService:
                 proposed_actions.pop(op.change_id, None)
         for patch_operation in request.patch.operations:
             if isinstance(patch_operation, StageActionUpsert):
-                action = patch_operation.action.model_dump(mode="json", exclude_none=True)
+                action = mutation_input_json(patch_operation.action)
                 change_id = patch_operation.action.change_id
                 if change_id in owned_ids:
                     raise DocketError(
@@ -1510,8 +1511,8 @@ class ChangeSetAssemblyService:
             if (
                 prior_content is not None
                 and content is not None
-                and effect_hash(prior_content.model_dump(mode="json", exclude_none=True))
-                != effect_hash(content.model_dump(mode="json", exclude_none=True))
+                and effect_hash(mutation_input_json(prior_content))
+                != effect_hash(mutation_input_json(content))
             ):
                 # An unchanged stage patch is not permission for a deployment
                 # to silently replace provider/occurrence compiler products.
