@@ -1357,6 +1357,9 @@ class ChangeSetService:
         # Even changing a Pydantic default must not alter previously observed
         # meaning. Current schemas parse stored effects; they never migrate them.
         verify_snapshot(changeset, revision, _content_payload(content), for_migration=for_migration)
+        from docket.services.request_adoption import verify_adopted_content
+
+        verify_adopted_content(self.session, changeset, content)
         return content
 
     def _session_utterance_refs(self, intent_session: IntentSession) -> set[str]:

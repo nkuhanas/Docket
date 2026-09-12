@@ -77,7 +77,10 @@ from docket.models.registry import (
     SenderIdentityEmail,
     Source,
 )
-from docket.models.request_specifications import SemanticRequestSpecification
+from docket.models.request_specifications import (
+    RequestAssemblyAdoption,
+    SemanticRequestSpecification,
+)
 from docket.models.tracked_context import (
     AttachmentEvidence,
     EncryptedAttachmentBlob,
@@ -157,6 +160,7 @@ __all__ = [
     "ProviderEventBinding",
     "Relationship",
     "ReminderPlan",
+    "RequestAssemblyAdoption",
     "RuntimeLogEntry",
     "ScheduledNotification",
     "SemanticRequest",

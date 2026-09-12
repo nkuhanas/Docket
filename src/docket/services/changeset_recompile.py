@@ -34,6 +34,7 @@ from docket.services.changeset_compiler import (
 )
 from docket.services.changeset_diff import bounded_sample, compiled_diff
 from docket.services.changeset_pins import effect_hash
+from docket.services.request_adoption import verify_adopted_content
 from docket.services.request_specifications import read_request_proposal
 from docket.services.semantic_scope import pinned_semantic_projection
 from docket.services.source_title_repair import coalesce_source_titles
@@ -196,6 +197,7 @@ def recompile_draft(
                 "difference_count": len(differences), "differences": bounded_sample(differences),
             },
         )
+    verify_adopted_content(service.session, changeset, content)
     errors = service.changesets._validate(intent_session, content, require_handlers=False)
     # No mutation of the draft occurred before equivalence was proved.
     changeset.normalized_entries_json = entries

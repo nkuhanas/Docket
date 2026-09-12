@@ -20,6 +20,7 @@ from docket.schemas.authority import (
     ImportScope,
     MutationBase,
     OperatorChangeSetContent,
+    mutation_input_json,
 )
 from docket.schemas.registry import IdentityResolutionBasis
 
@@ -60,6 +61,18 @@ def semantic_authority_scope(
     return _project_scope(
         content, exclusions, fixed_change_ids=False, normalize_create_defaults=False,
     )
+
+
+def freeform_authority_scope(
+    content: ChangeSetContent, resolved_intent: dict[str, Any],
+) -> dict[str, Any]:
+    """The same current typed binding for direct capture and explicit adoption."""
+    return {
+        "resolved_intent": resolved_intent,
+        **semantic_authority_scope(mutation_input_json(
+            content, exclude_none=False, exclude={"provider_intents", "occurrence_plans"},
+        ), []),
+    }
 
 
 def pinned_semantic_projection(

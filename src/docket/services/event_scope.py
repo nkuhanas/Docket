@@ -14,6 +14,7 @@ from docket.schemas.event_occurrences import (
     EventMutationScope,
     OneTimeEventScope,
 )
+from docket.services.request_adoption import read_adoption
 
 
 class EventScopeGuard:
@@ -34,6 +35,12 @@ class EventScopeGuard:
         )
         binding = (request.selected_option_binding or {}) if request else {}
         authorized = binding.get("scope", {}).get("event_scopes", {}).get(event_ref)
+        adopted = read_adoption(self.session, request) if request else None
+        if adopted is not None:
+            exact_scope = adopted[1].assembly_boundary.event_scopes.get(event_ref)
+            authorized = (
+                exact_scope.model_dump(mode="json", exclude_none=True) if exact_scope else None
+            )
         if authorized != scope.model_dump(mode="json", exclude_none=True):
             raise DocketError(
                 code="event_scope_authority_mismatch",

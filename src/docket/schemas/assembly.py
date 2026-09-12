@@ -232,9 +232,19 @@ class StageDraftRecompile(StrictModel):
     operation: Literal["draft_recompile"] = "draft_recompile"
 
 
+class StageDraftAdopt(StrictModel):
+    """Explicitly adopt the bound preserved request, without changing its effects.
+
+    Docket loads the original revision, verifies its evidence/scope and records
+    a new assembly revision. No replacement payload or broadened scope is accepted.
+    """
+
+    operation: Literal["draft_adopt"] = "draft_adopt"
+
+
 StagePatchOperation = Annotated[
     StageActionUpsert | StageActionRemove | StageNormalizedEntryUpsert | StageNormalizedEntryRemove
-    | StageDraftRecompile,
+    | StageDraftRecompile | StageDraftAdopt,
     Field(discriminator="operation"),
 ]
 
@@ -252,9 +262,10 @@ class StagePatchInput(StrictModel):
     @model_validator(mode="after")
     def targets_are_unique(self) -> StagePatchInput:
         if len(self.operations) != 1 and any(
-            isinstance(operation, StageDraftRecompile) for operation in self.operations
+            isinstance(operation, StageDraftRecompile | StageDraftAdopt)
+            for operation in self.operations
         ):
-            raise ValueError("draft_recompile must be the only patch operation")
+            raise ValueError("draft_recompile or draft_adopt must be the only patch operation")
         entry_ops = [
             operation.entry.import_entry_id
             if isinstance(operation, StageNormalizedEntryUpsert)
@@ -295,10 +306,10 @@ class StageChangesInput(StrictModel):
 
     @model_validator(mode="after")
     def request_is_bounded(self) -> StageChangesInput:
-        if isinstance(self.patch.operations[0], StageDraftRecompile) and (
+        if isinstance(self.patch.operations[0], StageDraftRecompile | StageDraftAdopt) and (
             self.assembly_scope is not None or self.expected_versions
         ):
-            raise ValueError("draft_recompile cannot change authority or execution preconditions")
+            raise ValueError("draft migration cannot change authority or execution preconditions")
         encoded = json.dumps(
             mutation_input_json(self),
             sort_keys=True,

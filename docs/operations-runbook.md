@@ -268,10 +268,28 @@ cardinality, dates, destinations and occurrence scope remain bound. Symbolic
 selection substitution applies only to declared provenance slots, never arbitrary
 policy text/data. A comparison digest does not independently establish authority.
 
-`semantic_request_migration_required` means a preserved pre-staging or unversioned binding needs
-the explicit audited adoption path. Do not create a second request, edit its hash
-in production, or ask for the same authorization again. Completion of that
-migration path remains a deployment prerequisite; there is no automatic backfill.
+`semantic_request_migration_required` means a preserved pre-staging or unversioned
+binding needs explicit adoption. For a current typed, hash-matching direct request,
+review its bounded current summary, then use the sole `draft_adopt` staging
+operation. It takes no new payload, scope or versions. It records a new assembly
+revision and immutable proof while preserving the original request, utterances,
+sources, hashes and failed attempts. Observe the new revision before committing;
+a bounded summary suffices. Subsequent edits/recompilation and the shared commit
+service still enforce the original exact effects and provider identity.
+
+`request_adoption_unproven` identifies the exact missing proof or incompatible
+representation; it is not a request for renewed authorization. Unversioned scopes,
+unverifiable compiler ownership or changed evidence remain preserved, not decoded
+or automatically rebound. Do not create a second request, edit its hash in
+production or retry adoption indefinitely. Source-grounded adoption outside this
+current-typed equality path remains a deployment prerequisite.
+
+Migration `20260911f5c4` adds internal `request_assembly_adoptions`, with one
+immutable proof per request and references to its original/adopted revisions.
+It does not adopt or execute historical work at startup. PostgreSQL rejects proof
+updates/deletes. Downgrade refuses when any proof exists; use the verified
+pre-migration backup or a reviewed forward repair, never delete evidence to
+make downgrade pass. Empty-database downgrade/re-upgrade is an isolated rehearsal.
 
 Assembly admission and execution resolve the exact originating utterance's
 existing request, including when that request was created after tool admission.

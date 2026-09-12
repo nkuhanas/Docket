@@ -114,7 +114,10 @@ def test_normalized_entry_stage_schema_is_exact_and_bounded() -> None:
     mapping = scoped["$defs"]["StagePatchInput"]["properties"]["operations"][
         "items"
     ]["discriminator"]["mapping"]
-    assert set(mapping) == {"normalized_entry_upsert", "normalized_entry_remove", "draft_recompile"}
+    assert set(mapping) == {
+        "normalized_entry_upsert", "normalized_entry_remove", "draft_recompile", "draft_adopt",
+    }
+    assert scoped["$defs"]["StageDraftAdopt"]["properties"].keys() == {"operation"}
     entry_mapping = scoped["$defs"]["StageNormalizedEntryUpsert"]["properties"][
         "entry"
     ]["discriminator"]["mapping"]

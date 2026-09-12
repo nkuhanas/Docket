@@ -879,3 +879,47 @@ Validation passed 598 tests, Ruff and strict mypy (139 source files), plus the
 isolated Compose/PostgreSQL smoke with both new races, the existing occurrence,
 recovery, governance and migration round-trip checks. These are local results;
 no production deployment or live provider verification is claimed.
+
+## Explicit adoption of unchanged typed direct requests
+
+The sole `draft_adopt` staging operation provides a one-time transition for an
+unfinished direct request whose current typed scope, stored revision digest and
+retained evidence agree exactly. It accepts no replacement content, new scope or
+expected versions. The trusted execution must have observed that exact revision;
+adoption locks the request/draft and produces one new immutable revision and audit.
+Neither the original utterance nor the request's original scope/hash is rewritten.
+
+An internal `request_assembly_adoptions` row records the proof and both revision
+identities. Later staging, recompilation and the shared commit service compare
+against the original canonical effects and provider target/identity. A changed
+title, extra effect or removal preserves the prior draft and returns a bounded
+conflict. A genuine compiler failure retains the same authorized inputs as
+`saved_with_errors`, not renewed Operator ambiguity. A corrected new operation
+can continue; replay still returns the original failed result.
+
+The adopted revision requires fresh observation; a bounded summary is sufficient,
+not mandatory pagination. Duplicate adoption cannot create another revision/proof.
+Lost-response replay and committed receipt recovery survive fresh sessions.
+Old internal direct calls, with or without an explicit request binding, cannot
+bypass the assembled path after adoption. The public direct protocol remains
+removed. This adds a staging operation, not a new tool: the registries stay 23/4
+and the generated contract is v35.
+
+Migration `20260911f5c4` creates the proof table without backfills or historical
+execution. PostgreSQL protects it against update/delete; downgrade refuses to
+discard a nonempty proof table. The isolated smoke includes simultaneous adoption
+attempts (one revision, one stale conflict), reobservation, fresh-session commit,
+old operation replay, proof trigger enforcement and downgrade refusal. Empty
+migration upgrade/downgrade/re-upgrade runs on a separate isolated database.
+
+This is the unchanged-current-typed branch of REQ-0018, not general source
+interpretation. Unversioned semantic scopes, unprovable ownership, missing evidence
+or effect changes fail with their specific preserved-request constraint. Exact
+source-grounded request authority and broader historical adoption remain open;
+evidence digests alone do not claim the source was interpreted correctly.
+
+Validation passed all 618 tests, Ruff and strict mypy (141 source files), plus
+the isolated Compose/PostgreSQL smoke. The Calendar fixture preserves the exact
+title, location, lane and provider intent through adoption and recompilation,
+then queues one Operation on commit; it does not claim provider delivery. These
+are local results, with no production mutation or deployment.
