@@ -262,6 +262,7 @@ def test_mcp_trace_is_monotonic_redacted_and_projected(
             "ordinal": 1,
             "tool_name": "docket_search_history",
             "origin": "unreconciled",
+            "transport_layer": "wrapper",
             "transport_state": "completed",
             "domain_state": "unknown",
             "elapsed_ms": 125,
@@ -413,6 +414,7 @@ def test_mcp_trace_projects_semantic_disposition_as_primary_outcome(
         "ordinal": 1,
         "tool_name": "docket_commit_changeset",
         "origin": "authenticated_docket",
+        "transport_layer": "wrapper",
         "transport_state": "completed",
         "domain_state": "succeeded",
         "elapsed_ms": 125,
@@ -636,7 +638,7 @@ def test_trace_pagination_rejects_mixed_revision_and_foreign_or_invalid_cursors(
         cursor = first["cursor"]
         decoded = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))
         for field, value in (("trace_ref", new_public_ref("trace")), ("position", True),
-                             ("format", 2), ("position", 101)):
+                             ("format", 1), ("position", 101)):
             bad = base64.urlsafe_b64encode(json.dumps({**decoded, field: value}).encode()).decode()
             with pytest.raises(DocketError) as invalid:
                 history.get_entry(trace.ref_id, view="calls", cursor=bad)
@@ -682,3 +684,62 @@ def test_trace_timing_unions_closed_intervals_without_invented_phases(session_fa
             "unattributed_ms": 26_000, "queue_ms": None, "context_schema_ms": None,
             "model_ms": None, "local_validation_ms": None, "provider_wait_ms": None,
         }
+
+
+@pytest.mark.integration
+def test_missing_callback_calls_are_counted_once_and_invalidate_old_pages(session_factory):
+    with session_factory.begin() as session:
+        trace = _long_trace(session)
+        trace_ref, version = trace.ref_id, trace.version
+        cursor = TraceViewService(session).read(trace, cursor=None, limit=1)["cursor"]
+        evidence = {"actor_ref": f"discord_user:{get_settings().operator_discord_user_id}",
+                    "utterance_refs": session.scalar(select(ToolInvocation)).utterance_refs}
+    with session_factory.begin() as session:
+        for ordinal, name in ((101, "docket_stage_changes"), (102, "docket_commit_changeset")):
+            session.add(ToolInvocation(
+                **evidence, tool_name=name, tool_contract_version=CONTRACT_VERSION,
+                tool_contract_hash=contract_hash("interactive"), caller_profile="interactive",
+                trace_ref=trace_ref, trace_call_id=f"lost-{ordinal}", trace_ordinal=ordinal,
+                received_argument_hash="c" * 64, transport_state="completed",
+                domain_state="succeeded", completed_at=datetime.now(UTC),
+                result_disposition="ready_to_commit" if ordinal == 101 else "committed",
+            ))
+        # Same signed upstream attempt, separate authenticated retransmission.
+        session.add(ToolInvocation(
+            **evidence, tool_name="docket_commit_changeset", tool_contract_version=CONTRACT_VERSION,
+            tool_contract_hash=contract_hash("interactive"), caller_profile="interactive",
+            trace_ref=trace_ref, trace_ordinal=102, received_argument_hash="c" * 64,
+            transport_state="running", domain_state="unknown",
+        ))
+    with session_factory() as session:
+        trace = session.scalar(select(ConversationalToolTrace).where(
+            ConversationalToolTrace.ref_id == trace_ref,
+        ))
+        assert trace.version == version  # No callback or trace-version update was necessary.
+        service = TraceViewService(session)
+        with pytest.raises(DocketError) as changed:
+            service.read(trace, cursor=cursor, limit=1)
+        assert changed.value.code == "trace_revision_changed"
+        view = service.snapshot(trace)
+        assert view["counts"]["attempts"] == 102
+        assert view["counts"]["authenticated_invocations"] == 4
+        assert view["timing"]["wrapper_elapsed_sum_ms"] == 12_500
+        assert len(trace.calls) == 100  # Derived rows do not fabricate callback history.
+        missing = view["rows"][-2:]
+        assert [row["outcome"] for row in missing] == ["ready_to_commit", "committed"]
+        assert all(row["transport_layer"] == "docket" for row in missing)
+        assert all(row["elapsed_ms"] is None for row in missing)
+        assert all(row["argument_preview"] == '{"availability":"not_recorded"}' for row in missing)
+        tools = {row["tool_name"]: row for row in view["tool_counts"]}
+        assert tools["docket_stage_changes"]["attempts"] == 2
+        assert tools["docket_commit_changeset"]["attempts"] == 2
+        assert tools["docket_commit_changeset"]["authenticated_invocations"] == 3
+        all_rows, cursor = [], None
+        while True:
+            page = service.read(trace, cursor=cursor, limit=25)
+            assert len(json.dumps(page).encode()) < 16_384
+            all_rows.extend(page["items"])
+            cursor = page.get("cursor")
+            if cursor is None:
+                break
+        assert [row["ordinal"] for row in all_rows] == list(range(1, 103))

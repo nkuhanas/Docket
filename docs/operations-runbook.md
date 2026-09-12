@@ -64,6 +64,12 @@ The Docket tool-activity projection reports exact whole-trace attempt and
 authenticated-invocation counts. Its byte-bounded preview shows recent attempts;
 the omitted count and `docket_get_history_entry(ref="trace_...", view="calls")`
 provide the rest. Stage/review/commit totals always describe the entire trace.
+When a wrapper callback is missing, signed invocations still supply the call
+row and workflow count. `transport_layer=docket` identifies server processing,
+not proof that Hermes received its response; wrapper latency and argument
+preview remain unrecorded. Retransmissions share one upstream attempt row while
+every authenticated invocation is counted separately. Finalization queues its
+own trace refresh instead of depending on a later callback.
 Local wrapper rejections are not authenticated Docket invocations. Unlinked
 attempts stay unreconciled rather than becoming evidence of domain success.
 
@@ -74,8 +80,9 @@ over all attempts, not a wall-clock partition. `unattributed_ms` is the remainin
 trace time, not model time. Queue, context/schema, model, local-validation and
 provider-wait fields remain null until separately instrumented. A large
 `before_first_docket_call_ms` identifies a delay, not its cause. Statuses are live
-observations; call cursors bind the trace revision and explicitly require a
-restart if it advances. Historical callback formats are not decoded into the
+observations; call cursors bind the trace revision and projected invocation
+snapshot and explicitly require a restart if either advances. Historical callback
+formats are not decoded into the
 new contract; coordinated deployment drains active execution first.
 
 The gateway now supplies an infrastructure-only signed `invocation_binding` on

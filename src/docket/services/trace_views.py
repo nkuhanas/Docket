@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
 from docket.models import ConversationalToolTrace, ToolInvocation
 from docket.models.base import utc_now
@@ -61,9 +62,14 @@ class TraceViewService:
         execution_ms = _interval_union(intervals)
         first = min((item.started_at for item in invocations), default=None)
         rows: list[dict[str, Any]] = []
+        wrapper_call_ids = {str(call.get("call_id", "")) for call in trace.calls}
         for call in sorted(trace.calls, key=lambda row: int(row["ordinal"])):
             invocation = by_call.get(str(call.get("call_id", "")))
-            if invocation is not None and invocation.tool_name != call["tool_name"]:
+            if invocation is not None and (
+                invocation.tool_name != call["tool_name"]
+                or invocation.trace_ordinal != call["ordinal"]
+                or invocation.received_argument_hash != call.get("received_argument_hash")
+            ):
                 invocation = None
             local = call.get("execution_boundary") == "local_rejection"
             origin = (
@@ -82,6 +88,7 @@ class TraceViewService:
                     "tool_name": str(call["tool_name"])[:128],
                     "origin": origin,
                     "transport_state": str(call.get("transport_state", "running")),
+                    "transport_layer": "wrapper",
                     "domain_state": invocation.domain_state if invocation else "unknown",
                     "outcome": str(disposition or "unknown")[:128],
                     "transport_error_code": str(call.get("transport_error_code") or "none")[:64],
@@ -90,6 +97,23 @@ class TraceViewService:
                     "argument_preview": str(call.get("argument_preview", "{}"))[:768],
                 }
             )
+        for call_id, invocation in by_call.items():
+            if call_id in wrapper_call_ids or invocation.trace_ordinal is None:
+                continue
+            # The signed invocation establishes this upstream attempt even if
+            # every wrapper callback was lost. It does not establish wrapper
+            # latency or whether Hermes received the response.
+            rows.append({
+                "ordinal": invocation.trace_ordinal, "tool_name": invocation.tool_name,
+                "origin": "authenticated_docket", "transport_state": invocation.transport_state,
+                "transport_layer": "docket",
+                "domain_state": invocation.domain_state,
+                "outcome": invocation.result_disposition or "unknown",
+                "transport_error_code": "none", "elapsed_ms": None,
+                "tool_call_ref": invocation.ref_id,
+                "argument_preview": '{"availability":"not_recorded"}',
+            })
+        rows.sort(key=lambda row: int(row["ordinal"]))
         origins = Counter(row["origin"] for row in rows)
         tools = Counter(row["tool_name"] for row in rows)
         confirmed_tools = Counter(item.tool_name for item in invocations)
@@ -121,7 +145,7 @@ class TraceViewService:
                 "docket_execution_ms": execution_ms,
                 # This aggregate can overlap both itself and Docket intervals.
                 # It is deliberately NOT subtracted from wall-clock elapsed.
-                "wrapper_elapsed_sum_ms": sum(row["elapsed_ms"] for row in rows),
+                "wrapper_elapsed_sum_ms": sum(row["elapsed_ms"] or 0 for row in rows),
                 "unattributed_ms": total_ms - execution_ms,
                 "queue_ms": None,
                 "context_schema_ms": None,
@@ -136,6 +160,7 @@ class TraceViewService:
         self, trace: ConversationalToolTrace, *, cursor: str | None, limit: int
     ) -> dict[str, Any]:
         view = self.snapshot(trace)
+        snapshot_hash = sha256_json(view["rows"])
         position = 0
         if cursor is not None:
             try:
@@ -144,11 +169,12 @@ class TraceViewService:
                     "format",
                     "trace_ref",
                     "trace_version",
+                    "snapshot_hash",
                     "position",
                 }:
                     raise ValueError
                 if (
-                    payload["format"] != 1
+                    payload["format"] != 2
                     or type(payload["format"]) is not int
                     or payload["trace_ref"] != trace.ref_id
                     or type(payload["trace_version"]) is not int
@@ -156,7 +182,9 @@ class TraceViewService:
                     or payload["position"] < 0
                 ):
                     raise ValueError
-                if payload["trace_version"] != trace.version:
+                if payload["trace_version"] != trace.version or (
+                    payload["snapshot_hash"] != snapshot_hash
+                ):
                     raise DocketError(
                         code="trace_revision_changed",
                         message="The trace advanced; restart its bounded call read.",
@@ -180,9 +208,10 @@ class TraceViewService:
             base64.urlsafe_b64encode(
                 json.dumps(
                     {
-                        "format": 1,
+                        "format": 2,
                         "trace_ref": trace.ref_id,
                         "trace_version": trace.version,
+                        "snapshot_hash": snapshot_hash,
                         "position": end,
                     },
                     sort_keys=True,

@@ -180,6 +180,13 @@ def test_restart_recovers_exact_operation_not_later_request_outcome(
             ConversationalToolTrace.ref_id == trace_ref,
         ))
         assert trace.status == "interrupted"
+        view = TraceViewService(session).snapshot(trace)
+        assert view["counts"]["attempts"] == 4
+        assert view["counts"]["authenticated_invocations"] == 5
+        if missing_callback:
+            assert all(row["transport_layer"] == "docket" for row in view["rows"])
+            assert all(row["elapsed_ms"] is None for row in view["rows"])
+            assert view["timing"]["wrapper_elapsed_sum_ms"] == 0
         if not missing_callback:
             assert [row["disposition"] for row in trace.calls] == [
                 "rejected_validation", "ready_to_commit", "reviewed", "committed",
@@ -373,6 +380,14 @@ def test_mcp_recovers_commit_receipt_when_result_assembly_raises_after_commit(se
         )))
         assert len(calls) == 2
         assert all(row.result_disposition == "committed" for row in calls)
+        # No post-tool trace callback ran, but finalization still queues a
+        # refresh for each new authenticated invocation's known outcome.
+        trace = session.scalar(select(ConversationalToolTrace))
+        assert trace.version == 3
+        assert session.scalar(select(func.count(OutboxEvent.id)).where(
+            OutboxEvent.event_type == "discord.mcp_trace.requested",
+            OutboxEvent.aggregate_id == trace.id,
+        )) == 2
 
 
 @pytest.mark.integration

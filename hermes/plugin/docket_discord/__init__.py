@@ -3067,7 +3067,7 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
         try:
             ordinal = raw_call.get("ordinal")
             elapsed_ms = raw_call.get("elapsed_ms")
-            if type(ordinal) is not int or type(elapsed_ms) is not int:
+            if type(ordinal) is not int or (elapsed_ms is not None and type(elapsed_ms) is not int):
                 raise ValueError
         except (TypeError, ValueError) as exc:
             raise PluginAPIError(
@@ -3075,6 +3075,7 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
             ) from exc
         tool_name = _safe_text(raw_call.get("tool_name"), 128, "tool_name")
         transport_state = _safe_text(raw_call.get("transport_state"), 16, "transport_state")
+        transport_layer = _safe_text(raw_call.get("transport_layer"), 16, "transport_layer")
         domain_state = _safe_text(raw_call.get("domain_state"), 16, "domain_state")
         origin = _safe_text(raw_call.get("origin"), 32, "origin")
         outcome = _safe_text(raw_call.get("outcome"), 128, "outcome")
@@ -3093,6 +3094,7 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
             not previous_ordinal < ordinal <= 2_147_483_647
             or tool_name not in _DOCKET_MCP_TOOL_NAMES
             or transport_state not in {"running", "completed", "failed", "timed_out"}
+            or transport_layer not in {"wrapper", "docket"}
             or domain_state not in {"succeeded", "rejected", "failed", "unknown"}
             or origin not in {"authenticated_docket", "local_rejection", "unreconciled"}
             or (origin == "authenticated_docket") != (tool_call_ref != "unreconciled")
@@ -3103,8 +3105,12 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
                 and not re.fullmatch(r"call_[0-9A-HJKMNP-TV-Z]{26}", tool_call_ref)
             )
             or (transport_error_code != "none" and transport_error_code not in _TRACE_ERROR_CODES)
-            or elapsed_ms < 0
-            or elapsed_ms > 600_000
+            or (transport_layer == "docket" and (
+                origin != "authenticated_docket" or elapsed_ms is not None
+                or transport_error_code != "none"
+            ))
+            or (transport_layer == "wrapper" and elapsed_ms is None)
+            or (elapsed_ms is not None and not 0 <= elapsed_ms <= 600_000)
         ):
             raise PluginAPIError("invalid_mcp_trace", "Trace call binding is invalid", 422)
         calls.append(
@@ -3112,6 +3118,7 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
                 "ordinal": ordinal,
                 "tool_name": tool_name,
                 "transport_state": transport_state,
+                "transport_layer": transport_layer,
                 "domain_state": domain_state,
                 "origin": origin,
                 "elapsed_ms": elapsed_ms,
@@ -3266,14 +3273,18 @@ async def _put_mcp_trace(trace_ref: str, payload: dict[str, Any]) -> dict[str, A
     for call in calls:
         terminal = call["transport_state"] != "running"
         details = ""
-        if terminal:
+        if terminal or call["domain_state"] != "unknown":
             outcome_label = call["outcome"].replace("_", " ").capitalize()
             details = f"Outcome: {outcome_label} · "
         details += f"Origin: {call['origin'].replace('_', ' ')} · "
-        details += f"Transport: {transport_labels[call['transport_state']]}"
+        details += (
+            f"Transport ({call['transport_layer']}): {transport_labels[call['transport_state']]}"
+        )
         details += f" · Domain: {domain_labels[call['domain_state']]}"
-        if terminal:
+        if terminal and call["elapsed_ms"] is not None:
             details += f" · wrapper {call['elapsed_ms']} ms"
+        if call["transport_layer"] == "docket":
+            details += " · wrapper response/latency not observed"
         details += f" · {call['tool_call_ref']}"
         if call["transport_error_code"] != "none":
             details += f" · transport {call['transport_error_code'].replace('_', ' ')}"
