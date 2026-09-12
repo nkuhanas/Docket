@@ -30,6 +30,16 @@ class RequestSourceBinding(StrictModel):
     evidence_state: Literal["source_recorded", "attachment_recorded", "missing"]
 
 
+class RequestEntryInterpretationInput(StrictModel):
+    """Docket-recorded initial interpretation, not a model-facing authority assertion."""
+
+    schema_version: Literal[1] = 1
+    interpretation_state: Literal["recorded_interpretation"] = "recorded_interpretation"
+    originating_utterances: list[RequestUtteranceBinding] = Field(min_length=1, max_length=100)
+    source_binding: RequestSourceBinding
+    entry: NormalizedEntryInput
+
+
 class RequestSpecificationProposal(StrictModel):
     schema_version: Literal[1] = 1
     interpretation_state: Literal["pending_evidence_validation"] = "pending_evidence_validation"

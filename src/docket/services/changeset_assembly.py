@@ -70,7 +70,8 @@ from docket.services.intent_sessions import IntentSessionService
 from docket.services.interactive_authority import InteractiveAuthorityService
 from docket.services.reply_bindings import ReplyBindingService
 from docket.services.request_adoption import adopt_request, read_adoption, verify_adopted_content
-from docket.services.request_specifications import record_request_proposal
+from docket.services.request_interpretations import bind_entry_interpretation, selection_status
+from docket.services.request_specifications import read_request_proposal, record_request_proposal
 from docket.services.statements import StatementService
 
 MAX_DRAFT_ENTRIES = 250
@@ -1157,8 +1158,18 @@ class ChangeSetAssemblyService:
             )
         changeset.current_revision += 1
         changeset.version += 1
+        semantic_request = self.session.scalar(select(SemanticRequest).where(
+            SemanticRequest.ref_id == changeset.semantic_request_ref,
+        ))
+        assert semantic_request is not None
+        interpretation = selection_status(
+            self.session, request_ref=semantic_request.ref_id,
+            scope=request_boundary or self._scope(semantic_request),
+            entries=changeset.normalized_entries_json,
+        )
         changeset.compiler_manifest_json = {
             **(changeset.compiler_manifest_json or {}),
+            **({"source_interpretation": interpretation} if interpretation else {}),
             "canonical_event_preview": capture_event_preview(self.session, content),
             "canonical_patch_preview": capture_canonical_patch_preview(self.session, content),
         }
@@ -1300,6 +1311,23 @@ class ChangeSetAssemblyService:
             return replay
         operation.state = "running"
         utterance = self._authority_utterance(request)
+        if (
+            execution.semantic_request_ref is None
+            and request.assembly_scope is not None
+            and not request.assembly_scope.selected_entry_ids
+        ) and any(
+            isinstance(patch, StageNormalizedEntryUpsert) for patch in request.patch.operations
+        ):
+            # Reject before creating a request whose missing inventory could no
+            # longer be completed without changing its persisted scope.
+            raise DocketError(
+                code="source_selection_required",
+                message="Include the complete selected_entry_ids in the first import scope.",
+                details={
+                    "field_path": ["assembly_scope", "selected_entry_ids"],
+                    "authority_preserved": True, "next_action": "supply_complete_source_selection",
+                },
+            )
         recompiling = isinstance(request.patch.operations[0], StageDraftRecompile)
         adopting = isinstance(request.patch.operations[0], StageDraftAdopt)
         if (recompiling or adopting) and execution.semantic_request_ref is None:
@@ -1438,6 +1466,16 @@ class ChangeSetAssemblyService:
             if isinstance(patch_operation, StageActionUpsert):
                 action = mutation_input_json(patch_operation.action)
                 change_id = patch_operation.action.change_id
+                if scope.selected_entry_ids and (
+                    patch_operation.action.mutation_type == "canonical_event_create"
+                ):
+                    raise DocketError(
+                        code="source_selection_owned_effect",
+                        message="Source-selected Events must come from their normalized entries.",
+                        details={
+                            "authority_preserved": True, "next_action": "stage_selected_entries",
+                        },
+                    )
                 if change_id in owned_ids:
                     raise DocketError(
                         code="compiler_owned_action",
@@ -1475,6 +1513,10 @@ class ChangeSetAssemblyService:
                         code="assembly_scope_violation",
                         message="Normalized entry uses a source outside the authorized scope.",
                     )
+                bind_entry_interpretation(
+                    self.session, request=semantic_request, scope=scope, entry=entry,
+                    existing_draft_entry=entry.import_entry_id in entries_by_id,
+                )
                 statement = statement_service.derive(
                     utterance.ref_id,
                     [self._entry_statement(entry)],
@@ -1509,8 +1551,22 @@ class ChangeSetAssemblyService:
                     )
                 prior = entries_by_id.get(entry.import_entry_id)
                 if prior == record:
-                    unchanged += 1
-                    continue
+                    prior_owned = {
+                        key: actions[key] for owner in ownership
+                        if owner["owner_import_entry_id"] == entry.import_entry_id
+                        for key in owner["change_ids"] if key in actions
+                    }
+                    produced = {
+                        str(action["change_id"]): action for action in compiled.actions
+                    } if compiled is not None else {}
+                    if prior_owned == produced:
+                        unchanged += 1
+                        continue
+                    if not changeset.validation_errors:
+                        # A ready revision cannot silently acquire new compiler
+                        # products. A failed draft may repair its compiler under
+                        # the immutable interpretation and whole-graph guards.
+                        raise migration_required()
                 ownership, removed_count = self._remove_owned_actions(
                     actions, ownership, entry.import_entry_id
                 )
@@ -1579,7 +1635,18 @@ class ChangeSetAssemblyService:
                     details={"ref": ref_id},
                 )
             expected_versions[ref_id] = version
+        interpretation = selection_status(
+            self.session, request_ref=semantic_request.ref_id, scope=scope, entries=entries,
+        )
         errors = [error for entry in entries for error in entry.get("compilation_errors", [])]
+        if interpretation and not interpretation["complete"]:
+            errors.append({
+                "code": "source_selection_incomplete", "category": "incomplete_draft",
+                "field_path": ["patch"], "constraint": "all_selected_entries_staged",
+                "missing_entry_count": interpretation["missing_entry_count"],
+                "missing_entry_ids": interpretation["missing_entry_ids"],
+                "next_action": "stage_remaining_selected_entries",
+            })
         content = None
         try:
             if not errors:
@@ -1654,6 +1721,7 @@ class ChangeSetAssemblyService:
                 "totals": self._counts(changeset),
                 "assembly_ready": changeset.state == "validated",
                 "readiness": "saved_with_errors" if errors else "ready_to_commit",
+                **({"source_interpretation": interpretation} if interpretation else {}),
                 **_diagnostic_projection(
                     changeset_ref=changeset.ref_id,
                     revision=changeset.current_revision,
@@ -1737,6 +1805,7 @@ class ChangeSetAssemblyService:
             ),
             "predicted_provider_operation_count": len(changeset.provider_intents),
             "assembly_ready": not errors,
+            **({"source_interpretation": interpretation} if interpretation else {}),
             **_diagnostic_projection(
                 changeset_ref=changeset.ref_id,
                 revision=changeset.current_revision,
@@ -1900,6 +1969,18 @@ class ChangeSetAssemblyService:
                 }
                 for entry in entries
             ]
+            interpretation = revision.compiler_manifest_json.get("source_interpretation", {})
+            if interpretation and not interpretation["complete"]:
+                proposal = read_request_proposal(
+                    self.session, semantic_request_ref=semantic_request.ref_id,
+                    version=revision_number,
+                )
+                staged_ids = {row["import_entry_id"] for row in snapshot["normalized_entries"]}
+                details.extend({
+                    "import_entry_id": entry_id, "staging_state": "not_staged",
+                    "entry_type_known": False,
+                } for entry_id in proposal.assembly_boundary.selected_entry_ids
+                    if entry_id not in staged_ids)
         elif request.view == "diagnostics":
             details = list(snapshot["validation_errors"])
         elif request.view == "diff":
@@ -1979,6 +2060,8 @@ class ChangeSetAssemblyService:
             "current_revision": changeset.current_revision,
             "is_current_revision": revision_number == changeset.current_revision,
             "state": revision_state,
+            **({"source_interpretation": revision.compiler_manifest_json["source_interpretation"]}
+               if "source_interpretation" in revision.compiler_manifest_json else {}),
             "totals": self._snapshot_counts(snapshot),
             "normalized_entry_counts": dict(
                 sorted(Counter(str(item.get("entry_type")) for item in entries).items())

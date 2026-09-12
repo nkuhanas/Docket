@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-09-11-v36"
+CONTRACT_VERSION = "docket-tools-2026-09-11-v37"
 
 
 class ToolContractEntry(TypedDict):
@@ -132,7 +132,12 @@ _INTERACTIVE_ASSEMBLY: dict[str, tuple[str, str]] = {
         "Stage bounded actions or normalized entries; scheduled entries carry one title/time/lane "
         "and Docket derives their complete support records. A sole draft_recompile operation "
         "explicitly migrates unchanged pinned inputs. It can coalesce a duplicated Event title "
-        "to the recorded entry title verified in retained PDF text, with all other effects fixed. "
+        "to the initial interpretation bound to retained image bytes or verified PDF text, "
+        "with all other effects fixed. For source imports, supply the COMPLETE selected_entry_ids "
+        "once in the first assembly_scope; later batches fill that immutable selection. "
+        "Missing entries block commit. Initial readings are fallible interpretations, not new "
+        "authority; extra entries or changed readings conflict rather than count as repairs. "
+        "Entries review pages include not_staged IDs to recover missing batches after resumption. "
         "Observe its new revision before commit. A sole draft_adopt explicitly migrates an "
         "observed, unfinished direct request with current typed, identical effects and retained "
         "evidence; no new scope/versions. Unprovable adoption preserves the original request.",

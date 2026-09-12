@@ -18,11 +18,12 @@ from sqlalchemy.orm import Session
 from docket.config import get_settings
 from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
-from docket.models import InterpretedStatement, OperatorUtterance
+from docket.models import AttachmentEvidence, InterpretedStatement, OperatorUtterance
 from docket.schemas.assembly import ScheduledOccurrenceEntry
 from docket.schemas.authority import CanonicalEventCreate, ChangeSetContent, ItemCreate
 from docket.schemas.request_specifications import RequestSpecificationProposal
 from docket.services.attachment_evidence import AttachmentEvidenceService, AttachmentTextService
+from docket.services.request_interpretations import read_entry_interpretation
 
 
 def _unproved(entry_id: str, constraint: str) -> DocketError:
@@ -39,6 +40,7 @@ def _unproved(entry_id: str, constraint: str) -> DocketError:
 
 def coalesce_source_titles(
     session: Session, *, prior: ChangeSetContent, proposal: RequestSpecificationProposal,
+    semantic_request_ref: str,
 ) -> tuple[ChangeSetContent, list[dict[str, Any]]]:
     """Derive the only permitted title corrections without editing prior evidence."""
     scope = prior.import_scope
@@ -61,6 +63,7 @@ def coalesce_source_titles(
               if isinstance(change, CanonicalEventCreate)}
     proof: list[dict[str, Any]] = []
     reader: AttachmentTextService | None = None
+    image_digests: dict[str, str] = {}
     for entry in scope.entry_coverage:
         if entry.calendar_representation != "canonical_event":
             continue
@@ -100,6 +103,50 @@ def coalesce_source_titles(
         if len(statements) != 1:
             raise _unproved(entry.entry_id, "exact_original_source_statement")
         statement = statements[0]
+        attachment = session.scalar(select(AttachmentEvidence).where(
+            AttachmentEvidence.ref_id == statement.source_ref,
+        ))
+        if attachment is not None and attachment.media_type in {
+            "image/png", "image/jpeg", "image/webp", "image/gif",
+        }:
+            interpreted = read_entry_interpretation(
+                session, request_ref=semantic_request_ref, entry_id=entry.entry_id,
+            )
+            if not isinstance(interpreted.entry, ScheduledOccurrenceEntry) or (
+                interpreted.entry.title != title
+            ):
+                raise _unproved(entry.entry_id, "unchanged_initial_image_interpretation")
+            if attachment.ref_id not in image_digests:
+                settings = get_settings()
+                evidence_service = AttachmentEvidenceService(
+                    session, encryption_key=settings.attachment_encryption_key(),
+                    encryption_key_ref=settings.attachment_encryption_key_ref,
+                    max_attachment_bytes=settings.attachment_max_bytes,
+                    max_total_bytes=settings.attachment_total_max_bytes,
+                )
+                image_digests[attachment.ref_id] = hashlib.sha256(
+                    evidence_service.plaintext(attachment.ref_id),
+                ).hexdigest()
+            binding = source_bindings.get(attachment.ref_id)
+            if binding is None or (
+                binding.attachment_content_hash != image_digests[attachment.ref_id]
+            ):
+                raise _unproved(entry.entry_id, "unchanged_request_attachment_content")
+            event.create_spec.title = title
+            event.create_spec.event_spec.title = title
+            proof.append({
+                "rule": "coalesce_selected_interpretation_title_v1", "entry_id": entry.entry_id,
+                "item_change_id": item.change_id, "event_change_id": event.change_id,
+                "statement_ref": statement.ref_id,
+                "evidence": {
+                    "kind": "recorded_image_interpretation", "source_ref": attachment.ref_id,
+                    "attachment_content_hash": image_digests[attachment.ref_id],
+                    "interpretation_hash": sha256_json(interpreted.model_dump(mode="json")),
+                    "independent_semantic_verification": False,
+                },
+                "title_sha256": hashlib.sha256(title.encode("utf-8")).hexdigest(),
+            })
+            continue
         if reader is None:
             settings = get_settings()
             reader = AttachmentTextService(AttachmentEvidenceService(

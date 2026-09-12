@@ -73,6 +73,26 @@ class RequestAssemblyAdoption(Base):
     )
 
 
+class RequestEntryInterpretation(Base):
+    """Append-only first interpretation of one selected source entry.
+
+    The request's immutable selected-entry inventory defines completeness.
+    These rows are populated in bounded batches, never overwritten by repair.
+    They record fallible interpretations, not independent source verification.
+    """
+
+    __tablename__ = "request_entry_interpretations"
+    semantic_request_ref: Mapped[str] = mapped_column(
+        ForeignKey("semantic_requests.ref_id", ondelete="RESTRICT"), primary_key=True,
+    )
+    entry_id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    interpretation_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    interpretation_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False,
+    )
+
+
 def _immutable(_mapper: object, _connection: object, _target: object) -> None:
     raise ValueError("SemanticRequestSpecification is immutable")
 
@@ -87,3 +107,11 @@ def _immutable_adoption(_mapper: object, _connection: object, _target: object) -
 
 event.listen(RequestAssemblyAdoption, "before_update", _immutable_adoption)
 event.listen(RequestAssemblyAdoption, "before_delete", _immutable_adoption)
+
+
+def _immutable_entry(_mapper: object, _connection: object, _target: object) -> None:
+    raise ValueError("RequestEntryInterpretation is immutable")
+
+
+event.listen(RequestEntryInterpretation, "before_update", _immutable_entry)
+event.listen(RequestEntryInterpretation, "before_delete", _immutable_entry)

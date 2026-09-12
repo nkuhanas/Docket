@@ -734,6 +734,7 @@ def _schedule_stage(
     start_index: int,
     count: int,
     include_scope: bool,
+    selected_count: int | None = None,
 ) -> StageChangesInput:
     base = datetime(2026, 9, 8, 9, 0)
     operations = []
@@ -770,8 +771,13 @@ def _schedule_stage(
     scope = None
     if include_scope:
         scope = {
-            "resolved_intent": {"intent": "replace course schedule", "entry_count": 30},
+            "resolved_intent": {
+                "intent": "replace course schedule", "entry_count": selected_count or count,
+            },
             "normalized_entry_types": ["scheduled_occurrence_entry", "schedule_exception_entry"],
+            "selected_entry_ids": [
+                f"math-1263-entry-{index:02d}" for index in range(selected_count or count)
+            ],
             "target_refs": [lane_ref],
             "source_refs": [source_ref],
             "explicit_exclusions": ["generic recurrence"],
@@ -1047,11 +1053,14 @@ def test_thirty_entry_schedule_stages_in_batches_and_commits_once(session) -> No
                 start_index=start_index,
                 count=15,
                 include_scope=batch_index == 1,
+                selected_count=30,
             ),
             assembly_operation_token=token,
             assembly_argument_hash=argument_hash,
         )
-        assert result["disposition"] == "ready_to_commit"
+        assert result["disposition"] == (
+            "saved_with_errors" if batch_index == 1 else "ready_to_commit"
+        )
         assert len(json.dumps(result, separators=(",", ":")).encode()) < 16 * 1024
 
     commit_token = _admit(
@@ -1111,6 +1120,10 @@ def test_three_career_fair_entries_compile_once_without_review(session) -> None:
         entry["timing"]["start_local"] = f"2026-09-{16 + index}T10:00:00"
         entry["timing"]["end_local"] = f"2026-09-{16 + index}T{15 if index < 2 else 14}:00:00"
         expected.append(entry)
+
+    request["assembly_scope"]["selected_entry_ids"] = [
+        entry["import_entry_id"] for entry in expected
+    ]
 
     stage = StageChangesInput.model_validate(request)
     # No hand-authored Item/Time/Event/route support variants are needed.
@@ -1434,7 +1447,11 @@ def test_import_title_error_identifies_fields_and_preserves_entire_draft(
         saved["diagnostic_count"] - len(saved["diagnostic_sample"])
     )
     if long_title:
-        assert saved["diagnostic_sample"] == [] and saved["diagnostic_count"] > 0
+        # Compact baseline diagnostics may still fit when the copied mismatch
+        # values do not. Missing large details remain reachable through review.
+        assert saved["omitted_diagnostic_count"] > 0
+        assert all(row["code"] == "source_interpretation_compilation_mismatch"
+                   for row in saved["diagnostic_sample"])
     _, exposed = _compact_result(saved, saved, audit=False, page_limit=25)
     assert exposed["disposition"] == "saved_with_errors"
     assert len(json.dumps(exposed, ensure_ascii=False).encode()) <= 16384
@@ -1763,7 +1780,7 @@ def test_old_stage_retry_cannot_undo_newer_replacement(session) -> None:
 
 
 @pytest.mark.integration
-def test_normalized_entry_replacement_removes_all_obsolete_owned_actions(session) -> None:
+def test_source_reinterpretation_is_not_repair_and_removal_clears_owned_actions(session) -> None:
     utterance = _utterance("1542799000000000805")
     source, lane = _schedule_context(session, utterance, suffix="replace-entry")
     trace_ref = new_public_ref("trace")
@@ -1824,31 +1841,18 @@ def test_normalized_entry_replacement_removes_all_obsolete_owned_actions(session
         tool_name="docket_stage_changes",
         argument_hash="2" * 64,
     )
-    result = service.stage(
-        replacement,
-        assembly_operation_token=second_token,
-        assembly_argument_hash="2" * 64,
+    with pytest.raises(DocketError) as conflict:
+        service.stage(replacement, assembly_operation_token=second_token,
+                      assembly_argument_hash="2" * 64)
+    assert conflict.value.code == "request_interpretation_conflict"
+    service.reject_admitted_operation(
+        token=second_token, argument_hash="2" * 64, operation_kind="stage",
+        utterance_ref=utterance.ref_id, error=conflict.value,
     )
-    assert result["current_revision"] == 2
-    assert result["totals"] == {"item": 1, "temporal_binding": 1}
-    assert result["predicted_provider_operation_count"] == 0
     changeset = session.scalar(select(ChangeSet))
     assert changeset is not None
-    assert changeset.event_changes == []
-    assert changeset.lane_changes == []
-    assert changeset.provider_intents == []
-    assert changeset.compiled_action_ownership_json[0]["change_ids"] == [
-        "math-1263-entry-00.item",
-        "math-1263-entry-00.time",
-    ]
-    revisions = list(
-        session.scalars(select(ChangeSetRevision).order_by(ChangeSetRevision.revision))
-    )
-    assert len(revisions) == 2
-    assert len(revisions[0].event_changes) == 1
-    assert len(revisions[0].lane_changes) == 1
-    assert revisions[1].event_changes == []
-    assert revisions[1].lane_changes == []
+    assert changeset.current_revision == 1
+    assert len(changeset.event_changes) == 1
 
     forbidden_payload = replacement.model_dump(mode="json", exclude_none=True)
     forbidden_payload["patch"] = {
@@ -1871,6 +1875,25 @@ def test_normalized_entry_replacement_removes_all_obsolete_owned_actions(session
             assembly_argument_hash="3" * 64,
         )
     assert getattr(exc_info.value, "code", None) == "compiler_owned_action"
+    service.reject_admitted_operation(
+        token=forbidden_token, argument_hash="3" * 64, operation_kind="stage",
+        utterance_ref=utterance.ref_id, error=exc_info.value,
+    )
+    removal = replacement.model_dump(mode="json", exclude_none=True)
+    removal["patch"] = {"operations": [{
+        "operation": "normalized_entry_remove", "import_entry_id": "math-1263-entry-00",
+    }]}
+    removal_token = _admit(
+        session, utterance=utterance, trace_ref=trace_ref, call_id="remove-selected-entry",
+        ordinal=4, tool_name="docket_stage_changes", argument_hash="4" * 64,
+    )
+    removed = service.stage(StageChangesInput.model_validate(removal),
+                            assembly_operation_token=removal_token, assembly_argument_hash="4" * 64)
+    assert removed["disposition"] == "saved_with_errors"
+    assert removed["source_interpretation"]["missing_entry_count"] == 1
+    assert changeset.event_changes == changeset.lane_changes == changeset.provider_intents == []
+    assert changeset.staged_actions_json == changeset.compiled_action_ownership_json == []
+    assert session.scalar(select(func.count(ChangeSetRevision.id))) == 2
 
 
 @pytest.mark.integration
@@ -2044,20 +2067,21 @@ def test_diff_exposes_entry_values_removal_and_lossless_large_field(session) -> 
         utterance, source_ref=source.ref_id, lane_ref=lane.ref_id,
         start_index=0, count=3, include_scope=True,
     )
-    assert stage(initial)["disposition"] == "ready_to_commit"
-    replacement = initial.model_dump(mode="json", exclude_none=True)
-    replacement.pop("assembly_scope")
-    operations = replacement["patch"]["operations"]
+    rich = initial.model_dump(mode="json", exclude_none=True)
+    operations = rich["patch"]["operations"]
     entry = operations[0]["entry"]
     entry["title"] = "Exact lecture topic"
     entry["description"] = "🙂é" * 2_000
     entry["location"] = "Building 43"
-    operations[1] = {
+    assert stage(StageChangesInput.model_validate(rich))["disposition"] == "ready_to_commit"
+    replacement = {**rich, "assembly_scope": None}
+    replacement["patch"] = {"operations": [{
         "operation": "normalized_entry_remove",
-        "import_entry_id": operations[1]["entry"]["import_entry_id"],
-    }
-    replacement["patch"]["operations"] = operations[:2]
-    assert stage(StageChangesInput.model_validate(replacement))["disposition"] == "ready_to_commit"
+        "import_entry_id": entry["import_entry_id"],
+    }]}
+    assert stage(StageChangesInput.model_validate(replacement))["disposition"] == (
+        "saved_with_errors"
+    )
     rows = []
     cursor = None
     while True:
@@ -2076,7 +2100,7 @@ def test_diff_exposes_entry_values_removal_and_lossless_large_field(session) -> 
             assembly_operation_token=token, assembly_argument_hash=digest,
         )
         assert page["revision"] == 2 and page["base_revision"] == 1
-        assert page["diff_subject_counts"] == {"added": 0, "removed": 1, "modified": 1}
+        assert page["diff_subject_counts"] == {"added": 0, "removed": 1, "modified": 0}
         assert 0 < page["count"] <= 2
         assert len(json.dumps(page, ensure_ascii=False).encode()) < 16 * 1024
         rows.extend(page["items"])
@@ -2087,16 +2111,16 @@ def test_diff_exposes_entry_values_removal_and_lossless_large_field(session) -> 
     assert len(rows) == page["total_if_known"]
     fields = {
         tuple(row["field_path"]): row for row in rows
-        if "field_path" in row and row["change"] == "modified"
+        if "field_path" in row and row["change"] == "removed"
     }
-    assert fields[("title",)]["before"] == "MATH 1263 — Topic 1"
-    assert fields[("title",)]["after"] == "Exact lecture topic"
-    assert fields[("location",)]["after"] == "Building 43"
+    assert fields[("title",)]["before"] == "Exact lecture topic"
+    assert fields[("title",)]["after_present"] is False
+    assert fields[("location",)]["before"] == "Building 43"
     fragments = [row["detail_fragment"] for row in rows if "detail_fragment" in row]
     fragments.sort(key=lambda fragment: fragment["byte_offset"])
     reconstructed = json.loads("".join(fragment["text"] for fragment in fragments))
     assert reconstructed["field_path"] == ["description"]
-    assert reconstructed["after"] == "🙂é" * 2_000
+    assert reconstructed["before"] == "🙂é" * 2_000
     assert any(row.get("change") == "removed" for row in rows)
     assert all(row.get("subject_kind", "entry") == "entry" for row in rows)
     assert session.scalar(select(func.count(CanonicalEvent.id))) == 0

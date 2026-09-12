@@ -1,5 +1,3 @@
-from copy import deepcopy
-
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import func, select
@@ -31,7 +29,9 @@ def _stage(session, utterance, trace_ref, ordinal, payload):
     )
 
 
-def test_exact_proposals_preserve_failed_entries_without_claiming_source_authority(session):
+def test_exact_proposals_preserve_failed_entries_without_claiming_source_authority(
+    session, monkeypatch,
+):
     utterance = _utterance("1542799000000000941")
     source, lane = _schedule_context(session, utterance, suffix="specification")
     payload = _schedule_stage(
@@ -39,13 +39,17 @@ def test_exact_proposals_preserve_failed_entries_without_claiming_source_authori
         start_index=0, count=3, include_scope=True,
     )
     original = payload.model_dump(mode="json")
-    invalid = deepcopy(original)
-    invalid["patch"]["operations"][1]["entry"]["lane_ref"] = new_public_ref("lane")
-    invalid["assembly_scope"]["target_refs"].append(
-        invalid["patch"]["operations"][1]["entry"]["lane_ref"],
-    )
     trace = new_public_ref("trace")
-    failed = _stage(session, utterance, trace, 1, StageChangesInput.model_validate(invalid))
+    lane_lookup = ChangeSetAssemblyService._entry_lane
+
+    def temporarily_unavailable(service, entry, actions):
+        if entry.import_entry_id.endswith("01"):
+            raise DocketError(code="fixture_binding_unavailable", message="Synthetic failure")
+        return lane_lookup(service, entry, actions)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ChangeSetAssemblyService, "_entry_lane", temporarily_unavailable)
+        failed = _stage(session, utterance, trace, 1, payload)
     assert failed["disposition"] == "saved_with_errors"
     request = session.scalar(select(SemanticRequest))
     authority = request.authority_scope_hash
@@ -53,7 +57,7 @@ def test_exact_proposals_preserve_failed_entries_without_claiming_source_authori
     assert first.interpretation_state == "pending_evidence_validation"
     assert len(first.normalized_entries) == 3
     assert first.direct_actions == []  # No compiler-owned Item/Time/Event duplication.
-    assert first.normalized_entries[1].lane_ref != lane.ref_id
+    assert first.normalized_entries[1].lane_ref == lane.ref_id
     assert first.source_bindings[0].attachment_content_hash == source.content_hash
     assert first.source_bindings[0].evidence_state == "attachment_recorded"
     assert [binding.utterance_ref for binding in first.originating_utterances] == [utterance.ref_id]

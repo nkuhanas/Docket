@@ -40,6 +40,16 @@ class AssemblyAuthorityScopeInput(StrictModel):
     source_refs: list[Annotated[str, Field(pattern=r"^src_[0-9A-HJKMNP-TV-Z]{26}$")]] = Field(
         default_factory=list, max_length=25
     )
+    selected_entry_ids: list[Annotated[str, Field(pattern=_IDENTIFIER_PATTERN)]] = Field(
+        default_factory=list, max_length=250,
+        description=(
+            "For normalized source imports, the COMPLETE selected entry ID inventory, supplied "
+            "once with the initial scope, including later batches and no-occurrence entries. "
+            "Each entry's first staged interpretation is preserved separately. Missing entries "
+            "block commit; later patches cannot add unselected entries or reinterpret saved ones. "
+            "This inventory is not a new authorization or independently verified source truth."
+        ),
+    )
     planned_create_types: list[str] = Field(default_factory=list, max_length=32)
     explicit_exclusions: list[str] = Field(default_factory=list, max_length=25)
     event_scopes: dict[
@@ -50,6 +60,13 @@ class AssemblyAuthorityScopeInput(StrictModel):
     @classmethod
     def refs_are_unique(cls, values: list[str]) -> list[str]:
         return validate_refs(values)
+
+    @field_validator("selected_entry_ids")
+    @classmethod
+    def entry_ids_are_unique(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)):
+            raise ValueError("selected_entry_ids must be unique")
+        return sorted(values)
 
     @field_validator("allowed_mutation_types")
     @classmethod

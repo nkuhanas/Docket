@@ -30,6 +30,15 @@ traceability marker only.
 
 ## Hermes plugin contract
 
+Plugin `0.29.0` packages contract v37 and the reviewed source-selection guidance.
+Normalized source imports declare the complete selected-entry ID inventory once;
+stage receipts distinguish partial drafts from ready work. Initial interpretations
+are persisted separately and remain labeled fallible, not verified source truth.
+This is disclosed with the staging schema/tool entry, not appended to every
+read-only turn's global contract. The 8 KiB gateway rewrite and 16 KiB default
+tool-output limits remain unchanged; profile counts remain 23 interactive/four
+triage. Native input routing still uses the exact pinned seams described below.
+
 The Docket plugin depends on the user-plugin loader plus
 `pre_gateway_dispatch`, `pre_tool_call`, `post_tool_call`, `post_llm_call`,
 `pre_api_request`, `post_api_request`, and `api_request_error`

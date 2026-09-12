@@ -66,6 +66,7 @@ from docket.models import (
     ProviderAccount,
     ProviderEventBinding,
     RequestAssemblyAdoption,
+    RequestEntryInterpretation,
     SemanticRequest,
     SemanticRequestAttempt,
     SemanticRequestSpecification,
@@ -1059,7 +1060,7 @@ def test_direct_request_adoption_serializes_and_preserves_proof(
     else:
         raise AssertionError("Downgrade discarded adoption evidence")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260911a6d5"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260912a7e6"
         assert session.get(RequestAssemblyAdoption, request_ref) is not None
 
 
@@ -1112,6 +1113,7 @@ def _schedule_stage(
                 {
                     "resolved_intent": {"intent": "verify thirty-entry PostgreSQL assembly"},
                     "normalized_entry_types": ["scheduled_occurrence_entry"],
+                    "selected_entry_ids": [f"postgres-schedule-{index:02d}" for index in range(30)],
                     "target_refs": [lane_ref],
                     "source_refs": [source_ref],
                 }
@@ -1224,7 +1226,7 @@ def test_thirty_entry_schedule_commits_once(factory: sessionmaker[Session]) -> N
                 argument_hash=argument_hash,
                 request=request,
             )
-        assert result["disposition"] == ("ready_to_commit" if batch == 1 else "saved_with_errors")
+        assert result["disposition"] == "saved_with_errors"
         assert len(json.dumps(result, separators=(",", ":")).encode()) < 16 * 1024
 
     with factory() as session:
@@ -1834,6 +1836,7 @@ def test_source_title_repair_survives_restart_and_replays_once(
                 "resolved_intent": {"intent": "add the three source fairs"},
                 "source_refs": [source_ref], "target_refs": [lane_ref],
                 "normalized_entry_types": ["scheduled_occurrence_entry"],
+                "selected_entry_ids": [f"fair-{index}" for index in range(3)],
             }, "patch": {"operations": operations},
         }), assembly_operation_token=token, assembly_argument_hash="a" * 64)
         assert staged["disposition"] == "saved_with_errors"
@@ -1934,7 +1937,7 @@ def test_trace_history_survives_call_one_hundred_and_blocks_lossy_downgrade(
     else:
         raise AssertionError("Downgrade should preserve the longer trace by refusing to proceed")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260911a6d5"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260912a7e6"
         assert session.scalar(select(ConversationalToolTrace.last_ordinal).where(
             ConversationalToolTrace.id == trace_id
         )) == 103
@@ -2233,8 +2236,47 @@ def test_request_specifications_are_immutable_and_block_lossy_downgrade(
     else:
         raise AssertionError("Downgrade discarded immutable request specifications")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260911a6d5"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260912a7e6"
         assert session.get(SemanticRequestSpecification, (key["ref"], key["version"])) is not None
+
+
+def test_initial_source_interpretations_are_immutable_across_connections(
+    factory: sessionmaker[Session],
+) -> None:
+    from docket.services.request_interpretations import read_entry_interpretation
+
+    with factory() as session:
+        row = session.scalar(select(RequestEntryInterpretation))
+        assert row is not None
+        key = {"ref": row.semantic_request_ref, "entry": row.entry_id}
+        expected_hash = row.interpretation_hash
+        assert expected_hash == sha256_json(row.interpretation_json)
+    for sql in (
+        "UPDATE request_entry_interpretations SET interpretation_hash = :hash "
+        "WHERE semantic_request_ref = :ref AND entry_id = :entry",
+        "DELETE FROM request_entry_interpretations "
+        "WHERE semantic_request_ref = :ref AND entry_id = :entry",
+    ):
+        try:
+            with factory.begin() as session:
+                session.execute(text(sql), {**key, "hash": "0" * 64})
+        except DBAPIError:
+            pass
+        else:
+            raise AssertionError("PostgreSQL allowed rewriting initial source interpretation")
+    try:
+        command.downgrade(Config("alembic.ini"), "20260911a6d5")
+    except RuntimeError as exc:
+        assert "Request interpretations exist" in str(exc)
+    else:
+        raise AssertionError("Downgrade discarded initial source interpretations")
+    with factory() as session:
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260912a7e6"
+        interpreted = read_entry_interpretation(
+            session, request_ref=key["ref"], entry_id=key["entry"],
+        )
+        assert sha256_json(interpreted.model_dump(mode="json")) == expected_hash
+        assert interpreted.interpretation_state == "recorded_interpretation"
 
 
 def test_timing_observations_serialize_and_preserve_evidence(
@@ -2322,6 +2364,7 @@ def main() -> None:
         test_lost_admission_response_recovers_from_exact_local_trace,
         test_gateway_recovery_and_late_completion_serialize,
         test_request_specifications_are_immutable_and_block_lossy_downgrade,
+        test_initial_source_interpretations_are_immutable_across_connections,
         test_timing_observations_serialize_and_preserve_evidence,
     )
     for check in checks:
