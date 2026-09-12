@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-09-11-v28"
+CONTRACT_VERSION = "docket-tools-2026-09-11-v29"
 
 
 class ToolContractEntry(TypedDict):
@@ -124,12 +124,14 @@ _INTERACTIVE_ASSEMBLY: dict[str, tuple[str, str]] = {
     "docket_stage_changes": (
         "ONT-CS-TOOL-0001",
         "Stage bounded actions or normalized entries; scheduled entries carry one title/time/lane "
-        "and Docket derives their complete support records.",
+        "and Docket derives their complete support records. A sole draft_recompile operation "
+        "explicitly migrates unchanged pinned inputs; observe its new revision before commit.",
     ),
     "docket_review_changeset": (
         "ONT-CS-TOOL-0002",
         "Optionally read the draft; diff shows actual staged before/after fields against the "
         "previous immutable revision, including removals and occurrence/series scope. "
+        "Explicit migration diffs also show compiler products and executable pins. "
         "Oversized detail uses lossless json_utf8 fragments and a revision-bound cursor.",
     ),
 }

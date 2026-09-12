@@ -21,6 +21,7 @@ from docket.mcp.server import docket_stage_changes, mcp
 from docket.models import (
     AssemblyOperation,
     AttachmentEvidence,
+    AuditEvent,
     CalendarLane,
     CanonicalEvent,
     ChangeSet,
@@ -30,6 +31,7 @@ from docket.models import (
     OperatorUtterance,
     ProviderAccount,
     SemanticRequest,
+    SemanticRequestAttempt,
     Source,
     Task,
     TemporalBinding,
@@ -301,6 +303,262 @@ def test_same_patch_cannot_silently_recompile_changed_effects(session, monkeypat
     assert draft.current_revision == 1
     assert draft.tracked_context_changes[0]["create_spec"]["title"] == "Tracked request"
     assert session.scalar(select(func.count(Item.id))) == 0
+
+
+def _recompile_request(utterance):
+    return StageChangesInput(
+        utterance_ref=utterance.ref_id, request_key=utterance.request_key,
+        patch={"operations": [{"operation": "draft_recompile"}]},
+    )
+
+
+def test_explicit_recompile_retains_authority_and_requires_fresh_observation(session, monkeypatch):
+    import docket.services.changeset_compiler as compiler
+    import docket.services.changeset_pins as pins
+
+    utterance = _utterance("1542799000000000895")
+    source, lane = _schedule_context(session, utterance, suffix="explicit-recompile")
+    trace = new_public_ref("trace")
+    service = ChangeSetAssemblyService(session)
+
+    def token(name, ordinal, trace_ref=trace):
+        return _admit(
+            session, utterance=utterance, trace_ref=trace_ref, call_id=f"{trace_ref}-{ordinal}",
+            ordinal=ordinal, tool_name=name, argument_hash="a" * 64,
+        )
+
+    service.stage(
+        _schedule_stage(utterance, source_ref=source.ref_id, lane_ref=lane.ref_id,
+                        start_index=0, count=3, include_scope=True),
+        assembly_operation_token=token("docket_stage_changes", 1), assembly_argument_hash="a" * 64,
+    )
+    draft = session.scalar(select(ChangeSet))
+    before = session.scalar(select(ChangeSetRevision))
+    authority = draft.authority_scope_hash
+    original = deepcopy(before.compiler_manifest_json)
+    old_entries = deepcopy(before.normalized_entries_json)
+    other = new_public_ref("trace")
+    service.review(
+        ReviewChangesInput(utterance_ref=utterance.ref_id, request_key=utterance.request_key),
+        assembly_operation_token=token("docket_review_changeset", 1, other),
+        assembly_argument_hash="a" * 64,
+    )
+    monkeypatch.setattr(pins, "EXECUTABLE_SCHEMA_VERSION", 2)
+    monkeypatch.setattr(compiler, "COMPILER_VERSION", 3)
+    operation_token = token("docket_stage_changes", 2)
+    result = service.stage(
+        _recompile_request(utterance), assembly_operation_token=operation_token,
+        assembly_argument_hash="a" * 64,
+    )
+    assert result["disposition"] == "ready_to_commit"
+    assert result["observation_required"] is True
+    assert result["compiler_migration"]["semantic_scope_changed"] is False
+    assert draft.current_revision == 2
+    assert draft.authority_scope_hash == authority
+    assert before.compiler_manifest_json == original
+    assert before.normalized_entries_json == old_entries
+    assert draft.compiler_manifest_json["execution_pin"]["executable_schema_version"] == 2
+    assert {entry["compiler_version"] for entry in draft.normalized_entries_json} == {3}
+    assert {entry["statement_ref"] for entry in old_entries} == {
+        entry["statement_ref"] for entry in draft.normalized_entries_json
+    }
+    assert session.scalar(select(func.count(CanonicalEvent.id))) == 0
+    assert session.scalar(select(func.count(Operation.id))) == 0
+    assert session.scalar(select(func.count(AuditEvent.id)).where(
+        AuditEvent.event_type == "changeset.recompiled"
+    )) == 1
+    assert {attempt.observed_draft_revision for attempt in session.scalars(
+        select(SemanticRequestAttempt)
+    )} == {1}
+
+    for execution, ordinal in ((trace, 3), (other, 2)):
+        blocked = service.commit(
+            utterance_ref=utterance.ref_id, request_key=utterance.request_key,
+            assembly_operation_token=token("docket_commit_changeset", ordinal, execution),
+            assembly_argument_hash="a" * 64,
+        )
+        assert blocked["disposition"] == "draft_revision_conflict"
+    diff = service.review(
+        ReviewChangesInput(utterance_ref=utterance.ref_id, request_key=utterance.request_key,
+                           **result["diff_review"]),
+        assembly_operation_token=token("docket_review_changeset", 4),
+        assembly_argument_hash="a" * 64,
+    )
+    assert any(row["subject_kind"] == "compiler_pin" for row in diff["items"])
+    # A receipt-bound first page observes its exact still-current revision,
+    # without making the other attempt aware of that revision.
+    assert {attempt.observed_draft_revision for attempt in session.scalars(
+        select(SemanticRequestAttempt)
+    )} == {1, 2}
+    receipt = service.commit(
+        utterance_ref=utterance.ref_id, request_key=utterance.request_key,
+        assembly_operation_token=token("docket_commit_changeset", 5),
+        assembly_argument_hash="a" * 64,
+    )
+    assert receipt["disposition"] == "committed"
+    assert set(session.scalars(select(CanonicalEvent.title))) == {
+        "MATH 1263 — Topic 1", "MATH 1263 — Topic 2", "MATH 1263 — Topic 3",
+    }
+    assert session.scalar(select(func.count(Operation.id))) == 3
+    replay = service.stage(
+        _recompile_request(utterance), assembly_operation_token=operation_token,
+        assembly_argument_hash="a" * 64,
+    )
+    assert replay["replayed"] is True
+    assert replay["compiler_migration"] == result["compiler_migration"]
+    assert session.scalar(select(func.count(ChangeSetRevision.id))) == 2
+    assert session.scalar(select(func.count(ChangeSet.id))) == 1
+
+
+@pytest.mark.parametrize("change", ["title", "additional_effect", "removed_all"])
+def test_recompile_rejects_changed_meaning_without_replacing_draft(session, monkeypatch, change):
+    utterance = _utterance("1542799000000000896")
+    session.add(utterance)
+    session.flush()
+    trace = new_public_ref("trace")
+    service = ChangeSetAssemblyService(session)
+    stage_token = _admit(session, utterance=utterance, trace_ref=trace, call_id="stage", ordinal=1,
+                         tool_name="docket_stage_changes", argument_hash="a" * 64)
+    service.stage(_item_stage(utterance), assembly_operation_token=stage_token,
+                  assembly_argument_hash="a" * 64)
+    draft = session.scalar(select(ChangeSet))
+    old = deepcopy(draft.compiler_manifest_json)
+
+    def bad_compiler(content, **_kwargs):
+        payload = content.model_dump(mode="json")
+        item = payload["tracked_context_changes"][0]
+        if change == "title":
+            item["create_spec"]["title"] = "Unrelated work"
+        else:
+            extra = deepcopy(item)
+            extra["change_id"] = "extra-unrequested-item"
+            payload["tracked_context_changes"].append(extra)
+        return ChangeSetContent.model_validate(payload)
+
+    monkeypatch.setattr(service.changesets, "_compile_required_provider_intents", bad_compiler)
+    if change == "removed_all":
+        monkeypatch.setattr(service, "_content", lambda **_kwargs: None)
+    recompile_token = _admit(session, utterance=utterance, trace_ref=trace, call_id="recompile",
+                            ordinal=2, tool_name="docket_stage_changes", argument_hash="b" * 64)
+    with pytest.raises(DocketError) as failure, session.begin_nested():
+        service.stage(_recompile_request(utterance), assembly_operation_token=recompile_token,
+                      assembly_argument_hash="b" * 64)
+    assert failure.value.code == "draft_recompile_semantic_conflict"
+    assert failure.value.details["difference_count"] > 0
+    assert draft.current_revision == 1
+    assert draft.compiler_manifest_json == old
+    assert session.scalar(select(SemanticRequest)).authority_availability == "available"
+    assert session.scalar(select(func.count(Item.id))) == 0
+
+
+@pytest.mark.parametrize("change", ["event_date", "provider_account", "fourth_event"])
+def test_calendar_recompile_cannot_expand_pinned_effects(session, monkeypatch, change):
+    utterance = _utterance("1542799000000000899")
+    source, lane = _schedule_context(session, utterance, suffix="recompile-calendar-boundary")
+    other_account = ProviderAccount(provider="google", external_account_id="unrequested-account",
+                                    capabilities=["google_calendar"], enabled=True)
+    session.add(other_account)
+    session.flush()
+    trace = new_public_ref("trace")
+    service = ChangeSetAssemblyService(session)
+    token = _admit(session, utterance=utterance, trace_ref=trace, call_id="stage", ordinal=1,
+                   tool_name="docket_stage_changes", argument_hash="a" * 64)
+    service.stage(_schedule_stage(utterance, source_ref=source.ref_id, lane_ref=lane.ref_id,
+                                  start_index=0, count=3, include_scope=True),
+                  assembly_operation_token=token, assembly_argument_hash="a" * 64)
+    draft = session.scalar(select(ChangeSet))
+    original_effects = deepcopy(draft.event_changes)
+    compile_original = service.changesets._compile_required_provider_intents
+
+    def bad_compiler(content, **kwargs):
+        payload = compile_original(content, **kwargs).model_dump(mode="json")
+        event = payload["event_changes"][0]
+        if change == "event_date":
+            timing = event["create_spec"]["event_spec"]["timing"]
+            timing["start_local"] = "2026-12-01T09:00:00"
+            timing["end_local"] = "2026-12-01T09:50:00"
+        elif change == "provider_account":
+            payload["provider_intents"][0]["account_ref"] = other_account.ref_id
+        else:
+            extra = deepcopy(event)
+            extra["change_id"] = "fourth-unrequested-event"
+            extra["create_spec"]["canonical_key"] = "unrequested-calendar-entry"
+            payload["event_changes"].append(extra)
+        return ChangeSetContent.model_validate(payload)
+
+    monkeypatch.setattr(service.changesets, "_compile_required_provider_intents", bad_compiler)
+    token = _admit(session, utterance=utterance, trace_ref=trace, call_id="recompile", ordinal=2,
+                   tool_name="docket_stage_changes", argument_hash="b" * 64)
+    with pytest.raises(DocketError) as failure, session.begin_nested():
+        service.stage(_recompile_request(utterance), assembly_operation_token=token,
+                      assembly_argument_hash="b" * 64)
+    assert failure.value.code == "draft_recompile_semantic_conflict"
+    assert draft.current_revision == 1
+    assert draft.event_changes == original_effects
+    assert session.scalar(select(func.count(CanonicalEvent.id))) == 0
+    assert session.scalar(select(func.count(Operation.id))) == 0
+
+
+def test_recompile_cannot_mix_input_or_authority_changes(session):
+    utterance = _utterance("1542799000000000897")
+    session.add(utterance)
+    session.flush()
+    payload = _recompile_request(utterance).model_dump(mode="json", exclude_none=True)
+    for extra in (
+        {"assembly_scope": _scope().model_dump(mode="json")},
+        {"expected_versions": {new_public_ref("item"): 2}},
+        {"patch": {"operations": [
+            {"operation": "draft_recompile"}, {"operation": "action_remove", "change_id": "one"},
+        ]}},
+    ):
+        with pytest.raises(ValidationError):
+            StageChangesInput.model_validate({**payload, **extra})
+
+
+def test_mcp_recompile_cross_field_rejection_terminalizes_admission(session_factory):
+    from docket.mcp.instrumented import _result_envelope
+
+    trace = new_public_ref("trace")
+    with session_factory.begin() as session:
+        utterance = _utterance("1542799000000000898")
+        session.add(utterance)
+        session.flush()
+        initial = _admit(session, utterance=utterance, trace_ref=trace, call_id="stage", ordinal=1,
+                         tool_name="docket_stage_changes", argument_hash="a" * 64)
+        ChangeSetAssemblyService(session).stage(_item_stage(utterance),
+                                               assembly_operation_token=initial,
+                                               assembly_argument_hash="a" * 64)
+    for ordinal, forbidden_scope in ((2, True), (3, False)):
+        arguments = {"patch": {"operations": [{"operation": "draft_recompile"}]}}
+        if forbidden_scope:
+            arguments["assembly_scope"] = _scope().model_dump(mode="json", exclude_none=True)
+        digest = sha256_json(arguments)
+        with session_factory.begin() as session:
+            token = _admit(session, utterance=utterance, trace_ref=trace,
+                           call_id=f"recompile-{ordinal}", ordinal=ordinal,
+                           tool_name="docket_stage_changes", argument_hash=digest)
+        result = asyncio.run(mcp.call_tool("docket_stage_changes", {
+            **arguments, "utterance_ref": utterance.ref_id, "request_key": utterance.request_key,
+            "assembly_operation_token": token, "assembly_argument_hash": digest,
+        }))
+        envelope = _result_envelope(result)
+        if forbidden_scope:
+            assert envelope["disposition"] == "rejected_validation"
+            assert envelope["error"]["code"] == "validation_error"
+        else:
+            assert envelope["disposition"] == "ready_to_commit"
+            assert envelope["observation_required"] is True
+        with session_factory() as session:
+            operation = session.scalar(select(AssemblyOperation).where(
+                AssemblyOperation.operation_key == token
+            ))
+            assert operation.state == ("rejected" if forbidden_scope else "completed")
+            assert session.scalar(select(ChangeSet.current_revision)) == (
+                1 if forbidden_scope else 2
+            )
+            assert all(row.transport_state == "completed"
+                       for row in session.scalars(select(ToolInvocation)))
+            assert session.scalar(select(func.count(Item.id))) == 0
 
 
 def _utterance(message_id: str) -> OperatorUtterance:

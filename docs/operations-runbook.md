@@ -184,6 +184,22 @@ migration; a pin mismatch requires revision reconciliation. Neither permits
 editing production rows, reauthorizing the same request, or silently changing
 the draft. A committed receipt remains replayable without recompilation.
 
+For a draft whose pinned inputs and effects still parse exactly under the current
+schemas, a sole stage patch `{"operations":[{"operation":"draft_recompile"}]}`
+requests audited recompilation. It cannot carry edits, new authority or expected
+versions. Docket requires equality of the typed canonical and provider semantic
+projections, retains the old revision, and writes a new executable pin and audit.
+The receipt sets `observation_required=true`: a fresh bounded summary or the
+receipt's first diff page observes its exact still-current revision before
+commit. All older attempts remain stale. Migration diff pages include actual
+compiler products and executable pins; ordinary stage/commit needs no review.
+
+A semantic difference, missing pin or unsupported input schema leaves the draft
+and authority intact. This equality path does not establish whether an earlier
+source interpretation was correct and cannot repair a wrong source-derived date
+or title. Source-grounded correction and one-time pre-cutover request adoption
+remain separate deployment gates. Never use a new request to bypass them.
+
 New persisted option/freeform scope hashes use typed semantic format 2. They
 retain policy JSON literally and normalize only declared mechanical fields;
 renaming a same-draft dependency is not a new semantic effect. Source identities,

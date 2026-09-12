@@ -221,8 +221,15 @@ class StageNormalizedEntryRemove(StrictModel):
     import_entry_id: str = Field(pattern=_IDENTIFIER_PATTERN)
 
 
+class StageDraftRecompile(StrictModel):
+    """Explicitly migrate unchanged inputs; cannot be combined with semantic edits."""
+
+    operation: Literal["draft_recompile"] = "draft_recompile"
+
+
 StagePatchOperation = Annotated[
-    StageActionUpsert | StageActionRemove | StageNormalizedEntryUpsert | StageNormalizedEntryRemove,
+    StageActionUpsert | StageActionRemove | StageNormalizedEntryUpsert | StageNormalizedEntryRemove
+    | StageDraftRecompile,
     Field(discriminator="operation"),
 ]
 
@@ -239,6 +246,10 @@ class StagePatchInput(StrictModel):
 
     @model_validator(mode="after")
     def targets_are_unique(self) -> StagePatchInput:
+        if len(self.operations) != 1 and any(
+            isinstance(operation, StageDraftRecompile) for operation in self.operations
+        ):
+            raise ValueError("draft_recompile must be the only patch operation")
         entry_ops = [
             operation.entry.import_entry_id
             if isinstance(operation, StageNormalizedEntryUpsert)
@@ -279,6 +290,10 @@ class StageChangesInput(StrictModel):
 
     @model_validator(mode="after")
     def request_is_bounded(self) -> StageChangesInput:
+        if isinstance(self.patch.operations[0], StageDraftRecompile) and (
+            self.assembly_scope is not None or self.expected_versions
+        ):
+            raise ValueError("draft_recompile cannot change authority or execution preconditions")
         encoded = json.dumps(
             self.model_dump(mode="json", exclude_none=True),
             sort_keys=True,

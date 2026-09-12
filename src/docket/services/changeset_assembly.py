@@ -38,6 +38,7 @@ from docket.schemas.assembly import (
     StageActionRemove,
     StageActionUpsert,
     StageChangesInput,
+    StageDraftRecompile,
     StageNormalizedEntryRemove,
     StageNormalizedEntryUpsert,
 )
@@ -60,6 +61,7 @@ from docket.services.changeset_compiler import (
 )
 from docket.services.changeset_diff import bounded_details, bounded_sample, draft_diff
 from docket.services.changeset_pins import effect_hash, migration_required, pin_snapshot
+from docket.services.changeset_recompile import recompile_draft
 from docket.services.intent_sessions import IntentSessionService
 from docket.services.interactive_authority import InteractiveAuthorityService
 from docket.services.reply_bindings import ReplyBindingService
@@ -535,7 +537,10 @@ class ChangeSetAssemblyService:
             return None
         result = {
             **error.as_dict(),
-            "disposition": "rejected_validation",
+            "disposition": (
+                "rejected_conflict" if (error.details or {}).get("category") == "semantic_conflict"
+                else "rejected_validation"
+            ),
             "authority_preserved": True,
         }
         return self._terminal(operation, result, state="rejected")
@@ -1135,6 +1140,13 @@ class ChangeSetAssemblyService:
             return replay
         operation.state = "running"
         utterance = self._authority_utterance(request)
+        recompiling = isinstance(request.patch.operations[0], StageDraftRecompile)
+        if recompiling and execution.semantic_request_ref is None:
+            raise DocketError(
+                code="assembly_not_started",
+                message="There is no bound draft to recompile; stage the request first.",
+                details={"next_action": "stage_changes"},
+            )
         intent_session, semantic_request, attempt = self._bind_request_and_attempt(
             execution=execution,
             operation=operation,
@@ -1211,6 +1223,11 @@ class ChangeSetAssemblyService:
                 )
 
         scope = self._scope(semantic_request)
+        if recompiling:
+            return recompile_draft(
+                self, changeset=changeset, operation=operation, attempt=attempt,
+                utterance=utterance, intent_session=intent_session, scope=scope,
+            )
         prior_content = None if created else self.changesets.verify_execution_revision(changeset)
         allowed_mutations = set(scope.allowed_mutation_types)
         allowed_sources = set(scope.source_refs)
@@ -1748,7 +1765,9 @@ class ChangeSetAssemblyService:
                     "position": next_position,
                 }
             )
-        if request.cursor is None and revision_number == changeset.current_revision:
+        # A receipt-bound first page can observe exactly its still-current
+        # revision. Later pages or an older snapshot never observe newer work.
+        if position == 0 and revision_number == changeset.current_revision:
             attempt.observed_changeset_ref = changeset.ref_id
             attempt.observed_draft_revision = revision_number
         revision_state = (

@@ -12,6 +12,7 @@ def _revision(*, entries=(), actions=(), ownership=()):
         normalized_entries_json=list(entries),
         staged_actions_json=list(actions),
         compiled_action_ownership_json=list(ownership),
+        compiler_manifest_json={},
     )
 
 

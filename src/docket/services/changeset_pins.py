@@ -106,7 +106,8 @@ def migration_required() -> DocketError:
 
 
 def verify_snapshot(
-    changeset: ChangeSet, revision: ChangeSetRevision | None, payload: dict[str, Any] | None
+    changeset: ChangeSet, revision: ChangeSetRevision | None, payload: dict[str, Any] | None,
+    *, for_migration: bool = False,
 ) -> DraftExecutionPin:
     if revision is None:
         raise migration_required()
@@ -114,7 +115,7 @@ def verify_snapshot(
         pin = DraftExecutionPin.model_validate(revision.compiler_manifest_json.get("execution_pin"))
     except ValidationError as exc:
         raise migration_required() from exc
-    if pin.executable_schema_version != EXECUTABLE_SCHEMA_VERSION:
+    if pin.executable_schema_version != EXECUTABLE_SCHEMA_VERSION and not for_migration:
         raise migration_required()
     if (
         changeset.compiler_manifest_json != revision.compiler_manifest_json
