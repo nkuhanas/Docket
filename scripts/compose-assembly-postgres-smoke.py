@@ -27,6 +27,7 @@ from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
 from docket.domain.public_refs import new_public_ref
 from docket.internal_api.schemas import McpTraceCallUpdate, McpTraceUpdate, OperatorUtteranceCapture
+from docket.mcp.instrumented import ProvenanceFastMCP
 from docket.models import (
     AssemblyOperation,
     AttachmentEvidence,
@@ -1458,6 +1459,112 @@ def test_lost_admission_response_recovers_from_exact_local_trace(
         )) == 0
 
 
+def test_gateway_recovery_and_late_completion_serialize(factory: sessionmaker[Session]) -> None:
+    settings = get_settings()
+    for finalizer_waits in (False, True):
+        message_id = f"154279900000000078{int(finalizer_waits)}"
+        utterance_ref, request_key = _create_utterance(factory, message_id, "Track a smoke item.")
+        trace_ref = new_public_ref("trace")
+        with factory.begin() as session:
+            gateway = GatewayLifetimeService(session).register(
+                registration_key=uuid.uuid4(), instance_kind=f"recovery_smoke_{finalizer_waits}",
+            )
+            utterance = _load_utterance(session, utterance_ref)
+            stage_token = _admit(
+                session, utterance_ref=utterance_ref, trace_ref=trace_ref, call_id="stage",
+                ordinal=1, tool_name="docket_stage_changes", argument_hash="a" * 64,
+            )
+            ChangeSetAssemblyService(session).stage(
+                _item_stage(utterance, change_id="one", title="Smoke item", include_scope=True),
+                assembly_operation_token=stage_token, assembly_argument_hash="a" * 64,
+            )
+            commit_token = _admit(
+                session, utterance_ref=utterance_ref, trace_ref=trace_ref, call_id="commit",
+                ordinal=2, tool_name="docket_commit_changeset", argument_hash="b" * 64,
+            )
+            receipt = ChangeSetAssemblyService(session).commit(
+                utterance_ref=utterance_ref, request_key=request_key,
+                assembly_operation_token=commit_token, assembly_argument_hash="b" * 64,
+            )
+            trace = ConversationalToolTrace(
+                ref_id=trace_ref, guild_id=settings.discord_guild_id,
+                source_channel_id=settings.chat_channel_id, source_message_id=message_id,
+                actor_id=settings.operator_discord_user_id, tool_contract_version=CONTRACT_VERSION,
+                tool_contract_hash=contract_hash("interactive"), caller_profile="interactive",
+                gateway_instance_ref=gateway["ref"], status="running", calls=[{
+                    "call_id": "commit", "ordinal": 2, "tool_name": "docket_commit_changeset",
+                    "transport_state": "running", "received_argument_hash": "b" * 64,
+                }], last_ordinal=2, version=1, started_at=datetime.now(UTC),
+            )
+            session.add(trace)
+            invocation = ToolInvocation(
+                tool_name="docket_commit_changeset", caller_profile="interactive",
+                tool_contract_version=CONTRACT_VERSION,
+                tool_contract_hash=contract_hash("interactive"),
+                received_argument_hash="b" * 64, actor_ref=utterance.actor_ref,
+                utterance_refs=[utterance_ref], trace_ref=trace_ref, trace_call_id="commit",
+                trace_ordinal=2, gateway_instance_ref=gateway["ref"],
+            )
+            session.add(invocation)
+            session.flush()
+            invocation_id = invocation.id
+            # Clean shutdown is sufficient to trigger reconciliation and does
+            # not require sleeping until a database lease clock expires.
+            GatewayLifetimeService(session).clean_shutdown(str(gateway["ref"]))
+
+        def finish(session: Session, invocation_id: uuid.UUID = invocation_id) -> None:
+            ProvenanceFastMCP._finish_invocation(
+                session, invocation_id, status="failed", normalized_argument_hash=None,
+                result_refs=[], result_disposition="failed", error_code="internal_error",
+            )
+
+        started = threading.Event()
+
+        def concurrent(
+            started: threading.Event = started, finalizer_waits: bool = finalizer_waits,
+        ) -> None:
+            with factory.begin() as session:
+                started.set()
+                if finalizer_waits:
+                    finish(session)
+                else:
+                    GatewayLifetimeService(session).expire_and_reconcile()
+
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            with factory.begin() as session:
+                session.scalar(select(ToolInvocation).where(
+                    ToolInvocation.id == invocation_id,
+                ).with_for_update())
+                pending = executor.submit(concurrent)
+                assert started.wait(timeout=5)
+                try:
+                    pending.result(timeout=0.15)
+                except TimeoutError:
+                    pass
+                else:
+                    raise AssertionError("Invocation finalization bypassed its row lock")
+                if finalizer_waits:
+                    GatewayLifetimeService(session).expire_and_reconcile()
+                else:
+                    finish(session)
+            pending.result(timeout=10)
+        with factory.begin() as session:
+            GatewayLifetimeService(session).expire_and_reconcile()
+            invocation = session.get(ToolInvocation, invocation_id)
+            assert invocation is not None and invocation.result_disposition == "committed"
+            assert invocation.domain_state == "succeeded" and invocation.error_code is None
+            assert receipt["changeset_ref"] in invocation.result_refs
+            trace = session.scalar(select(ConversationalToolTrace).where(
+                ConversationalToolTrace.ref_id == trace_ref,
+            ))
+            assert trace is not None and trace.status == "interrupted"
+            assert trace.calls[0]["disposition"] == "committed"
+            assert session.scalar(select(func.count(ChangeSet.id)).where(
+                ChangeSet.semantic_request_ref == receipt["semantic_request_ref"],
+                ChangeSet.state == "committed",
+            )) == 1
+
+
 def main() -> None:
     database_url = os.environ["DOCKET_DATABASE_URL"]
     engine = configure_database(database_url)
@@ -1476,6 +1583,7 @@ def main() -> None:
         test_explicit_compiler_migration_requires_reobservation,
         test_trace_history_survives_call_one_hundred_and_blocks_lossy_downgrade,
         test_lost_admission_response_recovers_from_exact_local_trace,
+        test_gateway_recovery_and_late_completion_serialize,
     )
     for check in checks:
         check(factory)

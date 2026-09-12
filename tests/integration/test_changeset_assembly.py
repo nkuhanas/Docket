@@ -2519,8 +2519,9 @@ def test_terminal_tool_call_reconciles_stale_admitted_predecessor(session) -> No
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("later_committed", [False, True])
 def test_unknown_stage_operation_reconciles_durable_revision_without_reapplication(
-    session,
+    session, later_committed,
 ) -> None:
     utterance = _utterance("1542799000000000810")
     session.add(utterance)
@@ -2544,6 +2545,15 @@ def test_unknown_stage_operation_reconciles_durable_revision_without_reapplicati
     assert first["current_revision"] == 1
     operation = session.scalar(select(AssemblyOperation))
     assert operation is not None
+    if later_committed:
+        commit_token = _admit(
+            session, utterance=utterance, trace_ref=trace_ref, call_id="later-commit",
+            ordinal=2, tool_name="docket_commit_changeset", argument_hash="b" * 64,
+        )
+        service.commit(
+            utterance_ref=utterance.ref_id, request_key=utterance.request_key,
+            assembly_operation_token=commit_token, assembly_argument_hash="b" * 64,
+        )
     operation.state = "unknown"
     operation.result_json = {}
     operation.result_disposition = None
@@ -2561,3 +2571,4 @@ def test_unknown_stage_operation_reconciles_durable_revision_without_reapplicati
     changeset = session.scalar(select(ChangeSet))
     assert changeset is not None and changeset.current_revision == 1
     assert session.scalar(select(func.count(ChangeSetRevision.id))) == 1
+    assert session.scalar(select(func.count(Item.id))) == int(later_committed)

@@ -19,9 +19,10 @@ from docket.models import (
     GatewayLifetime,
     IntentTurn,
     OutboxEvent,
-    SemanticRequest,
     ToolInvocation,
 )
+from docket.services.invocation_outcomes import gateway_recovery_pending, recover_assembly_outcome
+from docket.services.trace_correlation import correlated_calls
 
 
 def _aware(value: datetime) -> datetime:
@@ -202,42 +203,17 @@ class GatewayLifetimeService:
 
     def _reconcile_trace(self, trace: ConversationalToolTrace, now: datetime) -> None:
         calls = [dict(item) for item in trace.calls]
+        invocations = correlated_calls(list(self.session.scalars(
+            select(ToolInvocation).where(ToolInvocation.trace_ref == trace.ref_id)
+        )))
         for call in calls:
-            invocation = self.session.scalar(
-                select(ToolInvocation).where(
-                    ToolInvocation.trace_ref == trace.ref_id,
-                    ToolInvocation.trace_call_id == str(call.get("call_id", "")),
-                )
-            )
-            if invocation is not None and invocation.transport_state == "running":
-                semantic_request = (
-                    self.session.scalar(
-                        select(SemanticRequest).where(
-                            SemanticRequest.ref_id == invocation.semantic_request_ref
-                        )
-                    )
-                    if invocation.semantic_request_ref is not None
-                    else None
-                )
-                if (
-                    semantic_request is not None
-                    and semantic_request.commit_state == "committed"
-                    and semantic_request.committed_changeset_ref is not None
-                ):
-                    invocation.transport_state = "completed"
-                    invocation.domain_state = "succeeded"
-                    invocation.result_disposition = "committed"
-                    invocation.result_refs = [
-                        semantic_request.ref_id,
-                        semantic_request.committed_changeset_ref,
-                    ]
-                    invocation.completed_at = now
-                else:
-                    invocation.transport_state = "timed_out"
-                    invocation.domain_state = "unknown"
-                    invocation.result_disposition = "unknown"
-                    invocation.error_code = "gateway_interrupted"
-                    invocation.completed_at = now
+            invocation = invocations.get(str(call.get("call_id", "")))
+            if invocation is not None and (
+                invocation.tool_name != call.get("tool_name")
+                or invocation.trace_ordinal != call.get("ordinal")
+                or invocation.gateway_instance_ref != trace.gateway_instance_ref
+            ):
+                invocation = None
             if call.get("transport_state", call.get("state")) == "running":
                 call["transport_state"] = "timed_out"
                 call["transport_error_code"] = "gateway_interrupted"
@@ -245,16 +221,21 @@ class GatewayLifetimeService:
             call["domain_state"] = (
                 invocation.domain_state if invocation is not None else "unknown"
             )
-            call["disposition"] = (
-                invocation.result_disposition if invocation is not None else "unknown"
-            )
+            if invocation is not None:
+                call["disposition"] = invocation.result_disposition
+            elif call.get("execution_boundary") != "local_rejection":
+                call["disposition"] = "unknown"
             call["domain_error_code"] = (
                 invocation.error_code if invocation is not None else "gateway_interrupted"
             )
             call["tool_call_ref"] = invocation.ref_id if invocation is not None else None
+        interrupted = trace.status == "running"
+        if not interrupted and trace.calls == calls:
+            return
         trace.calls = calls
-        trace.status = "interrupted"
-        trace.completed_at = now
+        if interrupted:
+            trace.status = "interrupted"
+            trace.completed_at = now
         trace.version += 1
         self.session.add(
             OutboxEvent(
@@ -336,12 +317,34 @@ class GatewayLifetimeService:
             ingress.claim_token = None
             ingress.claimed_at = None
             ingress.last_error_code = None if finalized else "gateway_interrupted"
+        changed_trace_refs: set[str] = set()
+        # Domain recovery cannot depend on whether the asynchronous trace
+        # callback arrived before the gateway died. Lock calls before traces,
+        # matching late MCP finalization's lock order.
+        invocations = list(self.session.scalars(select(ToolInvocation).where(
+            ToolInvocation.gateway_instance_ref == lifetime.ref_id,
+            gateway_recovery_pending(),
+        ).order_by(ToolInvocation.id).with_for_update()))
+        for invocation in invocations:
+            changed = recover_assembly_outcome(self.session, invocation)
+            if not changed and invocation.transport_state == "running":
+                invocation.transport_state = "timed_out"
+                invocation.domain_state = "unknown"
+                invocation.result_disposition = "unknown"
+                invocation.error_code = "gateway_interrupted"
+                invocation.completed_at = now
+                changed = True
+            if changed and invocation.trace_ref is not None:
+                changed_trace_refs.add(invocation.trace_ref)
         traces = list(
             self.session.scalars(
                 select(ConversationalToolTrace)
                 .where(
                     ConversationalToolTrace.gateway_instance_ref == lifetime.ref_id,
-                    ConversationalToolTrace.status == "running",
+                    or_(
+                        ConversationalToolTrace.status == "running",
+                        ConversationalToolTrace.ref_id.in_(changed_trace_refs),
+                    ),
                 )
                 .with_for_update()
             )
@@ -388,6 +391,12 @@ class GatewayLifetimeService:
                             select(ConversationalToolTrace.gateway_instance_ref).where(
                                 ConversationalToolTrace.status == "running",
                                 ConversationalToolTrace.gateway_instance_ref.is_not(None),
+                            )
+                        ),
+                        GatewayLifetime.ref_id.in_(
+                            select(ToolInvocation.gateway_instance_ref).where(
+                                gateway_recovery_pending(),
+                                ToolInvocation.gateway_instance_ref.is_not(None),
                             )
                         ),
                     ),

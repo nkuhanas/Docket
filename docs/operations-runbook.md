@@ -482,6 +482,22 @@ gateway. If an `rsp_` or terminal `turn_` already proves execution finished, its
 claimed ingress becomes completed rather than pending and is never re-executed;
 only an ingress without durable terminal evidence is released for resumption.
 
+Invocation recovery uses the exact authenticated upstream call and its durable
+AssemblyOperation, not the SemanticRequest's latest commit state. An earlier
+stage/review/rejection therefore keeps its own outcome even if a later commit
+succeeded. Recovery includes invocations whose asynchronous trace callback never
+arrived, and transport retries must match the original signed binding. It does
+not replay mutations or provider operations.
+
+A late authoritative Docket result can replace `unknown/gateway_interrupted`,
+but cannot overwrite a known terminal outcome. The conversation remains
+interrupted and its domain-status projection is refreshed. Late finalization
+links only the exact assembly attempt, never the request's newest attempt.
+An exception while assembling the response after commit returns the original
+bounded receipt when that exact durable outcome can be established. Evidence-free
+unknown calls remain unknown; periodic recovery does not repeatedly lock them
+unless a matching terminal operation becomes available.
+
 ## Clean reset boundary
 
 The signed tracked-context amendment authorizes implementation and rehearsal of

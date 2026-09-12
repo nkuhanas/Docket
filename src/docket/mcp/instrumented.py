@@ -13,11 +13,14 @@ from sqlalchemy.orm import Session
 
 from docket.database import session_scope
 from docket.domain.canonical import sha256_json
+from docket.domain.enums import OutboxStatus
 from docket.domain.errors import DocketError
 from docket.domain.public_refs import is_public_ref
 from docket.models import (
     AttachmentEvidence,
+    ConversationalToolTrace,
     OperatorUtterance,
+    OutboxEvent,
     SemanticRequestAttempt,
     ToolInvocation,
 )
@@ -25,6 +28,11 @@ from docket.models.base import utc_now
 from docket.services.changeset_assembly import ChangeSetAssemblyService
 from docket.services.continuity import ContinuityService
 from docket.services.invocation_binding import BINDING_ARGUMENT, bind_invocation
+from docket.services.invocation_outcomes import (
+    bound_assembly_operation,
+    is_gateway_unknown,
+    recover_assembly_outcome,
+)
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash
 
 INTERACTIVE_AUTHORITY_TOOLS = frozenset(
@@ -395,33 +403,60 @@ class ProvenanceFastMCP(FastMCP[Any]):
         domain_state: str | None = None,
         semantic_request_ref: str | None = None,
     ) -> None:
-        invocation = session.get(ToolInvocation, invocation_id)
+        invocation = session.get(
+            ToolInvocation, invocation_id, with_for_update=True, populate_existing=True,
+        )
         if invocation is None:
             raise RuntimeError("ToolInvocation disappeared before completion")
-        if invocation.transport_state != "running":
+        late_outcome = is_gateway_unknown(invocation)
+        if invocation.transport_state != "running" and not late_outcome:
             return
+        recovered = (late_outcome or status == "failed") and recover_assembly_outcome(
+            session, invocation,
+        )
+        if recovered:
+            semantic_request_ref = invocation.semantic_request_ref
         invocation.normalized_argument_hash = normalized_argument_hash
-        invocation.result_refs = result_refs
-        invocation.result_disposition = result_disposition
-        # Reaching this method means the authenticated MCP request received a
-        # durable Docket outcome. Domain failure is not transport failure.
-        invocation.transport_state = "completed"
-        invocation.domain_state = domain_state or _domain_state(status)
-        invocation.error_code = error_code
-        invocation.completed_at = utc_now()
+        if not recovered:
+            invocation.result_refs = result_refs
+            invocation.result_disposition = result_disposition
+            # Reaching this method means the authenticated MCP request received a
+            # durable Docket outcome. Domain failure is not transport failure.
+            invocation.transport_state = "completed"
+            invocation.domain_state = domain_state or _domain_state(status)
+            invocation.error_code = error_code
+            invocation.completed_at = utc_now()
         if semantic_request_ref is not None:
             invocation.semantic_request_ref = semantic_request_ref
+            operation = bound_assembly_operation(session, invocation)
             attempt = session.scalar(
                 select(SemanticRequestAttempt)
                 .where(
                     SemanticRequestAttempt.semantic_request_ref == semantic_request_ref,
                     SemanticRequestAttempt.tool_call_ref.is_(None),
+                    SemanticRequestAttempt.ref_id == operation.semantic_request_attempt_ref,
                 )
-                .order_by(SemanticRequestAttempt.attempt_number.desc())
                 .with_for_update()
-            )
+            ) if operation is not None else None
             if attempt is not None:
                 attempt.tool_call_ref = invocation.ref_id
+        if late_outcome and invocation.trace_ref is not None:
+            # A gateway can time out while Docket is still finishing. Preserve
+            # the interrupted conversation, but re-render its newly known
+            # domain outcome without needing a callback from the dead gateway.
+            trace = session.scalar(select(ConversationalToolTrace).where(
+                ConversationalToolTrace.ref_id == invocation.trace_ref,
+            ).with_for_update())
+            if trace is not None:
+                trace.version += 1
+                session.add(OutboxEvent(
+                    event_type="discord.mcp_trace.requested",
+                    aggregate_type="conversational_tool_trace",
+                    aggregate_id=trace.id,
+                    deduplication_key=f"conversational_tool_trace:{trace.ref_id}:v{trace.version}",
+                    payload={"trace_ref": trace.ref_id, "trace_version": trace.version},
+                    status=OutboxStatus.PENDING.value,
+                ))
 
     async def call_tool(
         self,
@@ -643,6 +678,7 @@ class ProvenanceFastMCP(FastMCP[Any]):
             validation_failure = normalized_hash is None
             error_code = "validation_error" if validation_failure else "internal_error"
             status = "rejected_validation" if validation_failure else "failed"
+            recovered_result: dict[str, Any] | None = None
             with session_scope() as session:
                 self._finish_invocation(
                     session,
@@ -653,11 +689,27 @@ class ProvenanceFastMCP(FastMCP[Any]):
                     result_disposition=status,
                     error_code=error_code,
                 )
+                completed = session.get(ToolInvocation, invocation_id)
+                operation = bound_assembly_operation(session, completed) if completed else None
+                if (
+                    completed is not None and completed.domain_state != "unknown"
+                    and operation is not None and operation.completed_at is not None
+                    and operation.state in {"completed", "rejected"}
+                    and completed.result_disposition == operation.result_disposition
+                ):
+                    recovered_result = {**operation.result_json, "reconciled": True}
                 if execution_completion_token is not None:
                     ContinuityService(session).complete_execution_lease(
                         execution_completion_token,
-                        metadata={"disposition": status},
+                        metadata={"disposition": (
+                            recovered_result.get("disposition", status)
+                            if recovered_result else status
+                        )},
                     )
+            if recovered_result is not None:
+                return _compact_result(
+                    recovered_result, recovered_result, audit=False, page_limit=25,
+                )[0]
             return _domain_error_result(
                 code=error_code,
                 message=(

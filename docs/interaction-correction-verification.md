@@ -675,3 +675,39 @@ turn-context budget remains unchanged and passes its real rewritten-turn test.
 All 539 tests, Ruff, strict mypy and isolated Compose/PostgreSQL smoke passed.
 No migration, provider action or production deployment was performed by this
 slice. Full amendment acceptance and deployment readiness remain incomplete.
+
+## Exact invocation outcome recovery
+
+Gateway reconciliation now resolves each authenticated invocation against its
+own durable assembly operation. It no longer infers an earlier call's result
+from the current SemanticRequest state. Stage, review, rejection and commit keep
+their exact dispositions; an unknown stage reconstructed from its immutable
+revision cannot become committed merely because the draft committed later.
+Original signed call/source/tool/argument bindings are required, including for
+transport retries. No source text or receipt payload is copied into `call_`.
+
+Recovery also covers invocations absent from the asynchronous trace callbacks.
+A later durable operation or MCP completion may resolve gateway-interrupted
+unknowns while retaining the interrupted conversation. Known outcomes cannot be
+replaced by later transport errors, and finalized-call attribution no longer
+selects the newest request attempt. Evidence-free unknowns do not cause repeated
+row locking on every retired-gateway reconciliation pass.
+
+If a tool commits but response assembly raises, MCP returns that exact bounded
+durable receipt; it does not tell Hermes the committed request failed. Repeating
+this failure returns the same commitment without another canonical item. These
+checks use real isolated service transactions, not fabricated provider success.
+
+Fixtures cover missing callbacks, post-expiry outcomes, rejected/staged/reviewed
+calls preceding a commit, original/retry binding mismatches, late attempt
+attribution, unknown-stage reconstruction and response-assembly failure. The
+PostgreSQL smoke contends gateway recovery against late MCP completion in both
+lock orders and verifies one committed ChangeSet with no lost durable outcome.
+The public 23-tool contract remains v31. Full callback durability, complete phase
+timing, semantic request/repair/adoption acceptance and deployment gates remain
+separate unfinished work.
+
+Validation for this slice: all 557 tests, Ruff, strict mypy (135 source files)
+and isolated Compose/PostgreSQL smoke passed, including both contention orders,
+governance restore and migration downgrade/re-upgrade. No new migration,
+production state change or provider call was required.
