@@ -594,3 +594,43 @@ establish the exact immutable request specification of ONT-UX-REQ-0009/0010.
 Those remain open; an arbitrary extractor identifier does not become a verified
 source merely because it is present in an input. No new authority, schema alias,
 public tool, historical replay or production change is introduced.
+
+## Canonical Calendar presentation previews
+
+Staging captures a scoped canonical-before/planned-after Calendar presentation
+snapshot in the immutable draft revision. The sample exposes manual event
+title/time/location/destination/status/scope; normalized entries remain represented
+once rather than repeated as compiler-owned Event boilerplate. Combined entry
+and event samples share the existing bounded-output budget with exact omitted
+counts. Review is still optional.
+
+Optional diff adds `canonical_event_effect` rows based exclusively on that stored
+snapshot, including captured and expected versions. It does not reread live
+canonical or provider state. The ordinary draft-to-draft diff remains separately
+identified. Calendar presentation covers title, timing, location, notes, lane,
+status, recurrence, tags and priority; other changed inputs remain in the input
+diff and are explicitly identified when not in this projection.
+
+Occurrence previews retain the original coordinate and show an existing moved
+timeslot. Cancellation displays a status change on that occurrence, not master
+retraction. Repeated cancellation is an explicit no-op. An uncompiled occurrence
+has an unavailable preview, not a misleading proposed master cancellation.
+Old revisions lacking a captured preview remain unavailable; no reconstruction,
+compatibility alias or backfill occurs during review.
+
+Fixtures cover captured values surviving a later canonical update, moved/renamed
+and already-cancelled occurrences, exact one-time/series scope, title disagreement,
+bounded lossless diffs and normalized-entry deduplication. PostgreSQL rehearsal
+checks snapshots across connections and rejects a direct attempt to rewrite the
+immutable preview. The generated tool contract is v30, still 23 interactive and
+four triage tools. These are planned effects, not provider confirmations.
+
+The moved-occurrence fixture models completed provider projection explicitly.
+An occurrence child whose initial provider creation is still queued can currently
+be blocked by `provider_event_binding_required`; that distinct recovery/diagnostic
+path is not silently treated as a completed projection by these tests.
+
+Validation for this slice: all 533 tests, Ruff and strict mypy (134 source
+files) passed. The isolated Compose/PostgreSQL smoke passed, including the
+immutable snapshot assertions and migration downgrade/re-upgrade checks. No
+production or live-provider operation was performed.

@@ -164,7 +164,16 @@ Optional `docket_review_changeset(view="diff")` reports actual staged field
 changes against the preceding immutable draft revision. It distinguishes added,
 removed and modified entries/actions, including occurrence/series scope, and
 names both revisions. This is a draft-to-draft comparison, not live canonical
-or Google state. Compiler-owned records appear once through their source entry.
+or Google state. Separate `canonical_event_effect` rows compare Calendar
+presentation fields captured at staging with the planned result: title, time,
+location, lane, status, recurrence and scope. Their expected/observed versions
+remain fixed even if a concurrent request changes canonical state. A moved
+occurrence retains its original identity while showing the moved timeslot.
+Uncompiled occurrences are explicitly unavailable, never shown as master
+cancellations. Additional non-presentation inputs stay in the ordinary input
+diff. Old revisions without a captured preview report it unavailable; reads do
+not reconstruct one from live state. Compiler-owned new records appear once
+through their source entry.
 Continue with the same cursor even if another attempt edits the draft. Reading
 old pages does not observe that newer revision or permit committing it.
 

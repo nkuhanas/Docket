@@ -168,6 +168,11 @@ staged fields; the comparison does not independently verify the source title.
 Optional `diff` review compares the selected immutable draft revision with its
 predecessor. It reports changed values and removed entries, including target
 scope; it is not a comparison with live Google Calendar or proof of execution.
+Separate `canonical_event_effect` rows show captured canonical-before and
+planned-after Calendar presentation fields, pinned at staging. They retain
+original occurrence identity and the current moved time when applicable;
+an unavailable preview is not a no-op. Non-presentation input changes remain
+in the ordinary draft diff. Never treat either preview as a provider confirmation.
 Entry-owned compiler boilerplate is represented once by its semantic entry.
 Follow the returned cursor to keep both sides of the comparison fixed. Large
 details use lossless `json_utf8` fragments with offsets and a digest, rather than

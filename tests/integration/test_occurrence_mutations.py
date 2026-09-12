@@ -1,4 +1,6 @@
 import hashlib
+import json
+from copy import deepcopy
 from datetime import UTC, date, datetime
 
 import pytest
@@ -18,14 +20,20 @@ from docket.models import (
     ProviderAccount,
     ProviderEventBinding,
 )
-from docket.schemas.assembly import StageChangesInput
-from docket.schemas.authority import CanonicalEventCancel, CanonicalEventModify
+from docket.schemas.assembly import ReviewChangesInput, StageChangesInput
+from docket.schemas.authority import (
+    CanonicalEventCancel,
+    CanonicalEventCreate,
+    CanonicalEventModify,
+    ChangeSetContent,
+)
 from docket.schemas.calendar import StandaloneCalendarEventInput
 from docket.services.canonical_events import CanonicalEventAuthorityService
 from docket.services.changeset_assembly import (
     ChangeSetAssemblyAdmissionService,
     ChangeSetAssemblyService,
 )
+from docket.services.changeset_previews import capture_event_preview, event_preview_sample
 from docket.services.event_occurrences import identity_for_timing, occurrence_timing
 
 
@@ -193,6 +201,134 @@ def _commit(session, utterance, trace):
         assembly_operation_token=token,
         assembly_argument_hash="2" * 64,
     )
+
+
+def test_occurrence_preview_is_captured_and_paging_does_not_read_live_calendar(session):
+    series, identity = _world(session)
+    scope = {"kind": "occurrence", "identity": identity.model_dump(mode="json")}
+    utterance, trace, staged = _stage_cancel(session, series, scope)
+    preview = staged["event_preview"][0]
+    assert staged["event_effect_count"] == 1
+    assert preview["scope"] == scope
+    assert preview["title"] == "MATH 1263"
+    assert preview["status"] == "cancelled"
+    assert preview["timing"]["start_local"] == "2026-09-08T15:00:00"
+    assert series.status == "active"
+    draft = session.scalar(select(ChangeSet))
+    snapshot = deepcopy(draft.compiler_manifest_json["canonical_event_preview"])
+    effect = snapshot["effects"][0]
+    assert effect["before"]["status"] == "active"
+    assert effect["after"]["status"] == "cancelled"
+    assert effect["before"]["recurrence"] is None
+    assert effect["expected_version"] == effect["observed_version"] == 1
+    assert "basis_refs" not in json.dumps(snapshot)
+    # Later canonical work cannot rewrite an immutable staged preview.
+    series.title = "Changed by another committed request"
+    series.version += 1
+    session.flush()
+    reviewed = ChangeSetAssemblyService(session).review(
+        ReviewChangesInput(utterance_ref=utterance.ref_id, request_key=utterance.request_key,
+                           view="diff", limit=100),
+        assembly_operation_token=_admit(session, utterance, trace, "review_changeset", 2),
+        assembly_argument_hash="2" * 64,
+    )
+    assert reviewed["canonical_event_diff_basis"] == "canonical_staging_snapshot"
+    rows = [row for row in reviewed["items"]
+            if row.get("subject_kind") == "canonical_event_effect"]
+    status = next(row for row in rows if row.get("field_path") == ["status"])
+    assert status["before"] == "active" and status["after"] == "cancelled"
+    assert status["scope"] == scope
+    assert "Changed by another" not in json.dumps(reviewed)
+    assert draft.compiler_manifest_json["canonical_event_preview"] == snapshot
+
+
+def test_moved_and_already_cancelled_occurrence_previews_keep_original_identity(session):
+    series, identity = _world(session)
+    scope = {"kind": "occurrence", "identity": identity.model_dump(mode="json")}
+    replacement = {
+        **series.event_spec, "title": "Rescheduled MATH lecture", "recurrence": None,
+        "timing": {
+            "kind": "timed", "start_local": "2026-09-09T16:00:00",
+            "end_local": "2026-09-09T16:50:00", "timezone": "America/Los_Angeles",
+        },
+    }
+    utterance, trace, staged = _stage_cancel(session, series, scope, event_spec=replacement)
+    assert staged["disposition"] == "ready_to_commit", staged
+    effect = session.scalar(select(ChangeSet)).compiler_manifest_json["canonical_event_preview"][
+        "effects"
+    ][0]
+    assert effect["before"]["timing"]["start_local"] == "2026-09-08T15:00:00"
+    assert effect["after"]["timing"]["start_local"] == "2026-09-09T16:00:00"
+    assert _commit(session, utterance, trace)["disposition"] == "committed"
+    occurrence = session.scalar(select(EventOccurrence))
+    master_binding = session.scalar(select(ProviderEventBinding))
+    # Model the completed child projection in this isolated fixture. A child
+    # still queued for creation has a separate provider-readiness constraint.
+    session.add(ProviderEventBinding(
+        canonical_target_ref=occurrence.replacement_event_ref, target_kind="event",
+        account_id=master_binding.account_id, calendar_id=master_binding.calendar_id,
+        provider_event_id="preview-replacement", status="active",
+    ))
+    session.flush()
+    utterance2, trace2, staged2 = _stage_cancel(session, series, scope, number=3)
+    assert staged2["disposition"] == "ready_to_commit", staged2["diagnostic_sample"]
+    assert staged2["event_preview"][0]["title"] == "Rescheduled MATH lecture"
+    assert staged2["event_preview"][0]["scope"]["identity"]["original_date"] == "2026-09-08"
+    assert staged2["event_preview"][0]["timing"]["start_local"] == "2026-09-09T16:00:00"
+    assert staged2["event_preview"][0]["status"] == "cancelled"
+    receipt2 = _commit(session, utterance2, trace2)
+    assert receipt2["disposition"] == "committed", receipt2
+    _utterance3, _trace3, staged3 = _stage_cancel(session, series, scope, number=4)
+    assert staged3["event_preview"][0]["no_op"] is True
+    assert staged3["event_effect_count"] == 1
+    assert series.status == "active"
+
+
+def test_uncompiled_occurrence_never_previews_master_cancellation(session):
+    series, identity = _world(session)
+    content = ChangeSetContent(
+        basis_refs=series.basis_refs,
+        event_changes=[CanonicalEventCancel(
+            change_id="cancel-only-one", action="retract", object_type="canonical_event",
+            object_ref=series.ref_id, basis_refs=series.basis_refs, affected_fields=["status"],
+            scope={"kind": "occurrence", "identity": identity.model_dump(mode="json")},
+        )],
+    )
+    effect = capture_event_preview(session, content)["effects"][0]
+    assert effect["available"] is False
+    assert effect["reason"] == "occurrence_compilation_required"
+    assert "after" not in effect
+    assert series.status == "active"
+
+
+def test_manual_event_preview_is_scoped_and_preserves_title_disagreement(session):
+    series, _identity = _world(session)
+    content = ChangeSetContent(
+        basis_refs=series.basis_refs,
+        event_changes=[CanonicalEventCreate(
+            change_id="manual-series", action="create", object_type="canonical_event",
+            affected_fields=["title", "event_spec"], basis_refs=series.basis_refs,
+            create_spec={
+                "title": "Canonical proposal title", "event_spec": series.event_spec,
+                "lane_ref": series.lane_ref,
+            },
+        )],
+    )
+    snapshot = capture_event_preview(session, content)
+    effect = snapshot["effects"][0]
+    assert effect["before"] is None
+    assert effect["after"]["title"] == "Canonical proposal title"
+    assert effect["after"]["calendar_title"] == "MATH 1263"
+    assert effect["scope"]["kind"] == "entire_series"
+    sample = event_preview_sample(snapshot, entry_owned_ids=set(), budget=7000)
+    assert sample["event_effect_count"] == 1
+    assert sample["event_preview"][0]["title"] == "Canonical proposal title"
+    # The same entry is never repeated as both normalized input and support Event.
+    sample = event_preview_sample(snapshot, entry_owned_ids={"manual-series"}, budget=7000)
+    assert sample["event_preview"] == []
+    assert sample["event_effects_represented_by_entries"] == 1
+    assert "basis_refs" not in json.dumps(snapshot)
+    assert session.scalar(select(func.count(CanonicalEvent.id))) == 1
 
 
 def test_explicit_series_cancellation_includes_moved_child(session) -> None:

@@ -61,6 +61,7 @@ from docket.services.changeset_compiler import (
 )
 from docket.services.changeset_diff import bounded_details, bounded_sample, draft_diff
 from docket.services.changeset_pins import effect_hash, migration_required, pin_snapshot
+from docket.services.changeset_previews import capture_event_preview, event_preview_sample
 from docket.services.changeset_recompile import recompile_draft
 from docket.services.intent_sessions import IntentSessionService
 from docket.services.interactive_authority import InteractiveAuthorityService
@@ -1047,6 +1048,10 @@ class ChangeSetAssemblyService:
             )
         changeset.current_revision += 1
         changeset.version += 1
+        changeset.compiler_manifest_json = {
+            **(changeset.compiler_manifest_json or {}),
+            "canonical_event_preview": capture_event_preview(self.session, content),
+        }
         if content is None:
             self._sync_empty(changeset)
             pin_snapshot(changeset, None)
@@ -1584,6 +1589,11 @@ class ChangeSetAssemblyService:
             "normalized_entry_count": len(entries),
             "entry_preview": entry_previews,
             "omitted_entry_count": len(entries) - len(entry_previews),
+            **event_preview_sample(
+                changeset.compiler_manifest_json["canonical_event_preview"],
+                entry_owned_ids=owned_ids,
+                budget=7000 - len(json.dumps(entry_previews, ensure_ascii=False).encode()),
+            ),
             "predicted_provider_operation_count": len(changeset.provider_intents),
             "assembly_ready": not errors,
             **_diagnostic_projection(
@@ -1854,6 +1864,10 @@ class ChangeSetAssemblyService:
                     "diff_basis": "previous_draft_revision",
                     "base_revision": previous_revision.revision if previous_revision else None,
                     "diff_subject_counts": diff_counts,
+                    "canonical_event_diff_basis": "canonical_staging_snapshot",
+                    "canonical_event_preview_available": revision.compiler_manifest_json.get(
+                        "canonical_event_preview", {}
+                    ).get("available", False),
                 }
                 if request.view == "diff"
                 else {}

@@ -164,6 +164,49 @@ def compiled_diff(
     return details
 
 
+def event_preview_diff(
+    revision: ChangeSetRevision, *, mutation_types: list[str], entry_types: list[str],
+) -> list[dict[str, Any]]:
+    snapshot = revision.compiler_manifest_json.get("canonical_event_preview", {})
+    if not snapshot.get("available"):
+        return []
+    entry_type_by_action = {
+        action_id: entry["entry_type"]
+        for entry in revision.normalized_entries_json
+        for owner in revision.compiled_action_ownership_json
+        if owner["owner_import_entry_id"] == entry["import_entry_id"]
+        for action_id in owner["change_ids"]
+    }
+    details: list[dict[str, Any]] = []
+    for effect in snapshot.get("effects", []):
+        if effect["change_id"] in entry_type_by_action and effect.get("before") is None:
+            # The normalized entry already shows this new occurrence once. Do not
+            # repeat its title/time/notes as Item + Event support-record output.
+            continue
+        if mutation_types and effect["mutation_type"] not in mutation_types:
+            continue
+        if entry_types and entry_type_by_action.get(effect["change_id"]) not in entry_types:
+            continue
+        header = {
+            "subject_kind": "canonical_event_effect",
+            "change": "added" if effect.get("before") is None else "modified",
+            **{key: value for key, value in effect.items() if key not in {"before", "after"}},
+        }
+        if not effect["available"]:
+            details.append(header)
+            continue
+        changes = list(_fields(
+            effect["before"] if effect["before"] is not None else _MISSING,
+            effect["after"] if effect["after"] is not None else _MISSING, [],
+        ))
+        if changes:
+            details.extend({**header, **change} for change in changes)
+        else:
+            # A repeated occurrence cancellation is a useful explicit no-op.
+            details.append({**header, "presentation_changed": False})
+    return details
+
+
 def draft_diff(
     before: ChangeSetRevision | None,
     after: ChangeSetRevision,
@@ -251,4 +294,7 @@ def draft_diff(
             after.compiler_manifest_json.get("execution_pin"), [],
         ):
             details.append({"subject_kind": "compiler_pin", **change})
+    details.extend(event_preview_diff(
+        after, mutation_types=mutation_types, entry_types=entry_types,
+    ))
     return details, counts

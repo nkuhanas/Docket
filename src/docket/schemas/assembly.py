@@ -313,6 +313,7 @@ class ReviewChangesInput(StrictModel):
         description=(
             "Optional review. Diff compares this immutable draft revision with its predecessor, "
             "returning actual staged field values, additions/removals and scope changes; "
+            "including stored canonical Calendar-before/planned-after snapshots; "
             "it does not claim canonical or provider state changed. Oversized detail is "
             "losslessly paginated as json_utf8 fragments."
         ),
