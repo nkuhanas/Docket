@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
+from trace_support import bind_execution, callback_binding, segment_for
 
 from docket.config import get_settings
 from docket.domain.errors import DocketError
@@ -25,24 +26,36 @@ from docket.services.trace_views import TraceViewService
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash
 
 
-def _bound_evidence(session: Session, message: str = "777777777777777777") -> dict:
+def _bound_evidence(session: Session, message: str = "777777777777777777", channel=None) -> dict:
     settings = get_settings()
     actor = f"discord_user:{settings.operator_discord_user_id}"
-    utterance = OperatorUtterance(
-        actor_ref=actor, transport="discord",
-        source_message_ref=(
-            f"discord_message:{settings.discord_guild_id}:{settings.chat_channel_id}:{message}"
-        ),
-        conversation_ref=f"discord_conversation:{settings.chat_channel_id}",
-        said_at=datetime.now(UTC), verbatim_text="Read my test context.",
-        content_hash="a" * 64, request_key=f"trace-test:{message}",
-    )
-    session.add(utterance)
-    session.flush()
-    return {"actor_ref": actor, "utterance_refs": [utterance.ref_id]}
+    channel = channel or settings.chat_channel_id
+    source = f"discord_message:{settings.discord_guild_id}:{channel}:{message}"
+    utterance = session.scalar(select(OperatorUtterance).where(
+        OperatorUtterance.source_message_ref == source,
+    ))
+    if utterance is None:
+        utterance = OperatorUtterance(
+            actor_ref=actor, transport="discord", source_message_ref=source,
+            conversation_ref=f"discord_conversation:{channel}",
+            said_at=datetime.now(UTC), verbatim_text="Read my test context.",
+            content_hash="a" * 64, request_key=f"trace-test:{channel}:{message}",
+        )
+        session.add(utterance)
+        session.flush()
+    evidence = {"actor_ref": actor, "utterance_refs": [utterance.ref_id]}
+    trace = session.scalar(select(ConversationalToolTrace).where(
+        ConversationalToolTrace.source_message_id == message,
+        ConversationalToolTrace.source_channel_id == channel,
+    ))
+    if trace is not None and (segment := segment_for(session, trace.ref_id)) is not None:
+        evidence.update(
+            trace_execution_id=segment.id, gateway_instance_ref=segment.gateway_instance_ref
+        )
+    return evidence
 
 
-def _update(
+def _update(session, trace_ref,
     *,
     ordinal: int | None = None,
     transport_state: str | None = None,
@@ -71,6 +84,12 @@ def _update(
             "argument_preview": '{"fields":["query"]}',
             "received_argument_hash": received_argument_hash,
         }
+    evidence = _bound_evidence(session, source_message_id, source_channel_id)
+    utterance = session.scalar(select(OperatorUtterance).where(
+        OperatorUtterance.ref_id == evidence["utterance_refs"][0],
+    ))
+    binding = bind_execution(session, utterance, label=trace_ref,
+                             started_at=turn_started_at or updated_at)
     return McpTraceUpdate.model_validate(
         {
             "request_id": "00000000-0000-0000-0000-000000000001",
@@ -81,7 +100,7 @@ def _update(
             "tool_contract_version": CONTRACT_VERSION,
             "tool_contract_hash": contract_hash("interactive"),
             "caller_profile": "interactive",
-            "turn_started_at": (turn_started_at or updated_at).isoformat(),
+            **callback_binding(binding),
             "updated_at": updated_at.isoformat(),
             "turn_status": turn_status,
             "call": call,
@@ -97,12 +116,12 @@ def test_mcp_trace_accepts_completed_domain_rejection(
     with session_factory.begin() as session:
         McpTraceService(session).update(
             trace_ref,
-            _update(ordinal=1, transport_state="running"),
+            _update(session, trace_ref, ordinal=1, transport_state="running"),
         )
     with session_factory.begin() as session:
         result = McpTraceService(session).update(
             trace_ref,
-            _update(
+            _update(session, trace_ref,
                 ordinal=1,
                 transport_state="completed",
                 disposition="rejected_validation",
@@ -115,8 +134,8 @@ def test_mcp_trace_accepts_completed_domain_rejection(
             select(ConversationalToolTrace).where(ConversationalToolTrace.ref_id == trace_ref)
         )
         assert trace is not None
-        assert trace.calls[0]["transport_state"] == "completed"
-        assert trace.calls[0]["disposition"] == "rejected_validation"
+        assert segment_for(session, trace.ref_id).calls[0]["transport_state"] == "completed"
+        assert segment_for(session, trace.ref_id).calls[0]["disposition"] == "rejected_validation"
 
 
 @pytest.mark.integration
@@ -124,10 +143,11 @@ def test_mcp_trace_rejects_duplicate_source_with_domain_error(
     session_factory: sessionmaker[Session],
 ) -> None:
     source_message_id = "777777777777777777"
+    trace_ref = new_public_ref("trace")
     with session_factory.begin() as session:
         McpTraceService(session).update(
-            new_public_ref("trace"),
-            _update(
+            trace_ref,
+            _update(session, trace_ref,
                 ordinal=1,
                 transport_state="running",
                 source_message_id=source_message_id,
@@ -137,14 +157,14 @@ def test_mcp_trace_rejects_duplicate_source_with_domain_error(
     with pytest.raises(DocketError) as duplicate, session_factory.begin() as session:
         McpTraceService(session).update(
             new_public_ref("trace"),
-            _update(
+            _update(session, trace_ref,
                 ordinal=1,
                 transport_state="running",
                 source_message_id=source_message_id,
             ),
         )
 
-    assert duplicate.value.code == "mcp_trace_source_conflict"
+    assert duplicate.value.code == "trace_execution_not_bound"
 
 
 def _project_all(session_factory: sessionmaker[Session]) -> FakeDiscordBackend:
@@ -179,21 +199,27 @@ def test_mcp_trace_accepts_only_a_trusted_docket_conversation(
         )
         result = McpTraceService(session).update(
             trace_ref,
-            _update(ordinal=1, transport_state="running", source_channel_id=thread_id),
+            _update(
+                session,
+                trace_ref,
+                ordinal=1,
+                transport_state="running",
+                source_channel_id=thread_id,
+            ),
         )
         assert result["trace_ref"] == trace_ref
-        assert result["trace_version"] == 1
+        assert result["trace_version"] == 2
 
     with pytest.raises(DocketError) as rejected, session_factory.begin() as session:
         McpTraceService(session).update(
             new_public_ref("trace"),
-            _update(
+            _update(session, new_public_ref("trace"),
                 ordinal=1,
                 transport_state="running",
                 source_channel_id="999999999999999999",
             ),
         )
-    assert rejected.value.code == "invalid_mcp_trace_context"
+    assert rejected.value.code == "trace_execution_binding_mismatch"
 
 
 @pytest.mark.integration
@@ -204,26 +230,28 @@ def test_mcp_trace_is_monotonic_redacted_and_projected(
     with session_factory.begin() as session:
         assert (
             McpTraceService(session).update(
-                trace_ref, _update(ordinal=1, transport_state="running")
-            )["trace_version"]
-            == 1
-        )
-    with session_factory.begin() as session:
-        assert (
-            McpTraceService(session).update(
-                trace_ref, _update(ordinal=1, transport_state="completed")
+                trace_ref, _update(session, trace_ref, ordinal=1, transport_state="running")
             )["trace_version"]
             == 2
         )
     with session_factory.begin() as session:
         assert (
-            McpTraceService(session).update(trace_ref, _update(turn_status="completed"))[
-                "trace_version"
-            ]
+            McpTraceService(session).update(
+                trace_ref, _update(session, trace_ref, ordinal=1, transport_state="completed")
+            )["trace_version"]
             == 3
         )
     with session_factory.begin() as session:
-        replay = McpTraceService(session).update(trace_ref, _update(turn_status="completed"))
+        assert (
+            McpTraceService(session).update(
+                trace_ref, _update(session, trace_ref, turn_status="completed")
+            )["trace_version"]
+            == 4
+        )
+    with session_factory.begin() as session:
+        replay = McpTraceService(session).update(
+            trace_ref, _update(session, trace_ref, turn_status="completed")
+        )
         assert replay["disposition"] == "replayed_request"
 
     with session_factory() as session:
@@ -232,7 +260,7 @@ def test_mcp_trace_is_monotonic_redacted_and_projected(
         )
         assert trace is not None
         assert trace.status == "completed"
-        assert trace.calls == [
+        assert segment_for(session, trace.ref_id).calls == [
             {
                 "call_id": "call-1",
                 "ordinal": 1,
@@ -250,7 +278,7 @@ def test_mcp_trace_is_monotonic_redacted_and_projected(
                 "tool_call_ref": None,
             }
         ]
-        assert session.scalar(select(func.count()).select_from(OutboxEvent)) == 3
+        assert session.scalar(select(func.count()).select_from(OutboxEvent)) == 4
 
     projected = _project_all(session_factory).mcp_traces[trace_ref]["render"]
     assert projected["status"] == "Completed"
@@ -260,6 +288,7 @@ def test_mcp_trace_is_monotonic_redacted_and_projected(
     assert projected["timing"]["unattributed_ms"] == projected["timing"]["total_elapsed_ms"]
     assert projected["calls"] == [
         {
+            "execution_index": 1,
             "ordinal": 1,
             "tool_name": "docket_search_history",
             "origin": "unreconciled",
@@ -277,7 +306,9 @@ def test_mcp_trace_is_monotonic_redacted_and_projected(
     assert get_settings().operator_discord_user_id not in str(projected)
 
     with pytest.raises(DocketError) as regression, session_factory.begin() as session:
-        McpTraceService(session).update(trace_ref, _update(ordinal=1, transport_state="failed"))
+        McpTraceService(session).update(
+            trace_ref, _update(session, trace_ref, ordinal=1, transport_state="failed")
+        )
     assert regression.value.code == "mcp_trace_state_regression"
 
 
@@ -300,7 +331,7 @@ def test_mcp_trace_reconciles_qualified_tool_lifecycle(
     with session_factory.begin() as session:
         McpTraceService(session).update(
             trace_ref,
-            _update(
+            _update(session, trace_ref,
                 ordinal=1,
                 transport_state="running",
                 received_argument_hash=argument_hash,
@@ -328,7 +359,7 @@ def test_mcp_trace_reconciles_qualified_tool_lifecycle(
     with session_factory.begin() as session:
         result = McpTraceService(session).update(
             trace_ref,
-            _update(
+            _update(session, trace_ref,
                 ordinal=1,
                 transport_state="completed",
                 received_argument_hash=argument_hash,
@@ -341,7 +372,7 @@ def test_mcp_trace_reconciles_qualified_tool_lifecycle(
             select(ConversationalToolTrace).where(ConversationalToolTrace.ref_id == trace_ref)
         )
         assert trace is not None
-        call = trace.calls[0]
+        call = segment_for(session, trace.ref_id).calls[0]
         assert call["transport_state"] == "completed"
         assert call["domain_state"] == domain_state
         assert call["disposition"] == result_disposition
@@ -372,7 +403,7 @@ def test_mcp_trace_projects_semantic_disposition_as_primary_outcome(
     with session_factory.begin() as session:
         McpTraceService(session).update(
             trace_ref,
-            _update(
+            _update(session, trace_ref,
                 ordinal=1,
                 transport_state="running",
                 received_argument_hash=argument_hash,
@@ -401,7 +432,7 @@ def test_mcp_trace_projects_semantic_disposition_as_primary_outcome(
     with session_factory.begin() as session:
         McpTraceService(session).update(
             trace_ref,
-            _update(
+            _update(session, trace_ref,
                 ordinal=1,
                 transport_state="completed",
                 received_argument_hash=argument_hash,
@@ -412,7 +443,7 @@ def test_mcp_trace_projects_semantic_disposition_as_primary_outcome(
 
     projected = _project_all(session_factory).mcp_traces[trace_ref]["render"]["calls"][0]
     assert projected == {
-        "ordinal": 1,
+        "execution_index": 1, "ordinal": 1,
         "tool_name": "docket_commit_changeset",
         "origin": "authenticated_docket",
         "transport_layer": "wrapper",
@@ -436,7 +467,7 @@ def test_mcp_trace_timing_includes_gateway_to_first_tool_delay(
     with session_factory.begin() as session:
         McpTraceService(session).update(
             trace_ref,
-            _update(
+            _update(session, trace_ref,
                 ordinal=1,
                 transport_state="running",
                 received_argument_hash=argument_hash,
@@ -463,7 +494,7 @@ def test_mcp_trace_timing_includes_gateway_to_first_tool_delay(
     with session_factory.begin() as session:
         McpTraceService(session).update(
             trace_ref,
-            _update(
+            _update(session, trace_ref,
                 ordinal=1,
                 transport_state="completed",
                 received_argument_hash=argument_hash,
@@ -472,7 +503,7 @@ def test_mcp_trace_timing_includes_gateway_to_first_tool_delay(
         )
         McpTraceService(session).update(
             trace_ref,
-            _update(turn_status="completed", turn_started_at=turn_started_at),
+            _update(session, trace_ref, turn_status="completed", turn_started_at=turn_started_at),
         )
 
     timing = _project_all(session_factory).mcp_traces[trace_ref]["render"]["timing"]
@@ -488,9 +519,13 @@ def test_interrupted_trace_uses_unknown_domain_outcome(
 ) -> None:
     trace_ref = new_public_ref("trace")
     with session_factory.begin() as session:
-        McpTraceService(session).update(trace_ref, _update(ordinal=1, transport_state="running"))
+        McpTraceService(session).update(
+            trace_ref, _update(session, trace_ref, ordinal=1, transport_state="running")
+        )
     with session_factory.begin() as session:
-        McpTraceService(session).update(trace_ref, _update(turn_status="interrupted"))
+        McpTraceService(session).update(
+            trace_ref, _update(session, trace_ref, turn_status="interrupted")
+        )
 
     projected = _project_all(session_factory).mcp_traces[trace_ref]["render"]
     assert projected["status"] == "Interrupted"
@@ -514,12 +549,14 @@ def test_local_rejection_never_claims_an_unrelated_matching_invocation(session_f
         session.flush()
         unrelated_ref = unrelated.ref_id
         for state in ("running", "completed"):
-            McpTraceService(session).update(trace_ref, _update(
+            McpTraceService(session).update(trace_ref, _update(session, trace_ref,
                 ordinal=1, transport_state=state, execution_boundary="local_rejection",
                 received_argument_hash="d" * 64, tool_name="docket_commit_changeset",
                 disposition="rejected_validation",
             ))
-        McpTraceService(session).update(trace_ref, _update(turn_status="completed"))
+        McpTraceService(session).update(
+            trace_ref, _update(session, trace_ref, turn_status="completed")
+        )
     with session_factory() as session:
         page = HistoryService(session).get_entry(trace_ref, view="calls")
         assert page["counts"]["authenticated_invocations"] == 0
@@ -534,7 +571,6 @@ def test_local_rejection_never_claims_an_unrelated_matching_invocation(session_f
 
 
 def _long_trace(session, count=100):
-    settings = get_settings()
     start = datetime.now(UTC) - timedelta(seconds=30)
     calls = []
     for ordinal in range(1, count + 1):
@@ -550,14 +586,16 @@ def _long_trace(session, count=100):
             "received_argument_hash": "f" * 64,
             "argument_preview": json.dumps({"fields": ["界" * 180]}, ensure_ascii=False),
         })
-    trace = ConversationalToolTrace(
-        guild_id=settings.discord_guild_id, source_channel_id=settings.chat_channel_id,
-        source_message_id="777777777777777777", actor_id=settings.operator_discord_user_id,
-        tool_contract_version=CONTRACT_VERSION, tool_contract_hash=contract_hash("interactive"),
-        caller_profile="interactive", started_at=start, calls=calls, last_ordinal=count,
-    )
-    session.add(trace)
-    session.flush()
+    evidence = _bound_evidence(session)
+    utterance = session.scalar(select(OperatorUtterance).where(
+        OperatorUtterance.ref_id == evidence["utterance_refs"][0],
+    ))
+    binding = bind_execution(session, utterance, label=new_public_ref("trace"), started_at=start)
+    trace = session.scalar(select(ConversationalToolTrace).where(
+        ConversationalToolTrace.ref_id == binding["trace_ref"],
+    ))
+    segment = segment_for(session, trace.ref_id)
+    segment.calls, segment.last_ordinal = calls, count
     session.add(ToolInvocation(
         **_bound_evidence(session),
         tool_name="docket_commit_changeset", caller_profile="interactive",
@@ -576,7 +614,7 @@ def test_whole_trace_counts_recent_commit_and_bounded_complete_pages(session_fac
     with session_factory.begin() as session:
         trace = _long_trace(session, count)
         trace_ref = trace.ref_id
-        McpTraceService(session).update(trace_ref, _update(
+        McpTraceService(session).update(trace_ref, _update(session, trace_ref,
             turn_status="completed", turn_started_at=trace.started_at,
         ))
     projected = _project_all(session_factory).mcp_traces[trace_ref]["render"]
@@ -615,7 +653,7 @@ def test_trace_updates_accept_late_calls_without_dropping_them(session_factory):
         with session_factory.begin() as session:
             service = McpTraceService(session)
             for state in ("running", "completed"):
-                service.update(trace_ref, _update(
+                service.update(trace_ref, _update(session, trace_ref,
                     ordinal=ordinal, transport_state=state, turn_started_at=started,
                     tool_name="docket_stage_changes" if ordinal == 103 else "docket_search_history",
                     execution_boundary="local_rejection", disposition="rejected_validation",
@@ -624,9 +662,13 @@ def test_trace_updates_accept_late_calls_without_dropping_them(session_factory):
         trace = session.scalar(select(ConversationalToolTrace).where(
             ConversationalToolTrace.ref_id == trace_ref
         ))
-        assert trace.last_ordinal == len(trace.calls) == 103
-        assert trace.calls[-1]["tool_name"] == "docket_stage_changes"
-        assert trace.calls[-1]["transport_state"] == "completed"
+        assert (
+            segment_for(session, trace.ref_id).last_ordinal
+            == len(segment_for(session, trace.ref_id).calls)
+            == 103
+        )
+        assert segment_for(session, trace.ref_id).calls[-1]["tool_name"] == "docket_stage_changes"
+        assert segment_for(session, trace.ref_id).calls[-1]["transport_state"] == "completed"
         assert session.scalar(select(func.count(ToolInvocation.id))) == 0
 
 
@@ -694,7 +736,9 @@ def test_missing_callback_calls_are_counted_once_and_invalidate_old_pages(sessio
         trace_ref, version = trace.ref_id, trace.version
         cursor = TraceViewService(session).read(trace, cursor=None, limit=1)["cursor"]
         evidence = {"actor_ref": f"discord_user:{get_settings().operator_discord_user_id}",
-                    "utterance_refs": session.scalar(select(ToolInvocation)).utterance_refs}
+                    "utterance_refs": session.scalar(select(ToolInvocation)).utterance_refs,
+                    "trace_execution_id": segment_for(session, trace.ref_id).id,
+                    "gateway_instance_ref": segment_for(session, trace.ref_id).gateway_instance_ref}
     with session_factory.begin() as session:
         for ordinal, name in ((101, "docket_stage_changes"), (102, "docket_commit_changeset")):
             session.add(ToolInvocation(
@@ -725,7 +769,9 @@ def test_missing_callback_calls_are_counted_once_and_invalidate_old_pages(sessio
         assert view["counts"]["attempts"] == 102
         assert view["counts"]["authenticated_invocations"] == 4
         assert view["timing"]["wrapper_elapsed_sum_ms"] == 12_500
-        assert len(trace.calls) == 100  # Derived rows do not fabricate callback history.
+        assert (
+            len(segment_for(session, trace.ref_id).calls) == 100
+        )  # Derived rows do not fabricate callback history.
         missing = view["rows"][-2:]
         assert [row["outcome"] for row in missing] == ["ready_to_commit", "committed"]
         assert all(row["transport_layer"] == "docket" for row in missing)

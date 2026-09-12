@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import func, select
+from trace_support import bind_execution, segment_for
 
 from docket.config import get_settings
 from docket.domain.public_refs import new_public_ref
@@ -28,6 +29,8 @@ def _context(plugin, factory=None):
     settings = get_settings()
     ref = new_public_ref("utt")
     message = "777777777777777778"
+    binding = {"execution_index": 1, "execution_completion_token": "a" * 32,
+               "gateway_instance_ref": new_public_ref("gwy")}
     if factory:
         with factory.begin() as session:
             session.add(OperatorUtterance(
@@ -39,15 +42,21 @@ def _context(plugin, factory=None):
                 said_at=datetime.now(UTC), verbatim_text="Test retained request.",
                 content_hash="a" * 64, request_key="checkpoint-plugin",
             ))
+            session.flush()
+            bound = bind_execution(session, session.scalar(select(OperatorUtterance)))
+            binding.update(bound)
+            binding.pop("trace_execution_id")
+            binding["turn_started_at"] = binding["turn_started_at"].isoformat()
     context = dict(
         trace_ref=new_public_ref("trace"), utterance_ref=ref,
         guild_id=settings.discord_guild_id, actor_id=settings.operator_discord_user_id,
         source_channel_id=settings.chat_channel_id, source_message_id=message,
         tool_contract_version=plugin._TOOL_CONTRACT_VERSION,
         tool_contract_hash=plugin._TOOL_CONTRACT_HASH, caller_profile="interactive",
-        turn_started_at=datetime.now(UTC).isoformat(), gateway_instance_ref=None,
+        turn_started_at=datetime.now(UTC).isoformat(),
         calls={}, next_ordinal=1, started=False, terminal=False, turn_id=None,
     )
+    context.update(binding)
     plugin._TRACE_CONTEXTS["checkpoint-test"] = context
     return context
 
@@ -97,8 +106,8 @@ def test_local_rejection_is_durable_without_queue_or_post_hook(
     assert "invocation_binding" not in args
     with session_factory() as session:
         trace = session.scalar(select(ConversationalToolTrace))
-        assert trace.calls[0]["transport_state"] == "completed"
-        assert trace.calls[0]["disposition"] == "rejected_validation"
+        assert segment_for(session, trace.ref_id).calls[0]["transport_state"] == "completed"
+        assert segment_for(session, trace.ref_id).calls[0]["disposition"] == "rejected_validation"
         assert session.scalar(select(func.count(ToolInvocation.id))) == 0
     assert context["trace_checkpoint_pending"] is False
 
@@ -125,8 +134,10 @@ def test_happy_tools_stay_async_then_final_checkpoint_precedes_response_persiste
     with session_factory() as session:
         trace = session.scalar(select(ConversationalToolTrace))
         assert trace.status == "completed"
-        assert trace.calls[0]["reported_disposition"] == "succeeded"
-        assert trace.calls[0]["disposition"] is None  # No call_ in this isolated hook fixture.
+        assert segment_for(session, trace.ref_id).calls[0]["reported_disposition"] == "succeeded"
+        assert (
+            segment_for(session, trace.ref_id).calls[0]["disposition"] is None
+        )  # No call_ in this isolated hook fixture.
 
 
 def test_failed_checkpoint_blocks_subsequent_dispatch_until_durable_recovery(
@@ -160,7 +171,11 @@ def test_failed_checkpoint_blocks_subsequent_dispatch_until_durable_recovery(
     assert "invocation_binding" in args
     with session_factory() as session:
         trace = session.scalar(select(ConversationalToolTrace))
-        assert trace.last_ordinal == 1 and trace.calls[0]["execution_boundary"] == "local_rejection"
+        assert (
+            segment_for(session, trace.ref_id).last_ordinal == 1
+            and segment_for(session, trace.ref_id).calls[0]["execution_boundary"]
+            == "local_rejection"
+        )
 
 
 def test_lost_checkpoint_acknowledgement_reuses_exact_page_after_commit(
@@ -182,7 +197,7 @@ def test_lost_checkpoint_acknowledgement_reuses_exact_page_after_commit(
     assert len(sent) == 2 and sent[0] == sent[1]
     with session_factory() as session:
         trace = session.scalar(select(ConversationalToolTrace))
-        assert trace.version == 1 and len(trace.calls) == 1
+        assert trace.version == 2 and len(segment_for(session, trace.ref_id).calls) == 1
 
 
 def test_checkpoint_uses_bounded_pages_and_can_resume_partial_delivery(plugin, monkeypatch):

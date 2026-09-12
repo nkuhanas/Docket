@@ -1150,3 +1150,47 @@ a new connection after a subsequent claim, and preserves the original interval.
 Adversarial fixtures cover wrong source/actor/gateway and inconsistent clocks;
 Discord rendering retains the exclusive timing total and explicit queue label.
 These checks are not live latency measurements or production deployment.
+
+## One conversation trace, separate admitted executions
+
+The approved execution-boundary cutover keeps one `trace_` per authenticated
+Discord source and records separate internal `TraceExecutionSegment` rows.
+Before dispatch, Docket binds the actual interactive lease, gateway and loaded
+contract. Duplicate binding of the same claim is idempotent. A fresh admitted
+execution receives a new local ordinal space without rebinding earlier calls,
+copying response/native-image state, creating another utterance, or opening a
+new semantic request. Failure to bind defers model dispatch through ingress.
+
+Assembly operation idempotency and SemanticRequestAttempt ownership now use that
+exact execution, not only the source-wide trace. PostgreSQL serialization tests
+cover simultaneous first binding and cold restart with a staged draft: execution
+two reuses the original request, observes the retained draft, commits once, and
+recovers the same receipt after a lost response. Its first upstream ID may equal
+execution one's without replaying the earlier operation. The expired gateway is
+fenced. Existing committed-outcome recovery and one-response-owner tests remain
+passing; trace interruption does not erase a durable committed domain outcome.
+
+Contract v39/plugin `0.31.0` require execution-bound internal callbacks and the
+format-2 signed invocation envelope. The old signature/shape is rejected without
+a decoder. No new model tool or public lease/segment prefix is introduced.
+Trace calls show execution index and local ordinal. `view="executions"` on the
+existing history tool provides bounded, revision-consistent metadata and measured
+timing even for executions with zero calls. A 31-execution fixture verifies
+complete pagination, collection/revision cursor fencing and the 16 KiB bound.
+Unmeasured phases remain null; recovery downtime is not claimed as model time.
+
+Migration `20260912b8f7` moves captured execution fields out of the parent trace,
+retaining exact source refs, captured calls/timestamps, timing evidence and
+ToolInvocation outcomes. Historical segments are explicitly `retained_trace`,
+without an inferred lease. Only exact existing trace links are attached; missing
+historical links stay unknown. PostgreSQL tests exercise a populated
+upgrade/downgrade/re-upgrade with exact before/after equality, immutable binding
+and delete guards, and downgrade refusal once an admitted execution exists.
+The empty full-history round trip and clean governance restore also pass.
+
+Validation passed **753 tests, Ruff and strict mypy (144 source files)**, plus
+isolated Compose smoke with authenticated HTTP MCP/callback execution and 25
+PostgreSQL assembly/recovery checks. This is not a production deployment, live
+latency measurement, Calendar replay or local OCR installation. Docket and the
+plugin require coordinated drained deployment; after new executions exist,
+recovery is forward repair or the verified backup, not image-only rollback.

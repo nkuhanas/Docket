@@ -23,6 +23,7 @@ from docket.internal_api.schemas import (
     ProductionResetAuthorizationCapture,
     SemanticOptionSelection,
     SpecificationSignoffCapture,
+    TraceExecutionBind,
 )
 from docket.models import (
     AgentResponse,
@@ -41,6 +42,7 @@ from docket.services.mcp_traces import McpTraceService
 from docket.services.provenance import ProvenanceService
 from docket.services.semantic_options import SemanticOptionService
 from docket.services.tool_invocations import ToolInvocationService
+from docket.services.trace_executions import TraceExecutionService
 
 logger = structlog.get_logger(__name__)
 
@@ -58,6 +60,9 @@ def assembly_operation_admit(payload: AssemblyOperationAdmission) -> dict[str, o
             return ChangeSetAssemblyAdmissionService(session).admit(
                 utterance_ref=payload.utterance_ref,
                 trace_ref=payload.trace_ref,
+                execution_index=payload.execution_index,
+                execution_completion_token=payload.execution_completion_token,
+                gateway_instance_ref=payload.gateway_instance_ref,
                 upstream_tool_call_id=payload.upstream_tool_call_id,
                 trace_ordinal=payload.trace_ordinal,
                 tool_name=payload.tool_name,
@@ -147,6 +152,19 @@ def _wake_projection_worker(request: Request) -> None:
     except Exception:
         # The committed outbox remains authoritative; polling is the fallback.
         logger.exception("discord_projection_wake_failed")
+
+
+@router.post("/mcp-traces/bind")
+def trace_execution_bind(request: Request, payload: TraceExecutionBind) -> dict[str, object]:
+    try:
+        with session_scope() as session:
+            result = TraceExecutionService(session).bind(**payload.model_dump())
+    except DocketError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=exc.as_dict()["error"]
+        ) from exc
+    _wake_projection_worker(request)
+    return result
 
 
 @router.put("/mcp-traces/{trace_ref}")

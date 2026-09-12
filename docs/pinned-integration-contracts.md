@@ -30,6 +30,26 @@ traceability marker only.
 
 ## Hermes plugin contract
 
+Plugin `0.31.0`/contract v39 separate a source-wide conversational trace from
+its admitted executions. After durable ingress claim and before model dispatch,
+the plugin calls `/internal/v1/discord/mcp-traces/bind` with the original `utt_`,
+opaque completion token, gateway lifetime and current contract. Docket returns
+the one `trace_` for the message plus its execution index and next local ordinal.
+Replaying the same claim returns the same binding; a restart creates a separate
+execution, not a new parent or a mutation of the prior gateway's observations.
+This callback starts no model or provider work and grants no semantic authority.
+Failed binding defers dispatch through the existing durable ingress path.
+
+Checkpoint, asynchronous trace and assembly-admission callbacks require that
+exact execution index and completion token. Signed MCP bindings use format 2
+and the `docket-mcp-invocation-v2:` signing context; there is no old decoder.
+The plugin never copies call ordinals, responses or native-image preparation
+state into a new execution. Infrastructure owns this bookkeeping; the model
+still uses stage, optional review/edit, then parameterless commit.
+The bounded history tool adds `view="executions"`, including executions with no
+tool calls. Cursors bind both collection and source-trace revision. There are
+still 23 interactive tools and four isolated triage tools.
+
 Plugin `0.30.0`/contract v38 label the initial ingress-queue interval separately.
 It is derived from the exact original ledger receipt and first interactive
 execution claim, never the mutable current claim or a later matching gateway.

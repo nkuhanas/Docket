@@ -13,7 +13,13 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql.elements import ColumnElement
 
-from docket.models import AssemblyOperation, ChangeSet, OperatorUtterance, ToolInvocation
+from docket.models import (
+    AssemblyExecution,
+    AssemblyOperation,
+    ChangeSet,
+    OperatorUtterance,
+    ToolInvocation,
+)
 
 
 def is_gateway_unknown(invocation: ToolInvocation) -> bool:
@@ -26,8 +32,9 @@ def is_gateway_unknown(invocation: ToolInvocation) -> bool:
 def gateway_recovery_pending() -> ColumnElement[bool]:
     """Do not continually lock evidence-free unknown calls on retired gateways."""
     original = aliased(ToolInvocation)
-    terminal = select(AssemblyOperation.id).join(original, and_(
+    terminal = select(AssemblyOperation.id).join(AssemblyExecution).join(original, and_(
         original.trace_ref == AssemblyOperation.trace_ref,
+        original.trace_execution_id.is_not_distinct_from(AssemblyExecution.trace_execution_id),
         original.trace_call_id == AssemblyOperation.upstream_tool_call_id,
         original.utterance_refs[0].as_string() == AssemblyOperation.source_utterance_ref,
         original.tool_name == AssemblyOperation.tool_name,
@@ -37,6 +44,7 @@ def gateway_recovery_pending() -> ColumnElement[bool]:
         AssemblyOperation.completed_at.is_not(None),
         AssemblyOperation.result_disposition != "unknown",
         original.trace_ref == ToolInvocation.trace_ref,
+        original.trace_execution_id.is_not_distinct_from(ToolInvocation.trace_execution_id),
         original.trace_ordinal == ToolInvocation.trace_ordinal,
         original.tool_name == ToolInvocation.tool_name,
         original.received_argument_hash == ToolInvocation.received_argument_hash,
@@ -75,6 +83,7 @@ def bound_assembly_operation(
         # nearby invocation by tool name, request ref or argument hash alone.
         originals = list(session.scalars(select(ToolInvocation).where(
             ToolInvocation.trace_ref == invocation.trace_ref,
+            ToolInvocation.trace_execution_id.is_not_distinct_from(invocation.trace_execution_id),
             ToolInvocation.trace_ordinal == invocation.trace_ordinal,
             ToolInvocation.trace_call_id.is_not(None),
         )))
@@ -94,8 +103,9 @@ def bound_assembly_operation(
         utterance.actor_ref != invocation.actor_ref
     ):
         return None
-    return session.scalar(select(AssemblyOperation).where(
+    return session.scalar(select(AssemblyOperation).join(AssemblyExecution).where(
         AssemblyOperation.trace_ref == original.trace_ref,
+        AssemblyExecution.trace_execution_id.is_not_distinct_from(original.trace_execution_id),
         AssemblyOperation.upstream_tool_call_id == original.trace_call_id,
         AssemblyOperation.source_utterance_ref == utterance.ref_id,
         AssemblyOperation.tool_name == invocation.tool_name,

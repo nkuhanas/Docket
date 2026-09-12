@@ -203,7 +203,7 @@ def _bind_execution_request(
     ).scalar_one()
     attempt = session.scalar(select(SemanticRequestAttempt).where(
         SemanticRequestAttempt.semantic_request_id == request.id,
-        SemanticRequestAttempt.execution_trace_ref == execution.trace_ref,
+        SemanticRequestAttempt.trace_execution_id == execution.trace_execution_id,
     ))
     if attempt is None:
         next_attempt = int(session.scalar(
@@ -212,11 +212,15 @@ def _bind_execution_request(
             )
         ) or 0) + 1
         attempt = SemanticRequestAttempt(
-            semantic_request_id=request.id, semantic_request_ref=request.ref_id,
-            attempt_number=next_attempt, authority_scope_hash=request.authority_scope_hash,
+            semantic_request_id=request.id,
+            semantic_request_ref=request.ref_id,
+            attempt_number=next_attempt,
+            authority_scope_hash=request.authority_scope_hash,
             precondition_hash=request.current_precondition_hash,
             case_revision_ref=request.current_case_revision_ref,
-            execution_trace_ref=execution.trace_ref, state="pending",
+            trace_ref=execution.trace_ref,
+            trace_execution_id=execution.trace_execution_id,
+            state="pending",
         )
         session.add(attempt)
         session.flush()
@@ -269,6 +273,9 @@ class ChangeSetAssemblyAdmissionService:
         *,
         utterance_ref: str,
         trace_ref: str,
+        execution_index: int,
+        execution_completion_token: str,
+        gateway_instance_ref: str,
         upstream_tool_call_id: str,
         trace_ordinal: int,
         tool_name: str,
@@ -299,8 +306,29 @@ class ChangeSetAssemblyAdmissionService:
                 code="assembly_authority_mismatch",
                 message="Assembly admission does not match the authenticated utterance.",
             )
+        from docket.services.trace_executions import TraceExecutionService
+
+        parent, segment = TraceExecutionService(self.session).require(
+            trace_ref=trace_ref, execution_index=execution_index,
+            execution_completion_token=execution_completion_token,
+            gateway_instance_ref=gateway_instance_ref, active=True,
+        )
+        if (
+            parent.guild_id,
+            parent.source_channel_id,
+            parent.source_message_id,
+            parent.actor_id,
+        ) != (
+            guild_id,
+            channel_id,
+            source_message_id,
+            actor_id,
+        ):
+            raise DocketError(code="assembly_authority_mismatch",
+                              message="The admitted trace belongs to another message.")
         existing = self.session.scalar(
-            select(AssemblyOperation).where(
+            select(AssemblyOperation).join(AssemblyExecution).where(
+                AssemblyExecution.trace_execution_id == segment.id,
                 AssemblyOperation.source_utterance_ref == utterance.ref_id,
                 AssemblyOperation.upstream_tool_call_id == upstream_tool_call_id,
             )
@@ -322,14 +350,14 @@ class ChangeSetAssemblyAdmissionService:
             select(AssemblyExecution)
             .where(
                 AssemblyExecution.source_utterance_ref == utterance.ref_id,
-                AssemblyExecution.trace_ref == trace_ref,
+                AssemblyExecution.trace_execution_id == segment.id,
             )
             .with_for_update()
         )
         if execution is None:
             execution = AssemblyExecution(
                 source_utterance_ref=utterance.ref_id,
-                trace_ref=trace_ref,
+                trace_ref=trace_ref, trace_execution_id=segment.id,
                 next_sequence=1,
             )
             self.session.add(execution)
@@ -410,6 +438,7 @@ class ChangeSetAssemblyService:
             invocation = self.session.scalar(
                 select(ToolInvocation).where(
                     ToolInvocation.trace_ref == predecessor.trace_ref,
+                    ToolInvocation.trace_execution_id == execution.trace_execution_id,
                     ToolInvocation.trace_call_id == predecessor.upstream_tool_call_id,
                 )
             )
@@ -443,7 +472,7 @@ class ChangeSetAssemblyService:
 
     def _reconcile_local_predecessor(self, predecessor: AssemblyOperation) -> None:
         """A lost admission response can fail locally without any MCP dispatch."""
-        from docket.models import ConversationalToolTrace
+        from docket.models import ConversationalToolTrace, TraceExecutionSegment
 
         if predecessor.state != "admitted":
             return  # Local telemetry cannot erase started or committed domain execution.
@@ -460,7 +489,13 @@ class ChangeSetAssemblyService:
             or utterance.actor_ref != f"discord_user:{trace.actor_id}"
         ):
             return
-        call = next((row for row in trace.calls if (
+        owner = self.session.get(AssemblyExecution, predecessor.assembly_execution_id)
+        segment = self.session.get(TraceExecutionSegment, owner.trace_execution_id) if (
+            owner is not None and owner.trace_execution_id is not None
+        ) else None
+        if segment is None:
+            return
+        call = next((row for row in segment.calls if (
             row.get("call_id") == predecessor.upstream_tool_call_id
             and row.get("tool_name") == predecessor.tool_name
             and row.get("received_argument_hash") == predecessor.argument_hash
@@ -739,7 +774,7 @@ class ChangeSetAssemblyService:
             existing_attempt = self.session.scalar(
                 select(SemanticRequestAttempt).where(
                     SemanticRequestAttempt.semantic_request_id == semantic_request.id,
-                    SemanticRequestAttempt.execution_trace_ref == execution.trace_ref,
+                    SemanticRequestAttempt.trace_execution_id == execution.trace_execution_id,
                 )
             )
             if existing_attempt is None:
@@ -761,7 +796,7 @@ class ChangeSetAssemblyService:
                     authority_scope_hash=semantic_request.authority_scope_hash,
                     precondition_hash=semantic_request.current_precondition_hash,
                     case_revision_ref=semantic_request.current_case_revision_ref,
-                    execution_trace_ref=execution.trace_ref,
+                    trace_ref=execution.trace_ref, trace_execution_id=execution.trace_execution_id,
                     state="pending",
                 )
                 self.session.add(existing_attempt)

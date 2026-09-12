@@ -7,6 +7,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 from test_plugin_actor_gate import plugin_module as base_plugin_fixture
+from test_plugin_actor_gate import resume_trace_fixture
 
 
 @pytest.fixture
@@ -150,24 +151,23 @@ def test_failed_input_capture_can_recover_at_final_callback_without_model_respon
     assert context["response_persistence_failed"] is False
 
 
-def test_new_execution_claim_resets_only_native_failure_projection(plugin_module, monkeypatch):
+def test_new_execution_claim_does_not_rewrite_previous_native_failure(plugin_module, monkeypatch):
     context, persisted, scheduled = _context(plugin_module, monkeypatch)
     context["execution_completion_token"] = "original-claim"
     with pytest.raises(RuntimeError, match="docket_native_image_input_unavailable"):
         plugin_module._verify_native_image_input("image-turn", "", [])
-    plugin_module._rebind_trace_execution(context, object(), {
-        "execution_completion_token": "original-claim",
-    })
     assert context["native_image_state"] == "failed"
-    plugin_module._rebind_trace_execution(context, object(), {
-        "execution_completion_token": "recovery-claim",
-    })
-    assert context["native_image_state"] == "pending"
-    assert "deterministic_response_text" not in context
-    assert not context.get("deterministic_delivery_scheduled")
-    assert context["response_ref"] is None
+    resumed = resume_trace_fixture(plugin_module, monkeypatch, context, "image-turn")
+    # Ingress supplies fresh source bindings; no failed/prepared state is copied.
+    resumed.update(
+        native_image_bindings=context["native_image_bindings"], native_image_state="pending"
+    )
+    assert not resumed.get("deterministic_response_text")
+    assert not resumed.get("deterministic_delivery_scheduled")
+    assert not resumed.get("response_ref")
     plugin_module._verify_native_image_input("image-turn", "", _parts(b"image one"))
-    assert context["native_image_state"] == "prepared"
+    assert resumed["native_image_state"] == "prepared"
+    assert context["native_image_state"] == "failed"
     assert len(persisted) == len(scheduled) == 1  # Previous immutable response remains.
 
 
@@ -317,11 +317,13 @@ def test_real_context_boundary_checks_images_before_calling_original(plugin_modu
     with pytest.raises(RuntimeError, match="docket_native_image_input_unavailable"):
         wrapper(agent, "lost image, only text", None, [], "image-turn")
     assert calls == [] and len(persisted) == 1
-    plugin_module._rebind_trace_execution(context, object(), {
-        "execution_completion_token": "new-admitted-execution",
-    })
+    resumed = resume_trace_fixture(plugin_module, monkeypatch, context, "image-turn")
+    resumed.update(
+        native_image_bindings=context["native_image_bindings"], native_image_state="pending"
+    )
     assert wrapper(agent, _parts(b"image one"), None, [], "image-turn") == "original result"
-    assert context["native_image_state"] == "prepared"
+    assert resumed["native_image_state"] == "prepared"
+    assert context["native_image_state"] == "failed"
     # Unrelated sessions neither inherit the source nor get blocked by this request.
     assert wrapper(SimpleNamespace(session_id="other"), "plain", None, [], "other") == (
         "original result"

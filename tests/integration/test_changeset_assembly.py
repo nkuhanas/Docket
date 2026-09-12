@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import func, select
+from trace_support import bind_execution, callback_binding
 
 from docket.config import get_settings
 from docket.domain.canonical import sha256_json
@@ -576,14 +577,15 @@ def test_local_admission_loss_recovers_only_exact_undispatched_predecessor(sessi
                    ordinal=1, tool_name="docket_stage_changes", argument_hash="a" * 64)
     # Admission committed but its response was lost. The gateway did not invoke MCP.
     for state in ("running", "completed"):
-        McpTraceService(session).update(trace_ref, McpTraceUpdate(
+        update = McpTraceUpdate(
             request_id="00000000-0000-0000-0000-000000000001",
             guild_id=settings.discord_guild_id, source_channel_id=settings.chat_channel_id,
             source_message_id=("1542799000000000881" if binding == "other_message"
                                else "1542799000000000880"),
             actor_id=settings.operator_discord_user_id, tool_contract_version=CONTRACT_VERSION,
             tool_contract_hash=contract_hash("interactive"), caller_profile="interactive",
-            turn_started_at=utterance.said_at, updated_at=datetime.now(UTC),
+            **callback_binding(bind_execution(session, utterance, label=trace_ref)),
+            updated_at=datetime.now(UTC),
             call=McpTraceCallUpdate(
                 call_id="lost-admission", ordinal=1, tool_name="docket_stage_changes",
                 execution_boundary=(
@@ -593,7 +595,13 @@ def test_local_admission_loss_recovers_only_exact_undispatched_predecessor(sessi
                 disposition="failed" if state == "completed" else None,
                 received_argument_hash="b" * 64 if binding == "other_hash" else "a" * 64,
             ),
-        ))
+        )
+        if binding == "other_message":
+            with pytest.raises(DocketError) as invalid:
+                McpTraceService(session).update(trace_ref, update)
+            assert invalid.value.code == "mcp_trace_binding_mismatch"
+        else:
+            McpTraceService(session).update(trace_ref, update)
     second = _admit(session, utterance=utterance, trace_ref=trace_ref, call_id="corrected-new-call",
                     ordinal=2, tool_name="docket_stage_changes", argument_hash="c" * 64)
     service = ChangeSetAssemblyService(session)
@@ -646,9 +654,13 @@ def _admit(
     argument_hash: str,
 ) -> str:
     settings = get_settings()
+    binding = bind_execution(session, utterance, label=trace_ref)
     result = ChangeSetAssemblyAdmissionService(session).admit(
         utterance_ref=utterance.ref_id,
-        trace_ref=trace_ref,
+        trace_ref=binding["trace_ref"],
+        **{key: binding[key] for key in (
+            "execution_index", "execution_completion_token", "gateway_instance_ref",
+        )},
         upstream_tool_call_id=call_id,
         trace_ordinal=ordinal,
         tool_name=tool_name,
@@ -1748,9 +1760,13 @@ def test_old_stage_retry_cannot_undo_newer_replacement(session) -> None:
     action = changeset.tracked_context_changes[0]
     assert action["create_spec"]["title"] == "Tracked request V2"
 
+    new_binding = bind_execution(session, utterance)
     cross_trace_admission = ChangeSetAssemblyAdmissionService(session).admit(
         utterance_ref=utterance.ref_id,
-        trace_ref=new_public_ref("trace"),
+        trace_ref=new_binding["trace_ref"],
+        **{key: new_binding[key] for key in (
+            "execution_index", "execution_completion_token", "gateway_instance_ref",
+        )},
         upstream_tool_call_id="old-item-stage",
         trace_ordinal=1,
         tool_name="docket_stage_changes",
@@ -1760,13 +1776,24 @@ def test_old_stage_retry_cannot_undo_newer_replacement(session) -> None:
         source_message_id=utterance.request_key.split(":")[3],
         actor_id=get_settings().operator_discord_user_id,
     )
-    assert cross_trace_admission["replayed"] is True
-    assert cross_trace_admission["assembly_operation_token"] == original_token
+    # Equal upstream IDs in a separately admitted execution are not a replay.
+    # Its stale observation cannot overwrite the replacement; replay above used
+    # the original durable operation token and did recover the original result.
+    assert cross_trace_admission["replayed"] is False
+    assert cross_trace_admission["assembly_operation_token"] != original_token
+    assert service.stage(
+        original, assembly_operation_token=cross_trace_admission["assembly_operation_token"],
+        assembly_argument_hash="1" * 64,
+    )["disposition"] == "draft_revision_conflict"
 
     with pytest.raises(DocketError) as exc_info:
+        old_binding = bind_execution(session, utterance, label=trace_a)
         ChangeSetAssemblyAdmissionService(session).admit(
             utterance_ref=utterance.ref_id,
             trace_ref=trace_a,
+            **{key: old_binding[key] for key in (
+                "execution_index", "execution_completion_token", "gateway_instance_ref",
+            )},
             upstream_tool_call_id="old-item-stage",
             trace_ordinal=1,
             tool_name="docket_stage_changes",
@@ -2384,17 +2411,21 @@ def test_mcp_stage_then_payload_free_commit_and_replay_without_review(session_fa
                 tool_name=name,
                 argument_hash=model_hash,
             )
+            binding = bind_execution(session, utterance, label=trace_ref)
         now = int(datetime.now(UTC).timestamp())
         encoded = base64.urlsafe_b64encode(json.dumps({
-            "format": 1, "trace_ref": trace_ref, "call_id": f"mcp-{ordinal}",
-            "ordinal": ordinal, "utterance_ref": utterance.ref_id, "gateway_instance_ref": None,
+            "format": 2, "trace_ref": binding["trace_ref"], "call_id": f"mcp-{ordinal}",
+            "ordinal": ordinal, "utterance_ref": utterance.ref_id,
+            **{key: binding[key] for key in (
+                "execution_index", "execution_completion_token", "gateway_instance_ref",
+            )},
             "tool_name": name, "argument_hash": model_hash,
             "contract_version": CONTRACT_VERSION, "contract_hash": contract_hash("interactive"),
             "issued_at": now, "expires_at": now + 900,
         }, sort_keys=True, separators=(",", ":")).encode()).decode().rstrip("=")
         signature = hmac.new(
             get_settings().hermes_to_docket_token().encode(),
-            b"docket-mcp-invocation-v1:" + encoded.encode(), hashlib.sha256,
+            b"docket-mcp-invocation-v2:" + encoded.encode(), hashlib.sha256,
         ).hexdigest()
         result = asyncio.run(
             mcp.call_tool(
@@ -2512,6 +2543,9 @@ def test_terminal_tool_call_reconciles_stale_admitted_predecessor(session) -> No
             domain_state="rejected",
             error_code="validation_error",
             trace_ref=trace_ref,
+            trace_execution_id=bind_execution(session, utterance, label=trace_ref)[
+                "trace_execution_id"
+            ],
             trace_call_id="stale-predecessor",
             trace_ordinal=1,
             completed_at=datetime.now(UTC),

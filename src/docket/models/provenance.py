@@ -226,7 +226,9 @@ class ToolInvocation(Base):
             "domain_state IN ('succeeded', 'rejected', 'failed', 'unknown')",
             name="ck_tool_invocations_domain_state",
         ),
-        UniqueConstraint("trace_ref", "trace_call_id", name="uq_tool_invocations_trace_call"),
+        UniqueConstraint(
+            "trace_execution_id", "trace_call_id", name="uq_tool_invocations_execution_call"
+        ),
         Index("ix_tool_invocations_name_started", "tool_name", "started_at"),
         Index("ix_tool_invocations_trace", "trace_ref", "trace_ordinal"),
     )
@@ -264,6 +266,9 @@ class ToolInvocation(Base):
     error_code: Mapped[str | None] = mapped_column(String(128))
     mcp_request_id: Mapped[str | None] = mapped_column(String(255))
     trace_ref: Mapped[str | None] = mapped_column(String(40))
+    trace_execution_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("trace_execution_segments.id", ondelete="RESTRICT"), index=True,
+    )
     trace_call_id: Mapped[str | None] = mapped_column(String(255))
     trace_ordinal: Mapped[int | None] = mapped_column(Integer)
 

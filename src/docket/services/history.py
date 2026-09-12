@@ -792,12 +792,14 @@ class HistoryService:
             item = self.session.scalar(select(Source).where(Source.ref_id == ref_id))
         if item is None:
             raise DocketError(code="history_entry_not_found", message="Public reference not found.")
-        if view == "calls":
+        if view in {"calls", "executions"}:
             if not isinstance(item, ConversationalToolTrace):
                 raise DocketError(
                     code="trace_view_requires_trace", message="Call details require a trace_ ref."
                 )
-            return TraceViewService(self.session).read(item, cursor=cursor, limit=limit)
+            return TraceViewService(self.session).read(
+                item, cursor=cursor, limit=limit, collection=view
+            )
         if view == "delivery":
             if not isinstance(item, ChangeSet):
                 raise DocketError(

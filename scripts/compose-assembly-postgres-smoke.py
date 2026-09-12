@@ -18,16 +18,16 @@ from io import BytesIO
 from typing import Any, Literal
 from unittest.mock import patch
 
-from alembic import command
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from alembic.script import ScriptDirectory
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
+from trace_execution_checks import test_retained_trace_migration_round_trip
 
 from docket.config import get_settings
 from docket.database import configure_database
@@ -44,6 +44,7 @@ from docket.internal_api.schemas import (
 )
 from docket.mcp.instrumented import ProvenanceFastMCP
 from docket.models import (
+    AssemblyExecution,
     AssemblyOperation,
     AttachmentEvidence,
     AuditEvent,
@@ -63,7 +64,6 @@ from docket.models import (
     Operation,
     OperationTarget,
     OperatorUtterance,
-    OutboxEvent,
     ProviderAccount,
     ProviderEventBinding,
     RequestAssemblyAdoption,
@@ -74,6 +74,7 @@ from docket.models import (
     Source,
     Task,
     ToolInvocation,
+    TraceExecutionSegment,
     TraceTimingObservation,
 )
 from docket.providers.google.calendar import CalendarProviderError
@@ -86,6 +87,7 @@ from docket.services.changeset_assembly import (
     ChangeSetAssemblyAdmissionService,
     ChangeSetAssemblyService,
 )
+from docket.services.continuity import ContinuityService
 from docket.services.event_occurrences import (
     bind_calendar_date,
     identity_for_timing,
@@ -98,6 +100,7 @@ from docket.services.invocation_binding import bind_invocation
 from docket.services.mcp_traces import McpTraceService
 from docket.services.operations import OperationRunner
 from docket.services.provenance import ProvenanceService
+from docket.services.trace_executions import TraceExecutionService
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash
 
 
@@ -367,7 +370,7 @@ def test_native_and_deferred_ingress_claim_once(factory: sessionmaker[Session]) 
     settings = get_settings()
     with factory.begin() as session:
         gateway = GatewayLifetimeService(session).register(
-            registration_key=uuid.uuid4(), instance_kind="hermes_discord_gateway"
+            registration_key=uuid.uuid4(), instance_kind="ingress_claim_smoke"
         )
         utterance = _utterance("1542799000000000550", "One input, one execution.")
         session.add(utterance)
@@ -445,6 +448,74 @@ def _load_utterance(session: Session, utterance_ref: str) -> OperatorUtterance:
     return utterance
 
 
+def _bind_execution(session, utterance, *, label=None, started_at=None, gateway=None, token=None):
+    session.scalar(select(OperatorUtterance).where(
+        OperatorUtterance.ref_id == utterance.ref_id,
+    ).with_for_update())
+    """Synthetic admitted execution; its label never replaces the server binding."""
+    settings = get_settings()
+    label = label or uuid.uuid4().hex
+    key = f"test:trace:{utterance.ref_id}:{label}"
+    lease = session.scalar(select(ExecutionLease).where(
+        ExecutionLease.completion_token == token if token else ExecutionLease.lease_key == key,
+    ))
+    if lease is None:
+        if gateway is None:
+            live = session.scalar(select(GatewayLifetime).where(
+                GatewayLifetime.instance_kind == "hermes_discord_gateway",
+                GatewayLifetime.status == "active",
+            ))
+            gateway = live.ref_id if live else GatewayLifetimeService(session).register(
+                registration_key=uuid.uuid4(), instance_kind="hermes_discord_gateway",
+            )["ref"]
+        lease = ContinuityService(session).acquire_execution_lease(
+            lease_key=key, lease_kind="interactive_turn", subject_ref=utterance.ref_id,
+            gateway_instance_ref=gateway,
+        )
+    start = started_at or datetime.now(UTC)
+    parts = utterance.source_message_ref.split(":")
+    if label.startswith("trace_") and session.scalar(select(ConversationalToolTrace).where(
+        ConversationalToolTrace.guild_id == parts[1],
+        ConversationalToolTrace.source_channel_id == parts[2],
+        ConversationalToolTrace.source_message_id == parts[3],
+    )) is None:
+        # Stable synthetic first-ref fixtures only. Production always lets Docket
+        # allocate it; the resumed execution still receives this same parent.
+        session.add(ConversationalToolTrace(
+            ref_id=label, guild_id=parts[1], source_channel_id=parts[2],
+            source_message_id=parts[3], actor_id=settings.operator_discord_user_id,
+            started_at=start, version=0,
+        ))
+        session.flush()
+    result = TraceExecutionService(session).bind(
+        utterance_ref=utterance.ref_id, execution_completion_token=lease.completion_token,
+        gateway_instance_ref=lease.gateway_instance_ref, turn_started_at=start,
+        tool_contract_version=CONTRACT_VERSION, tool_contract_hash=contract_hash("interactive"),
+    )
+    segment = session.scalar(select(TraceExecutionSegment).where(
+        TraceExecutionSegment.execution_lease_id == lease.id,
+    ))
+    return {
+        "trace_ref": result["trace_ref"], "execution_index": result["execution_index"],
+        "execution_completion_token": lease.completion_token,
+        "gateway_instance_ref": lease.gateway_instance_ref,
+        "turn_started_at": datetime.fromisoformat(result["turn_started_at"]),
+        "trace_execution_id": segment.id,
+    }
+
+
+def _callback_binding(binding):
+    return {key: binding[key] for key in (
+        "execution_index", "execution_completion_token", "gateway_instance_ref", "turn_started_at",
+    )}
+
+
+def _segment_for(session, ref, index=1):
+    return session.scalar(select(TraceExecutionSegment).where(
+        TraceExecutionSegment.trace_ref == ref, TraceExecutionSegment.execution_index == index,
+    ))
+
+
 def _admit(
     session: Session,
     *,
@@ -454,12 +525,17 @@ def _admit(
     ordinal: int,
     tool_name: str,
     argument_hash: str,
+    execution_binding: dict[str, Any] | None = None,
 ) -> str:
     settings = get_settings()
     utterance = _load_utterance(session, utterance_ref)
+    binding = execution_binding or _bind_execution(session, utterance, label=trace_ref)
     admitted = ChangeSetAssemblyAdmissionService(session).admit(
         utterance_ref=utterance.ref_id,
-        trace_ref=trace_ref,
+        trace_ref=binding["trace_ref"],
+        **{key: binding[key] for key in (
+            "execution_index", "execution_completion_token", "gateway_instance_ref",
+        )},
         upstream_tool_call_id=call_id,
         trace_ordinal=ordinal,
         tool_name=tool_name,
@@ -596,6 +672,136 @@ def _review(
             ),
             assembly_operation_token=token,
             assembly_argument_hash=argument_hash,
+        )
+
+
+def test_cold_restart_reuses_one_trace_and_staged_request(factory: sessionmaker[Session]) -> None:
+    utterance_ref, request_key = _create_utterance(
+        factory, "1542799000000000798", "Track the cold-restart verification item."
+    )
+    kind = "trace_restart_smoke"
+    with factory.begin() as session:
+        gateway = GatewayLifetimeService(session).register(
+            registration_key=uuid.uuid4(), instance_kind=kind,
+        )["ref"]
+        lease = ContinuityService(session).acquire_execution_lease(
+            lease_key=f"trace-cold-first:{utterance_ref}", lease_kind="interactive_turn",
+            subject_ref=utterance_ref, gateway_instance_ref=gateway,
+        )
+        binding_args = {
+            "utterance_ref": utterance_ref, "execution_completion_token": lease.completion_token,
+            "gateway_instance_ref": gateway, "turn_started_at": datetime.now(UTC),
+            "tool_contract_version": CONTRACT_VERSION,
+            "tool_contract_hash": contract_hash("interactive"),
+        }
+    barrier = threading.Barrier(2)
+
+    def bind_first():
+        barrier.wait(timeout=10)
+        with factory.begin() as session:
+            return TraceExecutionService(session).bind(**binding_args)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: bind_first(), range(2)))
+    assert {row["disposition"] for row in results} == {"bound", "replayed_request"}
+    assert results[0]["trace_ref"] == results[1]["trace_ref"]
+    assert results[0]["execution_index"] == results[1]["execution_index"] == 1
+    trace_ref = results[0]["trace_ref"]
+    first = {**binding_args, **results[0]}
+    with factory.begin() as session:
+        utterance = _load_utterance(session, utterance_ref)
+        token = _admit(
+            session, utterance_ref=utterance_ref, trace_ref=trace_ref, call_id="same-upstream",
+            ordinal=1, tool_name="docket_stage_changes", argument_hash="a" * 64,
+            execution_binding=first,
+        )
+        receipt = ChangeSetAssemblyService(session).stage(
+            _item_stage(
+                utterance, change_id="restart-item", title="Cold-restart item", include_scope=True
+            ),
+            assembly_operation_token=token,
+            assembly_argument_hash="a" * 64,
+        )
+        assert receipt["disposition"] == "ready_to_commit"
+        draft = session.scalar(select(ChangeSet).join(SemanticRequest,
+            ChangeSet.semantic_request_ref == SemanticRequest.ref_id).where(
+                SemanticRequest.origin_utterance_refs[0].as_string() == utterance_ref,
+            ))
+        draft_ref, request_ref = draft.ref_id, draft.semantic_request_ref
+    with factory.begin() as session:
+        lifetime = session.scalar(select(GatewayLifetime).where(GatewayLifetime.ref_id == gateway))
+        lifetime.lease_expires_at = datetime.now(UTC) - timedelta(seconds=10)
+    with factory.begin() as session:
+        replacement = GatewayLifetimeService(session).register(
+            registration_key=uuid.uuid4(), instance_kind=kind,
+        )["ref"]
+        lease = ContinuityService(session).acquire_execution_lease(
+            lease_key=f"trace-cold-second:{utterance_ref}", lease_kind="interactive_turn",
+            subject_ref=utterance_ref, gateway_instance_ref=replacement,
+        )
+        resumed_args = {
+            **binding_args,
+            "gateway_instance_ref": replacement,
+            "execution_completion_token": lease.completion_token,
+            "turn_started_at": datetime.now(UTC),
+        }
+        resumed = {**resumed_args, **TraceExecutionService(session).bind(**resumed_args)}
+        assert resumed["trace_ref"] == trace_ref and resumed["execution_index"] == 2
+        review_token = _admit(
+            session, utterance_ref=utterance_ref, trace_ref=trace_ref, call_id="same-upstream",
+            ordinal=1, tool_name="docket_review_changeset", argument_hash="b" * 64,
+            execution_binding=resumed,
+        )
+        assert review_token != token
+        ChangeSetAssemblyService(session).review(
+            ReviewChangesInput(utterance_ref=utterance_ref, request_key=request_key),
+            assembly_operation_token=review_token, assembly_argument_hash="b" * 64,
+        )
+    with factory.begin() as session:
+        commit_token = _admit(
+            session, utterance_ref=utterance_ref, trace_ref=trace_ref, call_id="commit",
+            ordinal=2, tool_name="docket_commit_changeset", argument_hash="c" * 64,
+            execution_binding=resumed,
+        )
+    for _ in range(2):
+        with factory.begin() as session:
+            committed = ChangeSetAssemblyService(session).commit(
+                utterance_ref=utterance_ref, request_key=request_key,
+                assembly_operation_token=commit_token, assembly_argument_hash="c" * 64,
+            )
+            assert committed["canonical_disposition"] == "committed"
+    try:
+        with factory.begin() as session:
+            TraceExecutionService(session).require(
+                trace_ref=trace_ref, execution_index=1,
+                execution_completion_token=first["execution_completion_token"],
+                gateway_instance_ref=gateway,
+            )
+    except DocketError as exc:
+        assert exc.code == "gateway_lifetime_fenced"
+    else:
+        raise AssertionError("An old gateway changed a resumed execution")
+    with factory() as session:
+        assert session.scalar(select(func.count(ConversationalToolTrace.id)).where(
+            ConversationalToolTrace.ref_id == trace_ref,
+        )) == 1
+        segments = list(session.scalars(select(TraceExecutionSegment).where(
+            TraceExecutionSegment.trace_ref == trace_ref,
+        ).order_by(TraceExecutionSegment.execution_index)))
+        assert [row.status for row in segments] == ["interrupted", "running"]
+        assert session.scalar(select(func.count(AssemblyExecution.id)).where(
+            AssemblyExecution.trace_ref == trace_ref,
+        )) == 2
+        assert session.scalar(select(func.count(SemanticRequestAttempt.id)).where(
+            SemanticRequestAttempt.semantic_request_ref == request_ref,
+        )) == 2
+        assert session.scalar(select(func.count(ChangeSet.id)).where(
+            ChangeSet.semantic_request_ref == request_ref, ChangeSet.ref_id == draft_ref,
+            ChangeSet.state == "committed",
+        )) == 1
+        assert (
+            session.scalar(select(func.count(Item.id)).where(Item.title == "Cold-restart item"))
+            == 1
         )
 
 
@@ -1055,13 +1261,19 @@ def test_direct_request_adoption_serializes_and_preserves_proof(
         else:
             raise AssertionError("PostgreSQL allowed rewriting an immutable adoption proof")
     try:
-        command.downgrade(Config("alembic.ini"), "20260911e4b3")
+        migration = ScriptDirectory.from_config(Config("alembic.ini")).get_revision("20260911f5c4")
+        assert migration is not None
+        with (
+            factory.kw["bind"].begin() as connection,
+            Operations.context(MigrationContext.configure(connection)),
+        ):
+            migration.module.downgrade()
     except RuntimeError as exc:
         assert "Request adoption proofs exist" in str(exc)
     else:
         raise AssertionError("Downgrade discarded adoption evidence")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260912a7e6"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260912b8f7"
         assert session.get(RequestAssemblyAdoption, request_ref) is not None
 
 
@@ -1499,10 +1711,15 @@ def test_invocation_binding_transport_retries_serialize(factory: sessionmaker[Se
         session.flush()
         utterance_ref = utterance.ref_id
     trace_ref = new_public_ref("trace")
+    with factory.begin() as session:
+        binding = _bind_execution(session, _load_utterance(session, utterance_ref), label=trace_ref)
     now = int(datetime.now(UTC).timestamp())
     payload = {
-        "format": 1, "trace_ref": trace_ref, "call_id": "same-transport-call", "ordinal": 1,
-        "utterance_ref": utterance_ref, "gateway_instance_ref": None,
+        "format": 2, "trace_ref": trace_ref, "call_id": "same-transport-call", "ordinal": 1,
+        "utterance_ref": utterance_ref,
+        **{key: binding[key] for key in (
+            "execution_index", "execution_completion_token", "gateway_instance_ref",
+        )},
         "tool_name": "docket_search_history", "argument_hash": sha256_json({}),
         "contract_version": CONTRACT_VERSION, "contract_hash": contract_hash("interactive"),
         "issued_at": now, "expires_at": now + 900,
@@ -1512,7 +1729,7 @@ def test_invocation_binding_transport_retries_serialize(factory: sessionmaker[Se
     ).encode()).decode().rstrip("=")
     signature = hmac.new(
         get_settings().hermes_to_docket_token().encode(),
-        b"docket-mcp-invocation-v1:" + encoded.encode(), hashlib.sha256,
+        b"docket-mcp-invocation-v2:" + encoded.encode(), hashlib.sha256,
     ).hexdigest()
     barrier = threading.Barrier(2)
 
@@ -1895,6 +2112,11 @@ def test_trace_history_survives_call_one_hundred_and_blocks_lossy_downgrade(
     trace_ref = new_public_ref("trace")
     started = datetime.now(UTC)
     states: tuple[Literal["running", "completed"], ...] = ("running", "completed")
+    with factory.begin() as session:
+        source = _utterance("1542799000000000797", "Synthetic long trace.")
+        session.add(source)
+        session.flush()
+        binding = _bind_execution(session, source, label=trace_ref, started_at=started)
     for ordinal in range(1, 104):
         with factory.begin() as session:
             service = McpTraceService(session)
@@ -1902,11 +2124,11 @@ def test_trace_history_survives_call_one_hundred_and_blocks_lossy_downgrade(
                 service.update(trace_ref, McpTraceUpdate(
                     request_id=uuid.uuid4(), guild_id=settings.discord_guild_id,
                     source_channel_id=settings.chat_channel_id,
-                    source_message_id="1542799000000000681",
+                    source_message_id="1542799000000000797",
                     actor_id=settings.operator_discord_user_id,
                     tool_contract_version=CONTRACT_VERSION,
                     tool_contract_hash=contract_hash("interactive"), caller_profile="interactive",
-                    turn_started_at=started, updated_at=datetime.now(UTC),
+                    **_callback_binding(binding), updated_at=datetime.now(UTC),
                     call=McpTraceCallUpdate(
                         call_id=f"long-call-{ordinal}", ordinal=ordinal,
                         tool_name="docket_stage_changes", execution_boundary="local_rejection",
@@ -1918,15 +2140,20 @@ def test_trace_history_survives_call_one_hundred_and_blocks_lossy_downgrade(
         trace = session.scalar(select(ConversationalToolTrace).where(
             ConversationalToolTrace.ref_id == trace_ref
         ))
-        assert trace is not None and trace.last_ordinal == len(trace.calls) == 103
-        trace_id = trace.id
+        assert (
+            trace is not None
+            and _segment_for(session, trace_ref).last_ordinal
+            == len(_segment_for(session, trace_ref).calls)
+            == 103
+        )
+        trace_id = _segment_for(session, trace_ref).id
         page = HistoryService(session).get_entry(trace_ref, view="calls", limit=25)
         assert page["total_if_known"] == 103
         assert len(page["items"]) <= 25 and page["cursor"]
     try:
         # Test this specific guard even when a newer migration independently
         # refuses to discard its evidence. Keep the whole transaction rolled back.
-        migration = ScriptDirectory.from_config(Config("alembic.ini")).get_revision("20260911d3a2")
+        migration = ScriptDirectory.from_config(Config("alembic.ini")).get_revision("20260912b8f7")
         assert migration is not None
         with (
             factory.kw["bind"].begin() as connection,
@@ -1934,30 +2161,23 @@ def test_trace_history_survives_call_one_hundred_and_blocks_lossy_downgrade(
         ):
             migration.module.downgrade()
     except RuntimeError as exc:
-        assert "discard evidence" in str(exc)
+        assert "downgrade would lose provenance" in str(exc)
     else:
         raise AssertionError("Downgrade should preserve the longer trace by refusing to proceed")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260912a7e6"
-        assert session.scalar(select(ConversationalToolTrace.last_ordinal).where(
-            ConversationalToolTrace.id == trace_id
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260912b8f7"
+        assert session.scalar(select(TraceExecutionSegment.last_ordinal).where(
+            TraceExecutionSegment.id == trace_id
         )) == 103
     try:
         with factory.begin() as session:
             session.execute(text(
-                "UPDATE conversational_tool_traces SET last_ordinal = -1 WHERE id = :id"
+                "UPDATE trace_execution_segments SET last_ordinal = -1 WHERE id = :id"
             ), {"id": trace_id})
     except DBAPIError:
         pass
     else:
         raise AssertionError("PostgreSQL accepted a negative trace ordinal")
-    # Remove only this synthetic fixture so the following no-loss roundtrip can
-    # rehearse the old constraint. Production downgrade never deletes anything.
-    with factory.begin() as session:
-        session.execute(delete(OutboxEvent).where(OutboxEvent.aggregate_id == trace_id))
-        session.execute(delete(ConversationalToolTrace).where(
-            ConversationalToolTrace.id == trace_id
-        ))
 
 
 def test_trace_checkpoints_serialize_with_callbacks_and_rollback_pages(
@@ -1969,12 +2189,15 @@ def test_trace_checkpoints_serialize_with_callbacks_and_rollback_pages(
     settings = get_settings()
     trace_ref = new_public_ref("trace")
     started = datetime.now(UTC)
+    with factory.begin() as session:
+        binding = _bind_execution(session, _load_utterance(session, utterance_ref),
+                                  label=trace_ref, started_at=started)
     context: dict[str, Any] = dict(
         request_id=uuid.uuid4(), guild_id=settings.discord_guild_id,
         source_channel_id=settings.chat_channel_id, source_message_id="1542799000000000689",
         actor_id=settings.operator_discord_user_id, caller_profile="interactive",
         tool_contract_version=CONTRACT_VERSION, tool_contract_hash=contract_hash("interactive"),
-        turn_started_at=started, updated_at=started,
+        **_callback_binding(binding), updated_at=started,
     )
     running = McpTraceCallUpdate(
         call_id="checkpoint-local", ordinal=1, tool_name="docket_stage_changes",
@@ -2007,7 +2230,10 @@ def test_trace_checkpoints_serialize_with_callbacks_and_rollback_pages(
         row = session.scalar(select(ConversationalToolTrace).where(
             ConversationalToolTrace.ref_id == trace_ref,
         ))
-        assert row is not None and row.calls[0]["transport_state"] == "completed"
+        assert (
+            row is not None
+            and _segment_for(session, trace_ref).calls[0]["transport_state"] == "completed"
+        )
         version = row.version
         # One valid new observation followed by a gap must roll back the whole
         # page even if the caller handles the rejection inside its transaction.
@@ -2023,7 +2249,7 @@ def test_trace_checkpoints_serialize_with_callbacks_and_rollback_pages(
         else:
             raise AssertionError("Checkpoint accepted a missing observed ordinal")
         session.refresh(row)
-        assert row.version == version and row.last_ordinal == 1
+        assert row.version == version and _segment_for(session, trace_ref).last_ordinal == 1
     for offset in (1, 26, 51):
         with factory.begin() as session:
             page = [terminal.model_copy(update={"call_id": f"recovered-{i}", "ordinal": i})
@@ -2036,13 +2262,22 @@ def test_trace_checkpoints_serialize_with_callbacks_and_rollback_pages(
         row = session.scalar(select(ConversationalToolTrace).where(
             ConversationalToolTrace.ref_id == trace_ref,
         ))
-        assert row is not None and row.status == "completed" and row.last_ordinal == 54
-        assert all(call["disposition"] == "rejected_validation" for call in row.calls)
+        assert (
+            row is not None
+            and row.status == "completed"
+            and _segment_for(session, trace_ref).last_ordinal == 54
+        )
+        assert all(
+            call["disposition"] == "rejected_validation"
+            for call in _segment_for(session, trace_ref).calls
+        )
         assert session.scalar(select(func.count(ToolInvocation.id)).where(
             ToolInvocation.trace_ref == trace_ref,
         )) == 0
         page = HistoryService(session).get_entry(trace_ref, view="calls", limit=25)
-        assert page["counts"]["local_rejections"] == 54 and page["omitted_detail_count"] == 29
+        assert page["counts"]["local_rejections"] == 54
+        assert 0 < len(page["items"]) <= 25
+        assert page["omitted_detail_count"] == 54 - len(page["items"])
 
 
 def test_lost_admission_response_recovers_from_exact_local_trace(
@@ -2057,7 +2292,8 @@ def test_lost_admission_response_recovers_from_exact_local_trace(
         ordinal=1, tool_name="docket_stage_changes", argument_hash="a" * 64,
     )
     settings = get_settings()
-    started = datetime.now(UTC)
+    with factory.begin() as session:
+        binding = _bind_execution(session, _load_utterance(session, utterance_ref), label=trace_ref)
     states: tuple[Literal["running", "completed"], ...] = ("running", "completed")
     for state in states:
         with factory.begin() as session:
@@ -2068,7 +2304,7 @@ def test_lost_admission_response_recovers_from_exact_local_trace(
                 actor_id=settings.operator_discord_user_id,
                 tool_contract_version=CONTRACT_VERSION,
                 tool_contract_hash=contract_hash("interactive"), caller_profile="interactive",
-                turn_started_at=started, updated_at=datetime.now(UTC),
+                **_callback_binding(binding), updated_at=datetime.now(UTC),
                 call=McpTraceCallUpdate(
                     call_id="lost-admission", ordinal=1, tool_name="docket_stage_changes",
                     execution_boundary="local_rejection", transport_state=state,
@@ -2098,7 +2334,6 @@ def test_lost_admission_response_recovers_from_exact_local_trace(
 
 
 def test_gateway_recovery_and_late_completion_serialize(factory: sessionmaker[Session]) -> None:
-    settings = get_settings()
     for finalizer_waits in (False, True):
         message_id = f"154279900000000078{int(finalizer_waits)}"
         utterance_ref, request_key = _create_utterance(factory, message_id, "Track a smoke item.")
@@ -2108,6 +2343,7 @@ def test_gateway_recovery_and_late_completion_serialize(factory: sessionmaker[Se
                 registration_key=uuid.uuid4(), instance_kind=f"recovery_smoke_{finalizer_waits}",
             )
             utterance = _load_utterance(session, utterance_ref)
+            _bind_execution(session, utterance, label=trace_ref, gateway=gateway["ref"])
             stage_token = _admit(
                 session, utterance_ref=utterance_ref, trace_ref=trace_ref, call_id="stage",
                 ordinal=1, tool_name="docket_stage_changes", argument_hash="a" * 64,
@@ -2124,24 +2360,19 @@ def test_gateway_recovery_and_late_completion_serialize(factory: sessionmaker[Se
                 utterance_ref=utterance_ref, request_key=request_key,
                 assembly_operation_token=commit_token, assembly_argument_hash="b" * 64,
             )
-            trace = ConversationalToolTrace(
-                ref_id=trace_ref, guild_id=settings.discord_guild_id,
-                source_channel_id=settings.chat_channel_id, source_message_id=message_id,
-                actor_id=settings.operator_discord_user_id, tool_contract_version=CONTRACT_VERSION,
-                tool_contract_hash=contract_hash("interactive"), caller_profile="interactive",
-                gateway_instance_ref=gateway["ref"], status="running", calls=[{
-                    "call_id": "commit", "ordinal": 2, "tool_name": "docket_commit_changeset",
-                    "transport_state": "running", "received_argument_hash": "b" * 64,
-                }], last_ordinal=2, version=1, started_at=datetime.now(UTC),
-            )
-            session.add(trace)
+            segment = _segment_for(session, trace_ref)
+            segment.calls = [{
+                "call_id": "commit", "ordinal": 2, "tool_name": "docket_commit_changeset",
+                "transport_state": "running", "received_argument_hash": "b" * 64,
+            }]
+            segment.last_ordinal = 2
             invocation = ToolInvocation(
                 tool_name="docket_commit_changeset", caller_profile="interactive",
                 tool_contract_version=CONTRACT_VERSION,
                 tool_contract_hash=contract_hash("interactive"),
                 received_argument_hash="b" * 64, actor_ref=utterance.actor_ref,
                 utterance_refs=[utterance_ref], trace_ref=trace_ref, trace_call_id="commit",
-                trace_ordinal=2, gateway_instance_ref=gateway["ref"],
+                trace_ordinal=2, gateway_instance_ref=gateway["ref"], trace_execution_id=segment.id,
             )
             session.add(invocation)
             session.flush()
@@ -2196,7 +2427,7 @@ def test_gateway_recovery_and_late_completion_serialize(factory: sessionmaker[Se
                 ConversationalToolTrace.ref_id == trace_ref,
             ))
             assert trace is not None and trace.status == "interrupted"
-            assert trace.calls[0]["disposition"] == "committed"
+            assert _segment_for(session, trace_ref).calls[0]["disposition"] == "committed"
             assert session.scalar(select(func.count(ChangeSet.id)).where(
                 ChangeSet.semantic_request_ref == receipt["semantic_request_ref"],
                 ChangeSet.state == "committed",
@@ -2237,7 +2468,7 @@ def test_request_specifications_are_immutable_and_block_lossy_downgrade(
     else:
         raise AssertionError("Downgrade discarded immutable request specifications")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260912a7e6"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260912b8f7"
         assert session.get(SemanticRequestSpecification, (key["ref"], key["version"])) is not None
 
 
@@ -2266,13 +2497,16 @@ def test_initial_source_interpretations_are_immutable_across_connections(
         else:
             raise AssertionError("PostgreSQL allowed rewriting initial source interpretation")
     try:
-        command.downgrade(Config("alembic.ini"), "20260911a6d5")
+        migration = ScriptDirectory.from_config(Config("alembic.ini")).get_revision("20260912a7e6")
+        with (factory.kw["bind"].begin() as connection,
+              Operations.context(MigrationContext.configure(connection))):
+            migration.module.downgrade()
     except RuntimeError as exc:
         assert "Request interpretations exist" in str(exc)
     else:
         raise AssertionError("Downgrade discarded initial source interpretations")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260912a7e6"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260912b8f7"
         interpreted = read_entry_interpretation(
             session, request_ref=key["ref"], entry_id=key["entry"],
         )
@@ -2292,6 +2526,7 @@ def test_timing_observations_serialize_and_preserve_evidence(
         session.add(source)
         session.flush()
         utterance_ref = source.ref_id
+        binding = _bind_execution(session, source, label=ref, started_at=start)
     span = TraceTimingInput(span_id=uuid.uuid4(), phase="model_request",
                            started_at=start, ended_at=start + timedelta(seconds=1))
     checkpoint = McpTraceCheckpoint(
@@ -2300,7 +2535,7 @@ def test_timing_observations_serialize_and_preserve_evidence(
         actor_id=settings.operator_discord_user_id, utterance_ref=utterance_ref,
         caller_profile="interactive", tool_contract_version=CONTRACT_VERSION,
         tool_contract_hash=contract_hash("interactive"),
-        turn_started_at=start, updated_at=datetime.now(UTC), timings=[span],
+        **_callback_binding(binding), updated_at=datetime.now(UTC), timings=[span],
     )
     barrier = threading.Barrier(2)
 
@@ -2368,13 +2603,15 @@ def test_queue_boundary_survives_ingress_reclaim(factory: sessionmaker[Session])
         utterance_ref, token = source.ref_id, lease.completion_token
     start = datetime.now(UTC)
     with factory.begin() as session:
+        binding = _bind_execution(session, _load_utterance(session, utterance_ref),
+                                  label=ref, started_at=start, token=token)
         McpTraceService(session).checkpoint(ref, McpTraceCheckpoint(
             request_id=uuid.uuid4(), guild_id=settings.discord_guild_id,
             source_channel_id=settings.chat_channel_id, source_message_id=message,
             actor_id=settings.operator_discord_user_id, utterance_ref=utterance_ref,
-            gateway_instance_ref=str(gateway), caller_profile="interactive",
+            caller_profile="interactive",
             tool_contract_version=CONTRACT_VERSION, tool_contract_hash=contract_hash("interactive"),
-            turn_started_at=start, updated_at=datetime.now(UTC), turn_status="completed",
+            **_callback_binding(binding), updated_at=datetime.now(UTC), turn_status="completed",
         ))
         ContinuityService(session).complete_execution_lease(token)
         ContinuityService(session).acquire_execution_lease(
@@ -2399,6 +2636,8 @@ def main() -> None:
     assert engine.dialect.name == "postgresql"
     factory = sessionmaker(engine, expire_on_commit=False)
     checks = (
+        test_retained_trace_migration_round_trip,
+        test_cold_restart_reuses_one_trace_and_staged_request,
         test_same_attempt_concurrent_calls_bind_old_revision,
         test_cross_attempt_stale_edit_and_commit_are_rejected,
         test_one_changeset_lineage_per_semantic_request,

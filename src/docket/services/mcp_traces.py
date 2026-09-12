@@ -7,7 +7,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from docket.config import get_settings
-from docket.domain.enums import OutboxStatus
 from docket.domain.errors import DocketError
 from docket.internal_api.schemas import (
     McpTraceCallUpdate,
@@ -20,13 +19,13 @@ from docket.models import (
     ConversationalToolTrace,
     DiscordDailyThread,
     OperatorUtterance,
-    OutboxEvent,
     ToolInvocation,
+    TraceExecutionSegment,
     TraceTimingObservation,
 )
 from docket.models.base import utc_now
-from docket.services.gateway_lifetimes import GatewayLifetimeService
 from docket.services.trace_correlation import correlated_calls
+from docket.services.trace_executions import TraceExecutionService, refresh_trace
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash, contract_tool_names
 
 VISIBLE_TRACE_CALLS = 20
@@ -194,7 +193,7 @@ class McpTraceService:
 
     def _apply_call(
         self,
-        trace: ConversationalToolTrace,
+        trace: TraceExecutionSegment,
         call: McpTraceCallUpdate,
         *,
         checkpoint: bool = False,
@@ -266,21 +265,27 @@ class McpTraceService:
         return True
 
     def _validate_invocation_context(
-        self, trace: ConversationalToolTrace, invocation: ToolInvocation,
+        self, trace: TraceExecutionSegment, invocation: ToolInvocation,
     ) -> None:
+        parent = self.session.scalar(select(ConversationalToolTrace).where(
+            ConversationalToolTrace.ref_id == trace.trace_ref,
+        ))
+        if parent is None:
+            raise DocketError(code="mcp_trace_binding_mismatch", message="Trace source is missing.")
         expected_source = (
-            f"discord_message:{trace.guild_id}:{trace.source_channel_id}:{trace.source_message_id}"
+            f"discord_message:{parent.guild_id}:{parent.source_channel_id}:{parent.source_message_id}"
         )
         utterance = self.session.scalar(select(OperatorUtterance).where(
             OperatorUtterance.ref_id.in_(invocation.utterance_refs),
             OperatorUtterance.source_message_ref == expected_source,
-            OperatorUtterance.actor_ref == f"discord_user:{trace.actor_id}",
+            OperatorUtterance.actor_ref == f"discord_user:{parent.actor_id}",
             OperatorUtterance.transport == "discord",
         ))
         if (
             len(invocation.utterance_refs) != 1 or utterance is None
             or invocation.actor_ref != utterance.actor_ref
             or invocation.gateway_instance_ref != trace.gateway_instance_ref
+            or invocation.trace_execution_id != trace.id
         ):
             raise DocketError(
                 code="mcp_trace_binding_mismatch",
@@ -289,12 +294,12 @@ class McpTraceService:
 
     def _link_tool_invocation(
         self,
-        trace: ConversationalToolTrace,
+        trace: TraceExecutionSegment,
         call: McpTraceCallUpdate,
     ) -> ToolInvocation | None:
         existing = correlated_calls(list(self.session.scalars(
-            select(ToolInvocation).where(ToolInvocation.trace_ref == trace.ref_id)
-        ))).get(call.call_id)
+            select(ToolInvocation).where(ToolInvocation.trace_execution_id == trace.id)
+        ))).get((trace.id, call.call_id))
         if existing is not None and (
             existing.tool_name != call.tool_name
             or existing.trace_ordinal != call.ordinal
@@ -315,15 +320,15 @@ class McpTraceService:
             return "unknown"
         return invocation.domain_state
 
-    def _reconcile_calls(self, trace: ConversationalToolTrace) -> bool:
+    def _reconcile_calls(self, trace: TraceExecutionSegment) -> bool:
         changed = False
         calls = [dict(item) for item in trace.calls]
         invocations = correlated_calls(list(self.session.scalars(
-            select(ToolInvocation).where(ToolInvocation.trace_ref == trace.ref_id)
+            select(ToolInvocation).where(ToolInvocation.trace_execution_id == trace.id)
         )))
         for call in calls:
             call_id = str(call.get("call_id", ""))
-            invocation = invocations.get(call_id)
+            invocation = invocations.get((trace.id, call_id))
             if invocation is not None and (
                 invocation.tool_name != call.get("tool_name")
                 or invocation.trace_ordinal != call.get("ordinal")
@@ -368,7 +373,7 @@ class McpTraceService:
         return changed
 
     @staticmethod
-    def _finish_running_calls(trace: ConversationalToolTrace) -> bool:
+    def _finish_running_calls(trace: TraceExecutionSegment) -> bool:
         changed = False
         calls = [dict(item) for item in trace.calls]
         for call in calls:
@@ -387,77 +392,28 @@ class McpTraceService:
             trace.calls = calls
         return changed
 
-    def _trace(self, trace_ref: str, request: McpTraceContext) -> ConversationalToolTrace:
+    def _trace(self, trace_ref: str, request: McpTraceContext) -> TraceExecutionSegment:
         self._validate_context(trace_ref, request)
-        # Serialize creation as well as updates. The immutable source row
-        # exists before any real gateway tool; SELECT FOR UPDATE changes no
-        # evidence and uses the same source-first order as invocation binding.
-        self.session.scalar(select(OperatorUtterance.id).where(
-            OperatorUtterance.source_message_ref == (
-                f"discord_message:{request.guild_id}:{request.source_channel_id}:"
-                f"{request.source_message_id}"
-            ),
-            OperatorUtterance.actor_ref == f"discord_user:{request.actor_id}",
-            OperatorUtterance.transport == "discord",
-        ).with_for_update())
-        if request.gateway_instance_ref is not None:
-            GatewayLifetimeService(self.session).require_live(request.gateway_instance_ref)
-        trace = self.session.scalar(
-            select(ConversationalToolTrace)
-            .where(ConversationalToolTrace.ref_id == trace_ref)
-            .with_for_update()
+        parent, segment = TraceExecutionService(self.session).require(
+            trace_ref=trace_ref, execution_index=request.execution_index,
+            execution_completion_token=request.execution_completion_token,
+            gateway_instance_ref=request.gateway_instance_ref,
         )
-        if trace is None:
-            source_trace = self.session.scalar(
-                select(ConversationalToolTrace)
-                .where(
-                    ConversationalToolTrace.guild_id == request.guild_id,
-                    ConversationalToolTrace.source_channel_id == request.source_channel_id,
-                    ConversationalToolTrace.source_message_id == request.source_message_id,
-                )
-                .with_for_update()
-            )
-            if source_trace is not None:
-                raise DocketError(
-                    code="mcp_trace_source_conflict",
-                    message=(
-                        "This Discord source message already has a different conversational trace."
-                    ),
-                    details={"existing_trace_ref": source_trace.ref_id},
-                )
-            trace = ConversationalToolTrace(
-                ref_id=trace_ref,
-                guild_id=request.guild_id,
-                source_channel_id=request.source_channel_id,
-                source_message_id=request.source_message_id,
-                actor_id=request.actor_id,
-                tool_contract_version=request.tool_contract_version,
-                tool_contract_hash=request.tool_contract_hash,
-                caller_profile=request.caller_profile,
-                gateway_instance_ref=request.gateway_instance_ref,
-                status="running",
-                calls=[],
-                last_ordinal=0,
-                version=0,
-                started_at=request.turn_started_at,
-            )
-            self.session.add(trace)
-            self.session.flush()
-        elif (
-            trace.guild_id != request.guild_id
-            or trace.source_channel_id != request.source_channel_id
-            or trace.source_message_id != request.source_message_id
-            or trace.actor_id != request.actor_id
-            or trace.tool_contract_version != request.tool_contract_version
-            or trace.tool_contract_hash != request.tool_contract_hash
-            or trace.caller_profile != request.caller_profile
-            or trace.gateway_instance_ref != request.gateway_instance_ref
+        def utc(value: datetime) -> datetime:
+            return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+        if (
+            parent.guild_id != request.guild_id
+            or parent.source_channel_id != request.source_channel_id
+            or parent.source_message_id != request.source_message_id
+            or parent.actor_id != request.actor_id
+            or segment.tool_contract_version != request.tool_contract_version
+            or segment.tool_contract_hash != request.tool_contract_hash
+            or segment.caller_profile != request.caller_profile
+            or utc(segment.started_at) != request.turn_started_at
         ):
-            raise DocketError(
-                code="mcp_trace_binding_mismatch",
-                message="The MCP trace source binding changed.",
-            )
-        return trace
+            raise DocketError(code="mcp_trace_binding_mismatch",
+                              message="The trace execution binding changed.")
+        return segment
 
     def update(self, trace_ref: str, request: McpTraceUpdate) -> dict[str, Any]:
         trace = self._trace(trace_ref, request)
@@ -473,20 +429,13 @@ class McpTraceService:
         return self._finish_update(trace, request, changed, tool_call_ref)
 
     def _apply_timing(
-        self, trace: ConversationalToolTrace, timing: TraceTimingInput, captured_at: datetime,
+        self, trace: TraceExecutionSegment, timing: TraceTimingInput, captured_at: datetime,
     ) -> bool:
         def utc(value: datetime) -> datetime:
             return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
         if (
             timing.started_at < utc(trace.started_at) or timing.ended_at > utc(captured_at)
-            or self.session.scalar(select(OperatorUtterance.id).where(
-                OperatorUtterance.source_message_ref == (
-                    f"discord_message:{trace.guild_id}:{trace.source_channel_id}:"
-                    f"{trace.source_message_id}"
-                ), OperatorUtterance.actor_ref == f"discord_user:{trace.actor_id}",
-                OperatorUtterance.transport == "discord",
-            )) is None
         ):
             raise DocketError(
                 code="invalid_trace_timing", message="Timing is outside its captured turn.",
@@ -494,7 +443,8 @@ class McpTraceService:
         prior = self.session.get(TraceTimingObservation, timing.span_id)
         if prior is not None:
             if (
-                prior.trace_ref != trace.ref_id or prior.phase != timing.phase
+                prior.trace_ref != trace.trace_ref or prior.trace_execution_id != trace.id
+                or prior.phase != timing.phase
                 or utc(prior.started_at) != timing.started_at
                 or utc(prior.ended_at) != timing.ended_at
             ):
@@ -506,10 +456,16 @@ class McpTraceService:
             raise DocketError(
                 code="mcp_trace_terminal", message="A terminal trace cannot add timing.",
             )
-        self.session.add(TraceTimingObservation(
-            id=timing.span_id, trace_ref=trace.ref_id, phase=timing.phase,
-            started_at=timing.started_at, ended_at=timing.ended_at,
-        ))
+        self.session.add(
+            TraceTimingObservation(
+                id=timing.span_id,
+                trace_ref=trace.trace_ref,
+                trace_execution_id=trace.id,
+                phase=timing.phase,
+                started_at=timing.started_at,
+                ended_at=timing.ended_at,
+            )
+        )
         self.session.flush()
         return True
 
@@ -544,7 +500,7 @@ class McpTraceService:
 
     def _finish_update(
         self,
-        trace: ConversationalToolTrace,
+        trace: TraceExecutionSegment,
         request: McpTraceContext,
         changed: bool,
         tool_call_ref: str | None,
@@ -562,34 +518,20 @@ class McpTraceService:
                     message="A terminal MCP trace cannot change terminal state.",
                 )
         changed = self._reconcile_calls(trace) or changed
-        if not changed:
-            return {
-                "ok": True,
-                "trace_ref": trace.ref_id,
-                "trace_status": trace.status,
-                "trace_version": trace.version,
-                "disposition": "replayed_request",
-            }
-
-        trace.version += 1
-        self.session.add(
-            OutboxEvent(
-                event_type="discord.mcp_trace.requested",
-                aggregate_type="conversational_tool_trace",
-                aggregate_id=trace.id,
-                deduplication_key=f"conversational_tool_trace:{trace.ref_id}:v{trace.version}",
-                payload={
-                    "trace_ref": trace.ref_id,
-                    "trace_version": trace.version,
-                },
-                status=OutboxStatus.PENDING.value,
-            )
-        )
+        parent = self.session.scalar(select(ConversationalToolTrace).where(
+            ConversationalToolTrace.ref_id == trace.trace_ref,
+        ).with_for_update())
+        if parent is None:
+            raise RuntimeError("Trace source disappeared")
+        if changed:
+            refresh_trace(self.session, parent)
         return {
             "ok": True,
-            "trace_ref": trace.ref_id,
-            "trace_status": trace.status,
-            "trace_version": trace.version,
-            "disposition": "updated",
+            "trace_ref": parent.ref_id,
+            "execution_index": trace.execution_index,
+            "execution_status": trace.status,
+            "trace_status": parent.status,
+            "trace_version": parent.version,
+            "disposition": "updated" if changed else "replayed_request",
             "tool_call_ref": tool_call_ref,
         }

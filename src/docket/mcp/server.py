@@ -441,7 +441,7 @@ def docket_search_history(
 @mcp.tool()
 def docket_get_history_entry(
     ref: str,
-    view: Literal["summary", "audit", "delivery", "calls"] = "summary",
+    view: Literal["summary", "audit", "delivery", "calls", "executions"] = "summary",
     text_offset: Annotated[int, Field(ge=0)] = 0,
     text_limit: Annotated[int, Field(ge=1, le=65536)] = 32768,
     cursor: Annotated[str | None, Field(max_length=4096)] = None,

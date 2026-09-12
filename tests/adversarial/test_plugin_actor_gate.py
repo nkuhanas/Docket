@@ -11,6 +11,8 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from docket.domain.public_refs import new_public_ref
+
 PLUGIN_PATH = Path("hermes/plugin/docket_discord/__init__.py")
 
 
@@ -27,15 +29,22 @@ def plugin_module(monkeypatch):
     monkeypatch.setattr(
         module,
         "_capture_operator_utterance",
-        lambda _event: f"utt_{'0' * 26}",
+        lambda _event: (f"utt_{'0' * 26}", None, {
+            "state": "claimed", "execution_completion_token": "a" * 32,
+        }),
     )
 
     def fake_internal_request(path, _payload, **_kwargs):
+        if path == "/internal/v1/discord/mcp-traces/bind":
+            return {"ok": True, "trace_ref": "trace_" + "2" * 26,
+                    "execution_index": 1, "next_ordinal": 1,
+                    "turn_started_at": _payload["turn_started_at"]}
         if path == "/internal/v1/discord/agent-responses":
             return {"ok": True, "ref": f"rsp_{'1' * 26}", "state": "pending"}
         return {"ok": True}
 
     monkeypatch.setattr(module, "_docket_internal_request", fake_internal_request)
+    monkeypatch.setattr(module, "_GATEWAY_INSTANCE_REF", "gwy_" + "3" * 26)
     # These tests isolate dispatch/projection behavior. Real checkpoint recovery
     # and failure gating are exercised in test_trace_checkpoints.py.
     monkeypatch.setattr(module, "_checkpoint_trace", lambda *_args, **_kwargs: True)
@@ -65,6 +74,8 @@ def test_plugin_and_docket_trace_dispositions_remain_identical(plugin_module) ->
 def test_relative_calendar_read_uses_trusted_message_not_model_ref(plugin_module, monkeypatch):
     captured_ref = f"utt_{'0' * 26}"
     plugin_module._TRACE_CONTEXTS["relative-date-test"] = {
+        "execution_index": 1, "execution_completion_token": "a" * 32,
+        "gateway_instance_ref": "gwy_" + "3" * 26,
         "trace_ref": f"trace_{'2' * 26}", "utterance_ref": captured_ref,
         "turn_id": None, "next_ordinal": 1, "calls": {}, "started": False, "terminal": False,
     }
@@ -95,6 +106,10 @@ def test_operator_capture_uses_raw_discord_content_for_stable_ingress_replay(
     captured: dict[str, object] = {}
 
     def fake_request(path, payload, **_kwargs):
+        if path == "/internal/v1/discord/mcp-traces/bind":
+            return {"ok": True, "trace_ref": "trace_" + "2" * 26,
+                    "execution_index": 1, "next_ordinal": 1,
+                    "turn_started_at": payload["turn_started_at"]}
         captured["path"] = path
         captured["payload"] = payload
         return {"ok": True, "ref": f"utt_{'0' * 26}", "state": "recorded"}
@@ -427,6 +442,8 @@ def test_local_commit_rejection_is_traced_as_completed_domain_result(
 ) -> None:
     emitted: list[dict[str, object]] = []
     plugin_module._TRACE_CONTEXTS["session-local-rejection"] = {
+        "execution_index": 1, "execution_completion_token": "a" * 32,
+        "gateway_instance_ref": "gwy_" + "3" * 26,
         "trace_ref": f"trace_{'2' * 26}",
         "utterance_ref": f"utt_{'0' * 26}",
         "guild_id": "222222222222222222",
@@ -486,6 +503,8 @@ def test_assembly_admission_injects_hidden_server_bookkeeping(
     plugin_module, monkeypatch
 ) -> None:
     context = {
+        "execution_index": 1, "execution_completion_token": "a" * 32,
+        "gateway_instance_ref": "gwy_" + "3" * 26,
         "trace_ref": f"trace_{'2' * 26}",
         "guild_id": "222222222222222222",
         "source_channel_id": "333333333333333333",
@@ -502,6 +521,10 @@ def test_assembly_admission_injects_hidden_server_bookkeeping(
     requests: list[tuple[str, dict[str, object]]] = []
 
     def fake_request(path, payload, **_kwargs):
+        if path == "/internal/v1/discord/mcp-traces/bind":
+            return {"ok": True, "trace_ref": "trace_" + "2" * 26,
+                    "execution_index": 1, "next_ordinal": 1,
+                    "turn_started_at": payload["turn_started_at"]}
         requests.append((path, dict(payload)))
         return {
             "ok": True,
@@ -559,6 +582,9 @@ def test_assembly_admission_injects_hidden_server_bookkeeping(
                 "actor_id": context["actor_id"],
                 "utterance_ref": context["utterance_ref"],
                 "trace_ref": context["trace_ref"],
+                **{key: context[key] for key in (
+                    "execution_index", "execution_completion_token", "gateway_instance_ref",
+                )},
                 "upstream_tool_call_id": "assembly-call-1",
                 "trace_ordinal": 1,
                 "tool_name": "docket_stage_changes",
@@ -647,6 +673,10 @@ def test_empty_model_turn_is_reported_as_no_response(plugin_module, monkeypatch)
     requests: list[tuple[str, dict[str, object]]] = []
 
     def fake_request(path, payload, **_kwargs):
+        if path == "/internal/v1/discord/mcp-traces/bind":
+            return {"ok": True, "trace_ref": "trace_" + "2" * 26,
+                    "execution_index": 1, "next_ordinal": 1,
+                    "turn_started_at": payload["turn_started_at"]}
         requests.append((path, dict(payload)))
         return {"ok": True}
 
@@ -693,6 +723,10 @@ def test_empty_signoff_turn_persists_deterministic_response(plugin_module, monke
     requests: list[tuple[str, dict[str, object]]] = []
 
     def fake_request(path, payload, **_kwargs):
+        if path == "/internal/v1/discord/mcp-traces/bind":
+            return {"ok": True, "trace_ref": "trace_" + "2" * 26,
+                    "execution_index": 1, "next_ordinal": 1,
+                    "turn_started_at": payload["turn_started_at"]}
         requests.append((path, dict(payload)))
         if path == "/internal/v1/discord/agent-responses":
             return {"ok": True, "ref": f"rsp_{'4' * 26}", "state": "pending"}
@@ -760,6 +794,10 @@ def test_exact_signoff_persists_and_schedules_confirmation_without_model_turn(
     scheduled: list[dict[str, object]] = []
 
     def fake_request(path, payload, **_kwargs):
+        if path == "/internal/v1/discord/mcp-traces/bind":
+            return {"ok": True, "trace_ref": "trace_" + "2" * 26,
+                    "execution_index": 1, "next_ordinal": 1,
+                    "turn_started_at": payload["turn_started_at"]}
         requests.append((path, dict(payload)))
         if path == "/internal/v1/discord/agent-responses":
             return {"ok": True, "ref": response_ref, "state": "pending"}
@@ -990,21 +1028,83 @@ async def test_deferred_dispatch_reports_delivery_and_completes_once(
     assert context["delivery_recorded"] is True
 
 
-def test_recovery_rebinds_execution_without_discarding_trace(plugin_module) -> None:
-    event = SimpleNamespace()
+def test_failed_trace_bind_defers_model_execution(plugin_module, monkeypatch):
+    actor, guild, channel = ("1" * 18, "2" * 18, "3" * 18)
+    for key, value in (("DOCKET_OPERATOR_DISCORD_USER_ID", actor),
+                       ("DOCKET_DISCORD_GUILD_ID", guild), ("DOCKET_CHAT_CHANNEL_ID", channel)):
+        monkeypatch.setenv(key, value)
+    event = SimpleNamespace(
+        text="Track the synthetic item.", message_id="4" * 18,
+        source=SimpleNamespace(platform="discord", user_id=actor, guild_id=guild, chat_id=channel),
+    )
+    store = SimpleNamespace(get_or_create_session=lambda _source: SimpleNamespace(
+        session_id="failed-bind", session_key="failed-bind",
+    ))
+    completions = []
+
+    def unavailable(path, _payload, **_kwargs):
+        assert path == "/internal/v1/discord/mcp-traces/bind"
+        raise OSError("Synthetic unavailable execution binding")
+
+    monkeypatch.setattr(plugin_module, "_docket_internal_request", unavailable)
+    monkeypatch.setattr(plugin_module, "_complete_captured_ingress",
+                        lambda *args, **kwargs: completions.append(kwargs))
+    result = plugin_module._pre_gateway_dispatch(event, session_store=store)
+    assert result == {"action": "skip", "reason": "docket-trace-binding-unavailable"}
+    assert completions == [
+        {"outcome": "failed", "error_code": "trace_execution_binding_unavailable"}
+    ]
+    assert "failed-bind" not in plugin_module._TRACE_CONTEXTS
+
+
+def resume_trace_fixture(plugin, monkeypatch, context, session_id="recovery"):
+    """Exercise the real registration seam with a separately admitted server binding."""
+    for field, env in (("actor_id", "DOCKET_OPERATOR_DISCORD_USER_ID"),
+                       ("guild_id", "DOCKET_DISCORD_GUILD_ID"),
+                       ("source_channel_id", "DOCKET_CHAT_CHANNEL_ID")):
+        monkeypatch.setenv(env, context[field])
+    event = SimpleNamespace(message_id=context["source_message_id"], source=SimpleNamespace(
+        platform="discord", user_id=context["actor_id"], guild_id=context["guild_id"],
+        chat_id=context["source_channel_id"],
+    ))
+    store = SimpleNamespace(get_or_create_session=lambda _source: SimpleNamespace(
+        session_id=session_id, session_key=session_id,
+    ))
+    admissions = []
+    def bind(path, payload, **_kwargs):
+        assert path == "/internal/v1/discord/mcp-traces/bind"
+        admissions.append(dict(payload))
+        return {"trace_ref": context["trace_ref"], "execution_index": 2, "next_ordinal": 1,
+                "turn_started_at": payload["turn_started_at"]}
+    monkeypatch.setattr(plugin, "_docket_internal_request", bind)
+    plugin._register_trace_context(
+        event, store, context["utterance_ref"],
+        ingress_binding={"state": "claimed", "execution_completion_token": "b" * 32},
+    )
+    new = plugin._TRACE_CONTEXTS[session_id]
+    plugin._register_trace_context(
+        event, store, context["utterance_ref"],
+        ingress_binding={"state": "claimed", "execution_completion_token": "b" * 32},
+    )
+    assert len(admissions) == 1 and plugin._TRACE_CONTEXTS[session_id] is new
+    return new
+
+
+def test_recovery_retains_trace_with_separate_execution_context(plugin_module, monkeypatch):
     context = {
-        "execution_completion_token": "old-token", "delivery_recorded": True,
+        "trace_ref": "trace_" + "2" * 26, "utterance_ref": "utt_" + "0" * 26,
+        "actor_id": "111111111111111111", "guild_id": "222222222222222222",
+        "source_channel_id": "333333333333333333", "source_message_id": "444444444444444444",
+        "execution_completion_token": "a" * 32, "execution_index": 1, "delivery_recorded": True,
         "terminal": True, "calls": {"first": {}}, "next_ordinal": 2,
     }
-    plugin_module._rebind_trace_execution(
-        context, event, {"execution_completion_token": "new-token", "ref": "ing-new"}
-    )
-    assert context["processing_event_id"] == id(event)
-    assert context["execution_completion_token"] == "new-token"
-    assert context["delivery_recorded"] is False
-    assert context["terminal"] is False
-    assert context["calls"] == {"first": {}}
-    assert context["next_ordinal"] == 2
+    plugin_module._TRACE_CONTEXTS["old-session"] = context
+    new = resume_trace_fixture(plugin_module, monkeypatch, context)
+    assert new is not context and new["trace_ref"] == context["trace_ref"]
+    assert new["execution_index"] == 2 and new["execution_completion_token"] == "b" * 32
+    assert new["calls"] == {} and new["next_ordinal"] == 1 and not new["terminal"]
+    assert context["terminal"] and context["delivery_recorded"]
+    assert context["calls"] == {"first": {}} and context["execution_completion_token"] == "a" * 32
 
 
 @pytest.mark.parametrize("name", ["docket-schedule-management", "new-protocol", "../elsewhere"])
@@ -1036,6 +1136,8 @@ def test_changed_or_missing_instruction_bundle_blocks_mutation(plugin_module, mo
 @pytest.mark.parametrize("problem", ["instructions", "missing_binding", "admission", "signer"])
 def test_predispatch_rejections_close_without_post_hook(plugin_module, monkeypatch, problem):
     context = {
+        "execution_index": 1, "execution_completion_token": "a" * 32,
+        "gateway_instance_ref": "gwy_" + "3" * 26,
         "trace_ref": f"trace_{'2' * 26}", "utterance_ref": f"utt_{'0' * 26}",
         "actor_id": "111111111111111111", "guild_id": "222222222222222222",
         "source_channel_id": "333333333333333333", "source_message_id": "444444444444444444",
@@ -1099,6 +1201,8 @@ def test_unbound_tools_cannot_execute_or_attach_to_another_turn(plugin_module, p
 
 def test_plugin_traces_and_binds_calls_beyond_one_hundred(plugin_module, monkeypatch):
     context = {
+        "execution_index": 1, "execution_completion_token": "a" * 32,
+        "gateway_instance_ref": "gwy_" + "3" * 26,
         "trace_ref": f"trace_{'2' * 26}", "utterance_ref": f"utt_{'0' * 26}",
         "turn_id": None, "next_ordinal": 1, "calls": {}, "started": False, "terminal": False,
     }
@@ -1138,7 +1242,7 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
 ) -> None:
     guild_id = "222222222222222222"
     channel_id = "333333333333333333"
-    trace_ref = plugin_module._new_trace_ref()
+    trace_ref = new_public_ref("trace")
     monkeypatch.setenv("DOCKET_DISCORD_GUILD_ID", guild_id)
     monkeypatch.setenv("DOCKET_SYSTEM_CHANNEL_ID", channel_id)
 
@@ -1215,7 +1319,7 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
         "status": "Completed",
         "calls": [
             {
-                "ordinal": 1,
+                "execution_index": 1, "ordinal": 1,
                 "tool_name": "docket_search_history",
                 "transport_state": "completed",
                 "domain_state": "succeeded",
@@ -1241,7 +1345,7 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
             "provider_wait_ms": None,
         },
         "counts": {
-            "attempts": 1,
+            "executions": 1, "attempts": 1,
             "authenticated_invocations": 1,
             "local_rejections": 0,
             "unreconciled_attempts": 0,
@@ -1282,12 +1386,12 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
     assert second["created"] is False
     assert len(channel.messages) == 1
     assert channel.messages[0].edit_count == 1
-    assert channel.messages[0].embeds[0].fields[1]["name"] == "Turn timing"
+    assert channel.messages[0].embeds[0].fields[1]["name"] == "Conversation trace timing"
     assert "Before first Docket call: 3500 ms" in (
         channel.messages[0].embeds[0].fields[1]["value"]
     )
     assert channel.messages[0].embeds[0].fields[2]["name"] == "Workflow attempts (entire trace)"
-    assert channel.messages[0].embeds[0].fields[3]["name"] == ("1. docket_search_history")
+    assert channel.messages[0].embeds[0].fields[3]["name"] == ("E1.1 · docket_search_history")
     value = channel.messages[0].embeds[0].fields[3]["value"]
     assert value.startswith("Outcome: Succeeded")
     assert "Transport (wrapper): Completed" in value
@@ -1362,9 +1466,12 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
 
     # Exercise the actual Docket renderer, including a late stage/commit and
     # byte-heavy preview, through the plugin's strict digest/field validation.
+    from sqlalchemy import select
+    from trace_support import bind_execution, callback_binding, segment_for
+
     from docket.config import get_settings
     from docket.internal_api.schemas import McpTraceUpdate
-    from docket.models import ConversationalToolTrace
+    from docket.models import OperatorUtterance
     from docket.providers.discord import FakeDiscordBackend, FakeDiscordProjectionAdapter
     from docket.services.discord_projection import DiscordProjectionRunner
     from docket.services.mcp_traces import McpTraceService
@@ -1372,7 +1479,7 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
 
     settings = get_settings()
     stamp = datetime.now(UTC)
-    long_ref = plugin_module._new_trace_ref()
+    long_ref = new_public_ref("trace")
     with session_factory.begin() as session:
         calls = []
         for ordinal in range(1, 151):
@@ -1387,20 +1494,24 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
                     {"fields": ["界" * 180]}, ensure_ascii=False
                 ),
             })
-        session.add(ConversationalToolTrace(
-            ref_id=long_ref, guild_id=settings.discord_guild_id,
-            source_channel_id=settings.chat_channel_id, source_message_id="777777777777777777",
-            actor_id=settings.operator_discord_user_id, tool_contract_version=CONTRACT_VERSION,
-            tool_contract_hash=contract_hash("interactive"), started_at=stamp,
-            calls=calls, last_ordinal=150,
+        session.add(OperatorUtterance(
+            actor_ref=f"discord_user:{settings.operator_discord_user_id}", transport="discord",
+            source_message_ref=f"discord_message:{settings.discord_guild_id}:{settings.chat_channel_id}:777777777777777777",
+            conversation_ref=f"discord_conversation:{settings.chat_channel_id}",
+            verbatim_text="Synthetic trace projection.", content_hash="a" * 64,
+            request_key="trace-render-fixture", said_at=stamp,
         ))
         session.flush()
+        binding = bind_execution(session, session.scalar(select(OperatorUtterance)),
+                                 label=long_ref, started_at=stamp)
+        segment = segment_for(session, long_ref)
+        segment.calls, segment.last_ordinal = calls, 150
         McpTraceService(session).update(long_ref, McpTraceUpdate(
             request_id=uuid.uuid4(), guild_id=settings.discord_guild_id,
             source_channel_id=settings.chat_channel_id, source_message_id="777777777777777777",
             actor_id=settings.operator_discord_user_id, tool_contract_version=CONTRACT_VERSION,
             tool_contract_hash=contract_hash("interactive"), caller_profile="interactive",
-            turn_started_at=stamp, updated_at=datetime.now(UTC), turn_status="completed",
+            **callback_binding(binding), updated_at=datetime.now(UTC), turn_status="completed",
         ))
     backend = FakeDiscordBackend()
     runner = DiscordProjectionRunner(
@@ -1422,7 +1533,7 @@ async def test_mcp_trace_projection_creates_then_edits_one_system_message(
     assert len(embed.fields) <= 25
     assert "Stage: 1" in embed.fields[2]["value"]
     assert "Commit: 1" in embed.fields[2]["value"]
-    assert any(field["name"] == "150. docket_commit_changeset" for field in embed.fields)
+    assert any(field["name"] == "E1.150 · docket_commit_changeset" for field in embed.fields)
     assert any("omitted; showing recent attempts" in field["value"] for field in embed.fields)
 
 
@@ -1726,6 +1837,10 @@ def test_terminal_attachment_failure_gets_durable_response_without_model(
     )
 
     def fake_request(path, payload, **_kwargs):
+        if path == "/internal/v1/discord/mcp-traces/bind":
+            return {"ok": True, "trace_ref": "trace_" + "2" * 26,
+                    "execution_index": 1, "next_ordinal": 1,
+                    "turn_started_at": payload["turn_started_at"]}
         requests.append((path, dict(payload)))
         if path == "/internal/v1/discord/agent-responses":
             return {"ok": True, "ref": response_ref, "state": "pending"}

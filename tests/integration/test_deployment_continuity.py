@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
+from trace_support import segment_for
 
 from docket.config import get_settings
 from docket.domain.errors import DocketError
@@ -17,6 +18,7 @@ from docket.models import (
     OperatorUtterance,
     OutboxEvent,
     ToolInvocation,
+    TraceExecutionSegment,
 )
 from docket.providers.discord import FakeDiscordProjectionAdapter
 from docket.services.continuity import ContinuityService
@@ -43,6 +45,25 @@ def _claimed_message(session_factory):
         )
         captured = ProvenanceService(session).capture_operator_utterance(request)
     return request, captured
+
+
+def _retained_trace(session, **values):
+    """Exact pre-cutover trace evidence; no inferred execution lease."""
+    fields = {
+        key: values.pop(key) for key in (
+            "tool_contract_version", "tool_contract_hash", "caller_profile",
+            "gateway_instance_ref", "calls", "last_ordinal",
+        )
+    }
+    trace = ConversationalToolTrace(**values)
+    session.add(trace)
+    session.flush()
+    session.add(TraceExecutionSegment(
+        trace_ref=trace.ref_id, execution_index=1, binding_basis="retained_trace",
+        started_at=trace.started_at, status=trace.status, **fields,
+    ))
+    session.flush()
+    return trace
 
 
 @pytest.mark.integration
@@ -237,7 +258,7 @@ def test_drained_replacement_terminalizes_trace_without_replaying_finalized_utte
         )
         ingress_binding = capture["deferred_ingress"]
         session.add(
-            ConversationalToolTrace(
+            _retained_trace(session,
                 ref_id=trace_ref,
                 guild_id=settings.discord_guild_id,
                 source_channel_id=settings.chat_channel_id,
@@ -305,8 +326,8 @@ def test_drained_replacement_terminalizes_trace_without_replaying_finalized_utte
         assert ingress.claimed_by_gateway_ref is None
         assert ingress.claim_token is None
         assert trace is not None and trace.status == "interrupted"
-        assert trace.calls[0]["transport_state"] == "timed_out"
-        assert trace.calls[0]["disposition"] == "unknown"
+        assert segment_for(session, trace.ref_id).calls[0]["transport_state"] == "timed_out"
+        assert segment_for(session, trace.ref_id).calls[0]["disposition"] == "unknown"
         assert session.scalar(
             select(func.count(OutboxEvent.id)).where(
                 OutboxEvent.event_type == "discord.mcp_trace.requested",
@@ -341,7 +362,7 @@ def test_startup_reconciles_trace_left_running_by_closed_gateway(
         session.add(gateway)
         session.flush()
         session.add(
-            ConversationalToolTrace(
+            _retained_trace(session,
                 ref_id=trace_ref,
                 guild_id=settings.discord_guild_id,
                 source_channel_id=settings.chat_channel_id,
@@ -497,7 +518,7 @@ def test_dead_gateway_preserves_terminal_domain_outcomes_and_marks_unknowns(
         )
         session.add(gateway)
         session.flush()
-        trace = ConversationalToolTrace(
+        trace = _retained_trace(session,
             ref_id=trace_ref,
             guild_id=get_settings().discord_guild_id,
             source_channel_id=get_settings().chat_channel_id,
@@ -543,6 +564,7 @@ def test_dead_gateway_preserves_terminal_domain_outcomes_and_marks_unknowns(
                     result_disposition="committed",
                     completed_at=now - timedelta(minutes=4),
                     trace_ref=trace_ref,
+                    trace_execution_id=segment_for(session, trace_ref).id,
                     trace_call_id="committed-call",
                     trace_ordinal=1,
                     gateway_instance_ref=gateway.ref_id,
@@ -557,6 +579,7 @@ def test_dead_gateway_preserves_terminal_domain_outcomes_and_marks_unknowns(
                     transport_state="running",
                     domain_state="unknown",
                     trace_ref=trace_ref,
+                    trace_execution_id=segment_for(session, trace_ref).id,
                     trace_call_id="orphaned-call",
                     trace_ordinal=2,
                     gateway_instance_ref=gateway.ref_id,
@@ -572,12 +595,12 @@ def test_dead_gateway_preserves_terminal_domain_outcomes_and_marks_unknowns(
             select(ConversationalToolTrace).where(ConversationalToolTrace.ref_id == trace_ref)
         )
         assert trace is not None and trace.status == "interrupted"
-        assert trace.calls[0]["transport_state"] == "timed_out"
-        assert trace.calls[0]["domain_state"] == "succeeded"
-        assert trace.calls[0]["disposition"] == "committed"
-        assert trace.calls[1]["transport_state"] == "timed_out"
-        assert trace.calls[1]["domain_state"] == "unknown"
-        assert trace.calls[1]["disposition"] == "unknown"
+        assert segment_for(session, trace.ref_id).calls[0]["transport_state"] == "timed_out"
+        assert segment_for(session, trace.ref_id).calls[0]["domain_state"] == "succeeded"
+        assert segment_for(session, trace.ref_id).calls[0]["disposition"] == "committed"
+        assert segment_for(session, trace.ref_id).calls[1]["transport_state"] == "timed_out"
+        assert segment_for(session, trace.ref_id).calls[1]["domain_state"] == "unknown"
+        assert segment_for(session, trace.ref_id).calls[1]["disposition"] == "unknown"
         orphaned = session.scalar(
             select(ToolInvocation).where(ToolInvocation.trace_call_id == "orphaned-call")
         )

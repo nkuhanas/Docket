@@ -38,6 +38,8 @@ def timing_plugin(monkeypatch):
         tool_contract_hash=plugin._TOOL_CONTRACT_HASH, caller_profile="interactive",
         turn_started_at=base.isoformat(), calls={}, next_ordinal=1,
         turn_id=None, started=False, terminal=False,
+        execution_index=1, execution_completion_token="a" * 32,
+        gateway_instance_ref="gwy_" + "0" * 26,
     )
     plugin._TRACE_CONTEXTS["timing-test"] = context
     return plugin, context, clock, sent

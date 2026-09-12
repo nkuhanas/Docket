@@ -73,6 +73,30 @@ own trace refresh instead of depending on a later callback.
 Local wrapper rejections are not authenticated Docket invocations. Unlinked
 attempts stay unreconciled rather than becoming evidence of domain success.
 
+One `trace_` now spans all admitted executions of its original Discord message.
+Each execution retains its own immutable lease/gateway/contract binding and
+local call ordinals. `E2.1` means the first call in the second execution, not a
+replay of execution one's first call. Inspect
+`docket_get_history_entry(ref="trace_...", view="executions")` for bounded
+per-execution status, timing and call counts, including zero-call executions.
+Use `view="calls"` for the combined call history. Both collections reject stale
+revision cursors explicitly. Recovery downtime is not relabeled as model time;
+each execution's measured closed intervals remain separate from whole-trace
+elapsed time. A late prior-gateway callback cannot reopen the current execution.
+
+Migration `20260912b8f7` moves each previously captured trace's execution fields
+into an internal `TraceExecutionSegment`, retaining original references,
+timestamps, calls and durable outcomes. These rows are marked `retained_trace`;
+no historical completion token/lease is guessed. Exact existing trace links
+are preserved, while historical missing links remain unknown. This is a
+lossless evidence move, not an old callback decoder or a domain backfill. New
+executions require the authenticated bind callback and format-2 signed MCP
+envelope. Drain and deploy Docket plus the pinned plugin together; old callback
+formats are rejected. Queued projections are rebuilt from durable trace state.
+Downgrade is allowed only before an admitted execution exists. Once new work
+has run, use forward repair or a verified backup; neither deleting evidence nor
+an image-only rollback is a valid recovery procedure.
+
 Local rejection and turn completion now checkpoint the gateway's observations
 through the authenticated internal trace endpoint, in pages of at most 25 calls
 and 16 KiB. This recovers a dropped callback prefix without inventing missing

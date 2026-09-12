@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
+from trace_support import bind_execution, segment_for
 
 from docket.config import get_settings
 from docket.domain.canonical import sha256_json
@@ -19,6 +20,7 @@ from docket.mcp.instrumented import ProvenanceFastMCP, _result_envelope
 from docket.models import (
     AssemblyOperation,
     ConversationalToolTrace,
+    ExecutionLease,
     GatewayLifetime,
     Item,
     OperatorUtterance,
@@ -56,16 +58,11 @@ def _context(session):
         request_key=f"discord:{settings.discord_guild_id}:{settings.chat_channel_id}:{message_id}:0",
     )
     session.add(utterance)
-    trace = ConversationalToolTrace(
-        ref_id=new_public_ref("trace"), guild_id=settings.discord_guild_id,
-        source_channel_id=settings.chat_channel_id, source_message_id=message_id,
-        actor_id=settings.operator_discord_user_id, tool_contract_version=CONTRACT_VERSION,
-        tool_contract_hash=contract_hash("interactive"), caller_profile="interactive",
-        gateway_instance_ref=gateway["ref"], status="running", calls=[], last_ordinal=0,
-        version=1, started_at=datetime.now(UTC),
-    )
-    session.add(trace)
     session.flush()
+    binding = bind_execution(session, utterance, gateway=gateway["ref"])
+    trace = session.scalar(select(ConversationalToolTrace).where(
+        ConversationalToolTrace.ref_id == binding["trace_ref"],
+    ))
     return utterance, trace
 
 
@@ -73,27 +70,38 @@ def _admit(session, utterance, trace, kind, ordinal, digest=None):
     tool = f"docket_{kind}_changes" if kind == "stage" else f"docket_{kind}_changeset"
     digest = digest or hashlib.sha256(f"{kind}:{ordinal}".encode()).hexdigest()
     settings = get_settings()
+    segment = segment_for(session, trace.ref_id)
+    lease = session.get(ExecutionLease, segment.execution_lease_id)
     admitted = ChangeSetAssemblyAdmissionService(session).admit(
         utterance_ref=utterance.ref_id, trace_ref=trace.ref_id,
+        execution_index=segment.execution_index, execution_completion_token=lease.completion_token,
+        gateway_instance_ref=segment.gateway_instance_ref,
         upstream_tool_call_id=f"call-{ordinal}", trace_ordinal=ordinal,
         tool_name=tool, argument_hash=digest, guild_id=settings.discord_guild_id,
         channel_id=settings.chat_channel_id, source_message_id=trace.source_message_id,
         actor_id=settings.operator_discord_user_id,
     )
     invocation = ToolInvocation(
-        tool_name=tool, tool_contract_version=CONTRACT_VERSION,
-        tool_contract_hash=contract_hash("interactive"), caller_profile="interactive",
-        actor_ref=utterance.actor_ref, utterance_refs=[utterance.ref_id],
-        received_argument_hash=digest, trace_ref=trace.ref_id, trace_call_id=f"call-{ordinal}",
-        trace_ordinal=ordinal, gateway_instance_ref=trace.gateway_instance_ref,
+        tool_name=tool,
+        tool_contract_version=CONTRACT_VERSION,
+        tool_contract_hash=contract_hash("interactive"),
+        caller_profile="interactive",
+        actor_ref=utterance.actor_ref,
+        utterance_refs=[utterance.ref_id],
+        received_argument_hash=digest,
+        trace_ref=trace.ref_id,
+        trace_call_id=f"call-{ordinal}",
+        trace_execution_id=segment.id,
+        trace_ordinal=ordinal,
+        gateway_instance_ref=segment_for(session, trace.ref_id).gateway_instance_ref,
     )
     session.add(invocation)
-    trace.calls = [*trace.calls, {
+    segment_for(session, trace.ref_id).calls = [*segment_for(session, trace.ref_id).calls, {
         "call_id": f"call-{ordinal}", "ordinal": ordinal, "tool_name": tool,
         "received_argument_hash": digest, "transport_state": "running",
         "domain_state": "unknown", "execution_boundary": "docket_dispatch",
     }]
-    trace.last_ordinal = ordinal
+    segment_for(session, trace.ref_id).last_ordinal = ordinal
     session.flush()
     return invocation, {
         "assembly_operation_token": admitted["assembly_operation_token"],
@@ -118,7 +126,7 @@ def _stage(utterance):
 
 def _expire(session, trace):
     gateway = session.scalar(select(GatewayLifetime).where(
-        GatewayLifetime.ref_id == trace.gateway_instance_ref,
+        GatewayLifetime.ref_id == segment_for(session, trace.ref_id).gateway_instance_ref,
     ))
     gateway.lease_expires_at = datetime.now(UTC) - timedelta(minutes=1)
 
@@ -155,12 +163,12 @@ def test_restart_recovers_exact_operation_not_later_request_outcome(
         retry = ToolInvocation(**{field: getattr(committed, field) for field in (
             "tool_name", "tool_contract_version", "tool_contract_hash", "caller_profile",
             "actor_ref", "utterance_refs", "received_argument_hash", "trace_ref",
-            "trace_ordinal", "gateway_instance_ref",
+            "trace_ordinal", "gateway_instance_ref", "trace_execution_id",
         )})
         session.add(retry)
         if missing_callback:
-            trace.calls = []
-            trace.last_ordinal = 0
+            segment_for(session, trace.ref_id).calls = []
+            segment_for(session, trace.ref_id).last_ordinal = 0
         _expire(session, trace)
         trace_ref = trace.ref_id
     with session_factory.begin() as session:
@@ -188,7 +196,7 @@ def test_restart_recovers_exact_operation_not_later_request_outcome(
             assert all(row["elapsed_ms"] is None for row in view["rows"])
             assert view["timing"]["wrapper_elapsed_sum_ms"] == 0
         if not missing_callback:
-            assert [row["disposition"] for row in trace.calls] == [
+            assert [row["disposition"] for row in segment_for(session, trace.ref_id).calls] == [
                 "rejected_validation", "ready_to_commit", "reviewed", "committed",
             ]
         version = trace.version
@@ -260,7 +268,7 @@ def test_recovery_cannot_borrow_nearby_operation_outcomes(session, field):
         invocation = ToolInvocation(**{name: getattr(original, name) for name in (
             "tool_name", "tool_contract_version", "tool_contract_hash", "caller_profile",
             "actor_ref", "utterance_refs", "received_argument_hash", "trace_ref",
-            "trace_ordinal", "gateway_instance_ref",
+            "trace_ordinal", "gateway_instance_ref", "trace_execution_id",
         )})
         session.add(invocation)
         if field == "retry_ordinal":
@@ -292,7 +300,7 @@ def test_late_finalization_binds_original_attempt_not_latest_request_attempt(ses
         semantic_request_id=request.id, semantic_request_ref=request.ref_id, attempt_number=2,
         authority_scope_hash=request.authority_scope_hash,
         precondition_hash=request.current_precondition_hash,
-        execution_trace_ref=new_public_ref("trace"), state="pending",
+        trace_ref=new_public_ref("trace"), state="pending",
     )
     session.add(other_attempt)
     session.flush()
@@ -339,16 +347,28 @@ def test_mcp_recovers_commit_receipt_when_result_assembly_raises_after_commit(se
         }
         now = int(datetime.now(UTC).timestamp())
         payload = {
-            "format": 1, "trace_ref": trace.ref_id, "call_id": "call-2", "ordinal": 2,
-            "utterance_ref": utterance.ref_id, "gateway_instance_ref": trace.gateway_instance_ref,
-            "tool_name": "docket_commit_changeset", "argument_hash": sha256_json({}),
-            "contract_version": CONTRACT_VERSION, "contract_hash": contract_hash("interactive"),
-            "issued_at": now, "expires_at": now + 900,
+            "format": 2,
+            "trace_ref": trace.ref_id,
+            "execution_index": segment_for(session, trace.ref_id).execution_index,
+            "execution_completion_token": session.get(
+                ExecutionLease,
+                segment_for(session, trace.ref_id).execution_lease_id,
+            ).completion_token,
+            "call_id": "call-2",
+            "ordinal": 2,
+            "utterance_ref": utterance.ref_id,
+            "gateway_instance_ref": segment_for(session, trace.ref_id).gateway_instance_ref,
+            "tool_name": "docket_commit_changeset",
+            "argument_hash": sha256_json({}),
+            "contract_version": CONTRACT_VERSION,
+            "contract_hash": contract_hash("interactive"),
+            "issued_at": now,
+            "expires_at": now + 900,
         }
         encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
         signature = hmac.new(
             get_settings().hermes_to_docket_token().encode(),
-            b"docket-mcp-invocation-v1:" + encoded.encode(), hashlib.sha256,
+            b"docket-mcp-invocation-v2:" + encoded.encode(), hashlib.sha256,
         ).hexdigest()
         arguments["invocation_binding"] = f"{encoded}.{signature}"
     server = ProvenanceFastMCP("recovery-test", caller_profile="interactive")
@@ -387,7 +407,7 @@ def test_mcp_recovers_commit_receipt_when_result_assembly_raises_after_commit(se
         assert session.scalar(select(func.count(OutboxEvent.id)).where(
             OutboxEvent.event_type == "discord.mcp_trace.requested",
             OutboxEvent.aggregate_id == trace.id,
-        )) == 2
+        )) == 3
 
 
 @pytest.mark.integration

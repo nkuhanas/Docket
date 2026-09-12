@@ -251,8 +251,14 @@ def test_pdf_citation_failure_preserves_all_entries_and_repairs_same_request(ses
     service = ChangeSetAssemblyService(session)
 
     def admit(ordinal, tool):
+        from trace_support import bind_execution
+
+        binding = bind_execution(session, utterance, label=trace_ref)
         result = ChangeSetAssemblyAdmissionService(session).admit(
-            utterance_ref=utterance.ref_id, trace_ref=trace_ref,
+            utterance_ref=utterance.ref_id, trace_ref=binding["trace_ref"],
+            **{key: binding[key] for key in (
+                "execution_index", "execution_completion_token", "gateway_instance_ref",
+            )},
             upstream_tool_call_id=f"call-{ordinal}", trace_ordinal=ordinal, tool_name=tool,
             argument_hash=str(ordinal) * 64, guild_id=settings.discord_guild_id,
             channel_id=settings.chat_channel_id, source_message_id="1542999000000000612",

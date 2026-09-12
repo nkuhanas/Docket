@@ -19,24 +19,26 @@ from sqlalchemy.orm import Session
 
 from docket.config import get_settings
 from docket.domain.errors import DocketError
-from docket.models import ConversationalToolTrace, OperatorUtterance, ToolInvocation
+from docket.models import OperatorUtterance, ToolInvocation
 from docket.models.base import utc_now
-from docket.services.gateway_lifetimes import GatewayLifetimeService
+from docket.services.trace_executions import TraceExecutionService
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash
 
 BINDING_ARGUMENT = "invocation_binding"
-SIGNING_CONTEXT = b"docket-mcp-invocation-v1:"
+SIGNING_CONTEXT = b"docket-mcp-invocation-v2:"
 
 
 class InvocationBinding(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    format: Literal[1]
+    format: Literal[2]
     trace_ref: str = Field(pattern=r"^trace_[0-9A-HJKMNP-TV-Z]{26}$")
     call_id: str = Field(min_length=1, max_length=255)
     ordinal: int = Field(ge=1, le=2_147_483_647)
     utterance_ref: str = Field(pattern=r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")
-    gateway_instance_ref: str | None = Field(pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
+    gateway_instance_ref: str = Field(pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
+    execution_index: int = Field(ge=1)
+    execution_completion_token: str = Field(pattern=r"^[0-9a-f]{32}$")
     tool_name: str = Field(min_length=1, max_length=128)
     argument_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     contract_version: str = Field(min_length=1, max_length=128)
@@ -94,22 +96,23 @@ def bind_invocation(
     for name in ("utterance_ref", "operator_utterance_ref"):
         if arguments.get(name) is not None and arguments[name] != utterance.ref_id:
             raise _invalid()
-    if binding.gateway_instance_ref is not None:
-        GatewayLifetimeService(session).require_live(binding.gateway_instance_ref)
-    trace = session.scalar(select(ConversationalToolTrace).where(
-        ConversationalToolTrace.ref_id == binding.trace_ref
-    ))
-    if trace is not None and (
+    trace, execution = TraceExecutionService(session).require(
+        trace_ref=binding.trace_ref, execution_index=binding.execution_index,
+        execution_completion_token=binding.execution_completion_token,
+        gateway_instance_ref=binding.gateway_instance_ref, active=True,
+    )
+    if (
         utterance.source_message_ref != (
             f"discord_message:{trace.guild_id}:{trace.source_channel_id}:{trace.source_message_id}"
         )
-        or trace.gateway_instance_ref != binding.gateway_instance_ref
+        or execution.tool_contract_version != binding.contract_version
+        or execution.tool_contract_hash != binding.contract_hash
     ):
         raise _invalid()
     # The callback may arrive after MCP. Correlation is still exact and survives
     # lost tool responses; it never depends on finding a recent same-hash call.
     existing = session.scalar(select(ToolInvocation).where(
-        ToolInvocation.trace_ref == binding.trace_ref,
+        ToolInvocation.trace_execution_id == execution.id,
         ToolInvocation.trace_call_id == binding.call_id,
     ))
     if existing is not None and (
@@ -121,6 +124,7 @@ def bind_invocation(
     ):
         raise _invalid()
     invocation.trace_ref = binding.trace_ref
+    invocation.trace_execution_id = execution.id
     # The original upstream call owns its unique call_id. A transport retry is
     # another authenticated invocation under that exact signed ordinal and
     # original binding. Leave deduplication/replay of effects to the durable

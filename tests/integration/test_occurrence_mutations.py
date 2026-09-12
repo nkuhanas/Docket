@@ -133,10 +133,16 @@ def _world(session):
 
 
 def _admit(session, utterance, trace, kind, ordinal):
+    from trace_support import bind_execution
+
     settings = get_settings()
+    binding = bind_execution(session, utterance, label=trace)
     return ChangeSetAssemblyAdmissionService(session).admit(
         utterance_ref=utterance.ref_id,
-        trace_ref=trace,
+        trace_ref=binding["trace_ref"],
+        **{key: binding[key] for key in (
+            "execution_index", "execution_completion_token", "gateway_instance_ref",
+        )},
         upstream_tool_call_id=f"{kind}-{ordinal}",
         trace_ordinal=ordinal,
         tool_name=f"docket_{kind}",

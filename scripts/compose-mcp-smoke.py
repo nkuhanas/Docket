@@ -17,7 +17,6 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from docket.domain.canonical import sha256_json
-from docket.domain.public_refs import new_public_ref
 from docket.tool_contracts import CONTRACT_VERSION, contract_hash
 
 EXPECTED_TOOLS = {
@@ -126,6 +125,7 @@ async def smoke() -> None:
                     "channel_id": "000000000000000003",
                     "message_id": "999999999999999999",
                     "actor_id": "000000000000000001",
+                    "gateway_instance_ref": gateway_results[0]["ref"],
                     "verbatim_text": "Store the dummy Compose smoke term.",
                     "request_key": (
                         "discord:000000000000000002:000000000000000003:"
@@ -136,6 +136,20 @@ async def smoke() -> None:
             utterance.raise_for_status()
             utterance_ref = utterance.json()["ref"]
             assert utterance_ref.startswith("utt_")
+            completion_token = utterance.json()["deferred_ingress"]["execution_completion_token"]
+            trace_binding = await service_client.post(
+                f"{base_url}/internal/v1/discord/mcp-traces/bind",
+                json={
+                    "utterance_ref": utterance_ref,
+                    "execution_completion_token": completion_token,
+                    "gateway_instance_ref": gateway_results[0]["ref"],
+                    "tool_contract_version": CONTRACT_VERSION,
+                    "tool_contract_hash": contract_hash("interactive"),
+                    "turn_started_at": datetime.now(UTC).isoformat(),
+                },
+            )
+            trace_binding.raise_for_status()
+            execution = trace_binding.json()
 
             changeset_arguments = {
                 "utterance_ref": utterance_ref,
@@ -159,15 +173,20 @@ async def smoke() -> None:
                 }],
             }
 
-        trace_ref = new_public_ref("trace")
+        trace_ref = execution["trace_ref"]
+        execution_context = {
+            "execution_index": execution["execution_index"],
+            "execution_completion_token": completion_token,
+            "gateway_instance_ref": gateway_results[0]["ref"],
+        }
         argument_hash = sha256_json({
             key: value for key, value in changeset_arguments.items()
             if key not in {"utterance_ref", "request_key"}
         })
         issued_at = int(datetime.now(UTC).timestamp())
         binding_payload = {
-            "format": 1, "trace_ref": trace_ref, "call_id": "compose-smoke-call",
-            "ordinal": 1, "utterance_ref": utterance_ref, "gateway_instance_ref": None,
+            "format": 2, "trace_ref": trace_ref, "call_id": "compose-smoke-call",
+            "ordinal": 1, "utterance_ref": utterance_ref, **execution_context,
             "tool_name": "docket_request_clarification", "argument_hash": argument_hash,
             "contract_version": CONTRACT_VERSION, "contract_hash": contract_hash("interactive"),
             "issued_at": issued_at, "expires_at": issued_at + 900,
@@ -176,7 +195,7 @@ async def smoke() -> None:
             binding_payload, sort_keys=True, separators=(",", ":")
         ).encode()).decode().rstrip("=")
         binding_signature = hmac.new(
-            _service_token().encode(), b"docket-mcp-invocation-v1:" + encoded_binding.encode(),
+            _service_token().encode(), b"docket-mcp-invocation-v2:" + encoded_binding.encode(),
             hashlib.sha256,
         ).hexdigest()
         async with streamable_http_client(f"{base_url}/mcp/", http_client=client) as streams:
@@ -211,8 +230,9 @@ async def smoke() -> None:
                 clarification_payload = json.loads(clarification.content[0].text)
                 assert clarification_payload["disposition"] == "needs_clarification"
 
-        turn_started_at = datetime.now(UTC).isoformat()
+        turn_started_at = execution["turn_started_at"]
         trace_context = {
+            **execution_context,
             "guild_id": "000000000000000002",
             "source_channel_id": "000000000000000003",
             "source_message_id": "999999999999999999",

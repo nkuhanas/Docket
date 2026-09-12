@@ -13,6 +13,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     event,
+    inspect,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -54,10 +55,6 @@ class ConversationalToolTrace(TimestampMixin, Base):
             "status IN ('running', 'completed', 'failed', 'interrupted')",
             name="ck_conversational_tool_traces_status",
         ),
-        CheckConstraint(
-            "last_ordinal >= 0",
-            name="ck_conversational_tool_traces_last_ordinal",
-        ),
         UniqueConstraint(
             "guild_id",
             "source_channel_id",
@@ -74,22 +71,80 @@ class ConversationalToolTrace(TimestampMixin, Base):
     source_channel_id: Mapped[str] = mapped_column(String(64), nullable=False)
     source_message_id: Mapped[str] = mapped_column(String(64), nullable=False)
     actor_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    tool_contract_version: Mapped[str] = mapped_column(
-        String(128), default="pre-contract-bootstrap-2026-08-27", nullable=False
-    )
-    tool_contract_hash: Mapped[str] = mapped_column(
-        String(64), default="0" * 64, nullable=False
-    )
-    caller_profile: Mapped[str] = mapped_column(
-        String(32), default="interactive", nullable=False
-    )
-    gateway_instance_ref: Mapped[str | None] = mapped_column(String(40))
+    # Source-wide projection state. Execution bindings and observations live
+    # in distinct segments; this row is never rebound to a replacement gateway.
     status: Mapped[str] = mapped_column(String(16), default="running", nullable=False)
-    calls: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
-    last_ordinal: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TraceExecutionSegment(Base):
+    """An immutable execution binding with append-only observation evolution.
+
+    Existing trace evidence is moved losslessly to a retained_trace segment by
+    the cutover. Only admitted_execution segments may receive new gateway work.
+    No lease is guessed for previously captured evidence.
+    """
+
+    __tablename__ = "trace_execution_segments"
+    __table_args__ = (
+        UniqueConstraint("trace_ref", "execution_index", name="uq_trace_execution_index"),
+        UniqueConstraint("execution_lease_id", name="uq_trace_execution_lease"),
+        CheckConstraint("execution_index >= 1", name="ck_trace_execution_index"),
+        CheckConstraint("last_ordinal >= 0", name="ck_trace_execution_ordinal"),
+        CheckConstraint(
+            "status IN ('running', 'completed', 'failed', 'interrupted')",
+            name="ck_trace_execution_status",
+        ),
+        CheckConstraint(
+            "(binding_basis = 'admitted_execution' AND execution_lease_id IS NOT NULL "
+            "AND gateway_instance_ref IS NOT NULL) OR "
+            "(binding_basis = 'retained_trace' AND execution_lease_id IS NULL)",
+            name="ck_trace_execution_binding",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    trace_ref: Mapped[str] = mapped_column(
+        ForeignKey("conversational_tool_traces.ref_id", ondelete="RESTRICT"),
+        nullable=False, index=True,
+    )
+    execution_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    execution_lease_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("execution_leases.id", ondelete="RESTRICT"),
+    )
+    binding_basis: Mapped[str] = mapped_column(String(32), nullable=False)
+    gateway_instance_ref: Mapped[str | None] = mapped_column(String(40), index=True)
+    tool_contract_version: Mapped[str] = mapped_column(String(128), nullable=False)
+    tool_contract_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    caller_profile: Mapped[str] = mapped_column(String(32), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(16), default="running", nullable=False)
+    calls: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list, nullable=False)
+    last_ordinal: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
+def _protect_execution_binding(_mapper: object, _connection: object, target: object) -> None:
+    state = inspect(target)
+    assert state is not None
+    if any(state.attrs[name].history.has_changes() for name in (
+        "id", "trace_ref", "execution_index", "execution_lease_id", "binding_basis",
+        "gateway_instance_ref", "tool_contract_version", "tool_contract_hash",
+        "caller_profile", "started_at",
+    )):
+        raise ValueError("TraceExecutionSegment binding is immutable")
+
+
+event.listen(TraceExecutionSegment, "before_update", _protect_execution_binding)
+
+
+def _protect_execution_delete(_mapper: object, _connection: object, _target: object) -> None:
+    raise ValueError("TraceExecutionSegment binding is immutable")
+
+
+event.listen(TraceExecutionSegment, "before_delete", _protect_execution_delete)
 
 
 class TraceTimingObservation(Base):
@@ -107,6 +162,10 @@ class TraceTimingObservation(Base):
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
     trace_ref: Mapped[str] = mapped_column(
         ForeignKey("conversational_tool_traces.ref_id", ondelete="RESTRICT"),
+        nullable=False, index=True,
+    )
+    trace_execution_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("trace_execution_segments.id", ondelete="RESTRICT"),
         nullable=False, index=True,
     )
     phase: Mapped[str] = mapped_column(String(32), nullable=False)
