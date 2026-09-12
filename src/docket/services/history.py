@@ -59,6 +59,7 @@ from docket.models import (
     ToolInvocation,
     TriageRun,
 )
+from docket.services.changeset_delivery import ChangeSetDeliveryService
 from docket.services.source_identities import (
     associated_sender_emails,
     gmail_sender_identity,
@@ -764,6 +765,8 @@ class HistoryService:
         view: str = "summary",
         text_offset: int = 0,
         text_limit: int = MAX_TEXT_CHUNK_BYTES,
+        cursor: str | None = None,
+        limit: int = DEFAULT_PAGE_SIZE,
     ) -> dict[str, Any]:
         try:
             prefix, _payload = parse_public_ref(ref_id)
@@ -788,6 +791,18 @@ class HistoryService:
             item = self.session.scalar(select(Source).where(Source.ref_id == ref_id))
         if item is None:
             raise DocketError(code="history_entry_not_found", message="Public reference not found.")
+        if view == "delivery":
+            if not isinstance(item, ChangeSet):
+                raise DocketError(
+                    code="delivery_requires_changeset",
+                    message="Use the committed receipt's chg_ ref to follow provider delivery.",
+                )
+            return ChangeSetDeliveryService(self.session).read(item, cursor=cursor, limit=limit)
+        if cursor is not None:
+            raise DocketError(
+                code="history_cursor_view_invalid",
+                message="A delivery cursor requires delivery view.",
+            )
         entry = self._summary(object_type, item)
         if isinstance(item, InterpretedStatement):
             entry["utterance_ref"] = self.session.scalar(

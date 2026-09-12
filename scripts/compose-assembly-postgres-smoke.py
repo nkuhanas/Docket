@@ -55,6 +55,7 @@ from docket.services.event_occurrences import (
     occurrence_timing,
 )
 from docket.services.gateway_lifetimes import GatewayLifetimeService
+from docket.services.history import HistoryService
 from docket.services.operations import OperationRunner
 from docket.services.provenance import ProvenanceService
 
@@ -1090,6 +1091,23 @@ def test_thirty_entry_schedule_commits_once(factory: sessionmaker[Session]) -> N
         assert prior_attempt is not None and prior_attempt.status == "unknown"
         assert current_attempt is not None and current_attempt.status == "succeeded"
     assert len(provider.events) == 1
+
+    # Counts and per-target rows use the same PostgreSQL statement snapshot.
+    # This is status only: the remaining 29 queued deliveries are not retried.
+    with factory() as session:
+        page = HistoryService(session).get_entry(result["changeset_ref"], view="delivery", limit=3)
+        assert page["provider_operation_count"] == 30
+        assert page["provider_state_counts"] == {"queued": 29, "confirmed": 1}
+        assert page["count"] == 3 and page["omitted_target_count"] == 27
+        assert page["cursor"]
+        assert len(json.dumps(page, ensure_ascii=False).encode()) < 16 * 1024
+        first_refs = {item["operation_ref"] for item in page["items"]}
+    with factory() as session:
+        following = HistoryService(session).get_entry(
+            result["changeset_ref"], view="delivery", limit=3, cursor=page["cursor"]
+        )
+        assert following["provider_state_counts"] == {"queued": 29, "confirmed": 1}
+        assert not first_refs.intersection(item["operation_ref"] for item in following["items"])
 
 
 def test_diff_pages_keep_both_revisions_across_connections(factory: sessionmaker[Session]) -> None:

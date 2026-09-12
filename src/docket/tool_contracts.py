@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-09-11-v24"
+CONTRACT_VERSION = "docket-tools-2026-09-11-v25"
 
 
 class ToolContractEntry(TypedDict):
@@ -51,7 +51,8 @@ _INTERACTIVE_READS: dict[str, tuple[str, str]] = {
     ),
     "docket_get_history_entry": (
         "ONT-TOOL-0007",
-        "Read one exact referenced provenance or accountability object.",
+        "Read exact history; delivery view on chg_ returns live provider counts and bounded "
+        "per-target title/time/lane/error. Follow the committed receipt; never restage it.",
     ),
     "docket_get_conflict": (
         "ONT-TOOL-0008",

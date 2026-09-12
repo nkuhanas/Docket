@@ -249,6 +249,21 @@ A Google popup ReminderPlan requires an Event provider binding or an active/
 same-ChangeSet Time projection. Docket queue reminders can target Event or Time
 without turning a deadline into an Event.
 
+After commit, `docket_get_history_entry(ref="chg_...", view="delivery")` follows
+the existing provider Operations. New receipts contain this read's exact
+arguments. The bounded result reports whole-request Operation state counts and
+each target's committed title, timing, lane, `op_`, error and next action. It
+does not load unrelated source content or expose provider credentials/IDs.
+Counts and page rows share one database statement snapshot; another page is a
+new status observation and may reflect completed delivery. Cursor order is
+stable across those status changes. A status read never retries provider work.
+
+Report partial delivery precisely: identify the failed target and retain the
+confirmed siblings. Recovery follows the existing `op_`, not a new stage/commit
+of the user request. A queued receipt may be reported without repeatedly polling
+Google. Canonical commitment, provider confirmation and Discord reply delivery
+are different outcomes.
+
 ## Attachment evidence
 
 An Operator attachment first creates bounded `src_` metadata and, according to

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import replace
 from datetime import timedelta
@@ -22,6 +23,7 @@ from docket.models import (
 from docket.models.base import utc_now
 from docket.providers.google.calendar import CalendarProviderError
 from docket.providers.google.fake_calendar import FakeCalendarProvider
+from docket.services.history import HistoryService
 from docket.services.operations import OperationRunner
 
 
@@ -391,6 +393,23 @@ def test_partial_delivery_recovery_retries_only_failed_operation(session_factory
     assert all(runner.run_due_once() for _ in range(3))
     before = runner.auth_failure_recovery_status(changeset_ref)
     assert (before.succeeded, before.failed_auth, before.total) == (2, 1, 3)
+    with session_factory() as session:
+        status = HistoryService(session).get_entry(changeset_ref, view="delivery")
+        assert status["canonical_disposition"] == "committed"
+        assert status["provider_state_counts"] == {"confirmed": 2, "failed": 1}
+        assert status["provider_operation_count"] == status["delivery_target_count"] == 3
+        failed = [row for row in status["items"] if row["delivery_state"] == "failed"]
+        assert len(failed) == 1
+        assert failed[0]["title"] == "Recovery event 3"
+        assert failed[0]["timing"]["start_local"] == "2026-09-08T09:00:00"
+        assert failed[0]["error_code"] == "google_auth_invalid"
+        assert failed[0]["next_action"] == (
+            "restore_provider_authorization_then_recover_same_operation"
+        )
+        assert status["next"]["restage_request"] is False
+        assert "academic@example.com" not in json.dumps(status)
+        assert "calendar-recovery-correlation" not in json.dumps(status)
+        failed_ref = failed[0]["operation_ref"]
     recovered = OperationRunner(session_factory, provider).requeue_auth_failures(changeset_ref)
     assert recovered.requeued == 1
     assert runner.run_due_once()
@@ -403,6 +422,64 @@ def test_partial_delivery_recovery_retries_only_failed_operation(session_factory
         assert all(operation.status == "succeeded" for operation in operations)
         assert [operation.attempt_count for operation in operations] == [2, 2, 3]
         assert session.scalar(select(func.count(ChangeSet.id))) == 1
+        status = HistoryService(session).get_entry(changeset_ref, view="delivery")
+        assert status["provider_state_counts"] == {"confirmed": 3}
+        recovered_row = next(row for row in status["items"] if row["operation_ref"] == failed_ref)
+        assert recovered_row["delivery_state"] == "confirmed"
+        assert "error_code" not in recovered_row
+
+
+def test_delivery_pages_scope_exact_counts_without_loading_other_requests(session_factory):
+    changeset_ref, operation_ids, _keys = _seed_failed_operations(
+        session_factory, ["google_auth_invalid"] * 30
+    )
+    with session_factory() as session:
+        history = HistoryService(session)
+        rows = []
+        cursor = None
+        while True:
+            page = history.get_entry(changeset_ref, view="delivery", limit=7, cursor=cursor)
+            assert page["provider_state_counts"] == {"failed": 30}
+            assert page["provider_operation_count"] == page["delivery_target_count"] == 30
+            assert 0 < page["count"] <= 7
+            assert len(json.dumps(page, ensure_ascii=False).encode()) < 16 * 1024
+            rows.extend(page["items"])
+            assert page["omitted_target_count"] == 30 - len(rows)
+            cursor = page.get("cursor")
+            if cursor is None:
+                break
+        assert len(rows) == len({row["operation_ref"] for row in rows}) == 30
+        assert {row["title"] for row in rows} == {f"Recovery event {n}" for n in range(1, 31)}
+        assert all(session.get(Operation, ref).status == "failed" for ref in operation_ids)
+        assert all(session.get(Operation, ref).attempt_count == 1 for ref in operation_ids)
+        with pytest.raises(DocketError) as error:
+            history.get_entry(changeset_ref, view="delivery", cursor="not-json")
+        assert error.value.code == "invalid_delivery_cursor"
+        with pytest.raises(DocketError) as error:
+            history.get_entry(rows[0]["operation_ref"], view="delivery")
+        assert error.value.code == "delivery_requires_changeset"
+
+
+def test_delivery_no_provider_work_and_uncommitted_request_are_distinct(session_factory):
+    changeset_ref, _operations, _keys = _seed_failed_operations(session_factory, [])
+    with session_factory() as session:
+        history = HistoryService(session)
+        result = history.get_entry(changeset_ref, view="delivery")
+        assert result["canonical_disposition"] == "committed"
+        assert result["provider_operation_count"] == 0
+        assert result["delivery_target_count"] == 0
+        assert result["items"] == []
+        assert not result["truncated"]
+        draft = ChangeSet(
+            intent_session_id=session.scalar(select(IntentSession.id)),
+            intent_session_ref=session.scalar(select(IntentSession.ref_id)),
+            idempotency_key="uncommitted-status-test", state="draft", basis_refs=[],
+        )
+        session.add(draft)
+        session.flush()
+        with pytest.raises(DocketError) as error:
+            history.get_entry(draft.ref_id, view="delivery")
+        assert error.value.code == "changeset_not_committed"
 
 
 def test_mismatching_correlated_event_stays_in_reconciliation(session_factory):
