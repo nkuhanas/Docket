@@ -130,6 +130,7 @@ PY
     smoke_compose exec -T postgres createdb -U docket docket_readiness_restore
     smoke_compose exec -T postgres createdb -U docket docket_cutover_smoke
     smoke_compose exec -T postgres createdb -U docket docket_assembly_races
+    smoke_compose exec -T postgres createdb -U docket docket_migration_roundtrip
     smoke_compose run --rm --no-deps docket \
         ./.venv/bin/python -m docket.tracked_context_readiness synthetic-rehearsal \
         --rehearsal-url \
@@ -195,13 +196,20 @@ PY
         -v "$ROOT:/workspace:ro" \
         -e "DOCKET_DATABASE_URL=$assembly_database_url" \
         docket ./.venv/bin/python /workspace/scripts/compose-assembly-postgres-smoke.py
+    # Round-trip an empty, isolated database. The race database now deliberately
+    # contains immutable request evidence and refuses a lossy downgrade.
+    local migration_database_url
+    migration_database_url="postgresql+psycopg://docket:docket-smoke@postgres:5432/docket_migration_roundtrip"
     smoke_compose run --rm --no-deps \
-        -e "DOCKET_DATABASE_URL=$assembly_database_url" \
+        -e "DOCKET_DATABASE_URL=$migration_database_url" \
+        docket ./.venv/bin/alembic upgrade head
+    smoke_compose run --rm --no-deps \
+        -e "DOCKET_DATABASE_URL=$migration_database_url" \
         docket ./.venv/bin/alembic downgrade 20260905f4c1
     smoke_compose run --rm --no-deps \
-        -e "DOCKET_DATABASE_URL=$assembly_database_url" \
+        -e "DOCKET_DATABASE_URL=$migration_database_url" \
         docket ./.venv/bin/alembic upgrade head
-    smoke_compose exec -T postgres psql -U docket -d docket_assembly_races -Atc \
+    smoke_compose exec -T postgres psql -U docket -d docket_migration_roundtrip -Atc \
         "SELECT to_regclass('public.assembly_operations'), to_regclass('public.assembly_executions')" \
         | grep -Fx 'assembly_operations|assembly_executions' >/dev/null
 )

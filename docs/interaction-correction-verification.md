@@ -734,3 +734,36 @@ smoke passed. Tests cover late rows appearing without a trace-version update,
 retry deduplication, exact full counts and bounded pages, strict rendering of
 unmeasured wrapper latency, and finalization-triggered refresh without a callback.
 No production deployment or provider action occurred.
+
+## Immutable request interpretation records
+
+Staging now records each new draft revision's typed request interpretation in
+`semantic_request_specifications`, addressed internally by `sreq_` and version.
+The record binds original utterance refs/content hashes and source/attachment
+digests. It retains all normalized entries (including those with compilation
+errors) and independently staged typed actions, not compiler-owned Item/Time/Event
+copies, provider intents or execution preconditions. Reading requires the exact
+version and verifies the stored integrity digest; it never picks the latest one.
+Replays create no new proposal. Repairs retain the earlier proposal unchanged.
+
+The record explicitly has `interpretation_state=pending_evidence_validation`.
+Neither successful staging nor a source content hash proves semantic agreement.
+There is no model-supplied verification flag or new authority grant, and this
+record is **not yet the authority oracle for repairs**. Evidence-backed validation,
+mechanical-equivalence enforcement and direct-request adoption remain open. The
+existing authority hash is unchanged; `specification_hash` is only an integrity
+digest of this proposal, not the semantic authority hash from ONT-UX-REQ-0009.
+
+Migration `20260911e4b3` creates the empty append-only table without translating
+historical requests. ORM guards and PostgreSQL triggers reject updates/deletes.
+Downgrade refuses a nonempty table to preserve evidence. Empty-database upgrade,
+downgrade and re-upgrade are rehearsed separately from the populated concurrency
+database, whose immutable evidence is no longer deleted to enable a round trip.
+Production recovery requires a verified pre-migration backup or forward repair,
+not just rolling back the image. No production change is part of this slice.
+
+Validation passed all 562 tests, Ruff and strict mypy (138 source files), plus
+isolated Compose/PostgreSQL smoke. Fixtures cover retained invalid entries,
+same-operation replay, exact-version reads, digest mismatch, rejected promotion
+to a verified state, ORM/database immutability, downgrade refusal and the empty
+database round trip. Source-semantic correctness is not claimed by these tests.
