@@ -12,6 +12,8 @@ from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
 from docket.models import (
     AuditEvent,
+    CalendarLane,
+    CanonicalEvent,
     ChangeSet,
     ExecutionAttempt,
     IntentSession,
@@ -25,11 +27,16 @@ from docket.providers.google.calendar import CalendarProviderError
 from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.services.history import HistoryService
 from docket.services.operations import OperationRunner
+from docket.services.provider_intents import ProviderIntentService
+
+RECOVERY_CREDENTIAL_REF = "/run/test-google-reauth/token.json"
 
 
 def _seed_failed_operations(
     session_factory,
     error_codes: list[str],
+    *,
+    account_key: str = "calendar-recovery-account",
 ) -> tuple[str, list[uuid.UUID], list[str]]:
     operation_ids: list[uuid.UUID] = []
     idempotency_keys: list[str] = []
@@ -42,7 +49,8 @@ def _seed_failed_operations(
         )
         account = ProviderAccount(
             provider="google",
-            external_account_id="calendar-recovery-account",
+            external_account_id=account_key,
+            credential_ref=RECOVERY_CREDENTIAL_REF,
             capabilities=["google_calendar"],
             enabled=True,
         )
@@ -51,22 +59,31 @@ def _seed_failed_operations(
         changeset = ChangeSet(
             intent_session_id=intent_session.id,
             intent_session_ref=intent_session.ref_id,
-            idempotency_key="calendar-recovery-changeset",
+            idempotency_key=f"{account_key}:changeset",
             basis_refs=[intent_session.source_utterance_ref],
             state="committed",
             committed_at=utc_now(),
         )
         session.add(changeset)
         session.flush()
+        lane = CalendarLane(
+            account_id=account.id, lane=account_key, display_name="Academic",
+            calendar_id="academic@example.com", color_hex="#3367D6", status="active",
+            basis_refs=list(changeset.basis_refs), created_by_changeset_ref=changeset.ref_id,
+        )
+        session.add(lane)
+        session.flush()
         for index, error_code in enumerate(error_codes, start=1):
-            operation_key = f"calendar-recovery-operation-{index}"
+            operation_key = f"{account_key}:operation-{index}"
             target_key = f"calendar-recovery-target-{index}"
-            target_ref = f"evt_01M1Q0000000000000000000{index}"
-            parameters = {
-                "calendar_id": "academic@example.com",
-                "external_event_id": uuid.uuid4().hex,
-                "event": {
+            event = CanonicalEvent(
+                canonical_key=f"{account_key}:event-{index}", title=f"Recovery event {index}",
+                status="active", authority="explicit_operator", lane_ref=lane.ref_id,
+                lane_id=lane.id, basis_refs=list(changeset.basis_refs),
+                created_by_changeset_ref=changeset.ref_id,
+                event_spec={
                     "title": f"Recovery event {index}",
+                    "calendar_lane": lane.lane,
                     "timing": {
                         "kind": "timed",
                         "start_local": "2026-09-08T09:00:00",
@@ -74,7 +91,14 @@ def _seed_failed_operations(
                         "timezone": "America/Los_Angeles",
                     },
                 },
-            }
+            )
+            session.add(event)
+            session.flush()
+            target_ref = event.ref_id
+            parameters, _ref, _kind = ProviderIntentService(session)._parameters(
+                "calendar_create_event", event=event, lane=lane, projection=None,
+                account=account, hints={},
+            )
             operation = Operation(
                 originating_changeset_ref=changeset.ref_id,
                 basis_refs=list(changeset.basis_refs),
@@ -83,13 +107,14 @@ def _seed_failed_operations(
                 operation_type="calendar_create_event",
                 account_id=account.id,
                 status="failed",
-                provider_correlation=f"calendar-recovery-correlation-{index}",
+                provider_correlation=f"{account_key}:correlation-{index}",
                 attempt_count=1,
                 last_error_code=error_code,
                 last_error_message="Prior safe provider failure.",
             )
             session.add(operation)
             session.flush()
+            parameters["external_event_id"] = operation.id.hex
             target = OperationTarget(
                 operation_id=operation.id,
                 target_key=target_key,
@@ -122,6 +147,157 @@ def _seed_failed_operations(
             idempotency_keys.append(operation.idempotency_key)
         changeset_ref = changeset.ref_id
     return changeset_ref, operation_ids, idempotency_keys
+
+
+def _reauth(runner, **kwargs):
+    return runner.requeue_after_reauthorization(
+        external_account_id="calendar-recovery-account",
+        credential_ref=RECOVERY_CREDENTIAL_REF,
+        **kwargs,
+    )
+
+
+@pytest.mark.integration
+def test_reauthorization_recovers_only_auth_failures_for_the_matching_account(
+    session_factory,
+) -> None:
+    _changeset, ids, _keys = _seed_failed_operations(
+        session_factory, ["google_auth_invalid"] * 4 + ["google_calendar_rejected"],
+    )
+    _other_changeset, other_ids, _ = _seed_failed_operations(
+        session_factory, ["google_auth_invalid"], account_key="other-account",
+    )
+    with session_factory.begin() as session:
+        # Succeeded, pending and uncertain outcomes are never re-executed by reauth.
+        for operation_id, state in zip(
+            ids[1:4], ["succeeded", "pending", "reconciliation_required"], strict=True,
+        ):
+            session.get(Operation, operation_id).status = state
+            session.scalar(select(OperationTarget).where(
+                OperationTarget.operation_id == operation_id,
+            )).status = state
+        original = session.get(Operation, ids[0])
+        original_target = session.scalar(select(OperationTarget).where(
+            OperationTarget.operation_id == ids[0],
+        ))
+        before = (original.idempotency_key, list(original.basis_refs),
+                  original_target.id, dict(original_target.parameters),
+                  original_target.parameters_sha256)
+    runner = OperationRunner(session_factory, FakeCalendarProvider())
+    receipt = _reauth(runner, batch_size=1)
+    assert (receipt.examined, receipt.requeued, receipt.skipped) == (1, 1, {})
+    assert receipt.projection()["delivery_state"] == "queued"
+    assert _reauth(runner).requeued == 0
+    with session_factory() as session:
+        assert [session.get(Operation, key).status for key in ids] == [
+            "pending", "succeeded", "pending", "reconciliation_required", "failed",
+        ]
+        assert session.get(Operation, other_ids[0]).status == "failed"
+        operation = session.get(Operation, ids[0])
+        target = session.get(OperationTarget, before[2])
+        assert (operation.idempotency_key, operation.basis_refs, target.id,
+                target.parameters, target.parameters_sha256) == before
+        assert operation.attempt_count == target.attempt_count == 1
+        assert operation.last_error_code is target.last_error_code is None
+        assert session.scalar(select(func.count(ExecutionAttempt.id))) == 6
+        audits = list(session.scalars(select(AuditEvent)))
+        assert len(audits) == 1
+        assert audits[0].basis_refs == before[1]
+        assert audits[0].data["recovery_trigger"] == "google_reauthorization"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("barrier", ["gate", "credential", "account", "capability", "disabled"])
+def test_reauthorization_recovery_fails_closed_before_requeue(session_factory, barrier) -> None:
+    _seed_failed_operations(session_factory, ["google_auth_invalid"])
+    provider = FakeCalendarProvider()
+    if barrier == "credential":
+        provider.next_authorization_outcome = "invalid"
+    with session_factory.begin() as session:
+        account = session.scalar(select(ProviderAccount))
+        if barrier == "account":
+            account.credential_ref = "/different/credential.json"
+        elif barrier == "capability":
+            account.capabilities = ["gmail"]
+        elif barrier == "disabled":
+            account.enabled = False
+    runner = OperationRunner(session_factory, provider, execution_enabled=barrier != "gate")
+    with pytest.raises((DocketError, CalendarProviderError)):
+        _reauth(runner)
+    with session_factory() as session:
+        assert session.scalar(select(Operation)).status == "failed"
+        assert session.scalar(select(func.count(AuditEvent.id))) == 0
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("change,reason", [
+    ("cancel", "canonical_state_changed"),
+    ("title", "canonical_or_provider_state_changed"),
+    ("destination", "canonical_or_provider_state_changed"),
+    ("identity", "creation_identity_unavailable"),
+    ("lease", "invalid_or_claimed_state"),
+    ("target_error", "invalid_or_claimed_state"),
+    ("draft", "committed_authority_unavailable"),
+    ("superseded", "superseded_delivery"),
+])
+def test_reauthorization_does_not_revive_obsolete_or_invalid_delivery(
+    session_factory, change, reason,
+) -> None:
+    _chg, ids, _keys = _seed_failed_operations(session_factory, ["google_auth_invalid"])
+    with session_factory.begin() as session:
+        operation = session.get(Operation, ids[0])
+        target = session.scalar(select(OperationTarget))
+        event = session.scalar(select(CanonicalEvent))
+        if change == "cancel":
+            event.status = "cancelled"
+        elif change == "title":
+            event.title = "A later corrected title"
+        elif change == "destination":
+            session.scalar(select(CalendarLane)).calendar_id = "different@example.com"
+        elif change == "identity":
+            target.parameters = {**target.parameters, "external_event_id": "wrong"}
+            target.parameters_sha256 = sha256_json(target.parameters)
+        elif change == "lease":
+            operation.leased_until = utc_now() + timedelta(seconds=30)
+        elif change == "target_error":
+            target.last_error_code = "different_failure"
+        elif change == "draft":
+            session.scalar(select(ChangeSet)).state = "draft"
+        elif change == "superseded":
+            newer = Operation(
+                originating_changeset_ref=operation.originating_changeset_ref,
+                basis_refs=list(operation.basis_refs), canonical_target_refs=[event.ref_id],
+                idempotency_key="later-update", operation_type="calendar_update_event",
+                account_id=operation.account_id, status="succeeded",
+                provider_correlation="later-update",
+            )
+            session.add(newer)
+            session.flush()
+            session.add(OperationTarget(
+                operation_id=newer.id, target_key=event.ref_id,
+                canonical_target_ref=event.ref_id, target_kind="event",
+                idempotency_key="later-update-target", parameters={}, parameters_sha256="0" * 64,
+                status="succeeded",
+            ))
+    receipt = _reauth(OperationRunner(session_factory, FakeCalendarProvider()))
+    assert receipt.requeued == 0 and receipt.skipped == {reason: 1}
+    with session_factory() as session:
+        operation = session.get(Operation, ids[0])
+        assert operation.status == "failed" and operation.last_error_code == "google_auth_invalid"
+
+
+@pytest.mark.integration
+def test_reauthorization_batches_and_receipts_are_bounded(session_factory) -> None:
+    _seed_failed_operations(session_factory, ["google_auth_invalid"] * 27)
+    with session_factory.begin() as session:
+        for event in session.scalars(select(CanonicalEvent)):
+            event.status = "cancelled"
+    receipt = _reauth(OperationRunner(session_factory, FakeCalendarProvider()), batch_size=2)
+    assert receipt.examined == 27 and receipt.requeued == 0
+    output = receipt.projection()
+    assert len(output["skipped_operations"]) == 25
+    assert output["skipped_operations_omitted"] == 2
+    assert len(json.dumps(output).encode()) < 16384
 
 
 @pytest.mark.integration

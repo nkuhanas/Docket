@@ -1,5 +1,6 @@
 import uuid
 from datetime import UTC, datetime
+from unittest.mock import Mock
 
 import pytest
 from sqlalchemy import func, select
@@ -12,20 +13,24 @@ from docket.models import (
     AgentResponse,
     AttentionCase,
     AttentionCaseRevision,
+    AuditEvent,
     CalendarLane,
     CanonicalEvent,
     CaseItem,
     ChangeSet,
+    ExecutionAttempt,
     IntentTurn,
     Interaction,
     LaneRoutingDecision,
     Operation,
+    OperationTarget,
     OperatorUtterance,
     ProviderAccount,
     ProviderEventBinding,
     SemanticRequestAttempt,
     ToolInvocation,
 )
+from docket.providers.google.calendar import CalendarProviderError
 from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.schemas.authority import ChangeSetContent, IntentSessionOpen, StatementInput
 from docket.services.calendar_projection_invariants import (
@@ -236,6 +241,97 @@ def _commit_event_change(
         changeset_ref=None,
         expected_changeset_version=None,
     )
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("failed_method", [
+    "ensure_calendar_lane", "create_event", "update_event", "cancel_event",
+])
+def test_committed_event_delivery_resumes_after_reauth_without_another_request(
+    session_factory, monkeypatch, failed_method,
+) -> None:
+    credential_ref = "/run/test-reauth/token.json"
+    with session_factory.begin() as session:
+        event_ref, _lane_ref, _changeset_ref = _commit_rich_event(
+            session, message_id="1542802000000000501",
+        )
+        account = session.scalar(select(ProviderAccount))
+        account.credential_ref = credential_ref
+        external_account_id = account.external_account_id
+    provider = FakeCalendarProvider()
+    runner = OperationRunner(session_factory, provider)
+    if failed_method != "ensure_calendar_lane":
+        assert runner.run_due_once() is True
+    if failed_method in {"update_event", "cancel_event"}:
+        assert runner.run_due_once() is True
+        mutation = (
+            {"mutation_type": "canonical_event_modify", "action": "update",
+             "payload": {"title": "Updated meeting"}, "affected_fields": ["title"]}
+            if failed_method == "update_event" else
+            {"mutation_type": "canonical_event_cancel", "action": "retract",
+             "payload": {}, "affected_fields": ["status"]}
+        )
+        with session_factory.begin() as session:
+            result = _commit_event_change(
+                session, event_ref=event_ref, message_id="1542802000000000502",
+                text="Update this meeting." if failed_method == "update_event" else
+                "Cancel this meeting.", mutation=mutation,
+            )
+            assert result["state"] == "committed"
+    original_method = getattr(provider, failed_method)
+    monkeypatch.setattr(provider, failed_method, Mock(side_effect=CalendarProviderError(
+        "google_auth_invalid", "The test credential expired.", transient=False,
+    )))
+    assert runner.run_due_once() is True
+    with session_factory() as session:
+        failed = session.scalar(select(Operation).where(Operation.status == "failed"))
+        assert failed is not None and failed.last_error_code == "google_auth_invalid"
+        failed_ref = failed.ref_id
+        failed_id = failed.id
+        target = session.scalar(select(OperationTarget).where(
+            OperationTarget.operation_id == failed.id,
+        ))
+        before = (target.id, dict(target.parameters), target.parameters_sha256,
+                  failed.idempotency_key, list(failed.basis_refs))
+        operation_ids = set(session.scalars(select(Operation.id)))
+        changeset_count = session.scalar(select(func.count(ChangeSet.id)))
+    monkeypatch.setattr(provider, failed_method, original_method)
+    # A fresh runner models recovery in a separate CLI process.
+    recovered = OperationRunner(session_factory, provider).requeue_after_reauthorization(
+        external_account_id=external_account_id, credential_ref=credential_ref,
+    )
+    assert recovered.requeued == 1 and recovered.skipped == {}
+    with session_factory() as session:
+        target = session.get(OperationTarget, before[0])
+        operation = session.get(Operation, failed_id)
+        assert (target.id, target.parameters, target.parameters_sha256,
+                operation.idempotency_key, operation.basis_refs) == before
+    assert runner.run_due_once() is True
+    if failed_method == "ensure_calendar_lane":
+        assert runner.run_due_once() is True  # Original dependent event, not a recreated request.
+    assert runner.run_due_once() is False
+    with session_factory() as session:
+        assert set(session.scalars(select(Operation.id))) == operation_ids
+        assert session.scalar(select(func.count(ChangeSet.id))) == changeset_count
+        assert all(op.status == "succeeded" for op in session.scalars(select(Operation)))
+        attempts = list(session.scalars(select(ExecutionAttempt).where(
+            ExecutionAttempt.operation_id == failed_id,
+        ).order_by(ExecutionAttempt.attempt_number)))
+        assert [attempt.status for attempt in attempts] == ["failed", "succeeded"]
+        audit = session.scalar(select(AuditEvent).where(
+            AuditEvent.event_type == "operation.requeued_after_auth_restore",
+            AuditEvent.primary_ref == failed_ref,
+        ))
+        assert audit.basis_refs == before[4]
+        event = session.scalar(select(CanonicalEvent).where(CanonicalEvent.ref_id == event_ref))
+        binding = session.scalar(select(ProviderEventBinding))
+        if failed_method == "cancel_event":
+            assert event.status == binding.status == "cancelled"
+            assert not provider.events
+        else:
+            assert len(provider.events) == 1
+            delivered = provider.events[binding.provider_event_id]
+            assert delivered.snapshot["summary"] == event.title
 
 
 @pytest.mark.integration

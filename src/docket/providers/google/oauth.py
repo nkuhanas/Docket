@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
@@ -38,6 +39,20 @@ GoogleOAuthStatus = Literal["setup_required", "dummy", "configured", "invalid"]
 
 class GoogleOAuthSetupError(RuntimeError):
     """A safe-to-display Google OAuth setup error."""
+
+
+def credential_fingerprint(path: Path) -> str:
+    """Private host/runtime binding; never print the digest or credential bytes."""
+    try:
+        if path.is_symlink() or not path.is_file():
+            raise GoogleOAuthSetupError("OAuth credential is not a regular file")
+        with path.open("rb") as handle:
+            payload = handle.read(65537)
+    except OSError as exc:
+        raise GoogleOAuthSetupError("OAuth credential could not be read") from exc
+    if not payload or len(payload) > 65536:
+        raise GoogleOAuthSetupError("OAuth credential file has an invalid size")
+    return hashlib.sha256(payload).hexdigest()
 
 
 class OAuthCredentials(Protocol):

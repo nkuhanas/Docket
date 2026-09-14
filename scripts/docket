@@ -1194,6 +1194,8 @@ Commands:
                   Inspect one ChangeSet's Calendar provider-operation states.
   calendar-recover-auth requeue-auth-failures CHANGESET_REF --execute
                   Requeue exact Google-auth failures after validating the credential.
+  calendar-recover-auth requeue-after-reauth --execute --credential-sha256-stdin
+                  Retry current auth-failed deliveries after a matching Google reauthorization.
   gmail-status    Report Gmail gates, checkpoint freshness, and source counts.
   gmail-scan      Force one bounded metadata scan; never invokes semantic triage.
   gmail-propose-archive SOURCE_ID SOURCE_VERSION REQUEST_KEY

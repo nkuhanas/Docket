@@ -22,6 +22,10 @@ from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from alembic.script import ScriptDirectory
+from calendar_reauthorization_checks import (
+    test_google_reauthorization_rechecks_a_concurrent_canonical_edit,
+    test_google_reauthorization_recovery_serializes_and_preserves_delivery,
+)
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 from sqlalchemy import func, select, text
@@ -2747,6 +2751,8 @@ def main() -> None:
         test_timing_observations_serialize_and_preserve_evidence,
         test_queue_boundary_survives_ingress_reclaim,
         test_recovered_response_finalizes_original_turn_without_reexecution,
+        test_google_reauthorization_recovery_serializes_and_preserves_delivery,
+        test_google_reauthorization_rechecks_a_concurrent_canonical_edit,
     )
     for check in checks:
         check(factory)

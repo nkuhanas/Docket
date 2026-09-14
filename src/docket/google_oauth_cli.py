@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import json
 import os
+import subprocess
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -12,6 +14,7 @@ from docket.providers.google.oauth import (
     SCOPE_PROFILES,
     GoogleOAuthSetupError,
     authorized_user_file_status,
+    credential_fingerprint,
     perform_setup,
     resolve_scopes,
     validate_client_file,
@@ -64,9 +67,18 @@ def _parser() -> argparse.ArgumentParser:
     setup.add_argument("--port", type=int, default=0, help="Local callback port; 0 chooses one")
     setup.add_argument("--timeout-seconds", type=int, default=300)
     setup.add_argument("--force", action="store_true", help="Replace an existing token file")
+    setup.add_argument(
+        "--credentials-only", action="store_true",
+        help="Save credentials without contacting Docket or retrying deliveries (offline setup)",
+    )
 
     status = subparsers.add_parser("status", help="Validate local OAuth setup without networking")
     _add_paths(status)
+    recover = subparsers.add_parser(
+        "recover-deliveries",
+        help="Retry authentication-failed deliveries using the already restored credential",
+    )
+    _add_paths(recover)
     return parser
 
 
@@ -89,9 +101,51 @@ def _read_remote_callback_url() -> str:
     return getpass.getpass("Paste the complete failed localhost URL (input hidden): ")
 
 
+def _recover_deliveries(token_file: Path) -> int:
+    """Use the running service and its database, not host defaults or a second writer."""
+    root = Path(__file__).resolve().parents[2]
+    try:
+        fingerprint = credential_fingerprint(token_file)
+        completed = subprocess.run(
+            [
+                str(root / "scripts" / "docket"), "calendar-recover-auth",
+                "requeue-after-reauth", "--execute", "--credential-sha256-stdin",
+            ],
+            input=fingerprint + "\n", text=True, capture_output=True, timeout=60,
+            cwd=root, check=False,
+        )
+        if len(completed.stdout) > 16384:
+            raise ValueError("Oversized recovery receipt")
+        body = json.loads(completed.stdout)
+        if completed.returncode != 0 or not isinstance(body, dict) or body.get("ok") is not True:
+            raise ValueError("Recovery did not succeed")
+        recovery = body["recovery"]
+        if not isinstance(recovery, dict):
+            raise ValueError("Invalid recovery receipt")
+        print("Google delivery recovery: " + json.dumps(recovery, sort_keys=True))
+        print(
+            "Requeued deliveries are asynchronous; this is not confirmation of Calendar delivery."
+        )
+        return 0
+    except (GoogleOAuthSetupError, OSError, subprocess.SubprocessError, ValueError, KeyError):
+        # Never echo subprocess stderr/stdout: Docker, OAuth and database errors
+        # can include secrets. Saving the new credential is not rolled back.
+        print(
+            "The Google credential remains saved, but delivery recovery did not complete. "
+            "Some deliveries may already be queued; do not recreate the calendar request. "
+            "After restoring the runtime/write gate, run 'uv run docket-google-auth "
+            "recover-deliveries' with the same credential path. No new consent is needed.",
+            file=sys.stderr,
+        )
+        return 2
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
     client_file, token_file = _paths(arguments)
+
+    if arguments.command == "recover-deliveries":
+        return _recover_deliveries(token_file)
 
     if arguments.command == "status":
         try:
@@ -111,6 +165,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     port = arguments.port
     if arguments.remote and port == 0:
         port = DEFAULT_REMOTE_CALLBACK_PORT
+    if not arguments.credentials_only and set(SCOPE_PROFILES["calendar"]).issubset(
+        resolve_scopes(profiles)
+    ):
+        print(
+            "After successful consent, Docket will retry current Calendar deliveries "
+            "that failed with google_auth_invalid, using their existing operation identities.",
+            flush=True,
+        )
     try:
         scopes = perform_setup(
             client_file=client_file,
@@ -149,4 +211,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "Docket Calendar reads and writes remain controlled independently by "
         "DOCKET_CALENDAR_READS_ENABLED and DOCKET_EXTERNAL_WRITES_ENABLED."
     )
-    return 0
+    if arguments.credentials_only or not set(SCOPE_PROFILES["calendar"]).issubset(scopes):
+        print("Delivery recovery was not requested for this credential-only/non-Calendar setup.")
+        return 0
+    return _recover_deliveries(token_file)

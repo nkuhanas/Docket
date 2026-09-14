@@ -230,9 +230,9 @@ The main bootstrap commands are:
 # Create or reuse database and SearXNG secrets; atomically update .env.
 uv run docket-production-config
 
-# Authorize Docket's Google Desktop-app OAuth client.
+# Initial offline authorization of Docket's Google Desktop-app OAuth client.
 uv run docket-google-auth status --credentials-dir secrets/local
-scripts/setup-google-oauth.sh
+scripts/setup-google-oauth.sh --credentials-only
 
 # Render the ignored Hermes runtime from configured Discord IDs.
 scripts/prepare-hermes-home.sh
@@ -242,6 +242,14 @@ sudo docker compose --profile hermes run --rm hermes setup
 These commands do not silently enable Calendar reads, Gmail ingestion, or
 provider writes. Turn on each gate only after the deterministic suite passes and
 an operator is present for the corresponding live-account verification.
+
+For an already-running instance, `scripts/setup-google-oauth.sh --force` saves the
+new Google credential, validates that the running service uses that credential,
+and requeues current committed Calendar deliveries that failed specifically with
+`google_auth_invalid`. It preserves their operation/provider IDs and does not
+recreate the original requests. The receipt reports queued work, not completed
+Google delivery. See [provider recovery](docs/operations-runbook.md#provider-operations-and-reconciliation)
+for skipped operations and recovery when the runtime is unavailable.
 
 ### Supported lifecycle
 
