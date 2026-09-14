@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -20,6 +20,7 @@ from docket.models import (
     ExecutionAttempt,
     Operation,
     OperationTarget,
+    ProviderAccount,
     ProviderEventBinding,
 )
 from docket.models.base import utc_now
@@ -34,6 +35,7 @@ from docket.providers.google.calendar import (
     CalendarUnknownOutcome,
     event_matches_request,
 )
+from docket.services.provider_intents import ProviderIntentService
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +112,31 @@ class AuthFailureRecoveryStatus:
             "active": self.active,
             "other_terminal": self.other_terminal,
             "requeued": self.requeued,
+        }
+
+
+@dataclass(slots=True)
+class ReauthorizationRecoveryStatus:
+    account_ref: str
+    examined: int = 0
+    requeued: int = 0
+    skipped: dict[str, int] = field(default_factory=dict)
+    skipped_operations: list[dict[str, str]] = field(default_factory=list)
+
+    def skip(self, operation_ref: str, reason: str) -> None:
+        self.skipped[reason] = self.skipped.get(reason, 0) + 1
+        if len(self.skipped_operations) < 25:
+            self.skipped_operations.append({"operation_ref": operation_ref, "reason": reason})
+
+    def projection(self) -> dict[str, Any]:
+        return {
+            "account_ref": self.account_ref,
+            "examined": self.examined,
+            "requeued": self.requeued,
+            "skipped": self.skipped,
+            "skipped_operations": self.skipped_operations,
+            "skipped_operations_omitted": sum(self.skipped.values()) - len(self.skipped_operations),
+            "delivery_state": "queued" if self.requeued else "unchanged",
         }
 
 
@@ -426,6 +453,117 @@ class OperationRunner:
                 operations,
                 requeued=requeued,
             )
+
+    def requeue_after_reauthorization(
+        self, *, external_account_id: str, credential_ref: str, batch_size: int = 100,
+    ) -> ReauthorizationRecoveryStatus:
+        """One bounded pass over this credential's terminal authentication failures.
+
+        Called only by the explicit OAuth completion/recovery command, never
+        startup, token polling, or background access-token refresh. Provider
+        delivery remains with the normal worker after these transactions commit.
+        """
+        if not self.execution_enabled:
+            raise DocketError(
+                code="calendar_recovery_writes_disabled",
+                message="Calendar delivery is paused by the external-write gate.",
+            )
+        if not 1 <= batch_size <= 100:
+            raise ValueError("Recovery batch size must be between 1 and 100")
+        self.provider.validate_authorization()
+        cutoff = utc_now()
+        cursor = ""
+        result: ReauthorizationRecoveryStatus | None = None
+        while True:
+            with self.session_factory.begin() as session:
+                # NO KEY UPDATE serializes recovery for this account without
+                # blocking the foreign-key checks of concurrent canonical commits.
+                account = session.scalar(
+                    select(ProviderAccount).where(
+                        ProviderAccount.provider == "google",
+                        ProviderAccount.external_account_id == external_account_id,
+                        ProviderAccount.credential_ref == credential_ref,
+                        ProviderAccount.enabled.is_(True),
+                    ).with_for_update(key_share=True)
+                )
+                if account is None or "google_calendar" not in account.capabilities:
+                    raise DocketError(
+                        code="calendar_recovery_account_unavailable",
+                        message="No enabled Calendar account uses the refreshed credential.",
+                    )
+                if result is None:
+                    result = ReauthorizationRecoveryStatus(account_ref=account.ref_id)
+                operations = list(session.scalars(
+                    select(Operation).where(
+                        Operation.account_id == account.id,
+                        Operation.status == "failed",
+                        Operation.last_error_code == "google_auth_invalid",
+                        Operation.created_at <= cutoff,
+                        Operation.updated_at <= cutoff,
+                        Operation.ref_id > cursor,
+                    ).order_by(Operation.ref_id).limit(batch_size).with_for_update()
+                ))
+                if not operations:
+                    return result
+                for operation in operations:
+                    result.examined += 1
+                    cursor = operation.ref_id
+                    changeset = session.scalar(select(ChangeSet).where(
+                        ChangeSet.ref_id == operation.originating_changeset_ref,
+                        ChangeSet.state == "committed",
+                    ))
+                    if changeset is None or not operation.basis_refs:
+                        result.skip(operation.ref_id, "committed_authority_unavailable")
+                        continue
+                    targets = list(session.scalars(select(OperationTarget).where(
+                        OperationTarget.operation_id == operation.id,
+                    ).with_for_update()))
+                    if len(targets) != 1:
+                        result.skip(operation.ref_id, "invalid_target")
+                        continue
+                    target = targets[0]
+                    if (
+                        target.status != "failed"
+                        or target.last_error_code != "google_auth_invalid"
+                        or operation.lease_token is not None
+                        or target.lease_token is not None
+                        or operation.leased_until is not None
+                        or target.leased_until is not None
+                    ):
+                        result.skip(operation.ref_id, "invalid_or_claimed_state")
+                        continue
+                    try:
+                        blocker = ProviderIntentService(session).auth_recovery_blocker(
+                            operation, target,
+                        )
+                    except DocketError:
+                        blocker = "target_requires_reconciliation"
+                    if blocker is not None:
+                        result.skip(operation.ref_id, blocker)
+                        continue
+                    now = utc_now()
+                    operation.status = "pending"
+                    operation.next_attempt_at = now
+                    operation.last_error_code = None
+                    operation.last_error_message = None
+                    target.status = "pending"
+                    target.next_attempt_at = now
+                    target.last_error_code = None
+                    session.add(AuditEvent(
+                        event_type="operation.requeued_after_auth_restore",
+                        entity_type="operation", entity_id=operation.id,
+                        actor_type="docket_recovery", primary_ref=operation.ref_id,
+                        affected_refs=[operation.ref_id, target.canonical_target_ref],
+                        basis_refs=list(operation.basis_refs),
+                        data={
+                            "changeset_ref": changeset.ref_id,
+                            "operation_type": operation.operation_type,
+                            "prior_error_code": "google_auth_invalid",
+                            "preserved_attempt_count": operation.attempt_count,
+                            "recovery_trigger": "google_reauthorization",
+                        },
+                    ))
+                    result.requeued += 1
 
     def mark_provider_call_started(self, claim: ClaimedOperation) -> None:
         with self.session_factory.begin() as session:

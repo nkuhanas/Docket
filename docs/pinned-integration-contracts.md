@@ -845,6 +845,18 @@ the current lease/target/attempt identity. A late callback from a recovered leas
 cannot overwrite a newer outcome. An unverifiable successful create response or
 write-side timeout/server error is also uncertain, not proof of write failure.
 
+Explicit successful Google reauthorization has a separate completion hook:
+the host setup CLI binds the saved credential to the mounted runtime credential
+using a private fingerprint over stdin, then the runtime validates the grant
+and requeues only that account's current committed `google_auth_invalid`
+deliveries. It preserves the original operation/target/provider identities and
+payloads, requires the real-write gate, and skips superseded or changed intent.
+It does not replay unknown outcomes, successful deliveries, unrelated errors,
+or historical failed semantic requests. The normal worker remains the only
+delivery executor. Offline credential-only setup and passive token refresh do
+not trigger it. See the [recovery runbook](operations-runbook.md#google-reauthorization-and-delivery-recovery)
+for partial setup success, bounded receipts, and the no-new-consent resume path.
+
 ## Source provenance boundary
 
 The plugin appends this structured relationship:

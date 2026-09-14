@@ -639,16 +639,73 @@ deployment. There is no automatic identity backfill or historical replay.
 External write gates in production fail closed. Enabling a gate does not itself
 authorize a new semantic effect.
 
-If a committed ChangeSet's Calendar operations reached terminal
-`google_auth_invalid`, replacing the refresh credential does not silently replay
-them. Inspect and recover that exact scope through:
+### Google reauthorization and delivery recovery
+
+On an existing running instance, reauthorize with:
+
+```bash
+scripts/setup-google-oauth.sh --force
+```
+
+Successful consent and the atomic credential-file write are followed by an
+explicit runtime recovery command. It validates the Google refresh grant and
+requeues eligible committed Calendar operations whose **operation and target**
+both failed with exactly `google_auth_invalid`. The normal operation worker
+performs delivery asynchronously; reauthorization does not invoke Hermes,
+create a ChangeSet, or recreate an event. The command never enables a write gate.
+
+Recovery is restricted to the enabled Calendar-capable Google account matching
+the runtime's configured account identifier and credential path. The host passes
+a credential fingerprint over stdin to ensure the running container actually
+mounts the newly authorized file. Neither credentials nor that private binding
+are printed or stored in the audit. A mismatched mount, unavailable credential,
+invalid refresh grant, or disabled real-Google write gate fails closed.
+
+Within that account, recovery scans bounded batches using a fixed cutoff.
+Account/operation/target locking serializes concurrent recovery commands. It
+preserves each `op_`, target, provider correlation, reserved creation ID,
+idempotency key, original parameters, `basis_refs`, and failed ExecutionAttempt.
+Only the delivery scheduling/error state changes, with an
+`operation.requeued_after_auth_restore` audit entry under the original basis.
+Repeating recovery cannot requeue the same already-pending operation twice.
+
+Successful, pending, running, uncertain/reconciling, and non-auth-failed
+deliveries are untouched, including siblings from a partially delivered
+ChangeSet. Leased or inconsistent failures are skipped. Before requeueing,
+Docket checks current canonical state and exact delivery fields: a cancelled
+create, changed destination/content/reminder, superseding delivery, missing
+creation ID, or changed provider binding is left for explicit reconciliation.
+It never changes an old payload to make it eligible. Valid lane-provisioning
+retries unblock their already-queued dependent events through the normal worker.
+
+The compact receipt contains counts and up to 25 skipped operation refs/reasons;
+`queued` is **not** confirmation that Google Calendar has received them. Inspect
+the originating ChangeSet's delivery status for skipped work or later failures.
+Passive credential-file replacement, background access-token refresh, startup,
+and deployment do **not** initiate this recovery pass.
+
+For initial setup while the service is offline, use
+`scripts/setup-google-oauth.sh --credentials-only`. If credentials were saved
+but runtime recovery fails or times out, setup exits **2** and explicitly reports
+partial completion. Already-queued batches remain valid. Restore the runtime,
+credential mount, or write gate, then resume without new consent:
+
+```bash
+uv run docket-google-auth recover-deliveries --credentials-dir secrets/local
+```
+
+Use the same `--credentials-dir` / `--token-file` override as the original setup.
+Do not resend the original calendar request to repair provider delivery.
+
+Deliberately narrow operator-directed recovery for one ChangeSet is also
+available:
 
 ```bash
 scripts/docket calendar-recover-auth status chg_...
 scripts/docket calendar-recover-auth requeue-auth-failures chg_... --execute
 ```
 
-The recovery command first validates the current Google refresh grant. It then
+This per-ChangeSet command first validates the current Google refresh grant. It then
 requeues only that committed ChangeSet's exact failed Calendar operations,
 preserving every `op_`, provider correlation, idempotency key, basis reference,
 and failed ExecutionAttempt. It refuses mixed provider scopes, unrelated

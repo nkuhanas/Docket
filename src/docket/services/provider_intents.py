@@ -409,6 +409,71 @@ class ProviderIntentService:
             None,
         )
 
+    def auth_recovery_blocker(
+        self, operation: Operation, target: OperationTarget,
+    ) -> str | None:
+        """Check retained delivery intent against current canonical state; never recompile it."""
+        if (
+            target.canonical_target_ref not in operation.canonical_target_refs
+            or sha256_json(target.parameters) != target.parameters_sha256
+        ):
+            return "invalid_target"
+        # Lock the canonical targets while checking and requeueing. A newer
+        # committed delivery for the same target must not be overwritten by an
+        # old authorization failure (even if that newer delivery also failed).
+        for model in (CanonicalEvent, TemporalCalendarProjection, CalendarLane):
+            list(self.session.scalars(
+                select(model).where(model.ref_id.in_(operation.canonical_target_refs))
+                .with_for_update()
+            ))
+        latest = self.session.scalar(
+            select(Operation.ref_id)
+            .join(OperationTarget, OperationTarget.operation_id == Operation.id)
+            .where(
+                Operation.account_id == operation.account_id,
+                OperationTarget.canonical_target_ref == target.canonical_target_ref,
+            )
+            .order_by(Operation.created_at.desc(), Operation.ref_id.desc())
+            .limit(1)
+        )
+        if latest != operation.ref_id:
+            return "superseded_delivery"
+        event, projection, lane = self._targets(operation.canonical_target_refs)
+        cancel = operation.operation_type == "calendar_cancel_event"
+        if event is not None and event.status != ("cancelled" if cancel else "active"):
+            return "canonical_state_changed"
+        if projection is not None and projection.enabled == cancel:
+            return "canonical_state_changed"
+        if lane is None or lane.status == "deleted":
+            return "canonical_state_changed"
+        if operation.operation_type != "calendar_delete_lane" and not lane.enabled:
+            return "canonical_state_changed"
+        if (
+            operation.operation_type == "calendar_create_event"
+            and target.parameters.get("external_event_id") != operation.id.hex
+        ):
+            return "creation_identity_unavailable"
+        try:
+            account = self.session.get(ProviderAccount, operation.account_id)
+            if account is None:
+                return "account_unavailable"
+            current, current_ref, kind = self._parameters(
+                operation.operation_type, event=event, projection=projection,
+                lane=lane, account=account, hints=target.parameters,
+            )
+        except DocketError:
+            return "target_requires_reconciliation"
+        if current_ref != target.canonical_target_ref or kind != target.target_kind:
+            return "invalid_target"
+        # Lane versions include provider-provisioning bookkeeping. Compare the
+        # actual desired fields instead; preserve the entire stored payload.
+        if any(
+            target.parameters.get(key) != value
+            for key, value in current.items() if key != "lane_version"
+        ):
+            return "canonical_or_provider_state_changed"
+        return None
+
     def materialize(
         self,
         _session: Session,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from unittest.mock import Mock
 
 import pytest
 from sqlalchemy import select
@@ -14,11 +15,13 @@ from docket.models import (
     ChangeSet,
     Item,
     Operation,
+    OperationTarget,
     ProviderAccount,
     ProviderEventBinding,
     TemporalBinding,
     TemporalCalendarProjection,
 )
+from docket.providers.google.calendar import CalendarProviderError
 from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.schemas.authority import ChangeSetContent
 from docket.services.interactive_authority import InteractiveAuthorityService
@@ -214,13 +217,15 @@ def test_google_popup_reminder_without_calendar_projection_is_rejected(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("reauthorize", [False, True])
 def test_time_projection_compiles_and_executes_provider_operation(
-    session_factory,
+    session_factory, monkeypatch, reauthorize,
 ) -> None:
     with session_factory.begin() as session:
         account = ProviderAccount(
             provider="google",
             external_account_id="time-projection-test",
+            credential_ref="/run/test-time-reauth/token.json",
             capabilities=["google_calendar"],
             enabled=True,
         )
@@ -335,6 +340,24 @@ def test_time_projection_compiles_and_executes_provider_operation(
 
     provider = FakeCalendarProvider()
     runner = OperationRunner(session_factory, provider)
+    if reauthorize:
+        original_create = provider.create_event
+        monkeypatch.setattr(provider, "create_event", Mock(side_effect=CalendarProviderError(
+            "google_auth_invalid", "Test auth failure.", transient=False,
+        )))
+        assert runner.run_due_once() is True
+        with session_factory() as session:
+            original = session.scalar(select(OperationTarget))
+            before = (original.id, dict(original.parameters), original.parameters_sha256)
+        monkeypatch.setattr(provider, "create_event", original_create)
+        recovered = runner.requeue_after_reauthorization(
+            external_account_id="time-projection-test",
+            credential_ref="/run/test-time-reauth/token.json",
+        )
+        assert recovered.requeued == 1 and recovered.skipped == {}
+        with session_factory() as session:
+            original = session.get(OperationTarget, before[0])
+            assert (original.id, original.parameters, original.parameters_sha256) == before
     assert runner.run_due_once() is True
 
     with session_factory() as session:
