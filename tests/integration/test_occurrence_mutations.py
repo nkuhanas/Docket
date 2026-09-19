@@ -132,6 +132,7 @@ def _world(session):
         account_id=account.id,
         calendar_id=lane.calendar_id,
         provider_event_id="recurring-master",
+        provider_etag='"observed-master"',
         status="active",
     )
     session.add_all([route, binding])
@@ -283,6 +284,7 @@ def test_moved_and_already_cancelled_occurrence_previews_keep_original_identity(
         canonical_target_ref=occurrence.replacement_event_ref, target_kind="event",
         account_id=master_binding.account_id, calendar_id=master_binding.calendar_id,
         provider_event_id="preview-replacement", status="active",
+        provider_etag='"observed-child"',
     ))
     session.flush()
     utterance2, trace2, staged2 = _stage_cancel(session, series, scope, number=3)
@@ -381,6 +383,7 @@ def test_pending_occurrence_projection_has_exact_recovery_not_new_authority(
         canonical_target_ref=occurrence.replacement_event_ref, target_kind="event",
         account_id=master_binding.account_id, calendar_id=master_binding.calendar_id,
         provider_event_id="recovered-child", status="active",
+        provider_etag='"observed-child"',
     ))
     session.flush()
     restaged = ChangeSetAssemblyService(session).stage(
@@ -468,6 +471,7 @@ def test_explicit_series_cancellation_includes_moved_child(session) -> None:
             account_id=master_binding.account_id,
             calendar_id=master_binding.calendar_id,
             provider_event_id="delivered-child",
+            provider_etag='"observed-child"',
             status="active",
         )
     )
@@ -650,6 +654,7 @@ def test_moved_occurrence_edits_and_cancellation_share_one_child(session) -> Non
             account_id=master_binding.account_id,
             calendar_id=master_binding.calendar_id,
             provider_event_id="replacement",
+            provider_etag='"observed-child"',
             status="active",
         )
     )

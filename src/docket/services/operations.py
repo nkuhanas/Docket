@@ -78,6 +78,10 @@ class ClaimedOperation:
                 else "canonical_event"
             ),
             operation_type=self.operation_type,
+            event_patch_fields=(
+                tuple(self.parameters["event_patch_fields"])
+                if "event_patch_fields" in self.parameters else None
+            ),
         )
 
     def lane_request(self, *, create_if_missing: bool) -> CalendarLaneRequest:
@@ -646,7 +650,7 @@ class OperationRunner:
                 == target.canonical_target_ref,
                 ProviderEventBinding.account_id == operation.account_id,
                 ProviderEventBinding.calendar_id == calendar_id,
-            )
+            ).with_for_update().execution_options(populate_existing=True)
         )
         if binding is None:
             binding = ProviderEventBinding(
@@ -667,7 +671,7 @@ class OperationRunner:
         binding.status = (
             "cancelled"
             if operation.operation_type == "calendar_cancel_event"
-            else "active"
+            else ("diverged" if binding.status == "diverged" else "active")
         )
 
     @staticmethod

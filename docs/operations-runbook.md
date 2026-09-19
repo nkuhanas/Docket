@@ -714,6 +714,55 @@ original Operator authority remains the basis; credential recovery creates no
 new semantic effect. Monitor the exact operations to terminal provider outcomes
 and refresh Calendar sync before reporting the external repair complete.
 
+### Existing Google event changed independently
+
+A `diverged` ProviderEventBinding still identifies the existing Google event.
+It means Google has changed since Docket's previous observation; it is neither
+a missing binding nor evidence that OAuth expired. Calendar sync refreshes the
+observed ETag even while the binding remains diverged.
+
+For canonical Event updates, staging compares the prior canonical event to the
+authorized new representation. Docket pins a server-derived **field-level Google
+PATCH** and the exact provider event identity, binding version and ETag into the
+immutable draft revision. Copied, unchanged fields are not provider writes. A
+description-only update therefore leaves an independently changed Google title,
+time, location, recurrence and reminders untouched. It does not import that
+Google title into canonical state or silently clear the divergence marker.
+Timing/recurrence changes on a diverged binding still require reconciliation:
+replacing recurrence arrays must not erase independently changed exceptions.
+
+Commit locks and checks that exact binding through canonical mutation and
+Operation insertion. A changed observation returns
+`provider_event_version_conflict`, preserves the draft and authority, and requires
+fresh evidence and a new stage operation on the **same request**. No renewed
+Operator authorization or recreated event is needed. A replay of an old stage
+operation still returns its recorded result; use a new operation to restage.
+Uncommitted revisions without the field-level patch must also be explicitly
+restaged (`provider_event_patch_required`); deployment never silently recompiles
+their effects. Compiler version 2 records this change; the MCP surface is unchanged.
+
+The worker sends the pinned ETag as `If-Match`. A later Google edit returns
+`google_calendar_precondition_failed`, a nonretryable delivery failure, **not**
+`google_auth_invalid`. Inspect the committed ChangeSet's delivery status and
+reconcile that operation; reauthorization must not flush it. A lost PATCH response
+uses the original Operation's identity and reads back only to verify its requested
+fields and correlation. Description verification retains a digest, not a copy
+of external description text. Canonical commitment and Google delivery remain
+separate outcomes.
+
+An actually absent binding still reports `provider_event_binding_required` with
+the original create Operation's status. An existing but unusable binding reports
+`provider_event_binding_not_ready` with its state. Cancellation and other full-effect
+operations retain their existing active-binding guard; this update path cannot
+resurrect a cancelled event or bypass occurrence/whole-series authority checks.
+Do not manually mark a binding active or replay an entire event to repair notes.
+
+These mechanics follow Google's [PATCH semantics](https://developers.google.com/workspace/calendar/api/v3/reference/events/patch)
+and [ETag preconditions](https://developers.google.com/workspace/calendar/api/guides/version-resources).
+`tests/integration/test_calendar_scoped_updates.py` exercises commit, retained
+authority, retry and response-loss behavior; the Compose smoke additionally
+checks binding locks and stale ORM observations against PostgreSQL.
+
 ## Deployment and drain
 
 Deployment is distinct from push and requires explicit Operator direction.

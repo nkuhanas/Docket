@@ -272,7 +272,7 @@ class CalendarSyncService:
                     select(ProviderEventBinding).where(
                         ProviderEventBinding.account_id == state.account_id,
                         ProviderEventBinding.calendar_id == state.calendar_id,
-                    )
+                    ).with_for_update()
                 )
             }
             seen: set[str] = set()
@@ -322,7 +322,7 @@ class CalendarSyncService:
                 binding = bindings.get(event.provider_event_id)
                 if (
                     binding is not None
-                    and binding.status == "active"
+                    and binding.status in {"active", "diverged"}
                     and binding.provider_etag is not None
                     and event.provider_etag is not None
                     and binding.provider_etag != event.provider_etag

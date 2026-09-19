@@ -65,6 +65,58 @@ def test_calendar_body_uses_local_recurrence_and_private_correlation() -> None:
     )
 
 
+@pytest.mark.parametrize("notes", ["New room details", None])
+def test_scoped_patch_sends_only_notes_and_verifies_hash_without_retaining_text(monkeypatch, notes):
+    request = replace(
+        event_request(), schedule=None, operation_type="calendar_update_event",
+        event_spec={"title": "Unchanged canonical title", "notes": notes, "timing": {
+            "kind": "timed", "start_local": "2026-09-18T16:30:00",
+            "end_local": "2026-09-18T18:30:00", "timezone": "America/Los_Angeles",
+        }},
+        event_patch_fields=("description",), provider_etag='"observed"',
+        reminder_plan={"delivery_channels": ["google_popup"], "lead_seconds": [600]},
+    )
+    provider = GoogleCalendarProvider("unused")
+    monkeypatch.setattr(provider, "_authorization_header", lambda: "Bearer test")
+
+    def remote(method, url, **kwargs):
+        assert method == "PATCH"
+        assert kwargs["headers"]["If-Match"] == '"observed"'
+        assert set(kwargs["json"]) == {"description", "extendedProperties"}
+        assert kwargs["json"]["description"] == notes
+        return response(200, {
+            **kwargs["json"], "id": request.external_event_id, "etag": '"delivered"',
+            "summary": "Unrelated Google title", "location": "Google location",
+            "start": {"dateTime": "2026-09-18T16:30:00-07:00"},
+            "reminders": {"useDefault": True},
+        })
+
+    monkeypatch.setattr(httpx, "request", remote)
+    result = provider.update_event(request)
+    assert event_matches_request(result, request)
+    assert "description" not in result.snapshot
+    wrong = replace(result, snapshot={**result.snapshot, "description_sha256": "wrong"})
+    assert not event_matches_request(wrong, request)
+
+
+def test_scoped_patch_clears_removed_recurrence_explicitly():
+    request = replace(
+        event_request(), event_patch_fields=("recurrence",), schedule=None,
+        operation_type="calendar_update_event",
+    )
+    assert request.event_body()["recurrence"] == []
+
+
+def test_etag_precondition_failure_is_not_an_auth_failure_or_retryable_error(monkeypatch):
+    provider = GoogleCalendarProvider("unused")
+    monkeypatch.setattr(provider, "_authorization_header", lambda: "Bearer test")
+    monkeypatch.setattr(httpx, "request", lambda *args, **kwargs: response(412, {}))
+    with pytest.raises(CalendarProviderError) as raised:
+        provider.update_event(replace(event_request(), provider_etag='"stale"'))
+    assert raised.value.code == "google_calendar_precondition_failed"
+    assert raised.value.transient is False
+
+
 def test_google_offset_response_normalizes_to_immutable_request(monkeypatch) -> None:
     request = event_request()
     document = request.event_body() | {"id": request.external_event_id, "etag": '"etag-1"'}

@@ -6,6 +6,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from docket.domain.errors import DocketError
 from docket.models import (
     CanonicalEvent,
     ChangeSet,
@@ -43,6 +44,22 @@ def missing_event_binding_diagnostic(
         },
         "recovery_rule": "preserve_draft_do_not_recreate_target_or_request_authorization",
     }
+    bindings = list(session.scalars(select(ProviderEventBinding).where(
+        ProviderEventBinding.canonical_target_ref == target_ref,
+        ProviderEventBinding.target_kind == target_kind,
+    ).limit(2)))
+    if bindings:
+        state = bindings[0].status if len(bindings) == 1 else "ambiguous"
+        details.update({
+            "binding_state": state,
+            "constraint": "exact_usable_provider_event_binding",
+            "binding_diagnostic": "existing_binding_not_usable_for_requested_operation",
+            "next_action": (
+                "restage_field_scoped_event_update" if state == "diverged"
+                else "reconcile_existing_provider_binding"
+            ),
+        })
+        return details
     if len(creates) != 1:
         details["binding_diagnostic"] = (
             "no_committed_create_operation" if not creates else "ambiguous_create_history"
@@ -68,6 +85,21 @@ def missing_event_binding_diagnostic(
     if operation.last_error_code:
         details["creation_error_code"] = operation.last_error_code
     return details
+
+
+def unavailable_event_binding(
+    session: Session, *, target_ref: str, target_kind: str,
+) -> DocketError:
+    details = missing_event_binding_diagnostic(
+        session, target_ref=target_ref, target_kind=target_kind,
+    )
+    exists = "binding_state" in details
+    return DocketError(
+        code="provider_event_binding_not_ready" if exists else "provider_event_binding_required",
+        message=("The existing provider binding is not usable for this operation."
+                 if exists else "The provider event binding is not available yet."),
+        details=details,
+    )
 
 
 @dataclass(frozen=True)

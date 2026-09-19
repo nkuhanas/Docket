@@ -58,7 +58,11 @@ from docket.services.attachment_evidence import (
     AttachmentEvidenceService,
     AttachmentTextService,
 )
-from docket.services.calendar_projection_invariants import missing_event_binding_diagnostic
+from docket.services.calendar_projection_invariants import unavailable_event_binding
+from docket.services.calendar_update_plan import (
+    compile_event_update_plan,
+    validate_event_update_plan,
+)
 from docket.services.case_resolutions import AttentionCaseResolutionService
 from docket.services.changeset_pins import migration_required, pin_snapshot, verify_snapshot
 from docket.services.conflicts import ConflictService
@@ -701,6 +705,7 @@ class ChangeSetService:
             target_refs: list[str],
             basis_refs: list[str],
             source_change_id: str,
+            parameters: dict[str, Any] | None = None,
         ) -> ProviderIntentInput:
             token = sha256_json(
                 {
@@ -717,7 +722,7 @@ class ChangeSetService:
                 canonical_target_change_ids=target_change_ids,
                 basis_refs=basis_refs,
                 idempotency_key=f"changeset-provider:{token}:{operation_type}",
-                parameters={"compiled_from_change_id": source_change_id},
+                parameters={"compiled_from_change_id": source_change_id, **(parameters or {})},
             )
 
         for event_change in content.event_changes:
@@ -821,6 +826,17 @@ class ChangeSetService:
                         )
                     )
 
+            update_plan: dict[str, Any] = {}
+            if operation_type == "calendar_update_event" and event is not None:
+                event_lane = self.session.scalar(
+                    select(CalendarLane).where(CalendarLane.ref_id == event.lane_ref)
+                )
+                assert event_lane is not None
+                assert event_change.payload is not None
+                update_plan = compile_event_update_plan(
+                    self.session, event,
+                    event_change.payload.model_dump(mode="json", exclude_unset=True), event_lane,
+                )
             provider_intents.append(
                 compiled_intent(
                     operation_type=operation_type,
@@ -829,6 +845,7 @@ class ChangeSetService:
                     target_refs=target_refs,
                     basis_refs=list(event_change.basis_refs),
                     source_change_id=event_change.change_id,
+                    parameters=update_plan,
                 )
             )
 
@@ -1883,13 +1900,20 @@ class ChangeSetService:
 
         changes = _all_changes(content)
         event_guard = EventScopeGuard(self.session)
-        # Series locks serialize concurrent occurrence changes even before a
-        # tombstone/replacement row exists. Validation follows the locked read.
-        series_refs = sorted({plan.plan.identity.series_ref for plan in content.occurrence_plans})
-        if series_refs:
+        # Lock canonical targets before provider bindings, also matching auth
+        # recovery's lock order. Refresh before expected-version validation.
+        # Series locks additionally serialize occurrence changes even before a
+        # tombstone/replacement row exists.
+        event_lock_refs = {plan.plan.identity.series_ref for plan in content.occurrence_plans}
+        if require_handlers:
+            event_lock_refs.update(
+                change.object_ref for change in content.event_changes
+                if change.object_ref is not None
+            )
+        if event_lock_refs:
             self.session.scalars(
                 select(CanonicalEvent)
-                .where(CanonicalEvent.ref_id.in_(series_refs))
+                .where(CanonicalEvent.ref_id.in_(sorted(event_lock_refs)))
                 .order_by(CanonicalEvent.ref_id)
                 .with_for_update()
                 .execution_options(populate_existing=True)
@@ -2384,6 +2408,21 @@ class ChangeSetService:
                 event = self.session.scalar(
                     select(CanonicalEvent).where(CanonicalEvent.ref_id == target_ref)
                 )
+                if expected_operation == "calendar_update_event" and len(matching_intents) == 1:
+                    event_lane = self.session.scalar(
+                        select(CalendarLane).where(CalendarLane.ref_id == event.lane_ref)
+                    ) if event is not None else None
+                    if event_lane is not None:
+                        try:
+                            validate_event_update_plan(
+                                self.session, target_ref=target_ref, lane=event_lane,
+                                parameters=matching_intents[0].parameters, lock=require_handlers,
+                            )
+                        except DocketError as exc:
+                            errors.append({"code": exc.code, "details": {
+                                "change_id": event_change.change_id, **(exc.details or {}),
+                            }})
+                        continue
                 binding = (
                     self.session.scalar(
                         select(ProviderEventBinding).where(
@@ -2396,14 +2435,15 @@ class ChangeSetService:
                     else None
                 )
                 if binding is None:
+                    error = unavailable_event_binding(
+                        self.session, target_ref=target_ref, target_kind="event",
+                    )
                     errors.append(
                         {
-                            "code": "provider_event_binding_required",
+                            "code": error.code,
                             "details": {
                                 "change_id": event_change.change_id,
-                                **missing_event_binding_diagnostic(
-                                    self.session, target_ref=target_ref, target_kind="event",
-                                ),
+                                **(error.details or {}),
                             },
                         }
                     )

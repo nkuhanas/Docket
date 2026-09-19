@@ -28,7 +28,8 @@ from docket.models import (
 )
 from docket.models.base import utc_now
 from docket.schemas.authority import ProviderIntentInput
-from docket.services.calendar_projection_invariants import missing_event_binding_diagnostic
+from docket.services.calendar_projection_invariants import unavailable_event_binding
+from docket.services.calendar_update_plan import validate_event_update_plan
 
 _LANE_OPERATION_TYPES = frozenset(
     {"calendar_configure_lane", "calendar_delete_lane"}
@@ -154,12 +155,8 @@ class ProviderIntentService:
             )
         )
         if binding is None:
-            raise DocketError(
-                code="provider_event_binding_required",
-                message="Provider event update requires an exact active binding.",
-                details=missing_event_binding_diagnostic(
-                    self.session, target_ref=canonical_target_ref, target_kind=target_kind,
-                ),
+            raise unavailable_event_binding(
+                self.session, target_ref=canonical_target_ref, target_kind=target_kind,
             )
         return binding
 
@@ -372,12 +369,22 @@ class ProviderIntentService:
             "target_kind": target_kind,
         }
         if operation_type != "calendar_create_event":
-            provider_binding = self._event_binding(
-                canonical_target_ref=canonical_target_ref,
-                target_kind=target_kind,
-                account=account,
-                lane=lane,
-            )
+            if operation_type == "calendar_update_event" and event is not None:
+                provider_binding = validate_event_update_plan(
+                    self.session, target_ref=canonical_target_ref, lane=lane,
+                    parameters=hints, lock=True,
+                )
+                parameters.update({
+                    "event_patch_fields": hints["event_patch_fields"],
+                    "provider_observation": hints["provider_observation"],
+                })
+            else:
+                provider_binding = self._event_binding(
+                    canonical_target_ref=canonical_target_ref,
+                    target_kind=target_kind,
+                    account=account,
+                    lane=lane,
+                )
             parameters.update(
                 {
                     "external_event_id": provider_binding.provider_event_id,

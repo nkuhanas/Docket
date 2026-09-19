@@ -49,7 +49,13 @@ class FakeCalendarProvider:
         previous: CalendarEventResult | None = None,
     ) -> CalendarEventResult:
         snapshot = request.snapshot()
-        if previous is not None and request.operation_type == "calendar_update_reminders":
+        if previous is not None and request.event_patch_fields is not None:
+            keys = {
+                "description_sha256" if field == "description" else field
+                for field in request.event_patch_fields
+            } | {key for key in snapshot if key.startswith("docket_")}
+            snapshot = {**previous.snapshot, **{key: snapshot[key] for key in keys}}
+        elif previous is not None and request.operation_type == "calendar_update_reminders":
             snapshot = {
                 **previous.snapshot,
                 "reminders": snapshot["reminders"],
@@ -106,6 +112,14 @@ class FakeCalendarProvider:
         if request.external_event_id is None or request.external_event_id not in self.events:
             raise CalendarProviderError(
                 "fake_not_found", "Fake Calendar event was not found.", transient=False
+            )
+        if (
+            request.provider_etag is not None
+            and self.events[request.external_event_id].provider_etag != request.provider_etag
+        ):
+            raise CalendarProviderError(
+                "google_calendar_precondition_failed", "The provider event changed.",
+                transient=False,
             )
         result = self._result(
             request,
