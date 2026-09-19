@@ -26,6 +26,9 @@ from calendar_reauthorization_checks import (
     test_google_reauthorization_rechecks_a_concurrent_canonical_edit,
     test_google_reauthorization_recovery_serializes_and_preserves_delivery,
 )
+from calendar_update_checks import (
+    test_calendar_update_binding_pin_serializes_with_provider_observations,
+)
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 from sqlalchemy import func, select, text
@@ -189,6 +192,7 @@ def test_occurrence_commits_serialize_and_identity_is_immutable(
                     account_id=account.id,
                     calendar_id=lane.calendar_id,
                     provider_event_id="occurrence-master",
+                    provider_etag='"observed-master"',
                     status="active",
                 ),
             ]
@@ -2753,6 +2757,7 @@ def main() -> None:
         test_recovered_response_finalizes_original_turn_without_reexecution,
         test_google_reauthorization_recovery_serializes_and_preserves_delivery,
         test_google_reauthorization_rechecks_a_concurrent_canonical_edit,
+        test_calendar_update_binding_pin_serializes_with_provider_observations,
     )
     for check in checks:
         check(factory)

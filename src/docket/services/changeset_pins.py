@@ -17,7 +17,7 @@ from docket.models import ChangeSet, ChangeSetRevision
 from docket.schemas.common import StrictModel
 
 COMPILER_IDENTIFIER = "docket.changeset"
-COMPILER_VERSION = 1
+COMPILER_VERSION = 2
 EXECUTABLE_SCHEMA_VERSION = 1
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 

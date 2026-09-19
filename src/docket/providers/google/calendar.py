@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from docket.domain.canonical import sha256_json
 from docket.providers.google.oauth import (
     CALENDAR_EVENTS_SCOPE,
     CALENDAR_LIST_SCOPE,
@@ -40,6 +41,7 @@ class CalendarEventRequest:
     origin_kind: str | None = None
     operation_type: str = "calendar_create_event"
     destination_calendar_id: str | None = None
+    event_patch_fields: tuple[str, ...] | None = None
 
     def creation_id(self) -> str:
         if self.external_event_id is None or re.fullmatch(
@@ -76,6 +78,14 @@ class CalendarEventRequest:
         reminders = _google_reminders(self.reminder_plan)
         if reminders is not None:
             body["reminders"] = reminders
+        if self.event_patch_fields is not None:
+            # Only the server-compiled canonical diff may change provider data.
+            # Include explicit clears; leave all unmentioned Google fields alone.
+            body = {
+                **{field: body.get(field, [] if field == "recurrence" else None)
+                   for field in self.event_patch_fields},
+                "extendedProperties": {"private": private},
+            }
         return body
 
     def snapshot(self) -> dict[str, Any]:
@@ -418,6 +428,9 @@ def normalize_event_body(body: dict[str, Any]) -> dict[str, Any]:
         "status": body.get("status"),
         "event_type": body.get("eventType", "default"),
         "summary": body.get("summary"),
+        # Exact-write reconciliation can verify notes without retaining raw
+        # external descriptions in snapshots, caches, audit or runtime logs.
+        "description_sha256": sha256_json(body.get("description") or ""),
         "location": body.get("location"),
         "transparency": body.get("transparency"),
         "start": endpoint(body.get("start")),
@@ -440,7 +453,12 @@ def event_matches_request(event: CalendarEventResult, request: CalendarEventRequ
     if event.snapshot.get("status") == "cancelled":
         return False
     keys: tuple[str, ...]
-    if request.operation_type == "calendar_update_reminders":
+    if request.event_patch_fields is not None:
+        keys = (*(
+            "description_sha256" if field == "description" else field
+            for field in request.event_patch_fields
+        ), "docket_correlation")
+    elif request.operation_type == "calendar_update_reminders":
         keys = ("reminders", "docket_correlation", "docket_reminder_plan_sha256")
     else:
         keys = (
@@ -537,6 +555,12 @@ class GoogleCalendarProvider:
             return response
         if response.status_code == 409 and allow_conflict:
             return response
+        if response.status_code == 412:
+            raise CalendarProviderError(
+                "google_calendar_precondition_failed",
+                "Google changed after staging; refresh and reconcile the same request.",
+                transient=False,
+            )
         if method != "GET" and (response.status_code == 408 or response.status_code >= 500):
             raise CalendarUnknownOutcome("Calendar write returned an uncertain server response.")
         if response.status_code in {408, 429} or response.status_code >= 500:
