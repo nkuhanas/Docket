@@ -78,6 +78,44 @@ Use `docket_resolve_conflict` only for an explicit current Operator resolution o
 one exact `conf_` and expected version. Preserve the chosen scope and retained or
 superseded statements.
 
+### Choose the intended time/calendar outcome before staging
+
+An intended occurrence and a window for possible work are different, even if both
+have start/end times. Interpret the whole current request and trusted context,
+not a keyword test or the easiest mutation recipe. The Operator need not say the
+word "calendar" when clearly scheduling attendance at a meeting or visit.
+
+- "I'm going to a drop-in meeting Monday from 2 to 2:30" describes an Event:
+  stage `canonical_event_create` with the resolved lane and an exact route. The
+  meeting being drop-in does not make the selected attendance interval a Task
+  window. An Item or a separate preparation Task is optional, not a substitute.
+- "I could stop by sometime between 2 and 4; just track that option" describes
+  tracked context/work with a Time window, not confirmed attendance. Do not invent
+  an Event or provider effect. If the attendance/window meaning really remains
+  ambiguous, ask one semantic clarification before fixing the assembly scope.
+- "HW2 is due Friday at 9" describes Item/Task plus `due_by`. Keep it a Time,
+  not a fabricated meeting. A date-only deadline stays date-only.
+- "Show that deadline/work window on my calendar" additionally needs
+  `temporal_calendar_projection_create` with the existing/same-draft Time and a
+  resolved lane/display policy. Use `all_day_marker` for a date and `interval_span`
+  for a window; a point-in-time `timed_marker` duration needs explicit intent or
+  an applicable recorded policy. Never invent attendance or a marker duration.
+
+Resolve the lane using the existing Calendar routing rules. Missing lane, end
+time, or a genuinely ambiguous occurrence is not permission to silently downgrade
+the request to Item/Task/Time-only work. Do not ask for reapproval of resolved
+intent. Before the first stage, describe the actual needed mutation types:
+`canonical_event_create` (and `lane_routing_decision_create` when needed) for an
+occurrence; `temporal_calendar_projection_create` for calendar-visible Time.
+
+`predicted_provider_operation_count=0` and the stage's `calendar_delivery_notice`
+mean the draft has no Google delivery, not a credential failure. Compare that
+outcome to the resolved request before committing. Review remains optional.
+Do not manufacture a provider intent or widen a bound request as a "repair".
+A committed Docket-only request cannot acquire new effects by replay: keep its
+existing objects and follow the current authenticated correction workflow, rather
+than recreating the work or telling the Operator to refresh OAuth.
+
 ## Semantic readiness and commit readiness
 
 Intent is semantically ready when the requested effects and scope are unambiguous:
@@ -466,6 +504,16 @@ call was blocked locally.
 On `committed`, the durable minimal receipt reports exact
 canonical/provider totals, provider disposition, and a bounded affected-ref sample.
 `provider_disposition=queued` proves durable provider intent, not provider completion.
+Use `calendar_delivery_notice` to communicate that distinction. For temporal work,
+`provider_disposition=no_provider_operations` requires an explicit Docket-only
+confirmation, for example "Tracked in Docket for Monday, 2–2:30 PM; not added to
+Google Calendar." Never use a bare "Added", "Scheduled", or "Done" that leaves
+the destination ambiguous. Do not imply every affected Item/Task has a Calendar
+entry merely because some sibling effect queued an Operation.
+For queued work say "Committed in Docket; Google Calendar delivery is queued",
+not "on your Google Calendar". A replay retains the original commit-time notice;
+only a fresh delivery-status read proves current provider completion or failure.
+For unrelated registry/policy-only work, there is no need to mention Calendar.
 This is sufficient for the normal final response. Do not issue post-commit
 verification reads unless the receipt is internally inconsistent or the Operator
 explicitly requested provider completion rather than durable queueing.

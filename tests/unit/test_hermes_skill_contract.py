@@ -5,6 +5,7 @@ import yaml
 
 from docket.domain.public_refs import new_public_ref
 from docket.schemas.assembly import StageActionUpsert, StageChangesInput
+from docket.tool_contracts import render_contract
 
 SKILL_PATH = Path("hermes/plugin/docket_discord/skills/docket-manual-intent/SKILL.md")
 TRIAGE_SKILL_PATH = Path("hermes/plugin/docket_discord/skills/docket-triage/SKILL.md")
@@ -128,6 +129,26 @@ def test_manual_skill_keeps_triage_non_authoritative_and_outputs_compact() -> No
     assert "merely because the immutable `utt_` exists" in skill
     assert "bounded receipt, effect/provider counts" in skill
     assert "intentionally truncates those samples" in skill
+
+
+def test_skill_and_loaded_contract_distinguish_attendance_from_work_windows() -> None:
+    skill = " ".join(SKILL_PATH.read_text(encoding="utf-8").split())
+    assert 'word "calendar" when clearly scheduling attendance' in skill
+    assert "drop-in does not make the selected attendance interval a Task window" in skill
+    assert "not confirmed attendance" in skill
+    assert "A date-only deadline stays date-only" in skill
+    assert "temporal_calendar_projection_create" in skill
+    assert "Never invent attendance or a marker duration" in skill
+    assert "silently downgrade" in skill
+    assert "before the first stage" in skill.casefold()
+    assert "predicted_provider_operation_count=0" in skill
+    assert "explicit Docket-only confirmation" in skill
+    assert "A replay retains the original commit-time notice" in skill
+    contract = render_contract("interactive")
+    assert "An intended meeting/visit at a selected time is an Event, not a Task window" in contract
+    assert "calendar_delivery_notice" in contract
+    assert "no_provider_operations" in contract
+    assert "queued is not delivered" in contract
 
 
 def test_triage_skill_does_not_invent_acknowledgement_work() -> None:

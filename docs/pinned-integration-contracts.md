@@ -30,6 +30,19 @@ traceability marker only.
 
 ## Hermes plugin contract
 
+Plugin `0.31.3` packages contract v40 and the occurrence/work-window guidance.
+The interpretation decision belongs before the first stage: intended attendance
+uses Event/routing, whereas a deadline or possible work window remains Time and
+only gains an explicit Calendar projection when requested or covered by an active
+policy. Docket supplies bounded draft/commit `calendar_delivery_notice` text from
+compiled effects, not OAuth availability or model inference. The final response
+must distinguish Docket-only storage from queued/confirmed Calendar delivery.
+Receipts replay their original commit-time notice, never a guessed live outcome.
+No hook, mutation-input schema, canonical semantics, provider gate, tool count,
+or database migration changes; both generated contracts and the read-only skill
+must be packaged together. Deterministic fixtures exercise the real stage/commit
+and worker paths but are not proof of live-model interpretation accuracy.
+
 Plugin `0.31.2` requires the pinned foreground `task_id` to resolve an admitted
 execution. The gateway supplies its captured session as that task; the background
 memory/skill reviewer reuses `session_id` for caching but omits `task_id` before
