@@ -52,6 +52,7 @@ from docket.schemas.authority import (
     StatementInput,
     mutation_input_json,
 )
+from docket.services.calendar_delivery_notice import calendar_delivery_notice
 from docket.services.canonical_patch_previews import capture_canonical_patch_preview
 from docket.services.changeset_compiler import (
     COMPILER_IDENTIFIER,
@@ -1839,6 +1840,9 @@ class ChangeSetAssemblyService:
                 budget=7000 - len(json.dumps(entry_previews, ensure_ascii=False).encode()),
             ),
             "predicted_provider_operation_count": len(changeset.provider_intents),
+            "calendar_delivery_notice": calendar_delivery_notice(
+                len(changeset.provider_intents), phase="draft", has_errors=bool(errors),
+            ),
             "assembly_ready": not errors,
             **({"source_interpretation": interpretation} if interpretation else {}),
             **_diagnostic_projection(

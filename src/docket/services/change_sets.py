@@ -58,6 +58,7 @@ from docket.services.attachment_evidence import (
     AttachmentEvidenceService,
     AttachmentTextService,
 )
+from docket.services.calendar_delivery_notice import calendar_delivery_notice
 from docket.services.calendar_projection_invariants import unavailable_event_binding
 from docket.services.calendar_update_plan import (
     compile_event_update_plan,
@@ -186,6 +187,9 @@ class ChangeSetApplicationReceipt:
             "provider_operation_count": len(self.provider_operations),
             "provider_operation_counts_by_initial_state": (
                 {"queued": len(self.provider_operations)} if self.provider_operations else {}
+            ),
+            "calendar_delivery_notice": calendar_delivery_notice(
+                len(self.provider_operations), phase="committed",
             ),
             "provider_operation_counts": provider_counts,
             "affected_refs": self.affected_refs[:limit],

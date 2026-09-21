@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-09-11-v39"
+CONTRACT_VERSION = "docket-tools-2026-09-20-v40"
 
 
 class ToolContractEntry(TypedDict):
@@ -120,7 +120,10 @@ _INTERACTIVE_MUTATIONS: dict[str, tuple[str, str]] = {
         "the original request, including pre-staging work. Recover a committed receipt without "
         "restaging. semantic_request_migration_required preserves unfinished work for explicit "
         "adoption, not another request or renewed approval. Cancelled/superseded authority "
-        "stays unavailable.",
+        "stays unavailable. Use calendar_delivery_notice with the exact provider counts: "
+        "no_provider_operations means Docket-only, not an OAuth failure or queued Calendar "
+        "write; queued is not delivered. For timed work report the actual destination, "
+        "not an unqualified 'Added' or 'Scheduled'.",
     ),
     "docket_resolve_conflict": (
         "ONT-TOOL-0009",
@@ -135,7 +138,13 @@ _INTERACTIVE_ASSEMBLY: dict[str, tuple[str, str]] = {
     ),
     "docket_stage_changes": (
         "ONT-CS-TOOL-0001",
-        "Stage bounded actions or normalized entries; scheduled entries carry one title/time/lane "
+        "Stage bounded actions or normalized entries. Resolve occurrence versus work before "
+        "the first stage: an intended meeting/visit at a selected time is a CanonicalEvent, "
+        "not merely a Task with a window. A deadline or possible work window stays Time; "
+        "calendar-visible Time also needs a temporal_calendar_projection and resolved lane. "
+        "Do not downgrade a scheduling request to Docket-only work when routing is unresolved. "
+        "calendar_delivery_notice and predicted_provider_operation_count describe this draft, "
+        "not delivery. Scheduled entries carry one title/time/lane "
         "and Docket derives their complete support records. A sole draft_recompile operation "
         "explicitly migrates unchanged pinned inputs. It can coalesce a duplicated Event title "
         "to the initial interpretation bound to retained image bytes or verified PDF text, "
@@ -312,8 +321,10 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
                     "before any effect begins."
                 ),
                 (
-                    "Items are bounded tracked context; Tasks are work; TemporalBindings attach "
-                    "time roles; Events are occurrences. Never launder a dated Item into an Event."
+                    "Item=context; Task=work; Time=temporal meaning; Event=occurrence. "
+                    "An intended meeting/visit at a selected time is an Event, not a Task window. "
+                    "Dates alone are not Events. Calendar-visible Time needs "
+                    "temporal_calendar_projection+lane."
                 ),
                 (
                     "Attachment imports use normalized entries with exact source-fragment "
@@ -339,10 +350,10 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
                     "transaction. Never invent a separate push or repair request."
                 ),
                 (
-                    "A committed ChangeSet receipt returns exact effect/provider totals and "
-                    "bounded samples mapping change_id to refs. Large atomic receipts truncate "
-                    "samples, never the commit. Treat totals and disposition as authoritative; "
-                    "do not reread objects or history merely to verify the commit."
+                    "Commit receipts prove exact canonical/provider totals; samples may be "
+                    "truncated, never the commit. For timed work, no_provider_operations means "
+                    "Docket-only; queued is not delivered. Use calendar_delivery_notice. "
+                    "No verification rereads unless provider confirmation is needed."
                 ),
                 (
                     "Never compress structured source entries with distinct content into one "

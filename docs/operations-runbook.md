@@ -520,6 +520,32 @@ of `time_`, remains distinguishable from `evt_`, and requires an explicit displa
 policy and CalendarLane. An Event linked to an Item must be temporally compatible
 with the Time it claims to realize.
 
+An intended meeting/visit at a selected attendance time is an Event, even if the
+Operator describes it as "drop-in" rather than using the word "calendar". A
+possible work window is a different interpretation. The interactive contract
+requires resolving that distinction before the first stage, including the
+existing lane/routing rules. Missing routing or timing is not permission to
+silently substitute a Docket-only Task. Ordinary deadlines remain Time, not
+invented Events; explicitly calendar-visible work uses a Time projection.
+
+Stage receipts include a bounded `calendar_delivery_notice` derived from their
+validation state and compiled provider count. This is a draft-plan observation,
+not a provider call or additional authorization. An invalid draft never claims
+that any effects committed. A ready draft with zero predicted operations plainly
+states that it saves in Docket only. Review remains optional.
+
+New commit receipts retain a `calendar_delivery_notice` alongside their exact
+canonical/provider counts. It says either Docket-only or queued at commit, never
+provider-confirmed. This notice is immutable on replay: use the existing delivery
+view when current provider status is needed. A nonzero count does not imply that
+every Item/Task in a mixed ChangeSet received a Calendar representation. Hermes
+must explicitly name Docket-only storage when confirming temporal work with
+`no_provider_operations`, not merely say "Added" or diagnose OAuth. Reauthorization
+cannot publish work with no Operation. It only recovers eligible existing failed
+deliveries. Deployment does not rewrite old receipts, convert existing Tasks to
+Events, or replay a committed request; a requested correction reuses the existing
+objects through the authenticated workflow.
+
 For a missing Calendar object:
 
 1. Resolve whether the target is `evt_` or a Time marker (`time_` + `tproj_`).
