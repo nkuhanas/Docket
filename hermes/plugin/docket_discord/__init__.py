@@ -3977,6 +3977,14 @@ async def _post_calendar_reminder(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _semantic_prompt_presentation(question: str, options: list[str]) -> tuple[str, str]:
+    lines = "\n".join(f"**{index}.** {value}" for index, value in enumerate(options, start=1))
+    description = f"{question}\n\n{lines}"
+    if len(description) > 4096:
+        raise PluginAPIError("semantic_prompt_too_large", "Clarification cannot be truncated", 422)
+    return "❓ **Docket needs your decision**", description
+
+
 async def _put_semantic_prompt(projection_id: uuid.UUID, payload: dict[str, Any]) -> dict[str, Any]:
     import discord
 
@@ -4106,13 +4114,10 @@ async def _put_semantic_prompt(projection_id: uuid.UUID, payload: dict[str, Any]
                 custom_id=custom_id,
             )
         )
-    option_lines = "\n".join(
-        f"**{index}.** {value}" for index, value in enumerate(visible_options, start=1)
-    )
-    content = f"❓ **Docket needs your decision**\n\n{question}\n\n{option_lines}"
+    content, description = _semantic_prompt_presentation(question, visible_options)
     embed = discord.Embed(
         title="Docket clarification",
-        description=f"{question}\n\n{option_lines}"[:4096],
+        description=description,
         color=discord.Color.orange(),
     )
     known_message_id = payload.get("known_message_id")

@@ -577,6 +577,21 @@ are different outcomes.
 
 ## Attachment evidence
 
+### Clarification controls
+
+Calendar duration choices display the actual durations, dates, bounds, timezone,
+destination and locations, with routing support summarized as the destination.
+Different choices cannot share identical visible text. Old ambiguous cards fail
+closed with `semantic_options_indistinguishable`; permission recovery never makes
+an unreadable historical choice authoritative. Replace the prompt through the
+clarification workflow only when that request is still unresolved, not after a
+separate successful retry. Prompts render once and never truncate choice text.
+
+The restricted Discord ingress role needs SELECT on `projection_deliveries` to
+verify an option's exact delivered message. It receives no write privilege on
+that table. The isolated Compose gate now captures/replays an actual selection
+under that role and verifies denied canonical reads and ledger/delivery writes.
+
 ### Mixed-source fields
 
 A supporting attachment is not necessarily a structured import. If dates/times

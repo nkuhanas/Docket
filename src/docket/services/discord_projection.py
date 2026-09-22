@@ -300,7 +300,11 @@ class DiscordProjectionRunner:
             ).encode()
             controls = [
                 {
-                    "label": f"Select {index}",
+                    "label": str(next((
+                        row.get("button_label") for row in
+                        projection.semantic_content["render"]["options"]
+                        if row["option_ref"] == option.ref_id
+                    ), None) or f"Select {index}"),
                     "custom_id": "dkt:s:"
                     + issue_semantic_option_token(
                         option_row_id=option.id,
@@ -329,7 +333,7 @@ class DiscordProjectionRunner:
                 "request_id": str(event.id),
                 "projection_id": str(projection.id),
                 "projection_ref": projection.ref_id,
-                "projection_version": 1,
+                "projection_version": projection.render_schema_version,
                 "guild_id": parts[1],
                 "channel_id": parts[2],
                 "parent_channel_id": (
