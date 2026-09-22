@@ -149,3 +149,43 @@ def test_ingress_rollout_regenerates_clean_projection_without_changing_authority
 
     prior_message = adapter.backend.semantic_prompts[str(prior.id)]
     assert prior_message["controls"] == []
+
+
+def test_rollout_keeps_historical_indistinguishable_choices_disabled(session_factory):
+    from test_clean_semantic_options import _utterance
+
+    with session_factory.begin() as session:
+        utterance = _utterance("1542799000000000702")
+        session.add(utterance)
+        session.flush()
+        intent = IntentSession(conversation_ref=utterance.conversation_ref,
+                               source_utterance_ref=utterance.ref_id,
+                               semantic_state="needs_clarification")
+        session.add(intent)
+        session.flush()
+        # Historical evidence is inserted as it existed, never rewritten to
+        # pretend the Operator saw distinct choices.
+        projection = OperatorProjection(
+            projection_kind="clarification", operator_ref=utterance.actor_ref,
+            primary_public_ref=intent.ref_id, intent_session_ref=intent.ref_id,
+            semantic_content={"render": {"options": [
+                {"visible_text": "Create new object."}, {"visible_text": "Create new object."},
+            ]}}, visible_text="Which?", render_schema_version=1,
+            render_sha256="a" * 64, component_sha256="b" * 64,
+            basis_refs=[utterance.ref_id],
+        )
+        session.add(projection)
+        session.flush()
+        ref = projection.ref_id
+        session.add(ProjectionDelivery(
+            projection_id=projection.id, projection_ref=ref, transport="discord",
+            destination_ref=utterance.conversation_ref, status="delivered",
+            last_error_code="ingress_deployment_quiesced",
+        ))
+    result = IngressDeploymentService(session_factory, FakeDiscordProjectionAdapter()).regenerate()
+    assert result["count"] == 0
+    assert result["skipped_projection_refs"] == [ref]
+    with session_factory() as session:
+        assert len(list(session.scalars(select(OperatorProjection)))) == 1
+        delivery = session.scalars(select(ProjectionDelivery)).one()
+        assert delivery.last_error_code == "semantic_options_indistinguishable"

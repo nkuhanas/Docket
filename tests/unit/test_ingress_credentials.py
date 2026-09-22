@@ -8,4 +8,6 @@ def test_ingress_role_inventory_matches_clean_schema() -> None:
     assert set(_READ_TABLES) <= table_names
     assert set(_APPEND_TABLES) <= set(_READ_TABLES)
     assert "operator_projections" in _READ_TABLES
+    assert "projection_deliveries" in _READ_TABLES
+    assert "projection_deliveries" not in _APPEND_TABLES
     assert "semantic_prompt_projections" not in _READ_TABLES

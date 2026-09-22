@@ -17,6 +17,7 @@ _READ_TABLES = (
     "operator_projections",
     "operator_utterances",
     "persisted_semantic_options",
+    "projection_deliveries",
     "sources",
 )
 _APPEND_TABLES = (

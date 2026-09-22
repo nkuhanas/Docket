@@ -242,6 +242,9 @@ class ProvenanceService:
             )
         ) is not None:
             return
+        from docket.services.clarification_replies import bind_reply
+
+        bind_reply(self.session, utterance)
         self.session.add(
             AuditEvent(
                 ref_id=audit_ref,
@@ -286,6 +289,7 @@ class ProvenanceService:
                 raise IdempotencyConflict(request.request_key)
             attachment_service.reconcile_existing(existing, captures)
             self._ensure_utterance_audit(existing, request)
+            from docket.services.clarification_replies import retained_attachments
             attachment_summaries = attachment_service.summaries(existing)
             replay_result: dict[str, Any] = {
                 "ok": True,
@@ -295,6 +299,7 @@ class ProvenanceService:
                 "disposition": "replayed_request",
                 "reply_binding": ReplyBindingService(self.session).resolve(existing),
                 "attachments": attachment_summaries,
+                **retained_attachments(self.session, existing),
             }
             ingress = self._capture_or_claim_typed_ingress(
                 existing,
@@ -347,6 +352,7 @@ class ProvenanceService:
             utterance = existing
             attachment_service.reconcile_existing(utterance, captures)
         self._ensure_utterance_audit(utterance, request)
+        from docket.services.clarification_replies import retained_attachments
         attachment_summaries = attachment_service.summaries(utterance)
         result: dict[str, Any] = {
             "ok": True,
@@ -356,6 +362,7 @@ class ProvenanceService:
             "disposition": "created" if created else "replayed_request",
             "reply_binding": ReplyBindingService(self.session).resolve(utterance),
             "attachments": attachment_summaries,
+            **retained_attachments(self.session, utterance),
         }
         ingress = self._capture_or_claim_typed_ingress(
             utterance,

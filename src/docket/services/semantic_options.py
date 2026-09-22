@@ -33,11 +33,23 @@ from docket.schemas.authority import (
     mutation_input_json,
 )
 from docket.security import decode_semantic_option_token, verify_semantic_option_token
+from docket.services.clarification_labels import calendar_choice
 from docket.services.continuity import ContinuityService
 from docket.services.gateway_lifetimes import GatewayLifetimeService
 from docket.services.semantic_scope import semantic_authority_scope
 
 CURRENT_SELECTION_UTTERANCE = "$current_selection_utterance"
+
+
+def require_distinct_choices(projection: OperatorProjection) -> None:
+    """Do not activate an old misleading card just because its transport recovers."""
+    options = projection.semantic_content.get("render", {}).get("options", [])
+    labels = [str(option.get("visible_text", "")).strip() for option in options]
+    if not labels or any(not label for label in labels) or len(set(labels)) != len(labels):
+        raise DocketError(
+            code="semantic_options_indistinguishable",
+            message="These choices are indistinguishable. Request a new clarification prompt.",
+        )
 
 
 def _substitute_selection_slots(
@@ -150,6 +162,10 @@ class SemanticOptionService:
         return f"{action} {object_type} {target}"
 
     def render_visible_text(self, content: dict[str, Any], exclusions: Iterable[str]) -> str:
+        exclusions = list(exclusions)
+        calendar = calendar_choice(content)
+        if calendar is not None:
+            return calendar[0] + "".join(f"\nExclude {value}." for value in exclusions)
         changes = [
             change
             for key in (
@@ -220,6 +236,28 @@ class SemanticOptionService:
         option_render: list[dict[str, str]] = []
         for draft in drafts:
             content = mutation_input_json(draft.content, exclude_none=False)
+            # Do not offer a button whose supporting attachment provenance
+            # cannot be compiled. A click has no model turn to invent bindings.
+            if content.get("event_changes") and not content.get("import_scope"):
+                from docket.models import AttachmentEvidence, InterpretedStatement
+
+                cited = {ref for change in content["event_changes"]
+                         for ref in change.get("basis_refs", [])}
+                cited.update(content.get("basis_refs", []))
+                cited.update(ref for ref in self.session.scalars(select(
+                    InterpretedStatement.source_ref,
+                ).where(InterpretedStatement.ref_id.in_(cited))) if ref)
+                attachments = set(self.session.scalars(select(AttachmentEvidence.ref_id).where(
+                    AttachmentEvidence.ref_id.in_(cited),
+                )))
+                missing = attachments - {item.source_ref for item in draft.field_evidence}
+                if missing:
+                    raise DocketError(
+                        code="clarification_field_evidence_required",
+                        message="Bind supporting attachment fields before presenting this choice.",
+                        details={"source_refs": sorted(missing),
+                                 "next_action": "include_option_field_evidence"},
+                    )
             template, replacements = _replace_authority_slot(
                 content, draft.selection_authority_ref
             )
@@ -235,6 +273,7 @@ class SemanticOptionService:
                 "case_revision_ref": case_revision_ref,
                 "projection_ref": projection_ref,
                 "intent_session_version": intent_session.version,
+                "field_evidence": [item.model_dump(mode="json") for item in draft.field_evidence],
             }
             visible_text = self.render_visible_text(content, draft.explicit_exclusions)
             option = PersistedSemanticOption(
@@ -262,8 +301,15 @@ class SemanticOptionService:
                     "precondition_hash": option.precondition_hash,
                 }
             )
-            option_render.append(
-                {"option_ref": option.ref_id, "visible_text": visible_text}
+            calendar = calendar_choice(content)
+            option_render.append({
+                "option_ref": option.ref_id, "visible_text": visible_text,
+                "button_label": calendar[1] if calendar else f"Select {len(option_render) + 1}",
+            })
+        if len({row.visible_text for row in option_rows}) != len(option_rows):
+            raise DocketError(
+                code="semantic_options_indistinguishable",
+                message="Choices must visibly distinguish their effects. Revise the clarification.",
             )
         render = {
             "question": question,
@@ -280,6 +326,12 @@ class SemanticOptionService:
             f"{index}. {item['visible_text']}"
             for index, item in enumerate(option_render, start=1)
         )
+        # The whole authority-bearing choice must fit, never transport-truncate it.
+        if len(visible_text) + 8 * len(option_rows) > 4000:
+            raise DocketError(
+                code="semantic_prompt_too_large",
+                message="Clarify a smaller choice; the complete prompt must fit 4000 characters.",
+            )
         projection = OperatorProjection(
             id=projection_id,
             ref_id=projection_ref,
@@ -293,7 +345,7 @@ class SemanticOptionService:
             case_revision_ref=case_revision_ref,
             semantic_content={"render": render, "component_binding": component_binding},
             visible_text=visible_text,
-            render_schema_version=1,
+            render_schema_version=2,
             render_sha256=sha256_json(render),
             component_sha256=sha256_json(component_binding),
             basis_refs=[utterance.ref_id],
@@ -376,6 +428,7 @@ class SemanticOptionService:
                 code="semantic_option_binding_mismatch",
                 message="Discord interaction does not match its persisted option projection.",
             )
+        require_distinct_choices(projection)
         if (
             sha256_json(option.authority_scope_json) != option.authority_scope_hash
             or sha256_json(option.execution_preconditions_json) != option.precondition_hash
@@ -465,6 +518,29 @@ class SemanticOptionService:
         utterance: OperatorUtterance,
         replay: bool,
     ) -> dict[str, Any]:
+        intent = self.session.scalar(select(IntentSession).where(
+            IntentSession.ref_id == option.intent_session_ref,
+        ).with_for_update().execution_options(populate_existing=True))
+        if intent is not None and intent.semantic_request_ref:
+            prior = self.session.scalar(select(SemanticRequest).where(
+                SemanticRequest.ref_id == intent.semantic_request_ref,
+            ))
+            if prior is not None and utterance.ref_id not in prior.origin_utterance_refs:
+                raise DocketError(
+                    code="semantic_prompt_already_selected",
+                    message="This request already has a bound answer; resume it instead.",
+                    details={"semantic_request_ref": prior.ref_id,
+                             "commit_state": prior.commit_state},
+                )
+        from docket.models import ClarificationReply
+
+        typed_answer = self.session.scalar(select(ClarificationReply.utterance_ref).where(
+            ClarificationReply.projection_ref == option.projection_ref,
+            ClarificationReply.selected_option_ref.is_not(None),
+        ).limit(1))
+        if typed_answer is not None:
+            raise DocketError(code="semantic_prompt_already_selected",
+                              message="A typed reply already continues this request; resume it.")
         semantic_request = self.session.scalar(
             select(SemanticRequest).where(
                 SemanticRequest.intent_session_ref == option.intent_session_ref,

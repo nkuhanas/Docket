@@ -239,6 +239,9 @@ class IngressLedgerService:
                 message="Option does not match its durable Discord projection.",
             )
         source_key = f"discord:{guild_id}:{channel_id}:{interaction_id}:0"
+        from docket.services.semantic_options import require_distinct_choices
+
+        require_distinct_choices(projection)
         existing = self.session.scalar(
             select(OperatorUtterance).where(
                 OperatorUtterance.discord_interaction_ref == interaction_id

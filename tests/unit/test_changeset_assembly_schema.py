@@ -68,7 +68,7 @@ def test_commit_submission_variants_are_removed_not_aliased() -> None:
     "scope.kind", "create_spec.event_spec.recurrence",
 ])
 def test_supporting_field_is_not_a_time_routing_or_authority_exemption(path):
-    from docket.schemas.assembly import FieldEvidenceTarget
+    from docket.schemas.evidence import FieldEvidenceTarget
 
     with pytest.raises(ValidationError):
         FieldEvidenceTarget(change_id="event", field_path=path)

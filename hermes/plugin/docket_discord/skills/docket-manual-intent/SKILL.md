@@ -141,7 +141,22 @@ Confidence, plausibility, or “obvious” is never a substitute. Consolidate re
 unknowns into the smallest natural question. If a bounded choice would authorize a
 mutation, call `docket_request_clarification` with the question
 and one through four fully typed `semantic_options`. Docket persists the exact scopes
-before projecting deterministic visible choices. Never use a generic clarification
+before projecting deterministic visible choices. Include each option's `field_evidence`
+when a supporting image supplies a building name or other descriptive field. Docket
+retains those bindings with the choice and compiles their provenance on selection.
+Duration options display minutes, actual dates/times, timezone and destination;
+do not replace them with model-authored summaries of hidden effects.
+
+A clarification reply continues its bound IntentSession. Docket supplies retained
+attachments from that request at the native model-input boundary; they need not
+be on the latest message. Use the provided source refs and `field_evidence_bind`
+with the answered duration. Never request reattachment merely because the image
+belongs to an earlier message. Only genuinely unavailable/corrupt retained bytes
+need evidence recovery. If reply context is ambiguous, ask which pending request
+the answer addresses; do not guess or borrow an unrelated attachment. An already
+committed receipt is final: inspect delivery rather than restaging its events.
+
+Never use a generic clarification
 tool for a mutation-authorizing choice. For a genuinely open-ended question, ask in
 the final response so the existing IntentSession survives restart.
 

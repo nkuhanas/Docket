@@ -25,6 +25,7 @@ from docket.models.calendar import (
     OperationTarget,
     ScheduledNotification,
 )
+from docket.models.clarifications import ClarificationReply
 from docket.models.continuity import (
     DeferredIngress,
     DrainBarrier,
@@ -121,6 +122,7 @@ __all__ = [
     "CaseSource",
     "ChangeSet",
     "ChangeSetRevision",
+    "ClarificationReply",
     "Conflict",
     "ConnectorCheckpoint",
     "ContextPacket",

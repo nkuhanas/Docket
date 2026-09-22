@@ -186,6 +186,31 @@ def _bound_request(session: Session, utterance_ref: str) -> SemanticRequest | No
     The caller holds the originating utterance lock. Do not infer a request
     from the latest conversation, title similarity, or another utterance.
     """
+    from docket.models import ClarificationReply
+
+    reply = session.get(ClarificationReply, utterance_ref)
+    if reply is not None:
+        bound = session.scalar(select(IntentSession).where(
+            IntentSession.ref_id == reply.intent_session_ref,
+        ).with_for_update().execution_options(populate_existing=True))
+        if bound is not None and bound.semantic_request_ref is not None:
+            request = session.scalar(select(SemanticRequest).where(
+                SemanticRequest.ref_id == bound.semantic_request_ref,
+            ))
+            if request is not None and request.commit_state != "committed":
+                original_choices = set(session.scalars(select(
+                    ClarificationReply.selected_option_ref,
+                ).where(ClarificationReply.utterance_ref.in_(request.origin_utterance_refs))))
+                if reply.selected_option_ref and original_choices and (
+                    reply.selected_option_ref not in original_choices
+                ):
+                    raise DocketError(
+                        code="clarification_answer_changed",
+                        message="Another answer already bound this draft; reconcile it first.",
+                        details={"authority_preserved": True,
+                                 "next_action": "reconcile_clarification_answer"},
+                    )
+            return request
     candidates = [
         request for request in session.scalars(select(SemanticRequest))
         if utterance_ref in request.origin_utterance_refs
@@ -740,6 +765,15 @@ class ChangeSetAssemblyService:
                     message="The first stage operation requires the exact assembly scope.",
                 )
             intent_session = self._open_session(utterance)
+            # Another answer may have staged after this execution was admitted.
+            # The shared IntentSession lock makes that one existing request win.
+            preserved = _bound_request(self.session, utterance.ref_id)
+            if preserved is not None:
+                _bind_execution_request(self.session, execution, preserved)
+                return self._bind_request_and_attempt(
+                    execution=execution, operation=operation, utterance=utterance,
+                    scope=scope, expected_versions=expected_versions,
+                )
             scope_payload = scope.model_dump(mode="json", exclude_none=True)
             authority_scope_hash = sha256_json(scope_payload)
             precondition_payload = {
@@ -1782,7 +1816,7 @@ class ChangeSetAssemblyService:
                                              "next_action": "reconcile_preserved_request"},
                                 )
                             require_same_effects(prior_content, content)
-                        from docket.schemas.assembly import FieldEvidenceInput
+                        from docket.schemas.evidence import FieldEvidenceInput
 
                         field_proof = bind_field_evidence(
                             self.session, request=semantic_request, scope=scope, content=content,

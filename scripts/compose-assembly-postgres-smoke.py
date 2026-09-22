@@ -1286,7 +1286,7 @@ def test_direct_request_adoption_serializes_and_preserves_proof(
     else:
         raise AssertionError("Downgrade discarded adoption evidence")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260921c9a8"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260922d0b9"
         assert session.get(RequestAssemblyAdoption, request_ref) is not None
 
 
@@ -2178,7 +2178,7 @@ def test_trace_history_survives_call_one_hundred_and_blocks_lossy_downgrade(
     else:
         raise AssertionError("Downgrade should preserve the longer trace by refusing to proceed")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260921c9a8"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260922d0b9"
         assert session.scalar(select(TraceExecutionSegment.last_ordinal).where(
             TraceExecutionSegment.id == trace_id
         )) == 103
@@ -2481,7 +2481,7 @@ def test_request_specifications_are_immutable_and_block_lossy_downgrade(
     else:
         raise AssertionError("Downgrade discarded immutable request specifications")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260921c9a8"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260922d0b9"
         assert session.get(SemanticRequestSpecification, (key["ref"], key["version"])) is not None
 
 
@@ -2519,7 +2519,7 @@ def test_initial_source_interpretations_are_immutable_across_connections(
     else:
         raise AssertionError("Downgrade discarded initial source interpretations")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260921c9a8"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260922d0b9"
         interpreted = read_entry_interpretation(
             session, request_ref=key["ref"], entry_id=key["entry"],
         )
@@ -2737,7 +2737,7 @@ def test_mixed_field_evidence_recovery_survives_connections(factory: sessionmake
             request_id=uuid.uuid4(), guild_id=settings.discord_guild_id,
             channel_id=settings.chat_channel_id, message_id=message,
             actor_id=settings.operator_discord_user_id, request_key=request_key,
-            verbatim_text=("Two fixture meetings Sep 17/24 at 19:00, one hour each, "
+            verbatim_text=("Two fixture meetings Sep 17/24 at 19:00, "
                            "CSAI lane, room 102 in the attached building."),
             attachments=[AttachmentManifest(
                 transport_attachment_ref="1542799000000000992", filename="building.png",
@@ -2781,6 +2781,67 @@ def test_mixed_field_evidence_recovery_survives_connections(factory: sessionmake
                             "decision_kind": "explicit_operator", "operator_confirmed": True},
         },
     } for day in (17, 24))
+    # Clarification and a typed answer use distinct connections/utterances;
+    # the retained image stays owned by the original message.
+    from docket.models import ClarificationReply, IntentSession, ProjectionDelivery
+    from docket.schemas.authority import SemanticOptionDraft
+    from docket.services.semantic_options import SemanticOptionService
+
+    original_utterance_ref = utterance_ref
+    with factory.begin() as session:
+        original_utterance = session.scalar(select(OperatorUtterance).where(
+            OperatorUtterance.ref_id == original_utterance_ref,
+        ))
+        intent = IntentSession(source_utterance_ref=utterance_ref,
+                               conversation_ref=original_utterance.conversation_ref,
+                               semantic_state="needs_clarification", commit_state="not_attempted")
+        session.add(intent)
+        session.flush()
+        content = {"basis_refs": [utterance_ref], "event_changes": [], "lane_changes": []}
+        for operation in actions:
+            action = operation["action"]
+            content["event_changes" if action["object_type"] == "canonical_event"
+                    else "lane_changes"].append(action)
+        prompt = SemanticOptionService(session).persist_prompt(
+            utterance=original_utterance, intent_session=intent, question="How long?",
+            drafts=[SemanticOptionDraft.model_validate({"option_id": "one-hour",
+                    "selection_authority_ref": utterance_ref, "content": content,
+                    "field_evidence": [{
+                        "source_ref": source_ref,
+                        "source_fragment_locator": {"region": "building_name"},
+                        "extractor_identifier": "hermes.native-vision",
+                        "extractor_version": "fixture-v1", "value": "Baker Center",
+                        "targets": [{"change_id": f"meeting-{day}",
+                                     "field_path": "create_spec.event_spec.location",
+                                     "match": "prefix"} for day in (17, 24)],
+                    }]})],
+        )
+        delivery = session.scalar(select(ProjectionDelivery).where(
+            ProjectionDelivery.projection_ref == prompt.ref_id,
+        ))
+        delivery.status = "delivered"
+        delivery.external_message_ref = (
+            f"discord_message:{settings.discord_guild_id}:"
+            f"{settings.chat_channel_id}:1542799000000000993"
+        )
+    request_key = (
+        f"discord:{settings.discord_guild_id}:{settings.chat_channel_id}:1542799000000000994:0"
+    )
+    with factory.begin() as session:
+        captured = ProvenanceService(session).capture_operator_utterance(OperatorUtteranceCapture(
+            request_id=uuid.uuid4(), guild_id=settings.discord_guild_id,
+            channel_id=settings.chat_channel_id, message_id="1542799000000000994",
+            actor_id=settings.operator_discord_user_id, request_key=request_key,
+            verbatim_text="1 hour", reply_to_message_id="1542799000000000993",
+        ))
+        utterance_ref = captured["ref"]
+        assert captured["retained_attachment_summaries"][0]["ref"] == source_ref
+        assert base64.b64decode(captured["retained_attachments"][0]["plaintext_base64"]) == png
+    for operation in actions:
+        operation["action"]["basis_refs"] = [
+            utterance_ref if ref == original_utterance_ref else ref
+            for ref in operation["action"]["basis_refs"]
+        ]
     initial = StageChangesInput.model_validate({
         "utterance_ref": utterance_ref, "request_key": request_key,
         "assembly_scope": {
@@ -2880,6 +2941,28 @@ def test_mixed_field_evidence_recovery_survives_connections(factory: sessionmake
         raise AssertionError("Downgrade discarded field evidence")
     with factory() as session:
         assert session.get(RequestFieldEvidence, request_ref) is not None
+        assert session.get(ClarificationReply, utterance_ref) is not None
+    for sql in (
+        "UPDATE clarification_replies SET evidence_utterance_refs = '[]' "
+        "WHERE utterance_ref = :ref",
+        "DELETE FROM clarification_replies WHERE utterance_ref = :ref",
+    ):
+        try:
+            with factory.begin() as session:
+                session.execute(text(sql), {"ref": utterance_ref})
+        except DBAPIError:
+            pass
+        else:
+            raise AssertionError("PostgreSQL allowed rewriting clarification context")
+    migration = ScriptDirectory.from_config(Config("alembic.ini")).get_revision("20260922d0b9")
+    try:
+        with (factory.kw["bind"].begin() as connection,
+              Operations.context(MigrationContext.configure(connection))):
+            migration.module.downgrade()
+    except RuntimeError as exc:
+        assert "Clarification replies exist" in str(exc)
+    else:
+        raise AssertionError("Downgrade discarded clarification context")
 
 
 def main() -> None:

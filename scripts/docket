@@ -106,25 +106,7 @@ compose_smoke() (
     smoke_compose config --quiet
     smoke_compose up -d --build --wait --wait-timeout 180 postgres docket
     uv run python scripts/compose-mcp-smoke.py
-    smoke_compose exec -T docket ./.venv/bin/python - <<'PY'
-from sqlalchemy import create_engine, text
-from sqlalchemy.exc import ProgrammingError
-
-from docket.discord_ingress import ingress_database_url
-
-engine = create_engine(ingress_database_url())
-with engine.connect() as connection:
-    # The MCP clarification fixture persisted one option, readable (not
-    # writable) by stable ingress so it can authenticate a later selection.
-    assert connection.scalar(text("SELECT count(*) FROM persisted_semantic_options")) == 1
-    try:
-        connection.execute(text("UPDATE operator_utterances SET verbatim_text = verbatim_text"))
-    except ProgrammingError:
-        connection.rollback()
-    else:
-        raise AssertionError("restricted ingress role unexpectedly has UPDATE authority")
-engine.dispose()
-PY
+    smoke_compose exec -T docket ./.venv/bin/python - < scripts/check-ingress-selection.py
 
     smoke_compose exec -T postgres createdb -U docket docket_readiness_rehearsal
     smoke_compose exec -T postgres createdb -U docket docket_readiness_restore

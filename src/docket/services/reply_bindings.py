@@ -23,6 +23,11 @@ class ReplyBindingService:
         self.session = session
 
     def resolve(self, utterance: OperatorUtterance) -> dict[str, Any] | None:
+        from docket.services.clarification_replies import reply_context
+
+        clarification = reply_context(self.session, utterance)
+        if clarification is not None:
+            return clarification
         reply_ref = utterance.reply_to_source_ref
         if reply_ref is None or not reply_ref.startswith("discord_message:"):
             return None

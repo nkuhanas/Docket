@@ -577,6 +577,42 @@ are different outcomes.
 
 ## Attachment evidence
 
+### Clarification controls
+
+Calendar duration choices display the actual durations, dates, bounds, timezone,
+destination and locations, with routing support summarized as the destination.
+Different choices cannot share identical visible text. Old ambiguous cards fail
+closed with `semantic_options_indistinguishable`; permission recovery never makes
+an unreadable historical choice authoritative. Replace the prompt through the
+clarification workflow only when that request is still unresolved, not after a
+separate successful retry. Prompts render once and never truncate choice text.
+
+The restricted Discord ingress role needs SELECT on `projection_deliveries` to
+verify an option's exact delivered message. It receives no write privilege on
+that table. The isolated Compose gate now captures/replays an actual selection
+under that role and verifies denied canonical reads and ledger/delivery writes.
+
+Typed replies to a delivered clarification reuse its IntentSession and retained
+evidence. An unthreaded exact choice (including `1 hour` / `60 minutes`) binds only
+when there is one pending prompt and its source is the immediately preceding
+Operator message. Otherwise reply to the specific prompt; general channel history
+is not request identity. The immutable `clarification_replies` linkage separates
+the answer's authority from earlier attachments' evidence ownership. Old messages
+are not backfilled. Selection scope still constrains dates, count, duration and
+destination, and already-committed requests recover their receipt without replay.
+
+Migration `20260922d0b9` adds only that internal append-only linkage. An empty table
+can downgrade/re-upgrade; populated linkage must not be discarded. For recovery
+use the pre-migration backup or forward repair, not an older image against a
+newer schema. Deploy both Docket/Hermes and the stable ingress through their
+supported drain paths. Regeneration deliberately leaves indistinguishable old
+choices disabled; it never guesses their meaning or executes historical work.
+For this grant-restoration rollout, quiesce existing controls with
+`docket-continuity quiesce-ingress-options` in the running Docket container before
+the normal deployment restores the ingress role's SELECT grant. Then run the
+normal deployment and `scripts/docket deploy-ingress`; do not leave an old
+ingress writer able to accept the formerly broken, indistinguishable controls.
+
 ### Mixed-source fields
 
 A supporting attachment is not necessarily a structured import. If dates/times

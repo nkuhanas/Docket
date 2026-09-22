@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import hashlib
+import importlib.util
 import json
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -8,8 +9,8 @@ from threading import Event
 from types import ModuleType, SimpleNamespace
 
 import pytest
+from test_plugin_actor_gate import PLUGIN_PATH, resume_trace_fixture
 from test_plugin_actor_gate import plugin_module as base_plugin_fixture
-from test_plugin_actor_gate import resume_trace_fixture
 
 
 @pytest.fixture
@@ -68,6 +69,53 @@ def test_native_input_matches_each_ledger_source_without_retaining_bytes(
     assert persisted == scheduled == []
     assert "image one" not in str(context) and "base64" not in str(context)
     assert "private image instructions" not in str(context)
+
+
+def test_clarification_capture_restores_native_media_without_reassigning_evidence(
+    monkeypatch,
+):
+    # The dispatch fixture deliberately stubs capture; exercise the real hook.
+    spec = importlib.util.spec_from_file_location("docket_clarification_capture_test", PLUGIN_PATH)
+    assert spec is not None and spec.loader is not None
+    plugin = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(plugin)
+    source_ref = "src_" + "1" * 26
+    summary = {"ref": source_ref, "content_hash": hashlib.sha256(b"earlier image").hexdigest(),
+               "media_type": "image/png", "filename": "building.png", "ingest_state": "available"}
+    monkeypatch.setattr(plugin, "_provenance_ingress_context", lambda _: (
+        "1" * 18, "2" * 18, "3" * 18, None,
+    ))
+    sent = []
+
+    def capture(_path, payload):
+        sent.append(payload)
+        return {"ref": "utt_" + "1" * 26, "attachments": [],
+                "reply_binding": {"kind": "clarification"},
+                "retained_attachment_summaries": [summary],
+                "retained_attachments": [
+                    {**summary, "plaintext_base64": "verified internal bytes"},
+                ]}
+
+    monkeypatch.setattr(plugin, "_docket_internal_request", capture)
+    materialized = []
+
+    def materialize(payload):
+        materialized.extend(payload["attachment_evidence"])
+        return ["/cache/retained-building.png"], ["image/png"]
+
+    monkeypatch.setattr(plugin, "_materialize_deferred_attachments", materialize)
+    event = SimpleNamespace(source={}, message_id="4" * 18, text="1 hour",
+                            raw_message=SimpleNamespace(content="1 hour", attachments=[]),
+                            media_urls=[], media_types=[])
+    _, binding, ingress = plugin._capture_operator_utterance(event)
+    assert sent[0]["attachments"] == []  # not attributed to the answering message
+    assert materialized[0]["ref"] == source_ref
+    assert event.media_urls == ["/cache/retained-building.png"]
+    assert event.media_types == ["image/png"]
+    assert "plaintext_base64" not in str(ingress) and "plaintext_base64" not in str(binding)
+    assert plugin._native_image_bindings(ingress["attachments"]) == [
+        {"source_ref": source_ref, "content_hash": summary["content_hash"]},
+    ]
 
 
 @pytest.mark.parametrize("problem", [

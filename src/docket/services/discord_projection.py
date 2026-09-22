@@ -295,12 +295,19 @@ class DiscordProjectionRunner:
                 raise DiscordProjectionError(
                     "semantic_option_count_invalid", "Prompt requires one through four options"
                 )
+            by_ref = {option.ref_id: option for option in options}
+            options = [by_ref[row["option_ref"]]
+                       for row in projection.semantic_content["render"]["options"]]
             signing_key = self.settings.read_secret(
                 self.settings.interaction_signing_key_file
             ).encode()
             controls = [
                 {
-                    "label": f"Select {index}",
+                    "label": str(next((
+                        row.get("button_label") for row in
+                        projection.semantic_content["render"]["options"]
+                        if row["option_ref"] == option.ref_id
+                    ), None) or f"Select {index}"),
                     "custom_id": "dkt:s:"
                     + issue_semantic_option_token(
                         option_row_id=option.id,
@@ -329,7 +336,7 @@ class DiscordProjectionRunner:
                 "request_id": str(event.id),
                 "projection_id": str(projection.id),
                 "projection_ref": projection.ref_id,
-                "projection_version": 1,
+                "projection_version": projection.render_schema_version,
                 "guild_id": parts[1],
                 "channel_id": parts[2],
                 "parent_channel_id": (

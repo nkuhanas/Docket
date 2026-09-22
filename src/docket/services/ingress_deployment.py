@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from docket.domain.canonical import sha256_json
+from docket.domain.errors import DocketError
 from docket.domain.public_refs import new_public_ref
 from docket.models import (
     AttentionCase,
@@ -176,6 +177,14 @@ class IngressDeploymentService:
                 if binding.get("projection_ref")
             }
             for projection, delivery in rows:
+                from docket.services.semantic_options import require_distinct_choices
+
+                try:
+                    require_distinct_choices(projection)
+                except DocketError:
+                    skipped_refs.append(projection.ref_id)
+                    delivery.last_error_code = "semantic_options_indistinguishable"
+                    continue
                 intent_session = session.scalar(
                     select(IntentSession).where(
                         IntentSession.ref_id == projection.intent_session_ref
@@ -286,7 +295,10 @@ class IngressDeploymentService:
             )
             option_rows.append(option)
             option_render.append(
-                {"option_ref": option.ref_id, "visible_text": option.visible_text}
+                {"option_ref": option.ref_id, "visible_text": option.visible_text,
+                 "button_label": str(next((row.get("button_label") for row in
+                     projection.semantic_content["render"]["options"]
+                     if row["option_ref"] == prior.ref_id), None) or f"Select {len(option_rows)}")}
             )
             option_components.append(
                 {

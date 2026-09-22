@@ -71,6 +71,18 @@ def test_plugin_and_docket_trace_dispositions_remain_identical(plugin_module) ->
     assert plugin_module._TRACE_DISPOSITIONS == TRACE_DISPOSITIONS
 
 
+def test_clarification_is_displayed_once_and_never_truncated(plugin_module):
+    content, description = plugin_module._semantic_prompt_presentation(
+        "How long?", ["60 minutes each", "90 minutes each"],
+    )
+    assert "How long?" not in content
+    assert description.count("How long?") == 1
+    assert description.count("60 minutes each") == 1
+    with pytest.raises(plugin_module.PluginAPIError) as error:
+        plugin_module._semantic_prompt_presentation("How long?", ["x" * 4096])
+    assert error.value.code == "semantic_prompt_too_large"
+
+
 def test_relative_calendar_read_uses_trusted_message_not_model_ref(plugin_module, monkeypatch):
     captured_ref = f"utt_{'0' * 26}"
     plugin_module._TRACE_CONTEXTS["relative-date-test"] = {

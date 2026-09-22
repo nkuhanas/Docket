@@ -1347,3 +1347,48 @@ Plugin `0.32.0`/contract v41 retain 23 interactive tools and payload-free commit
 No live model extraction, historical request replay, OAuth refresh, or provider
 delivery is claimed by these deterministic results. Production release still
 requires both remote CI jobs and the supported drained, backed-up deployment.
+
+## Clarification choices and retained reply evidence — September 22, 2026
+
+The clarification incident exposed three independent boundaries: deterministic
+labels hid differing meeting durations, the append-only ingress role could not
+read the delivered-message binding for a click, and a typed duration answer had
+no durable link to the original attachment-bearing request. This repair leaves
+the signed mutation/authority model intact.
+
+Calendar duration choices now display actual minutes, dates, start/end times,
+timezone, location and destination, once in the Discord embed. Indistinguishable
+or oversized choices are rejected rather than truncated. Restricted ingress can
+SELECT `projection_deliveries`, but cannot update delivery rows, rewrite the
+utterance ledger, delete options, or read canonical events. Old indistinguishable
+cards remain disabled through ingress regeneration.
+
+The internal append-only `clarification_replies` table records an authenticated
+reply's exact prompt, IntentSession and bounded evidence closure. An exact
+unthreaded answer binds only to an unambiguous pending prompt immediately after
+its originating Operator message; explicit replies address the delivered prompt.
+Retained attachment bytes are restored through the trusted gateway before native
+image interpretation, not inserted into model-visible JSON. Earlier attachment
+ownership and the new answer's authority remain distinct. Source hashes and
+context bindings are verified again during compilation.
+
+Persisted semantic options include supporting-field evidence needed to execute
+their exact choice. Typed choice effects cannot expand the event count, dates or
+duration. Already-committed requests return the original receipt. No old messages
+are backfilled and no historical meeting request is replayed by the rollout.
+
+The regression suite covers typed and button completion, exact seven-event
+outcomes, retained bytes, unrelated-source rejection, changed-effect rejection,
+replay, disabled historical cards and immutable reply context. PostgreSQL smoke
+also exercises capture, field-proof repair, review, commit and replay across
+connections; restricted-role click capture; append-only triggers; and empty
+migration round-trip / nonempty downgrade refusal for `20260922d0b9`.
+
+Local release gates passed: **881 tests, Ruff, strict mypy (150 source files)**,
+and the full isolated Compose smoke, including all **30 PostgreSQL recovery
+checks** and clean governance export/restore with six specification sign-offs.
+
+Plugin `0.33.0` and contract v42 retain 23 interactive/four triage tools. Release
+requires both CI jobs, pre-migration backup, normal deployment and the separate
+quiesced ingress handoff. Live model extraction and an Operator clicking a newly
+issued production prompt are not claimed by deterministic fixtures.
