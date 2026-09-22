@@ -14,6 +14,7 @@ from docket.schemas.authority import (
 from docket.schemas.calendar import CalendarEventTiming
 from docket.schemas.common import PublicRef, StrictModel, validate_refs
 from docket.schemas.event_occurrences import EventMutationScope
+from docket.schemas.evidence import FieldEvidenceInput, structural_locator
 from docket.schemas.tracked_context import (
     ItemInput,
     TemporalRole,
@@ -125,27 +126,7 @@ class NormalizedEntryEvidence(StrictModel):
     @field_validator("source_fragment_locator")
     @classmethod
     def locator_is_structural_and_bounded(cls, value: dict[str, Any]) -> dict[str, Any]:
-        forbidden = {"body", "content", "excerpt", "quote", "raw", "text", "transcript"}
-
-        def visit(item: Any, depth: int = 0) -> int:
-            if depth > 8:
-                raise ValueError("source_fragment_locator exceeds maximum nesting depth")
-            if isinstance(item, dict):
-                if any(str(key).casefold() in forbidden for key in item):
-                    raise ValueError("source_fragment_locator contains copied source content")
-                return 1 + sum(visit(nested, depth + 1) for nested in item.values())
-            if isinstance(item, list):
-                return 1 + sum(visit(nested, depth + 1) for nested in item)
-            if isinstance(item, str) and len(item.encode("utf-8")) > 256:
-                raise ValueError("source_fragment_locator coordinate is too large")
-            return 1
-
-        if visit(value) > 100:
-            raise ValueError("source_fragment_locator contains too many coordinates")
-        encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        if len(encoded) > 2048:
-            raise ValueError("source_fragment_locator exceeds 2048 bytes")
-        return value
+        return structural_locator(value)
 
 
 class NormalizedTemporalFacet(StrictModel):
@@ -227,41 +208,6 @@ class StageActionUpsert(StrictModel):
 class StageActionRemove(StrictModel):
     operation: Literal["action_remove"] = "action_remove"
     change_id: str = Field(pattern=_IDENTIFIER_PATTERN)
-
-
-class FieldEvidenceTarget(StrictModel):
-    change_id: str = Field(pattern=_IDENTIFIER_PATTERN)
-    field_path: str = Field(
-        pattern=r"^(create_spec|payload)(\.[a-z][a-z0-9_]*){1,4}$",
-        description="Exact existing text field, e.g. create_spec.event_spec.location.",
-    )
-    match: Literal["exact", "prefix"] = "exact"
-
-    @field_validator("field_path")
-    @classmethod
-    def descriptive_field_only(cls, value: str) -> str:
-        if value.split(".")[-1] not in {
-            "location", "description", "notes", "title", "display_name", "name", "website",
-        }:
-            raise ValueError("field evidence supports descriptive text, not time/authority/routing")
-        return value
-
-
-class FieldEvidenceInput(StrictModel):
-    """A fallible reading of a source, not an authority grant or a schedule row."""
-
-    source_ref: Annotated[str, Field(pattern=r"^src_[0-9A-HJKMNP-TV-Z]{26}$")]
-    source_fragment_locator: dict[str, Any]
-    source_fragment_hash: str | None = Field(default=None, pattern=_HASH_PATTERN)
-    extractor_identifier: str = Field(min_length=1, max_length=255)
-    extractor_version: str = Field(min_length=1, max_length=128)
-    value: str = Field(min_length=1, max_length=4000)
-    targets: list[FieldEvidenceTarget] = Field(min_length=1, max_length=100)
-
-    @field_validator("source_fragment_locator")
-    @classmethod
-    def structural_locator(cls, value: dict[str, Any]) -> dict[str, Any]:
-        return NormalizedEntryEvidence.locator_is_structural_and_bounded(value)
 
 
 class StageFieldEvidenceBind(StrictModel):

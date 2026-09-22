@@ -295,6 +295,9 @@ class DiscordProjectionRunner:
                 raise DiscordProjectionError(
                     "semantic_option_count_invalid", "Prompt requires one through four options"
                 )
+            by_ref = {option.ref_id: option for option in options}
+            options = [by_ref[row["option_ref"]]
+                       for row in projection.semantic_content["render"]["options"]]
             signing_key = self.settings.read_secret(
                 self.settings.interaction_signing_key_file
             ).encode()

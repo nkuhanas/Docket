@@ -24,7 +24,7 @@ from docket.models import (
     SemanticRequest,
     Source,
 )
-from docket.schemas.assembly import AssemblyAuthorityScopeInput, FieldEvidenceInput
+from docket.schemas.assembly import AssemblyAuthorityScopeInput
 from docket.schemas.authority import (
     ChangeSetContent,
     ImportEffect,
@@ -32,6 +32,7 @@ from docket.schemas.authority import (
     StatementInput,
     mutation_input_json,
 )
+from docket.schemas.evidence import FieldEvidenceInput
 from docket.services.attachment_evidence import (
     PDF_TEXT_EXTRACTOR,
     AttachmentEvidenceService,
@@ -147,6 +148,15 @@ def read_proof(session: Session, request_ref: str | None) -> dict[str, Any] | No
     for identity in proof["sources"]:
         if _identity(*_source(session, identity["source_ref"])) != identity:
             raise _error("unchanged_original_source")
+    if "evidence_utterances" in proof:
+        from docket.services.clarification_replies import evidence_origins
+
+        evidence = {row.ref_id: row.content_hash
+                    for origin in session.scalars(select(OperatorUtterance).where(
+                        OperatorUtterance.ref_id.in_(origins),
+                    )) for row in evidence_origins(session, origin)}
+        if evidence != proof["evidence_utterances"]:
+            raise _error("unchanged_clarification_evidence")
     return proof
 
 
@@ -170,6 +180,11 @@ def bind_field_evidence(
     if set(origins) != set(request.origin_utterance_refs):
         raise _error("original_utterance_present")
     sources: dict[str, dict[str, Any]] = {}
+    from docket.services.clarification_replies import evidence_origins
+
+    evidence_utterances = {
+        row.ref_id: row for origin in origins.values() for row in evidence_origins(session, origin)
+    }
     statements: list[tuple[str, StatementInput]] = []
     seen: set[tuple[str, str, str]] = set()
     reader = _reader(session)
@@ -178,7 +193,7 @@ def bind_field_evidence(
         if binding.source_ref not in scope.source_refs:
             raise _error("source_in_original_scope")
         source, attachment = _source(session, binding.source_ref)
-        if attachment.operator_utterance_ref not in origins:
+        if attachment.operator_utterance_ref not in evidence_utterances:
             raise _error("source_bound_to_original_utterance")
         sources[source.ref_id] = _identity(source, attachment)
         for target in binding.targets:
@@ -259,6 +274,8 @@ def bind_field_evidence(
         "independent_semantic_verification": False,
         "authority_scope_hash": request.authority_scope_hash,
         "originating_utterances": {ref: row.content_hash for ref, row in sorted(origins.items())},
+        "evidence_utterances": {ref: row.content_hash for ref, row in
+                                sorted(evidence_utterances.items())},
         "sources": sorted(sources.values(), key=lambda row: str(row["source_ref"])),
         "bindings": supplied, "statement_refs": statement_refs,
         "direct_action_ids": sorted(direct_action_ids),
@@ -349,3 +366,39 @@ def verified_direct_actions(
                     "change_id": action.change_id, "field_path": ["basis_refs"],
                 })
     return set(proof["direct_action_ids"])
+
+
+def compile_selected_field_evidence(
+    session: Session, *, request_ref: str | None, content: ChangeSetContent,
+) -> ChangeSetContent:
+    """Compile the exact evidence bindings persisted with a selected option."""
+    from docket.models import PersistedSemanticOption
+    from docket.services.semantic_options import complete_selection_provenance
+    from docket.services.semantic_scope import pinned_semantic_projection
+
+    request = session.scalar(select(SemanticRequest).where(
+        SemanticRequest.ref_id == request_ref,
+    )) if request_ref else None
+    if request is None or (request.selected_option_binding or {}).get("kind") != "selected_option":
+        return content
+    binding = request.selected_option_binding or {}
+    option = session.scalar(select(PersistedSemanticOption).where(
+        PersistedSemanticOption.ref_id == binding.get("execution_option_ref"),
+    ))
+    if option is None or not option.execution_preconditions_json.get("field_evidence"):
+        return content
+    expected = complete_selection_provenance(option.compilation_template_json,
+                                             request.origin_utterance_refs[0])
+    if pinned_semantic_projection(expected, []) != pinned_semantic_projection(content, []):
+        raise _error("unchanged_selected_effects")
+    bindings = _BINDINGS.validate_python(option.execution_preconditions_json["field_evidence"])
+    actions = [action for group in GROUPS for action in getattr(content, group)]
+    scope = AssemblyAuthorityScopeInput(
+        resolved_intent={"kind": "selected_option"},
+        allowed_mutation_types=sorted({action.mutation_type for action in actions}),
+        source_refs=sorted({item.source_ref for item in bindings}),
+    )
+    bind_field_evidence(session, request=request, scope=scope, content=content,
+                        bindings=bindings, direct_action_ids={a.change_id for a in actions},
+                        from_revision=1)
+    return compile_field_evidence(session, request_ref=request_ref, content=content)

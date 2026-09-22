@@ -53,6 +53,18 @@ class IntentSessionService:
 
     def open(self, request: IntentSessionOpen) -> tuple[IntentSession, bool]:
         utterance = self._utterance(request.source_utterance_ref)
+        from docket.models import ClarificationReply
+
+        reply = self.session.get(ClarificationReply, utterance.ref_id)
+        if reply is not None:
+            intent = self.session.scalar(select(IntentSession).where(
+                IntentSession.ref_id == reply.intent_session_ref,
+            ).with_for_update().execution_options(populate_existing=True))
+            if intent is not None and intent.conversation_ref == utterance.conversation_ref:
+                if intent.semantic_state in {"cancelled", "superseded"}:
+                    raise DocketError(code="intent_session_closed",
+                                      message="This clarification request is closed.")
+                return intent, False
         existing = self.session.scalar(
             select(IntentSession).where(
                 IntentSession.source_utterance_ref == utterance.ref_id

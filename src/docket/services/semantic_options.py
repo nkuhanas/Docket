@@ -236,6 +236,28 @@ class SemanticOptionService:
         option_render: list[dict[str, str]] = []
         for draft in drafts:
             content = mutation_input_json(draft.content, exclude_none=False)
+            # Do not offer a button whose supporting attachment provenance
+            # cannot be compiled. A click has no model turn to invent bindings.
+            if content.get("event_changes") and not content.get("import_scope"):
+                from docket.models import AttachmentEvidence, InterpretedStatement
+
+                cited = {ref for change in content["event_changes"]
+                         for ref in change.get("basis_refs", [])}
+                cited.update(content.get("basis_refs", []))
+                cited.update(ref for ref in self.session.scalars(select(
+                    InterpretedStatement.source_ref,
+                ).where(InterpretedStatement.ref_id.in_(cited))) if ref)
+                attachments = set(self.session.scalars(select(AttachmentEvidence.ref_id).where(
+                    AttachmentEvidence.ref_id.in_(cited),
+                )))
+                missing = attachments - {item.source_ref for item in draft.field_evidence}
+                if missing:
+                    raise DocketError(
+                        code="clarification_field_evidence_required",
+                        message="Bind supporting attachment fields before presenting this choice.",
+                        details={"source_refs": sorted(missing),
+                                 "next_action": "include_option_field_evidence"},
+                    )
             template, replacements = _replace_authority_slot(
                 content, draft.selection_authority_ref
             )
@@ -251,6 +273,7 @@ class SemanticOptionService:
                 "case_revision_ref": case_revision_ref,
                 "projection_ref": projection_ref,
                 "intent_session_version": intent_session.version,
+                "field_evidence": [item.model_dump(mode="json") for item in draft.field_evidence],
             }
             visible_text = self.render_visible_text(content, draft.explicit_exclusions)
             option = PersistedSemanticOption(
@@ -495,6 +518,29 @@ class SemanticOptionService:
         utterance: OperatorUtterance,
         replay: bool,
     ) -> dict[str, Any]:
+        intent = self.session.scalar(select(IntentSession).where(
+            IntentSession.ref_id == option.intent_session_ref,
+        ).with_for_update().execution_options(populate_existing=True))
+        if intent is not None and intent.semantic_request_ref:
+            prior = self.session.scalar(select(SemanticRequest).where(
+                SemanticRequest.ref_id == intent.semantic_request_ref,
+            ))
+            if prior is not None and utterance.ref_id not in prior.origin_utterance_refs:
+                raise DocketError(
+                    code="semantic_prompt_already_selected",
+                    message="This request already has a bound answer; resume it instead.",
+                    details={"semantic_request_ref": prior.ref_id,
+                             "commit_state": prior.commit_state},
+                )
+        from docket.models import ClarificationReply
+
+        typed_answer = self.session.scalar(select(ClarificationReply.utterance_ref).where(
+            ClarificationReply.projection_ref == option.projection_ref,
+            ClarificationReply.selected_option_ref.is_not(None),
+        ).limit(1))
+        if typed_answer is not None:
+            raise DocketError(code="semantic_prompt_already_selected",
+                              message="A typed reply already continues this request; resume it.")
         semantic_request = self.session.scalar(
             select(SemanticRequest).where(
                 SemanticRequest.intent_session_ref == option.intent_session_ref,

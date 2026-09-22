@@ -536,6 +536,16 @@ def _capture_operator_utterance(
         dict(deferred_ingress) if isinstance(deferred_ingress, dict) else {"state": "ready"}
     )
     ingress_binding["attachments"] = result.get("attachments", [])
+    retained = result.get("retained_attachments", [])
+    if retained:
+        media_urls, media_types = _materialize_deferred_attachments(
+            {"attachment_evidence": retained},
+        )
+        event.media_urls = list(getattr(event, "media_urls", []) or []) + media_urls
+        event.media_types = list(getattr(event, "media_types", []) or []) + media_types
+        ingress_binding["attachments"] = [
+            *ingress_binding["attachments"], *result.get("retained_attachment_summaries", []),
+        ]
     return (
         utterance_ref,
         reply_binding if isinstance(reply_binding, dict) else None,

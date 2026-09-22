@@ -12,8 +12,9 @@ from docket.services.clarification_labels import calendar_choice
 from docket.services.semantic_options import SemanticOptionService, require_distinct_choices
 
 
-def test_duration_choices_show_actual_events_and_differ(session):
-    utterance, _, _, operations, _, _, _, _ = _fixture(session)
+@pytest.mark.parametrize("evidence_bound", [True, False])
+def test_duration_choices_show_actual_events_and_differ(session, evidence_bound):
+    utterance, _, _, operations, fields, _, _, _ = _fixture(session)
     content = {"basis_refs": [utterance.ref_id], "event_changes": [], "lane_changes": []}
     for patch in operations:
         action = patch["action"]
@@ -31,11 +32,21 @@ def test_duration_choices_show_actual_events_and_differ(session):
                            semantic_state="needs_clarification", commit_state="not_attempted")
     session.add(intent)
     session.flush()
+    drafts = [SemanticOptionDraft.model_validate({
+            "option_id": name, "selection_authority_ref": utterance.ref_id, "content": value,
+            "field_evidence": fields["bindings"] if evidence_bound else [],
+        }) for name, value in (("one-hour", content), ("ninety-minutes", second))]
+    if not evidence_bound:
+        with pytest.raises(DocketError) as error:
+            SemanticOptionService(session).persist_prompt(
+                utterance=utterance, intent_session=intent, question="How long?", drafts=drafts,
+            )
+        assert error.value.code == "clarification_field_evidence_required"
+        assert not list(session.scalars(select(OperatorProjection)))
+        return
     prompt = SemanticOptionService(session).persist_prompt(
         utterance=utterance, intent_session=intent, question="How long should each meeting be?",
-        drafts=[SemanticOptionDraft.model_validate({
-            "option_id": name, "selection_authority_ref": utterance.ref_id, "content": value,
-        }) for name, value in (("one-hour", content), ("ninety-minutes", second))],
+        drafts=drafts,
     )
     options = prompt.semantic_content["render"]["options"]
     assert [o["button_label"] for o in options] == ["60 minutes each", "90 minutes each"]

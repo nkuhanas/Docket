@@ -1388,6 +1388,11 @@ class ChangeSetService:
 
     def _session_utterance_refs(self, intent_session: IntentSession) -> set[str]:
         refs = {intent_session.source_utterance_ref}
+        from docket.models import ClarificationReply
+
+        refs.update(self.session.scalars(select(ClarificationReply.utterance_ref).where(
+            ClarificationReply.intent_session_ref == intent_session.ref_id,
+        )))
         refs.update(
             self.session.scalars(
                 select(IntentTurn.utterance_ref).where(
@@ -1891,7 +1896,10 @@ class ChangeSetService:
     ) -> list[dict[str, Any]]:
         errors: list[dict[str, Any]] = []
         provenance = ProvenanceRefService(self.session)
+        from docket.services.clarification_replies import validate_reply_effects
         from docket.services.request_interpretations import compiled_interpretation_errors
+
+        errors.extend(validate_reply_effects(self.session, intent_session, content))
 
         errors.extend(compiled_interpretation_errors(
             self.session, request_ref=intent_session.semantic_request_ref, content=content,
@@ -2868,6 +2876,11 @@ class ChangeSetService:
                 )
             }
         )
+        from docket.services.field_evidence import compile_selected_field_evidence
+
+        request = request.model_copy(update={"content": compile_selected_field_evidence(
+            self.session, request_ref=request.semantic_request_ref, content=request.content,
+        )})
         intent_session = IntentSessionService(self.session).get(request.intent_session_ref)
         if intent_session.version != request.expected_session_version:
             raise DocketError(

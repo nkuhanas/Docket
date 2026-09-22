@@ -30,6 +30,14 @@ traceability marker only.
 
 ## Hermes plugin contract
 
+Plugin `0.33.0` packages contract v42. Supporting `field_evidence` is also part
+of persisted clarification options. Typed clarification replies carry an immutable
+same-request context binding, not rewritten attachment ownership. The capture API
+returns retained bytes only to the trusted gateway; the gateway supplies them to
+native image input before interpretation. Tool/model context contains bounded
+source metadata, never a base64 JSON dump. Button selection compiles the same
+supporting-field proof through the shared ChangeSet service. Counts stay 23/four.
+
 Plugin `0.32.0` packages contract v41 and the `field_evidence_bind` staging variant.
 The scoped schema exposes it with direct mutation variants, not by expanding the
 normalized-only import schema or adding a tool. Supporting text has exact source,

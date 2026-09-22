@@ -14,6 +14,7 @@ from docket.schemas.event_occurrences import (
     OneTimeEventScope,
 )
 from docket.schemas.events import CanonicalEventCreateSpec, CanonicalEventPatchSpec
+from docket.schemas.evidence import FieldEvidenceInput
 from docket.schemas.policy import (
     CalendarLaneCreateSpec,
     CalendarLanePatchSpec,
@@ -1324,6 +1325,14 @@ class SemanticOptionDraft(StrictModel):
     selection_authority_ref: UtteranceRef
     content: OperatorChangeSetContent
     explicit_exclusions: list[str] = Field(default_factory=list, max_length=25)
+    field_evidence: list[FieldEvidenceInput] = Field(
+        default_factory=list, max_length=25,
+        description=(
+            "Supporting attachment fields used by this exact option. Retained with the choice; "
+            "Docket compiles their provenance on selection. Earlier attachments from the same "
+            "bound clarification request remain evidence, never renewed authority."
+        ),
+    )
 
     @field_validator("explicit_exclusions")
     @classmethod

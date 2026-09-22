@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-09-21-v41"
+CONTRACT_VERSION = "docket-tools-2026-09-22-v42"
 
 
 class ToolContractEntry(TypedDict):
@@ -134,7 +134,11 @@ _INTERACTIVE_MUTATIONS: dict[str, tuple[str, str]] = {
 _INTERACTIVE_ASSEMBLY: dict[str, tuple[str, str]] = {
     "docket_request_clarification": (
         "ONT-UX-TOOL-0001",
-        "Persist typed semantic choices for genuinely unresolved intent; no canonical effects.",
+        "Persist typed semantic choices for genuinely unresolved intent; no canonical effects. "
+        "Include each option's field_evidence for supporting attachment fields. Duration choices "
+        "show actual minutes, dates, times and destination. A bound clarification reply reuses "
+        "the request's retained attachments; the image need not be on the latest message. "
+        "If request context is ambiguous, ask which pending request, not for reattachment.",
     ),
     "docket_stage_changes": (
         "ONT-CS-TOOL-0001",
@@ -163,7 +167,9 @@ _INTERACTIVE_ASSEMBLY: dict[str, tuple[str, str]] = {
         "an existing unbound draft, bind evidence alone without changing assembly_scope, "
         "then follow observation_required. Dates/durations/lane/count cannot change as repair. "
         "Unknown duration needs an applicable recorded policy or one consolidated clarification, "
-        "not a remembered default promoted to authority.",
+        "not a remembered default promoted to authority. Bound clarification replies retain prior "
+        "request evidence; use supplied sources with the new answer, without reattachment. "
+        "Already-committed requests return their receipt, not a new draft.",
     ),
     "docket_review_changeset": (
         "ONT-CS-TOOL-0002",
