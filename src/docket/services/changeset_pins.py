@@ -51,6 +51,8 @@ def _input_hash(snapshot: ChangeSet | ChangeSetRevision) -> str:
             "actions": snapshot.staged_actions_json,
             "entries": snapshot.normalized_entries_json,
             "ownership": snapshot.compiled_action_ownership_json,
+            **({"field_evidence_input": snapshot.compiler_manifest_json["field_evidence_input"]}
+               if "field_evidence_input" in snapshot.compiler_manifest_json else {}),
         }
     )
 

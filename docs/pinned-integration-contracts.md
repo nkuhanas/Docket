@@ -30,6 +30,16 @@ traceability marker only.
 
 ## Hermes plugin contract
 
+Plugin `0.32.0` packages contract v41 and the `field_evidence_bind` staging variant.
+The scoped schema exposes it with direct mutation variants, not by expanding the
+normalized-only import schema or adding a tool. Supporting text has exact source,
+field and value bindings; Docket generates provenance without fake schedule rows.
+New bindings can stage and commit without review. Explicit recovery of a preserved
+unbound draft requires unchanged effects and a bounded summary observation.
+Dates/durations/routing remain semantic decisions; remembered duration defaults
+do not become canonical policy. Counts remain 23 interactive/four triage tools.
+Historical recipes cannot remove shared mutation-service evidence validation.
+
 Plugin `0.31.3` packages contract v40 and the occurrence/work-window guidance.
 The interpretation decision belongs before the first stage: intended attendance
 uses Event/routing, whereas a deadline or possible work window remains Time and

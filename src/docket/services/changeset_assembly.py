@@ -40,6 +40,7 @@ from docket.schemas.assembly import (
     StageChangesInput,
     StageDraftAdopt,
     StageDraftRecompile,
+    StageFieldEvidenceBind,
     StageNormalizedEntryRemove,
     StageNormalizedEntryUpsert,
 )
@@ -67,6 +68,14 @@ from docket.services.changeset_diff import bounded_details, bounded_sample, draf
 from docket.services.changeset_pins import effect_hash, migration_required, pin_snapshot
 from docket.services.changeset_previews import capture_event_preview, event_preview_sample
 from docket.services.changeset_recompile import recompile_draft
+from docket.services.field_evidence import (
+    bind_field_evidence,
+    compile_field_evidence,
+    require_same_effects,
+)
+from docket.services.field_evidence import (
+    read_proof as read_field_evidence,
+)
 from docket.services.intent_sessions import IntentSessionService
 from docket.services.interactive_authority import InteractiveAuthorityService
 from docket.services.reply_bindings import ReplyBindingService
@@ -1209,6 +1218,18 @@ class ChangeSetAssemblyService:
             "canonical_event_preview": capture_event_preview(self.session, content),
             "canonical_patch_preview": capture_canonical_patch_preview(self.session, content),
         }
+        if "field_evidence_input" in changeset.compiler_manifest_json:
+            bindings = changeset.compiler_manifest_json["field_evidence_input"]
+            changeset.compiler_manifest_json["field_evidence_summary"] = {
+                "interpretation_state": (
+                    "recorded_interpretation"
+                    if "field_evidence_proof_hash" in changeset.compiler_manifest_json
+                    else "pending_binding_validation"
+                ),
+                "binding_count": len(bindings),
+                "target_field_count": sum(len(row["targets"]) for row in bindings),
+                "independent_semantic_verification": False,
+            }
         if content is None:
             self._sync_empty(changeset)
             pin_snapshot(changeset, None)
@@ -1466,6 +1487,31 @@ class ChangeSetAssemblyService:
                 utterance=utterance, intent_session=intent_session, scope=scope,
             )
         prior_content = None if created else self.changesets.verify_execution_revision(changeset)
+        field_operation = next((op for op in request.patch.operations
+                                if isinstance(op, StageFieldEvidenceBind)), None)
+        field_proof = read_field_evidence(self.session, semantic_request.ref_id)
+        if field_proof is not None and field_operation is not None and (
+            field_proof["bindings"] != [row.model_dump(mode="json")
+                                       for row in field_operation.bindings]
+        ):
+            raise DocketError(
+                code="field_evidence_effect_conflict",
+                message="A changed source reading requires semantic reconciliation.",
+                details={"authority_preserved": True,
+                         "next_action": "reconcile_source_interpretation"},
+            )
+        recovering_fields = field_operation is not None and not created and field_proof is None
+        if recovering_fields and (len(request.patch.operations) != 1 or request.expected_versions):
+            raise DocketError(
+                code="field_evidence_recovery_requires_unchanged_draft",
+                message="Bind evidence alone before editing an existing unbound draft.",
+                details={"authority_preserved": True,
+                         "next_action": "stage_field_evidence_bind_only"},
+            )
+        field_inputs = (
+            [row.model_dump(mode="json") for row in field_operation.bindings]
+            if field_operation else changeset.compiler_manifest_json.get("field_evidence_input", [])
+        )
         allowed_mutations = set(scope.allowed_mutation_types)
         allowed_sources = set(scope.source_refs)
         allowed_targets = set(scope.target_refs)
@@ -1476,6 +1522,9 @@ class ChangeSetAssemblyService:
                 "actions": actions,
                 "entries": entries,
                 "expected_versions": changeset.expected_versions,
+                "field_evidence_input": changeset.compiler_manifest_json.get(
+                    "field_evidence_input", [],
+                ),
             }
         )
         entries_by_id = {str(item["import_entry_id"]): item for item in entries}
@@ -1498,11 +1547,34 @@ class ChangeSetAssemblyService:
         for op in request.patch.operations:
             if isinstance(op, StageActionRemove):
                 proposed_actions.pop(op.change_id, None)
+        if field_proof is not None:
+            # Guard edits before compiler/domain validation too: a malformed
+            # replacement must not overwrite the preserved evidence-bound work.
+            original_direct = {
+                action["change_id"]: action for group in _SNAPSHOT_GROUPS[:-1]
+                for action in field_proof["effects"][group]
+                if action["change_id"] in field_proof["direct_action_ids"]
+            }
+            proposed_direct = {
+                key: {name: value for name, value in action.items() if name != "basis_refs"}
+                for key, action in proposed_actions.items() if key not in owned_ids
+            }
+            if original_direct != proposed_direct:
+                raise DocketError(
+                    code="field_evidence_effect_conflict",
+                    message="Evidence-bound effects require semantic reconciliation, not repair.",
+                    details={"authority_preserved": True,
+                             "next_action": "reconcile_source_interpretation"},
+                )
         for patch_operation in request.patch.operations:
             if isinstance(patch_operation, StageActionUpsert):
                 action = mutation_input_json(patch_operation.action)
                 change_id = patch_operation.action.change_id
-                if scope.selected_entry_ids and (
+                if scope.selected_entry_ids and change_id not in {
+                    target.change_id
+                    for binding in (field_operation.bindings if field_operation else [])
+                    for target in binding.targets
+                } and change_id not in (field_proof or {}).get("direct_action_ids", []) and (
                     patch_operation.action.mutation_type == "canonical_event_create"
                 ):
                     raise DocketError(
@@ -1700,6 +1772,35 @@ class ChangeSetAssemblyService:
                         content,
                         changeset_idempotency_key=changeset.idempotency_key,
                     )
+                    if field_inputs and field_proof is None:
+                        if not created:
+                            if prior_content is None:
+                                raise DocketError(
+                                    code="field_evidence_recovery_unproven",
+                                    message="The old draft has no pinned effects to compare.",
+                                    details={"authority_preserved": True,
+                                             "next_action": "reconcile_preserved_request"},
+                                )
+                            require_same_effects(prior_content, content)
+                        from docket.schemas.assembly import FieldEvidenceInput
+
+                        field_proof = bind_field_evidence(
+                            self.session, request=semantic_request, scope=scope, content=content,
+                            bindings=[FieldEvidenceInput.model_validate(row)
+                                      for row in field_inputs],
+                            direct_action_ids=set(actions) - owned_ids,
+                            from_revision=changeset.current_revision,
+                        )
+                    elif field_operation is not None:
+                        bind_field_evidence(
+                            self.session, request=semantic_request, scope=scope, content=content,
+                            bindings=field_operation.bindings,
+                            direct_action_ids=set(actions) - owned_ids,
+                            from_revision=changeset.current_revision,
+                        )
+                    content = compile_field_evidence(
+                        self.session, request_ref=semantic_request.ref_id, content=content,
+                    )
                     errors.extend(
                         self.changesets._validate(intent_session, content, require_handlers=False)
                     )
@@ -1716,6 +1817,7 @@ class ChangeSetAssemblyService:
         except (DocketError, ValidationError) as exc:
             if isinstance(exc, DocketError) and exc.code in {
                 "adopted_request_scope_conflict", "request_adoption_unproven",
+                "field_evidence_effect_conflict", "field_evidence_recovery_unproven",
             }:
                 raise
             errors.extend(self._compilation_diagnostics(exc))
@@ -1732,6 +1834,7 @@ class ChangeSetAssemblyService:
                 "actions": actions,
                 "entries": entries,
                 "expected_versions": expected_versions,
+                "field_evidence_input": field_inputs,
             }
         )
         if not created and before_hash == after_hash and errors == changeset.validation_errors:
@@ -1798,6 +1901,10 @@ class ChangeSetAssemblyService:
             if entries
             else {}
         )
+        if field_inputs:
+            changeset.compiler_manifest_json["field_evidence_input"] = field_inputs
+        if field_proof is not None:
+            changeset.compiler_manifest_json["field_evidence_proof_hash"] = sha256_json(field_proof)
         changeset.precondition_hash = new_precondition_hash
         changeset.expected_versions = expected_versions
         changeset.basis_refs = list(
@@ -1816,13 +1923,17 @@ class ChangeSetAssemblyService:
             attempt.state = "pending"
         self._write_revision(changeset=changeset, content=content, operation=operation)
         attempt.observed_changeset_ref = changeset.ref_id
-        attempt.observed_draft_revision = changeset.current_revision
+        if not recovering_fields:
+            attempt.observed_draft_revision = changeset.current_revision
         attempt.change_set_ref = changeset.ref_id
         operation.change_set_ref = changeset.ref_id
         entry_previews = self._entry_previews(entries)
         result = {
             "ok": True,
             "disposition": "saved_with_errors" if errors else "ready_to_commit",
+            **({"observation_required": True} if recovering_fields else {}),
+            **({"field_evidence": changeset.compiler_manifest_json["field_evidence_summary"]}
+               if field_inputs else {}),
             **_request_authority_receipt(semantic_request),
             "draft_ref": changeset.ref_id,
             "current_revision": changeset.current_revision,
@@ -1850,7 +1961,10 @@ class ChangeSetAssemblyService:
                 revision=changeset.current_revision,
                 errors=errors,
             ),
-            "next": {"action": "commit_changeset" if not errors else "repair_staged_actions"},
+            "next": (
+                {"action": "review_changeset", "view": "summary"} if recovering_fields else
+                {"action": "commit_changeset" if not errors else "repair_staged_actions"}
+            ),
         }
         self.session.add(
             AuditEvent(
@@ -1868,6 +1982,12 @@ class ChangeSetAssemblyService:
                     "staged_count": staged,
                     "removed_count": removed,
                     "replaced_count": replaced,
+                    **({
+                        "field_evidence_proof_hash": sha256_json(field_proof),
+                        "field_evidence_from_revision": field_proof["from_revision"],
+                        "semantic_scope_changed": False,
+                        "historical_derivation_backfilled": False,
+                    } if field_proof is not None else {}),
                 },
             )
         )
@@ -2101,6 +2221,8 @@ class ChangeSetAssemblyService:
             "state": revision_state,
             **({"source_interpretation": revision.compiler_manifest_json["source_interpretation"]}
                if "source_interpretation" in revision.compiler_manifest_json else {}),
+            **({"field_evidence": revision.compiler_manifest_json["field_evidence_summary"]}
+               if "field_evidence_summary" in revision.compiler_manifest_json else {}),
             "totals": self._snapshot_counts(snapshot),
             "normalized_entry_counts": dict(
                 sorted(Counter(str(item.get("entry_type")) for item in entries).items())

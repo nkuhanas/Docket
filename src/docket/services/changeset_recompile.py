@@ -34,6 +34,8 @@ from docket.services.changeset_compiler import (
 )
 from docket.services.changeset_diff import bounded_sample, compiled_diff
 from docket.services.changeset_pins import effect_hash
+from docket.services.field_evidence import compile_field_evidence
+from docket.services.field_evidence import read_proof as read_field_evidence
 from docket.services.request_adoption import verify_adopted_content
 from docket.services.request_specifications import read_request_proposal
 from docket.services.semantic_scope import pinned_semantic_projection
@@ -157,6 +159,9 @@ def recompile_draft(
     content = service.changesets._compile_required_provider_intents(
         content, changeset_idempotency_key=changeset.idempotency_key,
     )
+    content = compile_field_evidence(
+        service.session, request_ref=changeset.semantic_request_ref, content=content,
+    )
     fixed_change_ids = False
     try:
         old_scope = _semantic_projection(prior, scope.explicit_exclusions)
@@ -230,6 +235,12 @@ def recompile_draft(
         "entry_count": len(entries), "migration": migration,
         **({"source_title_repair_proofs": repair_proofs} if repair_proofs else {}),
     }
+    field_proof = read_field_evidence(service.session, changeset.semantic_request_ref)
+    if field_proof is not None:
+        changeset.compiler_manifest_json.update({
+            "field_evidence_input": field_proof["bindings"],
+            "field_evidence_proof_hash": sha256_json(field_proof),
+        })
     changeset.validation_errors = errors
     changeset.state = "draft" if errors else "validated"
     if not errors:

@@ -314,6 +314,20 @@ def compiled_interpretation_errors(
             invalid(entry_id, "lane", "destination_matches_initial_interpretation")
         if spec.entity_refs != entry.context_entity_refs:
             invalid(entry_id, "entity_refs", "context_matches_initial_interpretation")
+    # Mixed requests can also contain utterance-defined occurrences with a
+    # narrowly bound supporting field. Only an independently verified, immutable
+    # effect inventory exempts those actions from the selected-entry inventory;
+    # a caller-supplied flag or extra raw event never does.
+    field_actions: set[str] = set()
     if covered_events != set(events):
+        from docket.services.field_evidence import verified_direct_actions
+
+        try:
+            field_actions = verified_direct_actions(
+                session, request_ref=request_ref, content=content,
+            )
+        except DocketError as exc:
+            errors.append({"code": exc.code, **(exc.details or {})})
+    if covered_events != set(events) - field_actions:
         invalid("request", "event_changes", "no_unselected_created_occurrences")
     return errors

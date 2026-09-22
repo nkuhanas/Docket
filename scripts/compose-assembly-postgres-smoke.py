@@ -78,6 +78,7 @@ from docket.models import (
     ProviderEventBinding,
     RequestAssemblyAdoption,
     RequestEntryInterpretation,
+    RequestFieldEvidence,
     SemanticRequest,
     SemanticRequestAttempt,
     SemanticRequestSpecification,
@@ -1285,7 +1286,7 @@ def test_direct_request_adoption_serializes_and_preserves_proof(
     else:
         raise AssertionError("Downgrade discarded adoption evidence")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260912b8f7"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260921c9a8"
         assert session.get(RequestAssemblyAdoption, request_ref) is not None
 
 
@@ -2177,7 +2178,7 @@ def test_trace_history_survives_call_one_hundred_and_blocks_lossy_downgrade(
     else:
         raise AssertionError("Downgrade should preserve the longer trace by refusing to proceed")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260912b8f7"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260921c9a8"
         assert session.scalar(select(TraceExecutionSegment.last_ordinal).where(
             TraceExecutionSegment.id == trace_id
         )) == 103
@@ -2480,7 +2481,7 @@ def test_request_specifications_are_immutable_and_block_lossy_downgrade(
     else:
         raise AssertionError("Downgrade discarded immutable request specifications")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260912b8f7"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260921c9a8"
         assert session.get(SemanticRequestSpecification, (key["ref"], key["version"])) is not None
 
 
@@ -2518,7 +2519,7 @@ def test_initial_source_interpretations_are_immutable_across_connections(
     else:
         raise AssertionError("Downgrade discarded initial source interpretations")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260912b8f7"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260921c9a8"
         interpreted = read_entry_interpretation(
             session, request_ref=key["ref"], entry_id=key["entry"],
         )
@@ -2723,6 +2724,164 @@ def test_recovered_response_finalizes_original_turn_without_reexecution(
         assert session.scalar(select(func.count(Operation.id))) == operation_count
 
 
+def test_mixed_field_evidence_recovery_survives_connections(factory: sessionmaker[Session]) -> None:
+    """Real staging/commit, immutable PostgreSQL evidence, no live providers."""
+    settings = get_settings()
+    message = "1542799000000000991"
+    request_key = f"discord:{settings.discord_guild_id}:{settings.chat_channel_id}:{message}:0"
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII="
+    )
+    with factory.begin() as session:
+        captured = ProvenanceService(session).capture_operator_utterance(OperatorUtteranceCapture(
+            request_id=uuid.uuid4(), guild_id=settings.discord_guild_id,
+            channel_id=settings.chat_channel_id, message_id=message,
+            actor_id=settings.operator_discord_user_id, request_key=request_key,
+            verbatim_text=("Two fixture meetings Sep 17/24 at 19:00, one hour each, "
+                           "CSAI lane, room 102 in the attached building."),
+            attachments=[AttachmentManifest(
+                transport_attachment_ref="1542799000000000992", filename="building.png",
+                media_type="image/png", byte_size=len(png), received_at=datetime.now(UTC),
+                plaintext_base64=base64.b64encode(png).decode(),
+            )],
+        ))
+        utterance_ref, source_ref = captured["ref"], captured["attachments"][0]["ref"]
+        account = ProviderAccount(provider="google", external_account_id="field-evidence-smoke",
+                                  capabilities=["google_calendar"], enabled=True)
+        session.add(account)
+        session.flush()
+        lane = CalendarLane(
+            account_id=account.id, lane="field-evidence-csai", display_name="CSAI",
+            calendar_id="field-csai@example.com", color_hex="#3367D6", status="active",
+            basis_refs=[utterance_ref], created_by_changeset_ref="chg_01M1A100000000000000000000",
+        )
+        session.add(lane)
+        session.flush()
+        lane_ref, lane_name = lane.ref_id, lane.lane
+    actions = [{
+        "operation": "action_upsert", "action": {
+            "mutation_type": "canonical_event_create", "change_id": f"meeting-{day}",
+            "action": "create", "object_type": "canonical_event",
+            "affected_fields": ["event_spec"], "basis_refs": [utterance_ref, source_ref],
+            "create_spec": {"title": "CSAI fixture", "lane_ref": lane_ref, "event_spec": {
+                "title": "CSAI fixture", "calendar_lane": lane_name,
+                "location": "Baker Center, Room 102",
+                "timing": {"kind": "timed", "start_local": f"2026-09-{day}T19:00:00",
+                           "end_local": f"2026-09-{day}T20:00:00",
+                           "timezone": "America/Los_Angeles"},
+            }},
+        },
+    } for day in (17, 24)]
+    actions.extend({
+        "operation": "action_upsert", "action": {
+            "mutation_type": "lane_routing_decision_create", "change_id": f"route-{day}",
+            "action": "create", "object_type": "lane_routing_decision",
+            "affected_fields": ["routing"], "basis_refs": [utterance_ref],
+            "create_spec": {"event_change_id": f"meeting-{day}", "lane_ref": lane_ref,
+                            "decision_kind": "explicit_operator", "operator_confirmed": True},
+        },
+    } for day in (17, 24))
+    initial = StageChangesInput.model_validate({
+        "utterance_ref": utterance_ref, "request_key": request_key,
+        "assembly_scope": {
+            "resolved_intent": {"effect": "two fixture meetings"},
+            "allowed_mutation_types": ["canonical_event_create", "lane_routing_decision_create"],
+            "target_refs": [lane_ref], "source_refs": [source_ref],
+        }, "patch": {"operations": actions},
+    })
+    trace = new_public_ref("trace")
+
+    def admit(ordinal: int, tool: str) -> str:
+        return _admit_committed(
+            factory, utterance_ref=utterance_ref, trace_ref=trace,
+            call_id=f"field-{ordinal}", ordinal=ordinal, tool_name=tool,
+            argument_hash=f"{ordinal:064x}",
+        )
+
+    token = admit(1, "docket_stage_changes")
+    first = _stage(factory, utterance_ref=utterance_ref, token=token,
+                   argument_hash=f"{1:064x}", request=initial)
+    assert first["disposition"] == "saved_with_errors"
+    with factory() as session:
+        draft = session.scalar(select(ChangeSet).where(ChangeSet.ref_id == first["draft_ref"]))
+        assert draft is not None
+        request_ref, draft_id, authority = (
+            draft.semantic_request_ref, draft.id, draft.authority_scope_hash,
+        )
+        original = session.scalar(select(ChangeSetRevision).where(
+            ChangeSetRevision.change_set_id == draft_id, ChangeSetRevision.revision == 1,
+        ))
+        original_hash = original.parameter_hash
+    recovery = StageChangesInput.model_validate({
+        "utterance_ref": utterance_ref, "request_key": request_key, "patch": {"operations": [{
+            "operation": "field_evidence_bind", "bindings": [{
+                "source_ref": source_ref, "source_fragment_locator": {"region": "building_name"},
+                "extractor_identifier": "hermes.native-vision", "extractor_version": "fixture-v1",
+                "value": "Baker Center", "targets": [{
+                    "change_id": f"meeting-{day}", "field_path": "create_spec.event_spec.location",
+                    "match": "prefix",
+                } for day in (17, 24)],
+            }],
+        }]},
+    })
+    recovery_token = admit(2, "docket_stage_changes")
+    fixed = _stage(factory, utterance_ref=utterance_ref, token=recovery_token,
+                   argument_hash=f"{2:064x}", request=recovery)
+    assert fixed["disposition"] == "ready_to_commit", fixed["diagnostic_sample"]
+    assert fixed["observation_required"]
+    _review(factory, utterance_ref=utterance_ref, request_key=request_key,
+            trace_ref=trace, call_id="field-review", ordinal=3, argument_hash=f"{3:064x}")
+    commit_token = admit(4, "docket_commit_changeset")
+    with factory.begin() as session:
+        receipt = ChangeSetAssemblyService(session).commit(
+            utterance_ref=utterance_ref, request_key=request_key,
+            assembly_operation_token=commit_token, assembly_argument_hash=f"{4:064x}",
+        )
+        assert receipt["disposition"] == "committed", receipt
+    assert _stage(factory, utterance_ref=utterance_ref, token=recovery_token,
+                  argument_hash=f"{2:064x}", request=recovery) == {**fixed, "replayed": True}
+    with factory.begin() as session:
+        replay = ChangeSetAssemblyService(session).commit(
+            utterance_ref=utterance_ref, request_key=request_key,
+            assembly_operation_token=commit_token, assembly_argument_hash=f"{4:064x}",
+        )
+        assert replay == {**receipt, "replayed": True}
+        draft = session.get(ChangeSet, draft_id)
+        assert draft.authority_scope_hash == authority and draft.current_revision == 2
+        original = session.scalar(select(ChangeSetRevision).where(
+            ChangeSetRevision.change_set_id == draft_id, ChangeSetRevision.revision == 1,
+        ))
+        assert original.parameter_hash == original_hash and original.import_scope_json is None
+        assert session.scalar(select(func.count(CanonicalEvent.id)).where(
+            CanonicalEvent.created_by_changeset_ref == draft.ref_id,
+        )) == 2
+        assert session.scalar(select(func.count(Operation.id)).where(
+            Operation.originating_changeset_ref == draft.ref_id,
+        )) == 2
+    for sql in (
+        "UPDATE request_field_evidence SET proof_hash = :hash WHERE semantic_request_ref = :ref",
+        "DELETE FROM request_field_evidence WHERE semantic_request_ref = :ref",
+    ):
+        try:
+            with factory.begin() as session:
+                session.execute(text(sql), {"hash": "0" * 64, "ref": request_ref})
+        except DBAPIError:
+            pass
+        else:
+            raise AssertionError("PostgreSQL allowed rewriting field evidence")
+    migration = ScriptDirectory.from_config(Config("alembic.ini")).get_revision("20260921c9a8")
+    try:
+        with (factory.kw["bind"].begin() as connection,
+              Operations.context(MigrationContext.configure(connection))):
+            migration.module.downgrade()
+    except RuntimeError as exc:
+        assert "Field evidence exists" in str(exc)
+    else:
+        raise AssertionError("Downgrade discarded field evidence")
+    with factory() as session:
+        assert session.get(RequestFieldEvidence, request_ref) is not None
+
+
 def main() -> None:
     database_url = os.environ["DOCKET_DATABASE_URL"]
     engine = configure_database(database_url)
@@ -2758,6 +2917,7 @@ def main() -> None:
         test_google_reauthorization_recovery_serializes_and_preserves_delivery,
         test_google_reauthorization_rechecks_a_concurrent_canonical_edit,
         test_calendar_update_binding_pin_serializes_with_provider_observations,
+        test_mixed_field_evidence_recovery_survives_connections,
     )
     for check in checks:
         check(factory)
