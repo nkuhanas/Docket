@@ -229,6 +229,56 @@ class StageActionRemove(StrictModel):
     change_id: str = Field(pattern=_IDENTIFIER_PATTERN)
 
 
+class FieldEvidenceTarget(StrictModel):
+    change_id: str = Field(pattern=_IDENTIFIER_PATTERN)
+    field_path: str = Field(
+        pattern=r"^(create_spec|payload)(\.[a-z][a-z0-9_]*){1,4}$",
+        description="Exact existing text field, e.g. create_spec.event_spec.location.",
+    )
+    match: Literal["exact", "prefix"] = "exact"
+
+    @field_validator("field_path")
+    @classmethod
+    def descriptive_field_only(cls, value: str) -> str:
+        if value.split(".")[-1] not in {
+            "location", "description", "notes", "title", "display_name", "name", "website",
+        }:
+            raise ValueError("field evidence supports descriptive text, not time/authority/routing")
+        return value
+
+
+class FieldEvidenceInput(StrictModel):
+    """A fallible reading of a source, not an authority grant or a schedule row."""
+
+    source_ref: Annotated[str, Field(pattern=r"^src_[0-9A-HJKMNP-TV-Z]{26}$")]
+    source_fragment_locator: dict[str, Any]
+    source_fragment_hash: str | None = Field(default=None, pattern=_HASH_PATTERN)
+    extractor_identifier: str = Field(min_length=1, max_length=255)
+    extractor_version: str = Field(min_length=1, max_length=128)
+    value: str = Field(min_length=1, max_length=4000)
+    targets: list[FieldEvidenceTarget] = Field(min_length=1, max_length=100)
+
+    @field_validator("source_fragment_locator")
+    @classmethod
+    def structural_locator(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return NormalizedEntryEvidence.locator_is_structural_and_bounded(value)
+
+
+class StageFieldEvidenceBind(StrictModel):
+    operation: Literal["field_evidence_bind"] = "field_evidence_bind"
+    bindings: list[FieldEvidenceInput] = Field(
+        min_length=1, max_length=25,
+        description=(
+            "Bind supporting attachment text to exact staged fields. Include with all actions "
+            "when creating the draft, or ALONE after staging all actions. Docket pins effects. "
+            "A building-name image can support several location prefixes; message-supplied room "
+            "numbers retain utterance basis. Not for dates or structured schedule imports. "
+            "To recover an existing unbound draft, send this operation ALONE, unchanged scope. "
+            "Native-image hashes may be omitted; Docket binds retained bytes, not OCR truth."
+        ),
+    )
+
+
 class StageNormalizedEntryUpsert(StrictModel):
     operation: Literal["normalized_entry_upsert"] = "normalized_entry_upsert"
     entry: NormalizedEntryInput
@@ -261,7 +311,7 @@ class StageDraftAdopt(StrictModel):
 
 StagePatchOperation = Annotated[
     StageActionUpsert | StageActionRemove | StageNormalizedEntryUpsert | StageNormalizedEntryRemove
-    | StageDraftRecompile | StageDraftAdopt,
+    | StageDraftRecompile | StageDraftAdopt | StageFieldEvidenceBind,
     Field(discriminator="operation"),
 ]
 
@@ -278,6 +328,8 @@ class StagePatchInput(StrictModel):
 
     @model_validator(mode="after")
     def targets_are_unique(self) -> StagePatchInput:
+        if sum(isinstance(op, StageFieldEvidenceBind) for op in self.operations) > 1:
+            raise ValueError("one patch accepts one complete field_evidence_bind operation")
         if len(self.operations) != 1 and any(
             isinstance(operation, StageDraftRecompile | StageDraftAdopt)
             for operation in self.operations

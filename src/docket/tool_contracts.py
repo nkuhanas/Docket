@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-09-20-v40"
+CONTRACT_VERSION = "docket-tools-2026-09-21-v41"
 
 
 class ToolContractEntry(TypedDict):
@@ -155,7 +155,15 @@ _INTERACTIVE_ASSEMBLY: dict[str, tuple[str, str]] = {
         "Entries review pages include not_staged IDs to recover missing batches after resumption. "
         "Observe its new revision before commit. A sole draft_adopt explicitly migrates an "
         "observed, unfinished direct request with current typed, identical effects and retained "
-        "evidence; no new scope/versions. Unprovable adoption preserves the original request.",
+        "evidence; no new scope/versions. Unprovable adoption preserves the original request. "
+        "Supporting images are not schedule imports: field_evidence_bind maps an interpreted "
+        "text value to exact action fields (e.g. a building-name location prefix). Include it "
+        "with all actions on draft creation, or alone after staging; Docket compiles provenance. "
+        "To recover "
+        "an existing unbound draft, bind evidence alone without changing assembly_scope, "
+        "then follow observation_required. Dates/durations/lane/count cannot change as repair. "
+        "Unknown duration needs an applicable recorded policy or one consolidated clarification, "
+        "not a remembered default promoted to authority.",
     ),
     "docket_review_changeset": (
         "ONT-CS-TOOL-0002",

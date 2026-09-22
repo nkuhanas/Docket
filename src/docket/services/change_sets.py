@@ -1404,6 +1404,7 @@ class ChangeSetService:
         changes: list[ChangeInput],
         statements: dict[str, InterpretedStatement],
         attachment_source_refs: set[str],
+        field_evidence_action_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         errors: list[dict[str, Any]] = []
         changes_by_id = {change.change_id: change for change in changes}
@@ -1416,6 +1417,7 @@ class ChangeSetService:
                 and change.create_spec.enabled
             )
         }
+        calendar_create_ids -= field_evidence_action_ids or set()
         entry_statements: dict[str, list[InterpretedStatement]] = {}
         for statement in statements.values():
             entry_id = statement.interpretation_json.get("import_entry_id")
@@ -1653,12 +1655,14 @@ class ChangeSetService:
             if isinstance(change, ItemCreate)
             and source_refs.intersection(change.create_spec.source_refs)
         }
+        source_item_ids -= field_evidence_action_ids or set()
         source_time_ids = {
             change.change_id
             for change in changes
             if isinstance(change, TemporalBindingCreate)
             and source_refs.intersection(change.create_spec.source_refs)
         }
+        source_time_ids -= field_evidence_action_ids or set()
         for code, actual, covered in (
             ("import_entry_items_not_exact", source_item_ids, covered_item_ids),
             ("import_entry_times_not_exact", source_time_ids, covered_time_ids),
@@ -1732,8 +1736,18 @@ class ChangeSetService:
         content: ChangeSetContent,
         changes: list[ChangeInput],
         session_utterance_refs: set[str],
+        request_ref: str | None = None,
     ) -> list[dict[str, Any]]:
         errors: list[dict[str, Any]] = []
+        from docket.services.field_evidence import verified_direct_actions
+
+        field_action_ids: set[str] = set()
+        try:
+            field_action_ids = verified_direct_actions(
+                self.session, request_ref=request_ref, content=content,
+            )
+        except DocketError as exc:
+            errors.append({"code": exc.code, **(exc.details or {})})
         nested_refs = _nested_public_refs(_content_payload(content))
         statement_refs = {ref for ref in nested_refs if ref.startswith("stm_")}
         statements = {
@@ -1759,14 +1773,18 @@ class ChangeSetService:
         }
         scope = content.import_scope
         if attachment_source_refs and scope is None:
-            return [
+            return [*errors,
                 {
                     "code": "import_scope_required",
+                    "category": "evidence_validation",
+                    "field_path": ["basis_refs"],
+                    "constraint": "structured_import_or_exact_supporting_field_binding",
+                    "next_action": "stage_field_evidence_or_selected_source_entries",
                     "details": {"source_refs": sorted(attachment_source_refs)},
                 }
             ]
         if scope is None:
-            return []
+            return errors
 
         errors.extend(self._source_fragment_errors(statements))
 
@@ -1807,6 +1825,7 @@ class ChangeSetService:
                 changes=changes,
                 statements=statements,
                 attachment_source_refs=attachment_source_refs,
+                field_evidence_action_ids=field_action_ids,
             )
         )
 
@@ -1961,6 +1980,7 @@ class ChangeSetService:
                 content=content,
                 changes=changes,
                 session_utterance_refs=session_utterance_refs,
+                request_ref=intent_session.semantic_request_ref,
             )
         )
         case_resolutions = AttentionCaseResolutionService(self.session)

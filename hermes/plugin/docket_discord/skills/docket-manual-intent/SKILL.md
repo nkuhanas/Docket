@@ -108,6 +108,11 @@ intent. Before the first stage, describe the actual needed mutation types:
 `canonical_event_create` (and `lane_routing_decision_create` when needed) for an
 occurrence; `temporal_calendar_projection_create` for calendar-visible Time.
 
+For an unknown end time, use an applicable Docket-recorded duration policy or
+ask one consolidated clarification (for example, "Use one hour for all seven?").
+Session memory about a habitual default can inform the question but is not a
+canonical Preference. Never change a duration as evidence/compiler repair.
+
 `predicted_provider_operation_count=0` and the stage's `calendar_delivery_notice`
 mean the draft has no Google delivery, not a credential failure. Compare that
 outcome to the resolved request before committing. Review remains optional.
@@ -179,6 +184,38 @@ Use the entry/field diagnostic to submit a corrected patch in the same request;
 do not re-add the other entries or request renewed approval. A retry of the exact
 old operation returns its recorded result; repair is a new stage operation.
 Do not equate a saved draft, ready draft, canonical commit and provider delivery.
+
+### Supporting attachments versus structured imports
+
+An attachment may contribute only a building name, description or other text
+field while dates, times and room numbers come from the Operator's message.
+Use ordinary actions with exact utterance/source basis and `field_evidence_bind`.
+Include all actions and the binding together on draft creation; if earlier batches
+exist, finish staging actions and then send the binding alone. Each binding
+records a source/structural locator, extractor
+identity/version, interpreted `value`, and `targets` (`change_id`, `field_path`,
+`match`). For the same building on seven meetings, one binding can target all
+seven `create_spec.event_spec.location` fields using `match="prefix"`; Docket
+requires that exact prefix plus a separator, preserving message-based room numbers.
+Native images use `hermes.native-vision`; omit the optional hash and Docket verifies
+retained bytes. PDF bindings use the attachment-text tool's fragment coordinates,
+hash and extractor version. Neither check certifies the semantic reading.
+
+The first successful field binding fixes the assembled effect inventory. Stage
+all desired actions/selected source entries before or alongside it as above. It is not
+a boolean exemption, a new authorization or a schedule-entry substitute. A true
+schedule import still uses normalized entries and complete selected_entry_ids.
+Do not create artificial Items/Times for a supporting building-name image.
+
+For `import_scope_required` on an existing mixed-source draft, submit
+`field_evidence_bind` ALONE under the unchanged request/scope; Docket verifies
+every effect is preserved and records the new derivation now, not historically.
+Follow `observation_required` with one bounded summary before committing.
+`draft_recompile` cannot infer a missing evidence association. Do not repeatedly
+change assembly_scope, remove source citations, or restart the request.
+Field diagnostics identify the exact target and correction. If source reading
+or semantic values conflict, ask the necessary semantic question; if runtime
+support is missing, report that constraint instead of retrying indefinitely.
 
 Bound stage/review and failed-commit receipts identify `semantic_request_ref` and
 `authority_availability_at_operation`. These are recorded observations, not fields

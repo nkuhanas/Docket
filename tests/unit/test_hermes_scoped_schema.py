@@ -128,6 +128,36 @@ def test_normalized_entry_stage_schema_is_exact_and_bounded() -> None:
     assert not {"item", "temporal", "calendar", "calendar_lane", "event_spec"} & properties.keys()
 
 
+def test_supporting_field_binding_is_disclosed_with_direct_actions_only():
+    module = _module()
+    described = module.scoped_tool_description(
+        _stage_definition(), mutation_types=["canonical_event_create"],
+    )
+    scoped = described["parameters"]
+    assert len(json.dumps(described, separators=(",", ":")).encode()) < 16_000
+    operations = scoped["$defs"]["StagePatchInput"]["properties"]["operations"]["items"]
+    assert "field_evidence_bind" in operations["discriminator"]["mapping"]
+    binding = scoped["$defs"]["FieldEvidenceInput"]
+    assert binding["additionalProperties"] is False
+    assert "source_fragment_hash" not in binding["required"]
+    assert {"source_ref", "targets", "value"} <= set(binding["required"])
+
+
+def test_schema_compaction_preserves_title_properties_and_opaque_literal_values():
+    module = _module()
+    literal = {"title": "literal", "properties": {"title": "not a schema"}}
+    schema = {"title": "Display annotation", "type": "object", "properties": {
+        "title": {"type": "string", "title": "Title", "default": "Keep"},
+        "data": {"type": "object", "default": literal, "const": literal},
+    }}
+    compact = module._without_schema_titles(schema)
+    assert "title" not in compact
+    assert compact["properties"]["title"] == {"type": "string", "default": "Keep"}
+    assert compact["properties"]["data"]["default"] == literal
+    assert compact["properties"]["data"]["const"] == literal
+    assert schema["title"] == "Display annotation"
+
+
 def test_pinned_hermes_bridge_requires_and_applies_mutation_scope(monkeypatch) -> None:
     module = _module()
     tool_search = ModuleType("tools.tool_search")

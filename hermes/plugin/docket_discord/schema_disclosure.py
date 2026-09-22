@@ -97,6 +97,24 @@ def _strip_internal_properties(value: Any) -> None:
             _strip_internal_properties(nested)
 
 
+def _without_schema_titles(schema: Any) -> Any:
+    """Drop display annotations, never a property named title or literal data."""
+    if not isinstance(schema, dict):
+        return schema
+    result = {key: value for key, value in schema.items() if key != "title"}
+    for key in ("$defs", "properties", "patternProperties", "dependentSchemas"):
+        if isinstance(result.get(key), dict):
+            result[key] = {name: _without_schema_titles(child)
+                           for name, child in result[key].items()}
+    for key in ("items", "contains", "not", "if", "then", "else", "additionalProperties"):
+        if key in result:
+            result[key] = _without_schema_titles(result[key])
+    for key in ("oneOf", "anyOf", "allOf", "prefixItems"):
+        if isinstance(result.get(key), list):
+            result[key] = [_without_schema_titles(child) for child in result[key]]
+    return result
+
+
 def _reference_closed(schema: dict[str, Any]) -> dict[str, Any]:
     definitions = schema.get("$defs")
     if not isinstance(definitions, dict):
@@ -116,7 +134,7 @@ def _reference_closed(schema: dict[str, Any]) -> dict[str, Any]:
     schema["$defs"] = {
         name: definition for name, definition in definitions.items() if name in needed
     }
-    return schema
+    return _without_schema_titles(schema)
 
 
 def mutation_type_catalog(parameters: dict[str, Any]) -> tuple[str, ...]:
@@ -259,6 +277,7 @@ def scoped_stage_schema(
         name: patch_mapping[name] for name in ("draft_recompile", "draft_adopt")
     }
     if requested_mutations:
+        selected_patch["field_evidence_bind"] = patch_mapping["field_evidence_bind"]
         selected_patch["action_upsert"] = patch_mapping["action_upsert"]
         selected_patch["action_remove"] = patch_mapping["action_remove"]
         canonical_union = definitions["CanonicalChangeInput"]

@@ -282,6 +282,11 @@ def draft_diff(
             header = {"subject_kind": kind, id_field: identifier, "change": disposition}
             details.extend({**header, **change} for change in changes)
     migration = after.compiler_manifest_json.get("migration")
+    for change in _fields(
+        before.compiler_manifest_json.get("field_evidence_input", []) if before else [],
+        after.compiler_manifest_json.get("field_evidence_input", []), [],
+    ):
+        details.append({"subject_kind": "field_evidence", **change})
     if before is not None and isinstance(migration, dict) and (
         migration.get("from_revision") == before.revision
         and migration.get("to_revision") == after.revision

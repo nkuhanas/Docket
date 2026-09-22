@@ -1308,3 +1308,42 @@ source files)**. The preceding runtime commit `e2524d1` also passed a clean Git
 archive check (753 tests, 143 tracked source files) and the full isolated Compose
 smoke. The only subsequent changes are acceptance tests and this verification
 record; release checks still run against the final committed artifact.
+
+## Supporting attachment fields (September 21 correction)
+
+Supporting image text is now represented by a typed `field_evidence_bind` patch,
+not by invented schedule entries. An authenticated message can supply meeting
+dates/times/rooms while one retained image supplies the building-name prefix.
+Docket derives the field-specific statements and import envelope. The append-only
+`request_field_evidence` record binds original utterance/source identities and the
+exact assembled effect inventory. It is internal provenance, not a new canonical
+object, authority grant, or assertion of independent OCR accuracy.
+
+`tests/integration/test_field_evidence.py` exercises seven exact meetings through
+the real staging/commit service, without a review on draft creation. It verifies
+the dates, times, timezone, building/room fields, lane, seven queued provider
+Operations, absence of artificial Item/Time rows, bounded receipts, and stage and
+commit replay. Durations are explicit in the synthetic authenticated instruction;
+the fixture does not promote session memory to operator policy. Tests reject
+an eighth event, another date/duration/building/lane, series expansion, changed
+source interpretation and missing/forged field proof. A mixed structured import
+still requires its exact selected-entry and Item/Time coverage.
+
+The preserved-draft fixture repairs `import_scope_required` with one sole evidence
+patch under the original scope/hash. Old revisions and failed receipts stay
+unchanged. The new provenance requires a bounded summary observation before
+commit. Invalid bindings retain the whole draft, and explicit recompilation
+preserves the same bindings/effects. This recovery is never performed at startup.
+
+Local validation passed **860 tests, Ruff and strict mypy (146 source files)**.
+The full isolated Compose smoke passed authenticated MCP checks, governance
+restore, empty migration upgrade/downgrade/re-upgrade, and **30 PostgreSQL
+assembly/recovery checks**. The new PostgreSQL fixture stages, recovers, observes,
+commits and replays through separate connections; UPDATE/DELETE and nonempty
+downgrade cannot discard the evidence. Subsequent instruction clarification and
+contract regeneration passed the 28 focused evidence/schema/MCP tests and Ruff.
+
+Plugin `0.32.0`/contract v41 retain 23 interactive tools and payload-free commit.
+No live model extraction, historical request replay, OAuth refresh, or provider
+delivery is claimed by these deterministic results. Production release still
+requires both remote CI jobs and the supported drained, backed-up deployment.

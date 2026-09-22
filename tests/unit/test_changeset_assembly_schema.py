@@ -63,6 +63,17 @@ def test_commit_submission_variants_are_removed_not_aliased() -> None:
     assert not hasattr(assembly, "ChangeSetSubmission")
 
 
+@pytest.mark.parametrize("path", [
+    "create_spec.event_spec.timing", "create_spec.lane_ref", "basis_refs",
+    "scope.kind", "create_spec.event_spec.recurrence",
+])
+def test_supporting_field_is_not_a_time_routing_or_authority_exemption(path):
+    from docket.schemas.assembly import FieldEvidenceTarget
+
+    with pytest.raises(ValidationError):
+        FieldEvidenceTarget(change_id="event", field_path=path)
+
+
 def test_workload_limits_are_independent_of_output_budget() -> None:
     assert MAX_DRAFT_ENTRIES == 250
     assert MAX_DRAFT_REVISIONS == 1_000

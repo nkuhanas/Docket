@@ -85,6 +85,7 @@ from docket.models.registry import (
 from docket.models.request_specifications import (
     RequestAssemblyAdoption,
     RequestEntryInterpretation,
+    RequestFieldEvidence,
     SemanticRequestSpecification,
 )
 from docket.models.tracked_context import (
@@ -168,6 +169,7 @@ __all__ = [
     "ReminderPlan",
     "RequestAssemblyAdoption",
     "RequestEntryInterpretation",
+    "RequestFieldEvidence",
     "RuntimeLogEntry",
     "ScheduledNotification",
     "SemanticRequest",

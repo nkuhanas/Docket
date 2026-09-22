@@ -93,6 +93,24 @@ class RequestEntryInterpretation(Base):
     )
 
 
+class RequestFieldEvidence(Base):
+    """Immutable supporting-field derivation and exact effect baseline.
+
+    Created only by explicit staging, never by a historical backfill. Internal
+    provenance addressed through sreq_/chg_, not another canonical primitive.
+    """
+
+    __tablename__ = "request_field_evidence"
+    semantic_request_ref: Mapped[str] = mapped_column(
+        ForeignKey("semantic_requests.ref_id", ondelete="RESTRICT"), primary_key=True,
+    )
+    proof_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    proof_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False,
+    )
+
+
 def _immutable(_mapper: object, _connection: object, _target: object) -> None:
     raise ValueError("SemanticRequestSpecification is immutable")
 
@@ -115,3 +133,11 @@ def _immutable_entry(_mapper: object, _connection: object, _target: object) -> N
 
 event.listen(RequestEntryInterpretation, "before_update", _immutable_entry)
 event.listen(RequestEntryInterpretation, "before_delete", _immutable_entry)
+
+
+def _immutable_field_evidence(_mapper: object, _connection: object, _target: object) -> None:
+    raise ValueError("RequestFieldEvidence is immutable")
+
+
+event.listen(RequestFieldEvidence, "before_update", _immutable_field_evidence)
+event.listen(RequestFieldEvidence, "before_delete", _immutable_field_evidence)

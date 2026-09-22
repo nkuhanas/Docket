@@ -577,6 +577,52 @@ are different outcomes.
 
 ## Attachment evidence
 
+### Mixed-source fields
+
+A supporting attachment is not necessarily a structured import. If dates/times
+come from the authenticated message and an image supplies a building name, stage
+ordinary Event/routing actions and a typed `field_evidence_bind` patch. It binds
+the interpreted source value to exact existing descriptive field paths; `prefix`
+requires the value followed by a delimiter, so message-provided room numbers are
+not attributed to the image. This path does not support time, routing, recurrence
+or authority fields. Structured schedule imports retain normalized entry coverage
+and the complete selected-entry inventory, including in a mixed ChangeSet.
+
+Include the binding with all desired actions when creating the draft. If earlier
+batches already exist, finish staging the actions, then bind evidence in a sole
+operation (the existing draft is the exact effect baseline).
+The first valid binding retains the exact assembled canonical/provider effect
+inventory in append-only `request_field_evidence`, independently of compiled
+provenance. Later edits/recompile cannot add an event, change duration/date/lane,
+or reinterpret the binding. Docket derives statements and import bookkeeping;
+Hermes does not manufacture internal import scope or Item/Time scaffolding.
+Initial native-image readings are explicitly fallible; retained-byte integrity
+does not independently certify their meaning. PDF citations use the existing
+verified extraction path. No OCR service or external read is introduced.
+
+An old mixed-source draft with `import_scope_required` may use an explicit sole
+`field_evidence_bind` operation under its unchanged request/scope/preconditions.
+The pinned effects must compare exactly before any new evidence is attached.
+This is a new recorded derivation, never historical evidence backfill. The receipt
+requires one bounded summary observation before commit; ordinary first-stage
+bindings allow immediate commit. Old failures and receipts replay unchanged.
+Missing source/field proof returns a bounded correction diagnostic and preserves
+the complete draft. `draft_recompile` cannot guess missing field associations.
+
+Check the original duration independently: an applicable recorded Preference or
+explicit instruction can supply it; session memory alone is not canonical policy.
+A duration change requires semantic clarification, not provenance repair. No
+deployment executes historical requests, refreshes OAuth, or applies this repair.
+
+Migration `20260921c9a8` creates only the internal field-evidence table and its
+immutability trigger. It writes no historical rows and changes no authority hashes.
+Nonempty downgrade refuses to discard evidence; recover with forward repair or
+the verified pre-migration backup, not an image-only rollback. Isolated Compose
+tests exercise commit/replay through separate connections and empty migration
+upgrade/downgrade/re-upgrade.
+
+### Retention and input delivery
+
 An Operator attachment first creates bounded `src_` metadata and, according to
 retention policy, an encrypted blob. Interpretation and mutation wait until
 durable bytes are available. Attachment contents remain untrusted.
