@@ -16,6 +16,7 @@ def test_specification_artifact_manifest_is_unique_and_packaged() -> None:
         "ONT-DELTA-2026-08-29-TRACKED-CONTEXT",
         "ONT-DELTA-2026-09-06-INCREMENTAL-CHANGESET-ASSEMBLY",
         "ONT-DELTA-2026-09-11-INTERACTION-CORRECTION",
+        "ONT-DELTA-2026-09-28-EVENT-FIELD-PATCHING",
     ]
     assert all(item.document_ref in item.signoff_text for item in manifest.artifacts)
     assert all(item.frozen_artifact_hash in item.signoff_text for item in manifest.artifacts)
@@ -136,6 +137,39 @@ def test_interaction_correction_binds_five_prerequisites_without_reset_authority
             prerequisite.document_ref, prerequisite.frozen_artifact_hash
         )
         assert prior is not None
+        assert prerequisite.decision_kind == "specification_signoff"
+        assert prerequisite.architecture_authority is True
+
+
+def test_event_field_patching_binds_exact_prior_authority_without_bootstrap() -> None:
+    artifact = specification_artifact(
+        "ONT-DELTA-2026-09-28-EVENT-FIELD-PATCHING",
+        "fd3c48307f499bf9c1af6aed4e80f202d62965a6c1941bbbee88ad8dd64c6605",
+    )
+    assert artifact is not None
+    assert artifact.status == "frozen_candidate"
+    assert artifact.implementation_authority == "amendment_scope"
+    assert artifact.authorized_scope == (
+        "sparse_event_field_updates_free_text_locations_and_exact_occurrence_repair"
+    )
+    assert artifact.architecture_authority is True
+    assert artifact.production_reset_authority is False
+    assert artifact.bootstrap_authority is None
+    assert [item.decision_ref for item in artifact.prerequisites] == [
+        "dec_01M13MANM19BX22EW8QC8AH9DT",
+        "dec_01M1587SE1JX3BVQ1QZBQKX6T7",
+        "dec_01M15EHKNXVKRBM7MZ3FN39X3E",
+        "dec_01M18DYEYJVVJ7TW5VQQBCA6NC",
+        "dec_01M1W7648P7YJZ22GRD114WSBV",
+        "dec_01M293W1JA9CZFRMNY3FR2A48D",
+    ]
+    assert [item.document_ref for item in artifact.prerequisites] == [
+        item.document_ref for item in specification_artifact_manifest().artifacts[:-1]
+    ]
+    for prerequisite in artifact.prerequisites:
+        assert specification_artifact(
+            prerequisite.document_ref, prerequisite.frozen_artifact_hash
+        ) is not None
         assert prerequisite.decision_kind == "specification_signoff"
         assert prerequisite.architecture_authority is True
 
