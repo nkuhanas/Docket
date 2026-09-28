@@ -6,6 +6,8 @@ Start here when operating or changing the deployed stack:
   authority/projection recovery, provider reconciliation, and safe deployment.
 * [Interaction correction verification](interaction-correction-verification.md) —
   September 11 candidate registration, sign-off gate, and implementation boundary.
+* [Event field patching verification](event-field-patching-verification.md) —
+  September 28 sparse-event-patch candidate registration and sign-off boundary.
 * [Ontology rollout verification](ontology-rollout-verification.md) — signed
   authority, current clean tracked-context verification, PostgreSQL rehearsal,
   and explicitly historical rollout evidence.
