@@ -26,6 +26,10 @@ from calendar_reauthorization_checks import (
     test_google_reauthorization_rechecks_a_concurrent_canonical_edit,
     test_google_reauthorization_recovery_serializes_and_preserves_delivery,
 )
+from calendar_sync_checks import (
+    test_calendar_sync_first_state_race_claims_once_and_keeps_other_lanes_moving,
+    test_calendar_sync_skips_locked_targets_and_commits_claim_before_io,
+)
 from calendar_update_checks import (
     test_calendar_update_binding_pin_serializes_with_provider_observations,
 )
@@ -3034,6 +3038,8 @@ def main() -> None:
     factory = sessionmaker(engine, expire_on_commit=False)
     checks = (
         test_retained_trace_migration_round_trip,
+        test_calendar_sync_skips_locked_targets_and_commits_claim_before_io,
+        test_calendar_sync_first_state_race_claims_once_and_keeps_other_lanes_moving,
         test_cold_restart_reuses_one_trace_and_staged_request,
         test_same_attempt_concurrent_calls_bind_old_revision,
         test_cross_attempt_stale_edit_and_commit_are_rejected,

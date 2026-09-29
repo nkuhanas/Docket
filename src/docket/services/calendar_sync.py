@@ -87,60 +87,76 @@ class CalendarSyncService:
 
     def ensure_state(self, account_id: uuid.UUID, calendar_id: str) -> uuid.UUID:
         now = _aware(self.clock()).astimezone(UTC)
-        window_start, window_end = self._window(now)
         with self.session_factory.begin() as session:
-            self._validate_target(session, account_id, calendar_id)
-            state = session.scalar(
-                select(CalendarSyncState).where(
-                    CalendarSyncState.account_id == account_id,
-                    CalendarSyncState.calendar_id == calendar_id,
-                )
+            return self._ensure_state(session, account_id, calendar_id, now).id
+
+    def _ensure_state(
+        self, session: Session, account_id: uuid.UUID, calendar_id: str, now: datetime
+    ) -> CalendarSyncState:
+        # Serialize first-time state creation with foreground refreshes as well
+        # as background claims. No canonical lane fields are changed.
+        session.scalar(
+            select(CalendarLane.id)
+            .where(CalendarLane.account_id == account_id, CalendarLane.calendar_id == calendar_id)
+            .with_for_update()
+        )
+        self._validate_target(session, account_id, calendar_id)
+        state = session.scalar(
+            select(CalendarSyncState)
+            .where(
+                CalendarSyncState.account_id == account_id,
+                CalendarSyncState.calendar_id == calendar_id,
             )
-            if state is None:
-                state = CalendarSyncState(
-                    account_id=account_id,
-                    calendar_id=calendar_id,
-                    window_start=window_start,
-                    window_end=window_end,
-                    status="pending",
-                )
-                session.add(state)
-                session.flush()
-            return state.id
+            .with_for_update()
+        )
+        if state is None:
+            window_start, window_end = self._window(now)
+            state = CalendarSyncState(
+                account_id=account_id,
+                calendar_id=calendar_id,
+                window_start=window_start,
+                window_end=window_end,
+                status="pending",
+            )
+            session.add(state)
+            session.flush()
+        return state
 
     def _claim(
         self, account_id: uuid.UUID, calendar_id: str, *, force: bool
     ) -> tuple[uuid.UUID, uuid.UUID, datetime, datetime] | None:
-        state_id = self.ensure_state(account_id, calendar_id)
         now = _aware(self.clock()).astimezone(UTC)
-        window_start, window_end = self._window(now)
         with self.session_factory.begin() as session:
-            state = session.scalar(
-                select(CalendarSyncState).where(CalendarSyncState.id == state_id).with_for_update()
-            )
-            assert state is not None
-            if (
-                state.status == "syncing"
-                and state.leased_until is not None
-                and _aware(state.leased_until) > now
-            ):
-                return None
-            due = (
-                state.last_attempt_at is None
-                or _aware(state.last_attempt_at)
-                + timedelta(seconds=self.settings.calendar_sync_interval_seconds)
-                <= now
-                or state.status in {"pending", "stale", "failed"}
-            )
-            if not force and not due:
-                return None
-            lease_token = uuid.uuid4()
-            state.status = "syncing"
-            state.last_attempt_at = now
-            state.lease_token = lease_token
-            state.leased_until = now + timedelta(seconds=self.settings.calendar_sync_lease_seconds)
-            state.last_error_code = None
-            return state.id, lease_token, window_start, window_end
+            state = self._ensure_state(session, account_id, calendar_id, now)
+            return self._claim_state(state, now, force=force)
+
+    def _claim_state(
+        self, state: CalendarSyncState, now: datetime, *, force: bool
+    ) -> tuple[uuid.UUID, uuid.UUID, datetime, datetime] | None:
+        if (
+            state.status == "syncing"
+            and state.leased_until is not None
+            and _aware(state.leased_until) > now
+        ):
+            return None
+        # Failures obey the same retry interval as successes. Freshness/status
+        # is not a scheduling clock, and must not create a hot retry loop.
+        due = (
+            state.last_attempt_at is None
+            or _aware(state.last_attempt_at)
+            + timedelta(seconds=self.settings.calendar_sync_interval_seconds)
+            <= now
+        )
+        if not force and not due:
+            return None
+        window_start, window_end = self._window(now)
+        lease_token = uuid.uuid4()
+        state.status = "syncing"
+        state.last_attempt_at = now
+        state.lease_token = lease_token
+        state.leased_until = now + timedelta(seconds=self.settings.calendar_sync_lease_seconds)
+        state.last_error_code = None
+        return state.id, lease_token, window_start, window_end
 
     @staticmethod
     def _validate_event(event: CalendarSnapshotEvent) -> None:
@@ -371,7 +387,9 @@ class CalendarSyncService:
 
     def _mark_failed(self, state_id: uuid.UUID, lease_token: uuid.UUID, code: str) -> None:
         with self.session_factory.begin() as session:
-            state = session.get(CalendarSyncState, state_id)
+            state = session.scalar(
+                select(CalendarSyncState).where(CalendarSyncState.id == state_id).with_for_update()
+            )
             if state is None or state.lease_token != lease_token:
                 return
             state.status = "stale" if state.last_success_at is not None else "failed"
@@ -381,6 +399,11 @@ class CalendarSyncService:
 
     def sync_target(self, account_id: uuid.UUID, calendar_id: str, *, force: bool = False) -> bool:
         claim = self._claim(account_id, calendar_id, force=force)
+        return self._sync_claimed(calendar_id, claim)
+
+    def _sync_claimed(
+        self, calendar_id: str, claim: tuple[uuid.UUID, uuid.UUID, datetime, datetime] | None
+    ) -> bool:
         if claim is None:
             return False
         state_id, lease_token, window_start, window_end = claim
@@ -397,23 +420,46 @@ class CalendarSyncService:
     def run_due_once(self) -> bool:
         if not self.settings.calendar_reads_enabled:
             return False
-        with self.session_factory() as session:
+        now = _aware(self.clock()).astimezone(UTC)
+        cutoff = now - timedelta(seconds=self.settings.calendar_sync_interval_seconds)
+        with self.session_factory.begin() as session:
             target = session.execute(
                 select(CalendarLane.account_id, CalendarLane.calendar_id)
                 .join(ProviderAccount, ProviderAccount.id == CalendarLane.account_id)
+                .outerjoin(
+                    CalendarSyncState,
+                    (CalendarSyncState.account_id == CalendarLane.account_id)
+                    & (CalendarSyncState.calendar_id == CalendarLane.calendar_id),
+                )
                 .where(
                     ProviderAccount.provider == "google",
                     ProviderAccount.enabled.is_(True),
                     CalendarLane.status == "active",
                     CalendarLane.enabled.is_(True),
                     CalendarLane.calendar_id.is_not(None),
+                    or_(
+                        CalendarSyncState.last_attempt_at.is_(None),
+                        CalendarSyncState.last_attempt_at <= cutoff,
+                    ),
+                    or_(
+                        CalendarSyncState.status != "syncing",
+                        CalendarSyncState.leased_until.is_(None),
+                        CalendarSyncState.leased_until <= now,
+                    ),
                 )
-                .order_by(CalendarLane.updated_at)
+                .order_by(
+                    CalendarSyncState.last_attempt_at.asc().nulls_first(),
+                    CalendarLane.ref_id,
+                )
                 .limit(1)
+                .with_for_update(of=CalendarLane, skip_locked=True)
             ).first()
-        if target is None or target.calendar_id is None:
-            return False
-        return self.sync_target(target.account_id, target.calendar_id)
+            if target is None or target.calendar_id is None:
+                return False
+            state = self._ensure_state(session, target.account_id, target.calendar_id, now)
+            claim = self._claim_state(state, now, force=False)
+        # The durable lease is committed and all row locks released before I/O.
+        return self._sync_claimed(target.calendar_id, claim)
 
     def require_fresh(self, account_id: uuid.UUID, calendar_id: str) -> None:
         if self.settings.calendar_reads_enabled:
@@ -441,7 +487,7 @@ class CalendarSyncService:
                 select(CalendarSyncState).where(
                     CalendarSyncState.status == "syncing",
                     CalendarSyncState.leased_until < now,
-                )
+                ).with_for_update(skip_locked=True)
             ):
                 state.status = "stale" if state.last_success_at else "failed"
                 state.last_error_code = "calendar_sync_lease_expired"
