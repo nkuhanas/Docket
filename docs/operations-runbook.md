@@ -747,6 +747,35 @@ deployment. There is no automatic identity backfill or historical replay.
 External write gates in production fail closed. Enabling a gate does not itself
 authorize a new semantic effect.
 
+### Calendar read scheduling and freshness
+
+Background Calendar reads service one bounded snapshot per
+`DOCKET_CALENDAR_SYNC_POLL_SECONDS` poll. Eligible targets are active, enabled,
+provider-bound lanes on enabled Google accounts. Selection uses the oldest
+durable `last_attempt_at` (unattempted lanes first, public lane ref as a stable
+tie-breaker), not the lane's last edit time. Fresh targets and unexpired sync
+leases are skipped in the database. Claims serialize first-time state creation
+and commit before provider I/O; another runner skips locked lanes and cannot
+duplicate an active claim.
+
+Both successful and failed attempts observe `DOCKET_CALENDAR_SYNC_INTERVAL_SECONDS`
+before another background attempt. Failed/stale status does not bypass that
+cooldown or monopolize polling. Explicit fresh reads may bypass the interval,
+but not an active lease. Progress survives process restart. A failed refresh
+retains the prior complete generation and reports its error; only a successful
+refresh marks the snapshot current. Canonical lane
+timestamps, versions, events, and provider write Operations are not rewritten.
+
+After deploying a scheduling repair or restoring credentials, allow eligible
+read targets to cycle through normal polling; a backlog requires at least one
+poll per lane plus provider latency. Inspect each target's `last_attempt_at`,
+`last_success_at` and error, not merely the presence of an old
+`google_auth_invalid` code. Successful read recovery does **not** retry failed
+Calendar writes; that is the separate explicit recovery flow below. The
+12-lane/restart/failure fixtures are in `test_calendar_sync_scheduling.py`;
+isolated Compose also verifies PostgreSQL selection locks and concurrent
+first-time/foreground claims.
+
 ### Google reauthorization and delivery recovery
 
 On an existing running instance, reauthorize with:
