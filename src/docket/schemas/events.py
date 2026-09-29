@@ -4,7 +4,13 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from docket.schemas.calendar import StandaloneCalendarEventInput
+from docket.schemas.calendar import (
+    AllDayEventTiming,
+    CalendarRecurrenceInput,
+    MaterializedCalendarEvent,
+    StandaloneCalendarEventInput,
+    TimedEventTiming,
+)
 from docket.schemas.common import StrictModel, validate_refs
 from docket.schemas.policy import LaneRef
 from docket.schemas.registry import EntityRef
@@ -60,9 +66,43 @@ class CanonicalEventCreateSpec(StrictModel):
         return self
 
 
-class CanonicalEventPatchSpec(StrictModel):
+class MaterializedEventCreateSpec(CanonicalEventCreateSpec):
+    event_spec: MaterializedCalendarEvent
+
+
+class PatchTimedTiming(TimedEventTiming):
+    timezone: str = Field(min_length=1, max_length=128)
+
+
+class PatchAllDayTiming(AllDayEventTiming):
+    timezone: str = Field(min_length=1, max_length=128)
+
+
+class EventFieldPatch(StrictModel):
+    """Only supplied fields change. No creation, routing or recurrence defaults."""
+
     title: str | None = Field(default=None, min_length=1, max_length=512)
-    event_spec: StandaloneCalendarEventInput | None = None
+    location: str | None = Field(default=None, max_length=1000)
+    notes: str | None = Field(default=None, max_length=4000)
+    timing: Annotated[
+        PatchTimedTiming | PatchAllDayTiming, Field(discriminator="kind")
+    ] | None = None
+
+    @field_validator("title", "timing")
+    @classmethod
+    def required_fields_cannot_be_cleared(cls, value: Any) -> Any:
+        if value is None:
+            raise ValueError("omit an unchanged required field; it cannot be cleared")
+        return value
+
+    @model_validator(mode="after")
+    def patch_is_nonempty(self) -> EventFieldPatch:
+        if not self.model_fields_set:
+            raise ValueError("supply at least one changed event field")
+        return self
+
+
+class EventContextPatch(StrictModel):
     lane_ref: LaneRef | None = None
     lane_change_id: str | None = None
     routing_decision_ref: Annotated[
@@ -101,7 +141,7 @@ class CanonicalEventPatchSpec(StrictModel):
         return normalized
 
     @model_validator(mode="after")
-    def dependencies_are_exact(self) -> CanonicalEventPatchSpec:
+    def dependencies_are_exact(self) -> EventContextPatch:
         if self.lane_ref and self.lane_change_id:
             raise ValueError("lane update uses a ref or change id, not both")
         if self.routing_decision_ref and self.routing_decision_change_id:
@@ -118,6 +158,32 @@ class CanonicalEventPatchSpec(StrictModel):
         if not self.model_fields_set:
             raise ValueError("canonical event patch requires at least one field")
         return self
+
+
+class CanonicalEventPatchSpec(EventContextPatch):
+    event_spec: EventFieldPatch | None = None
+    # Recurrence is a separate scheduling capability, never a content-patch field.
+    recurrence: CalendarRecurrenceInput | None = None
+
+    @field_validator("event_spec")
+    @classmethod
+    def event_patch_cannot_be_null(cls, value: EventFieldPatch | None) -> EventFieldPatch:
+        if value is None:
+            raise ValueError("supply a nonempty field patch or omit event_spec")
+        return value
+
+    @model_validator(mode="after")
+    def patch_has_an_explicit_effect(self) -> CanonicalEventPatchSpec:
+        if not self.model_fields_set:
+            raise ValueError("supply an event field patch or a separate typed event change")
+        return self
+
+
+class MaterializedEventPatchSpec(EventContextPatch):
+    """Compiler output only; never exposed as a model input or old-shape decoder."""
+
+    title: str | None = Field(default=None, min_length=1, max_length=512)
+    event_spec: MaterializedCalendarEvent | None = None
 
 
 class ProviderOperationParameters(StrictModel):

@@ -17,7 +17,7 @@ from docket.models import ChangeSet, ChangeSetRevision
 from docket.schemas.common import StrictModel
 
 COMPILER_IDENTIFIER = "docket.changeset"
-COMPILER_VERSION = 2
+COMPILER_VERSION = 3
 EXECUTABLE_SCHEMA_VERSION = 1
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
@@ -53,6 +53,8 @@ def _input_hash(snapshot: ChangeSet | ChangeSetRevision) -> str:
             "ownership": snapshot.compiled_action_ownership_json,
             **({"field_evidence_input": snapshot.compiler_manifest_json["field_evidence_input"]}
                if "field_evidence_input" in snapshot.compiler_manifest_json else {}),
+            **({"event_patch_bindings": snapshot.compiler_manifest_json["event_patch_bindings"]}
+               if "event_patch_bindings" in snapshot.compiler_manifest_json else {}),
         }
     )
 

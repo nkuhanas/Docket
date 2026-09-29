@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from docket.domain.canonical import sha256_json
 from docket.models import CanonicalEvent
-from docket.schemas.authority import CanonicalEventCreate, ChangeSetContent
+from docket.schemas.authority import CanonicalEventCreate, ChangeSetContent, MaterializedEventModify
 from docket.schemas.event_occurrences import CompiledOccurrenceEdit
 from docket.services.event_occurrences import EventOccurrenceService
 
@@ -111,6 +111,9 @@ def capture_event_preview(session: Session, content: ChangeSetContent | None) ->
             "change_id": change.change_id, "mutation_type": change.mutation_type,
             "scope": scope.model_dump(mode="json") if scope is not None else {"kind": "one_time"},
         }
+        if isinstance(change, MaterializedEventModify):
+            header.update({"mutation_type": "canonical_event_modify", "no_op": change.no_op,
+                           "preserved_override_count": change.preserved_override_count})
         if header["scope"]["kind"] == "occurrence":
             effects.append({
                 **header, "available": False, "reason": "occurrence_compilation_required",
@@ -176,6 +179,11 @@ def event_preview_sample(
                 "change_id": effect["change_id"], "target_ref": effect.get("target_ref"),
                 "scope": effect["scope"], "no_op": effect.get("no_op"),
                 "available": effect["available"],
+                "preserved_override_count": effect.get("preserved_override_count"),
+                "changed_fields": [key for key, value in after.items()
+                                   if value != (effect.get("before") or {}).get(key)],
+                "cleared_fields": [key for key, value in after.items() if value is None
+                                   and (effect.get("before") or {}).get(key) is not None],
                 **{key: after.get(key) for key in (
                     "title", "status", "timing", "location", "lane_ref", "calendar_lane",
                 )},

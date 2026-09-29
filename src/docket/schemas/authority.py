@@ -13,7 +13,12 @@ from docket.schemas.event_occurrences import (
     EventMutationScope,
     OneTimeEventScope,
 )
-from docket.schemas.events import CanonicalEventCreateSpec, CanonicalEventPatchSpec
+from docket.schemas.events import (
+    CanonicalEventCreateSpec,
+    CanonicalEventPatchSpec,
+    MaterializedEventCreateSpec,
+    MaterializedEventPatchSpec,
+)
 from docket.schemas.evidence import FieldEvidenceInput
 from docket.schemas.policy import (
     CalendarLaneCreateSpec,
@@ -986,6 +991,10 @@ class CanonicalEventModify(MutationBase):
     scope: EventMutationScope = Field(default_factory=OneTimeEventScope)
 
 
+class MaterializedEventCreate(CanonicalEventCreate):
+    create_spec: MaterializedEventCreateSpec
+
+
 class CanonicalEventCancel(MutationBase):
     mutation_type: Literal["canonical_event_cancel"] = "canonical_event_cancel"
     action: Literal["retract"]
@@ -994,6 +1003,22 @@ class CanonicalEventCancel(MutationBase):
     create_spec: None = None
     payload: EmptyMutationSpec = Field(default_factory=EmptyMutationSpec)
     scope: EventMutationScope = Field(default_factory=OneTimeEventScope)
+
+
+class MaterializedEventModify(MutationBase):
+    """Internal executable result of a typed patch, not an interactive mutation."""
+
+    mutation_type: Literal["canonical_event_apply"] = "canonical_event_apply"
+    action: Literal["update", "supersede"]
+    object_type: Literal["canonical_event"]
+    object_ref: Annotated[str, Field(pattern=r"^evt_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: MaterializedEventPatchSpec
+    scope: EventMutationScope = Field(default_factory=OneTimeEventScope)
+    source_patch: CanonicalEventModify
+    affected_fields: list[str] = Field(default_factory=list, max_length=50)
+    no_op: bool = False
+    preserved_override_count: int = Field(default=0, ge=0)
 
 
 type RegistryMutation = (
@@ -1096,6 +1121,10 @@ type RegistryChangeInput = Annotated[RegistryMutation, Field(discriminator="muta
 type PreferenceChangeInput = Annotated[PreferenceMutation, Field(discriminator="mutation_type")]
 type LaneChangeInput = Annotated[LaneMutation, Field(discriminator="mutation_type")]
 type EventChangeInput = Annotated[EventMutation, Field(discriminator="mutation_type")]
+type InternalEventChange = Annotated[
+    MaterializedEventCreate | CanonicalEventModify | CanonicalEventCancel | MaterializedEventModify,
+    Field(discriminator="mutation_type")
+]
 type TrackedContextChangeInput = Annotated[
     TrackedContextMutation, Field(discriminator="mutation_type")
 ]
@@ -1260,13 +1289,21 @@ class ChangeSetContent(StrictModel):
     registry_changes: list[RegistryChangeInput] = Field(default_factory=list, max_length=100)
     preference_changes: list[PreferenceChangeInput] = Field(default_factory=list, max_length=100)
     lane_changes: list[LaneChangeInput] = Field(default_factory=list, max_length=100)
-    event_changes: list[EventChangeInput] = Field(default_factory=list, max_length=100)
+    event_changes: list[InternalEventChange] = Field(default_factory=list, max_length=100)
     tracked_context_changes: list[TrackedContextChangeInput] = Field(
         default_factory=list, max_length=250
     )
     resolution_changes: list[ResolutionChangeInput] = Field(default_factory=list, max_length=100)
     provider_intents: list[ProviderIntentInput] = Field(default_factory=list, max_length=100)
     occurrence_plans: list[CompiledOccurrenceEdit] = Field(default_factory=list, max_length=100)
+
+    @field_validator("event_changes", mode="before")
+    @classmethod
+    def materialize_create_input(cls, values: Any) -> Any:
+        if isinstance(values, list):
+            return [mutation_input_json(value) if type(value) is CanonicalEventCreate else value
+                    for value in values]
+        return values
 
     @field_validator("basis_refs")
     @classmethod

@@ -8,11 +8,12 @@ from docket.domain.errors import DocketError
 from docket.models import CanonicalEvent, EventOccurrence
 from docket.schemas.authority import (
     CanonicalEventCancel,
-    CanonicalEventCreate,
     CanonicalEventModify,
     ChangeSetContent,
-    EventChangeInput,
+    InternalEventChange,
     LaneRoutingDecisionCreate,
+    MaterializedEventCreate,
+    MaterializedEventModify,
     mutation_input_json,
 )
 from docket.schemas.event_occurrences import (
@@ -22,6 +23,7 @@ from docket.schemas.event_occurrences import (
     OccurrenceIdentity,
     OccurrenceReplacement,
 )
+from docket.services.event_field_patches import materialize_event_patch, merge_fields, patch_error
 from docket.services.event_occurrences import EventOccurrenceService
 
 
@@ -30,12 +32,15 @@ def compile_occurrence_changes(session: Session, content: ChangeSetContent) -> C
         raise DocketError(
             code="occurrence_plans_compiler_owned", message="Occurrence plans are compiler-owned."
         )
-    events: list[EventChangeInput] = []
+    events: list[InternalEventChange] = []
     routes = list(content.lane_changes)
     plans: list[CompiledOccurrenceEdit] = []
     versions = dict(content.expected_versions)
     seen: set[str] = set()
     for change in content.event_changes:
+        if isinstance(change, MaterializedEventModify):
+            raise DocketError(code="event_materialization_compiler_owned",
+                              message="Stage a sparse event patch, not executable records.")
         scope = getattr(change, "scope", None)
         if isinstance(scope, EntireSeriesEventScope) and change.action == "retract":
             # Explicit whole-series cancellation includes already moved children.
@@ -85,7 +90,8 @@ def compile_occurrence_changes(session: Session, content: ChangeSetContent) -> C
                     )
                 )
         if not isinstance(scope, OccurrenceEventScope):
-            events.append(change)
+            events.append(materialize_event_patch(session, change, versions)
+                          if isinstance(change, CanonicalEventModify) else change)
             continue
         if change.object_ref != scope.identity.series_ref:
             raise DocketError(
@@ -99,30 +105,28 @@ def compile_occurrence_changes(session: Session, content: ChangeSetContent) -> C
             )
         seen.add(change.object_ref)
         service = EventOccurrenceService(session)
-        plan = service.plan(scope.identity)
+        try:
+            plan = service.plan(scope.identity)
+        except DocketError as exc:
+            raise patch_error(change, exc.code, ["scope", "identity"],
+                              "read_current_occurrence") from exc
         series = session.scalar(
             select(CanonicalEvent).where(CanonicalEvent.ref_id == change.object_ref)
         )
         assert series is not None
         if versions.get(series.ref_id) != series.version:
-            raise DocketError(
-                code="version_conflict",
-                message="Review the current series before staging its edit.",
-            )
+            raise patch_error(change, "version_conflict", ["expected_versions", series.ref_id],
+                              "reconcile_event_version")
         if change.action != "retract":
             if not isinstance(change, CanonicalEventModify):
                 raise DocketError(
                     code="occurrence_action_invalid", message="Unsupported occurrence action."
                 )
             patch = change.payload.model_dump(mode="json", exclude_unset=True)
-            if set(patch) - {"title", "event_spec"}:
-                raise DocketError(
-                    code="occurrence_patch_scope_invalid",
-                    message=(
-                        "Occurrence edits may change its title, time, location or notes, "
-                        "not series context."
-                    ),
-                )
+            unsupported = sorted(set(patch) - {"event_spec"})
+            if unsupported:
+                raise patch_error(change, "occurrence_patch_scope_invalid",
+                                  ["payload", unsupported[0]], "stage_occurrence_fields_only")
             child = (
                 session.scalar(
                     select(CanonicalEvent).where(
@@ -141,32 +145,49 @@ def compile_occurrence_changes(session: Session, content: ChangeSetContent) -> C
                     "recurrence": None,
                 }
             )
-            replacement_spec = patch.get("event_spec") or original
-            if replacement_spec.get("recurrence") or (
-                replacement_spec.get("calendar_lane") != series.event_spec.get("calendar_lane")
-            ):
-                raise DocketError(
-                    code="occurrence_patch_scope_invalid",
-                    message="An occurrence edit cannot change recurrence or destination.",
-                )
+            if child is not None:
+                if child.ref_id in versions and versions[child.ref_id] != child.version:
+                    raise patch_error(
+                        change, "version_conflict", ["expected_versions", child.ref_id],
+                        "reconcile_event_version",
+                    )
+                versions[child.ref_id] = child.version
+            assert change.payload.event_spec is not None
+            replacement_spec = merge_fields(original, change.payload.event_spec)
             replacement = OccurrenceReplacement.model_validate(
                 {key: replacement_spec.get(key) for key in ("title", "timing", "location", "notes")}
             )
-            if patch.get("title"):
-                replacement = replacement.model_copy(update={"title": patch["title"]})
-            plan = service.plan(scope.identity, replacement)
-        generated: list[EventChangeInput] = []
+            try:
+                plan = service.plan(scope.identity, replacement)
+            except DocketError as exc:
+                details = exc.details or {}
+                raise patch_error(
+                    change, exc.code, details.get("field_path", ["scope", "identity"]),
+                    details.get("next_action", "read_current_occurrence"),
+                ) from exc
+        generated: list[InternalEventChange] = []
         child_change_id: str | None = None
         if not plan.no_op:
             # Keep a no-content-change master update when only a moved child is
             # changing: it remains the optimistic concurrency lock for this identity.
-            master = CanonicalEventModify(
+            # Cancellation also produces a compiler-owned master exception patch.
+            source_patch = change if isinstance(change, CanonicalEventModify) else (
+                CanonicalEventModify(
+                    change_id=change.change_id, action="update", object_type="canonical_event",
+                    object_ref=series.ref_id, scope=scope,
+                    payload={"recurrence": plan.master_after["recurrence"]},
+                    affected_fields=["event_spec.recurrence"], basis_refs=change.basis_refs,
+                )
+            )
+            master = MaterializedEventModify(
                 change_id=change.change_id,
                 action="update",
                 object_type="canonical_event",
                 object_ref=series.ref_id,
                 scope=scope,
                 payload={"event_spec": plan.master_after},
+                source_patch=source_patch,
+                no_op=series.event_spec == plan.master_after,
                 affected_fields=["recurrence.exceptions"],
                 basis_refs=change.basis_refs,
             )
@@ -195,7 +216,7 @@ def compile_occurrence_changes(session: Session, content: ChangeSetContent) -> C
                 else:
                     assert plan.replacement_after is not None
                     generated.append(
-                        CanonicalEventModify(
+                        MaterializedEventModify(
                             change_id=child_change_id,
                             action="update",
                             object_type="canonical_event",
@@ -204,13 +225,14 @@ def compile_occurrence_changes(session: Session, content: ChangeSetContent) -> C
                                 "title": plan.replacement_after["title"],
                                 "event_spec": plan.replacement_after,
                             },
+                            source_patch=source_patch,
                             affected_fields=["event"],
                             basis_refs=change.basis_refs,
                         )
                     )
             elif plan.replacement_after is not None:
                 generated.append(
-                    CanonicalEventCreate(
+                    MaterializedEventCreate(
                         change_id=child_change_id,
                         action="create",
                         object_type="canonical_event",

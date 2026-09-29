@@ -21,7 +21,7 @@ from docket.models import (
     TemporalBinding,
 )
 from docket.schemas.event_occurrences import CompiledOccurrenceEdit
-from docket.schemas.events import CanonicalEventCreateSpec, CanonicalEventPatchSpec
+from docket.schemas.events import MaterializedEventCreateSpec, MaterializedEventPatchSpec
 from docket.services.event_scope import EventScopeGuard
 
 EventHandler = Callable[[Session, ChangeSet, Any], list[str]]
@@ -204,7 +204,7 @@ class CanonicalEventAuthorityService:
     ) -> list[str]:
         event: CanonicalEvent
         if change.action == "create":
-            spec = CanonicalEventCreateSpec.model_validate(change.create_spec)
+            spec = MaterializedEventCreateSpec.model_validate(change.create_spec)
             if spec.lane_ref is None:
                 raise DocketError(
                     code="create_reference_unresolved",
@@ -270,7 +270,12 @@ class CanonicalEventAuthorityService:
             if change.action == "retract":
                 event.status = "cancelled"
             elif change.action in {"update", "supersede"}:
-                patch = CanonicalEventPatchSpec.model_validate(change.payload)
+                if change.mutation_type != "canonical_event_apply":
+                    raise DocketError(code="event_materialization_required",
+                                      message="Stage the sparse event patch before applying it.")
+                if change.no_op:
+                    return [event.ref_id]
+                patch = MaterializedEventPatchSpec.model_validate(change.payload)
                 values = patch.model_dump(exclude_unset=True)
                 if "lane_ref" in values:
                     lane = self._lane(values.pop("lane_ref"))

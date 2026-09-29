@@ -38,6 +38,7 @@ from docket.services.attachment_evidence import (
     AttachmentEvidenceService,
     AttachmentTextService,
 )
+from docket.services.event_patch_inputs import event_source_content, owned_event_action_ids
 from docket.services.statements import StatementService
 
 GROUPS = (
@@ -75,6 +76,15 @@ def effect_projection(content: ChangeSetContent) -> dict[str, Any]:
     dependency renaming, opaque JSON stripping, scope re-selection or defaults.
     """
     value = mutation_input_json(content)
+    effect_actions = {
+        row["change_id"]: {key: val for key, val in row.items() if key != "basis_refs"}
+        for group in GROUPS for row in value[group]
+    }
+    # Occurrence hashes bind exact execution provenance, but evidence derivation
+    # may add its declared statement basis without changing the semantic effect.
+    plans = [{**plan, "action_hashes": {
+        identifier: sha256_json(effect_actions[identifier]) for identifier in plan["action_hashes"]
+    }} for plan in value["occurrence_plans"]]
     return {
         **{group: sorted([
             {key: val for key, val in action.items() if key != "basis_refs"}
@@ -85,7 +95,7 @@ def effect_projection(content: ChangeSetContent) -> dict[str, Any]:
              if key not in {"intent_id", "idempotency_key", "basis_refs"}}
             for intent in value["provider_intents"]
         ], key=sha256_json),
-        "occurrence_plans": value["occurrence_plans"],
+        "occurrence_plans": plans,
     }
 
 
@@ -172,8 +182,8 @@ def bind_field_evidence(
         if existing["bindings"] != supplied:
             raise _error("unchanged_recorded_field_interpretation")
         return existing
-    actions = {action.change_id: mutation_input_json(action)
-               for group in GROUPS for action in getattr(content, group)}
+    source_content = event_source_content(content)
+    actions = {action["change_id"]: action for group in GROUPS for action in source_content[group]}
     origins = {row.ref_id: row for row in session.scalars(select(OperatorUtterance).where(
         OperatorUtterance.ref_id.in_(request.origin_utterance_refs),
     ))}
@@ -279,6 +289,8 @@ def bind_field_evidence(
         "sources": sorted(sources.values(), key=lambda row: str(row["source_ref"])),
         "bindings": supplied, "statement_refs": statement_refs,
         "direct_action_ids": sorted(direct_action_ids),
+        "direct_inputs": {key: {name: value for name, value in actions[key].items()
+                                if name != "basis_refs"} for key in sorted(direct_action_ids)},
         "effects": effect_projection(content), "from_revision": from_revision,
         "historical_derivation_backfilled": False,
     }
@@ -307,8 +319,15 @@ def compile_field_evidence(
     actions = {action["change_id"]: action for group in GROUPS for action in raw[group]}
     for binding, statement_ref in zip(proof["bindings"], proof["statement_refs"], strict=True):
         for target in binding["targets"]:
-            action = actions[target["change_id"]]
-            action["basis_refs"] = list(dict.fromkeys([*action["basis_refs"], statement_ref]))
+            for identifier in owned_event_action_ids(content, target["change_id"]):
+                if identifier in actions:
+                    action = actions[identifier]
+                    action["basis_refs"] = list(dict.fromkeys([
+                        *action["basis_refs"], statement_ref,
+                    ]))
+    for edit in raw["occurrence_plans"]:
+        edit["action_hashes"] = {identifier: sha256_json(actions[identifier])
+                                 for identifier in edit["action_hashes"]}
     sources = sorted({row["source_ref"] for row in proof["sources"]}.union(
         content.import_scope.source_refs if content.import_scope else [],
     ))
@@ -365,7 +384,8 @@ def verified_direct_actions(
                 raise _error("every_cited_source_has_field_binding", target={
                     "change_id": action.change_id, "field_path": ["basis_refs"],
                 })
-    return set(proof["direct_action_ids"])
+    return set().union(*(owned_event_action_ids(content, identifier)
+                         for identifier in proof["direct_action_ids"]))
 
 
 def compile_selected_field_evidence(
@@ -389,16 +409,19 @@ def compile_selected_field_evidence(
         return content
     expected = complete_selection_provenance(option.compilation_template_json,
                                              request.origin_utterance_refs[0])
-    if pinned_semantic_projection(expected, []) != pinned_semantic_projection(content, []):
+    if pinned_semantic_projection(expected, []) != pinned_semantic_projection(
+        event_source_content(content), [],
+    ):
         raise _error("unchanged_selected_effects")
     bindings = _BINDINGS.validate_python(option.execution_preconditions_json["field_evidence"])
-    actions = [action for group in GROUPS for action in getattr(content, group)]
+    source_content = event_source_content(content)
+    actions = [action for group in GROUPS for action in source_content[group]]
     scope = AssemblyAuthorityScopeInput(
         resolved_intent={"kind": "selected_option"},
-        allowed_mutation_types=sorted({action.mutation_type for action in actions}),
+        allowed_mutation_types=sorted({action["mutation_type"] for action in actions}),
         source_refs=sorted({item.source_ref for item in bindings}),
     )
     bind_field_evidence(session, request=request, scope=scope, content=content,
-                        bindings=bindings, direct_action_ids={a.change_id for a in actions},
+                        bindings=bindings, direct_action_ids={a["change_id"] for a in actions},
                         from_revision=1)
     return compile_field_evidence(session, request_ref=request_ref, content=content)

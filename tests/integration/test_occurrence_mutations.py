@@ -164,7 +164,10 @@ def _admit(session, utterance, trace, kind, ordinal):
 
 
 def _stage_cancel(session, series, scope, number=2, event_spec=None):
-    utterance = _utterance(session, "This class is cancelled tomorrow.", number)
+    utterance = _utterance(session, (
+        "Update the selected class: " + json.dumps(event_spec)
+        if event_spec is not None else "This class is cancelled tomorrow."
+    ), number)
     trace = new_public_ref("trace")
     token = _admit(session, utterance, trace, "stage_changes", 1)
     result = ChangeSetAssemblyService(session).stage(
@@ -174,7 +177,8 @@ def _stage_cancel(session, series, scope, number=2, event_spec=None):
                 "request_key": utterance.request_key,
                 "expected_versions": {series.ref_id: series.version},
                 "assembly_scope": {
-                    "resolved_intent": {"intent": "cancel selected occurrence"},
+                    "resolved_intent": {"intent": "update selected fields" if event_spec
+                                        else "cancel selected occurrence"},
                     "allowed_mutation_types": [
                         "canonical_event_modify" if event_spec else "canonical_event_cancel"
                     ],
@@ -262,7 +266,7 @@ def test_moved_and_already_cancelled_occurrence_previews_keep_original_identity(
     series, identity = _world(session)
     scope = {"kind": "occurrence", "identity": identity.model_dump(mode="json")}
     replacement = {
-        **series.event_spec, "title": "Rescheduled MATH lecture", "recurrence": None,
+        "title": "Rescheduled MATH lecture",
         "timing": {
             "kind": "timed", "start_local": "2026-09-09T16:00:00",
             "end_local": "2026-09-09T16:50:00", "timezone": "America/Los_Angeles",
@@ -331,7 +335,6 @@ def test_pending_occurrence_projection_has_exact_recovery_not_new_authority(
     series, identity = _world(session)
     scope = {"kind": "occurrence", "identity": identity.model_dump(mode="json")}
     replacement = {
-        **series.event_spec, "recurrence": None,
         "timing": {
             "kind": "timed", "start_local": "2026-09-09T16:00:00",
             "end_local": "2026-09-09T16:50:00", "timezone": "America/Los_Angeles",
@@ -442,8 +445,6 @@ def test_manual_event_preview_is_scoped_and_preserves_title_disagreement(session
 def test_explicit_series_cancellation_includes_moved_child(session) -> None:
     series, identity = _world(session)
     replacement = {
-        **series.event_spec,
-        "recurrence": None,
         "timing": {
             "kind": "timed",
             "start_local": "2026-09-09T16:00:00",
@@ -628,8 +629,6 @@ def test_moved_occurrence_edits_and_cancellation_share_one_child(session) -> Non
     series, identity = _world(session)
     scope = {"kind": "occurrence", "identity": identity.model_dump(mode="json")}
     replacement = {
-        **series.event_spec,
-        "recurrence": None,
         "timing": {
             "kind": "timed",
             "start_local": "2026-09-09T16:00:00",
@@ -659,7 +658,7 @@ def test_moved_occurrence_edits_and_cancellation_share_one_child(session) -> Non
         )
     )
     session.flush()
-    replacement2 = {**replacement, "title": "MATH 1263 — revised location", "location": "Room 121"}
+    replacement2 = {"title": "MATH 1263 — revised location", "location": "Room 121"}
     utterance2, trace2, staged2 = _stage_cancel(
         session, series, scope, number=3, event_spec=replacement2
     )

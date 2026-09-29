@@ -61,6 +61,35 @@ because a dated row exposes its `evt_`. `scope.kind=entire_series` is reserved
 for explicit whole-series intent. For "today"/"tomorrow", the gateway binds the
 original captured message; preserve the returned date/timezone on recovery.
 
+For an event update, `canonical_event_modify.payload.event_spec` is a **sparse
+field patch**, not a create specification. Send only changed `title`, `location`,
+`notes` (description), or a complete typed `timing`. For example, a selected
+October 8 occurrence can use `payload: {event_spec: {location: Async}}` with its
+returned original occurrence scope. Do not copy the original title, time, lane,
+tags, priority or recurrence. Docket merges against the canonical occurrence or
+its existing moved replacement, and preserves everything not supplied.
+
+Location is arbitrary literal text: `Async`, `Online`, `TBD`, a room, Unicode or
+a URL all work. It need not be a physical venue or registered Entity. Do not
+fetch a URL, cancel the meeting, remove its time block, create a Task or fabricate
+a meeting link merely because a location is nonphysical. Ask only when the
+requested effect or target is materially ambiguous.
+
+Omission leaves a field unchanged; null clears location/notes; empty text remains
+empty. Title/timing cannot be cleared. Title has only one edit path:
+`payload.event_spec.title`. Appending description text may need one scoped read
+of existing notes, then send the complete intended notes field. A separately
+requested recurrence change uses outer `payload.recurrence` with explicit series
+scope; destination changes still use guarded routing. Never embed calendar_lane
+or recurrence in the content patch. Entire-series edits preserve explicit
+overrides; report a returned `preserved_override_count` when relevant.
+
+An equal-value patch is a no-op, not a reason to create another occurrence.
+`event_patch_effect_conflict` needs semantic reconciliation, not a changed action
+ID, supersede/cancel fallback, or a new request. `event_patch_migration_required`
+preserves an old draft but does not authorize reinterpreting its old full snapshot.
+Do not replay an earlier failed cancellation as a replacement for a location edit.
+
 ## Interpretation and conflict path
 
 Derive zero or more typed statements from the current utterance. Preserve what the

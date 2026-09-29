@@ -37,6 +37,18 @@ def test_manual_skill_preserves_evidence_interpretation_and_conflicts() -> None:
     assert "one consolidated clarification" in skill
 
 
+def test_event_patch_recipe_is_sparse_literal_and_preserves_unchanged_fields():
+    skill = " ".join(SKILL_PATH.read_text(encoding="utf-8").split())
+    contract = render_contract("interactive")
+    assert "sparse field patch" in skill.replace("**", "")
+    assert "Location is arbitrary literal text" in skill
+    assert "Omission leaves a field unchanged" in skill
+    assert "Do not replay an earlier failed cancellation" in skill
+    assert "payload.event_spec.title" in skill
+    assert "cancelled occurrences require lifecycle resolution" in contract
+    assert "Never copy a full create spec or outer payload.title" in contract
+
+
 def test_manual_skill_defines_semantic_readiness_and_staged_protocol() -> None:
     skill = " ".join(SKILL_PATH.read_text(encoding="utf-8").split())
 

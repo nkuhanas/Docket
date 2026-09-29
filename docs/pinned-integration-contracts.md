@@ -30,6 +30,17 @@ traceability marker only.
 
 ## Hermes plugin contract
 
+Plugin `0.34.0` packages contract v43 and sparse event field patching. The public
+`canonical_event_modify.payload.event_spec` accepts only supplied title, notes,
+location and complete explicit-timezone timing. Docket owns materialization,
+version checks, occurrence identity and unchanged fields. Locations are literal
+text, not registered venues. Null clears notes/location; omission preserves them.
+Public outer-title/full-snapshot recipes are rejected with field diagnostics;
+internal executable records cannot be supplied through MCP or clarification.
+The ChangeSet compiler pin is version 3. Current executable revisions can run
+only when exact stored effects still validate; older event-edit drafts require
+explicit effect-checked reconciliation. Counts remain 23 interactive/four triage.
+
 Plugin `0.33.0` packages contract v42. Supporting `field_evidence` is also part
 of persisted clarification options. Typed clarification replies carry an immutable
 same-request context binding, not rewritten attachment ownership. The capture API

@@ -72,9 +72,8 @@ def _google_edit(factory, provider, *, title):
 def _mutation(event):
     return {
         "mutation_type": "canonical_event_modify", "action": "update",
-        # The ordinary contract carries the full canonical spec, but copied
-        # title/time/location fields must not become unwanted provider writes.
-        "payload": {"event_spec": {**event.event_spec, "notes": NOTES}},
+        # Docket owns the unchanged canonical fields; the model sends only notes.
+        "payload": {"event_spec": {"notes": NOTES}},
         "affected_fields": ["event_spec"],
     }
 
@@ -127,6 +126,46 @@ def test_description_update_preserves_google_edit_and_reconciles_exact_patch(
         assert session.scalar(select(Operation.status).where(
             Operation.operation_type == "calendar_update_event",
         )) == "succeeded"
+
+
+@pytest.mark.parametrize("field", ["location", "notes"])
+@pytest.mark.parametrize("value", [None, "", "Async", "東京 🏫", "https://example.test/meeting"])
+def test_sparse_field_delivery_preserves_omit_and_projects_clear(session_factory, field, value):
+    event_ref, provider, runner = _fixture(session_factory, diverged=False)
+    before = next(iter(provider.events.values())).snapshot.copy()
+    with session_factory.begin() as session:
+        event = session.scalar(select(CanonicalEvent))
+        # Establish nonempty baseline for a meaningful clear, using the real write path.
+        if field == "notes":
+            assert _commit_event_change(
+                session, event_ref=event_ref, message_id="1542899000000000310",
+                text="Set the description to the reservation notice.", mutation=_mutation(event),
+            )["state"] == "committed"
+    if field == "notes":
+        assert runner.run_due_once()
+    with session_factory.begin() as session:
+        result = _commit_event_change(
+            session, event_ref=event_ref, message_id="1542899000000000311",
+            text=f"Set {field} to {value!r}.", mutation={
+                "mutation_type": "canonical_event_modify", "action": "update",
+                "payload": {"event_spec": {field: value}},
+                "affected_fields": [f"event_spec.{field}"],
+            },
+        )
+        assert result["state"] == "committed", result
+        event = session.scalar(select(CanonicalEvent))
+        assert event.event_spec[field] == value
+    assert runner.run_due_once()
+    assert len(provider.events) == 1
+    after = next(iter(provider.events.values())).snapshot
+    provider_field = "description_sha256" if field == "notes" else "location"
+    # Google's absent/empty description is normalized to the same digest;
+    # Docket still retains the Operator's exact null-vs-empty canonical input.
+    assert after[provider_field] == (sha256_json(value or "") if field == "notes" else value)
+    ignored = {provider_field, "docket_correlation"}  # new delivery has a new correlation identity
+    assert {key: val for key, val in after.items() if key not in ignored} == {
+        key: val for key, val in before.items() if key not in ignored
+    }
 
 
 def test_google_edit_after_commit_is_rejected_without_overwriting(session_factory):

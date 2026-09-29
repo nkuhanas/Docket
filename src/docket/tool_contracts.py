@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-09-22-v42"
+CONTRACT_VERSION = "docket-tools-2026-09-28-v43"
 
 
 class ToolContractEntry(TypedDict):
@@ -142,7 +142,16 @@ _INTERACTIVE_ASSEMBLY: dict[str, tuple[str, str]] = {
     ),
     "docket_stage_changes": (
         "ONT-CS-TOOL-0001",
-        "Stage bounded actions or normalized entries. Resolve occurrence versus work before "
+        "Stage bounded actions or normalized entries. Event modify uses a sparse "
+        "payload.event_spec with only changed title/location/notes/timing. Omit unchanged "
+        "fields; null clears location/notes, empty text stays empty, title/timing cannot be "
+        "cleared. Location is literal free text (Async/Online/TBD/URL), not venue validation "
+        "or cancellation. Docket preserves destination, recurrence, tags and priority. Never "
+        "copy a full create spec or outer payload.title. Separate payload.recurrence needs "
+        "explicit series scope; lane_ref remains guarded routing. Use the original occurrence "
+        "selector even after a move. Equal fields are no-op; cancelled occurrences require "
+        "lifecycle resolution. Field-intent changes conflict, not mechanical repair. "
+        "Resolve occurrence versus work before "
         "the first stage: an intended meeting/visit at a selected time is a CanonicalEvent, "
         "not merely a Task with a window. A deadline or possible work window stays Time; "
         "calendar-visible Time also needs a temporal_calendar_projection and resolved lane. "

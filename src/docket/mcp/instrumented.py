@@ -185,13 +185,23 @@ def _validation_issues(exc: Exception) -> list[dict[str, Any]]:
         include_input=False,
     )[:12]:
         location = [str(component)[:64] for component in error.get("loc", ())[:16]]
-        issues.append(
-            {
-                "path": location,
-                "type": str(error.get("type", "validation_error"))[:128],
-                "message": str(error.get("msg", "Invalid argument."))[:240],
-            }
-        )
+        issue: dict[str, Any] = {
+            "path": location,
+            "type": str(error.get("type", "validation_error"))[:128],
+            "message": str(error.get("msg", "Invalid argument."))[:240],
+        }
+        if "canonical_event_modify" in location:
+            issue["next_action"] = "correct_the_identified_field_and_stage_again"
+            if location[-2:] == ["event_spec", "calendar_lane"]:
+                issue.update({
+                    "constraint": "destination_is_not_an_event_content_field",
+                    "next_action": "omit_calendar_lane_to_preserve_destination",
+                })
+            elif location[-2:] == ["event_spec", "recurrence"]:
+                issue["next_action"] = "use_outer_payload_recurrence_with_explicit_series_scope"
+            elif location[-2:] == ["payload", "title"]:
+                issue["next_action"] = "use_payload_event_spec_title"
+        issues.append(issue)
     return issues
 
 

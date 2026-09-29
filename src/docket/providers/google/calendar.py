@@ -210,6 +210,12 @@ def _standalone_event_body(event: dict[str, Any]) -> dict[str, Any]:
     else:
         start_local = datetime.fromisoformat(str(timing["start_local"]))
         end_local = datetime.fromisoformat(str(timing["end_local"]))
+        # A replacement occurrence may be in the repeated DST hour. Carry the
+        # retained fold as an RFC3339 offset instead of leaving Google to choose.
+        if timing.get("fold") is not None:
+            zone = ZoneInfo(timezone)
+            start_local = start_local.replace(tzinfo=zone, fold=int(timing["fold"]))
+            end_local = end_local.replace(tzinfo=zone, fold=int(timing["fold"]))
         start = {
             "dateTime": start_local.isoformat(timespec="seconds"),
             "timeZone": timezone,
@@ -417,7 +423,11 @@ def normalize_event_body(body: dict[str, Any]) -> dict[str, Any]:
         timezone = value.get("timeZone")
         parsed = datetime.fromisoformat(value["dateTime"].replace("Z", "+00:00"))
         if parsed.tzinfo is not None and isinstance(timezone, str):
-            parsed = parsed.astimezone(ZoneInfo(timezone)).replace(tzinfo=None)
+            parsed = parsed.astimezone(ZoneInfo(timezone))
+            # Normal times still normalize Google's offset spelling to local
+            # wall time. In a fold, removing it would conflate distinct instants.
+            if parsed.replace(fold=0).utcoffset() == parsed.replace(fold=1).utcoffset():
+                parsed = parsed.replace(tzinfo=None)
         return {"dateTime": parsed.isoformat(timespec="seconds"), "timeZone": timezone}
 
     properties = body.get("extendedProperties", {})

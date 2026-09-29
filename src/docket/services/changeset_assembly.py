@@ -68,6 +68,7 @@ from docket.services.changeset_diff import bounded_details, bounded_sample, draf
 from docket.services.changeset_pins import effect_hash, migration_required, pin_snapshot
 from docket.services.changeset_previews import capture_event_preview, event_preview_sample
 from docket.services.changeset_recompile import recompile_draft
+from docket.services.event_patch_bindings import bind_event_patches
 from docket.services.field_evidence import (
     bind_field_evidence,
     compile_field_evidence,
@@ -1581,10 +1582,11 @@ class ChangeSetAssemblyService:
         for op in request.patch.operations:
             if isinstance(op, StageActionRemove):
                 proposed_actions.pop(op.change_id, None)
+        event_patch_bindings = bind_event_patches(changeset, proposed_actions)
         if field_proof is not None:
             # Guard edits before compiler/domain validation too: a malformed
             # replacement must not overwrite the preserved evidence-bound work.
-            original_direct = {
+            original_direct = field_proof.get("direct_inputs") or {
                 action["change_id"]: action for group in _SNAPSHOT_GROUPS[:-1]
                 for action in field_proof["effects"][group]
                 if action["change_id"] in field_proof["direct_action_ids"]
@@ -1937,6 +1939,8 @@ class ChangeSetAssemblyService:
         )
         if field_inputs:
             changeset.compiler_manifest_json["field_evidence_input"] = field_inputs
+        if event_patch_bindings:
+            changeset.compiler_manifest_json["event_patch_bindings"] = event_patch_bindings
         if field_proof is not None:
             changeset.compiler_manifest_json["field_evidence_proof_hash"] = sha256_json(field_proof)
         changeset.precondition_hash = new_precondition_hash
