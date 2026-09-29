@@ -118,15 +118,25 @@ from docket.tool_contracts import CONTRACT_VERSION, contract_hash
 
 def test_occurrence_commits_serialize_and_identity_is_immutable(
     factory: sessionmaker[Session],
+    *,
+    field_patch: bool = False,
 ) -> None:
+    name = "field-patch-smoke" if field_patch else "occurrence-smoke"
     with factory.begin() as session:
-        first = _utterance("1542799000000000651", "Cancel Tuesday's class, not the series.")
-        second = _utterance("1542799000000000652", "Cancel that same class occurrence.")
+        first = _utterance(
+            "1542799000000000661" if field_patch else "1542799000000000651",
+            ("Tuesday's class is Async." if field_patch
+             else "Cancel Tuesday's class, not the series."),
+        )
+        second = _utterance(
+            "1542799000000000662" if field_patch else "1542799000000000652",
+            "That class is Online." if field_patch else "Cancel that same class occurrence.",
+        )
         session.add_all([first, second])
         session.flush()
         account = ProviderAccount(
             provider="google",
-            external_account_id="occurrence-smoke",
+            external_account_id=name,
             capabilities=["google_calendar"],
             enabled=True,
         )
@@ -134,7 +144,7 @@ def test_occurrence_commits_serialize_and_identity_is_immutable(
         session.flush()
         lane = CalendarLane(
             account_id=account.id,
-            lane="occurrence-smoke",
+            lane=name,
             display_name="Occurrence smoke",
             calendar_id="occurrence@example.com",
             color_hex="#3367D6",
@@ -147,6 +157,8 @@ def test_occurrence_commits_serialize_and_identity_is_immutable(
         spec = StandaloneCalendarEventInput.model_validate(
             {
                 "title": "Occurrence smoke",
+                "location": "Original room",
+                "notes": "Preserve the description",
                 "calendar_lane": lane.lane,
                 "timing": {
                     "kind": "timed",
@@ -163,7 +175,7 @@ def test_occurrence_commits_serialize_and_identity_is_immutable(
             }
         )
         series = CanonicalEvent(
-            canonical_key="occurrence-smoke",
+            canonical_key=name,
             title=spec.title,
             event_spec=spec.model_dump(mode="json"),
             status="active",
@@ -247,6 +259,19 @@ def test_occurrence_commits_serialize_and_identity_is_immutable(
                 },
             }
         )
+        if field_patch:
+            values = request.model_dump(mode="json", exclude_unset=True)
+            values["assembly_scope"]["resolved_intent"] = {"intent": "update selected location"}
+            values["assembly_scope"]["allowed_mutation_types"] = ["canonical_event_modify"]
+            action = values["patch"]["operations"][0]["action"]
+            action.update({
+                "mutation_type": "canonical_event_modify", "action": "update",
+                "payload": {"event_spec": {
+                    "location": "Async" if utterance_ref == requests[0][0] else "Online",
+                }},
+                "affected_fields": ["event_spec.location"],
+            })
+            request = StageChangesInput.model_validate(values)
         staged = _stage(
             factory,
             utterance_ref=utterance_ref,
@@ -257,6 +282,12 @@ def test_occurrence_commits_serialize_and_identity_is_immutable(
         assert staged["assembly_ready"], staged
         assert staged["event_effect_count"] == 1
         assert staged["event_preview"][0]["scope"]["kind"] == "occurrence"
+        if field_patch:
+            # The lost stage response replays exactly, even across connections.
+            assert _stage(
+                factory, utterance_ref=utterance_ref, token=token,
+                argument_hash="a" * 64, request=request,
+            ) == {**staged, "replayed": True}
         staged_draft_refs.append(staged["draft_ref"])
         commit_token = _admit_committed(
             factory,
@@ -298,6 +329,18 @@ def test_occurrence_commits_serialize_and_identity_is_immutable(
     with ThreadPoolExecutor(max_workers=2) as pool:
         outcomes = list(pool.map(commit, pending))
     assert sum(result["disposition"] == "committed" for result in outcomes) == 1, outcomes
+    if field_patch:
+        winner = next(
+            i for i, result in enumerate(outcomes) if result["disposition"] == "committed"
+        )
+        binding = pending[winner]
+        with factory.begin() as session:
+            # Lost commit response recovers its receipt, not a second replacement/delivery.
+            replay = ChangeSetAssemblyService(session).commit(
+                utterance_ref=binding[0], request_key=binding[1],
+                assembly_operation_token=binding[2], assembly_argument_hash="b" * 64,
+            )
+            assert replay == {**outcomes[winner], "replayed": True}
     with factory.begin() as session:
         series = session.scalar(select(CanonicalEvent).where(CanonicalEvent.ref_id == series_ref))
         assert series.status == "active"
@@ -309,7 +352,7 @@ def test_occurrence_commits_serialize_and_identity_is_immutable(
             assert preview["effect_count"] == 1
             effect = preview["effects"][0]
             assert effect["before"]["status"] == "active"
-            assert effect["after"]["status"] == "cancelled"
+            assert effect["after"]["status"] == ("active" if field_patch else "cancelled")
             assert effect["before"]["timing"]["start_local"] == "2026-09-08T15:00:00"
             assert effect["observed_version"] == 1 < series.version
         assert (
@@ -320,6 +363,21 @@ def test_occurrence_commits_serialize_and_identity_is_immutable(
             )
             == 1
         )
+        if field_patch:
+            occurrence = session.scalar(select(EventOccurrence).where(
+                EventOccurrence.series_ref == series_ref,
+            ))
+            child = session.scalar(select(CanonicalEvent).where(
+                CanonicalEvent.ref_id == occurrence.replacement_event_ref,
+            ))
+            assert child.event_spec["location"] == ("Async" if winner == 0 else "Online")
+            assert child.event_spec["notes"] == "Preserve the description"
+            assert child.lane_ref == series.lane_ref
+            assert child.event_spec["timing"]["start_local"] == "2026-09-08T15:00:00"
+            assert child.event_spec["timing"]["end_local"] == "2026-09-08T15:50:00"
+            assert session.scalar(select(func.count(Operation.id)).where(
+                Operation.originating_changeset_ref == outcomes[winner]["changeset_ref"],
+            )) == 2
     # Exercise database triggers, bypassing the complementary ORM guards.
     for statement in (
         "UPDATE event_occurrences SET original_timezone='UTC' WHERE series_ref=:ref",
@@ -328,20 +386,24 @@ def test_occurrence_commits_serialize_and_identity_is_immutable(
         try:
             with factory.begin() as session:
                 session.execute(text(statement), {"ref": series_ref})
-        except DBAPIError:
-            pass
+        except DBAPIError as exc:
+            assert getattr(exc.orig, "sqlstate", None) == "P0001"
         else:
             raise AssertionError("PostgreSQL permitted an occurrence identity rewrite")
     try:
         with factory.begin() as session:
             session.execute(text(
-                "UPDATE changeset_revisions SET compiler_manifest_json='{}'::json "
-                "WHERE change_set_id IN (SELECT id FROM changesets WHERE ref_id=:ref)"
+                "UPDATE change_set_revisions SET compiler_manifest_json='{}'::json "
+                "WHERE change_set_id IN (SELECT id FROM change_sets WHERE ref_id=:ref)"
             ), {"ref": staged_draft_refs[0]})
-    except DBAPIError:
-        pass
+    except DBAPIError as exc:
+        assert getattr(exc.orig, "sqlstate", None) == "P0001"
     else:
         raise AssertionError("PostgreSQL permitted rewriting a pinned canonical preview")
+
+
+def test_sparse_occurrence_patches_serialize_and_replay(factory: sessionmaker[Session]) -> None:
+    test_occurrence_commits_serialize_and_identity_is_immutable(factory, field_patch=True)
 
 
 def test_relative_date_capture_serializes(factory: sessionmaker[Session]) -> None:
@@ -2983,6 +3045,7 @@ def main() -> None:
         test_native_and_deferred_ingress_claim_once,
         test_relative_date_capture_serializes,
         test_occurrence_commits_serialize_and_identity_is_immutable,
+        test_sparse_occurrence_patches_serialize_and_replay,
         test_diff_pages_keep_both_revisions_across_connections,
         test_invocation_binding_transport_retries_serialize,
         test_explicit_compiler_migration_requires_reobservation,

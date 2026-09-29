@@ -224,10 +224,19 @@ class EventOccurrenceService:
             raise DocketError(
                 code="series_unavailable", message="The selected series is not active."
             )
-        event = StandaloneCalendarEventInput.model_validate(series.event_spec)
+        event = StandaloneCalendarEventInput.model_validate(
+            series.event_spec, context={"allow_explicit_priority": True},
+        )
         if event.recurrence is None:
             raise DocketError(code="event_is_not_recurring", message="Target is not a series.")
         prior = self.get(identity)
+        if replacement is not None and prior is not None and prior.status == "cancelled":
+            raise DocketError(
+                code="occurrence_cancelled",
+                message="A field edit cannot revive a cancelled occurrence.",
+                details={"field_path": ["scope", "identity"],
+                         "next_action": "resolve_occurrence_lifecycle"},
+            )
         if prior is not None:
             original = OccurrenceIdentity.model_validate(prior.identity_json)
             if identity != original:
@@ -247,6 +256,13 @@ class EventOccurrenceService:
         recurrence = event.recurrence.model_dump(mode="json")
         selected = identity.original_date.isoformat()
         already_excluded = selected in recurrence["excluded_dates"]
+        if replacement is not None and prior is None and already_excluded:
+            raise DocketError(
+                code="occurrence_cancelled",
+                message="A field edit cannot revive an excluded occurrence.",
+                details={"field_path": ["scope", "identity"],
+                         "next_action": "resolve_occurrence_lifecycle"},
+            )
         # Removing RDATE is the precise exclusion when this date was added; a
         # profile cannot contain the same date in both RDATE and EXDATE.
         if selected in recurrence["additional_dates"]:
@@ -264,23 +280,30 @@ class EventOccurrenceService:
         recurrence["excluded_dates"].sort()
         master_after = {**series.event_spec, "recurrence": recurrence}
         # Validate the complete result, including the explicit exception budget.
-        StandaloneCalendarEventInput.model_validate(master_after)
+        StandaloneCalendarEventInput.model_validate(
+            master_after, context={"allow_explicit_priority": True},
+        )
+        child = self.session.scalar(select(CanonicalEvent).where(
+            CanonicalEvent.ref_id == prior.replacement_event_ref,
+        )) if prior is not None and prior.replacement_event_ref is not None else None
+        baseline = child.event_spec if child is not None else {
+            **series.event_spec, "timing": original_timing, "recurrence": None,
+        }
         replacement_after: dict[str, Any] | None = None
         if replacement is not None:
             replacement_after = {
-                **event.model_dump(mode="json"),
+                **baseline,
                 **replacement.model_dump(mode="json"),
                 "recurrence": None,
             }
-            StandaloneCalendarEventInput.model_validate(replacement_after)
+            StandaloneCalendarEventInput.model_validate(
+                replacement_after, context={"allow_explicit_priority": True},
+            )
         no_op = False
         if replacement is None:
             no_op = prior is not None and prior.status == "cancelled"
-        elif prior is not None and prior.status == "replaced":
-            child = self.session.scalar(
-                select(CanonicalEvent).where(CanonicalEvent.ref_id == prior.replacement_event_ref)
-            )
-            no_op = child is not None and child.event_spec == replacement_after
+        else:
+            no_op = baseline == replacement_after
         return OccurrenceEditPlan(
             identity=identity,
             original_timing=original_timing,

@@ -35,14 +35,14 @@ DATES = ["09-17", "09-24", "10-08", "10-22", "11-05", "11-19", "12-03"]
 ROOMS = ["102", "113", "102", "102", "113", "102", "102"]
 
 
-def _fixture(session):
+def _fixture(session, text=None):
     content = base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII="
     )
     capture = ProvenanceService(session).capture_operator_utterance(_request(
         message_id="1542999000000000771", content=content,
         filename="building.png", media_type="image/png",
-    ).model_copy(update={"verbatim_text": (
+    ).model_copy(update={"verbatim_text": text or (
         "Add seven CSAI meetings: 9/17 7:50pm 102; 9/24 8pm 113; 10/8 7:30pm 102; "
         "10/22 7:30pm 102; 11/5 7:30pm 113; 11/19 7:30pm 102; 12/3 7:30pm 102. "
         "Use the attached building name. Use one hour for each meeting."
@@ -162,6 +162,65 @@ def _assert_committed(session, lane):
     assert session.scalar(select(func.count(Item.id))) == 0
     assert session.scalar(select(func.count(TemporalBinding.id))) == 0
     assert session.scalar(select(func.count(Operation.id))) == 7
+
+
+@pytest.mark.parametrize("occurrence", [False, True])
+def test_sparse_event_patch_uses_bound_image_without_full_snapshot(session, occurrence):
+    from test_occurrence_mutations import _admit as admit_occurrence
+    from test_occurrence_mutations import _world
+
+    from docket.models import EventOccurrence
+
+    series, identity = _world(session)
+    if not occurrence:
+        series.event_spec = {**series.event_spec, "recurrence": None}
+    utterance, service, _, _, binding, _, _, _ = _fixture(
+        session, text="Change the selected class location to the building in this image.",
+    )
+    source = binding["bindings"][0]["source_ref"]
+    scope = ({"kind": "occurrence", "identity": identity.model_dump(mode="json")}
+             if occurrence else {"kind": "one_time"})
+    binding["bindings"][0]["targets"] = [
+        {"change_id": "location", "field_path": "payload.event_spec.location", "match": "exact"},
+    ]
+    action = {"mutation_type": "canonical_event_modify", "change_id": "location",
+              "action": "update", "object_type": "canonical_event", "object_ref": series.ref_id,
+              "scope": scope, "payload": {"event_spec": {"location": BUILDING}},
+              "affected_fields": ["event_spec.location"], "basis_refs": [utterance.ref_id, source]}
+    trace = new_public_ref("trace")
+    result = service.stage(StageChangesInput(
+        utterance_ref=utterance.ref_id, request_key=utterance.request_key,
+        expected_versions={series.ref_id: series.version},
+        assembly_scope={"resolved_intent": {"effect": "update location"},
+                        "allowed_mutation_types": ["canonical_event_modify"],
+                        "source_refs": [source], "target_refs": [series.ref_id],
+                        "event_scopes": {series.ref_id: scope}},
+        patch={"operations": [{"operation": "action_upsert", "action": action}, binding]},
+    ), assembly_operation_token=admit_occurrence(session, utterance, trace, "stage_changes", 1),
+        assembly_argument_hash="1" * 64)
+    assert result["disposition"] == "ready_to_commit", result["diagnostic_sample"]
+    # A new operation carrying the same sparse source is replay-safe despite
+    # server-owned materialization and evidence statement compilation.
+    restaged = service.stage(StageChangesInput(
+        utterance_ref=utterance.ref_id, request_key=utterance.request_key,
+        patch={"operations": [{"operation": "action_upsert", "action": action}]},
+    ), assembly_operation_token=admit_occurrence(session, utterance, trace, "stage_changes", 2),
+        assembly_argument_hash="2" * 64)
+    assert restaged["disposition"] == "no_op", restaged
+    receipt = service.commit(
+        utterance_ref=utterance.ref_id, request_key=utterance.request_key,
+        assembly_operation_token=admit_occurrence(session, utterance, trace, "commit_changeset", 3),
+        assembly_argument_hash="3" * 64,
+    )
+    assert receipt["disposition"] == "committed"
+    target = series
+    if occurrence:
+        row = session.scalar(select(EventOccurrence))
+        target = session.scalar(select(CanonicalEvent).where(
+            CanonicalEvent.ref_id == row.replacement_event_ref,
+        ))
+    assert target.event_spec["location"] == BUILDING
+    assert any(ref.startswith("stm_") for ref in target.basis_refs)
 
 
 def test_mixed_message_and_image_stage_then_commit_without_review(session):

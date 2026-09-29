@@ -241,6 +241,9 @@ class StandaloneCalendarEventInput(StrictModel):
                 "initial proposals default to normal priority; use the authenticated "
                 "Priority control for a non-default value"
             )
+        return self.validate_recurrence_bounds()
+
+    def validate_recurrence_bounds(self) -> "StandaloneCalendarEventInput":
         if (
             self.recurrence is not None
             and self.recurrence.until_date is not None
@@ -265,6 +268,15 @@ class StandaloneCalendarEventInput(StrictModel):
     def system_tags(self) -> list[str]:
         timing_kind = "all_day" if isinstance(self.timing, AllDayEventTiming) else "timed"
         return [self.recurrence_kind, timing_kind, "standalone"]
+
+
+class MaterializedCalendarEvent(StandaloneCalendarEventInput):
+    """Canonical server-owned state may retain already authorized nondefault priority."""
+
+    @model_validator(mode="after")
+    def priority_and_recurrence_are_safe(self, info: ValidationInfo) -> "MaterializedCalendarEvent":
+        self.validate_recurrence_bounds()
+        return self
 
 
 class CalendarLaneResult(StrictModel):

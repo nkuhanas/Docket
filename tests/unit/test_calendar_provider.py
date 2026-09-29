@@ -138,6 +138,26 @@ def test_google_offset_response_normalizes_to_immutable_request(monkeypatch) -> 
     assert event_matches_request(result, request)
 
 
+@pytest.mark.parametrize(("fold", "offset"), [(0, "-07:00"), (1, "-08:00")])
+def test_replacement_body_and_reconciliation_preserve_dst_fold(fold, offset):
+    request = replace(event_request(), schedule=None, event_spec={
+        "title": "Class", "location": "Async", "timing": {
+            "kind": "timed", "start_local": "2026-11-01T01:30:00",
+            "end_local": "2026-11-01T01:50:00", "timezone": "America/Los_Angeles",
+            "fold": fold,
+        },
+    })
+    body = request.event_body()
+    assert body["start"]["dateTime"] == "2026-11-01T01:30:00" + offset
+    provider = FakeCalendarProvider()
+    delivered = provider.create_event(request)
+    assert event_matches_request(delivered, request)
+    wrong_fold = replace(request, event_spec={**request.event_spec, "timing": {
+        **request.event_spec["timing"], "fold": 1 - fold,
+    }})
+    assert not event_matches_request(delivered, wrong_fold)
+
+
 def test_http_timeout_is_unknown_but_rate_limit_is_definite_transient(monkeypatch) -> None:
     provider = GoogleCalendarProvider("unused-token-file")
     monkeypatch.setattr(provider, "_authorization_header", lambda: "Bearer test")

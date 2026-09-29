@@ -233,6 +233,8 @@ def recompile_draft(
     changeset.compiler_manifest_json = {
         "identifier": COMPILER_IDENTIFIER, "version": COMPILER_VERSION,
         "entry_count": len(entries), "migration": migration,
+        **({"event_patch_bindings": before.compiler_manifest_json["event_patch_bindings"]}
+           if "event_patch_bindings" in before.compiler_manifest_json else {}),
         **({"source_title_repair_proofs": repair_proofs} if repair_proofs else {}),
     }
     field_proof = read_field_evidence(service.session, changeset.semantic_request_ref)

@@ -143,6 +143,20 @@ def test_supporting_field_binding_is_disclosed_with_direct_actions_only():
     assert {"source_ref", "targets", "value"} <= set(binding["required"])
 
 
+def test_event_edit_disclosure_exposes_only_sparse_public_fields():
+    described = _module().scoped_tool_description(
+        _stage_definition(), mutation_types=["canonical_event_modify"],
+    )
+    schema = described["parameters"]
+    assert len(json.dumps(described, separators=(",", ":")).encode()) < 16_000
+    assert set(schema["$defs"]["EventFieldPatch"]["properties"]) == {
+        "title", "location", "notes", "timing",
+    }
+    assert "title" not in schema["$defs"]["CanonicalEventPatchSpec"]["properties"]
+    assert "MaterializedEventModify" not in schema["$defs"]
+    assert "canonical_event_apply" not in json.dumps(schema)
+
+
 def test_schema_compaction_preserves_title_properties_and_opaque_literal_values():
     module = _module()
     literal = {"title": "literal", "properties": {"title": "not a schema"}}

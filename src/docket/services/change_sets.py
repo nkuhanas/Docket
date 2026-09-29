@@ -47,6 +47,7 @@ from docket.schemas.authority import (
     ConflictResolve,
     ImportEntryCoverage,
     ItemCreate,
+    MaterializedEventModify,
     ProviderIntentInput,
     ProviderOperationType,
     TemporalBindingCreate,
@@ -66,6 +67,7 @@ from docket.services.calendar_update_plan import (
 )
 from docket.services.case_resolutions import AttentionCaseResolutionService
 from docket.services.changeset_pins import migration_required, pin_snapshot, verify_snapshot
+from docket.services.changeset_previews import event_preview_sample
 from docket.services.conflicts import ConflictService
 from docket.services.event_occurrences import EventOccurrenceService
 from docket.services.event_scope import EventScopeGuard
@@ -271,7 +273,7 @@ def _content_payload(content: ChangeSetContent) -> dict[str, Any]:
     return payload
 
 
-ChangeInput = CanonicalChangeInput | AttentionCaseResolutionInput
+ChangeInput = CanonicalChangeInput | MaterializedEventModify | AttentionCaseResolutionInput
 
 
 def _as_json(value: Any) -> Any:
@@ -611,16 +613,23 @@ class ChangeSetService:
             refs = self.handlers[change.object_type](self.session, changeset, resolved_change)
             refs_by_change_id[change.change_id] = refs
             receipt.add_refs(refs)
+            if isinstance(change, MaterializedEventModify) and change.no_op:
+                continue
             receipt.effects.append(
                 ChangeSetEffectReceipt(
                     change_id=change.change_id,
-                    mutation_type=change.mutation_type,
+                    mutation_type=(
+                        "canonical_event_modify" if isinstance(change, MaterializedEventModify)
+                        else change.mutation_type
+                    ),
                     action=change.action,
                     object_type=change.object_type,
                     refs=tuple(refs),
                 )
             )
         for compiled in content.occurrence_plans:
+            if compiled.plan.no_op:
+                continue
             replacement_ref = compiled.plan.replacement_event_ref
             if replacement_ref is None and compiled.replacement_change_id is not None:
                 replacement_refs = refs_by_change_id.get(compiled.replacement_change_id, [])
@@ -730,6 +739,8 @@ class ChangeSetService:
             )
 
         for event_change in content.event_changes:
+            if isinstance(event_change, MaterializedEventModify) and event_change.no_op:
+                continue
             lane_change_id: str | None = None
             lane_ref: str | None = None
             operation_type: ProviderOperationType | None = None
@@ -2368,6 +2379,8 @@ class ChangeSetService:
 
         for event_change in content.event_changes:
             expected_operation: ProviderOperationType | None = None
+            if isinstance(event_change, MaterializedEventModify) and event_change.no_op:
+                continue
             target_ref = event_change.object_ref
             if event_change.action == "create":
                 expected_operation = "calendar_create_event"
@@ -3152,6 +3165,11 @@ class ChangeSetService:
             changeset_ref=changeset.ref_id,
             semantic_request_ref=changeset.semantic_request_ref,
         )
+        changeset.commit_receipt_json.update(event_preview_sample(
+            changeset.compiler_manifest_json.get("canonical_event_preview", {}),
+            entry_owned_ids={change_id for owner in changeset.compiled_action_ownership_json
+                             for change_id in owner["change_ids"]}, budget=3000,
+        ))
         intent_session.semantic_state = "ready"
         intent_session.commit_state = "committed"
         intent_session.committed_changeset_ref = changeset.ref_id

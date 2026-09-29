@@ -266,7 +266,8 @@ def test_committed_event_delivery_resumes_after_reauth_without_another_request(
         assert runner.run_due_once() is True
         mutation = (
             {"mutation_type": "canonical_event_modify", "action": "update",
-             "payload": {"title": "Updated meeting"}, "affected_fields": ["title"]}
+             "payload": {"event_spec": {"title": "Updated meeting"}},
+             "affected_fields": ["event_spec.title"]}
             if failed_method == "update_event" else
             {"mutation_type": "canonical_event_cancel", "action": "retract",
              "payload": {}, "affected_fields": ["status"]}
@@ -795,7 +796,7 @@ def test_uncertain_provider_failure_does_not_roll_back_committed_event(
             {
                 "mutation_type": "canonical_event_modify",
                 "action": "update",
-                "payload": {"title": "Renamed PolyUAS meeting"},
+                "payload": {"event_spec": {"title": "Renamed PolyUAS meeting"}},
                 "affected_fields": ["title"],
             },
             "calendar_update_event",
@@ -932,7 +933,7 @@ def test_event_update_without_provider_binding_commits_nothing(session_factory) 
             mutation={
                 "mutation_type": "canonical_event_modify",
                 "action": "update",
-                "payload": {"title": "Must not commit"},
+                "payload": {"event_spec": {"title": "Must not commit"}},
                 "affected_fields": ["title"],
             },
         )
