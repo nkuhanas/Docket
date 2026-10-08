@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -246,6 +247,17 @@ class Settings(BaseSettings):
     docket_to_hermes_token_file: Path = Field(
         default=Path("secrets/smoke/docket_to_hermes_token"),
         alias="DOCKET_TO_HERMES_TOKEN_FILE",
+    )
+    docket_triage_token_file: Path = Field(
+        default=Path("secrets/smoke/docket_triage_token"),
+        alias="DOCKET_TRIAGE_TOKEN_FILE",
+    )
+    docket_read_only_token_file: Path | None = Field(
+        default=None, alias="DOCKET_READ_ONLY_TOKEN_FILE",
+    )
+    interactive_agent_enabled: bool = Field(default=True, alias="DOCKET_INTERACTIVE_AGENT_ENABLED")
+    interactive_agent_expires_at: datetime | None = Field(
+        default=None, alias="DOCKET_INTERACTIVE_AGENT_EXPIRES_AT",
     )
     hermes_to_docket_token_file: Path = Field(
         default=Path("secrets/smoke/hermes_to_docket_token"),

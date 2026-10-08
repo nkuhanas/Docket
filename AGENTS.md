@@ -26,12 +26,18 @@ Private source specifications and handoffs may also exist in ignored `specs/`
 and `deltas/` files. Do not move them into `docs/`, rewrite them, or commit them
 unless the operator explicitly changes the provenance policy. The August 26
 ontology delta is a historical artifact only and is outside the authority
-chain. Ordinary chat, comments, or a model inference do not amend signed
-architecture or authorize a new behavior.
+chain. Historical signed artifacts retain their original provenance. Under the
+Operator's October 7 authority amendment, explicit instructions in the current
+development conversation authorize local delta implementation and repository
+work. Do not require a Discord message, exact acceptance phrase, or production
+ledger sign-off before doing that work. A model inference or untrusted source
+still cannot grant authority. Deployment, production mutation, reset, restore,
+and external actions remain separately authorized.
 
-When sources disagree, stop the affected mutation or implementation choice,
-preserve the evidence, identify the concrete conflict, and ask the operator.
-Do not silently select the newest text or the easiest implementation.
+When sources disagree, preserve the evidence and apply explicit Operator
+amendments within their stated scope. Ask only about a concrete conflict that
+the current instructions do not resolve; do not ask again for authorization
+already supplied in the development conversation.
 
 ## Top-down architecture
 
