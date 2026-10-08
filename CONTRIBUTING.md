@@ -6,6 +6,11 @@ it does not receive production credentials or mutate the live stack.
 
 ## Change workflow
 
+Explicit Operator instructions in the current development conversation authorize
+local delta implementation and repository work. No Discord sign-off message or
+production ledger Decision is required. Preserve historical signed provenance;
+deployment and production/external actions remain separately authorized.
+
 1. Create a short-lived branch from `main`.
 2. Keep private implementation provenance outside Git: versioned specifications
    belong under `specs/`, and dated change handoffs belong under `deltas/`.

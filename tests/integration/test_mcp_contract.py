@@ -95,55 +95,12 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
         "question",
         "semantic_options",
     }.issubset(choice_schema["properties"])
-    # Future choice effects remain fully typed, but are not commit arguments.
-    content = choice_schema["$defs"]["OperatorChangeSetContent"]
-    assert {
-        "registry_changes",
-        "preference_changes",
-        "lane_changes",
-        "event_changes",
-        "resolution_changes",
-    }.issubset(content["properties"])
-    assert "provider_intents" not in content["properties"]
+    choice = choice_schema["$defs"]["AgentClarificationChoice"]
+    assert set(choice["properties"]) == {"option_id", "label", "interpretation"}
+    assert choice["additionalProperties"] is False
+    assert "OperatorChangeSetContent" not in choice_schema["$defs"]
     assert "ProviderIntentInput" not in choice_schema["$defs"]
-    import_scope = choice_schema["$defs"]["OperatorImportScope"]
-    assert "authorized_effects" in import_scope["properties"]
-    assert "entry_coverage" in import_scope["properties"]
-    assert "authority_statement_refs" not in import_scope["properties"]
-    assert "Docket derives" in import_scope["properties"]["authorized_effects"]["description"]
-    entry_coverage = choice_schema["$defs"]["ImportEntryCoverage"]
-    assert entry_coverage["additionalProperties"] is False
-    assert set(entry_coverage["properties"]) == {
-        "entry_id",
-        "item_change_id",
-        "temporal_binding_change_id",
-        "calendar_representation",
-        "calendar_change_id",
-    }
-    statement = choice_schema["$defs"]["StatementInput"]
-    assert "import_entry_id" in statement["properties"]
-    registry_union = choice_schema["$defs"]["RegistryChangeInput"]
-    assert registry_union["discriminator"]["propertyName"] == "mutation_type"
-    assert registry_union["discriminator"]["mapping"]["entity_create"] == ("#/$defs/EntityCreate")
-    assert registry_union["discriminator"]["mapping"]["identity_binding_bind"] == (
-        "#/$defs/IdentityBindingBind"
-    )
-    identity_bind = choice_schema["$defs"]["IdentityBindingBind"]
-    assert identity_bind["additionalProperties"] is False
-    assert "object_change_id" in identity_bind["properties"]
-    assert identity_bind["properties"]["payload"] == {"$ref": "#/$defs/IdentityBindingBindSpec"}
-    identity_bind_spec = choice_schema["$defs"]["IdentityBindingBindSpec"]
-    assert "entity_change_id" in identity_bind_spec["properties"]
-    assert identity_bind_spec["properties"]["resolution_basis"] == {
-        "$ref": "#/$defs/IdentityResolutionBasis"
-    }
-    case_resolution = choice_schema["$defs"]["ResolutionChangeInput"]
-    assert case_resolution["additionalProperties"] is False
-    assert case_resolution["properties"]["object_ref"]["pattern"].startswith("^case_")
-    assert case_resolution["properties"]["case_revision_ref"]["pattern"].startswith("^caserev_")
-    assert "payload" not in case_resolution["properties"]
-    assert "affected_fields" not in case_resolution["properties"]
-    assert "ConflictResolution" not in repr(commit_schema)
+
 
     stage_schema = tools["docket_stage_changes"].inputSchema
     assert stage_schema["properties"]["patch"] == {"$ref": "#/$defs/StagePatchInput"}
@@ -178,7 +135,7 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
     ]
     assert "numeric UTC offset" in temporal_interval["end_local"]["description"]
 
-    lane_create = choice_schema["$defs"]["CalendarLaneCreateSpec"]
+    lane_create = stage_schema["$defs"]["CalendarLaneCreateSpec"]
     assert "account_ref" in lane_create["properties"]
     assert "account_id" not in lane_create["properties"]
     assert "provider_calendar_binding" not in lane_create.get("required", [])

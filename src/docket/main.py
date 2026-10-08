@@ -1,4 +1,3 @@
-import hmac
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -12,6 +11,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import select, text
 from starlette.requests import Request
 
+from docket.agent_auth import AgentCallContext, AgentRole, agent_call_context, authenticate_agent
 from docket.config import Settings, get_settings
 from docket.database import (
     configure_database,
@@ -19,6 +19,8 @@ from docket.database import (
     get_session_factory,
     session_scope,
 )
+from docket.domain.errors import DocketError
+from docket.internal_api.agent_router import router as agent_router
 from docket.internal_api.provenance_router import router as provenance_router
 from docket.internal_api.router import router as internal_router
 from docket.mcp import mcp, triage_mcp
@@ -40,6 +42,7 @@ from docket.services.calendar_projection_invariants import (
 )
 from docket.services.calendar_sync import CalendarSyncService
 from docket.services.continuity import ExecutionLeaseCoordinator
+from docket.services.conversation_retention import ConversationRetentionService
 from docket.services.deferred_ingress import DeferredIngressRunner
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.gateway_lifetimes import GatewayLifetimeReconciler
@@ -129,6 +132,11 @@ worker = WorkerRuntime(
     gateway_lifetime_reconciler=GatewayLifetimeReconciler(get_session_factory()),
     execution_lease_coordinator=ExecutionLeaseCoordinator(get_session_factory()),
     deferred_ingress_runner=deferred_ingress_runner,
+    conversation_retention_service=(
+        ConversationRetentionService(get_session_factory(), settings)
+        if settings.retention_enabled else None
+    ),
+    retention_poll_seconds=settings.retention_poll_seconds,
 )
 
 
@@ -154,6 +162,7 @@ app = FastAPI(
 )
 app.state.wake_discord_projection = worker.wake_discord_projection
 app.include_router(internal_router)
+app.include_router(agent_router)
 app.include_router(provenance_router)
 app.mount("/mcp", mcp.streamable_http_app())
 app.mount("/triage-mcp", triage_mcp.streamable_http_app())
@@ -164,9 +173,19 @@ async def protect_mcp(request: Request, call_next: Any) -> Any:
     if request.url.path.startswith(("/mcp", "/triage-mcp")):
         authorization = request.headers.get("authorization", "")
         supplied = authorization.removeprefix("Bearer ").strip()
-        if not authorization.startswith("Bearer ") or not hmac.compare_digest(
-            supplied, settings.docket_to_hermes_token()
-        ):
+        principal = None
+        roles: tuple[AgentRole, ...] = (
+            ("triage",) if request.url.path.startswith("/triage-mcp")
+            else ("interactive", "read_only")
+        )
+        if authorization.startswith("Bearer "):
+            for role in roles:
+                try:
+                    principal = authenticate_agent(supplied, role=role, settings=settings)
+                    break
+                except DocketError:
+                    continue
+        if principal is None:
             try:
                 with session_scope() as session:
                     RuntimeLogService(session).append(
@@ -189,6 +208,16 @@ async def protect_mcp(request: Request, call_next: Any) -> Any:
                 status_code=401,
                 content={"error": {"code": "unauthorized", "message": "Invalid MCP token"}},
             )
+        context_token = agent_call_context.set(AgentCallContext(
+            principal,
+            request.headers.get("x-docket-request-key"),
+            request.headers.get("x-docket-execution-key"),
+            request.headers.get("x-docket-operation-key"),
+        ))
+        try:
+            return await call_next(request)
+        finally:
+            agent_call_context.reset(context_token)
     return await call_next(request)
 
 

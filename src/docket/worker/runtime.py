@@ -11,6 +11,7 @@ from docket.services.backups import BackupService
 from docket.services.briefs import DailyBriefService
 from docket.services.calendar_sync import CalendarSyncService
 from docket.services.continuity import ExecutionLeaseCoordinator
+from docket.services.conversation_retention import ConversationRetentionService
 from docket.services.deferred_ingress import DeferredIngressRunner
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.gateway_lifetimes import GatewayLifetimeReconciler
@@ -46,8 +47,12 @@ class WorkerRuntime:
         gateway_lifetime_reconciler: GatewayLifetimeReconciler | None = None,
         execution_lease_coordinator: ExecutionLeaseCoordinator | None = None,
         deferred_ingress_runner: DeferredIngressRunner | None = None,
+        conversation_retention_service: ConversationRetentionService | None = None,
+        retention_poll_seconds: float = 3600.0,
     ) -> None:
         self.heartbeat_seconds = heartbeat_seconds
+        self.conversation_retention_service = conversation_retention_service
+        self.retention_poll_seconds = retention_poll_seconds
         self.operation_runner = operation_runner
         self.operation_poll_seconds = operation_poll_seconds
         self.operation_drain_limit = operation_drain_limit
@@ -166,10 +171,14 @@ class WorkerRuntime:
         next_reminder = 0.0
         next_projection_repair = 0.0
         next_deferred_ingress = 0.0
+        next_retention = 0.0
         while not self._stop.is_set():
             self.last_heartbeat = datetime.now(UTC)
             now = time.monotonic()
             try:
+                if self.conversation_retention_service is not None and now >= next_retention:
+                    await asyncio.to_thread(self.conversation_retention_service.run_once)
+                    next_retention = now + self.retention_poll_seconds
                 if now >= next_operation:
                     await self._drain_due_operations()
                     next_operation = now + self.operation_poll_seconds

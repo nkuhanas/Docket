@@ -45,18 +45,19 @@ already supplied in the development conversation.
 Authenticated Operator message
         |
         v
-Hermes Discord gateway + docket-discord plugin
+Authenticated interactive agent (Hermes Discord gateway today)
   - authenticates actor/guild/channel
-  - persists immutable utt_ before interpretation
+  - admits durable req_ before execution
+  - optionally archives agent-reported transcript/files as rec_/src_
   - loads the interactive tool contract
         |
-        +------> trusted internal API (/internal/v1/discord/...)
+        +------> trusted internal API (/internal/v1/agent/...)
         |
         v
 Interactive MCP boundary (/mcp/; 23 bounded tools)
   - call_ starts after service authentication
   - reads are bounded
-  - mutations require current utterance authority
+  - mutations require current interactive principal and owned req_
         |
         v
 IntentSession -> statements -> conflicts/clarification
@@ -123,20 +124,25 @@ canonical state or provenance authority.
 
 ## Invariants agents must preserve
 
-1. Every authenticated operator message on a Docket surface is durably stored
-   verbatim as `utt_` before interpretation or mutation. Failure is fail-closed.
+1. New interactive work requires durable authenticated `req_` attribution and
+   audit before execution. Transcript, attachment, and response capture are
+   optional, separately committed, and honestly marked agent-reported. Missing
+   archives do not block valid work. Never invent `utt_` evidence for relayed text.
 2. Evidence truth (what was observed or said) is distinct from canonical truth
    (what Docket currently uses). Later input never destroys earlier evidence.
 3. Every canonical mutation has public `basis_refs`; operator-owned mutations
-   ultimately trace to an authenticated utterance.
-4. Explicit, unambiguous correction may supersede old state while retaining
-   history. Ambiguous incompatibility creates `conf_` and blocks the affected
-   ChangeSet until resolution.
+   ultimately trace to the authenticated interactive request. Historical work
+   retains its genuine utterance roots and original constraints.
+4. Draft interpretations can be corrected within the admitted effect and target
+   scope; retain immutable revisions. Missing required values, stale target
+   versions, invalid occurrence scope, and unresolved domain conflicts block
+   only affected work. Fine archive or first-reading semantics are not new gates.
 5. Resolved operator intent compiles into one immutable `chg_`. Canonical state
    and required provider intents commit in one PostgreSQL transaction.
 6. Provider calls execute after canonical commit. Unknown-after-transmission
    outcomes reconcile; they are not blindly retried or reported as success.
-7. Cron triage can observe, correlate, classify, summarize, suppress under an
+7. Background agents never inherit an interactive task or credential. Cron
+   triage can observe, correlate, classify, summarize, suppress under an
    existing Preference, and create attention/brief intelligence. It cannot
    mutate operator-owned canonical state or providers.
 8. Discord messages/cards and Hermes responses are projections. Delivery
@@ -154,16 +160,23 @@ The current interactive surface has exactly 23 tools, with only
 state. The isolated triage surface has exactly four non-authoritative tools.
 `docket_get_attention_case` is the only deliberately shared tool.
 
-Under the signed September 11 interaction-correction amendment, ordinary
+Under the October 7 authority amendment, preserving the September 11 workflow, ordinary
 canonical work uses `docket_stage_changes`, optional `docket_review_changeset`,
 then `docket_commit_changeset`. Staging implicitly creates the noncanonical
 durable draft; there is no begin call. Commit accepts no model-supplied payload
-or direct/assembled mode. The trusted gateway supplies the current utterance,
-request, and admitted execution binding; commit checks the specific observed
+or direct/assembled mode. Authentication establishes the caller role. Trusted
+transport supplies request, execution, and operation identity; commit checks the specific observed
 draft revision atomically, never whichever revision happens to be latest.
-`docket_request_clarification` persists typed choices without canonical effects.
+`docket_request_clarification` persists bounded labels and interpretations without
+executable mutation templates or canonical effects. The agent stages answered intent.
 `docket_resolve_conflict` remains the single conflict surface through the shared
 guarded ChangeSet service, not an escape from authority or occurrence checks.
+
+Interactive, triage, and optional read-only callers use distinct credentials.
+Read-only callers see 18 read tools on `/mcp/`; triage uses `/triage-mcp/` only.
+No caller-supplied role, request reference, source content, or operation token
+grants background authority. Optional capture can fail; attribution, audit,
+current permission, versions, and atomic provider intent cannot.
 
 When changing a tool:
 

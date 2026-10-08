@@ -46,9 +46,10 @@ class AssemblyAuthorityScopeInput(StrictModel):
         default_factory=list, max_length=250,
         description=(
             "For normalized source imports, the COMPLETE selected entry ID inventory, supplied "
-            "once with the initial scope, including later batches and no-occurrence entries. "
-            "Each entry's first staged interpretation is preserved separately. Missing entries "
-            "block commit; later patches cannot add unselected entries or reinterpret saved ones. "
+            "including later batches and no-occurrence entries. Missing entries block commit. "
+            "Authenticated requests can correct selection and interpretations by restaging "
+            "within the admitted target/effect scope; revisions retain earlier readings. "
+            "Historical utterance-backed drafts keep their original first-reading constraints. "
             "This inventory is not a new authorization or independently verified source truth."
         ),
     )

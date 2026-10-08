@@ -11,12 +11,14 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from docket.agent_auth import agent_call_context, require_principal
 from docket.database import session_scope
 from docket.domain.canonical import sha256_json
 from docket.domain.enums import OutboxStatus
 from docket.domain.errors import DocketError
 from docket.domain.public_refs import is_public_ref
 from docket.models import (
+    AssemblyOperation,
     AttachmentEvidence,
     ConversationalToolTrace,
     OperatorUtterance,
@@ -25,7 +27,12 @@ from docket.models import (
     ToolInvocation,
 )
 from docket.models.base import utc_now
-from docket.services.changeset_assembly import ChangeSetAssemblyService
+from docket.services.agent_invocation_binding import request_context
+from docket.services.agent_requests import AgentRequestService
+from docket.services.changeset_assembly import (
+    ChangeSetAssemblyAdmissionService,
+    ChangeSetAssemblyService,
+)
 from docket.services.continuity import ContinuityService
 from docket.services.invocation_binding import BINDING_ARGUMENT, bind_invocation
 from docket.services.invocation_outcomes import (
@@ -57,7 +64,7 @@ INTERACTIVE_CANONICAL_MUTATION_TOOLS = frozenset(
 )
 INFRASTRUCTURE_ARGUMENT_NAMES = frozenset({
     "assembly_operation_token", "assembly_argument_hash", "utterance_ref",
-    "request_key", "operator_utterance_ref",
+    "request_key", "operator_utterance_ref", "request_ref",
     BINDING_ARGUMENT,
 })
 
@@ -222,7 +229,7 @@ def _terminalize_invalid_assembly_operation(
         operation_kind = "commit"
     token = arguments.get("assembly_operation_token")
     admitted_hash = arguments.get("assembly_argument_hash")
-    utterance_ref = arguments.get("utterance_ref")
+    utterance_ref = arguments.get("request_ref") or arguments.get("utterance_ref")
     if (
         operation_kind is None
         or not isinstance(token, str)
@@ -391,6 +398,11 @@ class ProvenanceFastMCP(FastMCP[Any]):
 
     async def list_tools(self) -> list[Tool]:
         registered = await super().list_tools()
+        authenticated = agent_call_context.get()
+        if authenticated is not None and authenticated.principal.role == "read_only":
+            registered = [
+                tool for tool in registered if tool.name not in INTERACTIVE_AUTHORITY_TOOLS
+            ]
         for tool in registered:
             tool.inputSchema["additionalProperties"] = False
             if self.caller_profile == "interactive":
@@ -472,6 +484,15 @@ class ProvenanceFastMCP(FastMCP[Any]):
         name: str,
         arguments: dict[str, Any],
     ) -> Sequence[ContentBlock] | dict[str, Any]:
+        token = agent_call_context.set(agent_call_context.get())
+        try:
+            return await self._call_tool(name, arguments)
+        finally:
+            agent_call_context.reset(token)
+
+    async def _call_tool(
+        self, name: str, arguments: dict[str, Any],
+    ) -> Sequence[ContentBlock] | dict[str, Any]:
         binding_provided = BINDING_ARGUMENT in arguments
         binding_token = arguments.get(BINDING_ARGUMENT)
         arguments = {key: value for key, value in arguments.items() if key != BINDING_ARGUMENT}
@@ -502,7 +523,66 @@ class ProvenanceFastMCP(FastMCP[Any]):
             session.add(invocation)
             session.flush()
             invocation_id = invocation.id
-            if binding_provided:
+            authenticated = agent_call_context.get()
+            if authenticated is not None:
+                invocation.actor_ref = authenticated.principal.principal_ref
+                try:
+                    if binding_provided:
+                        authenticated = request_context(
+                            binding_token, tool_name=name, argument_hash=received_hash,
+                        )
+                        agent_call_context.set(authenticated)
+                    permission = (
+                        "commit" if name == "docket_commit_changeset"
+                        else "resolve_conflict" if name == "docket_resolve_conflict"
+                        else "stage" if name in INTERACTIVE_AUTHORITY_TOOLS
+                        else "triage" if name in {
+                            "docket_submit_triage_analysis", "docket_apply_existing_suppression",
+                        } else "read"
+                    )
+                    require_principal(permission)
+                    arguments = {
+                        key: value for key, value in arguments.items()
+                        if key not in INFRASTRUCTURE_ARGUMENT_NAMES
+                    }
+                    if authenticated.request_key and authenticated.principal.role == "interactive":
+                        root = AgentRequestService(session).admit(
+                            request_key=authenticated.request_key,
+                        )
+                        invocation.authenticated_request_ref = root.ref_id
+                        if name in INTERACTIVE_AUTHORITY_TOOLS:
+                            arguments.update(request_ref=root.ref_id, request_key=root.request_key)
+                        if name == "docket_list_provider_calendar_events":
+                            arguments["request_ref"] = root.ref_id
+                        if name in {
+                            "docket_stage_changes", "docket_review_changeset",
+                            "docket_commit_changeset",
+                        }:
+                            admission = ChangeSetAssemblyAdmissionService(session).admit_agent(
+                                request_ref=root.ref_id,
+                                execution_key=authenticated.execution_key or "",
+                                operation_key=authenticated.operation_key or "",
+                                tool_name=name, argument_hash=received_hash,
+                            )
+                            arguments.update(
+                                assembly_operation_token=admission["assembly_operation_token"],
+                                assembly_argument_hash=received_hash,
+                            )
+                            operation = session.scalar(select(AssemblyOperation).where(
+                                AssemblyOperation.operation_key
+                                == admission["assembly_operation_token"],
+                            ))
+                            assert operation is not None
+                            invocation.assembly_operation_id = operation.id
+                    elif name in INTERACTIVE_AUTHORITY_TOOLS:
+                        raise DocketError(
+                            code="request_context_required",
+                            message="Trusted request and execution identity are required.",
+                        )
+                except DocketError as exc:
+                    admission_error = exc
+                    admission_disposition = "rejected_authority"
+            elif binding_provided:
                 try:
                     bind_invocation(session, invocation, binding_token, arguments=arguments)
                 except DocketError as exc:
@@ -600,6 +680,7 @@ class ProvenanceFastMCP(FastMCP[Any]):
 
         if (
             self.caller_profile == "interactive"
+            and agent_call_context.get() is None
             and name in INTERACTIVE_AUTHORITY_TOOLS
             and normalized_arguments is not None
         ):

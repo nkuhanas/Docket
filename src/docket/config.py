@@ -193,6 +193,9 @@ class Settings(BaseSettings):
         default=True,
         alias="DOCKET_RETENTION_ENABLED",
     )
+    conversation_retention_days: int = Field(
+        default=30, ge=1, le=3650, alias="DOCKET_CONVERSATION_RETENTION_DAYS",
+    )
     retention_poll_seconds: float = Field(
         default=3600.0,
         ge=60,

@@ -184,7 +184,11 @@ def scoped_commit_schema(
 def scoped_clarification_schema(
     parameters: dict[str, Any], mutation_types: Iterable[str],
 ) -> dict[str, Any]:
-    """Choices carry exact future effects, but this tool cannot execute them."""
+    """New choices contain bounded interpretations and no executable effects."""
+    if "AgentClarificationChoice" in parameters.get("$defs", {}):
+        scoped = copy.deepcopy(parameters)
+        _strip_internal_properties(scoped)
+        return _reference_closed(scoped)
     requested = tuple(dict.fromkeys(str(name).strip() for name in mutation_types if name))
     if not requested:
         raise SchemaScopeError("mutation_types is required for typed clarification choices")
@@ -417,7 +421,10 @@ def install_hermes_progressive_schema_patch() -> bool:
         requested_entries = entry_types if isinstance(entry_types, list) else []
         if "commit_mode" in args:
             return json.dumps({"error": "commit has no mode or payload; stage first, then commit"})
-        if _is_clarification_tool_name(name) and not requested_mutations:
+        if (
+            _is_clarification_tool_name(name) and not requested_mutations
+            and "AgentClarificationChoice" not in parameters.get("$defs", {})
+        ):
             return json.dumps({
                 "error": "mutation_types is required to describe exact typed choices",
                 "available_mutation_types": list(mutation_type_catalog(parameters)),
@@ -466,7 +473,7 @@ def install_hermes_progressive_schema_patch() -> bool:
                 "items": {"type": "string"},
                 "maxItems": MAX_MUTATION_TYPES,
                 "description": (
-                    "For docket_stage_changes action patches or typed clarification choices, "
+                    "For docket_stage_changes action patches, "
                     "the exact discriminated mutation_type values needed."
                 ),
             }
@@ -481,7 +488,7 @@ def install_hermes_progressive_schema_patch() -> bool:
             }
             function["description"] = (
                 str(function.get("description") or "")
-                + " Scope Docket staging/clarification schemas to the required variants. "
+                + " Scope Docket staging schemas to the required variants. "
                 "Docket commit has no model arguments or mode."
             )
         return schemas

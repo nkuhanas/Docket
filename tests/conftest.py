@@ -27,6 +27,8 @@ os.environ.update(
         "DOCKET_QUEUE_CHANNEL_ID": "000000000000000004",
         "DOCKET_SYSTEM_CHANNEL_ID": "000000000000000005",
         "DOCKET_TO_HERMES_TOKEN_FILE": str(SMOKE_SECRETS / "docket_to_hermes_token"),
+        "DOCKET_TRIAGE_TOKEN_FILE": str(SMOKE_SECRETS / "docket_triage_token"),
+        "DOCKET_INTERACTIVE_AGENT_ENABLED": "true",
         "HERMES_TO_DOCKET_TOKEN_FILE": str(SMOKE_SECRETS / "hermes_to_docket_token"),
         "DOCKET_INTERACTION_SIGNING_KEY_FILE": str(SMOKE_SECRETS / "interaction_signing_key"),
         "DOCKET_ATTACHMENT_ENCRYPTION_KEY_FILE": str(
@@ -36,6 +38,9 @@ os.environ.update(
         "GOOGLE_OAUTH_TOKEN_FILE": str(SMOKE_SECRETS / "google_oauth_token.json"),
     }
 )
+
+os.environ.pop("DOCKET_INTERACTIVE_AGENT_EXPIRES_AT", None)
+os.environ.pop("DOCKET_READ_ONLY_TOKEN_FILE", None)
 
 from docket.database import configure_database, get_session_factory  # noqa: E402
 from docket.models import Base  # noqa: E402

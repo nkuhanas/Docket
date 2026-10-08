@@ -251,6 +251,12 @@ class ToolInvocation(Base):
     )
     caller_profile: Mapped[str] = mapped_column(String(32), nullable=False)
     actor_ref: Mapped[str | None] = mapped_column(String(255))
+    authenticated_request_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("authenticated_requests.ref_id", ondelete="RESTRICT")
+    )
+    assembly_operation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("assembly_operations.id", ondelete="RESTRICT")
+    )
     utterance_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     intent_session_ref: Mapped[str | None] = mapped_column(String(40))
     case_ref: Mapped[str | None] = mapped_column(String(40))

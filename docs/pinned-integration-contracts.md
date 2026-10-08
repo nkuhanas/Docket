@@ -30,6 +30,30 @@ traceability marker only.
 
 ## Hermes plugin contract
 
+Plugin `0.35.0` packages contract v44 and the October 7 request authority path.
+Foreground Discord source authentication remains; admission creates a durable
+`req_` and execution lease before dispatch. Only the admitted foreground task can
+sign format-3 request/execution/operation correlation (`docket-mcp-request-v3:`).
+Copied session IDs, model arguments, and background tasks cannot use the binding.
+Docket also accepts trusted HTTP request metadata from direct interactive clients.
+The MCP SDK pin remains unchanged; this is not the future dot/MCP Events adapter.
+
+Transcript/file/response capture is optional and agent-reported. Failures do not
+gate model tools, final delivery, or execution completion. Foreground request
+ownership prevents duplicate model turns from late archival ingress. Stage can
+correct interpretation and selection within the admitted effect/target scope;
+commit checks the observed immutable revision, exact versions/occurrences, and
+atomic provider intent. Clarification exposes bounded non-executable labels and
+interpretations; the agent stages the answered intent. Counts remain 23 interactive,
+18 optional read-only, and four isolated triage tools. Credentials are distinct;
+triage cannot authenticate against `/mcp/` or trusted internal callbacks.
+
+The older plugin notes below describe historical evidence and retained workflows.
+Utterance capture, first-reading, field-binding, response persistence, sign-off,
+and format-2 trace procedures are not gates on new request-backed work. Explicit
+development-chat authorization replaces Discord sign-off for local repository and
+delta implementation. Production and external actions remain separately authorized.
+
 Plugin `0.34.0` packages contract v43 and sparse event field patching. The public
 `canonical_event_modify.payload.event_spec` accepts only supplied title, notes,
 location and complete explicit-timezone timing. Docket owns materialization,

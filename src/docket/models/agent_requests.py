@@ -42,6 +42,7 @@ class AuthenticatedRequest(Base):
     permissions: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     request_key: Mapped[str] = mapped_column(String(512), nullable=False)
     conversation_ref: Mapped[str] = mapped_column(String(512), nullable=False)
+    admitted_timezone: Mapped[str | None] = mapped_column(String(128))
     source_utterance_ref: Mapped[str | None] = mapped_column(
         ForeignKey("operator_utterances.ref_id", ondelete="RESTRICT")
     )
@@ -89,10 +90,25 @@ class ConversationRecord(Base):
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
+    purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 def _immutable_record(_mapper: object, _connection: object, _target: object) -> None:
     raise ValueError("ConversationRecord is immutable")
+
+
+def _purge_record(_mapper: object, _connection: object, target: ConversationRecord) -> None:
+    changed = {attr.key for attr in inspect(target).attrs if attr.history.has_changes()}
+    prior = inspect(target).attrs.purged_at.history.deleted
+    payload = inspect(target).attrs.ciphertext.history.deleted
+    if (
+        changed - {"ciphertext", "nonce", "encryption_key_ref", "purged_at"}
+        or target.ciphertext is not None or target.nonce is not None
+        or target.encryption_key_ref is not None or target.purged_at is None
+        or (prior and prior[0] is not None)
+        or not payload or payload[0] is None
+    ):
+        raise ValueError("ConversationRecord permits irreversible payload retention purge only")
 
 
 def _guard_request(_mapper: object, _connection: object, target: AuthenticatedRequest) -> None:
@@ -104,7 +120,7 @@ def _guard_request(_mapper: object, _connection: object, target: AuthenticatedRe
         raise ValueError("A completed or cancelled request cannot regain authority")
 
 
-event.listen(ConversationRecord, "before_update", _immutable_record)
+event.listen(ConversationRecord, "before_update", _purge_record)
 event.listen(ConversationRecord, "before_delete", _immutable_record)
 event.listen(AuthenticatedRequest, "before_update", _guard_request)
 event.listen(AuthenticatedRequest, "before_delete", _immutable_record)

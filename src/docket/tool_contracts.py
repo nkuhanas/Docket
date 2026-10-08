@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-09-28-v43"
+CONTRACT_VERSION = "docket-tools-2026-10-07-v44"
 
 
 class ToolContractEntry(TypedDict):
@@ -101,7 +101,7 @@ _INTERACTIVE_READS: dict[str, tuple[str, str]] = {
     "docket_list_provider_calendar_events": (
         "ONT-TRACK-TOOL-0005",
         "Read a bounded Calendar page with canonical versions and stable occurrence selectors; "
-        "relative dates are pinned to the gateway-bound original utterance.",
+        "relative dates are pinned to the authenticated request admission time and timezone.",
     ),
     "docket_get_calendar_sync_status": (
         "ONT-TRACK-TOOL-0006",
@@ -134,51 +134,32 @@ _INTERACTIVE_MUTATIONS: dict[str, tuple[str, str]] = {
 _INTERACTIVE_ASSEMBLY: dict[str, tuple[str, str]] = {
     "docket_request_clarification": (
         "ONT-UX-TOOL-0001",
-        "Persist typed semantic choices for genuinely unresolved intent; no canonical effects. "
-        "Include each option's field_evidence for supporting attachment fields. Duration choices "
-        "show actual minutes, dates, times and destination. A bound clarification reply reuses "
-        "the request's retained attachments; the image need not be on the latest message. "
-        "If request context is ambiguous, ask which pending request, not for reattachment.",
+        "Persist one through four bounded choices with option_id, label, and interpretation. "
+        "Use only for missing required values or genuinely unresolved intent. Choices have no "
+        "canonical effects; stage the resolved interpretation after the Operator answers.",
     ),
     "docket_stage_changes": (
         "ONT-CS-TOOL-0001",
-        "Stage bounded actions or normalized entries. Event modify uses a sparse "
-        "payload.event_spec with only changed title/location/notes/timing. Omit unchanged "
-        "fields; null clears location/notes, empty text stays empty, title/timing cannot be "
-        "cleared. Location is literal free text (Async/Online/TBD/URL), not venue validation "
-        "or cancellation. Docket preserves destination, recurrence, tags and priority. Never "
-        "copy a full create spec or outer payload.title. Separate payload.recurrence needs "
-        "explicit series scope; lane_ref remains guarded routing. Use the original occurrence "
-        "selector even after a move. Equal fields are no-op; cancelled occurrences require "
-        "lifecycle resolution. Field-intent changes conflict, not mechanical repair. "
-        "Resolve occurrence versus work before "
-        "the first stage: an intended meeting/visit at a selected time is a CanonicalEvent, "
-        "not merely a Task with a window. A deadline or possible work window stays Time; "
-        "calendar-visible Time also needs a temporal_calendar_projection and resolved lane. "
-        "Do not downgrade a scheduling request to Docket-only work when routing is unresolved. "
-        "calendar_delivery_notice and predicted_provider_operation_count describe this draft, "
-        "not delivery. Scheduled entries carry one title/time/lane "
-        "and Docket derives their complete support records. A sole draft_recompile operation "
-        "explicitly migrates unchanged pinned inputs. It can coalesce a duplicated Event title "
-        "to the initial interpretation bound to retained image bytes or verified PDF text, "
-        "with all other effects fixed. For source imports, supply the COMPLETE selected_entry_ids "
-        "once in the first assembly_scope; later batches fill that immutable selection. "
-        "Missing entries block commit. Initial readings are fallible interpretations, not new "
-        "authority; extra entries or changed readings conflict rather than count as repairs. "
-        "Entries review pages include not_staged IDs to recover missing batches after resumption. "
-        "Observe its new revision before commit. A sole draft_adopt explicitly migrates an "
-        "observed, unfinished direct request with current typed, identical effects and retained "
-        "evidence; no new scope/versions. Unprovable adoption preserves the original request. "
-        "Supporting images are not schedule imports: field_evidence_bind maps an interpreted "
-        "text value to exact action fields (e.g. a building-name location prefix). Include it "
-        "with all actions on draft creation, or alone after staging; Docket compiles provenance. "
-        "To recover "
-        "an existing unbound draft, bind evidence alone without changing assembly_scope, "
-        "then follow observation_required. Dates/durations/lane/count cannot change as repair. "
-        "Unknown duration needs an applicable recorded policy or one consolidated clarification, "
-        "not a remembered default promoted to authority. Bound clarification replies retain prior "
-        "request evidence; use supplied sources with the new answer, without reattachment. "
-        "Already-committed requests return their receipt, not a new draft.",
+        "Stage typed actions or normalized entries into the implicit durable draft. "
+        "The server supplies req_ attribution; basis_refs and supporting entry evidence are "
+        "optional inputs. Transcript/file capture and extraction proofs do not gate work. "
+        "Correct titles, dates, locations, and other interpretations by restaging within the "
+        "admitted effect/target scope. Domain values, target versions, lanes, occurrence scope, "
+        "and complete selected_entry_ids remain required where applicable. "
+        "Event modify uses sparse payload.event_spec: omitted fields stay unchanged, null clears "
+        "location/notes, title/timing cannot be cleared. Preserve the original occurrence selector "
+        "after moves; recurrence changes require explicit series scope; "
+        "cancelled occurrences require lifecycle resolution. "
+        "Never copy a full create spec or outer payload.title. "
+        "Use CanonicalEvents for intended meetings/visits, Time for deadlines or possible windows, "
+        "and temporal_calendar_projection for requested Calendar-visible Time. "
+        "Scheduled entries supply title/time/lane and Docket compiles their support records. "
+        "Missing selected entries block commit. At most 25 entry upserts per patch. "
+        "ready_to_commit allows immediate commit; saved_with_errors retains the batch for repair. "
+        "Stale executions must review the current revision before staging or committing. "
+        "Historical utterance-backed drafts retain their original proof and migration constraints. "
+        "calendar_delivery_notice predicts delivery; "
+        "queued provider work is not confirmed delivery.",
     ),
     "docket_review_changeset": (
         "ONT-CS-TOOL-0002",
@@ -236,7 +217,7 @@ def _interactive_entries() -> tuple[ToolContractEntry, ...]:
                     else "Unneeded or a more specific Docket read exists."
                 ),
                 "authority": (
-                    "interactive_operator_utterance"
+                    "authenticated_interactive_request"
                     if mutation or assembly
                     else "interactive_read_only"
                 ),
@@ -245,7 +226,7 @@ def _interactive_entries() -> tuple[ToolContractEntry, ...]:
                     "Commits canonical state and required provider Operations atomically."
                     if mutation
                     else (
-                        "Persists versioned semantic options and queues their projection only."
+                        "Persists bounded interpretation choices without canonical effects."
                         if name == "docket_request_clarification"
                         else "Mutates only noncanonical durable draft workflow state."
                         if name == "docket_stage_changes"
@@ -323,7 +304,8 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
             "detail/routing/audit field. Never request detail speculatively."
         ),
         (
-            "Codes: P-READ=authorized profile+bounded args; P-MUT=persisted current utt_+"
+            "Codes: P-READ=authorized profile+bounded args; "
+            "P-MUT=authenticated interactive role+durable req_+"
             "exact refs/versions; S-READ=succeeded; S-CHANGESET=committed|needs_clarification|"
             "replayed_request|rejected_validation|rejected_authority|rejected_conflict|"
             "blocked_version|failed|unknown."
@@ -331,7 +313,8 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
         (
             "Handling: O-STD=trust ok/state/ref and follow next; N-READ=use public refs; "
             "N-CHANGESET=ask only a genuine semantic clarification or report durable outcome; "
-            "E-READ=not_found|validation_error; E-MUT=operator_utterance_authority_required|"
+            "E-READ=not_found|validation_error; "
+            "E-MUT=request_authority_denied|agent_authority_denied|"
             "version_conflict|conflict_open|validation_error."
         ),
     ]

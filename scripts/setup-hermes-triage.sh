@@ -11,6 +11,7 @@ PROFILE_SKILL_DIR="$PROFILE_DIR/skills/docket-triage"
 PROFILE_CONTRACT="$PROFILE_DIR/tool-contract.md"
 LAUNCHER_DIR="$HERMES_HOME_DIR/scripts"
 LAUNCHER="$LAUNCHER_DIR/docket-gmail-triage.sh"
+CREDENTIALS_DIR=${DOCKET_CREDENTIALS_DIR:-"$ROOT/secrets/local"}
 JOB_NAME="Docket Gmail triage"
 JOB_SCHEDULE="every 5m"
 
@@ -48,13 +49,19 @@ trap 'rm -f "$config_tmp" "$env_tmp"' EXIT HUP INT TERM
 cp "$ROOT/hermes/triage-config.example.yaml" "$config_tmp"
 awk '
     !/^(DISCORD_|TELEGRAM_|SLACK_|WHATSAPP_|SIGNAL_|SMS_)/ &&
-    !/^(HERMES_TO_DOCKET_|DOCKET_TO_HERMES_|DOCKET_INTERNAL_URL=)/
+    !/^(HERMES_TO_DOCKET_|DOCKET_TO_HERMES_|DOCKET_INTERNAL_URL=|DOCKET_MCP_TOKEN=|DOCKET_TRIAGE_MCP_TOKEN=)/
 ' "$HERMES_HOME_DIR/.env" > "$env_tmp"
 
-if ! grep -q '^DOCKET_MCP_TOKEN=' "$env_tmp"; then
-    echo "The isolated profile requires DOCKET_MCP_TOKEN." >&2
+if [ ! -s "$CREDENTIALS_DIR/docket_triage_token" ]; then
+    echo "Configure the distinct docket_triage_token before installing triage." >&2
     exit 1
 fi
+if cmp -s "$CREDENTIALS_DIR/docket_triage_token" "$CREDENTIALS_DIR/docket_to_hermes_token" ||
+   cmp -s "$CREDENTIALS_DIR/docket_triage_token" "$CREDENTIALS_DIR/hermes_to_docket_token"; then
+    echo "Triage credentials must differ from interactive and internal service credentials." >&2
+    exit 1
+fi
+printf 'DOCKET_TRIAGE_MCP_TOKEN=%s\n' "$(head -n 1 "$CREDENTIALS_DIR/docket_triage_token")" >> "$env_tmp"
 
 mv "$config_tmp" "$PROFILE_CONFIG"
 mv "$env_tmp" "$PROFILE_ENV"

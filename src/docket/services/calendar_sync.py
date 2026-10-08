@@ -609,7 +609,8 @@ class CalendarReadService:
                 "local_date": local_date.isoformat() if local_date else None,
                 "timezone": str(zone),
                 **(
-                    {"source_utterance_ref": operator_utterance_ref}
+                    {("authenticated_request_ref" if operator_utterance_ref.startswith("req_")
+                      else "source_utterance_ref"): operator_utterance_ref}
                     if operator_utterance_ref else {}
                 ),
                 "as_of": now.isoformat(),

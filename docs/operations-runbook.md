@@ -16,7 +16,8 @@ PostgreSQL is the only durable authority. The live flow is:
 
 ```text
 authenticated Operator input
-  -> immutable utt_ before interpretation
+  -> authenticated interactive principal + durable req_ attribution
+  -> optional agent-reported transcript/file archive (independent transactions)
   -> IntentSession / statements / conflict handling
   -> one chg_ canonical transaction
   -> canonical objects + required op_ provider intents
@@ -36,6 +37,7 @@ task_   operator work           time_   temporal meaning
 evt_    actual occurrence       rem_    notification behavior
 case_   AttentionCase           citem_  case component
 utt_    Operator evidence       stm_    interpretation
+req_    authenticated request  rec_    optional reported context/capture gap
 chg_    atomic mutation         op_     provider effect
 call_   tool invocation         aud_    semantic audit
 ```
@@ -44,6 +46,64 @@ Provider writes are compiler-owned. An authorized Event or Time projection
 ChangeSet must create any required `op_` in the same transaction. Hermes does
 not formulate provider intents and must never ask for a second “push to Google”
 authorization after an already-authorized canonical mutation.
+
+New requests use the October 7 authority amendment. A missing transcript,
+attachment archive, extraction locator, source hash, or first-reading proof does
+not block work. Interpretations and selections can be corrected by restaging
+within the admitted effect/target scope. Required domain values, complete selected
+entries, exact versions and occurrence scope, immutable revisions, audit, and
+atomic provider intent remain mandatory. Background agents cannot stage, commit,
+resolve conflicts, or acquire interactive request authority.
+
+## Authenticated request operations
+
+The interactive credential selects the server-established principal on `/mcp/`.
+Trusted transport carries `x-docket-request-key`, `x-docket-execution-key`, and
+`x-docket-operation-key`; use stable identities for retries. These headers grant
+no authority without the interactive credential. Stage/review/commit share an
+execution's exact observed draft revision. Commit remains parameterless to the
+model. Read-only credentials expose 18 read tools; triage credentials access
+only the four tools at `/triage-mcp/`. Shared credentials fail authentication.
+
+Hermes plugin 0.35.0 admits `/internal/v1/agent/requests` before dispatch, signs
+format-3 request correlation with the internal service credential, and binds only
+the foreground `task_id`. Session reuse by an auxiliary agent never inherits that
+binding. Duplicate foreground deliveries share durable request ownership. A late
+Discord archival queue entry cannot dispatch the message again. Deployment drain
+still prevents acquisition of a new model execution lease.
+
+`/internal/v1/agent/records` and `/attachments` archive supporting context in
+separate transactions. Capture failures are reported as gaps when recording is
+available; they do not suppress valid tools, lease completion, or final delivery.
+Request cancellation is terminal and audited. Revoking the interactive principal
+or rotating its credential also prevents receipt replay under revoked authority.
+
+Use history search with `object_type="authenticated_request"`, then inspect its
+`req_`, `rec_`, `call_`, `sreq_`, or `chg_` references. Default views expose bounded
+metadata and capture status. Individual record `view="audit"` requires the owning
+interactive principal and can return encrypted, retained agent-reported text;
+conversation views link metadata without dumping transcripts. Text payloads expire
+after `DOCKET_CONVERSATION_RETENTION_DAYS` (30 by default) when retention is enabled.
+Hash, capture method, timestamps, request identity, and action history survive the
+irreversible payload purge. Missing archived text cannot revoke committed work.
+
+Upgrade Docket and Hermes together through the supported deployment path after
+explicit deployment authorization and backup. Configure a distinct
+`docket_triage_token` and reinstall the isolated profile before enabling cron.
+Its configuration uses only `DOCKET_TRIAGE_MCP_TOKEN`; the launcher removes
+foreground/internal credentials, and the profile has no built-in tools or plugins.
+Optional read-only clients use `DOCKET_READ_ONLY_TOKEN_FILE`. Disable foreground
+authority with `DOCKET_INTERACTIVE_AGENT_ENABLED=false` or configure its expiry;
+configuration changes require a restart. Never configure background roles with
+interactive keys.
+
+Migrations `20261007a1b2`–`20261007c3d4` do not rewrite historical utterances,
+governance, drafts, or provider work. Empty schemas can round-trip; populated new
+authority/capture history refuses lossy downgrade. Recover with forward repair or
+the verified backup, not an image-only rollback or deletion of retained evidence.
+
+The utterance/trace/first-reading recovery procedures below apply to historical
+utterance-backed work. They are not prerequisites for new authenticated requests.
 
 ## First checks
 
@@ -190,7 +250,7 @@ the production `.env` or production credentials.
 
 ## Tool and contract diagnosis
 
-New staged revisions retain an immutable request interpretation under the exact
+Historical utterance-backed staged revisions retain an immutable request interpretation under the exact
 `sreq_`/version pair in `semantic_request_specifications`. Its integrity digest
 and source hashes do not prove that the proposed interpretation is authorized:
 `pending_evidence_validation` remains explicit, separate from draft compilation
@@ -577,7 +637,7 @@ are different outcomes.
 
 ## Attachment evidence
 
-### Clarification controls
+### Historical clarification controls
 
 Calendar duration choices display the actual durations, dates, bounds, timezone,
 destination and locations, with routing support summarized as the destination.
@@ -613,7 +673,7 @@ the normal deployment restores the ingress role's SELECT grant. Then run the
 normal deployment and `scripts/docket deploy-ingress`; do not leave an old
 ingress writer able to accept the formerly broken, indistinguishable controls.
 
-### Mixed-source fields
+### Historical mixed-source fields
 
 A supporting attachment is not necessarily a structured import. If dates/times
 come from the authenticated message and an image supplies a building name, stage
@@ -657,7 +717,7 @@ the verified pre-migration backup, not an image-only rollback. Isolated Compose
 tests exercise commit/replay through separate connections and empty migration
 upgrade/downgrade/re-upgrade.
 
-### Retention and input delivery
+### Historical retention and input delivery
 
 An Operator attachment first creates bounded `src_` metadata and, according to
 retention policy, an encrypted blob. Interpretation and mutation wait until

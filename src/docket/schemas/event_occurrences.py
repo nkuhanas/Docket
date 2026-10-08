@@ -75,8 +75,19 @@ class OccurrenceReplacement(StrictModel):
 class ResolvedCalendarDate(StrictModel):
     date: date
     timezone: str
-    source_utterance_ref: str = Field(pattern=r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")
+    source_utterance_ref: str | None = Field(
+        default=None, pattern=r"^utt_[0-9A-HJKMNP-TV-Z]{26}$"
+    )
+    authenticated_request_ref: str | None = Field(
+        default=None, pattern=r"^req_[0-9A-HJKMNP-TV-Z]{26}$"
+    )
     relative_day: Literal["today", "tomorrow"] | None = None
+
+    @model_validator(mode="after")
+    def has_one_root(self) -> ResolvedCalendarDate:
+        if (self.source_utterance_ref is None) == (self.authenticated_request_ref is None):
+            raise ValueError("Calendar date resolution requires one authenticated root")
+        return self
 
 
 class OneTimeEventScope(StrictModel):

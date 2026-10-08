@@ -45,9 +45,10 @@ def plugin_module(monkeypatch):
 
     monkeypatch.setattr(module, "_docket_internal_request", fake_internal_request)
     monkeypatch.setattr(module, "_GATEWAY_INSTANCE_REF", "gwy_" + "3" * 26)
-    # These tests isolate dispatch/projection behavior. Real checkpoint recovery
-    # and failure gating are exercised in test_trace_checkpoints.py.
+    # Retain historical utterance/trace recovery coverage; the current request
+    # bridge is exercised without this substitution in test_request_bridge.py.
     monkeypatch.setattr(module, "_checkpoint_trace", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(module, "_pre_gateway_dispatch", module._historical_gateway_dispatch)
     return module
 
 
@@ -1691,7 +1692,7 @@ def test_authorized_chat_receives_verified_source_context(plugin_module, monkeyp
     assert f'"actor_id": "{actor}"' in result["text"]
     assert "Reads do not consume an intent index" in result["text"]
     assert "one ChangeSet" in result["text"]
-    assert "current authenticated OperatorUtterance supplies authority" in result["text"]
+    assert "historical OperatorUtterance supplies authority" in result["text"]
     assert "do not split one request across legacy mutations" in result["text"]
 
 

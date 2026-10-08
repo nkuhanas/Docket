@@ -284,6 +284,10 @@ class AttachmentEvidence(Base):
     __tablename__ = "attachment_evidence_metadata"
     __table_args__ = (
         CheckConstraint(
+            "operator_utterance_ref IS NOT NULL OR authenticated_request_ref IS NOT NULL",
+            name="ck_attachment_evidence_authority_root",
+        ),
+        CheckConstraint(
             "ingest_state IN ('pending', 'available', 'failed', 'rejected')",
             name="ck_attachment_evidence_ingest_state",
         ),
@@ -319,8 +323,11 @@ class AttachmentEvidence(Base):
     transport: Mapped[str] = mapped_column(String(32), nullable=False)
     transport_attachment_ref: Mapped[str] = mapped_column(String(512), nullable=False)
     source_message_ref: Mapped[str] = mapped_column(String(512), nullable=False)
-    operator_utterance_ref: Mapped[str] = mapped_column(
-        ForeignKey("operator_utterances.ref_id", ondelete="RESTRICT"), nullable=False
+    operator_utterance_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("operator_utterances.ref_id", ondelete="RESTRICT")
+    )
+    authenticated_request_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("authenticated_requests.ref_id", ondelete="RESTRICT")
     )
     filename: Mapped[str | None] = mapped_column(String(512))
     media_type: Mapped[str | None] = mapped_column(String(255))
@@ -371,6 +378,7 @@ def _guard_attachment_enrichment(
         "byte_size",
         "received_at",
         "recorded_at",
+        "authenticated_request_ref",
     )
     if any(state.attrs[field].history.has_changes() for field in immutable_fields):
         raise ValueError("AttachmentEvidence identity and manifest fields are immutable")

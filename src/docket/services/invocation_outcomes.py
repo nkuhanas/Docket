@@ -56,12 +56,21 @@ def gateway_recovery_pending() -> ColumnElement[bool]:
         original.tool_contract_hash == ToolInvocation.tool_contract_hash,
         or_(ToolInvocation.trace_call_id.is_(None), original.id == ToolInvocation.id),
     ).correlate(ToolInvocation).exists()
+    request_terminal = select(AssemblyOperation.id).where(
+        AssemblyOperation.id == ToolInvocation.assembly_operation_id,
+        AssemblyOperation.source_request_ref == ToolInvocation.authenticated_request_ref,
+        AssemblyOperation.tool_name == ToolInvocation.tool_name,
+        AssemblyOperation.argument_hash == ToolInvocation.received_argument_hash,
+        AssemblyOperation.state.in_(("completed", "rejected")),
+        AssemblyOperation.completed_at.is_not(None),
+        AssemblyOperation.result_disposition != "unknown",
+    ).correlate(ToolInvocation).exists()
     return or_(
         ToolInvocation.transport_state == "running",
         and_(
             ToolInvocation.domain_state == "unknown",
             ToolInvocation.error_code == "gateway_interrupted",
-            terminal,
+            or_(terminal, request_terminal),
         ),
     )
 
@@ -69,6 +78,15 @@ def gateway_recovery_pending() -> ColumnElement[bool]:
 def bound_assembly_operation(
     session: Session, invocation: ToolInvocation,
 ) -> AssemblyOperation | None:
+    if invocation.assembly_operation_id is not None:
+        operation = session.get(AssemblyOperation, invocation.assembly_operation_id)
+        if operation is not None and (
+            operation.source_request_ref == invocation.authenticated_request_ref
+            and operation.tool_name == invocation.tool_name
+            and operation.argument_hash == invocation.received_argument_hash
+        ):
+            return operation
+        return None
     if (
         invocation.caller_profile != "interactive"
         or invocation.trace_ref is None

@@ -1381,6 +1381,20 @@ class ChangeSetContent(StrictModel):
         return self
 
 
+class AgentClarificationChoice(StrictModel):
+    """A non-executable interpretation choice; selection must be restaged."""
+
+    option_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,127}$")
+    label: str = Field(min_length=1, max_length=255)
+    interpretation: dict[str, Any]
+
+    @model_validator(mode="after")
+    def bounded_choice(self) -> AgentClarificationChoice:
+        if len(json.dumps(self.interpretation).encode()) > 4096:
+            raise ValueError("Clarification interpretation exceeds 4 KiB")
+        return self
+
+
 class SemanticOptionDraft(StrictModel):
     """Typed pending ChangeSet scope rendered and persisted by Docket."""
 

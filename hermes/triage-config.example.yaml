@@ -27,7 +27,7 @@ mcp_servers:
   docket-triage:
     url: "http://docket:8000/triage-mcp/"
     headers:
-      Authorization: "Bearer ${DOCKET_MCP_TOKEN}"
+      Authorization: "Bearer ${DOCKET_TRIAGE_MCP_TOKEN}"
     timeout: 30
     connect_timeout: 15
     supports_parallel_tool_calls: false

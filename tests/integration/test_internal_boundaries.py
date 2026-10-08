@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import asynccontextmanager
 
 import pytest
 from fastapi import HTTPException, Response
@@ -30,16 +31,24 @@ def _request(path: str, authorization: str | None = None) -> Request:
     )
 
 
+def _authorize_service(value):
+    async def consume():
+        async with asynccontextmanager(require_hermes_service)(value):
+            return None
+
+    return asyncio.run(consume())
+
+
 @pytest.mark.integration
 def test_internal_api_and_mcp_require_distinct_tokens(session_factory) -> None:
     settings = get_settings()
     with pytest.raises(HTTPException) as missing:
-        require_hermes_service(None)
+        _authorize_service(None)
     assert missing.value.status_code == 401
     with pytest.raises(HTTPException) as wrong_service:
-        require_hermes_service(f"Bearer {settings.docket_to_hermes_token()}")
+        _authorize_service(f"Bearer {settings.docket_to_hermes_token()}")
     assert wrong_service.value.status_code == 401
-    assert require_hermes_service(f"Bearer {settings.hermes_to_docket_token()}") is None
+    assert _authorize_service(f"Bearer {settings.hermes_to_docket_token()}") is None
 
     async def call_next(_request: Request) -> Response:
         return Response(status_code=204)
@@ -55,9 +64,7 @@ def test_internal_api_and_mcp_require_distinct_tokens(session_factory) -> None:
     assert wrong_mcp_service.status_code == 401
     with session_factory() as session:
         runtime_logs = list(
-            session.scalars(
-                select(RuntimeLogEntry).order_by(RuntimeLogEntry.occurred_at)
-            )
+            session.scalars(select(RuntimeLogEntry).order_by(RuntimeLogEntry.occurred_at))
         )
         assert len(runtime_logs) == 2
         assert all(entry.ref_id.startswith("log_") for entry in runtime_logs)

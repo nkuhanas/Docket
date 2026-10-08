@@ -21,7 +21,8 @@ def _module():
 
 
 def _definition(
-    tool_name: str, name: str | None = None,
+    tool_name: str,
+    name: str | None = None,
 ) -> dict[str, object]:
     tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
     tool = tools[tool_name]
@@ -41,58 +42,38 @@ def _stage_definition(name: str = "docket_stage_changes") -> dict[str, object]:
 
 def test_tracked_work_scope_is_exact_reference_closed_and_bounded() -> None:
     module = _module()
-    definition = _definition("docket_request_clarification")
-    full_schema = definition["function"]["parameters"]
-
     described = module.scoped_tool_description(
-        definition,
+        _stage_definition(),
         ["item_create", "task_create", "temporal_binding_create"],
     )
-
     scoped = described["parameters"]
-    encoded = json.dumps(described, ensure_ascii=False, separators=(",", ":")).encode()
-    assert len(json.dumps(full_schema, separators=(",", ":")).encode()) > 100_000
-    assert len(encoded) < 20_000
-    assert described["schema_scope"]["complete_for_selected_mutations"] is True
-    assert described["schema_scope"]["mutation_types"] == [
-        "item_create",
-        "task_create",
-        "temporal_binding_create",
-    ]
-    content = scoped["$defs"]["OperatorChangeSetContent"]
-    assert set(content["properties"]) == {
-        "basis_refs",
-        "expected_versions",
-        "import_scope",
-        "tracked_context_changes",
-    }
-    mapping = scoped["$defs"]["TrackedContextChangeInput"]["discriminator"]["mapping"]
+    assert len(json.dumps(described, separators=(",", ":")).encode()) < 20_000
+    mapping = scoped["$defs"]["CanonicalChangeInput"]["discriminator"]["mapping"]
     assert set(mapping) == {"item_create", "task_create", "temporal_binding_create"}
-    assert "entry_coverage" in scoped["$defs"]["OperatorImportScope"]["properties"]
-    assert "ImportEntryCoverage" in scoped["$defs"]
-    assert "import_entry_id" in scoped["$defs"]["StatementInput"]["properties"]
     assert "EntityCreate" not in scoped["$defs"]
     assert "CanonicalEventCreate" not in scoped["$defs"]
-    assert "assembly_operation_token" not in scoped["properties"]
-    for definition_value in scoped["$defs"].values():
-        for reference in module._definition_refs(definition_value):
+    assert "request_ref" not in scoped["properties"]
+    for value in scoped["$defs"].values():
+        for reference in module._definition_refs(value):
             assert reference in scoped["$defs"]
 
 
 def test_clarification_description_requires_an_explicit_known_scope() -> None:
     module = _module()
-    definition = _definition("docket_request_clarification")
-    with pytest.raises(module.SchemaScopeError, match="unknown mutation types"):
-        module.scoped_tool_description(
-            definition, ["made_up_create"]
-        )
+    described = module.scoped_tool_description(_definition("docket_request_clarification"))
+    assert "request_ref" not in described["parameters"]["properties"]
+    definitions = described["parameters"]["$defs"]
+    assert set(definitions["AgentClarificationChoice"]["properties"]) == {
+        "option_id",
+        "label",
+        "interpretation",
+    }
+    assert "CanonicalChangeInput" not in definitions
 
 
 def test_commit_schema_has_no_model_arguments_and_hides_gateway_binding() -> None:
     module = _module()
-    described = module.scoped_tool_description(
-        _definition("docket_commit_changeset")
-    )
+    described = module.scoped_tool_description(_definition("docket_commit_changeset"))
     scoped = described["parameters"]
     assert len(json.dumps(described, separators=(",", ":")).encode()) < 3_000
     assert scoped["properties"] == {}
@@ -111,16 +92,19 @@ def test_normalized_entry_stage_schema_is_exact_and_bounded() -> None:
     scoped = described["parameters"]
     assert len(json.dumps(described, separators=(",", ":")).encode()) < 16_000
     assert "assembly_argument_hash" not in scoped["properties"]
-    mapping = scoped["$defs"]["StagePatchInput"]["properties"]["operations"][
-        "items"
-    ]["discriminator"]["mapping"]
+    mapping = scoped["$defs"]["StagePatchInput"]["properties"]["operations"]["items"][
+        "discriminator"
+    ]["mapping"]
     assert set(mapping) == {
-        "normalized_entry_upsert", "normalized_entry_remove", "draft_recompile", "draft_adopt",
+        "normalized_entry_upsert",
+        "normalized_entry_remove",
+        "draft_recompile",
+        "draft_adopt",
     }
     assert scoped["$defs"]["StageDraftAdopt"]["properties"].keys() == {"operation"}
-    entry_mapping = scoped["$defs"]["StageNormalizedEntryUpsert"]["properties"][
-        "entry"
-    ]["discriminator"]["mapping"]
+    entry_mapping = scoped["$defs"]["StageNormalizedEntryUpsert"]["properties"]["entry"][
+        "discriminator"
+    ]["mapping"]
     assert set(entry_mapping) == {"scheduled_occurrence_entry"}
     assert "CanonicalChangeInput" not in scoped["$defs"]
     properties = scoped["$defs"]["ScheduledOccurrenceEntry"]["properties"]
@@ -131,7 +115,8 @@ def test_normalized_entry_stage_schema_is_exact_and_bounded() -> None:
 def test_supporting_field_binding_is_disclosed_with_direct_actions_only():
     module = _module()
     described = module.scoped_tool_description(
-        _stage_definition(), mutation_types=["canonical_event_create"],
+        _stage_definition(),
+        mutation_types=["canonical_event_create"],
     )
     scoped = described["parameters"]
     assert len(json.dumps(described, separators=(",", ":")).encode()) < 16_000
@@ -145,12 +130,16 @@ def test_supporting_field_binding_is_disclosed_with_direct_actions_only():
 
 def test_event_edit_disclosure_exposes_only_sparse_public_fields():
     described = _module().scoped_tool_description(
-        _stage_definition(), mutation_types=["canonical_event_modify"],
+        _stage_definition(),
+        mutation_types=["canonical_event_modify"],
     )
     schema = described["parameters"]
     assert len(json.dumps(described, separators=(",", ":")).encode()) < 16_000
     assert set(schema["$defs"]["EventFieldPatch"]["properties"]) == {
-        "title", "location", "notes", "timing",
+        "title",
+        "location",
+        "notes",
+        "timing",
     }
     assert "title" not in schema["$defs"]["CanonicalEventPatchSpec"]["properties"]
     assert "MaterializedEventModify" not in schema["$defs"]
@@ -160,10 +149,14 @@ def test_event_edit_disclosure_exposes_only_sparse_public_fields():
 def test_schema_compaction_preserves_title_properties_and_opaque_literal_values():
     module = _module()
     literal = {"title": "literal", "properties": {"title": "not a schema"}}
-    schema = {"title": "Display annotation", "type": "object", "properties": {
-        "title": {"type": "string", "title": "Title", "default": "Keep"},
-        "data": {"type": "object", "default": literal, "const": literal},
-    }}
+    schema = {
+        "title": "Display annotation",
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "title": "Title", "default": "Keep"},
+            "data": {"type": "object", "default": literal, "const": literal},
+        },
+    }
     compact = module._without_schema_titles(schema)
     assert "title" not in compact
     assert compact["properties"]["title"] == {"type": "string", "default": "Keep"}
@@ -265,15 +258,10 @@ def test_pinned_hermes_bridge_scopes_namespaced_clarification_tool(monkeypatch) 
 
     assert described["name"] == namespaced
     definitions = described["parameters"]["$defs"]
-    assert set(definitions["TaskInput"]["properties"]) >= {
-        "item_change_id",
-        "title",
-        "task_state",
+    assert set(definitions["AgentClarificationChoice"]["properties"]) == {
+        "option_id",
+        "label",
+        "interpretation",
     }
-    assert set(definitions["TemporalBindingInput"]["properties"]) >= {
-        "subject_change_id",
-        "role",
-        "temporal_value",
-    }
-    assert "status" not in definitions["TaskInput"]["properties"]
-    assert "start_at" not in definitions["TemporalBindingInput"]["properties"]
+    assert "TaskInput" not in definitions
+    assert "TemporalBindingInput" not in definitions

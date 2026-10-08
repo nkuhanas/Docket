@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from datetime import UTC, datetime
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from sqlalchemy import select, text
@@ -10,7 +11,7 @@ from sqlalchemy.orm import Session
 from docket.agent_auth import require_principal
 from docket.config import get_settings
 from docket.domain.errors import DocketError
-from docket.models import AuditEvent, AuthenticatedRequest, ConversationRecord
+from docket.models import AuditEvent, AuthenticatedRequest, ConversationRecord, ExecutionLease
 
 
 class AgentRequestService:
@@ -51,6 +52,7 @@ class AgentRequestService:
             permissions=sorted(principal.permissions),
             request_key=request_key,
             conversation_ref=conversation_ref or request_key,
+            admitted_timezone=get_settings().timezone,
             source_utterance_ref=source_utterance_ref,
         )
         self.session.add(row)
@@ -74,6 +76,7 @@ class AgentRequestService:
         *,
         permission: str,
         allow_committed: bool = False,
+        allow_cancelled: bool = False,
     ) -> AuthenticatedRequest:
         principal = require_principal(permission)
         row = self.session.scalar(
@@ -89,7 +92,7 @@ class AgentRequestService:
             or row.operator_ref != principal.operator_ref
             or row.role != "interactive"
             or permission not in row.permissions
-            or row.state == "cancelled"
+            or (row.state == "cancelled" and not allow_cancelled)
             or (row.state == "committed" and not allow_committed)
         ):
             raise DocketError(
@@ -97,6 +100,63 @@ class AgentRequestService:
                 message="This request is unavailable to the authenticated caller.",
             )
         return row
+
+    def claim_foreground_execution(
+        self,
+        request_ref: str,
+        *,
+        execution_key: str,
+    ) -> dict[str, object]:
+        """Serialize duplicate foreground dispatches independently of optional capture."""
+        from docket.services.continuity import ContinuityService
+
+        root = self.require(request_ref, permission="stage")
+        if not execution_key or len(execution_key) > 255:
+            raise DocketError(
+                code="invalid_execution_identity", message="Execution key is required."
+            )
+        lease_key = f"agent:{root.ref_id}:{execution_key}"
+        previous = self.session.scalar(
+            select(ExecutionLease)
+            .where(
+                ExecutionLease.subject_ref == root.ref_id,
+                ExecutionLease.lease_kind == "interactive_turn",
+                ExecutionLease.status.in_(("active", "completed")),
+            )
+            .order_by(ExecutionLease.claimed_at.desc())
+            .limit(1)
+        )
+        if previous is not None and (
+            previous.status == "completed"
+            or (
+                previous.lease_key != lease_key
+                and previous.lease_expires_at.replace(tzinfo=UTC) > datetime.now(UTC)
+            )
+        ):
+            return {"execution_disposition": "already_dispatched"}
+        lease = ContinuityService(self.session).acquire_execution_lease(
+            lease_key=lease_key,
+            lease_kind="interactive_turn",
+            subject_ref=root.ref_id,
+        )
+        return {"completion_token": lease.completion_token}
+
+    def cancel(self, request_ref: str) -> dict[str, object]:
+        root = self.require(request_ref, permission="stage", allow_cancelled=True)
+        if root.state == "active":
+            root.state = "cancelled"
+            self.session.add(
+                AuditEvent(
+                    event_type="request.cancelled",
+                    actor_type="agent",
+                    actor_id=root.principal_ref,
+                    primary_ref=root.ref_id,
+                    affected_refs=[root.ref_id],
+                    basis_refs=[root.ref_id],
+                    data={},
+                )
+            )
+        return {"ok": True, "request_ref": root.ref_id, "state": root.state}
 
     def record(
         self,

@@ -18,7 +18,13 @@ from sqlalchemy.orm import Session
 from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError, IdempotencyConflict
 from docket.domain.public_refs import new_public_ref
-from docket.models import AttachmentEvidence, EncryptedAttachmentBlob, OperatorUtterance, Source
+from docket.models import (
+    AttachmentEvidence,
+    AuthenticatedRequest,
+    EncryptedAttachmentBlob,
+    OperatorUtterance,
+    Source,
+)
 from docket.schemas.common import StrictModel
 
 PDF_TEXT_EXTRACTOR = "docket.pypdf.text"
@@ -248,6 +254,66 @@ class AttachmentEvidenceService:
                 self.session.add(self._blob(source_ref, capture.plaintext))
             refs.append(source_ref)
         utterance.attachment_source_refs = refs
+        return refs
+
+    def plan_request(
+        self, request: AuthenticatedRequest, captures: list[AttachmentCapture],
+    ) -> list[str]:
+        """Optional, honestly labeled attachment archival for an authenticated request."""
+        from docket.services.agent_requests import AgentRequestService
+
+        AgentRequestService(self.session).require(
+            request.ref_id, permission="stage", allow_committed=True,
+        )
+        if len(captures) > 10:
+            raise DocketError(
+                code="attachment_manifest_limit_exceeded", message="At most ten files"
+            )
+        refs: list[str] = []
+        total = sum(len(c.plaintext) for c in captures if c.plaintext is not None)
+        for capture in captures:
+            self._validate_capture(capture)
+            state, retention, digest = self._outcome(capture, total_plaintext_bytes=total)
+            if state == "pending":
+                state, retention = "failed", "metadata_only"
+            identity = sha256_json({
+                "request_ref": request.ref_id,
+                "attachment_ref": capture.transport_attachment_ref,
+            })
+            prior = self.session.scalar(select(AttachmentEvidence).where(
+                AttachmentEvidence.authenticated_request_ref == request.ref_id,
+                AttachmentEvidence.transport_attachment_ref == capture.transport_attachment_ref,
+            ))
+            if prior is not None:
+                if (prior.content_hash, prior.filename, prior.media_type, prior.byte_size) != (
+                    digest, capture.filename, capture.media_type, capture.byte_size,
+                ):
+                    raise IdempotencyConflict(capture.transport_attachment_ref)
+                refs.append(prior.ref_id)
+                continue
+            source_ref = new_public_ref("src")
+            self.session.add(Source(
+                ref_id=source_ref, source_kind="attachment",
+                external_ref=f"agent_attachment:{identity}", observed_at=capture.received_at,
+                content_hash=sha256_json({"identity": identity, "content_hash": digest}),
+                metadata_json={"authenticated_request_ref": request.ref_id,
+                               "capture_method": "agent_reported", "untrusted_content": True},
+            ))
+            self.session.add(AttachmentEvidence(
+                ref_id=source_ref, transport="agent_reported",
+                transport_attachment_ref=capture.transport_attachment_ref,
+                source_message_ref=request.request_key, authenticated_request_ref=request.ref_id,
+                filename=capture.filename, media_type=capture.media_type,
+                byte_size=capture.byte_size, content_hash=digest,
+                received_at=capture.received_at, ingest_state=state,
+                retention_disposition=retention,
+                derived_content_refs=[],
+            ))
+            if state == "available":
+                assert capture.plaintext is not None
+                self.session.add(self._blob(source_ref, capture.plaintext))
+            refs.append(source_ref)
+        self.session.flush()
         return refs
 
     def reconcile_existing(
