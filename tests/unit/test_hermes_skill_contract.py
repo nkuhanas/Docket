@@ -14,8 +14,9 @@ TRIAGE_SKILL_PATH = Path("hermes/plugin/docket_discord/skills/docket-triage/SKIL
 def test_manual_skill_uses_ledger_authority_without_redundant_approval() -> None:
     skill = " ".join(SKILL_PATH.read_text(encoding="utf-8").split())
 
-    assert "current `utt_` reference" in skill
-    assert "do not ask for a redundant approval" in skill
+    assert "durable authenticated request (`req_`)" in skill
+    assert "Capture failures do not block otherwise valid work" in skill
+    assert "Review is optional" in skill
     assert "no Record, queue-item, Action, Approval, or compatibility surface" in skill
     assert "`docket_commit_changeset`" in skill
     assert "`docket_resolve_conflict`" in skill
@@ -56,8 +57,8 @@ def test_manual_skill_defines_semantic_readiness_and_staged_protocol() -> None:
     assert "every event has an exact intended lane" in skill
     assert "Commit readiness is separate" in skill
     assert "not evidence that the Operator's intent became ambiguous" in skill
-    assert "not copied into model arguments" in skill
-    assert "Confidence, plausibility, or “obvious” is never a substitute" in skill
+    assert "supplied by infrastructure" in skill
+    assert "required values or intent are unresolved" in skill
     for group in (
         "`registry_changes`",
         "`preference_changes`",
@@ -93,7 +94,7 @@ def test_manual_skill_defines_semantic_readiness_and_staged_protocol() -> None:
     assert "offset-free wall-clock values" in skill
     assert "reads retained PDFs, not image attachments" in skill
     assert "unique `import_entry_id`" in skill
-    assert "exact source-fragment locator/hash" in skill
+    assert "source-fragment locator/hash" in skill
     assert "exact duplicated-title repair rule" in skill
     assert "every other effect fixed" in skill
     assert "Never compress source entries" in skill
@@ -124,7 +125,7 @@ def test_sender_example_validates_against_actual_staging_schema() -> None:
     ]
     assert actions[1].payload.add_associated_email_change_id == actions[0].change_id
     assert actions[2].payload.policy_json == {"disposition": "suppress"}
-    assert all(action.basis_refs == [refs["utt_CURRENT_MESSAGE"]] for action in actions)
+    assert all(action.basis_refs == [] for action in actions)
     assert request.assembly_scope.allowed_mutation_types == sorted(
         action.mutation_type for action in actions
     )

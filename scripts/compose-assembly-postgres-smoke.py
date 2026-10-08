@@ -1352,7 +1352,7 @@ def test_direct_request_adoption_serializes_and_preserves_proof(
     else:
         raise AssertionError("Downgrade discarded adoption evidence")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007b2c3"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007c3d4"
         assert session.get(RequestAssemblyAdoption, request_ref) is not None
 
 
@@ -2244,7 +2244,7 @@ def test_trace_history_survives_call_one_hundred_and_blocks_lossy_downgrade(
     else:
         raise AssertionError("Downgrade should preserve the longer trace by refusing to proceed")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007b2c3"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007c3d4"
         assert session.scalar(select(TraceExecutionSegment.last_ordinal).where(
             TraceExecutionSegment.id == trace_id
         )) == 103
@@ -2547,7 +2547,7 @@ def test_request_specifications_are_immutable_and_block_lossy_downgrade(
     else:
         raise AssertionError("Downgrade discarded immutable request specifications")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007b2c3"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007c3d4"
         assert session.get(SemanticRequestSpecification, (key["ref"], key["version"])) is not None
 
 
@@ -2585,7 +2585,7 @@ def test_initial_source_interpretations_are_immutable_across_connections(
     else:
         raise AssertionError("Downgrade discarded initial source interpretations")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007b2c3"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007c3d4"
         interpreted = read_entry_interpretation(
             session, request_ref=key["ref"], entry_id=key["entry"],
         )
@@ -3054,6 +3054,21 @@ def test_authenticated_request_attribution_is_retained(factory: sessionmaker[Ses
     with ThreadPoolExecutor(max_workers=2) as pool:
         first, second = list(pool.map(lambda _index: admit(), range(2)))
     assert first == second
+    def claim_foreground(index: int) -> dict[str, object]:
+        context_token = agent_call_context.set(AgentCallContext(principal))
+        try:
+            with factory.begin() as session:
+                return AgentRequestService(session).claim_foreground_execution(
+                    first, execution_key=f"foreground-{index}",
+                )
+        finally:
+            agent_call_context.reset(context_token)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        claims = list(pool.map(claim_foreground, range(2)))
+    assert sum("completion_token" in claim for claim in claims) == 1, claims
+    assert sum(claim.get("execution_disposition") == "already_dispatched"
+               for claim in claims) == 1, claims
     token = agent_call_context.set(AgentCallContext(principal))
     try:
         with factory.begin() as session:
@@ -3102,18 +3117,85 @@ def test_authenticated_request_attribution_is_retained(factory: sessionmaker[Ses
                 assembly_argument_hash=digest,
             )
             assert staged["disposition"] == "ready_to_commit", staged
+        def commit_once(_index: int) -> dict[str, Any]:
+            context_token = agent_call_context.set(AgentCallContext(principal))
+            try:
+                with factory.begin() as session:
+                    root = AgentRequestService(session).require(
+                        first, permission="commit", allow_committed=True,
+                    )
+                    admission = ChangeSetAssemblyAdmissionService(session).admit_agent(
+                        request_ref=first, execution_key="pg-foreground", operation_key="commit",
+                        tool_name="docket_commit_changeset", argument_hash="c" * 64,
+                    )
+                    return ChangeSetAssemblyService(session).commit(
+                        request_ref=first, request_key=root.request_key,
+                        assembly_operation_token=admission["assembly_operation_token"],
+                        assembly_argument_hash="c" * 64,
+                    )
+            finally:
+                agent_call_context.reset(context_token)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(commit_once, range(2)))
+        assert all(result["disposition"] in {"committed", "already_committed"}
+                   for result in outcomes), outcomes
+        assert outcomes[0]["changeset_ref"] == outcomes[1]["changeset_ref"]
+        from docket.models import ConversationRecord
+        from docket.models.base import utc_now
+        from docket.services.conversation_retention import ConversationRetentionService
+        from docket.services.invocation_outcomes import (
+            gateway_recovery_pending,
+            recover_assembly_outcome,
+        )
+
+        assert ConversationRetentionService(factory, get_settings()).run_once(
+            utc_now() + timedelta(days=31),
+        ) == 1
         with factory.begin() as session:
-            root = AgentRequestService(session).require(first, permission="commit")
-            admission = ChangeSetAssemblyAdmissionService(session).admit_agent(
-                request_ref=first, execution_key="pg-foreground", operation_key="commit",
-                tool_name="docket_commit_changeset", argument_hash="c" * 64,
+            record = session.scalar(select(ConversationRecord).where(
+                ConversationRecord.ref_id == captured["ref"],
+            ))
+            assert record is not None and record.ciphertext is None and record.purged_at is not None
+            operation = session.scalar(select(AssemblyOperation).where(
+                AssemblyOperation.source_request_ref == first,
+                AssemblyOperation.tool_name == "docket_commit_changeset",
+            ))
+            assert operation is not None
+            invocation = ToolInvocation(
+                tool_name=operation.tool_name, tool_contract_version="synthetic-request-v44",
+                caller_profile="interactive", actor_ref=principal.principal_ref,
+                authenticated_request_ref=first, assembly_operation_id=operation.id,
+                received_argument_hash=operation.argument_hash, transport_state="failed",
+                domain_state="unknown", error_code="gateway_interrupted",
             )
-            committed = ChangeSetAssemblyService(session).commit(
-                request_ref=first, request_key=root.request_key,
-                assembly_operation_token=admission["assembly_operation_token"],
-                assembly_argument_hash="c" * 64,
-            )
-            assert committed["disposition"] == "committed", committed
+            session.add(invocation)
+            session.flush()
+            assert session.scalar(select(ToolInvocation).where(
+                ToolInvocation.id == invocation.id, gateway_recovery_pending(),
+            )) is invocation
+            assert recover_assembly_outcome(session, invocation)
+            assert invocation.domain_state == "succeeded"
+            assert invocation.result_disposition == "committed"
+        try:
+            with factory.begin() as session:
+                session.execute(text(
+                    "UPDATE conversation_records SET purged_at = NULL WHERE ref_id = :ref"
+                ), {"ref": captured["ref"]})
+        except DBAPIError:
+            pass
+        else:
+            raise AssertionError("PostgreSQL reopened a purged transcript payload")
+        latest = ScriptDirectory.from_config(Config("alembic.ini")).get_revision("20261007c3d4")
+        assert latest is not None
+        try:
+            with (factory.kw["bind"].begin() as connection,
+                  Operations.context(MigrationContext.configure(connection))):
+                latest.module.downgrade()
+        except RuntimeError as exc:
+            assert "discard evidence" in str(exc)
+        else:
+            raise AssertionError("Downgrade discarded request capture and call evidence")
         migration = ScriptDirectory.from_config(Config("alembic.ini")).get_revision("20261007b2c3")
         assert migration is not None
         try:

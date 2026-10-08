@@ -25,6 +25,8 @@ ProviderAccountRef = Annotated[
 ]
 
 HistoryObjectType = Literal[
+    "authenticated_request",
+    "conversation_record",
     "operator_utterance",
     "agent_response",
     "interpreted_statement",

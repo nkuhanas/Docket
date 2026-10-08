@@ -99,6 +99,8 @@ def authenticate_agent(
             for other, path in files.items()
             if other != role and path is not None and path.is_file()
         ]
+        if settings.hermes_to_docket_token_file.is_file():
+            peers.append(settings.hermes_to_docket_token())
     except (OSError, ValueError) as exc:
         raise DocketError(
             code="agent_authentication_required", message="Caller authentication is unavailable."

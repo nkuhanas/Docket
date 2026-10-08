@@ -2480,42 +2480,40 @@ def test_mcp_stage_then_payload_free_commit_and_replay_without_review(session_fa
 
 @pytest.mark.integration
 def test_mcp_clarification_persists_choices_without_canonical_effects(session_factory) -> None:
-    utterance = _utterance("1542799000000000841")
-    with session_factory.begin() as session:
-        session.add(utterance)
-        session.flush()
-        action = _item_stage(utterance).patch.operations[0].action.model_dump(mode="json")
-    result = asyncio.run(
-        mcp.call_tool(
-            "docket_request_clarification",
-            {
-                "utterance_ref": utterance.ref_id,
-                "request_key": utterance.request_key,
-                "question": "Track this item?",
-                "semantic_options": [
-                    {
-                        "option_id": "track-item",
-                        "selection_authority_ref": utterance.ref_id,
-                        "content": {
-                            "basis_refs": [utterance.ref_id],
-                            "tracked_context_changes": [action],
-                        },
-                    }
-                ],
-            },
-        )
+    from docket.agent_auth import AgentCallContext, AgentPrincipal, agent_call_context
+    from docket.mcp.instrumented import _result_envelope
+
+    principal = AgentPrincipal(
+        principal_ref="agent:interactive",
+        operator_ref=f"operator:{get_settings().operator_discord_user_id}",
+        role="interactive", permissions=frozenset({"read", "stage", "commit", "resolve_conflict"}),
     )
-    assert isinstance(result, tuple)
-    assert result[1]["disposition"] == "needs_clarification"
+    token = agent_call_context.set(AgentCallContext(
+        principal, "synthetic:clarification", "foreground", "choices",
+    ))
+    try:
+        result = _result_envelope(asyncio.run(mcp.call_tool(
+            "docket_request_clarification", {
+                "question": "Which date should this use?",
+                "semantic_options": [{
+                    "option_id": "tomorrow", "label": "Tomorrow",
+                    "interpretation": {"date": "2026-10-08"},
+                }],
+            },
+        )))
+    finally:
+        agent_call_context.reset(token)
+    assert result["disposition"] == "clarification_required", result
     with session_factory() as session:
         assert session.scalar(select(func.count(ChangeSet.id))) == 0
         assert session.scalar(select(func.count(Item.id))) == 0
         call = session.scalar(select(ToolInvocation))
         assert call.domain_state == "succeeded"
-        assert call.result_disposition == "needs_clarification"
+        assert call.result_disposition == "clarification_required"
+        assert call.authenticated_request_ref == result["request_ref"]
+        assert not call.utterance_refs
 
 
-@pytest.mark.integration
 def test_terminal_tool_call_reconciles_stale_admitted_predecessor(session) -> None:
     utterance = _utterance("1542799000000000812")
     session.add(utterance)

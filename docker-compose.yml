@@ -77,6 +77,7 @@ services:
     environment:
       DOCKET_DATABASE_URL: ${DOCKET_DATABASE_URL:-postgresql+psycopg://docket:docket-smoke@postgres:5432/docket}
       DOCKET_TO_HERMES_TOKEN_FILE: /run/docket-secrets/docket_to_hermes_token
+      DOCKET_TRIAGE_TOKEN_FILE: /run/docket-secrets/docket_triage_token
       HERMES_TO_DOCKET_TOKEN_FILE: /run/docket-secrets/hermes_to_docket_token
       DOCKET_INTERACTION_SIGNING_KEY_FILE: /run/docket-secrets/interaction_signing_key
       DOCKET_ATTACHMENT_ENCRYPTION_KEY_FILE: /run/docket-secrets/attachment_encryption_key
@@ -153,6 +154,7 @@ services:
       HERMES_GID: ${HERMES_GID:-1000}
       HERMES_TO_DOCKET_TOKEN_FILE: /run/docket-secrets/hermes_to_docket_token
       DOCKET_TO_HERMES_TOKEN_FILE: /run/docket-secrets/docket_to_hermes_token
+      DOCKET_TRIAGE_TOKEN_FILE: /run/docket-secrets/docket_triage_token
       DOCKET_INTERNAL_URL: http://docket:8000
       DOCKET_OPERATOR_DISCORD_USER_ID: ${DOCKET_OPERATOR_DISCORD_USER_ID:-000000000000000001}
       DISCORD_ALLOWED_USERS: ${DOCKET_OPERATOR_DISCORD_USER_ID:-000000000000000001}

@@ -26,6 +26,7 @@ from docket.models import (
 from docket.models.base import utc_now
 from docket.schemas.authority import (
     CURRENT_IMPORT_AUTHORITY_STATEMENT,
+    AgentClarificationChoice,
     ChangeSetCommit,
     ChangeSetContent,
     ChangeSetPrepare,
@@ -443,7 +444,7 @@ class InteractiveAuthorityService:
         content: ChangeSetContent | None,
         changeset_ref: str | None,
         expected_changeset_version: int | None,
-        semantic_options: list[SemanticOptionDraft] | None = None,
+        semantic_options: list[SemanticOptionDraft | AgentClarificationChoice] | None = None,
         semantic_request_ref: str | None = None,
         authority_scope_hash: str | None = None,
         precondition_hash: str | None = None,
@@ -455,7 +456,12 @@ class InteractiveAuthorityService:
             actor_id=actor_id,
         )
         if isinstance(utterance, AuthenticatedRequest):
-            if content is not None or not semantic_options or not blocking_clarifications:
+            if (
+                content is not None or not semantic_options or not blocking_clarifications
+                or not all(
+                    isinstance(option, AgentClarificationChoice) for option in semantic_options
+                )
+            ):
                 raise DocketError(
                     code="stage_changes_required",
                     message="Stage resolved actions; clarification needs typed choices.",
@@ -835,6 +841,11 @@ class InteractiveAuthorityService:
         if semantic_options:
             completed_options: list[SemanticOptionDraft] = []
             for draft in semantic_options:
+                if not isinstance(draft, SemanticOptionDraft):
+                    raise DocketError(
+                        code="historical_choice_required",
+                        message="Historical requests require their original typed choices.",
+                    )
                 completed_content = self._complete_import_statement_basis(
                     content=draft.content.to_internal(),
                     turn_statement_refs=list(turn.statement_refs),
@@ -846,7 +857,7 @@ class InteractiveAuthorityService:
                         }
                     )
                 )
-            semantic_options = completed_options
+            semantic_options = [option for option in completed_options]
         conflict_refs = list(
             dict.fromkeys(
                 [
@@ -910,7 +921,10 @@ class InteractiveAuthorityService:
                     utterance=utterance,
                     intent_session=intent_session,
                     question=question,
-                    drafts=semantic_options,
+                    drafts=[
+                        option for option in semantic_options
+                        if isinstance(option, SemanticOptionDraft)
+                    ],
                 )
             return {
                 "ok": True,

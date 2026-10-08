@@ -1,6 +1,9 @@
 #!/bin/sh
 set -eu
 
+# A cron child must not inherit foreground or internal service credentials.
+unset DOCKET_MCP_TOKEN DOCKET_TO_HERMES_TOKEN_FILE HERMES_TO_DOCKET_TOKEN_FILE DOCKET_INTERNAL_URL
+
 profile_home=${HERMES_HOME:-/opt/data}/profiles/docket-triage
 contract_file=$profile_home/tool-contract.md
 session_dir=$profile_home/sessions

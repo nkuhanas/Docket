@@ -26,9 +26,9 @@ the others.
 
 | Layer | Docket's responsibility |
 | --- | --- |
-| **Evidence** | Preserve exactly what the operator said and what providers exposed. Later information never erases earlier evidence. |
+| **Evidence** | Archive transcripts and files as optional supporting context, honestly labeled when agent-reported. Retain attribution and history independently of archive availability. |
 | **Meaning** | Resolve people, organizations, dates, preferences, and affected objects; ask one focused question when meaning is incomplete. |
-| **Authority** | Accept canonical change only from an authenticated operator utterance. Email, web content, model inference, and cron work cannot authorize it. |
+| **Authority** | Accept canonical change from an authenticated interactive agent acting for the operator. Background agents, email, web content, and copied references cannot grant authority. |
 | **Canonical state** | Maintain the current registry, policy, calendar model, decisions, and triage state in PostgreSQL with public provenance references. |
 | **Action** | Derive provider operations from committed intent, execute them asynchronously, and reconcile outcomes that are uncertain after transmission. |
 | **Projection** | Render current state into Discord and Google without treating either surface as canonical. |
@@ -79,8 +79,8 @@ success message.
 
 ### A complete answer to “what happened?”
 
-Every operator turn, interpreted statement, decision, tool call, ChangeSet,
-provider operation, and response carries a typed public reference. Docket can
+Every authenticated request, interpreted statement, decision, tool call,
+ChangeSet, and provider operation carries a typed public reference. Docket can
 trace a visible outcome back to its basis without exposing internal database
 identifiers or turning raw provider payloads into authority.
 
@@ -106,10 +106,10 @@ Authenticated operator message
         │
         ▼
 Discord ingress + Hermes
-  authenticate source · persist immutable utt_ · load bounded contract
+  authenticate source · admit durable req_ · optionally archive transcript/files
         │
         ▼
-Interactive MCP (22 tools; only 2 mutate canonical state)
+Interactive MCP (23 tools; only 2 mutate canonical state)
         │
         ▼
 IntentSession → statements → clarification/conflict → ChangeSet
@@ -133,12 +133,13 @@ ContextPacket → AttentionCase / DailyBrief
 
 ### Trust boundaries
 
-- Every authenticated operator message is stored verbatim as `utt_` before
-  interpretation or mutation. Persistence failure is fail-closed.
+- Every new interactive request has durable authenticated `req_` attribution.
+  Transcript, file, and response capture do not block execution or delivery.
+  Relayed text is agent-reported context, not invented human utterance evidence.
 - Evidence and canonical truth are separate. Canonical changes retain
   `basis_refs` back to their authority.
 - Only `docket_commit_changeset` and `docket_resolve_conflict` mutate canonical
-  state on the 22-tool interactive surface.
+  state on the 23-tool interactive surface.
 - The four-tool triage surface can observe and classify; it cannot mutate
   canonical state or providers.
 - Canonical changes and their required provider intents commit atomically.
@@ -154,7 +155,9 @@ Tracked readiness and traceability evidence lives in
 [`deltas/`](deltas/) and the
 [ontology rollout verification](docs/ontology-rollout-verification.md).
 Private source specifications and handoffs remain in ignored `specs/` and
-`deltas/` files; ordinary documentation does not amend signed architecture.
+`deltas/` files. The Operator's October 7 amendment accepts development-chat
+instructions for local delta work without requiring Discord sign-off. See the
+[authority verification](docs/authority-authentication-verification.md).
 
 ### Stack
 

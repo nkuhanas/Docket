@@ -57,6 +57,10 @@ safe_test_environment() {
     export DOCKET_BACKUP_ENABLED=false
     export DOCKET_BACKUP_AGE_RECIPIENT=
     export DOCKET_DISCORD_PROJECTION_ENABLED=false
+    export DOCKET_TRIAGE_TOKEN_FILE="$ROOT/secrets/smoke/docket_triage_token"
+    unset DOCKET_READ_ONLY_TOKEN_FILE
+    export DOCKET_INTERACTIVE_AGENT_ENABLED=true
+    unset DOCKET_INTERACTIVE_AGENT_EXPIRES_AT
     export DOCKET_TO_HERMES_TOKEN_FILE="$ROOT/secrets/smoke/docket_to_hermes_token"
     export HERMES_TO_DOCKET_TOKEN_FILE="$ROOT/secrets/smoke/hermes_to_docket_token"
     export DOCKET_INTERACTION_SIGNING_KEY_FILE="$ROOT/secrets/smoke/interaction_signing_key"

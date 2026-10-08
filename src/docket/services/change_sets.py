@@ -1141,6 +1141,14 @@ class ChangeSetService:
             if request.authority_ref.startswith("req_")
             else None
         )
+        if authority_request is not None:
+            request = request.model_copy(update={
+                "canonical_effects": [effect.model_copy(update={
+                    "basis_refs": list(dict.fromkeys([
+                        authority_request.ref_id, *effect.basis_refs,
+                    ])),
+                }) for effect in request.canonical_effects],
+            })
         payload = mutation_input_json(request, exclude_defaults=True)
         parameter_hash = sha256_json(payload)
         existing = self.session.scalar(

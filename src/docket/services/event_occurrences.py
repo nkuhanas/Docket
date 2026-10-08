@@ -45,7 +45,8 @@ def resolve_calendar_date(
     return ResolvedCalendarDate(
         date=selected,
         timezone=timezone,
-        source_utterance_ref=utterance_ref,
+        source_utterance_ref=utterance_ref if utterance_ref.startswith("utt_") else None,
+        authenticated_request_ref=utterance_ref if utterance_ref.startswith("req_") else None,
         relative_day=relative_day,
     )
 
@@ -57,6 +58,19 @@ def bind_calendar_date(
     timezone: str,
     relative_day: Literal["today", "tomorrow"],
 ) -> ResolvedCalendarDate:
+    if utterance_ref.startswith("req_"):
+        from docket.services.agent_requests import AgentRequestService
+
+        root = AgentRequestService(session).require(
+            utterance_ref, permission="read", allow_committed=True,
+        )
+        instant = root.admitted_at
+        if instant.tzinfo is None:  # SQLite fixtures; PostgreSQL retains the absolute instant.
+            instant = instant.replace(tzinfo=UTC)
+        return resolve_calendar_date(
+            utterance_ref=root.ref_id, message_instant=instant,
+            timezone=root.admitted_timezone or timezone, relative_day=relative_day,
+        )
     # Lock the parent before the first insert, including on independent readers.
     utterance = session.scalar(
         select(OperatorUtterance).where(OperatorUtterance.ref_id == utterance_ref).with_for_update()

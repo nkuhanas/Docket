@@ -347,6 +347,14 @@ class ChangeSetAssemblyAdmissionService:
             permission="commit" if kind == "commit" else "stage",
             allow_committed=True,
         )
+        bound = _bound_request(self.session, root.ref_id)
+        if root.state == "committed" and (
+            bound is None or bound.committed_changeset_ref != root.committed_changeset_ref
+        ):
+            raise DocketError(
+                code="request_authority_denied",
+                message="The request has already committed through another workflow.",
+            )
         if (
             not execution_key
             or not operation_key
@@ -754,6 +762,8 @@ class ChangeSetAssemblyService:
         *,
         state: Literal["completed", "rejected"] = "completed",
     ) -> dict[str, Any]:
+        if operation.source_request_ref is not None:
+            result = {**result, "request_ref": operation.source_request_ref}
         operation.state = state
         operation.result_disposition = str(result.get("disposition") or "unknown")[:64]
         operation.result_json = result
@@ -1711,6 +1721,8 @@ class ChangeSetAssemblyService:
                 "scope": request.assembly_scope.model_dump(mode="json", exclude_none=True),
             }
             intent_session.resolved_intent_json = dict(request.assembly_scope.resolved_intent)
+            intent_session.blocking_clarifications = []
+            intent_session.semantic_state = "ready"
         scope = self._scope(semantic_request)
         if recompiling:
             if not isinstance(utterance, OperatorUtterance):
@@ -1828,6 +1840,19 @@ class ChangeSetAssemblyService:
                             raise
                         qualified_basis.append(ref)
                     action["basis_refs"] = qualified_basis
+                    def qualify_sources(value: Any) -> None:
+                        if isinstance(value, dict):
+                            for name, nested in value.items():
+                                if name == "source_refs" and isinstance(nested, list):
+                                    value[name] = [ref for ref in nested if self.session.scalar(
+                                        select(Source.id).where(Source.ref_id == ref)
+                                    ) is not None]
+                                else:
+                                    qualify_sources(nested)
+                        elif isinstance(value, list):
+                            for nested in value:
+                                qualify_sources(nested)
+                    qualify_sources(action)
                 change_id = patch_operation.action.change_id
                 if scope.selected_entry_ids and change_id not in {
                     target.change_id

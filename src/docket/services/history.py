@@ -17,6 +17,7 @@ from docket.models import (
     AttentionCase,
     AttentionCaseRevision,
     AuditEvent,
+    AuthenticatedRequest,
     BriefEntry,
     CalendarLane,
     CanonicalEvent,
@@ -25,6 +26,7 @@ from docket.models import (
     Conflict,
     ContextPacket,
     ConversationalToolTrace,
+    ConversationRecord,
     DailyBrief,
     Decision,
     DeferredIngress,
@@ -74,6 +76,8 @@ AUDIT_OUTPUT_BYTES = 64 * 1024
 MAX_TEXT_CHUNK_BYTES = 32 * 1024
 
 _PREFIX_MODELS: dict[str, tuple[str, type[Any], str]] = {
+    "req": ("authenticated_request", AuthenticatedRequest, "admitted_at"),
+    "rec": ("conversation_record", ConversationRecord, "recorded_at"),
     "utt": ("operator_utterance", OperatorUtterance, "recorded_at"),
     "rsp": ("agent_response", AgentResponse, "generated_at"),
     "stm": ("interpreted_statement", InterpretedStatement, "created_at"),
@@ -193,6 +197,28 @@ class HistoryService:
 
     def _summary(self, object_type: str, item: Any) -> dict[str, Any]:
         base: dict[str, Any] = {"ref": item.ref_id, "type": object_type}
+        if isinstance(item, AuthenticatedRequest):
+            captures = list(self.session.scalars(select(ConversationRecord).where(
+                ConversationRecord.request_ref == item.ref_id,
+            ).order_by(ConversationRecord.recorded_at).limit(DEFAULT_PAGE_SIZE)))
+            return {
+                **base, "principal_ref": item.principal_ref, "operator_ref": item.operator_ref,
+                "role": item.role, "state": item.state, "conversation_ref": item.conversation_ref,
+                "admitted_at": _iso(item.admitted_at),
+                "committed_changeset_ref": item.committed_changeset_ref,
+                "conversation_capture": "optional_agent_reported",
+                "capture_status": "missing" if not captures else (
+                    "gaps_recorded" if any(row.gap_code for row in captures) else "reported"
+                ),
+                "record_refs": [row.ref_id for row in captures],
+            }
+        if isinstance(item, ConversationRecord):
+            return {
+                **base, "request_ref": item.request_ref, "record_kind": item.record_kind,
+                "capture_method": item.capture_method, "content_hash": item.content_hash,
+                "gap_code": item.gap_code, "recorded_at": _iso(item.recorded_at),
+                "purged_at": _iso(item.purged_at), "payload_retained": item.ciphertext is not None,
+            }
         if isinstance(item, OperatorUtterance):
             return {
                 **base,
@@ -250,6 +276,7 @@ class HistoryService:
                 "tool_contract_hash": item.tool_contract_hash,
                 "caller_profile": item.caller_profile,
                 "actor_ref": item.actor_ref,
+                "authenticated_request_ref": item.authenticated_request_ref,
                 "utterance_refs": item.utterance_refs,
                 "transport_state": item.transport_state,
                 "domain_state": item.domain_state,
@@ -264,6 +291,7 @@ class HistoryService:
                 **base,
                 "conversation_ref": item.conversation_ref,
                 "source_utterance_ref": item.source_utterance_ref,
+                "source_request_ref": item.source_request_ref,
                 "case_refs": item.case_refs,
                 "case_revision_refs": item.case_revision_refs,
                 "brief_ref": item.brief_ref,
@@ -279,6 +307,7 @@ class HistoryService:
         if isinstance(item, IntentTurn):
             return {
                 **base,
+                "request_ref": item.request_ref,
                 "intent_session_ref": item.intent_session_ref,
                 "utterance_ref": item.utterance_ref,
                 "statement_refs": item.statement_refs,
@@ -292,6 +321,7 @@ class HistoryService:
         if isinstance(item, SemanticRequest):
             return {
                 **base,
+                "authenticated_request_ref": item.authenticated_request_ref,
                 "intent_session_ref": item.intent_session_ref,
                 "authority_scope_hash": item.authority_scope_hash,
                 "current_precondition_hash": item.current_precondition_hash,
@@ -818,6 +848,23 @@ class HistoryService:
                 select(OperatorUtterance.ref_id).where(OperatorUtterance.id == item.utterance_id)
             )
         if view == "audit":
+            if isinstance(item, ConversationRecord) and item.ciphertext is not None:
+                from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+                from docket.config import get_settings
+                from docket.services.agent_requests import AgentRequestService
+
+                AgentRequestService(self.session).require(
+                    item.request_ref, permission="stage", allow_committed=True,
+                    allow_cancelled=True,
+                )
+                assert item.nonce is not None
+                raw = AESGCM(get_settings().attachment_encryption_key()).decrypt(
+                    item.nonce, item.ciphertext, item.request_ref.encode(),
+                ).decode("utf-8")
+                chunk = _text_chunk(raw, text_offset, min(text_limit, MAX_TEXT_CHUNK_BYTES))
+                chunk["reported_text_chunk"] = chunk.pop("verbatim_text_chunk")
+                entry.update(chunk)
             if isinstance(item, OperatorUtterance | AgentResponse):
                 entry.update(
                     _text_chunk(
@@ -947,6 +994,7 @@ class HistoryService:
             if object_type is not None and object_type != candidate_type:
                 continue
             if conversation_ref is not None and model not in {
+                AuthenticatedRequest,
                 OperatorUtterance,
                 AgentResponse,
                 IntentSession,
@@ -1050,6 +1098,28 @@ class HistoryService:
             if view == "audit":
                 entry.update(_text_chunk(response.verbatim_text, 0, MAX_TEXT_CHUNK_BYTES))
             turns.append((self._timestamp(response, "generated_at"), entry))
+        requests = list(self.session.scalars(
+            select(AuthenticatedRequest)
+            .where(AuthenticatedRequest.conversation_ref == conversation_ref)
+            .order_by(AuthenticatedRequest.admitted_at)
+            .limit(limit + 1)
+        ))
+        for request in requests:
+            entry = self._summary("authenticated_request", request)
+            entry["role"] = "interactive_agent"
+            turns.append((self._timestamp(request, "admitted_at"), entry))
+        records = list(self.session.scalars(
+            select(ConversationRecord).join(
+                AuthenticatedRequest, ConversationRecord.request_ref == AuthenticatedRequest.ref_id,
+            ).where(AuthenticatedRequest.conversation_ref == conversation_ref)
+            .order_by(ConversationRecord.recorded_at).limit(limit + 1)
+        ))
+        for record in records:
+            # Reported text is available only through the individual authenticated
+            # audit read; conversation views remain bounded metadata projections.
+            entry = self._summary("conversation_record", record)
+            entry["role"] = "reported_context"
+            turns.append((self._timestamp(record, "recorded_at"), entry))
         turns.sort(key=lambda turn: turn[0])
         truncated = len(turns) > limit
         entries = [turn[1] for turn in turns[:limit]]

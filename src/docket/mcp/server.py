@@ -23,10 +23,11 @@ from docket.schemas.assembly import (
     StagePatchInput,
 )
 from docket.schemas.authority import (
+    AgentClarificationChoice,
     CanonicalChangeInput,
     ConflictRef,
     ConflictResolve,
-    SemanticOptionDraft,
+    RequestRef,
     SessionRef,
     SourceRef,
     StatementInput,
@@ -80,6 +81,9 @@ TrustedUtterance = Annotated[
 ]
 TrustedRequestKey = Annotated[
     RequestKey | None, Field(default=None, json_schema_extra={"x-docket-internal": True})
+]
+TrustedRequest = Annotated[
+    RequestRef | None, Field(default=None, json_schema_extra={"x-docket-internal": True})
 ]
 ExpectedVersion = Annotated[int, Field(ge=1)]
 CalendarId = Annotated[str, Field(min_length=1, max_length=1024)]
@@ -593,6 +597,7 @@ def docket_list_provider_calendar_events(
     freshness: CalendarFreshness = "prefer_cache",
     result_view: CalendarEventResultView = "occurrences",
     detail: CalendarEventDetail = "summary",
+    request_ref: TrustedRequest = None,
     operator_utterance_ref: Annotated[
         UtteranceRef | None, Field(default=None, json_schema_extra={"x-docket-internal": True})
     ] = None,
@@ -605,7 +610,7 @@ def docket_list_provider_calendar_events(
     tool never mutates a provider.
     """
     try:
-        if relative_day is not None and operator_utterance_ref is None:
+        if relative_day is not None and (request_ref or operator_utterance_ref) is None:
             raise DocketError(
                 code="calendar_message_context_required",
                 message="Relative dates require the gateway's captured message binding.",
@@ -629,7 +634,7 @@ def docket_list_provider_calendar_events(
                 freshness=freshness,
                 result_view=result_view,
                 offset=offset,
-                operator_utterance_ref=operator_utterance_ref,
+                operator_utterance_ref=request_ref or operator_utterance_ref,
             )
         else:
             if calendar_id not in calendar_ids:
@@ -648,7 +653,7 @@ def docket_list_provider_calendar_events(
                 freshness=freshness,
                 result_view=result_view,
                 offset=offset,
-                operator_utterance_ref=operator_utterance_ref,
+                operator_utterance_ref=request_ref or operator_utterance_ref,
             )
         if detail == "summary":
             return _calendar_events_summary(result, offset=offset)
@@ -720,6 +725,7 @@ def docket_stage_changes(
     assembly_scope: AssemblyAuthorityScopeInput | None = None,
     expected_versions: dict[PublicRef, ExpectedVersion] | None = None,
     utterance_ref: TrustedUtterance = None,
+    request_ref: TrustedRequest = None,
     request_key: TrustedRequestKey = None,
     assembly_operation_token: Annotated[
         str | None,
@@ -752,7 +758,7 @@ def docket_stage_changes(
     An observation_required receipt needs a fresh summary/diff before commit.
     """
     try:
-        if utterance_ref is None or request_key is None:
+        if (request_ref or utterance_ref) is None or request_key is None:
             raise DocketError(
                 code="operator_context_required", message="Resume the authenticated request."
             )
@@ -761,13 +767,16 @@ def docket_stage_changes(
                 code="assembly_admission_required",
                 message="Stage operations require the authenticated infrastructure binding.",
             )
+        authority_ref = request_ref or utterance_ref
+        assert authority_ref is not None
         with session_scope() as session:
             service = ChangeSetAssemblyService(session)
             try:
                 with session.begin_nested():
                     return service.stage(
                         StageChangesInput(
-                            utterance_ref=utterance_ref,
+                            utterance_ref=utterance_ref if request_ref is None else None,
+                            request_ref=request_ref,
                             request_key=request_key,
                             patch=patch,
                             assembly_scope=assembly_scope,
@@ -789,7 +798,7 @@ def docket_stage_changes(
                     token=assembly_operation_token,
                     argument_hash=assembly_argument_hash,
                     operation_kind="stage",
-                    utterance_ref=utterance_ref,
+                    utterance_ref=authority_ref,
                     error=error,
                 ) or _error(error)
     except Exception as exc:
@@ -804,6 +813,7 @@ def docket_review_changeset(
     cursor: str | None = None,
     limit: Annotated[int, Field(ge=1, le=100)] = 25,
     utterance_ref: TrustedUtterance = None,
+    request_ref: TrustedRequest = None,
     request_key: TrustedRequestKey = None,
     assembly_operation_token: Annotated[
         str | None,
@@ -831,7 +841,7 @@ def docket_review_changeset(
     oversized details have lossless json_utf8 fragments with byte offsets.
     """
     try:
-        if utterance_ref is None or request_key is None:
+        if (request_ref or utterance_ref) is None or request_key is None:
             raise DocketError(
                 code="operator_context_required", message="Resume the authenticated request."
             )
@@ -840,13 +850,16 @@ def docket_review_changeset(
                 code="assembly_admission_required",
                 message="Review operations require the authenticated infrastructure binding.",
             )
+        authority_ref = request_ref or utterance_ref
+        assert authority_ref is not None
         with session_scope() as session:
             service = ChangeSetAssemblyService(session)
             try:
                 with session.begin_nested():
                     return service.review(
                         ReviewChangesInput(
-                            utterance_ref=utterance_ref,
+                            utterance_ref=utterance_ref if request_ref is None else None,
+                            request_ref=request_ref,
                             request_key=request_key,
                             view=view,
                             mutation_types=mutation_types or [],
@@ -862,7 +875,7 @@ def docket_review_changeset(
                     token=assembly_operation_token,
                     argument_hash=assembly_argument_hash,
                     operation_kind="review",
-                    utterance_ref=utterance_ref,
+                    utterance_ref=authority_ref,
                     error=exc,
                 ) or _error(exc)
     except Exception as exc:
@@ -872,6 +885,7 @@ def docket_review_changeset(
 @mcp.tool()
 def docket_commit_changeset(
     utterance_ref: TrustedUtterance = None,
+    request_ref: TrustedRequest = None,
     request_key: TrustedRequestKey = None,
     assembly_operation_token: Annotated[
         str | None,
@@ -899,7 +913,7 @@ def docket_commit_changeset(
     cannot commit a newer draft, and a lost response recovers the existing receipt.
     """
     try:
-        if utterance_ref is None or request_key is None:
+        if (request_ref or utterance_ref) is None or request_key is None:
             raise DocketError(
                 code="operator_context_required", message="Resume the authenticated request."
             )
@@ -908,19 +922,22 @@ def docket_commit_changeset(
                 code="assembly_admission_required",
                 message="Commit requires the authenticated execution binding.",
             )
+        authority_ref = request_ref or utterance_ref
+        assert authority_ref is not None
         with session_scope() as session:
             service = ChangeSetAssemblyService(session)
             try:
                 with session.begin_nested():
                     return service.commit(
-                        utterance_ref=utterance_ref, request_key=request_key,
+                        utterance_ref=utterance_ref if request_ref is None else None,
+                        request_ref=request_ref, request_key=request_key,
                         assembly_operation_token=assembly_operation_token,
                         assembly_argument_hash=assembly_argument_hash,
                     )
             except DocketError as exc:
                 return service.reject_admitted_operation(
                     token=assembly_operation_token, argument_hash=assembly_argument_hash,
-                    operation_kind="commit", utterance_ref=utterance_ref, error=exc,
+                    operation_kind="commit", utterance_ref=authority_ref, error=exc,
                 ) or _error(exc)
     except Exception as exc:
         return _error(exc)
@@ -929,29 +946,32 @@ def docket_commit_changeset(
 @mcp.tool()
 def docket_request_clarification(
     question: Annotated[str, Field(min_length=1, max_length=1000)],
-    semantic_options: Annotated[list[SemanticOptionDraft], Field(min_length=1, max_length=4)],
+    semantic_options: Annotated[
+        list[AgentClarificationChoice], Field(min_length=1, max_length=4),
+    ],
     statements: Annotated[list[StatementInput] | None, Field(max_length=100)] = None,
     relations: Annotated[list[StatementRelationInput] | None, Field(max_length=100)] = None,
     intent_session_ref: SessionRef | None = None,
     expected_session_version: Annotated[int | None, Field(ge=1)] = None,
     utterance_ref: TrustedUtterance = None,
+    request_ref: TrustedRequest = None,
     request_key: TrustedRequestKey = None,
 ) -> dict[str, Any]:
-    """Persist exact typed choices for unresolved intent, without canonical effects.
+    """Persist bounded choice labels and interpretations without canonical effects.
 
-    Docket renders the persisted semantic scopes as visible choices. Selection
-    records an authenticated utterance and binds the same IntentSession. This
-    tool cannot commit a ChangeSet; do not use it for an implementation failure
+    The interactive agent asks the question and stages the answered intent.
+    Choices carry no executable mutation payload. This tool cannot commit a
+    ChangeSet; do not use it for an implementation failure
     or to request equivalent authorization again.
     """
     try:
-        if utterance_ref is None or request_key is None:
+        if (request_ref or utterance_ref) is None or request_key is None:
             raise DocketError(
                 code="operator_context_required", message="Resume the authenticated request."
             )
         with session_scope() as session:
             return InteractiveAuthorityService(session).process_turn(
-                utterance_ref=utterance_ref, request_key=request_key,
+                utterance_ref=request_ref or utterance_ref or "", request_key=request_key,
                 actor_id=str(get_settings().operator_discord_user_id),
                 intent_session_ref=intent_session_ref,
                 expected_session_version=expected_session_version,
@@ -960,7 +980,7 @@ def docket_request_clarification(
                 blocking_clarifications=[{
                     "blocking": True, "code": "operator_choice_required", "question": question,
                 }],
-                semantic_options=semantic_options, content=None,
+                semantic_options=[choice for choice in semantic_options], content=None,
                 changeset_ref=None, expected_changeset_version=None,
             )
     except Exception as exc:
@@ -969,7 +989,6 @@ def docket_request_clarification(
 
 @mcp.tool()
 def docket_resolve_conflict(
-    utterance_ref: UtteranceRef,
     conflict_ref: ConflictRef,
     expected_conflict_version: int,
     resolution: Literal[
@@ -982,13 +1001,18 @@ def docket_resolve_conflict(
     statements_retained: list[StatementRef],
     effective_scope: dict[str, Any],
     canonical_effects: list[CanonicalChangeInput],
-    request_key: RequestKey,
+    request_key: TrustedRequestKey = None,
+    utterance_ref: TrustedUtterance = None,
+    request_ref: TrustedRequest = None,
     intent_session_ref: SessionRef | None = None,
     expected_session_version: int | None = None,
     expected_versions: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Resolve one Conflict through the same atomic ChangeSet service path."""
     try:
+        authority_ref = request_ref or utterance_ref
+        if authority_ref is None or request_key is None:
+            raise DocketError(code="operator_context_required", message="Resume this request.")
         with session_scope() as session:
             conflict = ConflictService(session).get(conflict_ref)
             statement = StatementInput(
@@ -1003,7 +1027,8 @@ def docket_resolve_conflict(
             request = ConflictResolve(
                 conflict_ref=conflict.ref_id,
                 expected_version=expected_conflict_version,
-                authority_utterance_ref=utterance_ref,
+                authority_utterance_ref=utterance_ref if request_ref is None else None,
+                authority_request_ref=request_ref,
                 resolution=resolution,
                 chosen_interpretation=chosen_interpretation,
                 statements_superseded=statements_superseded,
@@ -1013,7 +1038,7 @@ def docket_resolve_conflict(
                 canonical_effects=canonical_effects,
             )
             return InteractiveAuthorityService(session).process_conflict_resolution(
-                utterance_ref=utterance_ref,
+                utterance_ref=authority_ref,
                 request_key=request_key,
                 actor_id=str(get_settings().operator_discord_user_id),
                 intent_session_ref=intent_session_ref,

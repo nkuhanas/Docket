@@ -10,11 +10,13 @@ from sqlalchemy.orm import Session, sessionmaker
 from docket.config import get_settings
 from docket.models import (
     AttachmentEvidence,
+    AuthenticatedRequest,
     DeferredIngress,
     DiscordDailyThread,
     DrainBarrier,
     OperatorUtterance,
 )
+from docket.models.base import utc_now
 from docket.providers.discord import DiscordProjectionAdapter
 from docket.services.attachment_evidence import AttachmentEvidenceService
 
@@ -51,6 +53,17 @@ class DeferredIngressRunner:
             )
             if ingress is None:
                 return False
+            if ingress.ingress_kind == "typed_message" and session.scalar(
+                select(AuthenticatedRequest.id).where(
+                    AuthenticatedRequest.request_key == ingress.source_key,
+                    AuthenticatedRequest.principal_ref == "agent:interactive",
+                ).limit(1)
+            ) is not None:
+                # The foreground request bridge already owns this message. Archival
+                # ingress can arrive later; it must never dispatch a second model turn.
+                ingress.status = "completed"
+                ingress.completed_at = utc_now()
+                return True
             utterance = session.scalar(
                 select(OperatorUtterance).where(
                     OperatorUtterance.ref_id == ingress.utterance_ref
