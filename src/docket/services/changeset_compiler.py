@@ -132,7 +132,8 @@ def compile_normalized_entry(
     route_change_id = f"{entry.import_entry_id}.route"
     basis_refs = [utterance_ref, statement_ref]
     item_input, temporal_input = entry_facets(entry)
-    item_spec = item_input.model_copy(update={"source_refs": [entry.evidence.source_ref]})
+    source_refs = [entry.evidence.source_ref] if entry.evidence is not None else []
+    item_spec = item_input.model_copy(update={"source_refs": source_refs})
     item = ItemCreate(
         change_id=item_change_id,
         mutation_type="item_create",
@@ -155,7 +156,7 @@ def compile_normalized_entry(
             role=temporal_input.role,
             binding_key=temporal_input.binding_key,
             temporal_value=temporal_input.temporal_value,
-            source_refs=[entry.evidence.source_ref],
+            source_refs=source_refs,
         ),
         payload=None,
         affected_fields=["temporal_binding"],

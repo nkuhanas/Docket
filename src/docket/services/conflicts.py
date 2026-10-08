@@ -10,6 +10,7 @@ from docket.config import get_settings
 from docket.domain.errors import DocketError
 from docket.models import (
     AuditEvent,
+    AuthenticatedRequest,
     Conflict,
     Decision,
     InterpretedStatement,
@@ -144,7 +145,7 @@ class ConflictService:
 
     def validate_resolution(
         self, request: ConflictResolve
-    ) -> tuple[Conflict, OperatorUtterance]:
+    ) -> tuple[Conflict, OperatorUtterance | AuthenticatedRequest]:
         conflict = self.get(request.conflict_ref)
         if conflict.status != "open":
             raise DocketError(
@@ -162,14 +163,21 @@ class ConflictService:
                     "current_version": conflict.version,
                 },
             )
-        utterance = self.session.scalar(
-            select(OperatorUtterance).where(
-                OperatorUtterance.ref_id == request.authority_utterance_ref
+        if request.authority_ref.startswith("req_"):
+            from docket.services.agent_requests import AgentRequestService
+
+            utterance: OperatorUtterance | AuthenticatedRequest | None = AgentRequestService(
+                self.session,
+            ).require(request.authority_ref, permission="resolve_conflict")
+        else:
+            utterance = self.session.scalar(
+                select(OperatorUtterance).where(OperatorUtterance.ref_id == request.authority_ref)
             )
-        )
         settings = get_settings()
         expected_actor = f"discord_user:{settings.operator_discord_user_id}"
-        if utterance is None or utterance.actor_ref != expected_actor:
+        if utterance is None or (
+            isinstance(utterance, OperatorUtterance) and utterance.actor_ref != expected_actor
+        ):
             raise DocketError(
                 code="operator_utterance_authority_required",
                 message="Conflict resolution requires the current authenticated OperatorUtterance.",
@@ -200,7 +208,9 @@ class ConflictService:
             basis_refs=[utterance.ref_id, conflict.ref_id],
             authorized_scope="conflict_resolution",
             architecture_authority=False,
-            implementation_authority="operator_utterance",
+            implementation_authority="authenticated_request"
+            if isinstance(utterance, AuthenticatedRequest)
+            else "operator_utterance",
             payload_json={
                 "conflict_ref": conflict.ref_id,
                 "chosen_interpretation": request.chosen_interpretation,

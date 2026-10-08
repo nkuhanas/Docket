@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from docket.schemas.assembly import AssemblyAuthorityScopeInput, NormalizedEntryInput
-from docket.schemas.authority import CanonicalChangeInput, UtteranceRef
+from docket.schemas.authority import CanonicalChangeInput, RequestRef, UtteranceRef
 from docket.schemas.common import StrictModel
 
 Digest = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -41,13 +41,31 @@ class RequestEntryInterpretationInput(StrictModel):
 
 
 class RequestSpecificationProposal(StrictModel):
-    schema_version: Literal[1] = 1
-    interpretation_state: Literal["pending_evidence_validation"] = "pending_evidence_validation"
-    originating_utterances: list[RequestUtteranceBinding] = Field(min_length=1, max_length=100)
+    schema_version: Literal[1, 2] = 1
+    interpretation_state: Literal[
+        "pending_evidence_validation", "agent_reported_interpretation"
+    ] = "pending_evidence_validation"
+    authenticated_request_ref: RequestRef | None = None
+    originating_utterances: list[RequestUtteranceBinding] = Field(
+        default_factory=list, max_length=100
+    )
     source_bindings: list[RequestSourceBinding] = Field(default_factory=list, max_length=250)
     assembly_boundary: AssemblyAuthorityScopeInput
     normalized_entries: list[NormalizedEntryInput] = Field(default_factory=list, max_length=250)
     direct_actions: list[CanonicalChangeInput] = Field(default_factory=list, max_length=1000)
+
+    @model_validator(mode="after")
+    def attribution_is_explicit(self) -> RequestSpecificationProposal:
+        if self.schema_version == 1 and (
+            not self.originating_utterances or self.authenticated_request_ref is not None
+        ):
+            raise ValueError("Historical request interpretations require their original utterances")
+        if self.schema_version == 2 and (
+            self.authenticated_request_ref is None
+            or self.interpretation_state != "agent_reported_interpretation"
+        ):
+            raise ValueError("Agent interpretations require their authenticated request")
+        return self
 
     # Mechanical support actions, expected versions, provider intents, and
     # compiler pins belong to ChangeSetRevision, not this semantic proposal.

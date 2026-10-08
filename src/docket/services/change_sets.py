@@ -488,7 +488,7 @@ def _content_for_conflict_effects(request: ConflictResolve) -> ChangeSetContent 
             )
     return ChangeSetContent.model_validate(
         {
-            "basis_refs": [request.authority_utterance_ref],
+            "basis_refs": [request.authority_ref],
             "expected_versions": request.expected_versions,
             **groups,
         }
@@ -1127,6 +1127,20 @@ class ChangeSetService:
         request: ConflictResolve,
         idempotency_key: str,
     ) -> tuple[ChangeSet, ChangeSetApplicationReceipt, bool]:
+        from docket.agent_auth import agent_call_context, require_principal
+        from docket.services.agent_requests import AgentRequestService
+
+        if agent_call_context.get() is not None:
+            require_principal("resolve_conflict")
+        authority_request = (
+            AgentRequestService(self.session).require(
+                request.authority_ref,
+                permission="resolve_conflict",
+                allow_committed=True,
+            )
+            if request.authority_ref.startswith("req_")
+            else None
+        )
         payload = mutation_input_json(request, exclude_defaults=True)
         parameter_hash = sha256_json(payload)
         existing = self.session.scalar(
@@ -1146,6 +1160,14 @@ class ChangeSetService:
             ):
                 raise IdempotencyConflict(idempotency_key)
             return existing, ChangeSetApplicationReceipt(), False
+        if authority_request is not None and (
+            authority_request.state != "active"
+            or intent_session.source_request_ref != authority_request.ref_id
+        ):
+            raise DocketError(
+                code="request_authority_denied",
+                message="Conflict resolution must belong to the active authenticated request.",
+            )
         if intent_session.blocking_clarifications:
             raise DocketError(
                 code="intent_needs_clarification",
@@ -1177,7 +1199,7 @@ class ChangeSetService:
             intent_session_id=intent_session.id,
             intent_session_ref=intent_session.ref_id,
             idempotency_key=idempotency_key,
-            basis_refs=[request.authority_utterance_ref, request.conflict_ref],
+            basis_refs=[request.authority_ref, request.conflict_ref],
             expected_versions={request.conflict_ref: request.expected_version},
             resolution_changes=[
                 {
@@ -1194,7 +1216,7 @@ class ChangeSetService:
         )
         if content is not None:
             self._sync_snapshot(changeset, content)
-            changeset.basis_refs = [request.authority_utterance_ref, request.conflict_ref]
+            changeset.basis_refs = [request.authority_ref, request.conflict_ref]
             changeset.expected_versions = {
                 **request.expected_versions,
                 request.conflict_ref: request.expected_version,
@@ -1247,6 +1269,9 @@ class ChangeSetService:
         intent_session.semantic_state = "ready"
         intent_session.commit_state = "committed"
         intent_session.committed_changeset_ref = changeset.ref_id
+        if authority_request is not None:
+            authority_request.state = "committed"
+            authority_request.committed_changeset_ref = changeset.ref_id
         intent_session.version += 1
         conflict_refs = [conflict.ref_id, decision.ref_id]
         receipt.add_refs(conflict_refs)
@@ -1371,7 +1396,10 @@ class ChangeSetService:
         return item
 
     def verify_execution_revision(
-        self, changeset: ChangeSet, *, for_migration: bool = False,
+        self,
+        changeset: ChangeSet,
+        *,
+        for_migration: bool = False,
     ) -> ChangeSetContent | None:
         revision = self.session.scalar(
             select(ChangeSetRevision).where(
@@ -1382,7 +1410,9 @@ class ChangeSetService:
         pin = verify_snapshot(changeset, revision, None, for_migration=for_migration)
         from docket.services.request_interpretations import verify_draft_interpretation
 
-        verify_draft_interpretation(self.session, changeset)
+        source_request = self.session.get(IntentSession, changeset.intent_session_id)
+        if source_request is None or source_request.source_request_ref is None:
+            verify_draft_interpretation(self.session, changeset)
         if pin.compiled_effect_hash is None:
             return None
         try:
@@ -1398,7 +1428,11 @@ class ChangeSetService:
         return content
 
     def _session_utterance_refs(self, intent_session: IntentSession) -> set[str]:
-        refs = {intent_session.source_utterance_ref}
+        refs = {
+            ref
+            for ref in (intent_session.source_utterance_ref, intent_session.source_request_ref)
+            if ref is not None
+        }
         from docket.models import ClarificationReply
 
         refs.update(self.session.scalars(select(ClarificationReply.utterance_ref).where(
@@ -1411,7 +1445,16 @@ class ChangeSetService:
                 )
             )
         )
-        return refs
+        refs.update(
+            ref
+            for ref in self.session.scalars(
+                select(IntentTurn.request_ref).where(
+                    IntentTurn.intent_session_id == intent_session.id,
+                )
+            )
+            if ref is not None
+        )
+        return {ref for ref in refs if ref is not None}
 
     @staticmethod
     def _import_entry_coverage_errors(
@@ -1907,17 +1950,32 @@ class ChangeSetService:
     ) -> list[dict[str, Any]]:
         errors: list[dict[str, Any]] = []
         provenance = ProvenanceRefService(self.session)
+        if intent_session.source_request_ref is not None:
+            from docket.services.agent_requests import AgentRequestService
+
+            try:
+                AgentRequestService(self.session).require(
+                    intent_session.source_request_ref,
+                    permission="commit" if require_handlers else "stage",
+                )
+            except DocketError as exc:
+                errors.append({"code": exc.code, "details": exc.details or {}})
         from docket.services.clarification_replies import validate_reply_effects
         from docket.services.request_interpretations import compiled_interpretation_errors
 
         errors.extend(validate_reply_effects(self.session, intent_session, content))
 
-        errors.extend(compiled_interpretation_errors(
-            self.session, request_ref=intent_session.semantic_request_ref, content=content,
-        ))
+        if intent_session.source_request_ref is None:
+            errors.extend(
+                compiled_interpretation_errors(
+                    self.session,
+                    request_ref=intent_session.semantic_request_ref,
+                    content=content,
+                )
+            )
         try:
             provenance.require_all(content.basis_refs)
-            authority_refs = provenance.authority_utterance_refs(content.basis_refs)
+            authority_refs = provenance.authority_root_refs(content.basis_refs)
         except DocketError as exc:
             errors.append({"code": exc.code, "details": exc.details or {}})
             authority_refs = set()
@@ -2001,6 +2059,8 @@ class ChangeSetService:
                 session_utterance_refs=session_utterance_refs,
                 request_ref=intent_session.semantic_request_ref,
             )
+            if intent_session.source_request_ref is None
+            else []
         )
         case_resolutions = AttentionCaseResolutionService(self.session)
         change_ids = {change.change_id for change in changes}
@@ -2122,7 +2182,7 @@ class ChangeSetService:
                         }
                     )
                 try:
-                    change_authority = provenance.authority_utterance_refs(change.basis_refs)
+                    change_authority = provenance.authority_root_refs(change.basis_refs)
                 except DocketError as exc:
                     errors.append(
                         {
@@ -2752,7 +2812,7 @@ class ChangeSetService:
 
         for intent in content.provider_intents:
             try:
-                intent_authority = provenance.authority_utterance_refs(intent.basis_refs)
+                intent_authority = provenance.authority_root_refs(intent.basis_refs)
             except DocketError as exc:
                 errors.append(
                     {
@@ -3084,6 +3144,20 @@ class ChangeSetService:
         return changeset
 
     def commit(self, request: ChangeSetCommit) -> tuple[ChangeSet, ChangeSetApplicationReceipt]:
+        from docket.agent_auth import agent_call_context, require_principal
+        from docket.services.agent_requests import AgentRequestService
+
+        if agent_call_context.get() is not None:
+            require_principal("commit")
+        authority_request = (
+            AgentRequestService(self.session).require(
+                request.authority_ref,
+                permission="commit",
+                allow_committed=True,
+            )
+            if request.authority_ref.startswith("req_")
+            else None
+        )
         # Shared service callers receive the same revision lock as MCP assembly.
         changeset = self.session.scalar(
             select(ChangeSet).where(ChangeSet.ref_id == request.changeset_ref).with_for_update()
@@ -3092,6 +3166,22 @@ class ChangeSetService:
             raise DocketError(code="changeset_not_found", message="ChangeSet was not found.")
         if changeset.idempotency_key != request.idempotency_key:
             raise IdempotencyConflict(request.idempotency_key)
+        if authority_request is not None:
+            bound_session = self.session.get(IntentSession, changeset.intent_session_id)
+            if bound_session is None or (
+                bound_session.source_request_ref != authority_request.ref_id
+            ):
+                raise DocketError(
+                    code="request_authority_denied",
+                    message="The ChangeSet belongs to a different authenticated request.",
+                )
+            if authority_request.state == "committed" and (
+                authority_request.committed_changeset_ref != changeset.ref_id
+            ):
+                raise DocketError(
+                    code="request_authority_denied",
+                    message="The authenticated request has already committed another ChangeSet.",
+                )
         if changeset.state == "committed":
             return changeset, ChangeSetApplicationReceipt()
         if changeset.state != "validated":
@@ -3120,11 +3210,9 @@ class ChangeSetService:
                 message="ChangeSet IntentSession does not satisfy Resolved Intent.",
             )
         utterance = self.session.scalar(
-            select(OperatorUtterance).where(
-                OperatorUtterance.ref_id == request.authority_utterance_ref
-            )
+            select(OperatorUtterance).where(OperatorUtterance.ref_id == request.authority_ref)
         )
-        if (
+        if authority_request is None and (
             utterance is None
             or utterance.actor_ref != f"discord_user:{get_settings().operator_discord_user_id}"
         ):
@@ -3137,10 +3225,8 @@ class ChangeSetService:
             raise migration_required()
         # Revalidation may reject current preconditions, but must not rewrite
         # defaults, compiler products or provider intents from a previous turn.
-        authority_refs = ProvenanceRefService(self.session).authority_utterance_refs(
-            content.basis_refs
-        )
-        if request.authority_utterance_ref not in authority_refs:
+        authority_refs = ProvenanceRefService(self.session).authority_root_refs(content.basis_refs)
+        if request.authority_ref not in authority_refs:
             raise DocketError(
                 code="changeset_authority_mismatch",
                 message="Commit utterance is not a basis of this ChangeSet.",
@@ -3173,6 +3259,9 @@ class ChangeSetService:
         intent_session.semantic_state = "ready"
         intent_session.commit_state = "committed"
         intent_session.committed_changeset_ref = changeset.ref_id
+        if authority_request is not None:
+            authority_request.state = "committed"
+            authority_request.committed_changeset_ref = changeset.ref_id
         intent_session.version += 1
         self.session.add(
             AuditEvent(

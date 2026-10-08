@@ -54,6 +54,7 @@ from docket.schemas.tracked_context import (
 )
 
 UtteranceRef = Annotated[str, Field(pattern=r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")]
+RequestRef = Annotated[str, Field(pattern=r"^req_[0-9A-HJKMNP-TV-Z]{26}$")]
 StatementRef = Annotated[str, Field(pattern=r"^stm_[0-9A-HJKMNP-TV-Z]{26}$")]
 SessionRef = Annotated[str, Field(pattern=r"^ses_[0-9A-HJKMNP-TV-Z]{26}$")]
 ChangeSetRef = Annotated[str, Field(pattern=r"^chg_[0-9A-HJKMNP-TV-Z]{26}$")]
@@ -417,11 +418,24 @@ class StatementRelationInput(StrictModel):
 
 
 class IntentSessionOpen(StrictModel):
-    source_utterance_ref: UtteranceRef
+    source_utterance_ref: UtteranceRef | None = None
+    source_request_ref: RequestRef | None = None
     case_refs: list[PublicRef] = Field(default_factory=list, max_length=25)
     case_revision_refs: list[PublicRef] = Field(default_factory=list, max_length=25)
     brief_ref: PublicRef | None = None
     trusted_context_refs: list[PublicRef] = Field(default_factory=list, max_length=50)
+
+    @property
+    def source_ref(self) -> str:
+        value = self.source_request_ref or self.source_utterance_ref
+        if value is None:
+            raise ValueError("IntentSession requires an authority root")
+        return value
+
+    @model_validator(mode="after")
+    def authority_is_present(self) -> IntentSessionOpen:
+        _ = self.source_ref
+        return self
 
     @field_validator("case_refs", "case_revision_refs", "trusted_context_refs")
     @classmethod
@@ -431,7 +445,8 @@ class IntentSessionOpen(StrictModel):
 
 class IntentTurnAppend(StrictModel):
     intent_session_ref: SessionRef
-    utterance_ref: UtteranceRef
+    utterance_ref: UtteranceRef | None = None
+    request_ref: RequestRef | None = None
     statements: list[StatementInput] = Field(default_factory=list, max_length=100)
     relations: list[StatementRelationInput] = Field(default_factory=list, max_length=100)
     context_refs: list[PublicRef] = Field(default_factory=list, max_length=50)
@@ -443,6 +458,18 @@ class IntentTurnAppend(StrictModel):
     semantic_request_ref: SemanticRequestRef | None = None
     authority_substitutions: dict[str, UtteranceRef] = Field(default_factory=dict)
     gateway_instance_ref: str | None = Field(default=None, pattern=r"^gwy_[0-9A-HJKMNP-TV-Z]{26}$")
+
+    @property
+    def authority_ref(self) -> str:
+        value = self.request_ref or self.utterance_ref
+        if value is None:
+            raise ValueError("IntentTurn requires an authority root")
+        return value
+
+    @model_validator(mode="after")
+    def authority_is_present(self) -> IntentTurnAppend:
+        _ = self.authority_ref
+        return self
 
     @field_validator("context_refs", "tool_call_refs")
     @classmethod
@@ -485,7 +512,7 @@ class IntentTurnFinalize(StrictModel):
 class MutationBase(StrictModel):
     change_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     affected_fields: list[str] = Field(min_length=1, max_length=50)
-    basis_refs: list[PublicRef] = Field(min_length=1, max_length=100)
+    basis_refs: list[PublicRef] = Field(default_factory=list, max_length=100)
 
     @field_validator("basis_refs")
     @classmethod
@@ -1449,7 +1476,20 @@ class ChangeSetCommit(StrictModel):
     changeset_ref: ChangeSetRef
     expected_version: int = Field(ge=1)
     idempotency_key: str = Field(min_length=8, max_length=512)
-    authority_utterance_ref: UtteranceRef
+    authority_utterance_ref: UtteranceRef | None = None
+    authority_request_ref: RequestRef | None = None
+
+    @property
+    def authority_ref(self) -> str:
+        value = self.authority_request_ref or self.authority_utterance_ref
+        if value is None:
+            raise ValueError("Commit requires an authority root")
+        return value
+
+    @model_validator(mode="after")
+    def authority_is_present(self) -> ChangeSetCommit:
+        _ = self.authority_ref
+        return self
 
 
 class ConflictOpen(StrictModel):
@@ -1468,7 +1508,8 @@ class ConflictOpen(StrictModel):
 class ConflictResolve(StrictModel):
     conflict_ref: ConflictRef
     expected_version: int = Field(ge=1)
-    authority_utterance_ref: UtteranceRef
+    authority_utterance_ref: UtteranceRef | None = None
+    authority_request_ref: RequestRef | None = None
     resolution: Literal[
         "resolved_supersession", "resolved_scoped_coexistence", "resolved_retraction"
     ]
@@ -1478,6 +1519,18 @@ class ConflictResolve(StrictModel):
     effective_scope: dict[str, Any]
     expected_versions: dict[PublicRef, int] = Field(default_factory=dict, max_length=100)
     canonical_effects: list[CanonicalChangeInput] = Field(default_factory=list, max_length=100)
+
+    @property
+    def authority_ref(self) -> str:
+        value = self.authority_request_ref or self.authority_utterance_ref
+        if value is None:
+            raise ValueError("Conflict resolution requires an authority root")
+        return value
+
+    @model_validator(mode="after")
+    def authority_is_present(self) -> ConflictResolve:
+        _ = self.authority_ref
+        return self
 
     @field_validator("expected_versions")
     @classmethod

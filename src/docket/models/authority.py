@@ -26,6 +26,10 @@ from docket.models.base import Base, utc_now
 class IntentSession(Base):
     __tablename__ = "intent_sessions"
     __table_args__ = (
+        CheckConstraint(
+            "source_utterance_ref IS NOT NULL OR source_request_ref IS NOT NULL",
+            name="ck_intent_sessions_authority_root",
+        ),
         Index(
             "ix_intent_sessions_conversation_semantic_state",
             "conversation_ref",
@@ -33,8 +37,7 @@ class IntentSession(Base):
         ),
         Index("ix_intent_sessions_source_utterance", "source_utterance_ref"),
         CheckConstraint(
-            "semantic_state IN ('open', 'needs_clarification', 'ready', "
-            "'cancelled', 'superseded')",
+            "semantic_state IN ('open', 'needs_clarification', 'ready', 'cancelled', 'superseded')",
             name="ck_intent_sessions_semantic_state",
         ),
         CheckConstraint(
@@ -51,7 +54,11 @@ class IntentSession(Base):
         String(40), unique=True, nullable=False, default=lambda: new_public_ref("ses")
     )
     conversation_ref: Mapped[str] = mapped_column(String(512), nullable=False)
-    source_utterance_ref: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_utterance_ref: Mapped[str | None] = mapped_column(String(40))
+    source_request_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("authenticated_requests.ref_id", ondelete="RESTRICT"),
+        unique=True,
+    )
     case_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     case_revision_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     brief_ref: Mapped[str | None] = mapped_column(String(40))
@@ -81,11 +88,18 @@ class IntentTurn(Base):
     __tablename__ = "intent_turns"
     __table_args__ = (
         CheckConstraint(
+            "utterance_ref IS NOT NULL OR request_ref IS NOT NULL",
+            name="ck_intent_turns_authority_root",
+        ),
+        CheckConstraint(
             "response_disposition IN ('pending', 'final_response', 'no_response')",
             name="ck_intent_turns_response_disposition",
         ),
         UniqueConstraint(
             "intent_session_id", "utterance_ref", name="uq_intent_turns_session_utterance"
+        ),
+        UniqueConstraint(
+            "intent_session_id", "request_ref", name="uq_intent_turns_session_request"
         ),
         Index("ix_intent_turns_session_created", "intent_session_id", "created_at"),
     )
@@ -100,7 +114,10 @@ class IntentTurn(Base):
     intent_session_ref: Mapped[str] = mapped_column(
         ForeignKey("intent_sessions.ref_id", ondelete="RESTRICT"), nullable=False
     )
-    utterance_ref: Mapped[str] = mapped_column(String(40), nullable=False)
+    utterance_ref: Mapped[str | None] = mapped_column(String(40))
+    request_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("authenticated_requests.ref_id", ondelete="RESTRICT"),
+    )
     statement_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     context_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     tool_call_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
@@ -316,6 +333,10 @@ class SemanticRequest(Base):
     authority_scope_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     current_precondition_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     origin_utterance_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    authenticated_request_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("authenticated_requests.ref_id", ondelete="RESTRICT"),
+        unique=True,
+    )
     selected_option_binding: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     authority_availability: Mapped[str] = mapped_column(
         String(32), default="available", nullable=False
@@ -397,6 +418,11 @@ class AssemblyExecution(Base):
 
     __tablename__ = "assembly_executions"
     __table_args__ = (
+        CheckConstraint(
+            "source_utterance_ref IS NOT NULL OR source_request_ref IS NOT NULL",
+            name="ck_assembly_executions_authority_root",
+        ),
+        UniqueConstraint("source_request_ref", "execution_key", name="uq_assembly_agent_execution"),
         UniqueConstraint(
             "trace_execution_id",
             name="uq_assembly_executions_trace_execution",
@@ -409,10 +435,14 @@ class AssemblyExecution(Base):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    source_utterance_ref: Mapped[str] = mapped_column(
-        ForeignKey("operator_utterances.ref_id", ondelete="RESTRICT"), nullable=False
+    source_utterance_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("operator_utterances.ref_id", ondelete="RESTRICT")
     )
-    trace_ref: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_request_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("authenticated_requests.ref_id", ondelete="RESTRICT"),
+    )
+    execution_key: Mapped[str | None] = mapped_column(String(255))
+    trace_ref: Mapped[str | None] = mapped_column(String(40))
     trace_execution_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("trace_execution_segments.id", ondelete="RESTRICT")
     )
@@ -436,6 +466,10 @@ class AssemblyOperation(Base):
 
     __tablename__ = "assembly_operations"
     __table_args__ = (
+        CheckConstraint(
+            "source_utterance_ref IS NOT NULL OR source_request_ref IS NOT NULL",
+            name="ck_assembly_operations_authority_root",
+        ),
         CheckConstraint(
             "operation_kind IN ('stage', 'review', 'commit')",
             name="ck_assembly_operations_kind",
@@ -462,10 +496,13 @@ class AssemblyOperation(Base):
     assembly_execution_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("assembly_executions.id", ondelete="RESTRICT"), nullable=False
     )
-    source_utterance_ref: Mapped[str] = mapped_column(
-        ForeignKey("operator_utterances.ref_id", ondelete="RESTRICT"), nullable=False
+    source_utterance_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("operator_utterances.ref_id", ondelete="RESTRICT")
     )
-    trace_ref: Mapped[str] = mapped_column(String(40), nullable=False)
+    source_request_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("authenticated_requests.ref_id", ondelete="RESTRICT"),
+    )
+    trace_ref: Mapped[str | None] = mapped_column(String(40))
     upstream_tool_call_id: Mapped[str] = mapped_column(String(255), nullable=False)
     operation_key: Mapped[str] = mapped_column(String(512), nullable=False)
     operation_kind: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -488,6 +525,13 @@ class AssemblyOperation(Base):
         DateTime(timezone=True), default=utc_now, nullable=False
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    @property
+    def authority_ref(self) -> str:
+        value = self.source_request_ref or self.source_utterance_ref
+        if value is None:
+            raise ValueError("AssemblyOperation has no authority root")
+        return value
 
 
 class Conflict(Base):

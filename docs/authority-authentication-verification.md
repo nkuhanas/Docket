@@ -20,9 +20,22 @@ requests, drafts, governance records, or pending Operations. Downgrade refuses t
 discard durable request evidence. PostgreSQL enforces immutable attribution and
 append-only records as well as ORM guards.
 
-This initial slice supplies the persistence and identity primitives. Integration
-with MCP, Hermes, staging, commit, conflict resolution, optional attachments,
-retention, and operational role configuration remains part of the active work.
+The workflow slice binds sessions, statements, semantic requests, executions,
+and operations directly to genuine authenticated requests. Migration
+`20261007b2c3` leaves historical work unchanged and refuses a lossy downgrade
+after request-backed work exists. New interpretations use version 2 request
+specifications marked `agent_reported_interpretation`.
+
+New requests permit corrected drafts within their admitted effect boundary.
+Transcript capture, source registration, extraction locators, and first-reading
+proofs do not gate them. Required domain values, selected-entry completeness,
+exact targets, expected versions, occurrence scope, immutable revisions, and
+compiler pins continue to apply. Commit consumes the authenticated request in
+the same transaction as canonical effects and provider intents. Copied requests
+or operation tokens do not grant background callers authority.
+
+Integration with MCP and Hermes, retention, and operational role configuration
+remains part of the active work.
 The dot/plugin/MCP Events adapter is separate work.
 
 Initial slice validation: `scripts/docket check` passed 984 tests, Ruff, and
@@ -31,3 +44,9 @@ governance restore, existing request/revision races and provider recovery,
 new concurrent request admission and immutable attribution, and PostgreSQL
 migration downgrade/re-upgrade. Tests used smoke credentials and synthetic data.
 No production deployment or live provider operation was performed.
+
+Workflow slice validation: the full gate passed 988 tests, Ruff, and strict
+mypy. The isolated Compose smoke passed a request-backed stage/commit across
+PostgreSQL connections, concurrent admission, immutable attribution, guarded
+downgrade, and the existing provider, occurrence, revision, restore, and
+migration round-trip checks.

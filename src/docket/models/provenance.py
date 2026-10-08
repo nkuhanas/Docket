@@ -129,6 +129,10 @@ class AgentResponse(Base):
 class InterpretedStatement(Base):
     __tablename__ = "interpreted_statements"
     __table_args__ = (
+        CheckConstraint(
+            "utterance_id IS NOT NULL OR authenticated_request_ref IS NOT NULL",
+            name="ck_interpreted_statements_authority_root",
+        ),
         Index("ix_interpreted_statements_utterance", "utterance_id", "created_at"),
     )
 
@@ -136,8 +140,11 @@ class InterpretedStatement(Base):
     ref_id: Mapped[str] = mapped_column(
         String(40), unique=True, nullable=False, default=lambda: new_public_ref("stm")
     )
-    utterance_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("operator_utterances.id", ondelete="RESTRICT"), nullable=False
+    utterance_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("operator_utterances.id", ondelete="RESTRICT")
+    )
+    authenticated_request_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("authenticated_requests.ref_id", ondelete="RESTRICT"),
     )
     statement_kind: Mapped[str] = mapped_column(String(128), nullable=False)
     subject_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)

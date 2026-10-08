@@ -69,6 +69,8 @@ def _evidence_error(entry_id: str, constraint: str) -> DocketError:
 
 
 def _source_binding(session: Session, entry: NormalizedEntryInput) -> dict[str, Any]:
+    if entry.evidence is None:
+        raise _evidence_error(entry.import_entry_id, "original_source_present")
     source = session.scalar(select(Source).where(Source.ref_id == entry.evidence.source_ref))
     attachment = session.scalar(select(AttachmentEvidence).where(
         AttachmentEvidence.ref_id == entry.evidence.source_ref,
@@ -130,8 +132,12 @@ def read_entry_interpretation(
 
 
 def bind_entry_interpretation(
-    session: Session, *, request: SemanticRequest, scope: AssemblyAuthorityScopeInput,
-    entry: NormalizedEntryInput, existing_draft_entry: bool,
+    session: Session,
+    *,
+    request: SemanticRequest,
+    scope: AssemblyAuthorityScopeInput,
+    entry: NormalizedEntryInput,
+    existing_draft_entry: bool,
 ) -> None:
     """Called under the assembly request lock, before editing or compiling a patch."""
     if not scope.selected_entry_ids:
@@ -145,7 +151,7 @@ def bind_entry_interpretation(
         )
     if entry.import_entry_id not in scope.selected_entry_ids:
         raise _conflict(entry.import_entry_id, "entry_in_original_selection", ["import_entry_id"])
-    if entry.evidence.source_ref not in scope.source_refs:
+    if entry.evidence is None or entry.evidence.source_ref not in scope.source_refs:
         raise _conflict(
             entry.import_entry_id, "source_in_original_selection", ["evidence", "source_ref"],
         )
@@ -181,7 +187,10 @@ def bind_entry_interpretation(
 
 
 def selection_status(
-    session: Session, *, request_ref: str, scope: AssemblyAuthorityScopeInput,
+    session: Session,
+    *,
+    request_ref: str,
+    scope: AssemblyAuthorityScopeInput,
     entries: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Verify the exact selected entry set; an incomplete batch is saved, not committed."""
@@ -191,6 +200,18 @@ def selection_status(
     current = {str(entry["import_entry_id"]): entry for entry in entries}
     if not selected or current.keys() - selected:
         raise _conflict("request", "complete_original_entry_inventory", ["selected_entry_ids"])
+    request = session.scalar(select(SemanticRequest).where(SemanticRequest.ref_id == request_ref))
+    if request is not None and request.authenticated_request_ref is not None:
+        missing = sorted(selected - current.keys())
+        return {
+            "interpretation_state": "agent_reported_interpretation",
+            "selected_entry_count": len(selected),
+            "staged_entry_count": len(current),
+            "missing_entry_count": len(missing),
+            "missing_entry_ids": missing[:3],
+            "complete": not missing,
+            "interpretation_hash": sha256_json(entries) if not missing else None,
+        }
     bindings = []
     for entry_id, record in sorted(current.items()):
         original = read_entry_interpretation(session, request_ref=request_ref, entry_id=entry_id)
@@ -238,7 +259,10 @@ def verify_draft_interpretation(session: Session, changeset: ChangeSet) -> None:
 
 
 def compiled_interpretation_errors(
-    session: Session, *, request_ref: str | None, content: ChangeSetContent,
+    session: Session,
+    *,
+    request_ref: str | None,
+    content: ChangeSetContent,
 ) -> list[dict[str, Any]]:
     """Check actual compiled effects, not just the entry or a compiler self-report."""
     request = session.scalar(select(SemanticRequest).where(SemanticRequest.ref_id == request_ref))
@@ -278,6 +302,8 @@ def compiled_interpretation_errors(
         entry = read_entry_interpretation(
             session, request_ref=request.ref_id, entry_id=entry_id,
         ).entry
+        if entry.evidence is None:
+            raise _evidence_error(entry_id, "original_source_present")
         item = items.get(covered.item_change_id)
         time = times.get(covered.temporal_binding_change_id)
         item_input, temporal_input = entry_facets(entry)
