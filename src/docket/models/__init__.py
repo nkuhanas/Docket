@@ -1,3 +1,4 @@
+from docket.models.agent_requests import AuthenticatedRequest, ConversationRecord
 from docket.models.authority import (
     AssemblyExecution,
     AssemblyOperation,
@@ -110,6 +111,7 @@ __all__ = [
     "AttentionCase",
     "AttentionCaseRevision",
     "AuditEvent",
+    "AuthenticatedRequest",
     "BackupRun",
     "Base",
     "BriefEntry",
@@ -126,6 +128,7 @@ __all__ = [
     "Conflict",
     "ConnectorCheckpoint",
     "ContextPacket",
+    "ConversationRecord",
     "ConversationalToolTrace",
     "DailyBrief",
     "DailyBriefCaseMembership",

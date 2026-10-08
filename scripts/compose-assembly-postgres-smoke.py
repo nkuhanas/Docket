@@ -1352,7 +1352,7 @@ def test_direct_request_adoption_serializes_and_preserves_proof(
     else:
         raise AssertionError("Downgrade discarded adoption evidence")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260922d0b9"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007a1b2"
         assert session.get(RequestAssemblyAdoption, request_ref) is not None
 
 
@@ -2244,7 +2244,7 @@ def test_trace_history_survives_call_one_hundred_and_blocks_lossy_downgrade(
     else:
         raise AssertionError("Downgrade should preserve the longer trace by refusing to proceed")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260922d0b9"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007a1b2"
         assert session.scalar(select(TraceExecutionSegment.last_ordinal).where(
             TraceExecutionSegment.id == trace_id
         )) == 103
@@ -2547,7 +2547,7 @@ def test_request_specifications_are_immutable_and_block_lossy_downgrade(
     else:
         raise AssertionError("Downgrade discarded immutable request specifications")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260922d0b9"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007a1b2"
         assert session.get(SemanticRequestSpecification, (key["ref"], key["version"])) is not None
 
 
@@ -2585,7 +2585,7 @@ def test_initial_source_interpretations_are_immutable_across_connections(
     else:
         raise AssertionError("Downgrade discarded initial source interpretations")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20260922d0b9"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007a1b2"
         interpreted = read_entry_interpretation(
             session, request_ref=key["ref"], entry_id=key["entry"],
         )
@@ -3031,6 +3031,65 @@ def test_mixed_field_evidence_recovery_survives_connections(factory: sessionmake
         raise AssertionError("Downgrade discarded clarification context")
 
 
+def test_authenticated_request_attribution_is_retained(factory: sessionmaker[Session]) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from docket.agent_auth import AgentCallContext, AgentPrincipal, agent_call_context
+    from docket.services.agent_requests import AgentRequestService
+
+    principal = AgentPrincipal(
+        principal_ref="agent:interactive",
+        operator_ref=f"operator:{get_settings().operator_discord_user_id}",
+        role="interactive", permissions=frozenset({"read", "stage", "commit"}),
+    )
+
+    def admit() -> str:
+        token = agent_call_context.set(AgentCallContext(principal))
+        try:
+            with factory.begin() as session:
+                return AgentRequestService(session).admit(request_key="pg-agent-request").ref_id
+        finally:
+            agent_call_context.reset(token)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first, second = list(pool.map(lambda _index: admit(), range(2)))
+    assert first == second
+    token = agent_call_context.set(AgentCallContext(principal))
+    try:
+        with factory.begin() as session:
+            captured = AgentRequestService(session).record(
+                request_ref=first, record_key="pg-transcript", record_kind="operator_transcript",
+                text="Synthetic agent-reported transcript",
+            )
+        for sql, ref in (
+            ("UPDATE authenticated_requests SET principal_ref = 'agent:other' WHERE ref_id = :ref",
+             first),
+            ("DELETE FROM authenticated_requests WHERE ref_id = :ref", first),
+            ("UPDATE conversation_records SET capture_method = 'direct' WHERE ref_id = :ref",
+             captured["ref"]),
+            ("DELETE FROM conversation_records WHERE ref_id = :ref", captured["ref"]),
+        ):
+            try:
+                with factory.begin() as session:
+                    session.execute(text(sql), {"ref": ref})
+            except DBAPIError:
+                pass
+            else:
+                raise AssertionError("PostgreSQL rewrote authenticated request attribution")
+        migration = ScriptDirectory.from_config(Config("alembic.ini")).get_revision("20261007a1b2")
+        assert migration is not None
+        try:
+            with (factory.kw["bind"].begin() as connection,
+                  Operations.context(MigrationContext.configure(connection))):
+                migration.module.downgrade()
+        except RuntimeError as exc:
+            assert "discard authority" in str(exc)
+        else:
+            raise AssertionError("Downgrade discarded request authority")
+    finally:
+        agent_call_context.reset(token)
+
+
 def main() -> None:
     database_url = os.environ["DOCKET_DATABASE_URL"]
     engine = configure_database(database_url)
@@ -3070,6 +3129,7 @@ def main() -> None:
         test_google_reauthorization_rechecks_a_concurrent_canonical_edit,
         test_calendar_update_binding_pin_serializes_with_provider_observations,
         test_mixed_field_evidence_recovery_survives_connections,
+        test_authenticated_request_attribution_is_retained,
     )
     for check in checks:
         check(factory)

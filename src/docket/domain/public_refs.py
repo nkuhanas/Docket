@@ -17,6 +17,8 @@ class PublicRefDefinition:
 
 
 _DEFINITIONS = (
+    PublicRefDefinition("req", "AuthenticatedRequest"),
+    PublicRefDefinition("rec", "ConversationRecord"),
     PublicRefDefinition("utt", "OperatorUtterance"),
     PublicRefDefinition("rsp", "AgentResponse"),
     PublicRefDefinition("stm", "InterpretedStatement"),
