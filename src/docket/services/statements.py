@@ -10,6 +10,7 @@ from docket.domain.errors import DocketError
 from docket.models import (
     AttachmentEvidence,
     AuditEvent,
+    AuthenticatedRequest,
     InterpretedStatement,
     OperatorUtterance,
     Source,
@@ -29,9 +30,15 @@ class StatementService:
         utterance_ref: str,
         statements: list[StatementInput],
     ) -> list[InterpretedStatement]:
-        utterance = self.session.scalar(
-            select(OperatorUtterance).where(OperatorUtterance.ref_id == utterance_ref)
-        )
+        utterance: OperatorUtterance | AuthenticatedRequest | None
+        if utterance_ref.startswith("req_"):
+            from docket.services.agent_requests import AgentRequestService
+
+            utterance = AgentRequestService(self.session).require(utterance_ref, permission="stage")
+        else:
+            utterance = self.session.scalar(
+                select(OperatorUtterance).where(OperatorUtterance.ref_id == utterance_ref)
+            )
         if utterance is None:
             raise DocketError(
                 code="operator_utterance_not_found",
@@ -49,7 +56,9 @@ class StatementService:
         existing = list(
             self.session.scalars(
                 select(InterpretedStatement).where(
-                    InterpretedStatement.utterance_id == utterance.id
+                    InterpretedStatement.authenticated_request_ref == utterance.ref_id
+                    if isinstance(utterance, AuthenticatedRequest)
+                    else InterpretedStatement.utterance_id == utterance.id
                 )
             )
         )
@@ -72,8 +81,10 @@ class StatementService:
                         details={"source_ref": statement_input.source_ref},
                     )
                 attachment = attachment_evidence_by_ref.get(statement_input.source_ref)
-                if source.source_kind == "attachment" and (
-                    attachment is None or attachment.ingest_state != "available"
+                if (
+                    isinstance(utterance, OperatorUtterance)
+                    and source.source_kind == "attachment"
+                    and (attachment is None or attachment.ingest_state != "available")
                 ):
                     raise DocketError(
                         code="attachment_evidence_unavailable",
@@ -96,7 +107,10 @@ class StatementService:
                 interpretation_json["import_entry_id"] = statement_input.import_entry_id
             interpretation_json["_derivation_hash"] = derivation_hash
             statement = InterpretedStatement(
-                utterance_id=utterance.id,
+                utterance_id=utterance.id if isinstance(utterance, OperatorUtterance) else None,
+                authenticated_request_ref=(
+                    utterance.ref_id if isinstance(utterance, AuthenticatedRequest) else None
+                ),
                 statement_kind=statement_input.statement_kind,
                 subject_refs=list(statement_input.subject_refs),
                 predicate=statement_input.predicate,

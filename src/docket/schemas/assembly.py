@@ -4,10 +4,11 @@ import json
 import re
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 
 from docket.schemas.authority import (
     CanonicalChangeInput,
+    RequestRef,
     UtteranceRef,
     mutation_input_json,
 )
@@ -139,15 +140,32 @@ class NoCalendarRepresentation(StrictModel):
     kind: Literal["none"] = "none"
 
 
-class NormalizedEntryBase(StrictModel):
+class OptionalEntryEvidence(StrictModel):
+    evidence: NormalizedEntryEvidence | None = None
+
+    @field_validator("evidence", mode="before")
+    @classmethod
+    def supporting_evidence_is_best_effort(cls, value: Any) -> NormalizedEntryEvidence | None:
+        if value is None:
+            return None
+        try:
+            return NormalizedEntryEvidence.model_validate(value)
+        except (ValidationError, TypeError, ValueError):
+            return None
+
+
+class NormalizedEntryBase(OptionalEntryEvidence):
     import_entry_id: str = Field(pattern=_IDENTIFIER_PATTERN)
-    evidence: NormalizedEntryEvidence
     item: ItemInput
     temporal: NormalizedTemporalFacet
 
     @model_validator(mode="after")
     def item_source_matches_evidence(self) -> NormalizedEntryBase:
-        if self.item.source_refs and self.item.source_refs != [self.evidence.source_ref]:
+        if (
+            self.evidence is not None
+            and self.item.source_refs
+            and self.item.source_refs != [self.evidence.source_ref]
+        ):
             raise ValueError("normalized entry Item source must match its evidence source")
         return self
 
@@ -157,12 +175,11 @@ class TrackedTemporalEntry(NormalizedEntryBase):
     calendar: Literal[None] = None
 
 
-class ScheduledOccurrenceEntry(StrictModel):
+class ScheduledOccurrenceEntry(OptionalEntryEvidence):
     """One source occurrence; Docket derives all support records from these values."""
 
     entry_type: Literal["scheduled_occurrence_entry"] = "scheduled_occurrence_entry"
     import_entry_id: str = Field(pattern=_IDENTIFIER_PATTERN)
-    evidence: NormalizedEntryEvidence
     title: str = Field(min_length=1, max_length=512)
     timing: CalendarEventTiming
     location: str | None = Field(default=None, max_length=1000)
@@ -305,9 +322,25 @@ class StagePatchInput(StrictModel):
         return self
 
 
-class StageChangesInput(StrictModel):
-    utterance_ref: UtteranceRef
+class AssemblyRequestInput(StrictModel):
+    utterance_ref: UtteranceRef | None = None
+    request_ref: RequestRef | None = None
     request_key: RequestKey
+
+    @property
+    def authority_ref(self) -> str:
+        value = self.request_ref or self.utterance_ref
+        if value is None:
+            raise ValueError("Assembly requires an authority root")
+        return value
+
+    @model_validator(mode="after")
+    def authority_is_present(self) -> AssemblyRequestInput:
+        _ = self.authority_ref
+        return self
+
+
+class StageChangesInput(AssemblyRequestInput):
     assembly_scope: AssemblyAuthorityScopeInput | None = None
     expected_versions: dict[PublicRef, int] = Field(default_factory=dict, max_length=100)
     patch: StagePatchInput
@@ -336,9 +369,7 @@ class StageChangesInput(StrictModel):
         return self
 
 
-class ReviewChangesInput(StrictModel):
-    utterance_ref: UtteranceRef
-    request_key: RequestKey
+class ReviewChangesInput(AssemblyRequestInput):
     view: Literal["summary", "actions", "entries", "diagnostics", "diff"] = Field(
         default="summary",
         description=(

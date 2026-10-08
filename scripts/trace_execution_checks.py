@@ -22,7 +22,6 @@ def test_retained_trace_migration_round_trip(factory: sessionmaker[Session]) -> 
     assert engine.dialect.name == "postgresql"
     with engine.connect() as connection:
         assert not connection.scalar(text("SELECT count(*) FROM conversational_tool_traces"))
-    command.downgrade(Config("alembic.ini"), "20260912a7e6")
     settings = get_settings()
     start = datetime(2026, 9, 1, 12, tzinfo=UTC)
     end = start + timedelta(seconds=10)
@@ -61,6 +60,7 @@ def test_retained_trace_migration_round_trip(factory: sessionmaker[Session]) -> 
         session.add(request)
         session.flush()
         utterance_ref, request_id, request_ref = utterance.ref_id, request.id, request.ref_id
+    command.downgrade(Config("alembic.ini"), "20260912a7e6")
     metadata = MetaData()
     names = (
         "conversational_tool_traces",

@@ -61,6 +61,8 @@ HistoryObjectType = Literal[
 
 _PROVENANCE_PREFIXES = frozenset(
     {
+        "req",
+        "rec",
         "utt",
         "src",
         "stm",

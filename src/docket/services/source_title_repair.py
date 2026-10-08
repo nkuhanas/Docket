@@ -39,7 +39,10 @@ def _unproved(entry_id: str, constraint: str) -> DocketError:
 
 
 def coalesce_source_titles(
-    session: Session, *, prior: ChangeSetContent, proposal: RequestSpecificationProposal,
+    session: Session,
+    *,
+    prior: ChangeSetContent,
+    proposal: RequestSpecificationProposal,
     semantic_request_ref: str,
 ) -> tuple[ChangeSetContent, list[dict[str, Any]]]:
     """Derive the only permitted title corrections without editing prior evidence."""
@@ -77,7 +80,11 @@ def coalesce_source_titles(
         if event.create_spec.item_change_ids != [item.change_id]:
             raise _unproved(entry.entry_id, "event_represents_exact_selected_item")
         selected = selected_entries.get(entry.entry_id)
-        if not isinstance(selected, ScheduledOccurrenceEntry) or selected.title != title:
+        if (
+            not isinstance(selected, ScheduledOccurrenceEntry)
+            or selected.title != title
+            or selected.evidence is None
+        ):
             raise _unproved(entry.entry_id, "exact_recorded_request_entry")
         selected_value = selected.model_dump(mode="json", exclude={"evidence"}, exclude_none=True)
         basis = set(item.basis_refs).intersection(event.basis_refs)

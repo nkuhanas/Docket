@@ -14,6 +14,7 @@ from docket.models import (
     AttentionCase,
     AttentionCaseRevision,
     AuditEvent,
+    AuthenticatedRequest,
     BriefEntry,
     CalendarLane,
     CanonicalEvent,
@@ -21,6 +22,7 @@ from docket.models import (
     ChangeSet,
     Conflict,
     ContextPacket,
+    ConversationRecord,
     DailyBrief,
     Decision,
     Entity,
@@ -52,6 +54,8 @@ from docket.models import (
 PROVENANCE_PREFIXES = frozenset(
     {
         "utt",
+        "req",
+        "rec",
         "src",
         "stm",
         "dec",
@@ -93,6 +97,8 @@ PROVENANCE_PREFIXES = frozenset(
 )
 
 _PHASE_TWO_MODELS: dict[str, type[Any]] = {
+    "req": AuthenticatedRequest,
+    "rec": ConversationRecord,
     "utt": OperatorUtterance,
     "src": Source,
     "stm": InterpretedStatement,
@@ -191,6 +197,9 @@ class ProvenanceRefService:
         return items
 
     def authority_utterance_refs(self, basis_refs: Iterable[str]) -> set[str]:
+        return {ref for ref in self.authority_root_refs(basis_refs) if ref.startswith("utt_")}
+
+    def authority_root_refs(self, basis_refs: Iterable[str]) -> set[str]:
         utterance_refs: set[str] = set()
         visited: set[str] = set()
         stack = list(basis_refs)
@@ -200,9 +209,11 @@ class ProvenanceRefService:
                 continue
             visited.add(ref_id)
             item = self.get(ref_id)
-            if isinstance(item, OperatorUtterance):
+            if isinstance(item, OperatorUtterance | AuthenticatedRequest):
                 utterance_refs.add(item.ref_id)
             elif isinstance(item, InterpretedStatement):
+                if item.authenticated_request_ref is not None:
+                    stack.append(item.authenticated_request_ref)
                 utterance_ref = self.session.scalar(
                     select(OperatorUtterance.ref_id).where(
                         OperatorUtterance.id == item.utterance_id
@@ -216,13 +227,17 @@ class ProvenanceRefService:
                 stack.extend(item.prior_statement_refs)
                 stack.extend(item.incoming_statement_refs)
             elif isinstance(item, IntentSession):
-                stack.append(item.source_utterance_ref)
+                stack.extend(
+                    ref for ref in (item.source_utterance_ref, item.source_request_ref) if ref
+                )
             elif isinstance(item, IntentTurn):
-                stack.append(item.utterance_ref)
+                stack.extend(ref for ref in (item.utterance_ref, item.request_ref) if ref)
             elif isinstance(item, ToolInvocation):
                 stack.extend(item.utterance_refs)
             elif isinstance(item, SemanticRequest):
                 stack.extend(item.origin_utterance_refs)
+                if item.authenticated_request_ref is not None:
+                    stack.append(item.authenticated_request_ref)
             elif isinstance(
                 item,
                 Entity

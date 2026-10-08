@@ -46,7 +46,11 @@ def bind_event_patches(
             "payload": action.get("payload", {}),
         }
         prior = bindings.get(key)
-        if prior is not None and prior != effect:
+        if (
+            prior is not None
+            and prior != effect
+            and (draft.execution_binding_json.get("authority_kind") != "agent_request")
+        ):
             raise DocketError(
                 code="event_patch_effect_conflict",
                 message="Changing the recorded field intent requires semantic reconciliation.",

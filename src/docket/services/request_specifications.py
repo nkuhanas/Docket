@@ -64,7 +64,10 @@ def read_request_proposal(
 
 
 def record_request_proposal(
-    session: Session, *, changeset: ChangeSet, revision: ChangeSetRevision,
+    session: Session,
+    *,
+    changeset: ChangeSet,
+    revision: ChangeSetRevision,
     request_boundary: AssemblyAuthorityScopeInput | None = None,
 ) -> SemanticRequestSpecification:
     request = session.scalar(select(SemanticRequest).where(
@@ -90,7 +93,7 @@ def record_request_proposal(
         for row in changeset.normalized_entries_json
     ]
     source_refs = set((boundary or {}).get("source_refs", [])) | {
-        row["evidence"]["source_ref"] for row in entries
+        row["evidence"]["source_ref"] for row in entries if row.get("evidence")
     }
     sources = {row.ref_id: row for row in session.scalars(select(Source).where(
         Source.ref_id.in_(source_refs),
@@ -103,6 +106,15 @@ def record_request_proposal(
         for change_id in owner["change_ids"]
     }
     payload: dict[str, Any] = {
+        **(
+            {
+                "schema_version": 2,
+                "authenticated_request_ref": request.authenticated_request_ref,
+                "interpretation_state": "agent_reported_interpretation",
+            }
+            if request.authenticated_request_ref is not None
+            else {}
+        ),
         "originating_utterances": [
             {"utterance_ref": row.ref_id, "content_hash": row.content_hash}
             for row in sorted(utterances, key=lambda row: row.ref_id)
@@ -115,10 +127,14 @@ def record_request_proposal(
                     attachments[ref].content_hash if ref in attachments else None
                 ),
                 "evidence_state": (
-                    "attachment_recorded" if ref in attachments else
-                    "source_recorded" if ref in sources else "missing"
+                    "attachment_recorded"
+                    if ref in attachments
+                    else "source_recorded"
+                    if ref in sources
+                    else "missing"
                 ),
-            } for ref in sorted(source_refs)
+            }
+            for ref in sorted(source_refs)
         ],
         "assembly_boundary": boundary,
         "normalized_entries": entries,

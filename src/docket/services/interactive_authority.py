@@ -5,12 +5,14 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from docket.agent_auth import agent_call_context, require_principal
 from docket.config import get_settings
 from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
 from docket.models import (
     AttentionCase,
     AuditEvent,
+    AuthenticatedRequest,
     CaseItem,
     ChangeSet,
     IntentSession,
@@ -103,7 +105,23 @@ class InteractiveAuthorityService:
         utterance_ref: str,
         request_key: str,
         actor_id: str,
-    ) -> OperatorUtterance:
+    ) -> OperatorUtterance | AuthenticatedRequest:
+        if agent_call_context.get() is not None:
+            require_principal("stage")
+        if utterance_ref.startswith("req_"):
+            from docket.services.agent_requests import AgentRequestService
+
+            request = AgentRequestService(self.session).require(
+                utterance_ref,
+                permission="stage",
+                allow_committed=True,
+            )
+            if request.request_key != request_key:
+                raise DocketError(
+                    code="request_binding_mismatch",
+                    message="The request identity does not match its authority root.",
+                )
+            return request
         components = request_key.split(":")
         if len(components) != 5 or components[0] != "discord":
             raise DocketError(
@@ -436,6 +454,61 @@ class InteractiveAuthorityService:
             request_key=request_key,
             actor_id=actor_id,
         )
+        if isinstance(utterance, AuthenticatedRequest):
+            if content is not None or not semantic_options or not blocking_clarifications:
+                raise DocketError(
+                    code="stage_changes_required",
+                    message="Stage resolved actions; clarification needs typed choices.",
+                )
+            service = IntentSessionService(self.session)
+            intent = (
+                service.get(intent_session_ref)
+                if intent_session_ref
+                else service.open(
+                    IntentSessionOpen(source_request_ref=utterance.ref_id),
+                )[0]
+            )
+            if intent.source_request_ref != utterance.ref_id:
+                raise DocketError(
+                    code="request_binding_mismatch",
+                    message="The session belongs to another request.",
+                )
+            if expected_session_version is not None and intent.version != expected_session_version:
+                raise DocketError(
+                    code="version_conflict", message="The clarification session changed."
+                )
+            intent.blocking_clarifications = [
+                {
+                    **blocking_clarifications[0],
+                    "semantic_options": [
+                        option.model_dump(mode="json", exclude_none=True)
+                        for option in semantic_options
+                    ],
+                }
+            ]
+            intent.semantic_state = "needs_clarification"
+            intent.version += 1
+            self.session.add(
+                AuditEvent(
+                    event_type="request.clarification_recorded",
+                    actor_type="agent",
+                    actor_id=utterance.principal_ref,
+                    primary_ref=intent.ref_id,
+                    basis_refs=[utterance.ref_id],
+                    affected_refs=[intent.ref_id],
+                    data={"choice_count": len(semantic_options)},
+                )
+            )
+            return {
+                "ok": True,
+                "ref": intent.ref_id,
+                "request_ref": utterance.ref_id,
+                "state": "needs_clarification",
+                "disposition": "clarification_required",
+                "question": blocking_clarifications[0].get("question"),
+                "choice_count": len(semantic_options),
+                "version": intent.version,
+            }
         if gateway_instance_ref is not None:
             GatewayLifetimeService(self.session).require_live(gateway_instance_ref)
         else:
@@ -1167,6 +1240,8 @@ class InteractiveAuthorityService:
             request_key=request_key,
             actor_id=actor_id,
         )
+        if isinstance(utterance, AuthenticatedRequest):
+            require_principal("resolve_conflict")
         idempotency_key = f"{request_key}:conflict-resolution"
         replay = self.session.scalar(
             select(ChangeSet).where(ChangeSet.idempotency_key == idempotency_key)
@@ -1187,7 +1262,14 @@ class InteractiveAuthorityService:
         intent_service = IntentSessionService(self.session)
         if intent_session_ref is None:
             intent_session, _created = intent_service.open(
-                IntentSessionOpen(source_utterance_ref=utterance.ref_id)
+                IntentSessionOpen(
+                    source_utterance_ref=utterance.ref_id
+                    if isinstance(utterance, OperatorUtterance)
+                    else None,
+                    source_request_ref=utterance.ref_id
+                    if isinstance(utterance, AuthenticatedRequest)
+                    else None,
+                )
             )
         else:
             intent_session = intent_service.get(intent_session_ref)
@@ -1207,7 +1289,12 @@ class InteractiveAuthorityService:
         intent_session, turn = intent_service.append_turn(
             IntentTurnAppend(
                 intent_session_ref=intent_session.ref_id,
-                utterance_ref=utterance.ref_id,
+                utterance_ref=utterance.ref_id
+                if isinstance(utterance, OperatorUtterance)
+                else None,
+                request_ref=utterance.ref_id
+                if isinstance(utterance, AuthenticatedRequest)
+                else None,
                 statements=[statement],
                 relations=[],
                 resolved_intent_json={"conflict_ref": resolution.conflict_ref},

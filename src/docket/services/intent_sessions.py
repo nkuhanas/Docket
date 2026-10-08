@@ -10,6 +10,7 @@ from docket.domain.errors import DocketError
 from docket.models import (
     AgentResponse,
     AuditEvent,
+    AuthenticatedRequest,
     IntentSession,
     IntentTurn,
     OperatorUtterance,
@@ -34,7 +35,15 @@ class IntentSessionService:
     def _expected_actor_ref() -> str:
         return f"discord_user:{get_settings().operator_discord_user_id}"
 
-    def _utterance(self, utterance_ref: str) -> OperatorUtterance:
+    def _utterance(self, utterance_ref: str) -> OperatorUtterance | AuthenticatedRequest:
+        if utterance_ref.startswith("req_"):
+            from docket.services.agent_requests import AgentRequestService
+
+            return AgentRequestService(self.session).require(
+                utterance_ref,
+                permission="stage",
+                allow_committed=True,
+            )
         utterance = self.session.scalar(
             select(OperatorUtterance).where(OperatorUtterance.ref_id == utterance_ref)
         )
@@ -52,7 +61,7 @@ class IntentSessionService:
         return utterance
 
     def open(self, request: IntentSessionOpen) -> tuple[IntentSession, bool]:
-        utterance = self._utterance(request.source_utterance_ref)
+        utterance = self._utterance(request.source_ref)
         from docket.models import ClarificationReply
 
         reply = self.session.get(ClarificationReply, utterance.ref_id)
@@ -67,7 +76,12 @@ class IntentSessionService:
                 return intent, False
         existing = self.session.scalar(
             select(IntentSession).where(
-                IntentSession.source_utterance_ref == utterance.ref_id
+                (
+                    IntentSession.source_request_ref
+                    if isinstance(utterance, AuthenticatedRequest)
+                    else IntentSession.source_utterance_ref
+                )
+                == utterance.ref_id
             )
         )
         if existing is not None:
@@ -83,7 +97,12 @@ class IntentSessionService:
         )
         intent_session = IntentSession(
             conversation_ref=utterance.conversation_ref,
-            source_utterance_ref=utterance.ref_id,
+            source_utterance_ref=utterance.ref_id
+            if isinstance(utterance, OperatorUtterance)
+            else None,
+            source_request_ref=utterance.ref_id
+            if isinstance(utterance, AuthenticatedRequest)
+            else None,
             case_refs=list(request.case_refs),
             case_revision_refs=list(request.case_revision_refs),
             brief_ref=request.brief_ref,
@@ -126,7 +145,7 @@ class IntentSessionService:
 
     def append_turn(self, request: IntentTurnAppend) -> tuple[IntentSession, IntentTurn]:
         intent_session = self.get(request.intent_session_ref)
-        utterance = self._utterance(request.utterance_ref)
+        utterance = self._utterance(request.authority_ref)
         if utterance.conversation_ref != intent_session.conversation_ref:
             raise DocketError(
                 code="intent_conversation_mismatch",
@@ -135,7 +154,12 @@ class IntentSessionService:
         existing = self.session.scalar(
             select(IntentTurn).where(
                 IntentTurn.intent_session_id == intent_session.id,
-                IntentTurn.utterance_ref == utterance.ref_id,
+                (
+                    IntentTurn.request_ref
+                    if isinstance(utterance, AuthenticatedRequest)
+                    else IntentTurn.utterance_ref
+                )
+                == utterance.ref_id,
             )
         )
         if existing is not None:
@@ -205,7 +229,8 @@ class IntentSessionService:
         turn = IntentTurn(
             intent_session_id=intent_session.id,
             intent_session_ref=intent_session.ref_id,
-            utterance_ref=utterance.ref_id,
+            utterance_ref=utterance.ref_id if isinstance(utterance, OperatorUtterance) else None,
+            request_ref=utterance.ref_id if isinstance(utterance, AuthenticatedRequest) else None,
             statement_refs=[item.ref_id for item in statements],
             context_refs=list(request.context_refs),
             tool_call_refs=call_refs,

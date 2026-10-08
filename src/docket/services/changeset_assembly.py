@@ -18,6 +18,7 @@ from docket.models import (
     AssemblyExecution,
     AssemblyOperation,
     AuditEvent,
+    AuthenticatedRequest,
     CalendarLane,
     ChangeSet,
     ChangeSetRevision,
@@ -27,6 +28,7 @@ from docket.models import (
     OperatorUtterance,
     SemanticRequest,
     SemanticRequestAttempt,
+    Source,
     ToolInvocation,
 )
 from docket.models.base import utc_now
@@ -187,6 +189,14 @@ def _bound_request(session: Session, utterance_ref: str) -> SemanticRequest | No
     The caller holds the originating utterance lock. Do not infer a request
     from the latest conversation, title similarity, or another utterance.
     """
+    if utterance_ref.startswith("req_"):
+        return session.scalar(
+            select(SemanticRequest)
+            .where(
+                SemanticRequest.authenticated_request_ref == utterance_ref,
+            )
+            .with_for_update()
+        )
     from docket.models import ClarificationReply
 
     reply = session.get(ClarificationReply, utterance_ref)
@@ -229,7 +239,9 @@ def _bound_request(session: Session, utterance_ref: str) -> SemanticRequest | No
 
 
 def _bind_execution_request(
-    session: Session, execution: AssemblyExecution, request: SemanticRequest,
+    session: Session,
+    execution: AssemblyExecution,
+    request: SemanticRequest,
 ) -> None:
     # Attempt numbers are shared across executions, so an execution-row lock
     # alone is insufficient. All resumption paths use this request lock.
@@ -237,10 +249,22 @@ def _bind_execution_request(
         select(SemanticRequest).where(SemanticRequest.id == request.id)
         .with_for_update().execution_options(populate_existing=True)
     ).scalar_one()
-    attempt = session.scalar(select(SemanticRequestAttempt).where(
-        SemanticRequestAttempt.semantic_request_id == request.id,
-        SemanticRequestAttempt.trace_execution_id == execution.trace_execution_id,
-    ))
+    attempt = (
+        session.scalar(
+            select(SemanticRequestAttempt).where(
+                SemanticRequestAttempt.semantic_request_id == request.id,
+                SemanticRequestAttempt.trace_execution_id == execution.trace_execution_id,
+            )
+        )
+        if execution.trace_execution_id is not None
+        else session.scalar(
+            select(SemanticRequestAttempt).where(
+                SemanticRequestAttempt.ref_id == execution.semantic_request_attempt_ref,
+            )
+        )
+        if execution.semantic_request_attempt_ref is not None
+        else None
+    )
     if attempt is None:
         next_attempt = int(session.scalar(
             select(func.max(SemanticRequestAttempt.attempt_number)).where(
@@ -303,6 +327,97 @@ class ChangeSetAssemblyAdmissionService:
 
     def __init__(self, session: Session) -> None:
         self.session = session
+
+    def admit_agent(
+        self,
+        *,
+        request_ref: str,
+        execution_key: str,
+        operation_key: str,
+        tool_name: str,
+        argument_hash: str,
+    ) -> dict[str, Any]:
+        from docket.services.agent_requests import AgentRequestService
+
+        kind = self._KINDS.get(tool_name)
+        if kind is None:
+            raise DocketError(code="assembly_tool_invalid", message="Unknown assembly operation.")
+        root = AgentRequestService(self.session).require(
+            request_ref,
+            permission="commit" if kind == "commit" else "stage",
+            allow_committed=True,
+        )
+        if (
+            not execution_key
+            or not operation_key
+            or max(len(execution_key), len(operation_key)) > 255
+        ):
+            raise DocketError(
+                code="invalid_execution_identity",
+                message="Bounded execution and operation identities are required.",
+            )
+        execution = self.session.scalar(
+            select(AssemblyExecution)
+            .where(
+                AssemblyExecution.source_request_ref == root.ref_id,
+                AssemblyExecution.execution_key == execution_key,
+            )
+            .with_for_update()
+        )
+        if execution is None:
+            execution = AssemblyExecution(
+                source_request_ref=root.ref_id, execution_key=execution_key, next_sequence=1
+            )
+            self.session.add(execution)
+            self.session.flush()
+            preserved = _bound_request(self.session, root.ref_id)
+            if preserved is not None:
+                _bind_execution_request(self.session, execution, preserved)
+        previous = self.session.scalar(
+            select(AssemblyOperation).where(
+                AssemblyOperation.assembly_execution_id == execution.id,
+                AssemblyOperation.upstream_tool_call_id == operation_key,
+            )
+        )
+        if previous is not None:
+            if previous.tool_name != tool_name or previous.argument_hash != argument_hash:
+                raise DocketError(
+                    code="stage_idempotency_mismatch",
+                    message="An operation identity was reused with changed content.",
+                )
+            operation = previous
+        else:
+            attempt = self.session.scalar(
+                select(SemanticRequestAttempt).where(
+                    SemanticRequestAttempt.ref_id == execution.semantic_request_attempt_ref,
+                )
+            )
+            operation = AssemblyOperation(
+                assembly_execution_id=execution.id,
+                source_request_ref=root.ref_id,
+                upstream_tool_call_id=operation_key,
+                operation_key=secrets.token_hex(32),
+                operation_kind=kind,
+                tool_name=tool_name,
+                argument_hash=argument_hash,
+                patch_hash=argument_hash if kind == "stage" else None,
+                attempt_sequence=execution.next_sequence,
+                causal_observed_revision=attempt.observed_draft_revision if attempt else None,
+                semantic_request_ref=execution.semantic_request_ref,
+                semantic_request_attempt_ref=execution.semantic_request_attempt_ref,
+                state="admitted",
+            )
+            execution.next_sequence += 1
+            self.session.add(operation)
+            self.session.flush()
+        return {
+            "ok": True,
+            "request_ref": root.ref_id,
+            "assembly_operation_token": operation.operation_key,
+            "canonical_model_argument_hash": operation.argument_hash,
+            "attempt_sequence": operation.attempt_sequence,
+            "replayed": previous is not None,
+        }
 
     def admit(
         self,
@@ -559,6 +674,18 @@ class ChangeSetAssemblyService:
         operation_kind: Literal["stage", "review", "commit"],
         utterance_ref: str,
     ) -> tuple[AssemblyOperation, AssemblyExecution]:
+        from docket.agent_auth import agent_call_context, require_principal
+        from docket.services.agent_requests import AgentRequestService
+
+        permission = "commit" if operation_kind == "commit" else "stage"
+        if agent_call_context.get() is not None:
+            require_principal(permission)
+        if utterance_ref.startswith("req_"):
+            AgentRequestService(self.session).require(
+                utterance_ref,
+                permission=permission,
+                allow_committed=True,
+            )
         # Admission and execution take locks in the same order. Recheck the
         # request after this lock: another admitted execution may have created
         # it since this operation was admitted.
@@ -573,7 +700,7 @@ class ChangeSetAssemblyService:
         if (
             operation is None
             or operation.operation_kind != operation_kind
-            or operation.source_utterance_ref != utterance_ref
+            or operation.authority_ref != utterance_ref
         ):
             raise DocketError(
                 code="assembly_operation_invalid",
@@ -716,7 +843,7 @@ class ChangeSetAssemblyService:
             operation is None
             or operation.argument_hash != argument_hash
             or operation.operation_kind != operation_kind
-            or operation.source_utterance_ref != utterance_ref
+            or operation.authority_ref != utterance_ref
             or operation.state in {"completed", "rejected"}
         ):
             return None
@@ -730,14 +857,21 @@ class ChangeSetAssemblyService:
         }
         return self._terminal(operation, result, state="rejected")
 
-    def _authority_utterance(self, request: StageChangesInput) -> OperatorUtterance:
+    def _authority_utterance(
+        self,
+        request: StageChangesInput,
+    ) -> OperatorUtterance | AuthenticatedRequest:
         return self.authority._authority_utterance(
-            utterance_ref=request.utterance_ref,
+            utterance_ref=request.authority_ref,
             request_key=request.request_key,
             actor_id=str(get_settings().operator_discord_user_id),
         )
 
-    def _open_session(self, utterance: OperatorUtterance) -> IntentSession:
+    def _open_session(self, utterance: OperatorUtterance | AuthenticatedRequest) -> IntentSession:
+        if isinstance(utterance, AuthenticatedRequest):
+            return IntentSessionService(self.session).open(
+                IntentSessionOpen(source_request_ref=utterance.ref_id),
+            )[0]
         reply_binding = ReplyBindingService(self.session).resolve(utterance) or {}
         intent_session, _created = IntentSessionService(self.session).open(
             IntentSessionOpen(
@@ -755,7 +889,7 @@ class ChangeSetAssemblyService:
         *,
         execution: AssemblyExecution,
         operation: AssemblyOperation,
-        utterance: OperatorUtterance,
+        utterance: OperatorUtterance | AuthenticatedRequest,
         scope: AssemblyAuthorityScopeInput | None,
         expected_versions: dict[str, int],
     ) -> tuple[IntentSession, SemanticRequest, SemanticRequestAttempt]:
@@ -776,7 +910,15 @@ class ChangeSetAssemblyService:
                     scope=scope, expected_versions=expected_versions,
                 )
             scope_payload = scope.model_dump(mode="json", exclude_none=True)
-            authority_scope_hash = sha256_json(scope_payload)
+            authority_scope_hash = sha256_json(
+                {
+                    key: value
+                    for key, value in scope_payload.items()
+                    if key not in {"resolved_intent", "source_refs", "selected_entry_ids"}
+                }
+                if isinstance(utterance, AuthenticatedRequest)
+                else scope_payload
+            )
             precondition_payload = {
                 "expected_versions": expected_versions,
                 "case_refs": intent_session.case_refs,
@@ -795,7 +937,12 @@ class ChangeSetAssemblyService:
                     intent_session_ref=intent_session.ref_id,
                     authority_scope_hash=authority_scope_hash,
                     current_precondition_hash=precondition_hash,
-                    origin_utterance_refs=[utterance.ref_id],
+                    origin_utterance_refs=[utterance.ref_id]
+                    if isinstance(utterance, OperatorUtterance)
+                    else [],
+                    authenticated_request_ref=(
+                        utterance.ref_id if isinstance(utterance, AuthenticatedRequest) else None
+                    ),
                     selected_option_binding={
                         "kind": "freeform_assembly",
                         "scope": scope_payload,
@@ -811,16 +958,22 @@ class ChangeSetAssemblyService:
                 )
                 self.session.add(semantic_request)
                 self.session.flush()
-            elif utterance.ref_id not in semantic_request.origin_utterance_refs:
+            elif utterance.ref_id not in semantic_request.origin_utterance_refs and (
+                utterance.ref_id != semantic_request.authenticated_request_ref
+            ):
                 raise DocketError(
                     code="semantic_request_binding_mismatch",
                     message="This utterance cannot adopt another request's assembly draft.",
                 )
-            existing_attempt = self.session.scalar(
-                select(SemanticRequestAttempt).where(
-                    SemanticRequestAttempt.semantic_request_id == semantic_request.id,
-                    SemanticRequestAttempt.trace_execution_id == execution.trace_execution_id,
+            existing_attempt = (
+                self.session.scalar(
+                    select(SemanticRequestAttempt).where(
+                        SemanticRequestAttempt.semantic_request_id == semantic_request.id,
+                        SemanticRequestAttempt.trace_execution_id == execution.trace_execution_id,
+                    )
                 )
+                if execution.trace_execution_id is not None
+                else None
             )
             if existing_attempt is None:
                 next_attempt = (
@@ -907,6 +1060,19 @@ class ChangeSetAssemblyService:
                 )
             return bound_session, semantic_request, attempt
         persisted_scope = (semantic_request.selected_option_binding or {}).get("scope")
+        if semantic_request.authenticated_request_ref is not None and scope is not None:
+            replacement = scope.model_dump(mode="json", exclude_none=True)
+            mutable = {"resolved_intent", "source_refs", "selected_entry_ids"}
+            before = {
+                key: value for key, value in (persisted_scope or {}).items() if key not in mutable
+            }
+            after = {key: value for key, value in replacement.items() if key not in mutable}
+            if before != after:
+                raise DocketError(
+                    code="assembly_scope_violation",
+                    message="Interpretation edits cannot expand the admitted effect boundary.",
+                )
+            persisted_scope = replacement
         if (
             scope is not None
             and scope.model_dump(mode="json", exclude_none=True) != persisted_scope
@@ -995,11 +1161,18 @@ class ChangeSetAssemblyService:
         return retained, removed
 
     @staticmethod
-    def _entry_statement(entry: NormalizedEntryInput) -> StatementInput:
+    def _entry_statement(
+        entry: NormalizedEntryInput,
+        *,
+        request_ref: str | None = None,
+    ) -> StatementInput:
         item, _temporal = entry_facets(entry)
-        subject_refs = list(item.context_entity_refs) or [entry.evidence.source_ref]
+        evidence = entry.evidence
+        subject_refs = list(item.context_entity_refs) or (
+            [evidence.source_ref] if evidence else [request_ref] if request_ref else []
+        )
         return StatementInput(
-            statement_kind="normalized_source_entry",
+            statement_kind="normalized_source_entry" if evidence else "agent_reported_entry",
             subject_refs=subject_refs,
             predicate="normalized_temporal_entry",
             value_json=entry.model_dump(mode="json", exclude={"evidence"}, exclude_none=True),
@@ -1009,12 +1182,12 @@ class ChangeSetAssemblyService:
                 "compiler_version": COMPILER_VERSION,
             },
             interpreter_version=f"docket.normalized-entry.v{COMPILER_VERSION}",
-            import_entry_id=entry.import_entry_id,
-            source_ref=entry.evidence.source_ref,
-            source_fragment_locator=entry.evidence.source_fragment_locator,
-            source_fragment_hash=entry.evidence.source_fragment_hash,
-            extractor_identifier=entry.evidence.extractor_identifier,
-            extractor_version=entry.evidence.extractor_version,
+            import_entry_id=entry.import_entry_id if evidence else None,
+            source_ref=evidence.source_ref if evidence else None,
+            source_fragment_locator=evidence.source_fragment_locator if evidence else None,
+            source_fragment_hash=evidence.source_fragment_hash if evidence else None,
+            extractor_identifier=evidence.extractor_identifier if evidence else None,
+            extractor_version=evidence.extractor_version if evidence else None,
         )
 
     def _entry_lane(
@@ -1094,7 +1267,7 @@ class ChangeSetAssemblyService:
         self,
         *,
         changeset: ChangeSet,
-        utterance: OperatorUtterance,
+        utterance: OperatorUtterance | AuthenticatedRequest,
         actions: dict[str, dict[str, Any]],
         entries: list[dict[str, Any]],
         ownership: list[dict[str, Any]],
@@ -1120,7 +1293,7 @@ class ChangeSetAssemblyService:
             if isinstance(entry.get("statement_ref"), str)
         ]
         basis_refs = list(dict.fromkeys([utterance.ref_id, *statement_refs]))
-        if entries:
+        if entries and isinstance(utterance, OperatorUtterance):
             source_refs = sorted({str(entry["evidence"]["source_ref"]) for entry in entries})
             effect_types = sorted(
                 {
@@ -1396,7 +1569,7 @@ class ChangeSetAssemblyService:
             token=assembly_operation_token,
             argument_hash=assembly_argument_hash,
             operation_kind="stage",
-            utterance_ref=request.utterance_ref,
+            utterance_ref=request.authority_ref,
         )
         replay = self._replay(operation)
         if replay is not None:
@@ -1460,7 +1633,14 @@ class ChangeSetAssemblyService:
                 semantic_request_ref=semantic_request.ref_id,
                 authority_scope_hash=semantic_request.authority_scope_hash,
                 precondition_hash=semantic_request.current_precondition_hash,
-                execution_binding_json={"kind": "incremental_assembly"},
+                execution_binding_json={
+                    "kind": "incremental_assembly",
+                    **(
+                        {"authority_kind": "agent_request"}
+                        if isinstance(utterance, AuthenticatedRequest)
+                        else {}
+                    ),
+                },
                 idempotency_key=f"semantic-request:{semantic_request.ref_id}:changeset",
                 state="draft",
                 version=0,
@@ -1511,12 +1691,33 @@ class ChangeSetAssemblyService:
                 )
 
         if adopting:
+            if not isinstance(utterance, OperatorUtterance):
+                raise DocketError(
+                    code="draft_adoption_not_applicable",
+                    message="Agent requests do not require evidence adoption.",
+                )
             return adopt_request(
-                self, changeset=changeset, operation=operation, request=semantic_request,
-                attempt=attempt, utterance=utterance, intent_session=intent_session,
+                self,
+                changeset=changeset,
+                operation=operation,
+                request=semantic_request,
+                attempt=attempt,
+                utterance=utterance,
+                intent_session=intent_session,
             )
+        if isinstance(utterance, AuthenticatedRequest) and request.assembly_scope is not None:
+            semantic_request.selected_option_binding = {
+                "kind": "freeform_assembly",
+                "scope": request.assembly_scope.model_dump(mode="json", exclude_none=True),
+            }
+            intent_session.resolved_intent_json = dict(request.assembly_scope.resolved_intent)
         scope = self._scope(semantic_request)
         if recompiling:
+            if not isinstance(utterance, OperatorUtterance):
+                raise DocketError(
+                    code="explicit_recompile_required",
+                    message="Stage current typed inputs and observe their new revision.",
+                )
             return recompile_draft(
                 self, changeset=changeset, operation=operation, attempt=attempt,
                 utterance=utterance, intent_session=intent_session, scope=scope,
@@ -1524,7 +1725,11 @@ class ChangeSetAssemblyService:
         prior_content = None if created else self.changesets.verify_execution_revision(changeset)
         field_operation = next((op for op in request.patch.operations
                                 if isinstance(op, StageFieldEvidenceBind)), None)
-        field_proof = read_field_evidence(self.session, semantic_request.ref_id)
+        field_proof = (
+            read_field_evidence(self.session, semantic_request.ref_id)
+            if isinstance(utterance, OperatorUtterance)
+            else None
+        )
         if field_proof is not None and field_operation is not None and (
             field_proof["bindings"] != [row.model_dump(mode="json")
                                        for row in field_operation.bindings]
@@ -1547,6 +1752,9 @@ class ChangeSetAssemblyService:
             [row.model_dump(mode="json") for row in field_operation.bindings]
             if field_operation else changeset.compiler_manifest_json.get("field_evidence_input", [])
         )
+        if isinstance(utterance, AuthenticatedRequest):
+            field_operation = None
+            field_inputs = []
         allowed_mutations = set(scope.allowed_mutation_types)
         allowed_sources = set(scope.source_refs)
         allowed_targets = set(scope.target_refs)
@@ -1605,6 +1813,21 @@ class ChangeSetAssemblyService:
         for patch_operation in request.patch.operations:
             if isinstance(patch_operation, StageActionUpsert):
                 action = mutation_input_json(patch_operation.action)
+                if isinstance(utterance, AuthenticatedRequest):
+                    from docket.services.provenance_refs import ProvenanceRefService
+
+                    qualified_basis = [utterance.ref_id]
+                    for ref in action.get("basis_refs", []):
+                        if ref == utterance.ref_id:
+                            continue
+                        try:
+                            ProvenanceRefService(self.session).get(ref)
+                        except DocketError:
+                            if ref.startswith(("src_", "utt_", "stm_", "rsp_", "rec_")):
+                                continue
+                            raise
+                        qualified_basis.append(ref)
+                    action["basis_refs"] = qualified_basis
                 change_id = patch_operation.action.change_id
                 if scope.selected_entry_ids and change_id not in {
                     target.change_id
@@ -1652,18 +1875,48 @@ class ChangeSetAssemblyService:
                 unchanged += int(not existed)
             elif isinstance(patch_operation, StageNormalizedEntryUpsert):
                 entry = patch_operation.entry
-                if entry.evidence.source_ref not in allowed_sources:
+                if isinstance(utterance, OperatorUtterance) and entry.evidence is None:
+                    raise DocketError(
+                        code="historical_evidence_required",
+                        message="Preserved drafts require their original source evidence.",
+                    )
+                if (
+                    isinstance(utterance, OperatorUtterance)
+                    and entry.evidence is not None
+                    and entry.evidence.source_ref not in allowed_sources
+                ):
                     raise DocketError(
                         code="assembly_scope_violation",
                         message="Normalized entry uses a source outside the authorized scope.",
                     )
-                bind_entry_interpretation(
-                    self.session, request=semantic_request, scope=scope, entry=entry,
-                    existing_draft_entry=entry.import_entry_id in entries_by_id,
-                )
+                if isinstance(utterance, OperatorUtterance):
+                    bind_entry_interpretation(
+                        self.session,
+                        request=semantic_request,
+                        scope=scope,
+                        entry=entry,
+                        existing_draft_entry=entry.import_entry_id in entries_by_id,
+                    )
+                elif (
+                    entry.evidence is not None
+                    and self.session.scalar(
+                        select(Source).where(
+                            Source.ref_id == entry.evidence.source_ref,
+                        )
+                    )
+                    is None
+                ):
+                    entry = entry.model_copy(update={"evidence": None})
                 statement = statement_service.derive(
                     utterance.ref_id,
-                    [self._entry_statement(entry)],
+                    [
+                        self._entry_statement(
+                            entry,
+                            request_ref=utterance.ref_id
+                            if isinstance(utterance, AuthenticatedRequest)
+                            else None,
+                        )
+                    ],
                 )[0]
                 compiled_types = entry_mutation_types(entry)
                 if entry.entry_type not in scope.normalized_entry_types and not (
@@ -2061,7 +2314,7 @@ class ChangeSetAssemblyService:
             token=assembly_operation_token,
             argument_hash=assembly_argument_hash,
             operation_kind="review",
-            utterance_ref=request.utterance_ref,
+            utterance_ref=request.authority_ref,
         )
         replay = self._replay(operation)
         if replay is not None:
@@ -2315,12 +2568,17 @@ class ChangeSetAssemblyService:
         *,
         intent_session: IntentSession,
         semantic_request: SemanticRequest,
-        utterance: OperatorUtterance,
+        utterance: OperatorUtterance | AuthenticatedRequest,
     ) -> IntentTurn:
         existing = self.session.scalar(
             select(IntentTurn).where(
                 IntentTurn.intent_session_id == intent_session.id,
-                IntentTurn.utterance_ref == utterance.ref_id,
+                (
+                    IntentTurn.request_ref
+                    if isinstance(utterance, AuthenticatedRequest)
+                    else IntentTurn.utterance_ref
+                )
+                == utterance.ref_id,
             )
         )
         if existing is not None:
@@ -2328,14 +2586,17 @@ class ChangeSetAssemblyService:
         statement_refs = list(
             self.session.scalars(
                 select(InterpretedStatement.ref_id).where(
-                    InterpretedStatement.utterance_id == utterance.id
+                    InterpretedStatement.authenticated_request_ref == utterance.ref_id
+                    if isinstance(utterance, AuthenticatedRequest)
+                    else InterpretedStatement.utterance_id == utterance.id
                 )
             )
         )
         turn = IntentTurn(
             intent_session_id=intent_session.id,
             intent_session_ref=intent_session.ref_id,
-            utterance_ref=utterance.ref_id,
+            utterance_ref=utterance.ref_id if isinstance(utterance, OperatorUtterance) else None,
+            request_ref=utterance.ref_id if isinstance(utterance, AuthenticatedRequest) else None,
             statement_refs=statement_refs,
             context_refs=list(intent_session.trusted_context_refs),
             tool_call_refs=[],
@@ -2365,11 +2626,17 @@ class ChangeSetAssemblyService:
     def commit(
         self,
         *,
-        utterance_ref: str,
+        utterance_ref: str | None = None,
+        request_ref: str | None = None,
         request_key: str,
         assembly_operation_token: str,
         assembly_argument_hash: str,
     ) -> dict[str, Any]:
+        utterance_ref = request_ref or utterance_ref
+        if utterance_ref is None:
+            raise DocketError(
+                code="request_authority_required", message="Resume an authenticated request."
+            )
         operation, execution = self._operation(
             token=assembly_operation_token,
             argument_hash=assembly_argument_hash,
@@ -2478,7 +2745,12 @@ class ChangeSetAssemblyService:
                 changeset_ref=changeset.ref_id,
                 expected_version=changeset.version,
                 idempotency_key=changeset.idempotency_key,
-                authority_utterance_ref=utterance.ref_id,
+                authority_utterance_ref=utterance.ref_id
+                if isinstance(utterance, OperatorUtterance)
+                else None,
+                authority_request_ref=utterance.ref_id
+                if isinstance(utterance, AuthenticatedRequest)
+                else None,
             )
         )
         semantic_request.authority_availability = "consumed_committed"

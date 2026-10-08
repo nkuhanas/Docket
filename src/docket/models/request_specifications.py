@@ -21,9 +21,10 @@ class SemanticRequestSpecification(Base):
     __tablename__ = "semantic_request_specifications"
     __table_args__ = (
         CheckConstraint("version > 0", name="ck_request_specifications_version"),
-        CheckConstraint("schema_version = 1", name="ck_request_specifications_schema"),
+        CheckConstraint("schema_version IN (1, 2)", name="ck_request_specifications_schema"),
         CheckConstraint(
-            "interpretation_state = 'pending_evidence_validation'",
+            "(schema_version = 1 AND interpretation_state = 'pending_evidence_validation') OR "
+            "(schema_version = 2 AND interpretation_state = 'agent_reported_interpretation')",
             name="ck_request_specifications_interpretation",
         ),
     )

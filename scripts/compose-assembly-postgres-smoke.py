@@ -1352,7 +1352,7 @@ def test_direct_request_adoption_serializes_and_preserves_proof(
     else:
         raise AssertionError("Downgrade discarded adoption evidence")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007a1b2"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007b2c3"
         assert session.get(RequestAssemblyAdoption, request_ref) is not None
 
 
@@ -2244,7 +2244,7 @@ def test_trace_history_survives_call_one_hundred_and_blocks_lossy_downgrade(
     else:
         raise AssertionError("Downgrade should preserve the longer trace by refusing to proceed")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007a1b2"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007b2c3"
         assert session.scalar(select(TraceExecutionSegment.last_ordinal).where(
             TraceExecutionSegment.id == trace_id
         )) == 103
@@ -2547,7 +2547,7 @@ def test_request_specifications_are_immutable_and_block_lossy_downgrade(
     else:
         raise AssertionError("Downgrade discarded immutable request specifications")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007a1b2"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007b2c3"
         assert session.get(SemanticRequestSpecification, (key["ref"], key["version"])) is not None
 
 
@@ -2585,7 +2585,7 @@ def test_initial_source_interpretations_are_immutable_across_connections(
     else:
         raise AssertionError("Downgrade discarded initial source interpretations")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007a1b2"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007b2c3"
         interpreted = read_entry_interpretation(
             session, request_ref=key["ref"], entry_id=key["entry"],
         )
@@ -3076,14 +3076,52 @@ def test_authenticated_request_attribution_is_retained(factory: sessionmaker[Ses
                 pass
             else:
                 raise AssertionError("PostgreSQL rewrote authenticated request attribution")
-        migration = ScriptDirectory.from_config(Config("alembic.ini")).get_revision("20261007a1b2")
+        from docket.schemas.assembly import StageChangesInput
+
+        with factory.begin() as session:
+            root = AgentRequestService(session).require(first, permission="stage")
+            request = StageChangesInput.model_validate({
+                "request_ref": first, "request_key": root.request_key,
+                "assembly_scope": {
+                    "resolved_intent": {"intent": "track requested item"},
+                    "allowed_mutation_types": ["item_create"], "planned_create_types": ["item"],
+                },
+                "patch": {"operations": [{"operation": "action_upsert", "action": {
+                    "change_id": "agent-item", "mutation_type": "item_create", "action": "create",
+                    "object_type": "item", "affected_fields": ["title"],
+                    "create_spec": {"title": "Reported work", "kind": "test.agent"},
+                }}]},
+            })
+            digest = sha256_json(request.model_dump(mode="json", exclude_none=True))
+            admission = ChangeSetAssemblyAdmissionService(session).admit_agent(
+                request_ref=first, execution_key="pg-foreground", operation_key="stage",
+                tool_name="docket_stage_changes", argument_hash=digest,
+            )
+            staged = ChangeSetAssemblyService(session).stage(
+                request, assembly_operation_token=admission["assembly_operation_token"],
+                assembly_argument_hash=digest,
+            )
+            assert staged["disposition"] == "ready_to_commit", staged
+        with factory.begin() as session:
+            root = AgentRequestService(session).require(first, permission="commit")
+            admission = ChangeSetAssemblyAdmissionService(session).admit_agent(
+                request_ref=first, execution_key="pg-foreground", operation_key="commit",
+                tool_name="docket_commit_changeset", argument_hash="c" * 64,
+            )
+            committed = ChangeSetAssemblyService(session).commit(
+                request_ref=first, request_key=root.request_key,
+                assembly_operation_token=admission["assembly_operation_token"],
+                assembly_argument_hash="c" * 64,
+            )
+            assert committed["disposition"] == "committed", committed
+        migration = ScriptDirectory.from_config(Config("alembic.ini")).get_revision("20261007b2c3")
         assert migration is not None
         try:
             with (factory.kw["bind"].begin() as connection,
                   Operations.context(MigrationContext.configure(connection))):
                 migration.module.downgrade()
         except RuntimeError as exc:
-            assert "discard authority" in str(exc)
+            assert "discard evidence" in str(exc) or "discard authority" in str(exc)
         else:
             raise AssertionError("Downgrade discarded request authority")
     finally:
