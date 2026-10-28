@@ -1,10 +1,17 @@
 # Private Docket plugin setup
 
-This guide is a preparation handoff. The backend, DNS, ingress, Auth0 and plugin
+This guide is a preparation handoff. The backend, DNS, ingress and plugin
 connection have not been deployed or configured by the local implementation.
 Keep the current production interface until native linking and notification
 acceptance pass. Canonical plugin writes remain disabled pending the foreground
 authority contract.
+
+The Operator selected the Native/public PKCE connection and supplied the Docket
+client ID `H92evvENOutMDq3Bq1qyRzMOrHiL7qpB` on October 28, 2026. The existing
+tenant is `dev-yo4e5wrtdnuusefg.us.auth0.com`. Its public discovery document and
+JWKS were rechecked: the issuer matches, `none` and PKCE `S256` are advertised,
+and RSA signing keys are available. This public check does not inspect the new
+client's API grant, rotation setting, login connection or callback registration.
 
 ## Operator action: create the Docket OAuth connection
 
@@ -43,18 +50,29 @@ credential extraction or management token is needed in chat.
 
 ## Prepared runtime configuration
 
-Use the following nonsecret settings only after the corresponding account and
-network configuration exists:
+The selected nonsecret settings are prepared below. Apply them through the
+authorized deployment path after the account and network configuration exists.
+The Operator selected a Hermes-free deployment, including retirement of its
+triage cron. Inference and scheduling belong to the connected agent; Docket
+retains its inbox, bounded triage workflow, canonical state and Google adapters.
+The target configuration disables the old adapter:
 
 ```dotenv
 DOCKET_PLUGIN_ENABLED=true
+DOCKET_DISCORD_ADAPTER_ENABLED=false
 DOCKET_PLUGIN_PUBLIC_ORIGIN=https://docket.you
-DOCKET_PLUGIN_OAUTH_ISSUER=https://YOUR_AUTH0_TENANT/
-DOCKET_PLUGIN_OAUTH_JWKS_URL=https://YOUR_AUTH0_TENANT/.well-known/jwks.json
-DOCKET_PLUGIN_OAUTH_CLIENT_IDS=["NEW_DOCKET_NATIVE_CLIENT_ID"]
+DOCKET_PLUGIN_OAUTH_ISSUER=https://dev-yo4e5wrtdnuusefg.us.auth0.com/
+DOCKET_PLUGIN_OAUTH_JWKS_URL=https://dev-yo4e5wrtdnuusefg.us.auth0.com/.well-known/jwks.json
+DOCKET_PLUGIN_OAUTH_CLIENT_IDS=["H92evvENOutMDq3Bq1qyRzMOrHiL7qpB"]
 DOCKET_PLUGIN_READ_SCOPE=docket.read
 DOCKET_PLUGIN_EVENTS_SCOPE=docket.events
 ```
+
+The ignored `.runtime/plugin/native-oauth.env` contains this candidate overlay
+and preserves the current Operator identity explicitly.
+It is not loaded automatically and has not changed production `.env`. No OAuth
+client secret is needed. The exact callback URI still comes from the eventual
+ChatGPT connection, after the public endpoint is available.
 
 Retain the current Operator identity when disconnecting Discord. Set
 `DOCKET_OPERATOR_REF` explicitly to that same historical identity; do not invent
@@ -121,10 +139,11 @@ projections create inbox records without Discord outbox work. Keep
 retire a running Hermes gateway or its cron jobs; production cutover requires a
 separate drained deployment after native acceptance. Restricted Hermes triage
 can remain during the transition, with its separate non-authoritative credential.
-Keep the adapter enabled while relying on its existing gateway-managed triage
-cron. Selecting native-only deployment stops that gateway and its cron; a
-replacement triage executor is a separate transition step. Ingestion can continue
-staging sources meanwhile, and committed reminders/provider work remain active.
+The Operator explicitly chose to retire the gateway-managed triage cron as well.
+A connected Dot, another scheduled MCP client or a local inference client will
+provide triage execution. Docket does not select or host an inference provider.
+Ingestion can stage sources while that client is being connected, and committed
+reminders/provider work remain active.
 
 The normal deployment script selects checks from this setting. A missing setting
 keeps the existing adapter. An explicit native-only deployment retains CI,
