@@ -119,3 +119,15 @@ Ruff and strict mypy across 172 source files. `scripts/docket compose-smoke`
 passed the legacy workflow, PostgreSQL checks, empty migration round trip and
 native-only startup. No production deployment, public DNS/tunnel change,
 Auth0 enrollment or installed-plugin verification has occurred.
+
+On October 28 the Operator selected the Native client and supplied
+`H92evvENOutMDq3Bq1qyRzMOrHiL7qpB`. The existing tenant's public discovery and
+signing keys were revalidated for the exact issuer/JWKS, public token exchange,
+PKCE `S256` and RSA signing keys. The selected client is recorded in the setup
+guide and an ignored candidate environment overlay. The Operator clarified that
+the target retires Hermes entirely, including triage; the candidate disables the
+adapter. Inference and scheduling will belong to the connected MCP client, using
+Docket's inbox and restricted intelligence workflow. This records configuration
+preparation only: no live
+environment, approved-owner registry, callback, API grant or hosted connection
+was changed. Application-specific settings remain unverified until linking.
