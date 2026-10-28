@@ -32,6 +32,12 @@ and a separate application; Docket must not accept Aphelion's audience or client
    callback URI displayed by that connection** in Auth0. Do not guess it or use
    a wildcard. Complete linking and verify `docket_get_profile` in Dot's own task.
 
+The ChatGPT connection uses the new predefined client ID, public token-endpoint
+authentication (`none`) and scopes `docket.read docket.events`; it needs no client
+secret. The events permission can be omitted for a connection that only reads.
+Auth0 authenticates ChatGPT to Docket. Existing Google OAuth credentials remain
+private to Docket's provider adapters and are not passed to the plugin or Auth0.
+
 These provider-account steps need the Operator's signed-in Auth0 dashboard. No
 credential extraction or management token is needed in chat.
 
@@ -115,6 +121,20 @@ projections create inbox records without Discord outbox work. Keep
 retire a running Hermes gateway or its cron jobs; production cutover requires a
 separate drained deployment after native acceptance. Restricted Hermes triage
 can remain during the transition, with its separate non-authoritative credential.
+Keep the adapter enabled while relying on its existing gateway-managed triage
+cron. Selecting native-only deployment stops that gateway and its cron; a
+replacement triage executor is a separate transition step. Ingestion can continue
+staging sources meanwhile, and committed reminders/provider work remain active.
+
+The normal deployment script selects checks from this setting. A missing setting
+keeps the existing adapter. An explicit native-only deployment retains CI,
+execution drain, backup and migration guards, quiesces an existing gateway's
+controls, stops Hermes/Discord ingress and starts only Docket. Later native-only
+deployments require no gateway, ingress password or Hermes service credentials.
+Postdeploy verifies the private OAuth discovery/anonymous-denial boundary; actual
+public ingress and signed-in acceptance still require the connection checks below.
+The historical clean-reset workflow is restricted to the legacy adapter; use
+forward migrations for this transition.
 
 Run both repository gates, obtain green CI and use the normal authorized backup
 and deployment path. Then verify public anonymous denial, resource discovery,

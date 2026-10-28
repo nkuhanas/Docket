@@ -178,6 +178,16 @@ No caller-supplied role, request reference, source content, or operation token
 grants background authority. Optional capture can fail; attribution, audit,
 current permission, versions, and atomic provider intent cannot.
 
+The optional native OAuth app is isolated under `/plugin/`, with public ingress
+allowlisting only MCP, protected-resource discovery and its connection page. Its
+`plugin` contract has 21 read tools (the existing 18, profile and inbox list/get)
+plus modern protocol Events methods. Approved OAuth principals can read and,
+with a separate permission, manage notification subscriptions; they cannot admit
+interactive requests or stage/commit/resolve canonical work. Chat/session headers
+and event-triggered tasks do not prove foreground authority. Preserve this gate
+until a verified host contract or explicit Operator amendment resolves it.
+See `docs/plugin-setup.md` and `docs/plugin-integration-verification.md`.
+
 When changing a tool:
 
 1. Change the Pydantic/FastMCP schema and service behavior.
