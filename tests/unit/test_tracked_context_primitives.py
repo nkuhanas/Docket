@@ -36,8 +36,9 @@ def _ref(prefix: str) -> str:
 
 
 def test_clean_public_reference_registry_has_one_meaning_per_prefix() -> None:
-    assert len(PUBLIC_REF_TYPES) == 46
-    assert len(PUBLIC_REF_PREFIX_BY_TYPE) == 46
+    assert len(PUBLIC_REF_TYPES) == 47
+    assert len(PUBLIC_REF_PREFIX_BY_TYPE) == 47
+    assert prefix_for_type("OAuthPrincipal") == "prn"
     assert prefix_for_type("AuthenticatedRequest") == "req"
     assert prefix_for_type("ConversationRecord") == "rec"
     assert frozenset(PUBLIC_REF_TYPES) == PUBLIC_REF_PREFIXES

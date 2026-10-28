@@ -35,7 +35,7 @@ async def require_interactive_service(
             raise HTTPException(status_code=401, detail="Workload credentials must be distinct")
     principal = AgentPrincipal(
         principal_ref="agent:interactive",
-        operator_ref=f"operator:{settings.operator_discord_user_id}",
+        operator_ref=settings.canonical_operator_ref,
         role="interactive",
         permissions=frozenset({"read", "stage", "commit", "resolve_conflict"}),
         enabled=settings.interactive_agent_enabled,

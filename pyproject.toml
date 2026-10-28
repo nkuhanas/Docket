@@ -19,6 +19,7 @@ dependencies = [
   "psycopg[binary]==3.3.4",
   "pydantic==2.13.4",
   "pydantic-settings==2.14.2",
+  "PyJWT[crypto]==2.15.0",
   "pypdf==6.16.2",
   "sqlalchemy==2.0.51",
   "structlog==26.1.0",
@@ -41,6 +42,7 @@ docket-calendar-recovery = "docket.calendar_recovery_cli:main"
 docket-discord-ingress = "docket.discord_ingress:main"
 docket-provision-ingress-role = "docket.ingress_credentials:main"
 docket-google-auth = "docket.google_oauth_cli:main"
+docket-plugin-auth = "docket.plugin_auth_cli:main"
 docket-production-config = "docket.production_config:main"
 
 [tool.hatch.build.targets.wheel]

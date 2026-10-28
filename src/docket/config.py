@@ -3,6 +3,7 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -31,6 +32,20 @@ class Settings(BaseSettings):
         alias="DOCKET_DATABASE_URL",
     )
     timezone: str = Field(default="America/Los_Angeles", alias="DOCKET_TIMEZONE")
+    operator_ref: str | None = Field(default=None, alias="DOCKET_OPERATOR_REF", max_length=255)
+    discord_adapter_enabled: bool = Field(default=True, alias="DOCKET_DISCORD_ADAPTER_ENABLED")
+    plugin_enabled: bool = Field(default=False, alias="DOCKET_PLUGIN_ENABLED")
+    plugin_public_origin: str = Field(
+        default="https://docket.you", alias="DOCKET_PLUGIN_PUBLIC_ORIGIN"
+    )
+    plugin_oauth_issuer: str | None = Field(default=None, alias="DOCKET_PLUGIN_OAUTH_ISSUER")
+    plugin_oauth_jwks_url: str | None = Field(default=None, alias="DOCKET_PLUGIN_OAUTH_JWKS_URL")
+    plugin_oauth_client_ids: list[str] = Field(
+        default_factory=list, alias="DOCKET_PLUGIN_OAUTH_CLIENT_IDS"
+    )
+    plugin_read_scope: str = Field(default="docket.read", alias="DOCKET_PLUGIN_READ_SCOPE")
+    plugin_events_scope: str = Field(default="docket.events", alias="DOCKET_PLUGIN_EVENTS_SCOPE")
+
     calendar_reads_enabled: bool = Field(default=False, alias="DOCKET_CALENDAR_READS_ENABLED")
     external_writes_enabled: bool = Field(default=False, alias="DOCKET_EXTERNAL_WRITES_ENABLED")
     auto_create_schema: bool = Field(default=False, alias="DOCKET_AUTO_CREATE_SCHEMA")
@@ -303,6 +318,11 @@ class Settings(BaseSettings):
     google_calendar_id: str = Field(default="docket-smoke-calendar", alias="GOOGLE_CALENDAR_ID")
     google_account_external_id: str = Field(default="primary", alias="GOOGLE_ACCOUNT_EXTERNAL_ID")
 
+    @property
+    def canonical_operator_ref(self) -> str:
+        # An existing deployment can retain its genuine historical identity.
+        return self.operator_ref or f"operator:{self.operator_discord_user_id}"
+
     @field_validator("log_level")
     @classmethod
     def normalize_log_level(cls, value: str) -> str:
@@ -322,15 +342,41 @@ class Settings(BaseSettings):
         if self.environment is Environment.PRODUCTION:
             if self.auto_create_schema:
                 raise ValueError("DOCKET_AUTO_CREATE_SCHEMA must be false in production")
-            for identifier in (
+            for identifier in (() if not self.discord_adapter_enabled else (
                 self.operator_discord_user_id,
                 self.discord_guild_id,
                 self.chat_channel_id,
                 self.queue_channel_id,
                 self.system_channel_id,
-            ):
+            )):
                 if identifier.startswith("000000"):
                     raise ValueError("Production cannot use smoke Discord identifiers")
+            if not self.discord_adapter_enabled and not self.operator_ref:
+                raise ValueError("Production without Discord requires DOCKET_OPERATOR_REF")
+        if self.plugin_enabled:
+            origin = urlsplit(self.plugin_public_origin)
+            issuer = urlsplit(self.plugin_oauth_issuer or "")
+            jwks = urlsplit(self.plugin_oauth_jwks_url or "")
+            for name, value in (("origin", origin), ("issuer", issuer), ("JWKS", jwks)):
+                if (
+                    value.scheme != "https" or not value.hostname
+                    or value.username or value.password or value.query or value.fragment
+                ):
+                    raise ValueError(f"Plugin {name} must be a configured HTTPS URL")
+            if origin.path not in ("", "/"):
+                raise ValueError("Plugin public origin cannot contain a path")
+            if jwks.netloc != issuer.netloc:
+                raise ValueError("Plugin JWKS must use the configured issuer's origin")
+            if not self.plugin_oauth_client_ids or any(
+                not value or len(value) > 256 for value in self.plugin_oauth_client_ids
+            ):
+                raise ValueError("Plugin requires explicitly allowed OAuth client IDs")
+            if (
+                not self.plugin_read_scope or not self.plugin_events_scope
+                or any(c.isspace() for c in self.plugin_read_scope + self.plugin_events_scope)
+                or self.plugin_read_scope == self.plugin_events_scope
+            ):
+                raise ValueError("Plugin read/events scopes must be distinct single scope names")
         if self.backup_enabled and (
             self.backup_age_recipient is None or not self.backup_age_recipient.startswith("age1")
         ):

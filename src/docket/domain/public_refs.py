@@ -17,6 +17,7 @@ class PublicRefDefinition:
 
 
 _DEFINITIONS = (
+    PublicRefDefinition("prn", "OAuthPrincipal"),
     PublicRefDefinition("req", "AuthenticatedRequest"),
     PublicRefDefinition("rec", "ConversationRecord"),
     PublicRefDefinition("utt", "OperatorUtterance"),

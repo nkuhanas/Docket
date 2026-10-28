@@ -33,6 +33,7 @@ from calendar_sync_checks import (
 from calendar_update_checks import (
     test_calendar_update_binding_pin_serializes_with_provider_observations,
 )
+from plugin_oauth_checks import test_oauth_identity_is_retained_in_postgresql
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 from sqlalchemy import func, select, text
@@ -1352,7 +1353,9 @@ def test_direct_request_adoption_serializes_and_preserves_proof(
     else:
         raise AssertionError("Downgrade discarded adoption evidence")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007c3d4"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == (
+            ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
+        )
         assert session.get(RequestAssemblyAdoption, request_ref) is not None
 
 
@@ -2244,7 +2247,9 @@ def test_trace_history_survives_call_one_hundred_and_blocks_lossy_downgrade(
     else:
         raise AssertionError("Downgrade should preserve the longer trace by refusing to proceed")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007c3d4"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == (
+            ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
+        )
         assert session.scalar(select(TraceExecutionSegment.last_ordinal).where(
             TraceExecutionSegment.id == trace_id
         )) == 103
@@ -2547,7 +2552,9 @@ def test_request_specifications_are_immutable_and_block_lossy_downgrade(
     else:
         raise AssertionError("Downgrade discarded immutable request specifications")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007c3d4"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == (
+            ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
+        )
         assert session.get(SemanticRequestSpecification, (key["ref"], key["version"])) is not None
 
 
@@ -2585,7 +2592,9 @@ def test_initial_source_interpretations_are_immutable_across_connections(
     else:
         raise AssertionError("Downgrade discarded initial source interpretations")
     with factory() as session:
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007c3d4"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == (
+            ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
+        )
         interpreted = read_entry_interpretation(
             session, request_ref=key["ref"], entry_id=key["entry"],
         )
@@ -3250,6 +3259,7 @@ def main() -> None:
         test_calendar_update_binding_pin_serializes_with_provider_observations,
         test_mixed_field_evidence_recovery_survives_connections,
         test_authenticated_request_attribution_is_retained,
+        test_oauth_identity_is_retained_in_postgresql,
     )
     for check in checks:
         check(factory)

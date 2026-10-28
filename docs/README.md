@@ -7,6 +7,8 @@ Start here when operating or changing the deployed stack:
 * [Authority and authentication verification](authority-authentication-verification.md) —
   October 7 request attribution, nonblocking conversation capture, caller roles,
   and development authorization.
+* [Native plugin integration](plugin-integration-verification.md) — OAuth owner
+  enrollment, the foreground-authority boundary and implementation readiness.
 * [Interaction correction verification](interaction-correction-verification.md) —
   September 11 candidate registration, sign-off gate, and implementation boundary.
 * [Event field patching verification](event-field-patching-verification.md) —
