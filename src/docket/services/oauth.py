@@ -125,9 +125,12 @@ class OAuthVerifier:
             permissions = {"read"}
             if self.settings.plugin_events_scope in scopes:
                 permissions.add("events")
+            if self.settings.plugin_triage_scope in scopes:
+                permissions.add("triage")
             # A connected OAuth account proves no foreground task identity.
             return AgentPrincipal(
-                principal_ref=row.ref_id, operator_ref=row.operator_ref, role="read_only",
+                principal_ref=row.ref_id, operator_ref=row.operator_ref,
+                role="triage" if "triage" in permissions else "read_only",
                 permissions=frozenset(permissions), integration="oauth",
                 expires_at=datetime.fromtimestamp(claims["exp"], UTC),
                 grant_epoch=row.valid_after,
@@ -138,7 +141,9 @@ class OAuthPrincipalService:
     def __init__(self, session: Session, settings: Settings) -> None:
         self.session, self.settings = session, settings
 
-    def approve(self, subject: str, *, events: bool = False) -> OAuthPrincipal:
+    def approve(
+        self, subject: str, *, events: bool = False, triage: bool = False,
+    ) -> OAuthPrincipal:
         issuer = self.settings.plugin_oauth_issuer
         if not issuer or not subject.strip() or len(subject) > 512 or subject.endswith("@clients"):
             raise ValueError("A configured issuer and user subject are required")
@@ -148,6 +153,8 @@ class OAuthPrincipalService:
         scopes = [self.settings.plugin_read_scope]
         if events:
             scopes.append(self.settings.plugin_events_scope)
+        if triage:
+            scopes.append(self.settings.plugin_triage_scope)
         if row is None:
             row = OAuthPrincipal(
                 issuer=issuer, subject=subject, operator_ref=self.settings.canonical_operator_ref,

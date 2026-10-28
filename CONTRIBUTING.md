@@ -73,10 +73,10 @@ the restart and do not block it.
 
 For a configured native-only deployment (`DOCKET_DISCORD_ADAPTER_ENABLED=false`),
 the same path retains drain/backup/migration checks, retires the existing drained
-adapter, starts only Docket and checks its OAuth boundary. Hermes, its triage cron
-and Discord ingress are then absent. Leave the adapter enabled for an overlap
-deployment until native linking/notifications and the replacement triage executor
-have passed acceptance; see [plugin setup](docs/plugin-setup.md).
+adapter, starts only Docket and checks its OAuth boundary. Hermes, its triage cron,
+Discord ingress and SearXNG are then absent. The Operator selected this target;
+triage inference and scheduling belong to the connected MCP agent. Verify the
+scoped triage/inbox workflow with that client; see [plugin setup](docs/plugin-setup.md).
 
 With the adapter enabled, stable Discord ingress is excluded from normal deployment.
 Deploy ingress-only code with `scripts/docket deploy-ingress`; that path drains

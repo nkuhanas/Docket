@@ -17,6 +17,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--subject", required=True, help="Exact provider user subject, never a token"
     )
     approve.add_argument("--events", action="store_true")
+    approve.add_argument("--triage", action="store_true")
     approve.add_argument("--execute", action="store_true")
     revoke = commands.add_parser("revoke", help="Revoke an approved public principal ref")
     revoke.add_argument("principal_ref")
@@ -31,7 +32,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         with session_scope() as session:
             service = OAuthPrincipalService(session, settings)
             row = (
-                service.approve(arguments.subject, events=arguments.events)
+                service.approve(arguments.subject, events=arguments.events, triage=arguments.triage)
                 if arguments.command == "approve" else service.revoke(arguments.principal_ref)
             )
             receipt = {"principal_ref": row.ref_id, "enabled": row.enabled, "scopes": row.scopes}

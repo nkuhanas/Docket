@@ -24,6 +24,9 @@ def configured(**updates):
     {"DOCKET_PLUGIN_PUBLIC_ORIGIN": "https://docket.you/private"},
     {"DOCKET_PLUGIN_EVENTS_SCOPE": "docket.read"},
     {"DOCKET_PLUGIN_READ_SCOPE": "read write"},
+    {"DOCKET_PLUGIN_TRIAGE_SCOPE": "docket.read"},
+    {"DOCKET_PLUGIN_TRIAGE_SCOPE": "docket.events"},
+    {"DOCKET_PLUGIN_TRIAGE_SCOPE": "triage write"},
 ])
 def test_plugin_configuration_rejects_incomplete_or_unsafe_connection(updates):
     with pytest.raises(ValidationError):

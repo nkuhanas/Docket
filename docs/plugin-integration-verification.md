@@ -131,3 +131,33 @@ Docket's inbox and restricted intelligence workflow. This records configuration
 preparation only: no live
 environment, approved-owner registry, callback, API grant or hosted connection
 was changed. Application-specific settings remain unverified until linking.
+
+The Operator's subsequent clarification removes Hermes entirely from the target,
+including its inference and triage cron. Docket is the durable service and Google
+adapter; the connected MCP client selects inference and scheduling. Contract v47
+exposes 24 native tools: 21 reads plus the three existing bounded intelligence
+actions. Local owner approval and token scope must both grant `docket.triage`.
+Even a fully permitted triage client cannot admit `req_`, stage/commit canonical
+work, resolve conflicts, create policy or formulate provider operations.
+
+`docket.triage.ready` is the fifth event definition. New source staging creates
+its notification atomically, without message text in the payload. A bounded
+metadata-only sweep exposes backlog and expired claims and makes progress across
+pages. The sweep never selects or invokes a model. Claims bind an approved OAuth
+principal and claim generation; borrowed claims and old contexts with newer
+tokens are rejected. Concurrent analysis completion locks the run/source and
+creates one intelligence result. No historical source or authority was backfilled.
+
+Native-only deployment stops Hermes, Discord ingress and SearXNG. SearXNG now
+belongs to the explicit legacy Compose profile rather than default startup.
+The prepared native overlay disables the old interactive credential as well.
+The restricted private triage credential remains available to local MCP clients
+without a gateway. Actual Dot/local model behavior and user-selected schedules
+remain hosted-client acceptance steps, separate from deterministic server tests.
+
+Agent-neutral triage validation passed `scripts/docket check`: 1,088 tests,
+Ruff and strict mypy across 173 source files. The isolated Compose smoke passed,
+including PostgreSQL ready-work deduplication, concurrent analysis completion and
+native-only startup with no gateway credentials. Native correlation-token rejection
+now occurs before any gateway signing-key access. No public endpoint or production
+configuration has been changed.

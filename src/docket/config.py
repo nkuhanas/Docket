@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     )
     plugin_read_scope: str = Field(default="docket.read", alias="DOCKET_PLUGIN_READ_SCOPE")
     plugin_events_scope: str = Field(default="docket.events", alias="DOCKET_PLUGIN_EVENTS_SCOPE")
+    plugin_triage_scope: str = Field(default="docket.triage", alias="DOCKET_PLUGIN_TRIAGE_SCOPE")
 
     calendar_reads_enabled: bool = Field(default=False, alias="DOCKET_CALENDAR_READS_ENABLED")
     external_writes_enabled: bool = Field(default=False, alias="DOCKET_EXTERNAL_WRITES_ENABLED")
@@ -371,12 +372,11 @@ class Settings(BaseSettings):
                 not value or len(value) > 256 for value in self.plugin_oauth_client_ids
             ):
                 raise ValueError("Plugin requires explicitly allowed OAuth client IDs")
-            if (
-                not self.plugin_read_scope or not self.plugin_events_scope
-                or any(c.isspace() for c in self.plugin_read_scope + self.plugin_events_scope)
-                or self.plugin_read_scope == self.plugin_events_scope
-            ):
-                raise ValueError("Plugin read/events scopes must be distinct single scope names")
+            scopes = (self.plugin_read_scope, self.plugin_events_scope, self.plugin_triage_scope)
+            if any(not value or any(c.isspace() for c in value) for value in scopes) or len(
+                set(scopes)
+            ) != len(scopes):
+                raise ValueError("Plugin scopes must be distinct single scope names")
         if (self.environment is Environment.PRODUCTION
                 and not self.discord_adapter_enabled and not self.plugin_enabled):
             raise ValueError("Production without Discord requires the native notification inbox")

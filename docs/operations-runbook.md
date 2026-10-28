@@ -30,7 +30,8 @@ state. The isolated triage profile exposes four non-authoritative tools;
 `docket_get_attention_case` is the sole shared read.
 
 The optional native plugin facade at `/plugin/mcp/` has a separate OAuth boundary
-and 21 read tools, plus modern MCP Events subscription methods. Public ingress
+and 24 tools: 21 reads and three bounded triage tools requiring `docket.triage`,
+plus modern MCP Events subscription methods. Public ingress
 maps only its MCP/discovery/connection paths to `docket.you`; it never publishes
 the service-authenticated interactive or triage endpoint. Native OAuth does not
 admit `req_` or canonical mutations. See [plugin setup](plugin-setup.md) for owner
@@ -41,8 +42,11 @@ an explicit false value, production requires the enabled native inbox and a
 preserved `DOCKET_OPERATOR_REF`. New reminders, attention and briefs avoid Discord
 outbox work. The authorized deployment path drains and backs up before retiring
 the old gateway/ingress; postdeploy then verifies Docket's native boundary without
-requiring Hermes. This also stops gateway-managed triage cron, so retain the
-adapter during overlap if that executor is still needed. No transition resets
+requiring Hermes. The Operator's selected target retires its triage cron and
+SearXNG as well; inference and scheduling belong to the connected agent. Poll
+the inbox or subscribe to `docket.triage.ready`, then use the scoped claim/context
+workflow. Native configuration disables the legacy interactive credential.
+No transition resets
 canonical data or grants background mutation authority.
 
 The principal public vocabulary is:

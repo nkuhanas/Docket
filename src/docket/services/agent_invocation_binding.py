@@ -34,6 +34,8 @@ class AgentInvocationBinding(BaseModel):
 def request_context(token: Any, *, tool_name: str, argument_hash: str) -> AgentCallContext:
     principal = require_principal("read")
     try:
+        if principal.integration != "service" or principal.role != "interactive":
+            raise ValueError("Interactive service authentication is required")
         if not isinstance(token, str) or not 1 <= len(token) <= 4096:
             raise ValueError("binding size")
         encoded, signature = token.split(".")

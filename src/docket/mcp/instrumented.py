@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.applications import Starlette
 
-from docket.agent_auth import agent_call_context, require_principal
+from docket.agent_auth import TRIAGE_WORK_TOOLS, agent_call_context, require_principal
 from docket.database import session_scope
 from docket.domain.canonical import sha256_json
 from docket.domain.enums import OutboxStatus
@@ -560,9 +560,7 @@ class ProvenanceMCP(MCPServer[Any]):
                         "commit" if name == "docket_commit_changeset"
                         else "resolve_conflict" if name == "docket_resolve_conflict"
                         else "stage" if name in INTERACTIVE_AUTHORITY_TOOLS
-                        else "triage" if name in {
-                            "docket_submit_triage_analysis", "docket_apply_existing_suppression",
-                        } else "read"
+                        else "triage" if name in TRIAGE_WORK_TOOLS else "read"
                     )
                     require_principal(permission)
                     arguments = {

@@ -36,5 +36,6 @@ def test_skill_and_server_contract_share_the_native_boundary():
     metadata = yaml.safe_load(text.split("---", 2)[1])
     assert metadata["name"] == "docket"
     assert metadata["description"]
-    assert "read-only" in text
+    assert "non-authoritative triage" in text
+    assert "docket.triage" in text
     assert (PACKAGE / "contracts" / "plugin.md").read_text() == render_contract("plugin")

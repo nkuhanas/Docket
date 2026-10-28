@@ -2,14 +2,14 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "docket",
   "version": "0.1.0",
-  "description": "Read durable personal operations and receive Docket notifications.",
+  "description": "Read personal operations, triage bounded evidence and receive inbox notifications.",
   "author": { "name": "Docket" },
   "extensions": {
     "com.openai": {
       "interface": {
         "displayName": "Docket",
         "shortDescription": "Personal operations",
-        "longDescription": "Read your Docket context, attention and delivery history through an approved private connection. Native canonical writes remain unavailable until foreground authority is established.",
+        "longDescription": "Read Docket context and run explicitly permitted bounded triage with your chosen agent and model. Receive inbox notifications and inspect delivery history. Canonical writes require foreground authority.",
         "developerName": "Docket",
         "category": "Productivity",
         "capabilities": ["Interactive"],

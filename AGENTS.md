@@ -173,20 +173,30 @@ executable mutation templates or canonical effects. The agent stages answered in
 guarded ChangeSet service, not an escape from authority or occurrence checks.
 
 Interactive, triage, and optional read-only callers use distinct credentials.
-Read-only callers see 18 read tools on `/mcp/`; triage uses `/triage-mcp/` only.
+Read-only service callers see 18 read tools on `/mcp/`; the private triage
+credential uses `/triage-mcp/` only.
 No caller-supplied role, request reference, source content, or operation token
 grants background authority. Optional capture can fail; attribution, audit,
 current permission, versions, and atomic provider intent cannot.
 
 The optional native OAuth app is isolated under `/plugin/`, with public ingress
 allowlisting only MCP, protected-resource discovery and its connection page. Its
-`plugin` contract has 21 read tools (the existing 18, profile and inbox list/get)
-plus modern protocol Events methods. Approved OAuth principals can read and,
-with a separate permission, manage notification subscriptions; they cannot admit
+`plugin` contract has 24 tools: 21 reads (the existing 18, profile and inbox
+list/get), plus three bounded triage tools requiring `docket.triage`. Events
+subscription methods require a separate permission. Triage claims bind the
+approved principal and claim generation and cannot create canonical/provider
+effects. The client supplies inference and scheduling; ready-work notifications
+support polling and events. Approved OAuth principals cannot admit
 interactive requests or stage/commit/resolve canonical work. Chat/session headers
 and event-triggered tasks do not prove foreground authority. Preserve this gate
 until a verified host contract or explicit Operator amendment resolves it.
 See `docs/plugin-setup.md` and `docs/plugin-integration-verification.md`.
+
+The October 28 target retires Hermes, Discord ingress and SearXNG entirely.
+They remain an explicit legacy Compose profile for transition/history, with no
+dependency from native Docket startup. Do not preserve a Hermes inference or cron
+dependency on behalf of the Operator. Dot, other MCP agents and local inference
+clients can perform the restricted triage workflow.
 
 When changing a tool:
 

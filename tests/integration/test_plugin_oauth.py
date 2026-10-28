@@ -66,6 +66,25 @@ def test_login_requires_explicit_owner_and_never_grants_foreground(session_facto
         assert session.scalar(select(func.count()).select_from(OAuthPrincipal)) == 1
 
 
+def test_triage_requires_local_approval_and_token_scope_and_never_grants_foreground(
+    session_factory, oauth,
+):
+    settings, verifier, token, _ = oauth
+    with session_factory.begin() as session:
+        OAuthPrincipalService(session, settings).approve("user-owner", events=True, triage=True)
+    assert verifier.authenticate(token(), session_factory).role == "read_only"
+    principal = verifier.authenticate(token(scope="docket.read docket.triage"), session_factory)
+    assert principal.role == "triage" and principal.permissions == {"read", "triage"}
+    for permission in ("stage", "commit", "resolve_conflict", "events"):
+        with pytest.raises(DocketError):
+            principal.require(permission)
+    with session_factory.begin() as session:
+        session.scalar(select(OAuthPrincipal)).scopes = [settings.plugin_read_scope]
+    assert "triage" not in verifier.authenticate(token(
+        scope="docket.read docket.triage",
+    ), session_factory).permissions
+
+
 @pytest.mark.parametrize("claims", [
     {"iss": "https://wrong.example.test/"}, {"aud": "https://aphelion.host"},
     {"sub": "other-user"}, {"azp": "other-client"}, {"exp": 1},

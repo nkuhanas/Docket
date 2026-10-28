@@ -20,7 +20,7 @@ and a separate application; Docket must not accept Aphelion's audience or client
 
 1. Under **Applications → APIs**, create `Docket` with identifier
    `https://docket.you`, signing algorithm `RS256`, permissions `docket.read` and
-   `docket.events`, and **Allow Offline Access** enabled.
+   `docket.events` and `docket.triage`, and **Allow Offline Access** enabled.
 2. Verify the tenant's **Resource Parameter Compatibility Profile**, as used by
    Aphelion, so a request with `resource=https://docket.you` targets this API.
 3. Create a **Native** application named `Docket ChatGPT`, using public PKCE
@@ -28,7 +28,7 @@ and a separate application; Docket must not accept Aphelion's audience or client
    refresh-token rotation and the owner's login connection. A new Native
    application's public-client setting may not show a Credentials tab.
 4. Give that application explicit **user-delegated** access to the Docket API
-   for only the two permissions above. Keep machine-to-machine access absent.
+   for only the three permissions above. Keep machine-to-machine access absent.
    When RBAC is enabled, assign the owner permissions so the token's `scope`
    claim contains the granted scopes.
 5. Retain the new application client ID, issuer URL, JWKS URL and exact owner
@@ -40,7 +40,7 @@ and a separate application; Docket must not accept Aphelion's audience or client
    a wildcard. Complete linking and verify `docket_get_profile` in Dot's own task.
 
 The ChatGPT connection uses the new predefined client ID, public token-endpoint
-authentication (`none`) and scopes `docket.read docket.events`; it needs no client
+authentication (`none`) and scopes `docket.read docket.events docket.triage`; it needs no client
 secret. The events permission can be omitted for a connection that only reads.
 Auth0 authenticates ChatGPT to Docket. Existing Google OAuth credentials remain
 private to Docket's provider adapters and are not passed to the plugin or Auth0.
@@ -60,12 +60,14 @@ The target configuration disables the old adapter:
 ```dotenv
 DOCKET_PLUGIN_ENABLED=true
 DOCKET_DISCORD_ADAPTER_ENABLED=false
+DOCKET_INTERACTIVE_AGENT_ENABLED=false
 DOCKET_PLUGIN_PUBLIC_ORIGIN=https://docket.you
 DOCKET_PLUGIN_OAUTH_ISSUER=https://dev-yo4e5wrtdnuusefg.us.auth0.com/
 DOCKET_PLUGIN_OAUTH_JWKS_URL=https://dev-yo4e5wrtdnuusefg.us.auth0.com/.well-known/jwks.json
 DOCKET_PLUGIN_OAUTH_CLIENT_IDS=["H92evvENOutMDq3Bq1qyRzMOrHiL7qpB"]
 DOCKET_PLUGIN_READ_SCOPE=docket.read
 DOCKET_PLUGIN_EVENTS_SCOPE=docket.events
+DOCKET_PLUGIN_TRIAGE_SCOPE=docket.triage
 ```
 
 The ignored `.runtime/plugin/native-oauth.env` contains this candidate overlay
@@ -81,7 +83,7 @@ uses the configured Operator identity and issuer. The local administrative
 command previews by default:
 
 ```bash
-uv run docket-plugin-auth approve --subject '<exact owner subject>' --events
+uv run docket-plugin-auth approve --subject '<exact owner subject>' --events --triage
 ```
 
 Add `--execute` only when the Operator explicitly authorizes production owner
@@ -104,11 +106,39 @@ OAuth enforces the application account boundary. A tunnel alone grants no access
 The actual listener, certificates, firewall, DNS and existing proxy services must
 be reviewed by their infrastructure owner before applying this example.
 
+## Agent-supplied triage
+
+Docket supplies no inference provider or model scheduler. A connected Dot, an
+agent-managed cron job, or a local inference client can run the same bounded
+workflow. OAuth clients need both `docket.read` and `docket.triage`, plus local
+owner approval with `--triage`. API scopes alone do not approve an owner.
+
+Subscribe to `docket.triage.ready`, poll `docket_list_notifications`, or call
+`docket_get_triage_context` from a client-owned schedule. Each context call claims
+one eligible source. Pass its exact run/context/source references and claim token
+to `docket_submit_triage_analysis`, or apply an existing matching suppression with
+`docket_apply_existing_suppression`. Stop when the context returns `no_sources`.
+The client chooses its model, schedule and per-run work budget. Clients supporting
+legacy MCP can poll; webhook Events require the modern protocol.
+
+Claims expire and can be reclaimed. OAuth claims bind the approved principal and
+claim generation: a later claim cannot be completed with an older context, and a
+different principal cannot borrow a claim. Concurrent completion serializes.
+Ready-work inbox entries cover backlog and expired claims without launching a
+model. Webhooks contain generic metadata and refs, never Gmail bodies.
+
+Triage may create intelligence, apply existing Preferences and publish cases or
+briefs. It cannot stage/commit canonical work, resolve canonical conflicts, create
+policy or request Google writes. OAuth `docket.events` only manages subscriptions.
+Local clients can also use the private four-tool `/triage-mcp/` service credential,
+independently of Hermes. The client manages its own credentials and refresh flow.
+
 ## Acceptance before cutover
 
-The native profile exposes 21 tools: the 18 existing reads, the stable account
-profile, and inbox list/get. Four modern MCP Events cover attention revisions,
-published briefs, due reminders and provider-operation status. Events carry
+The native profile exposes 24 tools: the 18 existing reads, the stable account
+profile, inbox list/get and three bounded triage tools. Five modern MCP Events
+cover ready triage work, attention revisions, published briefs, due reminders and
+provider-operation status. Events carry
 generic summaries and public references; use the bounded read tools for context.
 Subscriptions are notification permissions and grant no canonical authority.
 
@@ -148,7 +178,7 @@ reminders/provider work remain active.
 The normal deployment script selects checks from this setting. A missing setting
 keeps the existing adapter. An explicit native-only deployment retains CI,
 execution drain, backup and migration guards, quiesces an existing gateway's
-controls, stops Hermes/Discord ingress and starts only Docket. Later native-only
+controls, stops Hermes/Discord ingress and SearXNG, and starts only Docket. Later native-only
 deployments require no gateway, ingress password or Hermes service credentials.
 Postdeploy verifies the private OAuth discovery/anonymous-denial boundary; actual
 public ingress and signed-in acceptance still require the connection checks below.
@@ -158,7 +188,9 @@ forward migrations for this transition.
 Run both repository gates, obtain green CI and use the normal authorized backup
 and deployment path. Then verify public anonymous denial, resource discovery,
 private account linking, the stable profile, actual tool count, read results,
-revocation/reconnection and rejection of copied foreground context. Verify inbox
+revocation/reconnection and rejection of copied foreground context. Run one source
+through the selected agent's triage workflow and verify it creates no canonical or
+provider mutations. Verify inbox
 and event delivery separately before retiring Discord alerts. A hosted plugin
 connection cannot enable canonical writes until foreground/background separation
 or an explicitly approved alternative has been established.

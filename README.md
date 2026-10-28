@@ -4,7 +4,7 @@
 
 <p align="center"><strong>The durable control plane for personal operations.</strong></p>
 
-<p align="center">Single operator · self-hosted · provenance-first · Discord-native</p>
+<p align="center">Single operator · self-hosted · durable context · agent-neutral MCP</p>
 
 Docket turns everyday instructions and incoming evidence into durable,
 traceable operations. It remembers the people, organizations, preferences, and
@@ -14,6 +14,13 @@ and carries authorized intent into Google Calendar.
 It is deliberately not a chatbot memory layer. Conversations are an interface,
 providers are projections, and model output is interpretation. Docket owns the
 record in between.
+
+The selected interface is the private plugin at `docket.you`, backed by Google
+authorization and Docket's durable inbox. The connected agent supplies inference
+and scheduling: Dot, agent-managed cron and local inference clients use the same
+bounded MCP workflow. Native OAuth currently permits reads and explicitly granted
+triage; canonical writes await a verified foreground-authority mechanism. Hermes,
+Discord and SearXNG are retired from the target deployment.
 
 > **The operator is the authority. PostgreSQL is the record. Everything else is
 > evidence or projection.**
@@ -31,7 +38,7 @@ the others.
 | **Authority** | Accept canonical change from an authenticated interactive agent acting for the operator. Background agents, email, web content, and copied references cannot grant authority. |
 | **Canonical state** | Maintain the current registry, policy, calendar model, decisions, and triage state in PostgreSQL with public provenance references. |
 | **Action** | Derive provider operations from committed intent, execute them asynchronously, and reconcile outcomes that are uncertain after transmission. |
-| **Projection** | Render current state into Discord and Google without treating either surface as canonical. |
+| **Projection** | Publish inbox notifications and committed Google operations without treating deliveries as canonical. |
 
 ### One place for operational context
 
@@ -57,9 +64,11 @@ conflict instead of a silent overwrite.
 
 ### Attention without autonomous authority
 
-Docket ingests bounded Gmail and Calendar evidence through an isolated triage
-path. It can correlate observations, apply existing preferences, suppress known
-noise, open an AttentionCase, and assemble morning or night briefs.
+Docket ingests bounded Gmail and Calendar evidence and exposes ready work through
+its inbox. An explicitly permitted MCP agent claims one source, receives bounded
+context and submits its interpretation using its chosen inference provider.
+Docket correlates observations, applies existing preferences, suppresses known
+noise, opens AttentionCases and assembles morning or night briefs.
 
 Triage cannot change operator-owned context or call providers. A reply to a case
 returns through the authenticated interactive path, where it can become real
@@ -102,11 +111,19 @@ interactive and triage paths have different capabilities, and all durable truth
 converges on PostgreSQL.
 
 ```text
-Authenticated operator message
+Dot / scheduled MCP agent / local inference client
+  client owns inference, scheduling and credential refresh
         │
         ▼
-Discord ingress + Hermes
-  authenticate source · admit durable req_ · optionally archive transcript/files
+OAuth MCP (24 tools: 21 reads + 3 restricted triage tools)
+        │
+        ├── source claim → bounded context → agent analysis → intelligence
+        └── durable inbox → events or polling → connected agent
+
+Authenticated interactive principal (native admission remains gated)
+        │
+        ▼
+admit durable req_ · optionally archive transcript/files
         │
         ▼
 Interactive MCP (23 tools; only 2 mutate canonical state)
@@ -118,12 +135,12 @@ IntentSession → statements → clarification/conflict → ChangeSet
 PostgreSQL canonical transaction
         ├── registry · preferences · lanes · events · decisions · audit
         ├── provider Operation intents ──► worker ──► Google
-        └── outbox events ───────────────► worker ──► Hermes / Discord
+        └── inbox events ────────────────► worker ──► connected agent
 
 Gmail + Calendar evidence
         │
         ▼
-bounded ingestion → isolated triage MCP (4 non-authoritative tools)
+bounded ingestion → ready-work inbox → explicitly permitted MCP agent
         │
         ▼
 ContextPacket → AttentionCase / DailyBrief
@@ -163,11 +180,11 @@ instructions for local delta work without requiring Discord sign-off. See the
 
 | Concern | Implementation |
 | --- | --- |
-| Service boundary | Python 3.12–3.14, FastAPI, Pydantic, FastMCP |
+| Service boundary | Python 3.12–3.14, FastAPI, Pydantic, MCP SDK 2 |
 | Durable state | PostgreSQL 16, SQLAlchemy, Alembic |
-| Conversation | Pinned Hermes Agent, Discord gateway and Docket plugin |
+| Conversation | Private OAuth plugin; connected MCP agent owns inference |
 | Providers | Google Calendar and bounded Gmail ingestion |
-| Background work | Operation, reconciliation, outbox, projection, ingestion, triage, reminder, retention, and backup workers |
+| Background work | Provider, ingestion, inbox, brief, reminder, retention and backup workers; inference scheduled by the client |
 | Deployment | Docker Compose with health, migration, drain, backup, and rollback gates |
 | Verification | pytest, Ruff, strict mypy, isolated PostgreSQL Compose smoke |
 
