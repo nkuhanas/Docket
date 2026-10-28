@@ -11,7 +11,7 @@ the candidate container's real classes and one live Discord message.
 | --- | --- | --- |
 | Hermes Agent | tag `v2026.7.20`; deployed and configured image digest `sha256:f7b35053268f532f98955195c909f15a230470fbcbdacaa9fdecb95707dad04a`; OCI revision label `3ef6bbd201263d354fd83ec55b3c306ded2eb72a` | The digest is the runtime pin. `HERMES_SOURCE_COMMIT` mirrors the OCI revision for traceability but still has no enforcement role. |
 | discord.py inside Hermes | `2.7.1` | Docket relies on public-thread, embed, view, raw interaction, and archived-history behavior from this bundled version. |
-| MCP Python SDK / FastMCP | `mcp==1.28.1`, locked in `uv.lock` | Python package is exact, but transport and schema behavior also depend on the application mount and Hermes adapter. |
+| MCP Python SDK | `mcp==2.3.0`, locked in `uv.lock` | Protocol `2026-07-28` and legacy `2025-11-25` are tested; application audit/admission still wraps SDK validation and execution. |
 | Docket Python base | `python:3.12-slim` | Minor line is pinned, image digest is not; future rebuilds can receive a different base image. The built image carries the exact Git revision in `org.opencontainers.image.revision`. |
 | PostgreSQL | `postgres:16.9-bookworm` | Version tag is pinned, image digest is not; persistent-volume semantics survive image replacement. |
 | SearXNG | dated tag plus SHA-256 image digest | This is the strongest container pin in the stack; keep both tag and digest when upgrading. |
@@ -372,7 +372,7 @@ idempotent resumption. Running traces owned by the closed lifetime become
 interrupted/unknown unless a linked `call_` proves a terminal domain outcome.
 
 Each interactive and triage MCP request creates `call_` after service bearer
-authentication but before FastMCP argument validation. Received and normalized
+authentication but before MCP argument validation. Received and normalized
 argument hashes, status, timing, bounded result references, and later trusted
 Discord trace bindings are retained. Raw arguments, raw results, and the
 diagnostic argument preview are not stored in `tool_invocations`; the preview
@@ -648,12 +648,14 @@ outbound web access.
 
 ## MCP transport and schema contract
 
-Docket mounts a stateless FastMCP server at `/mcp/`. With the current SDK and
+Docket mounts a stateless MCP server at `/mcp/`. With the current SDK and
 application mount, `/mcp` redirects to `/mcp/` with HTTP 307. Some MCP client
 paths do not follow that redirect during protocol setup, so use the trailing
 slash everywhere.
 
-FastMCP publishes each tool as separate `description` and `inputSchema` fields.
+The legacy protocol publishes separate `description` and `inputSchema` fields;
+the SDK's Python models use snake-case attributes. Both legacy `2025-11-25` and
+modern `2026-07-28` sessions are verified through the guarded invocation adapter.
 The schema is generated at runtime from Python type annotations and Pydantic
 models. Hermes `v2026.7.20` converts these into model-visible function
 definitions in `/opt/hermes/tools/mcp_tool.py` and normalizes nullable unions,

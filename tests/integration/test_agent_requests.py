@@ -404,7 +404,7 @@ async def test_mcp_admits_and_commits_with_transport_context_only(
             )
         )
         try:
-            return _result_envelope(await mcp.call_tool(name, arguments))
+            return _result_envelope(await mcp.invoke_tool(name, arguments))
         finally:
             agent_call_context.reset(token)
 
@@ -450,7 +450,7 @@ async def test_mcp_audits_background_rejection_before_admission(
         )
     )
     try:
-        rejected = _result_envelope(await mcp.call_tool("docket_commit_changeset", {}))
+        rejected = _result_envelope(await mcp.invoke_tool("docket_commit_changeset", {}))
         assert rejected["error"]["code"] == "agent_authority_denied"
         row = session.scalar(select(ToolInvocation))
         assert row.domain_state == "rejected"

@@ -18,7 +18,7 @@ from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
 from docket.domain.public_refs import new_public_ref
 from docket.internal_api.schemas import McpTraceUpdate
-from docket.mcp.instrumented import ProvenanceFastMCP, _result_envelope
+from docket.mcp.instrumented import ProvenanceMCP, _result_envelope
 from docket.models import OperatorUtterance, ToolInvocation
 from docket.services.mcp_traces import McpTraceService
 from docket.services.trace_correlation import correlated_calls
@@ -72,7 +72,7 @@ def _sign(payload):
 
 
 def _server(calls):
-    server = ProvenanceFastMCP("binding-test", caller_profile="interactive")
+    server = ProvenanceMCP("binding-test", caller_profile="interactive")
 
     @server.tool(name="docket_search_history")
     def read(query: str):
@@ -108,7 +108,7 @@ def test_same_arguments_bind_exactly_and_transport_retry_reaches_replay_service(
     # No trace callback or response reconciliation has happened. The durable
     # binding exists immediately and two identical requests cannot cross-link.
     for payload in (first, second):
-        result = asyncio.run(server.call_tool("docket_search_history", {
+        result = asyncio.run(server.invoke_tool("docket_search_history", {
             "query": "same", "invocation_binding": _sign(payload),
         }))
         assert _result_envelope(result)["ok"] is True
@@ -118,7 +118,7 @@ def test_same_arguments_bind_exactly_and_transport_retry_reaches_replay_service(
         assert all(row.utterance_refs == [utterance] for row in rows)
         assert all(row.transport_state == "completed" for row in rows)
         assert all(row.received_argument_hash == first["argument_hash"] for row in rows)
-    replay = asyncio.run(server.call_tool("docket_search_history", {
+    replay = asyncio.run(server.invoke_tool("docket_search_history", {
         "query": "same", "invocation_binding": _sign(first),
     }))
     assert _result_envelope(replay)["ok"] is True
@@ -175,8 +175,8 @@ def test_binding_is_hidden_and_plugin_signer_matches_service(session_factory):
     calls = []
     server = _server(calls)
     tool = asyncio.run(server.list_tools())[0]
-    assert tool.inputSchema["properties"]["invocation_binding"]["x-docket-internal"] is True
-    result = asyncio.run(server.call_tool("docket_search_history", {
+    assert tool.input_schema["properties"]["invocation_binding"]["x-docket-internal"] is True
+    result = asyncio.run(server.invoke_tool("docket_search_history", {
         "query": "same", "invocation_binding": token,
     }))
     assert _result_envelope(result)["ok"] is True
@@ -217,7 +217,7 @@ def test_unsigned_and_foreign_utterance_binding_rejects(session_factory):
     calls = []
     server = _server(calls)
     for token in ("not-signed", _sign(_payload(utterance))[:-1] + "Z"):
-        result = asyncio.run(server.call_tool("docket_search_history", {
+        result = asyncio.run(server.invoke_tool("docket_search_history", {
             "query": "same", "invocation_binding": token,
         }))
         assert _result_envelope(result)["error"]["code"] == "invalid_invocation_binding"

@@ -83,12 +83,12 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
     assert REPLACED_LEGACY_READS.isdisjoint(tools)
     assert "atomically" in (tools["docket_commit_changeset"].description or "").lower()
     assert "Conflict" in (tools["docket_resolve_conflict"].description or "")
-    commit_schema = tools["docket_commit_changeset"].inputSchema
+    commit_schema = tools["docket_commit_changeset"].input_schema
     assert all(field["x-docket-internal"] for field in commit_schema["properties"].values())
     assert "submission" not in commit_schema["properties"]
     assert "content" not in commit_schema["properties"]
     assert "commit_mode" not in repr(commit_schema)
-    choice_schema = tools["docket_request_clarification"].inputSchema
+    choice_schema = tools["docket_request_clarification"].input_schema
     assert {
         "statements",
         "relations",
@@ -102,7 +102,7 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
     assert "ProviderIntentInput" not in choice_schema["$defs"]
 
 
-    stage_schema = tools["docket_stage_changes"].inputSchema
+    stage_schema = tools["docket_stage_changes"].input_schema
     assert stage_schema["properties"]["patch"] == {"$ref": "#/$defs/StagePatchInput"}
     patch_operations = stage_schema["$defs"]["StagePatchInput"]["properties"][
         "operations"
@@ -140,7 +140,7 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
     assert "account_id" not in lane_create["properties"]
     assert "provider_calendar_binding" not in lane_create.get("required", [])
 
-    conflict_schema = tools["docket_resolve_conflict"].inputSchema
+    conflict_schema = tools["docket_resolve_conflict"].input_schema
     canonical_effects = conflict_schema["properties"]["canonical_effects"]
     assert canonical_effects["items"] == {"$ref": "#/$defs/CanonicalChangeInput"}
     canonical_union = conflict_schema["$defs"]["CanonicalChangeInput"]
@@ -151,23 +151,23 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
         "docket_list_provider_calendar_events",
         "docket_get_calendar_sync_status",
     }:
-        schema = tools[name].inputSchema
+        schema = tools[name].input_schema
         assert "account_ref" in schema["properties"]
         assert "account_id" not in schema["properties"]
-    assert "subject_ref" in tools["docket_list_reminder_plans"].inputSchema["properties"]
+    assert "subject_ref" in tools["docket_list_reminder_plans"].input_schema["properties"]
     calendar_events = tools["docket_list_provider_calendar_events"]
-    assert "calendar_id" not in calendar_events.inputSchema.get("required", [])
+    assert "calendar_id" not in calendar_events.input_schema.get("required", [])
     assert "globally ordered" in (calendar_events.description or "")
-    assert calendar_events.inputSchema["properties"]["detail"]["default"] == "summary"
+    assert calendar_events.input_schema["properties"]["detail"]["default"] == "summary"
     assert (
-        tools["docket_list_calendar_lanes"].inputSchema["properties"]["view"]["default"]
+        tools["docket_list_calendar_lanes"].input_schema["properties"]["view"]["default"]
         == "summary"
     )
     assert (
-        tools["docket_list_provider_accounts"].inputSchema["properties"]["view"]["default"]
+        tools["docket_list_provider_accounts"].input_schema["properties"]["view"]["default"]
         == "summary"
     )
-    history_type = tools["docket_search_history"].inputSchema["properties"]["object_type"]
+    history_type = tools["docket_search_history"].input_schema["properties"]["object_type"]
     history_type_schema = next(branch for branch in history_type["anyOf"] if "enum" in branch)
     assert set(history_type_schema["enum"]) >= {
         "operator_utterance",
@@ -175,11 +175,11 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
         "tool_invocation",
         "runtime_log_entry",
     }
-    assert "item_ref" in tools["docket_get_item_context"].inputSchema["properties"]
-    assert "context_entity_ref" in tools["docket_query_items"].inputSchema["properties"]
+    assert "item_ref" in tools["docket_get_item_context"].input_schema["properties"]
+    assert "context_entity_ref" in tools["docket_query_items"].input_schema["properties"]
     attachment_text = tools["docket_read_attachment_text"]
     assert "untrusted PDF text" in (attachment_text.description or "")
-    attachment_schema = attachment_text.inputSchema["properties"]
+    attachment_schema = attachment_text.input_schema["properties"]
     assert attachment_schema["source_ref"]["pattern"].startswith("^src_")
     assert attachment_schema["max_text_bytes"]["maximum"] == 8192
     assert attachment_schema["page_limit"]["maximum"] == 5
@@ -189,7 +189,7 @@ async def test_interactive_profile_exposes_only_reads_and_changeset_authority() 
 async def test_triage_profile_is_exact_and_non_authoritative() -> None:
     tools = {tool.name: tool for tool in await triage_mcp.list_tools()}
     assert set(tools) == TRIAGE_TOOLS
-    submit = tools["docket_submit_triage_analysis"].inputSchema
+    submit = tools["docket_submit_triage_analysis"].input_schema
     serialized = repr(submit)
     assert "registry_changes" not in serialized
     assert "provider_intents" not in serialized

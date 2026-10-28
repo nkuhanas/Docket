@@ -34,3 +34,13 @@ HTTP workflows, governance/restore and concurrency checks, plus PostgreSQL-only
 principal identity update/delete rejection, explicit revocation, retained-history
 downgrade refusal and empty migration downgrade/re-upgrade. Synthetic credentials
 and isolated databases were used. No native deployment or private linking has run.
+
+The transport now pins MCP SDK 2.3.0. The guarded adapter retains admission,
+exact-revision binding, compact results, rejected-call audit and provider recovery
+while producing typed MCP results. Actual ASGI sessions test both legacy
+`2025-11-25` and modern `2026-07-28`, including default/hard page caps and schema
+rejection. `scripts/docket check` passed 1,028 tests, Ruff and strict mypy;
+`scripts/docket compose-smoke` passed the genuine HTTP foreground workflow,
+restricted ingress, governance restore, PostgreSQL concurrency and migrations.
+The existing Hermes client protocol remains supported; live Hermes behavior is
+a separate rollout observation.

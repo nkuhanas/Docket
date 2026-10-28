@@ -16,7 +16,7 @@ from docket.config import get_settings
 from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
 from docket.domain.public_refs import new_public_ref
-from docket.mcp.instrumented import ProvenanceFastMCP, _result_envelope
+from docket.mcp.instrumented import ProvenanceMCP, _result_envelope
 from docket.models import (
     AssemblyOperation,
     ConversationalToolTrace,
@@ -227,7 +227,7 @@ def test_domain_outcome_arriving_after_gateway_expiry_replaces_only_unknown(
         result = ChangeSetAssemblyService(session).stage(_stage(utterance), **binding)
     with session_factory.begin() as session:
         if late_mcp_finish:
-            ProvenanceFastMCP._finish_invocation(
+            ProvenanceMCP._finish_invocation(
                 session, call_id, status="succeeded", normalized_argument_hash="b" * 64,
                 result_refs=[result["draft_ref"]], result_disposition=result["disposition"],
                 error_code=None, semantic_request_ref=result["semantic_request_ref"],
@@ -245,7 +245,7 @@ def test_domain_outcome_arriving_after_gateway_expiry_replaces_only_unknown(
         assert TraceViewService(session).snapshot(trace)["rows"][0]["outcome"] == "ready_to_commit"
         # A late/repeated generic transport failure cannot erase the durable
         # outcome we just learned. Neither path may execute the staged Item.
-        ProvenanceFastMCP._finish_invocation(
+        ProvenanceMCP._finish_invocation(
             session, call_id, status="failed", normalized_argument_hash=None,
             result_refs=[], result_disposition="failed", error_code="service_exception",
         )
@@ -304,7 +304,7 @@ def test_late_finalization_binds_original_attempt_not_latest_request_attempt(ses
     )
     session.add(other_attempt)
     session.flush()
-    ProvenanceFastMCP._finish_invocation(
+    ProvenanceMCP._finish_invocation(
         session, invocation.id, status="succeeded", normalized_argument_hash="b" * 64,
         result_refs=[], result_disposition=result["disposition"], error_code=None,
         semantic_request_ref=request.ref_id,
@@ -325,7 +325,7 @@ def test_postcommit_runtime_error_cannot_erase_exact_durable_outcome(session):
         utterance_ref=utterance.ref_id, request_key=utterance.request_key, **commit_binding,
     )
     session.flush()
-    ProvenanceFastMCP._finish_invocation(
+    ProvenanceMCP._finish_invocation(
         session, invocation.id, status="failed", normalized_argument_hash=None,
         result_refs=[], result_disposition="failed", error_code="internal_error",
     )
@@ -371,7 +371,7 @@ def test_mcp_recovers_commit_receipt_when_result_assembly_raises_after_commit(se
             b"docket-mcp-invocation-v2:" + encoded.encode(), hashlib.sha256,
         ).hexdigest()
         arguments["invocation_binding"] = f"{encoded}.{signature}"
-    server = ProvenanceFastMCP("recovery-test", caller_profile="interactive")
+    server = ProvenanceMCP("recovery-test", caller_profile="interactive")
 
     @server.tool(name="docket_commit_changeset")
     def commit(
@@ -387,7 +387,7 @@ def test_mcp_recovers_commit_receipt_when_result_assembly_raises_after_commit(se
         raise RuntimeError("Synthetic response assembly failure after durable commit.")
 
     for _ in range(2):
-        result = _result_envelope(asyncio.run(server.call_tool(
+        result = _result_envelope(asyncio.run(server.invoke_tool(
             "docket_commit_changeset", arguments,
         )))
         assert result["ok"] is True

@@ -31,7 +31,7 @@ def _definition(
         "function": {
             "name": name or tool_name,
             "description": tool.description or "",
-            "parameters": tool.inputSchema,
+            "parameters": tool.input_schema,
         },
     }
 

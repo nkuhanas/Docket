@@ -19,7 +19,7 @@ from docket.config import get_settings
 from docket.domain.errors import DocketError, IdempotencyConflict
 from docket.domain.public_refs import new_public_ref
 from docket.internal_api.schemas import AttachmentManifest, OperatorUtteranceCapture
-from docket.mcp.instrumented import ProvenanceFastMCP
+from docket.mcp.instrumented import ProvenanceMCP
 from docket.mcp.server import mcp
 from docket.models import (
     AttachmentEvidence,
@@ -520,7 +520,7 @@ def test_pdf_attachment_read_tool_records_bounded_result_refs_not_content(
         captured = ProvenanceService(session).capture_operator_utterance(request)
         source_ref = captured["attachments"][0]["ref"]
 
-    result = asyncio.run(mcp.call_tool("docket_read_attachment_text", {"source_ref": source_ref}))
+    result = asyncio.run(mcp.invoke_tool("docket_read_attachment_text", {"source_ref": source_ref}))
     assert isinstance(result, tuple) and len(result) == 2
     content, structured = result
     assert structured["source_ref"] == source_ref
@@ -1464,7 +1464,7 @@ def test_pending_attachment_blocks_statement_and_mutation(session_factory) -> No
             )
         assert error.value.code == "attachment_evidence_unavailable"
 
-    server = ProvenanceFastMCP("attachment-fail-closed", caller_profile="interactive")
+    server = ProvenanceMCP("attachment-fail-closed", caller_profile="interactive")
     executed = False
 
     @server.tool(name="docket_commit_changeset")
@@ -1474,7 +1474,7 @@ def test_pending_attachment_blocks_statement_and_mutation(session_factory) -> No
         return {"ok": True, "ref": new_public_ref("chg"), "disposition": "committed"}
 
     result = asyncio.run(
-        server.call_tool(
+        server.invoke_tool(
             "docket_commit_changeset",
             {"utterance_ref": captured["ref"], "request_key": request.request_key},
         )

@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from docket.config import get_settings
 from docket.database import get_session_factory, session_scope
 from docket.domain.errors import DocketError
-from docket.mcp.instrumented import ProvenanceFastMCP, _validation_issues
+from docket.mcp.instrumented import ProvenanceMCP, _validation_issues
 from docket.models import ReminderPlan
 from docket.providers.google.gmail_runtime import get_gmail_read_provider
 from docket.providers.google.runtime import get_calendar_read_provider
@@ -58,12 +58,9 @@ from docket.services.interactive_authority import InteractiveAuthorityService
 from docket.services.network import NetworkQueryService
 from docket.services.tracked_context import TrackedContextService
 
-mcp = ProvenanceFastMCP(
+mcp = ProvenanceMCP(
     "docket",
     caller_profile="interactive",
-    stateless_http=True,
-    json_response=True,
-    streamable_http_path="/",
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=["docket:8000", "127.0.0.1:*", "localhost:*", "[::1]:*"],

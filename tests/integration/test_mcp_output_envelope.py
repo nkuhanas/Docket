@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from docket.domain.public_refs import new_public_ref
-from docket.mcp.instrumented import ProvenanceFastMCP
+from docket.mcp.instrumented import ProvenanceMCP
 from docket.mcp.server import mcp
 from docket.models import CalendarLane, ProviderAccount, ToolInvocation
 
@@ -16,7 +16,7 @@ def test_mcp_boundary_minifies_null_omits_and_byte_bounds_default_lists(
     session_factory,
 ) -> None:
     del session_factory
-    server = ProvenanceFastMCP("output-envelope-test", caller_profile="interactive")
+    server = ProvenanceMCP("output-envelope-test", caller_profile="interactive")
 
     @server.tool(name="docket_search_history")
     def search_history() -> dict[str, object]:
@@ -37,7 +37,7 @@ def test_mcp_boundary_minifies_null_omits_and_byte_bounds_default_lists(
             "optional": None,
         }
 
-    result = asyncio.run(server.call_tool("docket_search_history", {}))
+    result = asyncio.run(server.invoke_tool("docket_search_history", {}))
     assert isinstance(result, tuple) and len(result) == 2
     content, structured = result
     assert isinstance(content, list) and len(content) == 1
@@ -64,7 +64,7 @@ def test_explicit_audit_view_uses_64_kib_utf8_budget_and_self_truncates(
     session_factory,
 ) -> None:
     del session_factory
-    server = ProvenanceFastMCP("audit-output-envelope-test", caller_profile="interactive")
+    server = ProvenanceMCP("audit-output-envelope-test", caller_profile="interactive")
 
     @server.tool(name="docket_search_history")
     def search_history(view: str = "summary") -> dict[str, object]:
@@ -78,7 +78,7 @@ def test_explicit_audit_view_uses_64_kib_utf8_budget_and_self_truncates(
             "cursor": "audit-next-page",
         }
 
-    result = asyncio.run(server.call_tool("docket_search_history", {"view": "audit"}))
+    result = asyncio.run(server.invoke_tool("docket_search_history", {"view": "audit"}))
     assert isinstance(result, tuple) and len(result) == 2
     content, structured = result
     assert isinstance(content, list) and len(content) == 1
@@ -98,7 +98,7 @@ def test_explicit_audit_view_uses_64_kib_utf8_budget_and_self_truncates(
 def test_argument_validation_is_a_domain_rejection_not_an_mcp_transport_error(
     session_factory,
 ) -> None:
-    server = ProvenanceFastMCP("validation-envelope-test", caller_profile="interactive")
+    server = ProvenanceMCP("validation-envelope-test", caller_profile="interactive")
     executed = False
 
     @server.tool(name="docket_search_history")
@@ -107,7 +107,7 @@ def test_argument_validation_is_a_domain_rejection_not_an_mcp_transport_error(
         executed = True
         return {"ok": True, "query": required_query}
 
-    result = asyncio.run(server.call_tool("docket_search_history", {}))
+    result = asyncio.run(server.invoke_tool("docket_search_history", {}))
 
     assert executed is False
     assert isinstance(result, tuple)
@@ -138,13 +138,13 @@ def test_argument_validation_is_a_domain_rejection_not_an_mcp_transport_error(
 def test_handler_exception_is_a_domain_failure_not_an_mcp_transport_error(
     session_factory,
 ) -> None:
-    server = ProvenanceFastMCP("failure-envelope-test", caller_profile="interactive")
+    server = ProvenanceMCP("failure-envelope-test", caller_profile="interactive")
 
     @server.tool(name="docket_search_history")
     def search_history() -> dict[str, object]:
         raise RuntimeError("fixture detail must not escape")
 
-    result = asyncio.run(server.call_tool("docket_search_history", {}))
+    result = asyncio.run(server.invoke_tool("docket_search_history", {}))
 
     assert isinstance(result, tuple)
     _content, structured = result
@@ -197,7 +197,7 @@ def test_retained_provider_reads_chain_through_public_refs_without_uuid_leak(
             )
         )
 
-    accounts_result = asyncio.run(mcp.call_tool("docket_list_provider_accounts", {}))
+    accounts_result = asyncio.run(mcp.invoke_tool("docket_list_provider_accounts", {}))
     assert isinstance(accounts_result, tuple)
     accounts = accounts_result[1]
     assert accounts["items"][0]["ref"] == account_ref
@@ -208,7 +208,7 @@ def test_retained_provider_reads_chain_through_public_refs_without_uuid_leak(
     assert "email_address" not in accounts["items"][0]
 
     account_details_result = asyncio.run(
-        mcp.call_tool("docket_list_provider_accounts", {"view": "details"})
+        mcp.invoke_tool("docket_list_provider_accounts", {"view": "details"})
     )
     assert isinstance(account_details_result, tuple)
     account_details = account_details_result[1]
@@ -217,7 +217,7 @@ def test_retained_provider_reads_chain_through_public_refs_without_uuid_leak(
     ]
 
     lanes_result = asyncio.run(
-        mcp.call_tool("docket_list_calendar_lanes", {"account_ref": account_ref})
+        mcp.invoke_tool("docket_list_calendar_lanes", {"account_ref": account_ref})
     )
     assert isinstance(lanes_result, tuple)
     lanes = lanes_result[1]
@@ -228,7 +228,7 @@ def test_retained_provider_reads_chain_through_public_refs_without_uuid_leak(
     assert all("operator_policy_text" not in item for item in lanes["items"])
 
     routing_result = asyncio.run(
-        mcp.call_tool(
+        mcp.invoke_tool(
             "docket_list_calendar_lanes",
             {"account_ref": account_ref, "view": "routing"},
         )

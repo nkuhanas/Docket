@@ -295,7 +295,7 @@ When Hermes appears to use the wrong schema:
 5. Reload MCP only after the server and generated contract agree.
 
 Do not probe hidden HTTP endpoints or use terminal access to discover a mutation
-shape. The Pydantic/FastMCP schema is the structural contract; the generated
+shape. The Pydantic/MCP schema is the structural contract; the generated
 Markdown contract supplies authority, selection, side-effect, and result rules.
 
 Staging returns `ready_to_commit` or `saved_with_errors`. The latter preserves
