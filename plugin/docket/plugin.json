@@ -1,0 +1,22 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "docket",
+  "version": "0.1.0",
+  "description": "Read durable personal operations and receive Docket notifications.",
+  "author": { "name": "Docket" },
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Docket",
+        "shortDescription": "Personal operations",
+        "longDescription": "Read your Docket context, attention and delivery history through an approved private connection. Native canonical writes remain unavailable until foreground authority is established.",
+        "developerName": "Docket",
+        "category": "Productivity",
+        "capabilities": ["Interactive"],
+        "defaultPrompt": "Show my Docket attention and upcoming work.",
+        "logo": "./assets/icon.svg",
+        "composerIcon": "./assets/icon.svg"
+      }
+    }
+  }
+}
