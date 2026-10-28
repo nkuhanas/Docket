@@ -25,6 +25,7 @@ from docket.models import (
 from docket.models.base import utc_now
 
 EVENTS = {
+    "docket.triage.ready": "A source is ready for bounded non-authoritative triage.",
     "docket.attention.created": "An attention case has a new revision.",
     "docket.brief.ready": "A daily brief is ready.",
     "docket.reminder.due": "A committed reminder is due.",

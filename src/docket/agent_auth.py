@@ -12,6 +12,10 @@ from docket.config import Settings, get_settings
 from docket.domain.errors import DocketError
 
 AgentRole = Literal["interactive", "triage", "read_only"]
+TRIAGE_WORK_TOOLS = frozenset({
+    "docket_get_triage_context", "docket_submit_triage_analysis",
+    "docket_apply_existing_suppression",
+})
 _PERMISSIONS = {
     "interactive": frozenset({"read", "stage", "commit", "resolve_conflict"}),
     "triage": frozenset({"read", "triage"}),

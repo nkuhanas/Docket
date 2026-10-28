@@ -26,6 +26,8 @@ from docket.providers.google.gmail import (
     GmailProviderError,
     GmailReadProvider,
 )
+from docket.services.notifications import NotificationService
+from docket.services.triage_inbox import triage_notice_key
 
 _GMAIL_STREAM = "gmail:inbox"
 
@@ -229,6 +231,10 @@ class GmailIngestionService:
                         minimal_headers=_minimal_headers(message),
                         status="staged",
                     )
+                )
+                NotificationService(session, self.settings).publish(
+                    "docket.triage.ready", evidence.ref_id,
+                    key=triage_notice_key(evidence.ref_id, None),
                 )
                 staged += 1
             checkpoint.cursor = next_cursor

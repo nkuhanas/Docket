@@ -11,5 +11,6 @@ select OAuth and provide the new Docket predefined client ID. Keep credentials
 out of this directory. This is a personal plugin; no public submission is planned.
 
 The plugin's generated contract comes from `scripts/generate-tool-contracts.py`.
-The source and endpoint both expose the native read-only boundary. Creating or
+The source and endpoint expose reads and separately permitted non-authoritative
+triage; the connected agent supplies inference and scheduling. Creating or
 importing a plugin does not enable canonical writes.

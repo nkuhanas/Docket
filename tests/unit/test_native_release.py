@@ -103,7 +103,7 @@ deploy
     if backup_fails:
         assert result.returncode != 0
         assert any(call.startswith("continuity abort") for call in calls)
-        assert "compose stop -t 30 discord-ingress hermes" not in calls
+        assert "compose stop -t 30 discord-ingress hermes searxng" not in calls
         assert not any("--force-recreate" in call for call in calls)
         return
     assert result.returncode == 0, result.stderr
@@ -112,7 +112,7 @@ deploy
     release = next(i for i, call in enumerate(calls) if call.startswith("continuity release"))
     assert calls.index("postdeploy") < release
     if enabled == "false":
-        stop = calls.index("compose stop -t 30 discord-ingress hermes")
+        stop = calls.index("compose stop -t 30 discord-ingress hermes searxng")
         start = calls.index("compose up -d --no-build --force-recreate docket")
         assert calls.index("backup") < stop < start < calls.index("postdeploy")
         if gateway == "true":
@@ -124,7 +124,7 @@ deploy
     else:
         assert "prepare-hermes" in calls and "triage-setup" in calls
         assert "compose up -d --no-build --force-recreate docket hermes" in calls
-        assert "compose stop -t 30 discord-ingress hermes" not in calls
+        assert "compose stop -t 30 discord-ingress hermes searxng" not in calls
 
 
 @pytest.mark.parametrize("value,expected", [("", "yes"), ("true", "yes"), ("'false'", "no")])

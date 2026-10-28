@@ -80,13 +80,14 @@ def create_plugin_app(settings: Settings, *, verifier: OAuthVerifier | None = No
             verifier.client.close()
 
     async def landing(_request: Request) -> JSONResponse:
-        return JSONResponse({"service": "Docket", "connection": "read and notifications"})
+        return JSONResponse({"service": "Docket", "connection": "read, triage and notifications"})
 
     async def resource(_request: Request) -> JSONResponse:
         return JSONResponse({
             "resource": settings.plugin_public_origin.rstrip("/"),
             "authorization_servers": [settings.plugin_oauth_issuer],
-            "scopes_supported": [settings.plugin_read_scope, settings.plugin_events_scope],
+            "scopes_supported": [settings.plugin_read_scope, settings.plugin_events_scope,
+                                 settings.plugin_triage_scope],
             "bearer_methods_supported": ["header"],
         })
 

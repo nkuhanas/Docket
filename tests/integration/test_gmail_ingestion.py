@@ -10,6 +10,7 @@ from docket.models import (
     ConnectorCheckpoint,
     GmailSource,
     OutboxEvent,
+    PluginNotification,
     ProviderAccount,
     Source,
 )
@@ -45,8 +46,10 @@ def _account(session_factory) -> ProviderAccount:
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("plugin_enabled", [False, True])
 def test_paginated_scan_advances_checkpoint_without_duplicate_sources(
     session_factory,
+    plugin_enabled,
 ) -> None:
     account = _account(session_factory)
     provider = FakeGmailProvider(page_size=2)
@@ -60,7 +63,8 @@ def test_paginated_scan_advances_checkpoint_without_duplicate_sources(
             body_text="This body must never be staged.",
             received_at=received + timedelta(minutes=number),
         )
-    service = GmailIngestionService(session_factory, provider, _settings())
+    settings = _settings().model_copy(update={"plugin_enabled": plugin_enabled})
+    service = GmailIngestionService(session_factory, provider, settings)
 
     result = service.run_due_once(force=True)
 
@@ -89,12 +93,19 @@ def test_paginated_scan_advances_checkpoint_without_duplicate_sources(
         assert len(evidence) == 3
         assert {item.ref_id for item in evidence} == {item.ref_id for item in sources}
         assert all(item.source_kind == "gmail" for item in evidence)
+        notices = session.scalars(select(PluginNotification)).all()
+        assert len(notices) == (3 if plugin_enabled else 0)
+        assert all(notice.event_name == "docket.triage.ready" for notice in notices)
+        assert all("This body" not in str(notice.data) for notice in notices)
 
     replay = service.run_due_once(force=True)
     assert replay.completed
     assert replay.staged == 0
     with session_factory() as session:
         assert len(session.scalars(select(GmailSource)).all()) == 3
+        assert len(session.scalars(select(PluginNotification)).all()) == (
+            3 if plugin_enabled else 0
+        )
 
 
 @pytest.mark.integration
@@ -117,9 +128,7 @@ def test_invalid_history_cursor_uses_overlap_and_deduplicates(
     with session_factory() as session:
         assert len(session.scalars(select(GmailSource)).all()) == 2
         recovery = session.scalars(
-            select(AuditEvent).where(
-                AuditEvent.event_type == "gmail.cursor_recovery_started"
-            )
+            select(AuditEvent).where(AuditEvent.event_type == "gmail.cursor_recovery_started")
         ).all()
         assert len(recovery) == 1
 
@@ -208,9 +217,7 @@ def test_stale_gmail_checkpoint_emits_one_redacted_alert_per_episode(
 
     with session_factory() as session:
         alerts = session.scalars(
-            select(OutboxEvent).where(
-                OutboxEvent.event_type == "discord.system_alert.requested"
-            )
+            select(OutboxEvent).where(OutboxEvent.event_type == "discord.system_alert.requested")
         ).all()
         assert len(alerts) == 1
         assert alerts[0].payload["error_code"] == "gmail_transient"

@@ -18,6 +18,9 @@ from io import BytesIO
 from typing import Any, Literal
 from unittest.mock import patch
 
+from agent_triage_checks import (
+    test_agent_triage_callbacks_serialize_and_inbox_survives_connections,
+)
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
@@ -3262,6 +3265,7 @@ def main() -> None:
         test_authenticated_request_attribution_is_retained,
         test_oauth_identity_is_retained_in_postgresql,
         test_notifications_claim_once_and_retain_postgresql_history,
+        test_agent_triage_callbacks_serialize_and_inbox_survives_connections,
     )
     for check in checks:
         check(factory)

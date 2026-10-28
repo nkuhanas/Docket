@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from collections.abc import Sequence
@@ -10,6 +11,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from docket.agent_auth import agent_call_context, require_principal
 from docket.config import Settings, get_settings
 from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
@@ -370,14 +372,23 @@ class IntelligenceService:
         return result
 
     def get_triage_context(self) -> dict[str, Any]:
-        claim = self._claim_source(claimed_by="docket-intelligence")
+        caller = agent_call_context.get()
+        claimant = (require_principal("triage").principal_ref
+                    if caller is not None else "docket-intelligence")
+        claim = self._claim_source(claimed_by=claimant)
         sources = claim.get("sources", [])
+        stats: dict[str, Any] = {"claimed_source_count": len(sources)}
+        if claim["claim_token"] is not None:
+            stats["claim_token_sha256"] = hashlib.sha256(claim["claim_token"].encode()).hexdigest()
         with self.session_factory.begin() as session:
             triage_run = TriageRun(
-                claimed_by="docket-intelligence",
+                claimed_by=claimant,
                 contract_version=CONTRACT_VERSION,
-                contract_hash=contract_hash("triage"),
-                stats_json={"claimed_source_count": len(sources)},
+                contract_hash=contract_hash(
+                    "plugin" if caller is not None and caller.principal.integration == "oauth"
+                    else "triage"
+                ),
+                stats_json=stats,
             )
             session.add(triage_run)
             session.flush()
@@ -439,6 +450,7 @@ class IntelligenceService:
                     code="source_item_not_found", message="Claimed source disappeared."
                 )
             persisted_run.source_refs = [source.ref_id]
+            self._check_agent_claim(persisted_run, source, claim_token)
             source_ref = source.ref_id
             trusted, trusted_bytes = self._fit_trusted_context(
                 self._trusted_context(session, source)
@@ -471,6 +483,26 @@ class IntelligenceService:
             "warnings": [],
         }
         return self._fit_context_result(result)
+
+    @staticmethod
+    def _check_agent_claim(run: TriageRun, source: GmailSource, token: uuid.UUID) -> None:
+        caller = agent_call_context.get()
+        if caller is None:
+            return
+        principal = require_principal("triage")
+        claim_hash = hashlib.sha256(str(token).encode()).hexdigest()
+        if (
+            run.claimed_by != principal.principal_ref
+            or source.claimed_by != principal.principal_ref
+            or source.status != "claimed" or source.claim_token != token
+            or source.claimed_until is None or _aware(source.claimed_until) <= utc_now()
+            or source.ref_id not in run.source_refs
+            or run.stats_json.get("claim_token_sha256") != claim_hash
+        ):
+            raise DocketError(
+                code="triage_claim_invalid",
+                message="The caller does not own this active triage claim.",
+            )
 
     @staticmethod
     def _situation_key(source: GmailSource) -> str:
@@ -594,13 +626,17 @@ class IntelligenceService:
         now = utc_now()
         with self.session_factory.begin() as session:
             run = session.scalar(
-                select(TriageRun).where(TriageRun.ref_id == request.triage_run_ref)
+                select(TriageRun).where(
+                    TriageRun.ref_id == request.triage_run_ref,
+                ).with_for_update()
             )
             packet = session.scalar(
                 select(ContextPacket).where(ContextPacket.ref_id == request.context_ref)
             )
             source = session.scalar(
-                select(GmailSource).where(GmailSource.ref_id == request.source_ref)
+                select(GmailSource).where(
+                    GmailSource.ref_id == request.source_ref,
+                ).with_for_update()
             )
             if (
                 run is None
@@ -631,6 +667,7 @@ class IntelligenceService:
                     message="Source is no longer held by this TriageRun.",
                 )
             ProvenanceRefService(session).require_all(request.entity_candidate_refs)
+            self._check_agent_claim(run, source, claim_token)
             for item in request.case_items:
                 ProvenanceRefService(session).require_all(item.candidate_refs)
 
@@ -887,11 +924,15 @@ class IntelligenceService:
     ) -> dict[str, Any]:
         now = utc_now()
         with self.session_factory.begin() as session:
-            run = session.scalar(select(TriageRun).where(TriageRun.ref_id == triage_run_ref))
+            run = session.scalar(select(TriageRun).where(
+                TriageRun.ref_id == triage_run_ref,
+            ).with_for_update())
             packet = session.scalar(
                 select(ContextPacket).where(ContextPacket.ref_id == context_ref)
             )
-            source = session.scalar(select(GmailSource).where(GmailSource.ref_id == source_ref))
+            source = session.scalar(select(GmailSource).where(
+                GmailSource.ref_id == source_ref,
+            ).with_for_update())
             preference = session.scalar(
                 select(Preference).where(Preference.ref_id == preference_ref)
             )
@@ -918,6 +959,7 @@ class IntelligenceService:
                     code="triage_suppression_binding_invalid",
                     message="Suppression does not match an active bounded triage context.",
                 )
+            self._check_agent_claim(run, source, parsed_claim)
             sender_resolution = packet.trusted_context_json.get("sender_resolution", {})
             identity_refs = _sender_identity_refs(sender_resolution)
             entity_ref = (

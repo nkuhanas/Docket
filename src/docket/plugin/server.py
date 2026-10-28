@@ -1,4 +1,4 @@
-"""A native read facade using the same audited business handlers."""
+"""An agent-neutral facade with separately permitted reads and intelligence work."""
 
 from copy import deepcopy
 from typing import Annotated, Any
@@ -8,11 +8,12 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import Tool, ToolAnnotations
 from pydantic import Field
 
-from docket.agent_auth import require_principal
+from docket.agent_auth import TRIAGE_WORK_TOOLS, require_principal
 from docket.config import Settings
 from docket.database import session_scope
 from docket.mcp.instrumented import INFRASTRUCTURE_ARGUMENT_NAMES, ProvenanceMCP
 from docket.mcp.server import mcp
+from docket.mcp.triage_server import triage_mcp
 from docket.plugin.events import EventMethods, advertise_events
 from docket.providers.webhooks import WebhookPoster
 from docket.services.notifications import NotificationService
@@ -42,6 +43,13 @@ class PluginMCP(ProvenanceMCP):
             if info.name in names:
                 self.add_tool(info.fn, name=info.name, description=info.description,
                               annotations=annotations)
+        for info in triage_mcp._tool_manager.list_tools():
+            if info.name in TRIAGE_WORK_TOOLS:
+                self.add_tool(info.fn, name=info.name, description=info.description,
+                              annotations=ToolAnnotations(
+                                  read_only_hint=False, destructive_hint=False,
+                                  idempotent_hint=False, open_world_hint=False,
+                              ))
 
         @self.tool(annotations=annotations)
         def docket_get_profile() -> dict[str, Any]:
@@ -90,11 +98,12 @@ class PluginMCP(ProvenanceMCP):
                 tool.input_schema["required"] = [
                     key for key in tool.input_schema["required"] if key not in hidden
                 ]
+            scopes = [self.plugin_settings.plugin_read_scope]
+            if tool.name in TRIAGE_WORK_TOOLS:
+                scopes.append(self.plugin_settings.plugin_triage_scope)
             tool.meta = {
                 **(tool.meta or {}),
-                "securitySchemes": [{"type": "oauth2", "scopes": [
-                    self.plugin_settings.plugin_read_scope,
-                ]}],
+                "securitySchemes": [{"type": "oauth2", "scopes": scopes}],
             }
             if tool.name == "docket_get_profile":
                 tool.meta["openai/profile"] = True

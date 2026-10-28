@@ -19,6 +19,7 @@ from docket.services.gmail_ingestion import GmailIngestionService
 from docket.services.notification_delivery import NotificationDispatcher
 from docket.services.operations import OperationRunner
 from docket.services.reminders import ReminderService
+from docket.services.triage_inbox import TriageInboxService
 
 logger = structlog.get_logger(__name__)
 
@@ -52,10 +53,12 @@ class WorkerRuntime:
         retention_poll_seconds: float = 3600.0,
         notification_dispatcher: NotificationDispatcher | None = None,
         notification_poll_seconds: float = 5.0,
+        triage_inbox_service: TriageInboxService | None = None,
     ) -> None:
         self.heartbeat_seconds = heartbeat_seconds
         self.notification_dispatcher = notification_dispatcher
         self.notification_poll_seconds = notification_poll_seconds
+        self.triage_inbox_service = triage_inbox_service
         self.conversation_retention_service = conversation_retention_service
         self.retention_poll_seconds = retention_poll_seconds
         self.operation_runner = operation_runner
@@ -203,6 +206,7 @@ class WorkerRuntime:
         next_projection_repair = 0.0
         next_deferred_ingress = 0.0
         next_retention = 0.0
+        next_triage_inbox = 0.0
         while not self._stop.is_set():
             self.last_heartbeat = datetime.now(UTC)
             now = time.monotonic()
@@ -285,6 +289,11 @@ class WorkerRuntime:
                         self.daily_brief_service.run_due_once,
                     )
                     next_daily_brief = now + self.daily_brief_poll_seconds
+                if self.triage_inbox_service is not None and now >= next_triage_inbox:
+                    await self._run_leased(
+                        "cron_execution", "triage-inbox", self.triage_inbox_service.run_due_once,
+                    )
+                    next_triage_inbox = now + 30.0
                 if self.reminder_service is not None and now >= next_reminder:
                     await self._run_leased(
                         "outbox_delivery",

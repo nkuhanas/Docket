@@ -204,6 +204,7 @@ PY
     smoke_compose run --rm --no-deps \
         -e DOCKET_ENVIRONMENT=test \
         -e DOCKET_PLUGIN_ENABLED=true -e DOCKET_DISCORD_ADAPTER_ENABLED=false \
+        -e DOCKET_INTERACTIVE_AGENT_ENABLED=false \
         -e DOCKET_PLUGIN_OAUTH_ISSUER=https://identity.test/ \
         -e DOCKET_PLUGIN_OAUTH_JWKS_URL=https://identity.test/.well-known/jwks.json \
         -e 'DOCKET_PLUGIN_OAUTH_CLIENT_IDS=["synthetic-native-client"]' \
@@ -633,7 +634,7 @@ deploy() {
         if [[ -n "$(compose ps -q hermes)" ]]; then
             database_continuity quiesce-ingress-options >/dev/null
         fi
-        compose stop -t 30 discord-ingress hermes
+        compose stop -t 30 discord-ingress hermes searxng
     fi
     compose run --rm --no-deps docket sh -c \
         './.venv/bin/alembic upgrade head && ./.venv/bin/docket-provision-ingress-role'

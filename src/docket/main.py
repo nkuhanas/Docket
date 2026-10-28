@@ -52,6 +52,7 @@ from docket.services.notification_delivery import NotificationDispatcher
 from docket.services.operations import OperationRunner
 from docket.services.reminders import ReminderService
 from docket.services.runtime_logs import RuntimeLogService
+from docket.services.triage_inbox import TriageInboxService
 from docket.worker import WorkerRuntime
 
 
@@ -139,6 +140,9 @@ worker = WorkerRuntime(
     ),
     notification_dispatcher=(
         NotificationDispatcher(get_session_factory(), settings) if settings.plugin_enabled else None
+    ),
+    triage_inbox_service=(
+        TriageInboxService(get_session_factory(), settings) if settings.plugin_enabled else None
     ),
     execution_lease_coordinator=ExecutionLeaseCoordinator(get_session_factory()),
     deferred_ingress_runner=deferred_ingress_runner,
