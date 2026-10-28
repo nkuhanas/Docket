@@ -95,3 +95,27 @@ Notification slice validation: `scripts/docket check` passed 1,064 tests, Ruff
 and strict mypy across 172 source files; `scripts/docket compose-smoke` passed.
 The final signing-rotation review also passed 15 focused notification/protocol
 tests, including refresh during the dual-signature window.
+
+Native-only lifecycle selection now retains CI, drain, backup and migration
+guards while removing gateway/ingress readiness requirements. An existing gateway
+is drained and its controls quiesced before retirement; later native deployments
+need neither Hermes tokens nor the ingress database password. The enabled-adapter
+path remains available during overlap, including restricted triage cron. Switching
+it off stops that cron, so replacement triage remains a cutover acceptance item.
+Private postdeploy checks cover resource metadata, anonymous denial and isolation;
+they do not claim public ingress or signed-in host acceptance.
+
+Failure simulation exposed a pre-existing exit-handler scope bug after a backup
+failure. Cleanup now captures the exact drain reference when installed. The test
+verifies barrier abort without stopping or replacing adapters after failed backup.
+Deployment idle counts include native delivery claims and tolerate a pre-migration
+database. Lease recovery records unknown attempts and releases abandoned claims
+without network I/O during drains. Missing encryption keys cannot be regenerated
+over retained encrypted callback settings. Isolated native startup explicitly uses
+nonexistent Hermes/ingress credential paths and starts/stops the actual application.
+
+Final local lifecycle validation: `scripts/docket check` passed 1,075 tests,
+Ruff and strict mypy across 172 source files. `scripts/docket compose-smoke`
+passed the legacy workflow, PostgreSQL checks, empty migration round trip and
+native-only startup. No production deployment, public DNS/tunnel change,
+Auth0 enrollment or installed-plugin verification has occurred.

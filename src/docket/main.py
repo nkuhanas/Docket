@@ -156,7 +156,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         create_schema_for_smoke()
     with session_scope() as session:
         AccountService(session).ensure_configured_google(settings)
-    GatewayLifetimeReconciler(get_session_factory()).run_once()
+    if settings.discord_adapter_enabled:
+        GatewayLifetimeReconciler(get_session_factory()).run_once()
     await worker.start()
     async with AsyncExitStack() as stack:
         await stack.enter_async_context(mcp.session_manager.run())

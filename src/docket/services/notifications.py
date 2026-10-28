@@ -1,4 +1,4 @@
-"""Canonical notification snapshots and independently recoverable delivery intents."""
+"""Retained notification snapshots and independently recoverable delivery intents."""
 
 import base64
 import hashlib

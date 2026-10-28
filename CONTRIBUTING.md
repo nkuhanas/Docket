@@ -71,7 +71,14 @@ Docket health, Alembic head, the Hermes gateway, the pinned plugin version, the
 Queued Operations, reconciliation work, and unclaimed outbox entries survive
 the restart and do not block it.
 
-The stable Discord ingress is deliberately excluded from normal deployment.
+For a configured native-only deployment (`DOCKET_DISCORD_ADAPTER_ENABLED=false`),
+the same path retains drain/backup/migration checks, retires the existing drained
+adapter, starts only Docket and checks its OAuth boundary. Hermes, its triage cron
+and Discord ingress are then absent. Leave the adapter enabled for an overlap
+deployment until native linking/notifications and the replacement triage executor
+have passed acceptance; see [plugin setup](docs/plugin-setup.md).
+
+With the adapter enabled, stable Discord ingress is excluded from normal deployment.
 Deploy ingress-only code with `scripts/docket deploy-ingress`; that path drains
 execution, removes all mutation-authorizing semantic controls, overlaps a
 temporary append-only ingress writer, replaces the primary writer, and

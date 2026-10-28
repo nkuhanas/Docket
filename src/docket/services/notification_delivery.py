@@ -219,3 +219,25 @@ class NotificationDispatcher:
                     if sub is not None and sub.version == version:
                         self.subscriptions.stop(sub)
         return True
+
+    def recover_expired_leases(self) -> int:
+        """Release abandoned claims without sending, including during a deploy drain."""
+        now = utc_now()
+        with self.factory.begin() as session:
+            rows = session.scalars(select(MCPEventDelivery).where(
+                MCPEventDelivery.status == "running", MCPEventDelivery.lease_until <= now,
+            ).with_for_update(skip_locked=True)).all()
+            for row in rows:
+                prior = session.scalar(select(MCPEventAttempt).where(
+                    MCPEventAttempt.delivery_ref == row.ref_id,
+                    MCPEventAttempt.attempt_number == row.attempts,
+                    MCPEventAttempt.status == "running",
+                ))
+                if prior is not None:
+                    prior.status, prior.finished_at = "unknown", now
+                    prior.error_code = "delivery_lease_expired"
+                row.status = "pending" if row.attempts < 8 else "failed"
+                row.error_code = "delivery_lease_expired"
+                row.lease_token, row.lease_until = None, None
+                row.next_attempt_at = now
+            return len(rows)

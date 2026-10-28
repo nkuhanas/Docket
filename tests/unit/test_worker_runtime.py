@@ -70,6 +70,9 @@ async def test_slow_callback_does_not_block_provider_execution():
     entered, release = threading.Event(), threading.Event()
 
     class SlowNotifications:
+        def recover_expired_leases(self):
+            return 0
+
         def run_due_once(self):
             entered.set()
             assert release.wait(timeout=3)

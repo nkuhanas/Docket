@@ -306,7 +306,11 @@ def test_expired_delivery_lease_retains_unknown_attempt_and_replays_same_event(
                 status="running",
             )
         )
-    assert NotificationDispatcher(session_factory, settings, poster).run_due_once()
+    dispatcher = NotificationDispatcher(session_factory, settings, poster)
+    assert dispatcher.recover_expired_leases() == 1
+    assert len(poster.calls) == 1
+    assert dispatcher.recover_expired_leases() == 0
+    assert dispatcher.run_due_once()
     assert json.loads(poster.calls[-1][1])["eventId"] == notice
     with session_factory() as session:
         assert [

@@ -201,6 +201,16 @@ PY
     smoke_compose exec -T postgres psql -U docket -d docket_migration_roundtrip -Atc \
         "SELECT to_regclass('public.assembly_operations'), to_regclass('public.assembly_executions')" \
         | grep -Fx 'assembly_operations|assembly_executions' >/dev/null
+    smoke_compose run --rm --no-deps \
+        -e DOCKET_ENVIRONMENT=test \
+        -e DOCKET_PLUGIN_ENABLED=true -e DOCKET_DISCORD_ADAPTER_ENABLED=false \
+        -e DOCKET_PLUGIN_OAUTH_ISSUER=https://identity.test/ \
+        -e DOCKET_PLUGIN_OAUTH_JWKS_URL=https://identity.test/.well-known/jwks.json \
+        -e 'DOCKET_PLUGIN_OAUTH_CLIENT_IDS=["synthetic-native-client"]' \
+        -e DOCKET_TO_HERMES_TOKEN_FILE=/nonexistent/unused \
+        -e HERMES_TO_DOCKET_TOKEN_FILE=/nonexistent/unused \
+        -e DOCKET_INGRESS_DB_PASSWORD_FILE=/nonexistent/unused \
+        docket ./.venv/bin/python - < "$ROOT/scripts/plugin-native-smoke.py"
 )
 
 build_image() {
@@ -225,14 +235,34 @@ env_value() {
         "$ROOT/.env"
 }
 
+discord_adapter_enabled() {
+    local value
+    value=$(env_value DOCKET_DISCORD_ADAPTER_ENABLED)
+    value=${value#\"}; value=${value%\"}
+    value=${value#\'}; value=${value%\'}
+    case "${value,,}" in
+        ""|true|1|yes|on) return 0 ;;
+        false|0|no|off) return 1 ;;
+        *) die "DOCKET_DISCORD_ADAPTER_ENABLED must be a boolean" ;;
+    esac
+}
+
 operational_counts() {
-    compose exec -T postgres psql -U docket -d docket -Atc \
+    local counts operations outbox native=0
+    counts=$(compose exec -T postgres psql -U docket -d docket -Atc \
         "select
            (select count(*) from operations
              where status = 'running')
            || ' ' ||
            (select count(*) from outbox_events
-             where status = 'delivering');"
+             where status = 'delivering');")
+    read -r operations outbox <<<"$counts"
+    if [[ "$(compose exec -T postgres psql -U docket -d docket -Atc \
+        "select to_regclass('public.mcp_event_deliveries') is not null;")" == "t" ]]; then
+        native=$(compose exec -T postgres psql -U docket -d docket -Atc \
+            "select count(*) from mcp_event_deliveries where status = 'running';")
+    fi
+    printf '%s %s\n' "$operations" "$((outbox + native))"
 }
 
 assert_operationally_idle() {
@@ -300,6 +330,7 @@ predeploy() {
 }
 
 ensure_ingress_credential() {
+    discord_adapter_enabled || return 0
     local configured_credentials_dir
     local credential_path
     configured_credentials_dir=$(env_value DOCKET_CREDENTIALS_DIR)
@@ -338,9 +369,16 @@ ensure_attachment_encryption_key() {
             retained_blob_count=$(compose exec -T postgres psql -U docket -d docket -Atc \
                 "select count(*) from encrypted_attachment_blobs;")
         fi
+        if [[ "$(compose exec -T postgres psql -U docket -d docket -Atc \
+            "select to_regclass('public.mcp_event_subscriptions') is not null;")" == "t" ]]; then
+            local retained_callback_count
+            retained_callback_count=$(compose exec -T postgres psql -U docket -d docket -Atc \
+                "select count(*) from mcp_event_subscriptions where octet_length(configuration) > 0;")
+            retained_blob_count=$((retained_blob_count + retained_callback_count))
+        fi
     fi
     [[ "$retained_blob_count" == "0" ]] ||
-        die "attachment encryption key is missing while encrypted evidence exists"
+        die "encryption key is missing while encrypted evidence or callbacks exist"
     mkdir -p "$(dirname "$credential_path")"
     umask 077
     require_command openssl
@@ -350,6 +388,7 @@ ensure_attachment_encryption_key() {
 }
 
 request_hermes_drain() {
+    [[ -n "$(compose ps -q hermes)" ]] || return 0
     local principal=${1:-scripts/docket deploy}
     compose exec -T --user hermes hermes python -c \
         "from gateway.drain_control import write_drain_request; write_drain_request(principal='$principal', suppress_notification=True)" \
@@ -357,12 +396,14 @@ request_hermes_drain() {
 }
 
 clear_hermes_drain() {
+    [[ -n "$(compose ps -q hermes)" ]] || return 0
     compose exec -T --user hermes hermes python -c \
         "from gateway.drain_control import clear_drain_request; clear_drain_request()" \
         >/dev/null 2>&1 || true
 }
 
 wait_for_hermes_drain() {
+    [[ -n "$(compose ps -q hermes)" ]] || return 0
     local attempt
     local state
     for attempt in {1..180}; do
@@ -379,6 +420,7 @@ wait_for_hermes_drain() {
 }
 
 wait_for_discord_ingress() {
+    discord_adapter_enabled || return 0
     local service=${1:-discord-ingress}
     local attempt
     local container
@@ -498,6 +540,11 @@ postdeploy() {
     wait_for_discord_ingress
     compose exec -T docket ./.venv/bin/alembic current | rg -q '\(head\)' ||
         die "Docket database is not at the Alembic head"
+    compose exec -T docket ./.venv/bin/python - < "$ROOT/scripts/plugin-runtime-readiness.py"
+    if ! discord_adapter_enabled; then
+        assert_operationally_idle
+        return
+    fi
     expected_plugin_version=$(
         awk '$1 == "version:" { print $2; exit }' \
             "$ROOT/hermes/plugin/docket_discord/plugin.yaml"
@@ -523,16 +570,13 @@ deploy() {
     local log_first_line=1
     local revision
     local timestamp
-    local cleanup_on_failure=0
-
     deploy_failure_cleanup() {
-        if ((cleanup_on_failure)); then
-            if [[ -n "$drain_ref" ]]; then
-                database_continuity abort "$drain_ref" >/dev/null 2>&1 || true
-            fi
-            clear_hermes_drain
-            printf 'Deployment failed; released the drain barrier without killing active work.\n' >&2
+        local failed_drain_ref=$1
+        if [[ -n "$failed_drain_ref" ]]; then
+            database_continuity abort "$failed_drain_ref" >/dev/null 2>&1 || true
         fi
+        clear_hermes_drain
+        printf 'Deployment failed; released the drain barrier without killing active work.\n' >&2
     }
 
     revision=$(git rev-parse --short=12 HEAD)
@@ -548,13 +592,15 @@ deploy() {
     else
         rollback_tag="none"
     fi
-    "$ROOT/scripts/prepare-hermes-home.sh"
+    if discord_adapter_enabled; then
+        "$ROOT/scripts/prepare-hermes-home.sh"
+    fi
     if [[ -f "$ROOT/.runtime/hermes/logs/agent.log" ]]; then
         log_first_line=$(( $(wc -l <"$ROOT/.runtime/hermes/logs/agent.log") + 1 ))
     fi
 
     build_image
-    if [[ -z "$(compose ps -q discord-ingress)" ]]; then
+    if discord_adapter_enabled && [[ -z "$(compose ps -q discord-ingress)" ]]; then
         backup=$(backup_database)
         printf 'Pre-bootstrap database backup created: %s\n' "$backup"
         compose run --rm --no-deps docket sh -c \
@@ -564,8 +610,9 @@ deploy() {
     fi
     wait_for_discord_ingress
     drain_ref=$(request_database_drain)
-    cleanup_on_failure=1
-    trap deploy_failure_cleanup EXIT
+    # Capture the exact reference now: function-local variables are out of scope
+    # when an errexit unwinds this function before the EXIT trap runs.
+    trap "$(printf 'deploy_failure_cleanup %q' "$drain_ref")" EXIT
     printf 'Deployment drain requested: %s\n' "$drain_ref"
     request_hermes_drain
     # Confirm the durable execution barrier before waiting for Hermes. New
@@ -578,22 +625,35 @@ deploy() {
     wait_for_operational_idle
     backup=$(backup_database)
     printf 'Drained database backup created: %s\n' "$backup"
-    python3 "$ROOT/scripts/quarantine-hermes-skills.py" "$ROOT/.runtime/hermes"
+    if discord_adapter_enabled; then
+        python3 "$ROOT/scripts/quarantine-hermes-skills.py" "$ROOT/.runtime/hermes"
+    else
+        # The Operator-selected configuration retires the old conversational
+        # adapter after all pre-barrier work drained and a backup was retained.
+        if [[ -n "$(compose ps -q hermes)" ]]; then
+            database_continuity quiesce-ingress-options >/dev/null
+        fi
+        compose stop -t 30 discord-ingress hermes
+    fi
     compose run --rm --no-deps docket sh -c \
         './.venv/bin/alembic upgrade head && ./.venv/bin/docket-provision-ingress-role'
-    compose up -d --no-build --force-recreate docket hermes
-    wait_for_hermes "$log_first_line"
-    gmail_triage_setup
+    if discord_adapter_enabled; then
+        compose up -d --no-build --force-recreate docket hermes
+        wait_for_hermes "$log_first_line"
+        gmail_triage_setup
+    else
+        compose up -d --no-build --force-recreate docket
+    fi
     postdeploy
     clear_hermes_drain
     database_continuity release "$drain_ref" >/dev/null
-    cleanup_on_failure=0
     trap - EXIT
     printf 'Deployed %s\nBackup: %s\nPrevious image: %s\n' \
         "$revision" "$backup" "$rollback_tag"
 }
 
 deploy_ingress() {
+    discord_adapter_enabled || die "Discord ingress is disabled in this deployment"
     predeploy
     local drain_ref=""
     local cleanup_on_failure=0
@@ -914,6 +974,7 @@ drop_cutover_database() {
 }
 
 production_reset() (
+    discord_adapter_enabled || die "The historical reset workflow requires the Discord adapter"
     local evidence_dir_input=${1:-}
     local execution_flag=${2:-}
     [[ -n "$evidence_dir_input" && "$execution_flag" == "--execute" ]] ||

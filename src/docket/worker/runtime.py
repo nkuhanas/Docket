@@ -222,6 +222,8 @@ class WorkerRuntime:
                     next_reconciliation = now + self.reconciliation_poll_seconds
                 if now >= next_recovery:
                     await asyncio.to_thread(self.operation_runner.recover_expired_leases)
+                    if self.notification_dispatcher is not None:
+                        await asyncio.to_thread(self.notification_dispatcher.recover_expired_leases)
                     if self.discord_projection_runner is not None:
                         await asyncio.to_thread(
                             self.discord_projection_runner.recover_expired_leases

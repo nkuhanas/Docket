@@ -7,6 +7,8 @@ from typing import Any, cast
 from psycopg import sql
 from sqlalchemy import create_engine
 
+from docket.config import get_settings
+
 _INGRESS_ROLE = "docket_ingress"
 _READ_TABLES = (
     "attachment_evidence_metadata",
@@ -101,6 +103,8 @@ def provision_ingress_role(database_url: str, password: str) -> None:
 
 
 def main() -> None:
+    if not get_settings().discord_adapter_enabled:
+        return
     password_file = Path(os.environ["DOCKET_INGRESS_DB_PASSWORD_FILE"])
     password = password_file.read_text(encoding="utf-8").strip()
     if not password:
