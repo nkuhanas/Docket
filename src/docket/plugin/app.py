@@ -18,6 +18,7 @@ from docket.config import Settings
 from docket.database import get_session_factory
 from docket.domain.errors import DocketError
 from docket.plugin.server import PluginMCP
+from docket.providers.webhooks import WebhookPoster
 from docket.services.oauth import OAuthVerifier
 
 
@@ -64,9 +65,10 @@ class PluginAuthentication(BaseHTTPMiddleware):
 
 
 def create_plugin_app(settings: Settings, *, verifier: OAuthVerifier | None = None,
-                      factory: sessionmaker[Session] | None = None) -> Starlette:
+                      factory: sessionmaker[Session] | None = None,
+                      poster: WebhookPoster | None = None) -> Starlette:
     verifier = verifier or OAuthVerifier(settings)
-    server = PluginMCP(settings)
+    server = PluginMCP(settings, poster)
     transport = server.streamable_http_app(max_request_body_size=131072)
 
     @asynccontextmanager
@@ -78,7 +80,7 @@ def create_plugin_app(settings: Settings, *, verifier: OAuthVerifier | None = No
             verifier.client.close()
 
     async def landing(_request: Request) -> JSONResponse:
-        return JSONResponse({"service": "Docket", "connection": "read-only"})
+        return JSONResponse({"service": "Docket", "connection": "read and notifications"})
 
     async def resource(_request: Request) -> JSONResponse:
         return JSONResponse({

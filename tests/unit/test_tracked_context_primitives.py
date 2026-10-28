@@ -36,8 +36,11 @@ def _ref(prefix: str) -> str:
 
 
 def test_clean_public_reference_registry_has_one_meaning_per_prefix() -> None:
-    assert len(PUBLIC_REF_TYPES) == 47
-    assert len(PUBLIC_REF_PREFIX_BY_TYPE) == 47
+    assert len(PUBLIC_REF_TYPES) == 50
+    assert len(PUBLIC_REF_PREFIX_BY_TYPE) == 50
+    assert prefix_for_type("PluginNotification") == "notice"
+    assert prefix_for_type("MCPEventSubscription") == "sub"
+    assert prefix_for_type("MCPEventDelivery") == "ndel"
     assert prefix_for_type("OAuthPrincipal") == "prn"
     assert prefix_for_type("AuthenticatedRequest") == "req"
     assert prefix_for_type("ConversationRecord") == "rec"

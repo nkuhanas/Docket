@@ -1,5 +1,7 @@
+import base64
 import json
 import time
+from unittest.mock import Mock
 
 import httpx
 import httpx2
@@ -13,6 +15,7 @@ from sqlalchemy import func, select
 from docket.config import get_settings
 from docket.models import AuthenticatedRequest, ToolInvocation
 from docket.plugin.app import create_plugin_app
+from docket.providers.webhooks import WebhookResponse
 from docket.services.oauth import OAuthPrincipalService, OAuthVerifier
 from docket.tool_contracts import contract_tool_names
 
@@ -38,7 +41,12 @@ def linked_plugin(session_factory):
     }, key, algorithm="RS256", headers={"kid": "test-key"})
     with session_factory.begin() as session:
         ref = OAuthPrincipalService(session, settings).approve("owner", events=True).ref_id
-    app = create_plugin_app(settings, verifier=verifier, factory=session_factory)
+    poster = Mock()
+    poster.post.side_effect = lambda _url, body, _headers: WebhookResponse(200, json.dumps({
+        "challenge": json.loads(body)["challenge"],
+    }).encode())
+    app = create_plugin_app(settings, verifier=verifier, factory=session_factory, poster=poster)
+    app.state.test_poster = poster
     return app, settings, token, ref
 
 
@@ -62,7 +70,7 @@ async def test_linked_plugin_schema_profile_audit_and_no_background_writes(
     ):
         tools = (await client.list_tools()).tools
         assert {tool.name for tool in tools} == contract_tool_names("plugin")
-        assert len(tools) == 19
+        assert len(tools) == 21
         assert all(tool.annotations.read_only_hint for tool in tools)
         assert all(not any(
             value.get("x-docket-internal") for value in tool.input_schema["properties"].values()
@@ -115,3 +123,44 @@ async def test_disabled_public_plugin_returns_no_metadata(session_factory):
     async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app)) as http:
         response = await http.get("https://docket.you/.well-known/oauth-protected-resource")
         assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_modern_events_discovery_verification_refresh_and_stop(
+    linked_plugin, session_factory,
+):
+    app, _, token, _ = linked_plugin
+    async with (
+        app.router.lifespan_context(app),
+        httpx2.AsyncClient(transport=httpx2.ASGITransport(app)) as http,
+    ):
+        async def request(method, params):
+            response = await http.post("https://docket.you/mcp/", headers={
+                "Authorization": f"Bearer {token}", "MCP-Protocol-Version": "2026-07-28",
+                "Mcp-Method": method, "Accept": "application/json, text/event-stream",
+            }, json={"jsonrpc": "2.0", "id": method, "method": method, "params": {
+                **params, "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                },
+            }})
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        discovery = await request("server/discover", {})
+        assert discovery["result"]["capabilities"]["events"] == {}
+        catalog = await request("events/list", {})
+        assert len(catalog["result"]["events"]) == 4
+        params = {"name": "docket.attention.created", "arguments": {}, "delivery": {
+            "mode": "webhook", "url": "https://receiver.example.com/callback",
+            "secret": "whsec_" + base64.b64encode(b"a" * 32).decode(),
+        }}
+        first = await request("events/subscribe", params)
+        assert first["result"]["id"].startswith("sub_")
+        assert (await request("events/subscribe", params))["result"]["id"] == first["result"]["id"]
+        assert app.state.test_poster.post.call_count == 1
+        params["delivery"].pop("secret")
+        stopped = (await request("events/unsubscribe", params))["result"]
+        assert {k: v for k, v in stopped.items() if k not in {"resultType", "_meta"}} == {}
+        with session_factory() as session:
+            assert session.scalar(select(func.count()).select_from(AuthenticatedRequest)) == 0

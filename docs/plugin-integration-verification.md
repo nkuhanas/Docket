@@ -59,3 +59,39 @@ ASGI account-linking tests verify schema/profile parity, public route isolation,
 wrong credentials, revocation and copied foreground context. Candidate plugin
 source and an Auth0/network handoff are prepared. The public hostname, provider
 configuration, exported package and installed plugin remain unverified.
+
+Migration `20261028b2c3` adds an immutable retained inbox, encrypted subscriptions,
+leased deliveries and retained attempts. Notification creation shares the source
+transaction. Attention revisions, briefs, reminders and operation status publish
+generic summaries and public references; untrusted source text is absent from
+events. The native profile now exposes 21 read tools, including inbox list/get.
+Modern MCP discovery advertises the webhook Events extension; legacy tools remain
+available without advertising unsupported legacy event methods.
+
+Verification uses one-use signed callback challenges, deterministic subscription
+identities, bounded verification caching and finite lifetimes. Renewal, secret
+rotation, unlink/revocation, expiration and reapproval epochs preserve ownership.
+Stopped subscriptions purge their encrypted configuration. Outbound HTTPS pins
+validated public DNS addresses while preserving TLS hostname checks and rejects
+redirects/private destinations. Callback secrets and URLs are excluded from audits
+and routine error logs. An admitted send may finish after concurrent revocation.
+
+Webhook acceptance is recorded separately from inbox availability and Operator
+visibility. Transient failures retry with bounded backoff, stable event IDs/body
+and fresh signatures; permanent failures retain inbox and attempt history. An
+expired delivery lease records the interrupted attempt as unknown before replay.
+This projection replay never retries a Google provider mutation. A separate worker
+loop prevents callback outages from blocking provider execution.
+
+PostgreSQL smoke verifies concurrent claim exclusion, commits before network I/O,
+immutable inbox/subscription/delivery identities, immutable completed attempts and
+retained-history downgrade refusal. Empty migrations downgrade and upgrade again.
+The full gate additionally covers actual modern Events HTTP discovery,
+subscribe/refresh/unsubscribe, filter matching, atomic rollback, pagination,
+Standard Webhooks signatures, revoked access, restart recovery and Discord-free
+reminder availability. No external callback or ChatGPT-hosted acceptance has run.
+
+Notification slice validation: `scripts/docket check` passed 1,064 tests, Ruff
+and strict mypy across 172 source files; `scripts/docket compose-smoke` passed.
+The final signing-rotation review also passed 15 focused notification/protocol
+tests, including refresh during the dual-signature window.

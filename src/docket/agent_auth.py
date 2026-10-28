@@ -29,6 +29,7 @@ class AgentPrincipal:
     expires_at: datetime | None = None
     enabled: bool = True
     integration: Literal["service", "oauth"] = "service"
+    grant_epoch: int | None = None
 
     def require(self, permission: str) -> None:
         expiry = self.expires_at

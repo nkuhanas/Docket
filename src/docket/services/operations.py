@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from docket.config import Settings, get_settings
 from docket.domain.canonical import sha256_json
 from docket.domain.enums import AttemptKind, AttemptStatus, OperationStatus
 from docket.domain.errors import DocketError
@@ -35,6 +36,7 @@ from docket.providers.google.calendar import (
     CalendarUnknownOutcome,
     event_matches_request,
 )
+from docket.services.notifications import NotificationService
 from docket.services.provider_intents import ProviderIntentService
 
 
@@ -156,6 +158,7 @@ class OperationRunner:
         max_attempts: int = 5,
         consistency_window_seconds: int = 30,
         execution_enabled: bool = True,
+        settings: Settings | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.provider = provider
@@ -163,6 +166,7 @@ class OperationRunner:
         self.max_attempts = max_attempts
         self.consistency_window_seconds = consistency_window_seconds
         self.execution_enabled = execution_enabled
+        self.settings = settings or get_settings()
 
     @staticmethod
     def _target(session: Session, operation: Operation) -> OperationTarget:
@@ -611,30 +615,35 @@ class OperationRunner:
         target.lease_token = None
         target.leased_until = None
 
-    @staticmethod
     def _audit(
+        self,
         session: Session,
         operation: Operation,
         target: OperationTarget,
         event_type: str,
     ) -> None:
-        session.add(
-            AuditEvent(
-                event_type=event_type,
-                entity_type="operation",
-                entity_id=operation.id,
-                actor_type="docket_worker",
-                actor_id=None,
-                primary_ref=operation.ref_id,
-                affected_refs=[operation.ref_id, target.canonical_target_ref],
-                basis_refs=list(operation.basis_refs),
-                data={
-                    "operation_type": operation.operation_type,
-                    "target_ref": target.canonical_target_ref,
-                    "attempt_count": operation.attempt_count,
-                },
-            )
+        audit = AuditEvent(
+            event_type=event_type,
+            entity_type="operation",
+            entity_id=operation.id,
+            actor_type="docket_worker",
+            actor_id=None,
+            primary_ref=operation.ref_id,
+            affected_refs=[operation.ref_id, target.canonical_target_ref],
+            basis_refs=list(operation.basis_refs),
+            data={
+                "operation_type": operation.operation_type,
+                "target_ref": target.canonical_target_ref,
+                "attempt_count": operation.attempt_count,
+            },
         )
+        session.add(audit)
+        if self.settings.plugin_enabled:
+            session.flush()
+            NotificationService(session, self.settings).publish(
+                "docket.operation.status_changed", operation.ref_id,
+                key=f"operation-audit:{audit.ref_id}",
+            )
 
     @staticmethod
     def _upsert_binding(

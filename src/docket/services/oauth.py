@@ -130,6 +130,7 @@ class OAuthVerifier:
                 principal_ref=row.ref_id, operator_ref=row.operator_ref, role="read_only",
                 permissions=frozenset(permissions), integration="oauth",
                 expires_at=datetime.fromtimestamp(claims["exp"], UTC),
+                grant_epoch=row.valid_after,
             )
 
 

@@ -377,6 +377,9 @@ class Settings(BaseSettings):
                 or self.plugin_read_scope == self.plugin_events_scope
             ):
                 raise ValueError("Plugin read/events scopes must be distinct single scope names")
+        if (self.environment is Environment.PRODUCTION
+                and not self.discord_adapter_enabled and not self.plugin_enabled):
+            raise ValueError("Production without Discord requires the native notification inbox")
         if self.backup_enabled and (
             self.backup_age_recipient is None or not self.backup_age_recipient.startswith("age1")
         ):
