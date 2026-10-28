@@ -136,9 +136,9 @@ independently of Hermes. The client manages its own credentials and refresh flow
 ## Acceptance before cutover
 
 The native profile exposes 24 tools: the 18 existing reads, the stable account
-profile, inbox list/get and three bounded triage tools. Five modern MCP Events
-cover ready triage work, attention revisions, published briefs, due reminders and
-provider-operation status. Events carry
+profile, inbox list/get and three bounded triage tools. Six modern MCP Events
+cover ready triage work, attention revisions, published briefs, due reminders,
+provider-operation status and operational alerts. Events carry
 generic summaries and public references; use the bounded read tools for context.
 Subscriptions are notification permissions and grant no canonical authority.
 
@@ -162,6 +162,14 @@ remove inbox entries or block provider execution. Deliveries retry transient
 failures with backoff for at most eight attempts, preserve the event ID/body and
 sign each attempt freshly. `410` stops the subscription; `413` fails that delivery.
 Events have no protocol replay cursor; catch up through the retained inbox.
+
+Gmail staleness and encrypted-backup failures also enter the inbox as
+`docket.system.alert`, with bounded server-authored text and a public account or
+audit reference. Retries keep the first alert for that episode; backup retries do
+not flood the inbox. Native-only mode creates no Discord delivery for these
+alerts. Existing operational audits and retry behavior remain intact.
+Inbox pages also respect a byte budget, so long alert summaries produce a
+continuation cursor instead of an oversized tool response or skipped records.
 
 With `DOCKET_DISCORD_ADAPTER_ENABLED=false`, new attention, brief and reminder
 projections create inbox records without Discord outbox work. Keep

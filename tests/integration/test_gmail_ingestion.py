@@ -190,11 +190,15 @@ def test_scan_selects_gmail_capable_account_after_other_google_account(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("native", [False, True])
 def test_stale_gmail_checkpoint_emits_one_redacted_alert_per_episode(
-    session_factory,
+    session_factory, native,
 ) -> None:
     account = _account(session_factory)
-    settings = _settings().model_copy(update={"gmail_stale_seconds": 300})
+    settings = _settings().model_copy(update={
+        "gmail_stale_seconds": 300, "plugin_enabled": native,
+        "discord_adapter_enabled": not native,
+    })
     stale_success = datetime.now(UTC) - timedelta(hours=1)
     with session_factory.begin() as session:
         session.add(
@@ -219,6 +223,13 @@ def test_stale_gmail_checkpoint_emits_one_redacted_alert_per_episode(
         alerts = session.scalars(
             select(OutboxEvent).where(OutboxEvent.event_type == "discord.system_alert.requested")
         ).all()
-        assert len(alerts) == 1
-        assert alerts[0].payload["error_code"] == "gmail_transient"
-        assert "message" not in str(alerts[0].payload).casefold()
+        assert len(alerts) == (0 if native else 1)
+        if not native:
+            assert alerts[0].payload["error_code"] == "gmail_transient"
+            assert "message" not in str(alerts[0].payload).casefold()
+        notices = session.scalars(select(PluginNotification)).all()
+        assert len(notices) == (1 if native else 0)
+        if native:
+            assert notices[0].event_name == "docket.system.alert"
+            assert notices[0].subject_ref == account.ref_id
+            assert "Gmail ingestion is stale" in notices[0].summary

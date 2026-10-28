@@ -25,6 +25,7 @@ from docket.models import (
 from docket.models.base import utc_now
 
 EVENTS = {
+    "docket.system.alert": "Docket has an operational alert.",
     "docket.triage.ready": "A source is ready for bounded non-authoritative triage.",
     "docket.attention.created": "An attention case has a new revision.",
     "docket.brief.ready": "A daily brief is ready.",
@@ -48,12 +49,15 @@ class NotificationService:
         self.session, self.settings = session, settings
 
     def publish(
-        self, name: str, subject_ref: str, *, key: str, occurred_at: datetime | None = None
+        self, name: str, subject_ref: str, *, key: str, occurred_at: datetime | None = None,
+        summary: str | None = None,
     ) -> PluginNotification | None:
         if not self.settings.plugin_enabled:
             return None
         if name not in EVENTS or not is_public_ref(subject_ref) or len(key) > 255:
             raise ValueError("A supported event, public subject and bounded identity are required")
+        if summary is not None and (name != "docket.system.alert" or not 1 <= len(summary) <= 512):
+            raise ValueError("Only bounded system alert text can override a summary")
         identity_lock(self.session, "notification:" + key)
         existing = self.session.scalar(
             select(PluginNotification).where(
@@ -73,9 +77,9 @@ class NotificationService:
             operator_ref=self.settings.canonical_operator_ref,
             event_name=name,
             subject_ref=subject_ref,
-            summary=EVENTS[name],
+            summary=summary or EVENTS[name],
             deduplication_key=key,
-            data={"subject_ref": subject_ref, "summary": EVENTS[name]},
+            data={"subject_ref": subject_ref, "summary": summary or EVENTS[name]},
             occurred_at=occurred_at or now,
         )
         self.session.add(notice)
@@ -105,6 +109,25 @@ class NotificationService:
                     )
                 )
         return notice
+
+    def system_alert(self, subject_ref: str, *, key: str, summary: str,
+                     occurred_at: datetime) -> PluginNotification | None:
+        """Retain the first observation of an alert episode across later retries."""
+        if not self.settings.plugin_enabled:
+            return None
+        if len(key) > 255:
+            raise ValueError("A bounded alert identity is required")
+        identity_lock(self.session, "notification:" + key)
+        existing = self.session.scalar(select(PluginNotification).where(
+            PluginNotification.deduplication_key == key,
+        ))
+        if existing is not None:
+            if (existing.event_name != "docket.system.alert"
+                    or existing.operator_ref != self.settings.canonical_operator_ref):
+                raise ValueError("An alert identity cannot change its owner or meaning")
+            return existing
+        return self.publish("docket.system.alert", subject_ref, key=key,
+                            summary=summary, occurred_at=occurred_at)
 
     def _view(self, notice: PluginNotification) -> dict[str, Any]:
         return {
@@ -144,9 +167,17 @@ class NotificationService:
                 PluginNotification.ref_id.desc(),
             ).limit(limit + 1)
         ).all()
-        page = rows[:limit]
+        page: list[PluginNotification] = []
+        byte_count = 512  # Reserve room for the envelope and continuation cursor.
+        for row in rows[:limit]:
+            size = len(json.dumps(self._view(row), separators=(",", ":")).encode())
+            if byte_count + size > 12288:
+                break
+            page.append(row)
+            byte_count += size + 1
+        truncated = len(rows) > len(page)
         next_cursor = None
-        if len(rows) > limit:
+        if truncated and page:
             last = page[-1]
             raw = json.dumps([aware(last.created_at).isoformat(), last.ref_id]).encode()
             next_cursor = base64.urlsafe_b64encode(raw).decode().rstrip("=")
@@ -154,7 +185,7 @@ class NotificationService:
             "ok": True,
             "items": [self._view(row) for row in page],
             "count": len(page),
-            "truncated": len(rows) > limit,
+            "truncated": truncated,
             "cursor": next_cursor,
         }
 

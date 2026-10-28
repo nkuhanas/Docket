@@ -2,10 +2,11 @@ import json
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+import pytest
 from sqlalchemy import select, text
 
 from docket.config import get_settings
-from docket.models import AuditEvent, BackupRun, OutboxEvent
+from docket.models import AuditEvent, BackupRun, OutboxEvent, PluginNotification
 from docket.services.backups import (
     BackupArtifact,
     BackupError,
@@ -90,7 +91,8 @@ def test_daily_backup_is_durable_and_idempotent(session_factory, tmp_path) -> No
         assert len(audits) == 2
 
 
-def test_backup_failure_retries_and_emits_one_alert(session_factory, tmp_path) -> None:
+@pytest.mark.parametrize("native", [False, True])
+def test_backup_failure_retries_and_emits_one_alert(session_factory, tmp_path, native) -> None:
     _version_table(session_factory)
 
     def clock() -> datetime:
@@ -99,7 +101,9 @@ def test_backup_failure_retries_and_emits_one_alert(session_factory, tmp_path) -
     executor = FakeBackupExecutor(error_code="backup_dump_failed")
     service = BackupService(
         session_factory,
-        _settings(tmp_path),
+        _settings(tmp_path).model_copy(update={
+            "plugin_enabled": native, "discord_adapter_enabled": not native,
+        }),
         executor=executor,
         clock=clock,
     )
@@ -122,8 +126,14 @@ def test_backup_failure_retries_and_emits_one_alert(session_factory, tmp_path) -
         assert run.status == "failed"
         assert run.attempt_count == 2
         assert run.error_code == "backup_dump_failed"
-        assert len(alerts) == 1
+        assert len(alerts) == (0 if native else 1)
         assert len(failures) == 2
+        notices = session.scalars(select(PluginNotification)).all()
+        assert len(notices) == (1 if native else 0)
+        if native:
+            assert notices[0].event_name == "docket.system.alert"
+            assert notices[0].subject_ref in {audit.ref_id for audit in failures}
+            assert "backup failed" in notices[0].summary
 
 
 def _write_artifact(directory: Path, local_date: date) -> Path:

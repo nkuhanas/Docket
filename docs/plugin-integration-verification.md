@@ -161,3 +161,16 @@ including PostgreSQL ready-work deduplication, concurrent analysis completion an
 native-only startup with no gateway credentials. Native correlation-token rejection
 now occurs before any gateway signing-key access. No public endpoint or production
 configuration has been changed.
+
+The remaining live worker alerts (Gmail ingestion staleness and encrypted-backup
+failure) now publish `docket.system.alert`, the sixth event definition. Summaries
+come from bounded trusted server templates, with public account/audit references
+and no provider bodies or raw errors. Each episode retains its first inbox alert;
+backup retry audits remain distinct. Native-only mode skips the Discord outbox
+for these alerts, preserving alert visibility after Hermes retirement.
+
+Final alert/inbox validation passed `scripts/docket check`: 1,091 tests, Ruff and
+strict mypy across 173 source files. `scripts/docket compose-smoke` passed,
+including the provider-neutral triage PostgreSQL checks and native-only startup.
+The inbox additionally pages by serialized bytes; a long-summary test traverses
+all records without oversize responses, duplicates or skipped notifications.
