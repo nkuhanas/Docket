@@ -1,0 +1,25 @@
+# App-side routing example only. Keep the listener private behind the reviewed
+# Cloudflare/Caddy/mTLS ingress, matching the Aphelion deployment pattern.
+# Do not expose the application's root API directly to the public network.
+http://127.0.0.1:8082 {
+    @mcp path /mcp /mcp/
+    handle @mcp {
+        rewrite * /plugin/mcp/
+        reverse_proxy 127.0.0.1:8000 {
+            header_up Host docket.you
+            flush_interval -1
+        }
+    }
+    @metadata path /.well-known/oauth-protected-resource
+    handle @metadata {
+        rewrite * /plugin/.well-known/oauth-protected-resource
+        reverse_proxy 127.0.0.1:8000
+    }
+    handle / {
+        rewrite * /plugin/
+        reverse_proxy 127.0.0.1:8000
+    }
+    handle {
+        respond 404
+    }
+}

@@ -6,7 +6,8 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-10-07-v44"
+CONTRACT_VERSION = "docket-tools-2026-10-28-v45"
+ContractProfile = Literal["interactive", "triage", "plugin"]
 
 
 class ToolContractEntry(TypedDict):
@@ -286,10 +287,22 @@ def _triage_entries() -> tuple[ToolContractEntry, ...]:
 CONTRACT_ENTRIES: Mapping[str, tuple[ToolContractEntry, ...]] = {
     "interactive": _interactive_entries(),
     "triage": _triage_entries(),
+    "plugin": (*(
+        entry for entry in _interactive_entries() if entry["tool_name"] in _INTERACTIVE_READS
+    ), {
+        "tool_ref": "DOCKET-PLUGIN-0001", "tool_name": "docket_get_profile",
+        "purpose": "Identify the approved account represented by this connection.",
+        "use_when": "Connecting or identifying the current Docket account.",
+        "do_not_use_when": "Never supply an account selector or infer write permission.",
+        "authority": "oauth_read_only", "preconditions": "P-READ", "side_effects": "None.",
+        "success_dispositions": "succeeded", "output_interpretation": "Stable opaque profile id.",
+        "required_next_action": "Use the permitted read and notification surfaces.",
+        "important_errors": "plugin_authentication_required|agent_authority_denied",
+    }),
 }
 
 
-def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
+def render_contract_payload(profile: ContractProfile) -> str:
     lines = [
         (
             "Rules: MCP/Pydantic schemas define exact arguments. This contract defines "
@@ -318,7 +331,14 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
             "version_conflict|conflict_open|validation_error."
         ),
     ]
-    if profile == "interactive":
+    if profile == "plugin":
+        lines.append(
+            "Native plugin: approved OAuth read access only. A connected account, conversation "
+            "identifier, event or copied request cannot authorize foreground mutation. "
+            "Do not stage, commit, resolve conflicts or substitute direct provider tools. "
+            "Report that native writes await a verified foreground-authority mechanism."
+        )
+    elif profile == "interactive":
         lines.extend(
             [
                 (
@@ -412,12 +432,15 @@ def render_contract_payload(profile: Literal["interactive", "triage"]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def contract_hash(profile: Literal["interactive", "triage"]) -> str:
+def contract_hash(profile: ContractProfile) -> str:
     return hashlib.sha256(render_contract_payload(profile).encode()).hexdigest()
 
 
-def render_contract(profile: Literal["interactive", "triage"]) -> str:
-    title = "Interactive" if profile == "interactive" else "Restricted triage"
+def render_contract(profile: ContractProfile) -> str:
+    titles = {
+        "interactive": "Interactive", "triage": "Restricted triage", "plugin": "Native plugin",
+    }
+    title = titles[profile]
     return (
         f"# Docket {title} Tool Contract\n\n"
         f"contract_version: {CONTRACT_VERSION}\n"
@@ -427,5 +450,5 @@ def render_contract(profile: Literal["interactive", "triage"]) -> str:
     )
 
 
-def contract_tool_names(profile: Literal["interactive", "triage"]) -> frozenset[str]:
+def contract_tool_names(profile: ContractProfile) -> frozenset[str]:
     return frozenset(entry["tool_name"] for entry in CONTRACT_ENTRIES[profile])

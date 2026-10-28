@@ -15,6 +15,9 @@ def main() -> None:
             render_contract(profile),
             encoding="utf-8",
         )
+    plugin_contract = ROOT / "plugin" / "docket" / "contracts" / "plugin.md"
+    plugin_contract.parent.mkdir(parents=True, exist_ok=True)
+    plugin_contract.write_text(render_contract("plugin"), encoding="utf-8")
 
 
 if __name__ == "__main__":

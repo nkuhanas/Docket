@@ -1,5 +1,5 @@
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -25,6 +25,7 @@ from docket.internal_api.provenance_router import router as provenance_router
 from docket.internal_api.router import router as internal_router
 from docket.mcp import mcp, triage_mcp
 from docket.models import BackupRun, CalendarSyncState, ConnectorCheckpoint
+from docket.plugin.app import create_plugin_app
 from docket.providers.discord import HttpDiscordProjectionAdapter
 from docket.providers.google import FakeGoogleProvider
 from docket.providers.google.factory import (
@@ -65,6 +66,7 @@ def configure_logging(settings: Settings) -> None:
 
 
 settings = get_settings()
+plugin_app = create_plugin_app(settings)
 configure_logging(settings)
 configure_database(settings.database_url)
 calendar_write_provider = build_calendar_write_provider(settings)
@@ -148,7 +150,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         AccountService(session).ensure_configured_google(settings)
     GatewayLifetimeReconciler(get_session_factory()).run_once()
     await worker.start()
-    async with mcp.session_manager.run(), triage_mcp.session_manager.run():
+    async with AsyncExitStack() as stack:
+        await stack.enter_async_context(mcp.session_manager.run())
+        await stack.enter_async_context(triage_mcp.session_manager.run())
+        if settings.plugin_enabled:
+            await stack.enter_async_context(plugin_app.router.lifespan_context(plugin_app))
         yield
     await worker.stop()
 
@@ -166,6 +172,7 @@ app.include_router(agent_router)
 app.include_router(provenance_router)
 app.mount("/mcp", mcp.streamable_http_app())
 app.mount("/triage-mcp", triage_mcp.streamable_http_app())
+app.mount("/plugin", plugin_app)
 
 
 @app.middleware("http")

@@ -42,7 +42,7 @@ from docket.services.invocation_outcomes import (
     is_gateway_unknown,
     recover_assembly_outcome,
 )
-from docket.tool_contracts import CONTRACT_VERSION, contract_hash
+from docket.tool_contracts import CONTRACT_VERSION, ContractProfile, contract_hash
 
 INTERACTIVE_AUTHORITY_TOOLS = frozenset(
     {
@@ -391,10 +391,12 @@ class ProvenanceMCP(MCPServer[Any]):
         name: str,
         *,
         caller_profile: Literal["interactive", "triage"],
+        contract_profile: ContractProfile | None = None,
         transport_security: TransportSecuritySettings | None = None,
         **kwargs: Any,
     ) -> None:
         self.caller_profile = caller_profile
+        self.contract_profile = contract_profile or caller_profile
         self._docket_transport_security = transport_security
         super().__init__(name, **kwargs)
 
@@ -537,7 +539,7 @@ class ProvenanceMCP(MCPServer[Any]):
             invocation = ToolInvocation(
                 tool_name=name,
                 tool_contract_version=CONTRACT_VERSION,
-                tool_contract_hash=contract_hash(self.caller_profile),
+                tool_contract_hash=contract_hash(self.contract_profile),
                 caller_profile=self.caller_profile,
                 received_argument_hash=received_hash,
                 mcp_request_id=mcp_request_id,

@@ -44,3 +44,18 @@ rejection. `scripts/docket check` passed 1,028 tests, Ruff and strict mypy;
 restricted ingress, governance restore, PostgreSQL concurrency and migrations.
 The existing Hermes client protocol remains supported; live Hermes behavior is
 a separate rollout observation.
+
+The public native app is mounted privately under `/plugin`; the ingress example
+maps only MCP, resource discovery and the minimal connection page to it. It
+accepts approved OAuth users only, rejects legacy service credentials and ignores
+foreground headers. Both wire protocols expose 18 bounded reads plus the stable
+profile tool, with OAuth metadata and no gateway-only arguments. Attempted native
+commits are audited and denied without admitting `req_`. The old 23-tool service
+surface and four-tool triage profile remain separate.
+
+Native-facade validation: the complete quality gate passed 1,032 tests, Ruff and
+strict mypy across 166 source files; the isolated Compose smoke passed. Actual
+ASGI account-linking tests verify schema/profile parity, public route isolation,
+wrong credentials, revocation and copied foreground context. Candidate plugin
+source and an Auth0/network handoff are prepared. The public hostname, provider
+configuration, exported package and installed plugin remain unverified.
