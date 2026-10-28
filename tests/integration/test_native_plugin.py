@@ -168,7 +168,7 @@ async def test_modern_events_discovery_verification_refresh_and_stop(
         discovery = await request("server/discover", {})
         assert discovery["result"]["capabilities"]["events"] == {}
         catalog = await request("events/list", {})
-        assert len(catalog["result"]["events"]) == 5
+        assert len(catalog["result"]["events"]) == 6
         params = {"name": "docket.attention.created", "arguments": {}, "delivery": {
             "mode": "webhook", "url": "https://receiver.example.com/callback",
             "secret": "whsec_" + base64.b64encode(b"a" * 32).decode(),

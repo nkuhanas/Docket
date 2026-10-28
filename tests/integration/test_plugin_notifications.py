@@ -321,3 +321,32 @@ def test_expired_delivery_lease_retains_unknown_attempt_and_replays_same_event(
                 )
             )
         ] == ["unknown", "accepted"]
+
+
+def test_inbox_pages_large_alerts_by_bytes_without_skipping_records(
+    session_factory, notification_connection,
+):
+    settings, principal, _, _ = notification_connection
+    expected = set()
+    with session_factory.begin() as session:
+        for index in range(60):
+            notice = NotificationService(session, settings).system_alert(
+                new_public_ref("aud"), key=f"large-alert:{index}", summary="é" * 512,
+                occurred_at=utc_now(),
+            )
+            expected.add(notice.ref_id)
+    seen = []
+    cursor = None
+    with session_factory() as session, as_principal(principal):
+        for _ in range(61):
+            page = NotificationService(session, settings).list(limit=100, cursor=cursor)
+            assert len(json.dumps(page, separators=(",", ":")).encode()) <= 12288
+            seen.extend(item["ref"] for item in page["items"])
+            cursor = page["cursor"]
+            if not page["truncated"]:
+                break
+            assert cursor and page["items"]
+        else:
+            pytest.fail("Inbox pagination did not terminate")
+    assert len(seen) == len(set(seen)) == 60
+    assert set(seen) == expected

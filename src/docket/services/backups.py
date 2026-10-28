@@ -20,6 +20,7 @@ from docket.config import Settings, get_settings
 from docket.domain.enums import OutboxStatus
 from docket.models import AuditEvent, BackupRun, OutboxEvent
 from docket.models.base import utc_now
+from docket.services.notifications import NotificationService
 
 
 class BackupError(RuntimeError):
@@ -363,19 +364,27 @@ class BackupService:
             run.next_attempt_at = now + timedelta(seconds=self.settings.backup_retry_seconds)
             run.lease_token = None
             run.leased_until = None
-            session.add(
-                AuditEvent(
-                    event_type="backup.failed",
-                    entity_type="backup_run",
-                    entity_id=run.id,
-                    actor_type="system",
-                    actor_id=None,
-                    data={
-                        "local_date": run.local_date.isoformat(),
-                        "error_code": run.error_code,
-                    },
-                )
+            audit = AuditEvent(
+                event_type="backup.failed",
+                entity_type="backup_run",
+                entity_id=run.id,
+                actor_type="system",
+                actor_id=None,
+                data={
+                    "local_date": run.local_date.isoformat(),
+                    "error_code": run.error_code,
+                },
             )
+            session.add(audit)
+            session.flush()
+            NotificationService(session, self.settings).system_alert(
+                audit.ref_id, key=f"system-alert:backup-failed:{run.local_date.isoformat()}",
+                summary=("The daily encrypted database backup failed. Docket will retry "
+                         "without replacing an earlier backup artifact."),
+                occurred_at=now,
+            )
+            if not self.settings.discord_adapter_enabled:
+                return
             key = f"discord_system_alert:backup_failed:{run.local_date.isoformat()}"
             if (
                 session.scalar(

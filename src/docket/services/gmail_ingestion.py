@@ -338,6 +338,16 @@ class GmailIngestionService:
             if checkpoint.last_success_at is not None
             else "never"
         )
+        account = session.get(ProviderAccount, checkpoint.account_id)
+        if account is not None:
+            NotificationService(session, self.settings).system_alert(
+                account.ref_id, key=f"system-alert:gmail-stale:{account.ref_id}:{episode}",
+                summary=("Gmail ingestion is stale. New email may not be staged yet. "
+                         "The committed cursor and pending sources are retained."),
+                occurred_at=now,
+            )
+        if not self.settings.discord_adapter_enabled:
+            return True
         key = f"discord_system_alert:gmail_stale:{checkpoint.id}:{episode}"
         if (
             session.scalar(

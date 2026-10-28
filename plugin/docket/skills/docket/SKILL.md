@@ -9,6 +9,10 @@ Use Docket for the operator's canonical personal-operations state. Read
 `../../contracts/plugin.md` for tool selection and result handling; the current
 MCP schema defines arguments.
 
+For an initial connection, inspect bounded current-state/history reads for open
+attention and upcoming work as well as the inbox. The inbox records notifications
+from when it was enabled; it is not the complete historical inventory.
+
 Start with `docket_get_profile` when identifying a new connection. Use specific
 bounded reads and public references. Provider delivery and canonical state are
 separate: inspect an existing ChangeSet's delivery status instead of creating
@@ -50,3 +54,7 @@ The client owns scheduling, inference and OAuth refresh. Process one claim at a
 time within the client's run budget. Docket supplies no mandatory model, gateway
 or background inference agent. Cron, Dot and local inference clients use the same
 MCP workflow. A completed triage result can notify the operator through the inbox.
+
+For `docket.system.alert`, report the operational condition from the retained
+inbox summary. Receipt is not resolution. Gmail staleness and backup failure do
+not authorize changes to credentials, retention policy or provider state.
