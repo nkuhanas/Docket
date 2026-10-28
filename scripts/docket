@@ -47,6 +47,9 @@ compose() {
 safe_test_environment() {
     mkdir -p "$ROOT/.runtime"
     export DOCKET_ENVIRONMENT=test
+    export DOCKET_PLUGIN_ENABLED=false
+    export DOCKET_DISCORD_ADAPTER_ENABLED=true
+    export DOCKET_OPERATOR_REF=
     export DOCKET_DATABASE_URL="sqlite+pysqlite:///$ROOT/.runtime/check.db"
     export DOCKET_AUTO_CREATE_SCHEMA=true
     export DOCKET_CALENDAR_READS_ENABLED=false

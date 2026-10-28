@@ -60,6 +60,7 @@ from docket.models.intelligence import (
     DailyBriefCaseMembership,
     TriageRun,
 )
+from docket.models.oauth import OAuthPrincipal
 from docket.models.policy import LaneRoutingDecision, Preference
 from docket.models.projections import OperatorProjection, ProjectionDelivery
 from docket.models.provenance import (
@@ -158,6 +159,7 @@ __all__ = [
     "Item",
     "ItemSourceBinding",
     "LaneRoutingDecision",
+    "OAuthPrincipal",
     "Operation",
     "OperationTarget",
     "OperatorProjection",

@@ -28,6 +28,7 @@ class AgentPrincipal:
     audience: str = "docket"
     expires_at: datetime | None = None
     enabled: bool = True
+    integration: Literal["service", "oauth"] = "service"
 
     def require(self, permission: str) -> None:
         expiry = self.expires_at
@@ -36,7 +37,7 @@ class AgentPrincipal:
         if (
             not self.enabled
             or self.audience != "docket"
-            or self.operator_ref != f"operator:{get_settings().operator_discord_user_id}"
+            or self.operator_ref != get_settings().canonical_operator_ref
             or (expiry is not None and expiry <= datetime.now(UTC))
             or permission not in self.permissions
             or (
@@ -119,7 +120,7 @@ def authenticate_agent(
         )
     principal = AgentPrincipal(
         principal_ref=f"agent:{role}",
-        operator_ref=f"operator:{settings.operator_discord_user_id}",
+        operator_ref=settings.canonical_operator_ref,
         role=role,
         permissions=_PERMISSIONS[role],
         enabled=settings.interactive_agent_enabled if role == "interactive" else True,
