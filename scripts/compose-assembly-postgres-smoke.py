@@ -55,7 +55,7 @@ from docket.internal_api.schemas import (
     OperatorUtteranceCapture,
     TraceTimingInput,
 )
-from docket.mcp.instrumented import ProvenanceFastMCP
+from docket.mcp.instrumented import ProvenanceMCP
 from docket.models import (
     AgentResponse,
     AssemblyExecution,
@@ -2466,7 +2466,7 @@ def test_gateway_recovery_and_late_completion_serialize(factory: sessionmaker[Se
             GatewayLifetimeService(session).clean_shutdown(str(gateway["ref"]))
 
         def finish(session: Session, invocation_id: uuid.UUID = invocation_id) -> None:
-            ProvenanceFastMCP._finish_invocation(
+            ProvenanceMCP._finish_invocation(
                 session, invocation_id, status="failed", normalized_argument_hash=None,
                 result_refs=[], result_disposition="failed", error_code="internal_error",
             )

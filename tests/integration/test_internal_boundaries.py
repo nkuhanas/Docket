@@ -80,8 +80,8 @@ def test_internal_api_and_mcp_require_distinct_tokens(session_factory) -> None:
     assert authorized.status_code == 204
 
     allowed_hosts = ["docket:8000", "127.0.0.1:*", "localhost:*", "[::1]:*"]
-    assert mcp.settings.transport_security.allowed_hosts == allowed_hosts
-    assert triage_mcp.settings.transport_security.allowed_hosts == allowed_hosts
+    assert mcp._docket_transport_security.allowed_hosts == allowed_hosts
+    assert triage_mcp._docket_transport_security.allowed_hosts == allowed_hosts
 
     response = Response()
     ready = health_ready(response)

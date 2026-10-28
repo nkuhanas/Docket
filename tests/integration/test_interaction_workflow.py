@@ -110,7 +110,7 @@ def _invoke(session_factory, utterance, name, arguments, ordinal):
         hashlib.sha256,
     ).hexdigest()
     result = asyncio.run(
-        mcp.call_tool(
+        mcp.invoke_tool(
             name,
             {
                 **arguments,

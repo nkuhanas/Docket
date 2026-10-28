@@ -8,8 +8,8 @@ import os
 from pathlib import Path
 from typing import Any
 
-import httpx
-from mcp import ClientSession
+import httpx2 as httpx
+from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 
 from docket.tool_contracts import contract_tool_names
@@ -39,17 +39,17 @@ async def smoke() -> None:
         ):
             async with (
                 httpx.AsyncClient(headers=headers, timeout=30) as mcp_client,
-                streamable_http_client(f"{base}/{path}/", http_client=mcp_client) as transport,
-                ClientSession(transport[0], transport[1]) as session,
+                Client(
+                    streamable_http_client(f"{base}/{path}/", http_client=mcp_client), mode="legacy"
+                ) as session,
             ):
-                await session.initialize()
                 tools = await session.list_tools()
                 assert {tool.name for tool in tools.tools} == set(contract_tool_names(profile))
                 if profile == "interactive":
                     commit = next(t for t in tools.tools if t.name == "docket_commit_changeset")
                     assert all(
                         p.get("x-docket-internal")
-                        for p in commit.inputSchema["properties"].values()
+                        for p in commit.input_schema["properties"].values()
                     )
 
         async def call(
@@ -63,10 +63,10 @@ async def smoke() -> None:
             }
             async with (
                 httpx.AsyncClient(headers=headers, timeout=30) as mcp_client,
-                streamable_http_client(f"{base}/mcp/", http_client=mcp_client) as transport,
-                ClientSession(transport[0], transport[1]) as session,
+                Client(
+                    streamable_http_client(f"{base}/mcp/", http_client=mcp_client), mode="legacy"
+                ) as session,
             ):
-                await session.initialize()
                 result = await session.call_tool(name, args)
                 payload = json.loads(result.content[0].text)
                 assert len(json.dumps(payload).encode()) <= 16 * 1024
@@ -75,10 +75,10 @@ async def smoke() -> None:
         no_context = {**foreground, "x-docket-operation-key": "missing-request"}
         async with (
             httpx.AsyncClient(headers=no_context, timeout=30) as mcp_client,
-            streamable_http_client(f"{base}/mcp/", http_client=mcp_client) as transport,
-            ClientSession(transport[0], transport[1]) as session,
+            Client(
+                streamable_http_client(f"{base}/mcp/", http_client=mcp_client), mode="legacy"
+            ) as session,
         ):
-            await session.initialize()
             rejected = await session.call_tool("docket_commit_changeset", {})
             assert json.loads(rejected.content[0].text)["error"]["code"] == (
                 "request_context_required"

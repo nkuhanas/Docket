@@ -5,11 +5,13 @@ import uuid
 from collections.abc import Sequence
 from typing import Any, Literal, cast
 
-from mcp.server.fastmcp import FastMCP
-from mcp.types import ContentBlock, TextContent, Tool
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
+from mcp.types import CallToolResult, ContentBlock, TextContent, Tool
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from starlette.applications import Starlette
 
 from docket.agent_auth import agent_call_context, require_principal
 from docket.database import session_scope
@@ -330,10 +332,8 @@ def _compact_result(
         ensure_ascii=False,
         separators=(",", ":"),
     )
-    # FastMCP tools with an output schema return a two-tuple containing both
-    # unstructured content and structured content. Preserve that protocol shape
-    # after compaction; returning only TextContent makes the low-level MCP server
-    # reject an otherwise successful call as missing structured output.
+    # Internal callers receive matching compact text and structured content.
+    # The transport adapter wraps that same payload in the SDK's typed result.
     compacted = ([TextContent(type="text", text=serialized)], payload)
     return cast(Sequence[ContentBlock], compacted), payload
 
@@ -385,16 +385,25 @@ def _operator_utterance_authority(
     return utterance
 
 
-class ProvenanceFastMCP(FastMCP[Any]):
+class ProvenanceMCP(MCPServer[Any]):
     def __init__(
         self,
         name: str,
         *,
         caller_profile: Literal["interactive", "triage"],
+        transport_security: TransportSecuritySettings | None = None,
         **kwargs: Any,
     ) -> None:
         self.caller_profile = caller_profile
+        self._docket_transport_security = transport_security
         super().__init__(name, **kwargs)
+
+    def streamable_http_app(self, **kwargs: Any) -> Starlette:
+        options = {
+            "streamable_http_path": "/", "json_response": True, "stateless_http": True,
+            "transport_security": self._docket_transport_security, **kwargs,
+        }
+        return super().streamable_http_app(**options)
 
     async def list_tools(self) -> list[Tool]:
         registered = await super().list_tools()
@@ -404,9 +413,9 @@ class ProvenanceFastMCP(FastMCP[Any]):
                 tool for tool in registered if tool.name not in INTERACTIVE_AUTHORITY_TOOLS
             ]
         for tool in registered:
-            tool.inputSchema["additionalProperties"] = False
+            tool.input_schema["additionalProperties"] = False
             if self.caller_profile == "interactive":
-                tool.inputSchema.setdefault("properties", {})[BINDING_ARGUMENT] = {
+                tool.input_schema.setdefault("properties", {})[BINDING_ARGUMENT] = {
                     "type": "string", "maxLength": 4096, "x-docket-internal": True,
                     "description": "Trusted gateway correlation envelope; never model supplied.",
                 }
@@ -480,18 +489,32 @@ class ProvenanceFastMCP(FastMCP[Any]):
                 ))
 
     async def call_tool(
+        self, name: str, arguments: dict[str, Any], context: Context[Any, Any] | None = None,
+    ) -> CallToolResult:
+        result = await self.invoke_tool(name, arguments, context)
+        envelope = _result_envelope(result)
+        return CallToolResult(
+            content=[TextContent(type="text", text=json.dumps(
+                envelope, ensure_ascii=False, separators=(",", ":"),
+            ))],
+            structured_content=envelope,
+            is_error=envelope is not None and envelope.get("ok") is False,
+        )
+
+    async def invoke_tool(
         self,
         name: str,
         arguments: dict[str, Any],
+        context: Context[Any, Any] | None = None,
     ) -> Sequence[ContentBlock] | dict[str, Any]:
         token = agent_call_context.set(agent_call_context.get())
         try:
-            return await self._call_tool(name, arguments)
+            return await self._call_tool(name, arguments, context)
         finally:
             agent_call_context.reset(token)
 
     async def _call_tool(
-        self, name: str, arguments: dict[str, Any],
+        self, name: str, arguments: dict[str, Any], context: Context[Any, Any] | None,
     ) -> Sequence[ContentBlock] | dict[str, Any]:
         binding_provided = BINDING_ARGUMENT in arguments
         binding_token = arguments.get(BINDING_ARGUMENT)
@@ -502,9 +525,8 @@ class ProvenanceFastMCP(FastMCP[Any]):
             if key not in INFRASTRUCTURE_ARGUMENT_NAMES
         }
         received_hash = sha256_json(public_arguments)
-        context = self.get_context()
         try:
-            mcp_request_id = context.request_id
+            mcp_request_id = context.request_id if context is not None else None
         except ValueError:
             mcp_request_id = None
 
@@ -763,7 +785,12 @@ class ProvenanceFastMCP(FastMCP[Any]):
                 )
 
         try:
-            result = await super().call_tool(name, arguments)
+            wire_result = await super().call_tool(name, arguments, context)
+            if not isinstance(wire_result, CallToolResult):
+                raise RuntimeError("Docket tools require a terminal result")
+            result: Sequence[ContentBlock] | dict[str, Any] = cast(Sequence[ContentBlock], (
+                wire_result.content, wire_result.structured_content or {},
+            ))
         except Exception as exc:
             validation_failure = normalized_hash is None
             error_code = "validation_error" if validation_failure else "internal_error"

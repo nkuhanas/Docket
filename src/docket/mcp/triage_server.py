@@ -6,7 +6,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from docket.database import get_session_factory
 from docket.domain.errors import DocketError
-from docket.mcp.instrumented import ProvenanceFastMCP
+from docket.mcp.instrumented import ProvenanceMCP
 from docket.providers.google.gmail_runtime import get_gmail_read_provider
 from docket.schemas.common import PublicRef
 from docket.schemas.intelligence import (
@@ -21,12 +21,9 @@ from docket.schemas.intelligence import (
 from docket.schemas.policy import PreferenceRef
 from docket.services.intelligence import IntelligenceService
 
-triage_mcp = ProvenanceFastMCP(
+triage_mcp = ProvenanceMCP(
     "docket-triage",
     caller_profile="triage",
-    stateless_http=True,
-    json_response=True,
-    streamable_http_path="/",
     transport_security=TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
         allowed_hosts=["docket:8000", "127.0.0.1:*", "localhost:*", "[::1]:*"],

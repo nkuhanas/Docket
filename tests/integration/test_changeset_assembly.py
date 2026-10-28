@@ -538,7 +538,7 @@ def test_mcp_recompile_cross_field_rejection_terminalizes_admission(session_fact
             token = _admit(session, utterance=utterance, trace_ref=trace,
                            call_id=f"recompile-{ordinal}", ordinal=ordinal,
                            tool_name="docket_stage_changes", argument_hash=digest)
-        result = asyncio.run(mcp.call_tool("docket_stage_changes", {
+        result = asyncio.run(mcp.invoke_tool("docket_stage_changes", {
             **arguments, "utterance_ref": utterance.ref_id, "request_key": utterance.request_key,
             "assembly_operation_token": token, "assembly_argument_hash": digest,
         }))
@@ -2329,7 +2329,7 @@ def test_mcp_schema_rejection_terminalizes_admission_and_next_stage_proceeds(
         )
 
     invalid_result = asyncio.run(
-        mcp.call_tool(
+        mcp.invoke_tool(
             "docket_stage_changes",
             {
                 **invalid_arguments,
@@ -2369,7 +2369,7 @@ def test_mcp_schema_rejection_terminalizes_admission_and_next_stage_proceeds(
             argument_hash=valid_hash,
         )
     valid_result = asyncio.run(
-        mcp.call_tool(
+        mcp.invoke_tool(
             "docket_stage_changes",
             {
                 **valid_arguments,
@@ -2428,7 +2428,7 @@ def test_mcp_stage_then_payload_free_commit_and_replay_without_review(session_fa
             b"docket-mcp-invocation-v2:" + encoded.encode(), hashlib.sha256,
         ).hexdigest()
         result = asyncio.run(
-            mcp.call_tool(
+            mcp.invoke_tool(
                 name,
                 {
                     **arguments,
@@ -2492,7 +2492,7 @@ def test_mcp_clarification_persists_choices_without_canonical_effects(session_fa
         principal, "synthetic:clarification", "foreground", "choices",
     ))
     try:
-        result = _result_envelope(asyncio.run(mcp.call_tool(
+        result = _result_envelope(asyncio.run(mcp.invoke_tool(
             "docket_request_clarification", {
                 "question": "Which date should this use?",
                 "semantic_options": [{
