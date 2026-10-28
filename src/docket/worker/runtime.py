@@ -16,6 +16,7 @@ from docket.services.deferred_ingress import DeferredIngressRunner
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.gateway_lifetimes import GatewayLifetimeReconciler
 from docket.services.gmail_ingestion import GmailIngestionService
+from docket.services.notification_delivery import NotificationDispatcher
 from docket.services.operations import OperationRunner
 from docket.services.reminders import ReminderService
 
@@ -49,8 +50,12 @@ class WorkerRuntime:
         deferred_ingress_runner: DeferredIngressRunner | None = None,
         conversation_retention_service: ConversationRetentionService | None = None,
         retention_poll_seconds: float = 3600.0,
+        notification_dispatcher: NotificationDispatcher | None = None,
+        notification_poll_seconds: float = 5.0,
     ) -> None:
         self.heartbeat_seconds = heartbeat_seconds
+        self.notification_dispatcher = notification_dispatcher
+        self.notification_poll_seconds = notification_poll_seconds
         self.conversation_retention_service = conversation_retention_service
         self.retention_poll_seconds = retention_poll_seconds
         self.operation_runner = operation_runner
@@ -77,6 +82,7 @@ class WorkerRuntime:
         self._stop = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
         self._projection_task: asyncio.Task[None] | None = None
+        self._notification_task: asyncio.Task[None] | None = None
         self._projection_wake: asyncio.Event | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -87,6 +93,10 @@ class WorkerRuntime:
         self._loop = asyncio.get_running_loop()
         self._projection_wake = asyncio.Event()
         self._task = asyncio.create_task(self._run(), name="docket-worker-heartbeat")
+        if self.notification_dispatcher is not None:
+            self._notification_task = asyncio.create_task(
+                self._run_notifications(), name="docket-plugin-notifications",
+            )
         if self.discord_projection_runner is not None:
             self._projection_task = asyncio.create_task(
                 self._run_discord_projection(),
@@ -103,6 +113,9 @@ class WorkerRuntime:
         if self._projection_task is not None:
             await self._projection_task
             self._projection_task = None
+        if self._notification_task is not None:
+            await self._notification_task
+            self._notification_task = None
         self._projection_wake = None
         self._loop = None
 
@@ -158,6 +171,24 @@ class WorkerRuntime:
             except TimeoutError:
                 continue
         logger.info("discord_projection_worker_stopped")
+
+    async def _run_notifications(self) -> None:
+        dispatcher = self.notification_dispatcher
+        assert dispatcher is not None
+        while not self._stop.is_set():
+            try:
+                for _ in range(25):
+                    if self._stop.is_set() or not await self._run_leased(
+                        "outbox_delivery", "plugin-notification", dispatcher.run_due_once,
+                    ):
+                        break
+            except Exception:
+                # Callback exceptions must never include URLs, signatures or payloads.
+                logger.error("plugin_notification_worker_iteration_failed")
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=self.notification_poll_seconds)
+            except TimeoutError:
+                continue
 
     async def _run(self) -> None:
         logger.info("worker_started", mode="calendar-operations")

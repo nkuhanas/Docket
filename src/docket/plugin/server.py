@@ -1,25 +1,31 @@
 """A native read facade using the same audited business handlers."""
 
 from copy import deepcopy
-from typing import Any
+from typing import Annotated, Any
 from urllib.parse import urlsplit
 
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import Tool, ToolAnnotations
+from pydantic import Field
 
 from docket.agent_auth import require_principal
 from docket.config import Settings
+from docket.database import session_scope
 from docket.mcp.instrumented import INFRASTRUCTURE_ARGUMENT_NAMES, ProvenanceMCP
 from docket.mcp.server import mcp
+from docket.plugin.events import EventMethods, advertise_events
+from docket.providers.webhooks import WebhookPoster
+from docket.services.notifications import NotificationService
 from docket.tool_contracts import contract_tool_names, render_contract
 
 
 class PluginMCP(ProvenanceMCP):
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, poster: WebhookPoster | None = None) -> None:
         hostname = urlsplit(settings.plugin_public_origin).hostname or "docket.you"
         super().__init__(
             "Docket", caller_profile="interactive", contract_profile="plugin",
             instructions=render_contract("plugin"),
+            extensions=[EventMethods(settings, poster)], middleware=[advertise_events],
             transport_security=TransportSecuritySettings(
                 enable_dns_rebinding_protection=True,
                 allowed_hosts=[hostname, hostname + ":443", "127.0.0.1:*", "docket:8000"],
@@ -51,6 +57,23 @@ class PluginMCP(ProvenanceMCP):
                 "name": {"type": "string"},
             }, "required": ["id"], "additionalProperties": False,
         }
+
+        @self.tool(annotations=annotations)
+        def docket_list_notifications(
+            limit: Annotated[int, Field(ge=1, le=100)] = 25,
+            cursor: Annotated[str | None, Field(max_length=256)] = None,
+        ) -> dict[str, Any]:
+            """Read retained notifications without acknowledging operator visibility."""
+            with session_scope() as session:
+                return NotificationService(session, self.plugin_settings).list(
+                    limit=limit, cursor=cursor,
+                )
+
+        @self.tool(annotations=annotations)
+        def docket_get_notification(notification_ref: str) -> dict[str, Any]:
+            """Read an inbox record and follow its public subject for current canonical context."""
+            with session_scope() as session:
+                return NotificationService(session, self.plugin_settings).get(notification_ref)
 
     async def list_tools(self) -> list[Tool]:
         tools = await super().list_tools()

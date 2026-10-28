@@ -41,6 +41,11 @@ def test_production_can_use_an_explicit_identity_without_discord():
             DOCKET_ENVIRONMENT="production", DOCKET_DISCORD_ADAPTER_ENABLED=False,
             DOCKET_OPERATOR_REF=None,
         )
+    with pytest.raises(ValidationError):
+        configured(
+            DOCKET_ENVIRONMENT="production", DOCKET_DISCORD_ADAPTER_ENABLED=False,
+            DOCKET_OPERATOR_REF="operator:personal", DOCKET_PLUGIN_ENABLED=False,
+        )
 
 
 def test_administration_defaults_to_preview_without_opening_database(monkeypatch, capsys):

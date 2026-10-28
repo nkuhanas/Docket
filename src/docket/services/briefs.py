@@ -17,12 +17,11 @@ from docket.models import (
     DailyBriefEntryMembership,
     GmailSource,
     OperatorProjection,
-    OutboxEvent,
-    ProjectionDelivery,
     TriageWindow,
     TriageWindowMembership,
 )
 from docket.models.base import utc_now
+from docket.services.notifications import route_projection
 
 
 def _aware(value: datetime) -> datetime:
@@ -260,7 +259,11 @@ class DailyBriefService:
                 )
             projection = OperatorProjection(
                 projection_kind="daily_brief",
-                operator_ref=f"discord_user:{self.settings.operator_discord_user_id}",
+                operator_ref=(
+                    f"discord_user:{self.settings.operator_discord_user_id}"
+                    if self.settings.discord_adapter_enabled
+                    else self.settings.canonical_operator_ref
+                ),
                 primary_public_ref=brief.ref_id,
                 brief_ref=brief.ref_id,
                 semantic_content={
@@ -278,28 +281,7 @@ class DailyBriefService:
             )
             session.add(projection)
             session.flush()
-            session.add(
-                ProjectionDelivery(
-                    projection_id=projection.id,
-                    projection_ref=projection.ref_id,
-                    transport="discord",
-                    destination_ref=(
-                        f"discord_conversation:{self.settings.discord_guild_id}:"
-                        f"{self.settings.queue_channel_id}"
-                    ),
-                    status="pending",
-                )
-            )
-            session.add(
-                OutboxEvent(
-                    event_type="discord.projection.requested",
-                    aggregate_type="operator_projection",
-                    aggregate_id=projection.id,
-                    deduplication_key=f"discord_projection:{projection.ref_id}",
-                    payload={"projection_ref": projection.ref_id},
-                    status="pending",
-                )
-            )
+            route_projection(session, self.settings, projection)
             brief.projection_ref = projection.ref_id
             brief.status = "published"
             brief.published_at = utc_now()

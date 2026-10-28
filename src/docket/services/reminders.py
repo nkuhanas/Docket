@@ -15,7 +15,6 @@ from docket.models import (
     Item,
     OperatorProjection,
     OutboxEvent,
-    ProjectionDelivery,
     ReminderPlan,
     ScheduledNotification,
     Task,
@@ -29,6 +28,7 @@ from docket.schemas.tracked_context import (
     DateTimeIntervalTemporalValue,
     DateTimeTemporalValue,
 )
+from docket.services.notifications import route_projection
 
 
 def _aware(value: datetime) -> datetime:
@@ -262,7 +262,11 @@ class ReminderService:
         }
         projection = OperatorProjection(
             projection_kind="reminder",
-            operator_ref=f"discord_user:{self.settings.operator_discord_user_id}",
+            operator_ref=(
+                f"discord_user:{self.settings.operator_discord_user_id}"
+                if self.settings.discord_adapter_enabled
+                else self.settings.canonical_operator_ref
+            ),
             primary_public_ref=plan.ref_id,
             semantic_content=semantic_content,
             visible_text=visible_text,
@@ -273,30 +277,13 @@ class ReminderService:
         )
         session.add(projection)
         session.flush()
-        session.add(
-            ProjectionDelivery(
-                projection_id=projection.id,
-                projection_ref=projection.ref_id,
-                transport="discord",
-                destination_ref=(
-                    f"discord_conversation:{self.settings.discord_guild_id}:"
-                    f"{self.settings.queue_channel_id}"
-                ),
-                status="pending",
-            )
-        )
-        outbox = OutboxEvent(
-            event_type="discord.projection.requested",
-            aggregate_type="operator_projection",
-            aggregate_id=projection.id,
+        outbox = route_projection(
+            session, self.settings, projection,
             deduplication_key=f"reminder_projection:{plan.ref_id}:{notification.trigger_key}",
-            payload={"projection_ref": projection.ref_id},
-            status="pending",
         )
-        session.add(outbox)
         session.flush()
-        notification.status = "delivering"
-        notification.outbox_event_id = outbox.id
+        notification.status = "delivering" if outbox is not None else "available"
+        notification.outbox_event_id = outbox.id if outbox is not None else None
         notification.attempt_count += 1
         notification.last_error_code = None
         session.add(

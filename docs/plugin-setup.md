@@ -82,6 +82,40 @@ be reviewed by their infrastructure owner before applying this example.
 
 ## Acceptance before cutover
 
+The native profile exposes 21 tools: the 18 existing reads, the stable account
+profile, and inbox list/get. Four modern MCP Events cover attention revisions,
+published briefs, due reminders and provider-operation status. Events carry
+generic summaries and public references; use the bounded read tools for context.
+Subscriptions are notification permissions and grant no canonical authority.
+
+Callback verification and event delivery require outbound HTTPS. Subscriptions
+last one day by default, with a one-minute minimum and seven-day maximum. Refresh
+uses the same deterministic subscription identity. Successful callback proof is
+cached for at most five minutes. Signing-key replacement has a 60-second dual
+signature window. Unsubscribe, expiration and locally revoked grants stop new
+claims and purge the encrypted callback configuration; an already claimed send
+may finish. Reapproval invalidates old subscriptions until refreshed.
+
+The existing attachment encryption key also derives the event-configuration
+key using a distinct context. Retain it with credential backups. Replacing it
+without migration makes retained callback configurations unreadable. Verification
+must succeed again before an unreadable configuration can be replaced. No URL or
+signing key enters audit metadata or ordinary runtime logs.
+
+Inbox availability is independent of callback delivery. A webhook `2xx` means
+receiver acceptance, with no claim that the Operator read it. Failed sends do not
+remove inbox entries or block provider execution. Deliveries retry transient
+failures with backoff for at most eight attempts, preserve the event ID/body and
+sign each attempt freshly. `410` stops the subscription; `413` fails that delivery.
+Events have no protocol replay cursor; catch up through the retained inbox.
+
+With `DOCKET_DISCORD_ADAPTER_ENABLED=false`, new attention, brief and reminder
+projections create inbox records without Discord outbox work. Keep
+`DOCKET_PLUGIN_ENABLED=true` for this configuration. This local switch does not
+retire a running Hermes gateway or its cron jobs; production cutover requires a
+separate drained deployment after native acceptance. Restricted Hermes triage
+can remain during the transition, with its separate non-authoritative credential.
+
 Run both repository gates, obtain green CI and use the normal authorized backup
 and deployment path. Then verify public anonymous denial, resource discovery,
 private account linking, the stable profile, actual tool count, read results,

@@ -260,7 +260,7 @@ class ScheduledNotification(TimestampMixin, Base):
     __tablename__ = "scheduled_notifications"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending', 'delivering', 'delivered', 'cancelled', 'failed')",
+            "status IN ('pending', 'delivering', 'delivered', 'cancelled', 'failed', 'available')",
             name="ck_scheduled_notifications_status",
         ),
         UniqueConstraint(

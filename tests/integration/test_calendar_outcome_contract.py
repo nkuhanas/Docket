@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from test_canonical_event_changesets import _capture
 from test_changeset_assembly import _admit
 
+from docket.config import get_settings
 from docket.domain.public_refs import new_public_ref
 from docket.models import (
     CalendarLane,
@@ -16,6 +17,7 @@ from docket.models import (
     Item,
     Operation,
     OperatorUtterance,
+    PluginNotification,
     ProviderAccount,
     Task,
     TemporalBinding,
@@ -90,8 +92,9 @@ def _actions(utterance_ref, lane, outcome):
 @pytest.mark.parametrize("outcome", [
     "meeting", "window", "deadline", "visible_window", "visible_deadline",
 ])
+@pytest.mark.parametrize("plugin_enabled", [False, True])
 def test_resolved_outcome_stages_commits_and_reports_actual_calendar_effect(
-    session_factory, outcome,
+    session_factory, outcome, plugin_enabled,
 ):
     expects_delivery = outcome == "meeting" or outcome.startswith("visible_")
     trace_ref = new_public_ref("trace")
@@ -191,9 +194,17 @@ def test_resolved_outcome_stages_commits_and_reports_actual_calendar_effect(
         original_receipt = deepcopy(session.scalar(select(ChangeSet)).commit_receipt_json)
 
     provider = FakeCalendarProvider()
-    runner = OperationRunner(session_factory, provider)
+    runner = OperationRunner(session_factory, provider, settings=get_settings().model_copy(
+        update={"plugin_enabled": plugin_enabled},
+    ))
     assert runner.run_due_once() is expects_delivery
     assert len(provider.events) == int(expects_delivery)
+    with session_factory() as session:
+        notices = session.scalars(select(PluginNotification)).all()
+        assert bool(notices) is (plugin_enabled and expects_delivery)
+        assert all(notice.event_name == "docket.operation.status_changed" for notice in notices)
+        assert all(notice.subject_ref.startswith("op_") for notice in notices)
+        assert all("provider_event_id" not in repr(notice.data) for notice in notices)
     if expects_delivery:
         snapshot = next(iter(provider.events.values())).snapshot
         if "deadline" in outcome:

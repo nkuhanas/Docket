@@ -48,6 +48,7 @@ from docket.services.deferred_ingress import DeferredIngressRunner
 from docket.services.discord_projection import DiscordProjectionRunner
 from docket.services.gateway_lifetimes import GatewayLifetimeReconciler
 from docket.services.gmail_ingestion import GmailIngestionService
+from docket.services.notification_delivery import NotificationDispatcher
 from docket.services.operations import OperationRunner
 from docket.services.reminders import ReminderService
 from docket.services.runtime_logs import RuntimeLogService
@@ -85,7 +86,7 @@ discord_projection_runner = (
         settings,
         lease_seconds=settings.discord_projection_lease_seconds,
     )
-    if settings.discord_projection_enabled
+    if settings.discord_adapter_enabled and settings.discord_projection_enabled
     else None
 )
 deferred_ingress_runner = (
@@ -95,7 +96,7 @@ deferred_ingress_runner = (
             settings.discord_projection_url, settings.docket_to_hermes_token()
         ),
     )
-    if settings.discord_projection_enabled
+    if settings.discord_adapter_enabled and settings.discord_projection_enabled
     else None
 )
 worker = WorkerRuntime(
@@ -104,6 +105,7 @@ worker = WorkerRuntime(
         get_session_factory(),
         calendar_write_provider,
         execution_enabled=settings.calendar_write_mode() != "disabled",
+        settings=settings,
     ),
     operation_poll_seconds=settings.operation_poll_seconds,
     operation_drain_limit=settings.operation_drain_limit,
@@ -131,7 +133,13 @@ worker = WorkerRuntime(
     daily_brief_poll_seconds=settings.daily_brief_poll_seconds,
     reminder_service=ReminderService(get_session_factory(), settings),
     reminder_poll_seconds=settings.reminder_dispatch_interval_seconds,
-    gateway_lifetime_reconciler=GatewayLifetimeReconciler(get_session_factory()),
+    gateway_lifetime_reconciler=(
+        GatewayLifetimeReconciler(get_session_factory())
+        if settings.discord_adapter_enabled else None
+    ),
+    notification_dispatcher=(
+        NotificationDispatcher(get_session_factory(), settings) if settings.plugin_enabled else None
+    ),
     execution_lease_coordinator=ExecutionLeaseCoordinator(get_session_factory()),
     deferred_ingress_runner=deferred_ingress_runner,
     conversation_retention_service=(

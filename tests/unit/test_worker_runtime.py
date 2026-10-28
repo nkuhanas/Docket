@@ -65,6 +65,37 @@ class FakeProjectionRunner:
             return True
 
 
+@pytest.mark.asyncio
+async def test_slow_callback_does_not_block_provider_execution():
+    entered, release = threading.Event(), threading.Event()
+
+    class SlowNotifications:
+        def run_due_once(self):
+            entered.set()
+            assert release.wait(timeout=3)
+            return False
+
+    operations = FakeOperationRunner()
+    runtime = WorkerRuntime(
+        0.01, operations, operation_poll_seconds=0.01,
+        reconciliation_poll_seconds=60, stale_lease_poll_seconds=60,
+        notification_dispatcher=SlowNotifications(), notification_poll_seconds=60,
+    )
+    await runtime.start()
+    try:
+        deadline = asyncio.get_running_loop().time() + 2
+        while not entered.is_set():
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0.01)
+        operations.pending = 2
+        while operations.pending:
+            assert asyncio.get_running_loop().time() < deadline
+            await asyncio.sleep(0.01)
+    finally:
+        release.set()
+        await runtime.stop()
+
+
 async def _wait_for(projection: FakeProjectionRunner, field: str, minimum: int) -> bool:
     deadline = asyncio.get_running_loop().time() + 1
     while int(getattr(projection, field)) < minimum:

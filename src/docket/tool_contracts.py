@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-10-28-v45"
+CONTRACT_VERSION = "docket-tools-2026-10-28-v46"
 ContractProfile = Literal["interactive", "triage", "plugin"]
 
 
@@ -298,7 +298,17 @@ CONTRACT_ENTRIES: Mapping[str, tuple[ToolContractEntry, ...]] = {
         "success_dispositions": "succeeded", "output_interpretation": "Stable opaque profile id.",
         "required_next_action": "Use the permitted read and notification surfaces.",
         "important_errors": "plugin_authentication_required|agent_authority_denied",
-    }),
+    }, *(ToolContractEntry(**{
+        "tool_ref": f"DOCKET-PLUGIN-000{index}", "tool_name": name,
+        "purpose": "Read retained notifications without acknowledging operator visibility.",
+        "use_when": "Catch up on notifications or inspect an event's referenced inbox record.",
+        "do_not_use_when": "Never treat webhook receipt as user approval or domain execution.",
+        "authority": "oauth_read_only", "preconditions": "P-READ", "side_effects": "None.",
+        "success_dispositions": "succeeded",
+        "output_interpretation": "Inbox metadata and public refs.",
+        "required_next_action": "Read the referenced canonical subject; notify the operator.",
+        "important_errors": "not_found|invalid_cursor|agent_authority_denied",
+    }) for index, name in enumerate(("docket_list_notifications", "docket_get_notification"), 2))),
 }
 
 

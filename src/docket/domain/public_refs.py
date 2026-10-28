@@ -17,6 +17,9 @@ class PublicRefDefinition:
 
 
 _DEFINITIONS = (
+    PublicRefDefinition("notice", "PluginNotification"),
+    PublicRefDefinition("sub", "MCPEventSubscription"),
+    PublicRefDefinition("ndel", "MCPEventDelivery"),
     PublicRefDefinition("prn", "OAuthPrincipal"),
     PublicRefDefinition("req", "AuthenticatedRequest"),
     PublicRefDefinition("rec", "ConversationRecord"),
@@ -100,6 +103,13 @@ def new_public_ref(prefix: str) -> str:
 def new_internal_key() -> str:
     """Return an opaque durable coordination key that is not a public reference."""
     return uuid.uuid4().hex
+
+
+def deterministic_public_ref(prefix: str, identity_digest: bytes) -> str:
+    """Stable protocol identity; unlike new_public_ref, its payload is not a clock."""
+    if prefix not in PUBLIC_REF_PREFIXES or len(identity_digest) != 32:
+        raise ValueError("A registered prefix and SHA-256 identity are required")
+    return f"{prefix}_{_encode_ulid(int.from_bytes(identity_digest[:16], 'big'))}"
 
 
 def parse_public_ref(value: str) -> tuple[str, str]:

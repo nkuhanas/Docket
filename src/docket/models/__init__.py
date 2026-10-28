@@ -60,6 +60,12 @@ from docket.models.intelligence import (
     DailyBriefCaseMembership,
     TriageRun,
 )
+from docket.models.notifications import (
+    MCPEventAttempt,
+    MCPEventDelivery,
+    MCPEventSubscription,
+    PluginNotification,
+)
 from docket.models.oauth import OAuthPrincipal
 from docket.models.policy import LaneRoutingDecision, Preference
 from docket.models.projections import OperatorProjection, ProjectionDelivery
@@ -159,6 +165,9 @@ __all__ = [
     "Item",
     "ItemSourceBinding",
     "LaneRoutingDecision",
+    "MCPEventAttempt",
+    "MCPEventDelivery",
+    "MCPEventSubscription",
     "OAuthPrincipal",
     "Operation",
     "OperationTarget",
@@ -168,6 +177,7 @@ __all__ = [
     "OutboxEvent",
     "PersistedSemanticOption",
     "PersonProfile",
+    "PluginNotification",
     "Preference",
     "ProjectionDelivery",
     "ProviderAccount",

@@ -27,15 +27,14 @@ from docket.models import (
     GmailSource,
     IdentityHandle,
     OperatorProjection,
-    OutboxEvent,
     Preference,
-    ProjectionDelivery,
     TriageRun,
 )
 from docket.models.base import utc_now
 from docket.providers.google.gmail import GmailReadProvider
 from docket.schemas.intelligence import TriageAnalysisInput
 from docket.services.network import NetworkQueryService
+from docket.services.notifications import route_projection
 from docket.services.policies import PreferenceMatcher
 from docket.services.provenance_refs import ProvenanceRefService
 from docket.services.source_identities import gmail_sender_identity
@@ -568,7 +567,11 @@ class IntelligenceService:
         }
         projection = OperatorProjection(
             projection_kind="attention_case",
-            operator_ref=str(self.settings.operator_discord_user_id),
+            operator_ref=(
+                str(self.settings.operator_discord_user_id)
+                if self.settings.discord_adapter_enabled
+                else self.settings.canonical_operator_ref
+            ),
             primary_public_ref=case.ref_id,
             primary_revision_ref=revision.ref_id,
             case_ref=case.ref_id,
@@ -584,28 +587,7 @@ class IntelligenceService:
         )
         session.add(projection)
         session.flush()
-        session.add(
-            ProjectionDelivery(
-                projection_id=projection.id,
-                projection_ref=projection.ref_id,
-                transport="discord",
-                destination_ref=(
-                    f"discord_conversation:{self.settings.discord_guild_id}:"
-                    f"{self.settings.queue_channel_id}"
-                ),
-                status="pending",
-            )
-        )
-        session.add(
-            OutboxEvent(
-                event_type="discord.projection.requested",
-                aggregate_type="operator_projection",
-                aggregate_id=projection.id,
-                deduplication_key=f"discord_projection:{projection.ref_id}",
-                payload={"projection_ref": projection.ref_id},
-                status="pending",
-            )
-        )
+        route_projection(session, self.settings, projection)
 
     def submit_analysis(self, request: TriageAnalysisInput) -> dict[str, Any]:
         disposition = self._validate_analysis_classes(request)

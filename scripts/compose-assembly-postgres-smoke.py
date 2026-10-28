@@ -33,6 +33,7 @@ from calendar_sync_checks import (
 from calendar_update_checks import (
     test_calendar_update_binding_pin_serializes_with_provider_observations,
 )
+from plugin_notification_checks import test_notifications_claim_once_and_retain_postgresql_history
 from plugin_oauth_checks import test_oauth_identity_is_retained_in_postgresql
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
@@ -3260,6 +3261,7 @@ def main() -> None:
         test_mixed_field_evidence_recovery_survives_connections,
         test_authenticated_request_attribution_is_retained,
         test_oauth_identity_is_retained_in_postgresql,
+        test_notifications_claim_once_and_retain_postgresql_history,
     )
     for check in checks:
         check(factory)
