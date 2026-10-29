@@ -1,15 +1,19 @@
 # Contributing to Docket
 
 Docket is currently deployed as a credential-bearing, single-operator service.
-Repository automation therefore proves an artifact is eligible for deployment;
-it does not receive production credentials or mutate the live stack.
+GitHub automation proves an artifact is eligible for deployment without receiving
+production credentials. Agents operating this checkout can carry out routine
+releases under the Operator's standing authorization in `AGENTS.md`.
 
 ## Change workflow
 
 Explicit Operator instructions in the current development conversation authorize
 local delta implementation and repository work. No Discord sign-off message or
 production ledger Decision is required. Preserve historical signed provenance;
-deployment and production/external actions remain separately authorized.
+routine publishing, green-CI merges, related deployment and necessary runtime
+configuration also have standing authorization. Preserve deployment safeguards
+and runtime authority; destructive reset/restore and unrelated external actions
+remain outside that authorization.
 
 1. Create a short-lived branch from `main`.
 2. Keep private implementation provenance outside Git: versioned specifications
@@ -20,8 +24,8 @@ deployment and production/external actions remain separately authorized.
 4. Run `scripts/docket compose-smoke` for changes to migrations, dependencies,
    Compose, health, MCP, authentication, or tool schemas.
 5. Open a pull request and wait for both required CI jobs.
-6. Merge only green source. Deployment remains an explicit operator action on
-   the configured host through `scripts/docket deploy`.
+6. Merge only green source. Deploy on the configured host through
+   `scripts/docket deploy` without a repeated permission step.
 
 Live Google Calendar and Discord smokes are operator-present verification. They
 must never run in GitHub-hosted CI.
