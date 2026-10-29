@@ -174,3 +174,12 @@ strict mypy across 173 source files. `scripts/docket compose-smoke` passed,
 including the provider-neutral triage PostgreSQL checks and native-only startup.
 The inbox additionally pages by serialized bytes; a long-summary test traverses
 all records without oversize responses, duplicates or skipped notifications.
+
+The first production retirement attempt stopped before migration because the old
+Hermes projection listener was unavailable. Its drain was aborted, the existing
+services remained running and the pre-migration backup was retained. Native
+retirement now stops every legacy consumer behind the drain without attempting
+Discord control edits. Production configuration requires the legacy interactive
+credential disabled, so historical controls cannot execute. The separate rolling
+Discord-ingress deployment still requires quiescence. The release harness covers
+an unavailable projection listener and retained backup/drain/stop ordering.

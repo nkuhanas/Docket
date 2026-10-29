@@ -1,10 +1,10 @@
 # Private Docket plugin setup
 
-This guide is a preparation handoff. The backend, DNS, ingress and plugin
-connection have not been deployed or configured by the local implementation.
-Keep the current production interface until native linking and notification
-acceptance pass. Canonical plugin writes remain disabled pending the foreground
-authority contract.
+This guide describes configuration and live acceptance for the native interface.
+The Operator authorized retiring Hermes and Discord during the drained native
+deployment. Public DNS/tunnel activation and signed-in plugin acceptance are
+separate checks; a healthy private backend does not prove either. Canonical
+plugin writes remain disabled pending the foreground authority contract.
 
 The Operator selected the Native/public PKCE connection and supplied the Docket
 client ID `H92evvENOutMDq3Bq1qyRzMOrHiL7qpB` on October 28, 2026. The existing
@@ -70,11 +70,11 @@ DOCKET_PLUGIN_EVENTS_SCOPE=docket.events
 DOCKET_PLUGIN_TRIAGE_SCOPE=docket.triage
 ```
 
-The ignored `.runtime/plugin/native-oauth.env` contains this candidate overlay
-and preserves the current Operator identity explicitly.
-It is not loaded automatically and has not changed production `.env`. No OAuth
-client secret is needed. The exact callback URI still comes from the eventual
-ChatGPT connection, after the public endpoint is available.
+The ignored `.runtime/plugin/native-oauth.env` contains this overlay and preserves
+the current Operator identity explicitly. It is not loaded automatically; the
+authorized deployment installs its values in production `.env`, retaining a
+private backup. No OAuth client secret is needed. The exact callback URI comes
+from the eventual ChatGPT connection, after the public endpoint is available.
 
 Retain the current Operator identity when disconnecting Discord. Set
 `DOCKET_OPERATOR_REF` explicitly to that same historical identity; do not invent
@@ -86,9 +86,9 @@ command previews by default:
 uv run docket-plugin-auth approve --subject '<exact owner subject>' --events --triage
 ```
 
-Add `--execute` only when the Operator explicitly authorizes production owner
-enrollment after migration. The returned `prn_` is the stable public account
-identity and can be supplied to `docket-plugin-auth revoke`. Reapproval preserves
+Add `--execute` for the approved owner enrollment after migration, within the
+standing release authorization in `AGENTS.md`. The returned `prn_` is the stable
+public account identity and can be supplied to `docket-plugin-auth revoke`. Reapproval preserves
 identity but invalidates older tokens; obtain a newly issued token afterwards.
 
 ## Network handoff
@@ -103,8 +103,9 @@ Internal callbacks, triage, operational health details and OpenAPI stay private.
 Preserve authorization headers, streaming responses and suitable idle timeouts.
 Avoid an interactive Cloudflare Access/bot challenge in front of the MCP route;
 OAuth enforces the application account boundary. A tunnel alone grants no access.
-The actual listener, certificates, firewall, DNS and existing proxy services must
-be reviewed by their infrastructure owner before applying this example.
+Review the actual listener, certificates, firewall, DNS and existing proxy
+services before applying the example. Runtime deployment receipts and the exact
+network activation handoff are retained privately under `.runtime/plugin/`.
 
 ## Agent-supplied triage
 
@@ -185,9 +186,12 @@ reminders/provider work remain active.
 
 The normal deployment script selects checks from this setting. A missing setting
 keeps the existing adapter. An explicit native-only deployment retains CI,
-execution drain, backup and migration guards, quiesces an existing gateway's
-controls, stops Hermes/Discord ingress and SearXNG, and starts only Docket. Later native-only
-deployments require no gateway, ingress password or Hermes service credentials.
+execution drain, backup and migration guards, stops Hermes/Discord ingress and
+SearXNG, and starts only Docket. Native-only production requires the legacy
+interactive credential disabled. Retained Discord controls are inert after
+retirement; no projection-listener call or Discord message edit is required.
+Later native-only deployments require no gateway, ingress password or Hermes
+service credentials.
 Postdeploy verifies the private OAuth discovery/anonymous-denial boundary; actual
 public ingress and signed-in acceptance still require the connection checks below.
 The historical clean-reset workflow is restricted to the legacy adapter; use
