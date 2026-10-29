@@ -629,11 +629,9 @@ deploy() {
     if discord_adapter_enabled; then
         python3 "$ROOT/scripts/quarantine-hermes-skills.py" "$ROOT/.runtime/hermes"
     else
-        # The Operator-selected configuration retires the old conversational
-        # adapter after all pre-barrier work drained and a backup was retained.
-        if [[ -n "$(compose ps -q hermes)" ]]; then
-            database_continuity quiesce-ingress-options >/dev/null
-        fi
+        # Stop every legacy consumer behind the drained barrier. Native-only
+        # production also disables its interactive credential, so retained
+        # Discord controls are inert without a projection-listener round trip.
         compose stop -t 30 discord-ingress hermes searxng
     fi
     compose run --rm --no-deps docket sh -c \

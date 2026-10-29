@@ -36,18 +36,24 @@ def test_plugin_configuration_rejects_incomplete_or_unsafe_connection(updates):
 def test_production_can_use_an_explicit_identity_without_discord():
     settings = configured(
         DOCKET_ENVIRONMENT="production", DOCKET_DISCORD_ADAPTER_ENABLED=False,
-        DOCKET_OPERATOR_REF="operator:personal",
+        DOCKET_OPERATOR_REF="operator:personal", DOCKET_INTERACTIVE_AGENT_ENABLED=False,
     )
     assert settings.canonical_operator_ref == "operator:personal"
     with pytest.raises(ValidationError):
         configured(
             DOCKET_ENVIRONMENT="production", DOCKET_DISCORD_ADAPTER_ENABLED=False,
-            DOCKET_OPERATOR_REF=None,
+            DOCKET_OPERATOR_REF=None, DOCKET_INTERACTIVE_AGENT_ENABLED=False,
         )
     with pytest.raises(ValidationError):
         configured(
             DOCKET_ENVIRONMENT="production", DOCKET_DISCORD_ADAPTER_ENABLED=False,
             DOCKET_OPERATOR_REF="operator:personal", DOCKET_PLUGIN_ENABLED=False,
+            DOCKET_INTERACTIVE_AGENT_ENABLED=False,
+        )
+    with pytest.raises(ValidationError, match="legacy interactive agent disabled"):
+        configured(
+            DOCKET_ENVIRONMENT="production", DOCKET_DISCORD_ADAPTER_ENABLED=False,
+            DOCKET_OPERATOR_REF="operator:personal", DOCKET_INTERACTIVE_AGENT_ENABLED=True,
         )
 
 

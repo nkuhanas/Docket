@@ -46,6 +46,10 @@ requiring Hermes. The Operator's selected target retires its triage cron and
 SearXNG as well; inference and scheduling belong to the connected agent. Poll
 the inbox or subscribe to `docket.triage.ready`, then use the scoped claim/context
 workflow. Native configuration disables the legacy interactive credential.
+Retirement stops every legacy consumer behind the drained barrier and requires
+that credential disabled in production. Historical Discord controls remain inert;
+an unavailable projection listener cannot block retirement. The separate
+`deploy-ingress` rolling handoff retains its control-quiescence requirement.
 No transition resets
 canonical data or grants background mutation authority.
 

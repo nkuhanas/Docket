@@ -79,7 +79,13 @@ backup_database() {
     printf 'synthetic-backup\n'
 }
 python3() { log quarantine; }
-database_continuity() { log "continuity $*"; }
+database_continuity() {
+    log "continuity $*"
+    if [[ "$*" == quiesce-ingress-options ]]; then
+        printf 'legacy projection listener unavailable\n' >&2
+        return 1
+    fi
+}
 wait_for_hermes() { log hermes-ready; }
 gmail_triage_setup() { log triage-setup; }
 postdeploy() { log postdeploy; }
@@ -115,10 +121,7 @@ deploy
         stop = calls.index("compose stop -t 30 discord-ingress hermes searxng")
         start = calls.index("compose up -d --no-build --force-recreate docket")
         assert calls.index("backup") < stop < start < calls.index("postdeploy")
-        if gateway == "true":
-            assert calls.index("backup") < calls.index("continuity quiesce-ingress-options") < stop
-        else:
-            assert "continuity quiesce-ingress-options" not in calls
+        assert "continuity quiesce-ingress-options" not in calls
         assert "prepare-hermes" not in calls and "triage-setup" not in calls
         assert not any(call.endswith("--force-recreate docket hermes") for call in calls)
     else:
