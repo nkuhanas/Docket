@@ -8,8 +8,9 @@ Implementation baseline: `60c30ce5aea241b78b36fc75e51481b4680e496d`
 
 This is Docket's single current specification. It consolidates the signed ontology
 and Operator amendments, including the adopted [context/local CI delta](deltas/2026-11-05T04-27-33Z-single-spec-context-and-local-ci.md).
-Adoption and deployment are distinct. The native command/context candidate is
-implemented; final release validation and activation are pending. Actual implementation
+Adoption and deployment are distinct. The native command/context release is
+implemented and deployed; plugin v2.0.0 is published. The existing ChatGPT catalog
+still needs a host refresh; its old cached tools are not acceptance evidence. Actual implementation
 and deployment evidence belongs in [the implementation report](docs/native-context-local-ci.md).
 
 Forward changes use dated `deltas/YYYY-MM-DDTHH-MM-SSZ-description.md` records,
@@ -230,4 +231,4 @@ stale/missing checks and reuse content-identical merge evidence without Actions.
 
 | Version | Change |
 | --- | --- |
-| 1.0 | First current SPEC synthesized from signed ontology and Operator amendments; adopts November 4 context/local-CI delta and retirement cleanup. No invented prior version. Implementation in progress. |
+| 1.0 | First current SPEC synthesized from signed ontology and Operator amendments; adopts November 4 context/local-CI delta and retirement cleanup. No invented prior version. Implemented and deployed; hosted catalog refresh pending. |

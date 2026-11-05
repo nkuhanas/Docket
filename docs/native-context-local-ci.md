@@ -3,13 +3,13 @@
 Requirements: [SPEC 1.0](../SPEC.md). Adopted change:
 [November 4 delta](../deltas/2026-11-05T04-27-33Z-single-spec-context-and-local-ci.md).
 
-The candidate implementation is complete; full catalog deployment/host refresh
-remain pending final release validation. Baseline: `60c30ce5aea241b78b36fc75e51481b4680e496d`.
+The complete native catalog is deployed and plugin v2.0.0 is published.
+The current ChatGPT connection still needs its cached tool inventory refreshed. Baseline: `60c30ce5aea241b78b36fc75e51481b4680e496d`.
 
 The candidate retains all-day/recurring events and event context links, and
 composes owned previews into one atomic batch. Immutable consumption records
 prevent a member from executing twice; original request/draft ownership remains
-unchanged. Catalog activation and PostgreSQL rehearsal are pending.
+unchanged. Catalog activation and PostgreSQL rehearsal passed as recorded below.
 
 | Measurement | Baseline | Implemented result |
 | --- | --- | --- |
@@ -112,3 +112,57 @@ The candidate smoke uses signed OAuth over real MCP/PostgreSQL: synthetic event
 create/retry/update/cancel, uncertain fake-provider reconciliation, tasks, exact
 preview correction races, atomic batching, optional capture and current revocation.
 This remains synthetic acceptance, not a real calendar operation or host UI test.
+
+
+## Final activation — November 5, 2026, 06:22 UTC
+
+[PR 57](https://github.com/nkuhanas/Docket/pull/57) merged by rebase to
+`2ce9617c9328c3b6ca9637b3caa5989f76125e45`. It reused validated content tree
+`9dcc9d0e5b8fe72bac1f869f6af0deec00f1ad2a` and the exact tested image:
+`sha256:b3919a01a31ec0a823b1732888966af8aff40bfa0123cf190c718116803ef013`.
+No GitHub Actions wait or post-validation rebuild occurred.
+
+Clean-archive validation selected native/storage/release groups: 339 cases passed
+in 36.67 seconds, plus Ruff and strict mypy. Overall checks/build/PostgreSQL smoke
+and migration round trips took 79.73 seconds. Native transport passed synthetic
+create/retry/update/cancel, tasks/completion, uncertain fake-provider reconciliation,
+concurrent corrections (one wins, one stale), exact apply, atomic batches/member
+retry, optional encrypted capture, workflow receipts and revocation. Seven focused
+PostgreSQL locking/continuity checks also passed. The full retained inventory is
+91 modules / 982 cases, 157 fewer expanded cases than baseline. The routine native
+gate is 179 meaningful cases, measured at 15.74 seconds before static checks.
+
+Supported predeploy/deploy passed with durable drain, idle checks and backup
+`backups/docket-20261105T062218Z-2ce9617c9328.dump`. Previous image is retained as
+`docket-docket:rollback-20261105T062216Z`. Production schema is `20261104e3f4`;
+Docket/PostgreSQL health and native OAuth readiness passed. The three stopped
+Hermes/Discord-ingress/SearXNG containers were removed without force or volume
+removal. Their images, persistent volumes and private historical runtime evidence
+remain recoverable. Aphelion API/worker and local Ollama remained running.
+
+Deployed registry inspection measured 84 tools / 54 writes, 1,643-byte global
+instructions and maximum 3,508-byte write schema. Generic compiler tools, public
+work envelopes and retired internal callback mounts are absent. The OAuth client
+binding is unchanged. Public HTTPS discovery returns 200 with the expected issuer
+and four scopes; anonymous MCP returns 401 with its OAuth challenge; internal
+callback ingress returns 404. Public DNS succeeds through DoH; the node's previously
+known local resolver issue remains separate from application health.
+
+The existing [Docket plugin](https://chatgpt.com/plugins/plugin_asdk_app_6aebd82ba1108191a77747be377965f8)
+was updated through Plugin Creator to v2.0.0, release
+`pluginrel_6aec20d4dd888191a2178affc82de5b8`. Five-file read-back exactly matched
+the candidate archive. App identity, connection binding, presentation/defaultPrompt,
+scope and private audience were preserved. No owner reapproval or grant-epoch bump.
+A genuine connected-host profile read passed against the existing approved owner.
+
+The host currently exposes its cached 24-tool inventory and old instructions.
+Refreshing that existing connector's tools and opening a fresh chat is the remaining
+operator step; `docket_get_overview` should appear afterward. New business writes
+were verified through independent signed MCP/PostgreSQL clients, not by creating
+real production appointments. Hosted use of the new tools remains unverified until
+that refresh. The plugin source update used the Plugin Creator update-plugin workflow.
+
+These documentation receipt changes are recorded after activation; they do not
+alter the tested runtime image or its exact source-tree evidence. Image rollback
+alone does not reverse migrations. Use forward repair or the matching backup and
+migration-specific recovery; destructive production restore remains separately scoped.
