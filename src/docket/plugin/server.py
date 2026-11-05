@@ -35,6 +35,7 @@ from docket.plugin.business import BUSINESS_TOOLS, register_business
 from docket.plugin.commands import NATIVE_COMMAND_TOOLS, register_commands
 from docket.plugin.events import EventMethods, advertise_events
 from docket.plugin.instructions import NATIVE_INSTRUCTIONS
+from docket.plugin.schemas import compact_schema
 from docket.plugin.work import NativeWork
 from docket.providers.webhooks import WebhookPoster
 from docket.services.agent_requests import AgentRequestService
@@ -285,4 +286,5 @@ class PluginMCP(ProvenanceMCP):
             }
             if tool.name == "docket_get_profile":
                 tool.meta["openai/profile"] = True
+            tool.input_schema = compact_schema(tool.input_schema)
         return tools

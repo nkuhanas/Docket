@@ -52,6 +52,7 @@ def test_active_migration_history_is_one_clean_baseline() -> None:
     revisions = list(script.walk_revisions())
 
     assert [revision.revision for revision in revisions] == [
+        "20261104d2e3",
         "20261104c1d2",
         "20261028b2c3",
         "20261028a1b2",

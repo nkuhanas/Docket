@@ -67,7 +67,8 @@ async def test_flat_event_first_attempt_and_retry_through_real_transport(
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
         schema = tools["docket_create_event"].input_schema
         assert len(json.dumps(schema).encode()) < 4096
-        assert "work" not in schema["properties"] and "$defs" not in schema
+        assert "work" not in schema["properties"]
+        assert "mutation_type" not in json.dumps(schema)
         context = (await client.call_tool("docket_get_calendar_context", {})).structured_content
         assert context["coverage"]["absence_proven"] is False
         assert len(json.dumps(context).encode()) < 8192
@@ -671,3 +672,160 @@ async def test_named_contracts_cover_current_effects_without_public_compiler_boo
         check(tools[definition.tool_name].input_schema)
     # Required references remain required after removing internal create-ID alternatives.
     assert "subject_ref" in tools["docket_create_fact"].input_schema["required"]
+
+
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+@pytest.mark.parametrize("all_day", [True, False])
+@pytest.mark.asyncio
+async def test_event_creation_retains_all_day_and_recurring_capabilities(
+    session_factory,
+    linked_plugin,
+    all_day,
+):
+    app, _settings, token, _principal = linked_plugin
+    with session_factory.begin() as session:
+        account = ProviderAccount(
+            provider="google",
+            external_account_id="calendar-capability",
+            capabilities=["google_calendar"],
+        )
+        session.add(account)
+        session.flush()
+        session.add(
+            CalendarLane(
+                account_id=account.id,
+                lane="meetings",
+                display_name="Meetings",
+                color_hex="#123456",
+                calendar_id="synthetic-calendar",
+                status="active",
+                created_by_changeset_ref="test-fixture",
+            )
+        )
+    async with (
+        app.router.lifespan_context(app),
+        httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app),
+            headers={"Authorization": "Bearer " + token},
+        ) as http,
+        Client(
+            streamable_http_client(
+                "http://docket.you/mcp/",
+                http_client=http,
+            ),
+            mode="legacy",
+        ) as client,
+    ):
+        context = (await client.call_tool("docket_get_calendar_context", {})).structured_content
+        arguments = {
+            "context_id": context["context_id"],
+            "operation_id": "calendar-capability",
+            "title": "Synthetic calendar entry",
+            "timezone": "America/Los_Angeles",
+            "calendar_ref": context["calendars"][0]["calendar_ref"],
+            "all_day": all_day,
+            "context_labels": ["synthetic"],
+        }
+        arguments.update(
+            {"start": "2026-11-13", "end": "2026-11-14"}
+            if all_day
+            else {
+                "start": "2026-11-13T13:00:00-08:00",
+                "end": "2026-11-13T14:00:00-08:00",
+                "recurrence": {"frequency": "weekly", "weekdays": ["FR"], "count": 3},
+            }
+        )
+        result = (await client.call_tool("docket_create_event", arguments)).structured_content
+        assert result.get("disposition") == "committed", json.dumps(result, indent=2)
+    with session_factory() as session:
+        event = session.scalar(select(CanonicalEvent))
+        assert event.context_labels == ["synthetic"]
+        assert event.event_spec["timing"]["kind"] == ("all_day" if all_day else "timed")
+        if all_day:
+            assert event.event_spec["timing"]["end_date"] == "2026-11-14"
+        else:
+            assert event.event_spec["recurrence"]["count"] == 3
+        assert session.scalar(select(func.count()).select_from(Item)) == 1
+        assert session.scalar(select(func.count()).select_from(TemporalBinding)) == 1
+
+
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+@pytest.mark.asyncio
+async def test_batch_applies_once_and_members_cannot_duplicate_canonical_effects(
+    session_factory,
+    linked_plugin,
+):
+    from docket.models import PreparedConsumption, Task
+
+    app, _settings, token, _principal = linked_plugin
+    async with (
+        app.router.lifespan_context(app),
+        httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app),
+            headers={"Authorization": "Bearer " + token},
+        ) as http,
+        Client(
+            streamable_http_client("http://docket.you/mcp/", http_client=http), mode="legacy"
+        ) as client,
+    ):
+        context = (await client.call_tool("docket_get_overview", {})).structured_content
+        changes = []
+        for index in range(2):
+            prepared = (
+                await client.call_tool(
+                    "docket_create_task",
+                    {
+                        "context_id": context["context_id"],
+                        "operation_id": f"batch-task-{index}",
+                        "title": f"Batch task {index}",
+                        "preview": True,
+                    },
+                )
+            ).structured_content
+            assert prepared.get("disposition") == "prepared", prepared
+            changes.append(prepared["change_id"])
+        arguments = {"operation_id": "atomic-task-batch", "change_ids": changes}
+        batch = (await client.call_tool("docket_prepare_batch", arguments)).structured_content
+        assert batch.get("disposition") == "prepared", batch
+        again = (await client.call_tool("docket_prepare_batch", arguments)).structured_content
+        assert again["change_id"] == batch["change_id"]
+        with session_factory() as session:
+            assert session.scalar(select(func.count()).select_from(Task)) == 0
+        applied = (
+            await client.call_tool(
+                "docket_apply_change",
+                {
+                    "change_id": batch["change_id"],
+                },
+            )
+        ).structured_content
+        assert applied.get("disposition") == "committed", applied
+        for ref in [batch["change_id"], *changes]:
+            retry = (
+                await client.call_tool(
+                    "docket_apply_change",
+                    {
+                        "change_id": ref,
+                    },
+                )
+            ).structured_content
+            assert retry.get("replayed") is True, retry
+            assert retry["changeset_ref"] == applied["changeset_ref"]
+        member = (
+            await client.call_tool(
+                "docket_read_change",
+                {
+                    "change_id": changes[0],
+                },
+            )
+        ).structured_content
+        assert member["state"] == "included_in_batch"
+    with session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(Task)) == 2
+        assert session.scalar(select(func.count()).select_from(PreparedConsumption)) == 2
+        assert (
+            session.scalar(
+                select(func.count()).select_from(ChangeSet).where(ChangeSet.state == "committed")
+            )
+            == 1
+        )

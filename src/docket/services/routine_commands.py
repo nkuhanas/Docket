@@ -19,6 +19,7 @@ from docket.schemas.authority import (
     TemporalBindingRetract,
     mutation_input_json,
 )
+from docket.schemas.calendar import AllDayEventTiming
 from docket.schemas.native_commands import (
     CancelEvent,
     CompleteTask,
@@ -153,34 +154,55 @@ class RoutineCommandService(NativeCommandService):
                     for field in ("title", "location", "notes")
                     if field in values
                 }
-                if any(field in values for field in ("start", "end", "timezone")):
+                if any(field in values for field in ("start", "end", "timezone", "all_day")):
                     observed = state.get("event_spec", {}).get("timing", {})
-                    if observed.get("kind") != "timed" and not all(
-                        key in values for key in ("start", "end", "timezone")
-                    ):
-                        raise DocketError(
-                            code="event_time_fields_required",
-                            message="Supply start, end and timezone for this event.",
-                            details={"field": "start"},
-                        )
+                    all_day = values.get("all_day", observed.get("kind") == "all_day")
                     timezone = values.get("timezone", observed.get("timezone"))
-                    start = values.get("start", observed.get("start_local"))
-                    end = values.get("end", observed.get("end_local"))
-                    # Offset-free observed times preserve their stored DST disambiguation.
-                    for field, value in (("start", start), ("end", end)):
-                        if field not in values and observed.get("fold"):
-                            value = (
-                                datetime.fromisoformat(value)
-                                .replace(tzinfo=ZoneInfo(timezone), fold=observed["fold"])
-                                .isoformat()
+                    if all_day:
+                        fields["timing"] = AllDayEventTiming.model_validate(
+                            {
+                                "kind": "all_day",
+                                "start_date": values.get("start", observed.get("start_date")),
+                                "end_date": values.get("end", observed.get("end_date")),
+                                "timezone": timezone,
+                            }
+                        ).model_dump(mode="json")
+                    else:
+                        if observed.get("kind") != "timed" and not all(
+                            key in values for key in ("start", "end", "timezone")
+                        ):
+                            raise DocketError(
+                                code="event_time_fields_required",
+                                message="Supply start, end and timezone for this event.",
+                                details={"field": "start"},
                             )
-                            if field == "start":
-                                start = value
-                            else:
-                                end = value
-                    fields["timing"] = event_timing(start, end, timezone)
+                        start = values.get("start", observed.get("start_local"))
+                        end = values.get("end", observed.get("end_local"))
+                        for field, value in (("start", start), ("end", end)):
+                            if field not in values and observed.get("fold"):
+                                value = (
+                                    datetime.fromisoformat(value)
+                                    .replace(tzinfo=ZoneInfo(timezone), fold=observed["fold"])
+                                    .isoformat()
+                                )
+                                if field == "start":
+                                    start = value
+                                else:
+                                    end = value
+                        fields["timing"] = event_timing(start, end, timezone)
                 if fields:
                     payload["event_spec"] = fields
+                for public, internal in (
+                    ("entity_refs", "entity_refs"),
+                    ("item_refs", "item_refs"),
+                    ("time_refs", "realizes_temporal_binding_refs"),
+                    ("context_labels", "context_labels"),
+                    ("operator_policy_text", "operator_policy_text"),
+                    ("routing_ref", "routing_decision_ref"),
+                    ("status", "status"),
+                ):
+                    if public in values:
+                        payload[internal] = values[public]
                 if "calendar_ref" in values:
                     payload["lane_ref"] = values["calendar_ref"]
                 if "recurrence" in values:

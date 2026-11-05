@@ -16,7 +16,7 @@ OperationId = Annotated[
         min_length=1,
         max_length=128,
         pattern=r"^[A-Za-z0-9_-]+$",
-        description="Stable identity for this command and unchanged retries.",
+        description="Reuse for retries.",
     ),
 ]
 CalendarRef = Annotated[str, Field(pattern=r"^lane_[0-9A-HJKMNP-TV-Z]{26}$")]
@@ -33,12 +33,26 @@ class CommandBase(StrictModel):
 
 class CreateEvent(CommandBase):
     title: str = Field(min_length=1, max_length=512)
-    start: str = Field(max_length=64, description="ISO timestamp, preferably including UTC offset.")
-    end: str = Field(max_length=64, description="ISO timestamp after start.")
+    start: str = Field(max_length=64, description="ISO timestamp; ISO date with all_day=true.")
+    end: str = Field(max_length=64, description="After start; all-day end date is exclusive.")
     timezone: str = Field(max_length=128, description="IANA zone, e.g. America/Los_Angeles.")
     calendar_ref: CalendarRef
     location: str | None = Field(default=None, max_length=1000)
     notes: str | None = Field(default=None, max_length=4000)
+    all_day: bool = False
+    recurrence: CalendarRecurrenceInput | None = None
+    entity_refs: list[Annotated[str, Field(pattern=r"^ent_[0-9A-HJKMNP-TV-Z]{26}$")]] = Field(
+        default_factory=list, max_length=100
+    )
+    item_refs: list[Annotated[str, Field(pattern=r"^item_[0-9A-HJKMNP-TV-Z]{26}$")]] = Field(
+        default_factory=list, max_length=100
+    )
+    time_refs: list[Annotated[str, Field(pattern=r"^time_[0-9A-HJKMNP-TV-Z]{26}$")]] = Field(
+        default_factory=list, max_length=100
+    )
+    tags: list[str] = Field(default_factory=list, max_length=8)
+    context_labels: list[str] = Field(default_factory=list, max_length=25)
+    operator_policy_text: str | None = Field(default=None, max_length=4000)
 
 
 EventRef = Annotated[str, Field(pattern=r"^evt_[0-9A-HJKMNP-TV-Z]{26}$")]
@@ -55,6 +69,7 @@ class EventScope(CommandBase):
 
 
 class UpdateEvent(EventScope):
+    all_day: bool | None = None
     title: str | None = Field(default=None, min_length=1, max_length=512)
     start: str | None = Field(default=None, max_length=64)
     end: str | None = Field(default=None, max_length=64)
@@ -63,6 +78,13 @@ class UpdateEvent(EventScope):
     location: str | None = Field(default=None, max_length=1000)
     notes: str | None = Field(default=None, max_length=4000)
     recurrence: CalendarRecurrenceInput | None = None
+    entity_refs: list[Annotated[str, Field(pattern=r"^ent_[0-9A-HJKMNP-TV-Z]{26}$")]] | None = None
+    item_refs: list[ItemRef] | None = None
+    time_refs: list[Annotated[str, Field(pattern=r"^time_[0-9A-HJKMNP-TV-Z]{26}$")]] | None = None
+    context_labels: list[str] | None = None
+    operator_policy_text: str | None = Field(default=None, max_length=4000)
+    routing_ref: Annotated[str, Field(pattern=r"^route_[0-9A-HJKMNP-TV-Z]{26}$")] | None = None
+    status: Literal["active", "cancelled", "archived"] | None = None
     replace: bool = False
 
     @field_validator("title", "start", "end", "timezone", "calendar_ref")
@@ -108,3 +130,8 @@ class CompleteTask(CommandBase):
 
 class ApplyChange(StrictModel):
     change_id: ChangeId
+
+
+class PrepareBatch(StrictModel):
+    operation_id: OperationId
+    change_ids: list[ChangeId] = Field(min_length=2, max_length=25)

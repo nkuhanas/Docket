@@ -13,7 +13,7 @@ from docket.agent_auth import require_principal
 from docket.config import Settings
 from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
-from docket.models import ChangeSet, NativeContext, PreparedCommand
+from docket.models import ChangeSet, NativeContext, PreparedCommand, PreparedConsumption
 from docket.schemas.assembly import StageChangesInput
 from docket.schemas.calendar import TimedEventTiming
 from docket.schemas.native_commands import CreateEvent
@@ -180,7 +180,22 @@ class NativeCommandService:
         AgentRequestService(self.session).require(
             request_ref, permission="commit", allow_committed=True
         )
-        hash_input = command.model_dump(mode="json", exclude={"preview", "replaces_change_id"})
+        # Preserve retry identity for the first deployed flat contract's default fields.
+        original_fields = {
+            "context_id",
+            "operation_id",
+            "title",
+            "start",
+            "end",
+            "timezone",
+            "calendar_ref",
+            "location",
+            "notes",
+        }
+        hash_input = command.model_dump(mode="json", include=original_fields)
+        for key, value in command.model_dump(mode="json").items():
+            if key not in original_fields | {"preview", "replaces_change_id"} and value:
+                hash_input[key] = value
         if command.replaces_change_id is not None:
             hash_input["replaces_change_id"] = command.replaces_change_id
         argument_hash = sha256_json(hash_input)
@@ -204,41 +219,11 @@ class NativeCommandService:
             command.context_id,
             "calendar",
         )
-        if command.calendar_ref not in context.versions:
-            raise DocketError(
-                code="calendar_not_in_context",
-                message="Read context for the selected calendar_ref.",
-                details={"field": "calendar_ref"},
-            )
-        timing = event_timing(command.start, command.end, command.timezone)
+        from docket.services.event_commands import create_event_plan
+
+        plan = create_event_plan(self.session, context, command, request_key)
         data = StageChangesInput.model_validate(
-            {
-                "request_ref": request_ref,
-                "request_key": request_key,
-                "expected_versions": {command.calendar_ref: context.versions[command.calendar_ref]},
-                "assembly_scope": {
-                    "resolved_intent": {"command": "create_event", "title": command.title},
-                    "normalized_entry_types": ["scheduled_occurrence_entry"],
-                    "selected_entry_ids": ["event"],
-                    "target_refs": [command.calendar_ref],
-                },
-                "patch": {
-                    "operations": [
-                        {
-                            "operation": "normalized_entry_upsert",
-                            "entry": {
-                                "import_entry_id": "event",
-                                "entry_type": "scheduled_occurrence_entry",
-                                "title": command.title,
-                                "timing": timing,
-                                "lane_ref": command.calendar_ref,
-                                "location": command.location,
-                                "description": command.notes,
-                            },
-                        }
-                    ]
-                },
-            }
+            {"request_ref": request_ref, "request_key": request_key, **plan}
         )
         if command.replaces_change_id is not None:
             data.assembly_scope = None
@@ -427,6 +412,8 @@ class NativeCommandService:
         return result
 
     def prepared(self, proposal: PreparedCommand) -> dict[str, Any]:
+        if self.session.get(PreparedConsumption, proposal.ref_id) is not None:
+            return self.apply(proposal.ref_id)
         changeset = self.session.scalar(
             select(ChangeSet).where(
                 ChangeSet.ref_id == proposal.changeset_ref,
@@ -475,16 +462,20 @@ class NativeCommandService:
             else None
         )
         stale = changeset is None or self.fingerprint(changeset) != proposal.revision_hash
+        consumed = self.session.get(PreparedConsumption, proposal.ref_id)
         return {
             "ok": True,
             "change_id": proposal.ref_id,
             "request_ref": proposal.request_ref,
             "changeset_ref": proposal.changeset_ref,
-            "state": "unavailable" if changeset is None else changeset.state,
+            "state": "included_in_batch"
+            if consumed
+            else ("unavailable" if changeset is None else changeset.state),
+            **({"included_in_change": consumed.batch_ref} if consumed else {}),
             "stale": stale,
             "preview": self.bounded_preview(proposal.preview),
             "issues": self.public_issues(revision.validation_errors_json if revision else []),
-            "next": "read_current_context" if stale else "docket_apply_change",
+            "next": "docket_get_context" if stale else "docket_apply_change",
         }
 
     def apply(self, change_id: str) -> dict[str, Any]:
@@ -500,6 +491,33 @@ class NativeCommandService:
         root = AgentRequestService(self.session).require(
             proposal.request_ref, permission="commit", allow_committed=True
         )
+        consumed = self.session.get(PreparedConsumption, proposal.ref_id)
+        if consumed is not None:
+            batch = self.session.scalar(
+                select(PreparedCommand).where(
+                    PreparedCommand.ref_id == consumed.batch_ref,
+                    PreparedCommand.principal_ref == principal.principal_ref,
+                )
+            )
+            parent = (
+                self.session.scalar(
+                    select(ChangeSet).where(
+                        ChangeSet.ref_id == batch.changeset_ref,
+                    )
+                )
+                if batch is not None
+                else None
+            )
+            if parent is None or parent.state != "committed":
+                raise DocketError(
+                    code="batch_receipt_unavailable",
+                    message="The retained batch receipt needs recovery.",
+                )
+            return {
+                **parent.commit_receipt_json,
+                "included_in_change": consumed.batch_ref,
+                "replayed": True,
+            }
         changeset = self.session.scalar(
             select(ChangeSet)
             .where(
@@ -513,12 +531,23 @@ class NativeCommandService:
                 code="prepared_change_stale",
                 message="This exact proposal changed; read the retained change.",
             )
+        batch_members: list[PreparedCommand] = []
+        if proposal.command == "batch" and changeset.state != "committed":
+            from docket.services.prepared_batches import members
+
+            batch_members = members(self, proposal)
         admission = self._admission(
             root.ref_id, "apply", "docket_commit_changeset", proposal.revision_hash
         )
-        return ChangeSetAssemblyService(self.session).commit(
+        result = ChangeSetAssemblyService(self.session).commit(
             request_ref=root.ref_id,
             request_key=root.request_key,
             assembly_operation_token=admission["assembly_operation_token"],
             assembly_argument_hash=proposal.revision_hash,
         )
+
+        if batch_members and changeset.state == "committed":
+            from docket.services.prepared_batches import consume
+
+            consume(self, proposal, batch_members)
+        return result

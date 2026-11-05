@@ -19,12 +19,14 @@ from docket.schemas.native_commands import (
     CompleteTask,
     CreateEvent,
     CreateTask,
+    PrepareBatch,
     UpdateEvent,
     UpdateTask,
 )
 from docket.services.business_commands import public_validation_error
 from docket.services.native_commands import NativeCommandService
 from docket.services.native_context import NativeContextService
+from docket.services.prepared_batches import PreparedBatchService
 from docket.services.routine_commands import RoutineCommandService
 
 ROUTINE_COMMANDS: dict[str, tuple[type[BaseModel], str]] = {
@@ -56,7 +58,7 @@ ROUTINE_COMMANDS: dict[str, tuple[type[BaseModel], str]] = {
         "Complete a task; Docket records completion time unless supplied.",
     ),
 }
-NATIVE_COMMAND_TOOLS = frozenset(ROUTINE_COMMANDS) | {"docket_apply_change"}
+NATIVE_COMMAND_TOOLS = frozenset(ROUTINE_COMMANDS) | {"docket_apply_change", "docket_prepare_batch"}
 NATIVE_CONTEXT_TOOLS = frozenset(
     {"docket_get_overview", "docket_get_calendar_context", "docket_get_context"}
 )
@@ -121,6 +123,42 @@ def register_commands(server: ProvenanceMCP, settings: Settings) -> None:
         "No mutation payload is accepted. Retrying returns its original receipt.",
         annotations=ToolAnnotations(
             read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=True
+        ),
+    )
+
+    def prepare_batch(arguments: dict[str, Any]) -> dict[str, Any]:
+        request_ref = arguments.pop("request_ref", None)
+        request_key = arguments.pop("request_key", None)
+        try:
+            if request_ref is None or request_key is None:
+                raise DocketError(
+                    code="request_context_required",
+                    message="An authenticated batch request is required.",
+                )
+            value = PrepareBatch.model_validate(arguments)
+            with session_scope() as session:
+                return PreparedBatchService(session, settings).prepare(
+                    value.operation_id,
+                    value.change_ids,
+                    request_ref,
+                    request_key,
+                )
+        except ValidationError as exc:
+            return public_validation_error(exc).as_dict()
+        except DocketError as exc:
+            return exc.as_dict()
+
+    server.add_tool(
+        model_function(PrepareBatch, "docket_prepare_batch", prepare_batch),
+        name="docket_prepare_batch",
+        description="Combine ready owned previews for different targets into one atomic "
+        "change. Preparation does not commit; apply the returned change_id. "
+        "A member applied by the batch cannot execute again separately.",
+        annotations=ToolAnnotations(
+            read_only_hint=False,
+            destructive_hint=False,
+            idempotent_hint=True,
+            open_world_hint=False,
         ),
     )
 
