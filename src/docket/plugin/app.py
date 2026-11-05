@@ -56,12 +56,20 @@ class PluginAuthentication(BaseHTTPMiddleware):
             )
             logger.warning("plugin_authentication_rejected", **diagnostic)
             metadata = self.settings.plugin_public_origin.rstrip("/")
+            insufficient_scope = diagnostic["reason"] == "read_scope_missing"
+            oauth_error = "insufficient_scope" if insufficient_scope else "invalid_token"
+            description = (
+                "Additional Docket permission is required" if insufficient_scope
+                else "Link an approved Docket account"
+            )
             return JSONResponse(
-                {"error": "plugin_authentication_required"}, status_code=401,
+                {"error": ("plugin_insufficient_scope" if insufficient_scope
+                           else "plugin_authentication_required")},
+                status_code=403 if insufficient_scope else 401,
                 headers={"WWW-Authenticate": (
                     f'Bearer resource_metadata="{metadata}/.well-known/oauth-protected-resource", '
-                    f'scope="{self.settings.plugin_read_scope}", error="invalid_token", '
-                    'error_description="Link an approved Docket account"'
+                    f'scope="{self.settings.plugin_read_scope}", error="{oauth_error}", '
+                    f'error_description="{description}"'
                 ), "Cache-Control": "no-store"},
             )
         # Model-supplied metadata and legacy headers are not foreground authority.

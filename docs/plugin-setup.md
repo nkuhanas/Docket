@@ -107,8 +107,10 @@ The verifier accepts Auth0's signed `azp` client claim and the RFC 9068 signed
 `client_id` claim. At least one is required; both must agree when present, and
 the value must match the configured client allowlist. Neither format bypasses
 the approved-owner or scope checks. See [Auth0 token profiles](https://auth0.com/docs/secure/tokens/access-tokens/access-token-profiles).
-The public response remains the same generic `401` and OAuth challenge. No token,
-header, claim value, request body, subject or exception text enters this event.
+An approved token missing `docket.read` receives `403` with an
+`insufficient_scope` challenge naming that required scope, enabling client
+reauthorization. Other authentication failures retain the generic `401`.
+No token, header, claim value, request body, subject or exception text enters this event.
 Use its label to choose the affected configuration check:
 
 | Reason | Check |
@@ -128,6 +130,13 @@ Use its label to choose the affected configuration check:
 An unexpected account or client does not enroll itself. Correct that exact
 connection or use explicit approved-owner administration; keep background
 authority and all token-verification checks enforced.
+
+Scope names must match exactly. Generic `read`, `write` and `triage` permissions
+do not satisfy `docket.read`, `docket.events` and `docket.triage`. Define the Docket
+names on its Auth0 API, grant them to the Native application's **User-Delegated
+Access**, and allow them through user role assignments when RBAC is enabled.
+Reconnect to obtain a newly scoped token; changing permission definitions does
+not rewrite a token already issued. See [MCP scope challenges](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#runtime-insufficient-scope-errors).
 
 ## Prepared runtime configuration
 
