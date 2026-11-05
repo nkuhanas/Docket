@@ -21,10 +21,12 @@ OAuthFailureReason = Literal[
     "credential_missing", "unsupported_token", "signing_keys_unavailable",
     "signing_key_unknown", "missing_claim", "invalid_signature", "invalid_issuer",
     "invalid_audience", "expired_token", "invalid_token_time", "invalid_claims",
-    "client_not_allowed", "non_user_grant", "principal_not_approved",
+    "client_not_allowed", "client_identity_missing", "client_identity_conflict",
+    "non_user_grant", "principal_not_approved",
     "principal_disabled", "principal_stale", "operator_mismatch", "read_scope_missing",
 ]
-_REQUIRED_CLAIMS = ("iss", "aud", "sub", "exp", "iat", "azp", "scope")
+_REQUIRED_CLAIMS = ("iss", "aud", "sub", "exp", "iat", "scope")
+_KNOWN_CLAIMS = (*_REQUIRED_CLAIMS, "azp", "client_id")
 
 
 class OAuthAuthenticationError(DocketError):
@@ -37,7 +39,7 @@ class OAuthAuthenticationError(DocketError):
         self.diagnostic: dict[str, str] = {"reason": reason}
         if missing_claim is not None:
             self.diagnostic["missing_claim"] = (
-                missing_claim if missing_claim in _REQUIRED_CLAIMS else "other"
+                missing_claim if missing_claim in _KNOWN_CLAIMS else "other"
             )
 
 
@@ -118,7 +120,16 @@ class OAuthVerifier:
                 or claims["exp"] <= claims["iat"]
             ):
                 raise ValueError("Invalid delegated grant")
-            if claims["azp"] not in self.settings.plugin_oauth_client_ids:
+            # Auth0's native profile uses azp; RFC 9068 uses client_id. Both
+            # values, when present, are signed and must identify the same client.
+            clients = [claims[name] for name in ("azp", "client_id") if name in claims]
+            if not clients:
+                raise OAuthAuthenticationError("client_identity_missing")
+            if any(not isinstance(value, str) or not 1 <= len(value) <= 256 for value in clients):
+                raise OAuthAuthenticationError("invalid_claims")
+            if any(value != clients[0] for value in clients[1:]):
+                raise OAuthAuthenticationError("client_identity_conflict")
+            if clients[0] not in self.settings.plugin_oauth_client_ids:
                 raise OAuthAuthenticationError("client_not_allowed")
             if claims.get("gty") == "client-credentials" or claims["sub"].endswith("@clients"):
                 raise OAuthAuthenticationError("non_user_grant")
