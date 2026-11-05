@@ -1,0 +1,206 @@
+{
+  "kind": "schema feasibility only; no runtime work/finance implementation",
+  "source_commit": "e349f23d557ea7e1b25de17d16932777da7dccb5",
+  "uv_lock_sha256": "d51d1e42ba642b64dff6f5a178927337321ebbc74f41ad9679319f167b2ffc43",
+  "probe_sha256": "689477dbba0a14cbdcb8bb4c32aa4332b3b1a7d483fe132eae7c609d0d6d18e0",
+  "measurement": "UTF-8 compact JSON; ensure_ascii=False; tools/list result without RPC envelope",
+  "baseline": {
+    "tools": 84,
+    "input_bytes": 75450,
+    "discovery_bytes": 119691,
+    "largest_input_bytes": 3508,
+    "global_instruction_bytes": 1643
+  },
+  "extension": {
+    "P0a": {
+      "tools": 6,
+      "input_bytes": 12018,
+      "discovery_bytes": 14744
+    },
+    "P0b": {
+      "tools": 7,
+      "input_bytes": 8704,
+      "discovery_bytes": 11840
+    }
+  },
+  "candidates": [
+    {
+      "phase": "P0a",
+      "tool": "docket_get_work_context",
+      "read_only": true,
+      "input_bytes": 377,
+      "discovery_bytes": 797,
+      "fields": 3,
+      "required": [],
+      "definitions": 0
+    },
+    {
+      "phase": "P0a",
+      "tool": "docket_query_work_sessions",
+      "read_only": true,
+      "input_bytes": 1667,
+      "discovery_bytes": 2098,
+      "fields": 16,
+      "required": [],
+      "definitions": 0
+    },
+    {
+      "phase": "P0a",
+      "tool": "docket_log_work_session",
+      "read_only": false,
+      "input_bytes": 3385,
+      "discovery_bytes": 3872,
+      "fields": 29,
+      "required": [
+        "context_id",
+        "operation_id",
+        "description"
+      ],
+      "definitions": 1
+    },
+    {
+      "phase": "P0a",
+      "tool": "docket_update_work_session",
+      "read_only": false,
+      "input_bytes": 3711,
+      "discovery_bytes": 4189,
+      "fields": 31,
+      "required": [
+        "context_id",
+        "operation_id",
+        "work_ref"
+      ],
+      "definitions": 1
+    },
+    {
+      "phase": "P0a",
+      "tool": "docket_create_engagement",
+      "read_only": false,
+      "input_bytes": 1357,
+      "discovery_bytes": 1810,
+      "fields": 13,
+      "required": [
+        "context_id",
+        "operation_id",
+        "label",
+        "kind"
+      ],
+      "definitions": 0
+    },
+    {
+      "phase": "P0a",
+      "tool": "docket_update_engagement",
+      "read_only": false,
+      "input_bytes": 1521,
+      "discovery_bytes": 1978,
+      "fields": 14,
+      "required": [
+        "context_id",
+        "operation_id",
+        "engagement_ref"
+      ],
+      "definitions": 0
+    },
+    {
+      "phase": "P0b",
+      "tool": "docket_start_work_session",
+      "read_only": false,
+      "input_bytes": 2267,
+      "discovery_bytes": 2704,
+      "fields": 21,
+      "required": [
+        "context_id",
+        "operation_id",
+        "description"
+      ],
+      "definitions": 0
+    },
+    {
+      "phase": "P0b",
+      "tool": "docket_pause_work_session",
+      "read_only": false,
+      "input_bytes": 553,
+      "discovery_bytes": 985,
+      "fields": 5,
+      "required": [
+        "context_id",
+        "operation_id",
+        "work_ref"
+      ],
+      "definitions": 0
+    },
+    {
+      "phase": "P0b",
+      "tool": "docket_resume_work_session",
+      "read_only": false,
+      "input_bytes": 553,
+      "discovery_bytes": 995,
+      "fields": 5,
+      "required": [
+        "context_id",
+        "operation_id",
+        "work_ref"
+      ],
+      "definitions": 0
+    },
+    {
+      "phase": "P0b",
+      "tool": "docket_stop_work_session",
+      "read_only": false,
+      "input_bytes": 641,
+      "discovery_bytes": 1084,
+      "fields": 6,
+      "required": [
+        "context_id",
+        "operation_id",
+        "work_ref"
+      ],
+      "definitions": 0
+    },
+    {
+      "phase": "P0b",
+      "tool": "docket_switch_work_session",
+      "read_only": false,
+      "input_bytes": 2456,
+      "discovery_bytes": 2908,
+      "fields": 23,
+      "required": [
+        "context_id",
+        "operation_id",
+        "description",
+        "from_work_ref"
+      ],
+      "definitions": 0
+    },
+    {
+      "phase": "P0b",
+      "tool": "docket_split_work_session",
+      "read_only": false,
+      "input_bytes": 1300,
+      "discovery_bytes": 1761,
+      "fields": 6,
+      "required": [
+        "context_id",
+        "operation_id",
+        "work_ref",
+        "parts"
+      ],
+      "definitions": 1
+    },
+    {
+      "phase": "P0b",
+      "tool": "docket_merge_work_sessions",
+      "read_only": false,
+      "input_bytes": 934,
+      "discovery_bytes": 1403,
+      "fields": 8,
+      "required": [
+        "context_id",
+        "operation_id",
+        "work_refs"
+      ],
+      "definitions": 0
+    }
+  ],
+  "combined_discovery_bytes": 146288
+}
