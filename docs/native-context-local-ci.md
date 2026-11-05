@@ -36,3 +36,27 @@ dependency or UI suite; it was removed. Real local credentials and historical
 runtime/backup data were preserved. The historical destructive clean-cutover CLI
 was removed with the retired gateway release path; backup/restore verification
 and signed historical artifacts remain available.
+
+## First calendar slice
+
+Commit `ec0773c` establishes SPEC/local release validation and removes the retired
+source. Its clean archive passed 197 selected cases and static analysis, built
+`sha256:14fff6d65798e893b5a2dce2fc6169c998cd05d32a294c2bfb91793d98c96a36`
+and passed native PostgreSQL transport in 53.98 seconds overall. This is local
+validation, not a production deployment receipt.
+
+The next slice adds `docket_get_overview`, `docket_get_calendar_context` and
+`docket_create_event`. Compact discovered input schemas measured 101, 249 and
+1,024 bytes respectively. Calendar context carries owner/purpose-bound observed
+versions, incomplete coverage and no arbitrary TTL. The flat event command
+normalizes ISO offsets and compiles/stages/commits through existing services,
+deriving Item/Time/Event support and one provider intent. Unchanged retries return
+the original receipt; changed input under the same operation identity rejects.
+
+New general context and exact proposal rows are separate from triage ContextPacket.
+Forward migration `20261104c1d2` preserves prior data and adds immutable tables;
+downgrade refuses to discard retained snapshots/proposals. Recovery of a deployed
+migration uses the matching backup and migration-specific procedure, not an image
+rollback or deletion of rows. The old public compiler remains available during
+this implementation slice; complete capability parity, shorter instructions,
+prepared-work discovery and registered-plugin refresh remain pending cutover.

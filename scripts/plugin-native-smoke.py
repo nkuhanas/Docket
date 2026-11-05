@@ -16,9 +16,16 @@ from docket.agent_auth import TRIAGE_WORK_TOOLS
 from docket.config import get_settings
 from docket.database import session_scope
 from docket.domain.enums import Environment
-from docket.mcp.instrumented import INTERACTIVE_AUTHORITY_TOOLS
-from docket.models import AuthenticatedRequest, Item, ToolInvocation
+from docket.models import (
+    AuthenticatedRequest,
+    CalendarLane,
+    CanonicalEvent,
+    Operation,
+    ProviderAccount,
+    ToolInvocation,
+)
 from docket.services.oauth import OAuthPrincipalService
+from docket.tool_contracts import contract_tool_names
 
 settings = get_settings()
 assert settings.environment is Environment.TEST
@@ -50,9 +57,9 @@ async def check() -> None:
         assert (await http.post("http://docket:8000/plugin/mcp/", json={})).status_code == 401
         assert (await http.get("http://docket:8000/plugin/triage-mcp/")).status_code == 404
         tools = await plugin_app.state.mcp.list_tools()
-        assert len(tools) == 30
+        assert {tool.name for tool in tools} == contract_tool_names("plugin")
         assert all(tool.annotations.read_only_hint is (
-            tool.name not in TRIAGE_WORK_TOOLS | INTERACTIVE_AUTHORITY_TOOLS)
+            tool.name not in TRIAGE_WORK_TOOLS | plugin_app.state.mcp.authority_tools)
                    for tool in tools)
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         jwk = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(key.public_key()))
@@ -75,40 +82,49 @@ async def check() -> None:
                                settings.plugin_triage_scope, settings.plugin_events_scope)),
         }, key, algorithm="RS256", headers={"kid": "native-smoke-key"})
         http.headers["Authorization"] = "Bearer " + credential
-        def work(operation: str) -> dict[str, str]:
-            return {"request_id": "native-smoke", "execution_id": "scheduled-run",
-                    "operation_id": operation}
+        with session_scope() as session:
+            account = ProviderAccount(provider="google", external_account_id="native-smoke",
+                                      capabilities=["google_calendar"])
+            session.add(account)
+            session.flush()
+            session.add(CalendarLane(account_id=account.id, lane="meetings",
+                        display_name="Synthetic Meetings", color_hex="#123456",
+                        calendar_id="synthetic-meetings", status="active",
+                        created_by_changeset_ref="synthetic-fixture"))
 
         async with Client(streamable_http_client(
             "http://docket:8000/plugin/mcp/", http_client=http,
         ), mode="legacy") as client:
-            assert len((await client.list_tools()).tools) == 30
-            staged = (await client.call_tool("docket_stage_changes", {
-                "work": work("stage"), "assembly_scope": {
-                    "resolved_intent": {"intent": "track the synthetic smoke item"},
-                    "allowed_mutation_types": ["item_create"], "planned_create_types": ["item"],
-                }, "patch": {"operations": [{"operation": "action_upsert", "action": {
-                    "change_id": "item-1", "mutation_type": "item_create", "action": "create",
-                    "object_type": "item", "affected_fields": ["title"],
-                    "create_spec": {"title": "Native smoke item", "kind": "test.smoke"},
-                }}]},
-            })).structured_content
-            assert staged and staged["disposition"] == "ready_to_commit", staged
-            committed = (await client.call_tool("docket_commit_changeset", {
-                "work": work("commit"),
-            })).structured_content
+            assert {t.name for t in (await client.list_tools()).tools} == (
+                contract_tool_names("plugin")
+            )
+            packet = (await client.call_tool("docket_get_calendar_context", {})).structured_content
+            assert packet and packet["calendars"]
+            arguments = {"context_id": packet["context_id"], "operation_id": "native-smoke-event",
+                         "title": "Synthetic smoke meeting", "start": "2026-11-13T13:00:00-08:00",
+                         "end": "2026-11-13T14:00:00-08:00", "timezone": "America/Los_Angeles",
+                         "calendar_ref": packet["calendars"][0]["calendar_ref"],
+                         "location": "https://example.test/meeting"}
+            committed = (await client.call_tool(
+                "docket_create_event", arguments,
+            )).structured_content
             assert committed and committed["disposition"] == "committed", committed
+            retry = (await client.call_tool("docket_create_event", arguments)).structured_content
+            assert retry and retry.pop("replayed") is True
+            assert retry == committed
         with session_scope() as session:
             root = session.scalar(select(AuthenticatedRequest).where(
                 AuthenticatedRequest.principal_ref == principal_ref,
             ))
             assert root and root.state == "committed" and root.source_utterance_ref is None
-            item = session.scalar(select(Item).where(Item.title == "Native smoke item"))
-            assert item and root.ref_id in item.basis_refs
+            event = session.scalar(select(CanonicalEvent).where(
+                CanonicalEvent.title == "Synthetic smoke meeting"))
+            assert event and root.ref_id in event.basis_refs
+            assert len(list(session.scalars(select(Operation)))) == 1
             calls = list(session.scalars(select(ToolInvocation).where(
                 ToolInvocation.actor_ref == principal_ref,
             )))
-            assert len(calls) == 2 and all(row.domain_state == "succeeded" for row in calls)
+            assert len(calls) == 3 and all(row.domain_state == "succeeded" for row in calls)
             OAuthPrincipalService(session, settings).revoke(principal_ref)
         assert (await http.post("http://docket:8000/plugin/mcp/", json={})).status_code == 401
         await asyncio.sleep(0)

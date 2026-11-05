@@ -1,5 +1,6 @@
 """Native delegated operations, separately scoped from reads, triage and events."""
 
+import hashlib
 from copy import deepcopy
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -27,6 +28,7 @@ from docket.mcp.instrumented import (
 )
 from docket.mcp.server import mcp
 from docket.mcp.triage_server import triage_mcp
+from docket.plugin.commands import NATIVE_COMMAND_TOOLS, register_commands
 from docket.plugin.events import EventMethods, advertise_events
 from docket.plugin.work import NativeWork
 from docket.providers.webhooks import WebhookPoster
@@ -36,6 +38,8 @@ from docket.tool_contracts import contract_tool_names, render_contract
 
 
 class PluginMCP(ProvenanceMCP):
+    authority_tools = INTERACTIVE_AUTHORITY_TOOLS | NATIVE_COMMAND_TOOLS
+
     def __init__(self, settings: Settings, poster: WebhookPoster | None = None) -> None:
         hostname = urlsplit(settings.plugin_public_origin).hostname or "docket.you"
         super().__init__(
@@ -49,6 +53,7 @@ class PluginMCP(ProvenanceMCP):
             ),
         )
         self.plugin_settings = settings
+        register_commands(self, settings)
         annotations = ToolAnnotations(
             read_only_hint=True, destructive_hint=False,
             idempotent_hint=True, open_world_hint=False,
@@ -150,7 +155,18 @@ class PluginMCP(ProvenanceMCP):
     def prepare_agent_call(
         self, name: str, authenticated: AgentCallContext, arguments: dict[str, Any],
     ) -> tuple[AgentCallContext, dict[str, Any]]:
-        if name not in INTERACTIVE_AUTHORITY_TOOLS:
+        if name in NATIVE_COMMAND_TOOLS:
+            operation = arguments.get("operation_id")
+            try:
+                work = NativeWork.model_validate({"request_id": (
+                        "command-" + hashlib.sha256(str(operation).encode()).hexdigest()),
+                        "execution_id": "native-command", "operation_id": operation})
+            except ValidationError as exc:
+                raise DocketError(code="invalid_operation_id",
+                                  message="Supply a stable operation_id for this command.",
+                                  details={"field": "operation_id"}) from exc
+            return work.bind(authenticated.principal), arguments
+        if name not in self.authority_tools:
             return authenticated, arguments
         arguments = dict(arguments)
         try:
@@ -168,7 +184,7 @@ class PluginMCP(ProvenanceMCP):
         authenticated = agent_call_context.get()
         result = await super().call_tool(name, arguments, context)
         if (
-            name in INTERACTIVE_AUTHORITY_TOOLS and authenticated is not None
+            name in self.authority_tools and authenticated is not None
             and authenticated.principal.oauth_write_eligible
             and "stage" not in authenticated.principal.permissions
             and (result.structured_content or {}).get("error", {}).get("code")
@@ -200,7 +216,9 @@ class PluginMCP(ProvenanceMCP):
                     key for key in tool.input_schema["required"] if key not in hidden
                 ]
             scopes = [self.plugin_settings.plugin_read_scope]
-            if tool.name in INTERACTIVE_AUTHORITY_TOOLS:
+            if tool.name in NATIVE_COMMAND_TOOLS:
+                scopes.append(self.plugin_settings.plugin_write_scope)
+            elif tool.name in INTERACTIVE_AUTHORITY_TOOLS:
                 properties["work"] = NativeWork.model_json_schema()
                 tool.input_schema.setdefault("required", []).append("work")
                 scopes.append(self.plugin_settings.plugin_write_scope)
