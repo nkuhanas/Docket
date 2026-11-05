@@ -3,10 +3,10 @@
 Requirements: [SPEC 1.0](../SPEC.md). Adopted change:
 [November 4 delta](../deltas/2026-11-05T04-27-33Z-single-spec-context-and-local-ci.md).
 
-The complete native catalog is deployed and plugin v2.0.0 is published.
-The current ChatGPT connection still needs its cached tool inventory refreshed. Baseline: `60c30ce5aea241b78b36fc75e51481b4680e496d`.
+The complete native catalog is deployed, plugin v2.0.0 is published and live
+native-tool use is verified. Baseline: `60c30ce5aea241b78b36fc75e51481b4680e496d`.
 
-The candidate retains all-day/recurring events and event context links, and
+The implementation retains all-day/recurring events and event context links, and
 composes owned previews into one atomic batch. Immutable consumption records
 prevent a member from executing twice; original request/draft ownership remains
 unchanged. Catalog activation and PostgreSQL rehearsal passed as recorded below.
@@ -17,6 +17,7 @@ unchanged. Catalog activation and PostgreSQL rehearsal passed as recorded below.
 | Full pytest | About 92 seconds | 179 native cases passed in 15.74 seconds; static checks passed |
 | Stage schema | 109,578 bytes / 113 definitions | 2,650-byte create / 3,352-byte update; all write schemas ≤3,508 bytes |
 | Global MCP instructions | 25,981 bytes | 1,643 bytes |
+| Complete warm local gate | Unconditional full suite plus static checks | 17.44 seconds for 179 cases, Ruff and strict mypy |
 | Canonical mutation variants | 47 | All 47 retained; [mapping](native-capabilities.md) |
 
 Retired gateway tests exercise Hermes hooks, Discord ingress, native image
@@ -155,14 +156,41 @@ the candidate archive. App identity, connection binding, presentation/defaultPro
 scope and private audience were preserved. No owner reapproval or grant-epoch bump.
 A genuine connected-host profile read passed against the existing approved owner.
 
-The host currently exposes its cached 24-tool inventory and old instructions.
-Refreshing that existing connector's tools and opening a fresh chat is the remaining
-operator step; `docket_get_overview` should appear afterward. New business writes
-were verified through independent signed MCP/PostgreSQL clients, not by creating
-real production appointments. Hosted use of the new tools remains unverified until
-that refresh. The plugin source update used the Plugin Creator update-plugin workflow.
+At activation, this host session still exposed a cached 24-tool inventory and old
+instructions. That was recorded as pending acceptance until live new-tool use could
+be verified. Release testing used independent signed MCP/PostgreSQL clients and
+synthetic provider execution. The plugin source update used the Plugin Creator
+update-plugin workflow. The later host acceptance below closes this pending step.
 
 These documentation receipt changes are recorded after activation; they do not
 alter the tested runtime image or its exact source-tree evidence. Image rollback
 alone does not reverse migrations. Use forward repair or the matching backup and
 migration-specific recovery; destructive production restore remains separately scoped.
+
+
+## Live host acceptance — November 5, 2026
+
+The Operator confirmed that the deployment is functional. A read-only production
+query independently verified these authenticated native invocations under
+`docket-tools-2026-11-04-v51`:
+
+| Tool | Successful invocations observed | Recorded disposition |
+| --- | --- | --- |
+| `docket_get_overview` | 3 | Successful read |
+| `docket_get_calendar_context` | 1 | Successful read |
+| `docket_create_event` | 1 | `committed` |
+
+The query selected only tool names, outcomes, contract versions and aggregate
+counts. No arguments, retained text, event content or OAuth material were queried.
+The verification itself created no canonical/provider effects. These live calls
+verify the new native surface beyond the older cached definition snapshots. The
+runtime still matches the tested image/tree above and is healthy. This Codex
+session retains an older 30-tool snapshot; the working connection and its v51
+calls provide the live acceptance evidence.
+
+The complete warm `scripts/docket check` also passed in 17.44 seconds wall time:
+179 cases, Ruff and strict mypy. This measures the whole command, supplementing
+the earlier pytest-only timing. All implementation, local-release, cleanup and
+host acceptance requirements for this delta are verified; no operator step remains.
+These final documentation changes require link/package checks, with no runtime
+redeployment or migration rehearsal.
