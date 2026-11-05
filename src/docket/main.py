@@ -180,9 +180,12 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.state.wake_discord_projection = worker.wake_discord_projection
-app.include_router(internal_router)
-app.include_router(agent_router)
-app.include_router(provenance_router)
+# Retired gateway callbacks are absent from native startup, including private HTTP.
+# Historical services remain importable for ledger recovery and isolated tests.
+if settings.discord_adapter_enabled:
+    app.include_router(internal_router)
+    app.include_router(agent_router)
+    app.include_router(provenance_router)
 app.mount("/mcp", mcp.streamable_http_app())
 app.mount("/triage-mcp", triage_mcp.streamable_http_app())
 app.mount("/plugin", plugin_app)
