@@ -2,7 +2,7 @@
 
 Date: November 4, 2026 (America/Los_Angeles)
 Draft timestamp: 2026-11-05 04:27:33 UTC
-Status: adopted for SPEC 1.0; candidate implemented, final activation pending
+Status: adopted for SPEC 1.0; implemented and deployed, host catalog refresh pending
 Inspected baseline: `60c30ce5aea241b78b36fc75e51481b4680e496d`
 
 ## 1. What changes
@@ -411,3 +411,14 @@ Drafting used static test inventory, actual generated native schema measurements
 synthetic input validation, read-only branch-rule inspection and bounded invocation
 metadata. No full suite was rerun for this private Markdown draft. No application
 code, live grant, GitHub setting, plugin release or calendar state changed.
+
+
+## 11. Implementation and activation receipt
+
+The local-CI foundation shipped in PR 56; the complete native command/context
+cutover shipped in PR 57 at `2ce9617c9328c3b6ca9637b3caa5989f76125e45`.
+The registered plugin is v2.0.0 with its original App, OAuth connection and audience.
+See [measured implementation/deployment evidence](../docs/native-context-local-ci.md)
+and [capability disposition](../docs/native-capabilities.md). The current ChatGPT
+connection still advertises an old 24-tool catalog and needs its host refresh;
+that manual cache step is separate from tested server activation.
