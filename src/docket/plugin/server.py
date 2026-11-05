@@ -2,6 +2,7 @@
 
 import hashlib
 from copy import deepcopy
+from dataclasses import replace
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
@@ -9,6 +10,7 @@ from mcp.server.mcpserver import Context
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import CallToolResult, Tool, ToolAnnotations
 from pydantic import Field, ValidationError
+from sqlalchemy import select
 
 from docket.agent_auth import (
     TRIAGE_WORK_TOOLS,
@@ -28,23 +30,27 @@ from docket.mcp.instrumented import (
 )
 from docket.mcp.server import mcp
 from docket.mcp.triage_server import triage_mcp
+from docket.models import AuthenticatedRequest, ChangeSet, PreparedCommand
+from docket.plugin.business import BUSINESS_TOOLS, register_business
 from docket.plugin.commands import NATIVE_COMMAND_TOOLS, register_commands
 from docket.plugin.events import EventMethods, advertise_events
+from docket.plugin.instructions import NATIVE_INSTRUCTIONS
 from docket.plugin.work import NativeWork
 from docket.providers.webhooks import WebhookPoster
 from docket.services.agent_requests import AgentRequestService
+from docket.services.native_commands import NativeCommandService
 from docket.services.notifications import NotificationService
-from docket.tool_contracts import contract_tool_names, render_contract
+from docket.tool_contracts import contract_tool_names
 
 
 class PluginMCP(ProvenanceMCP):
-    authority_tools = INTERACTIVE_AUTHORITY_TOOLS | NATIVE_COMMAND_TOOLS
+    authority_tools = INTERACTIVE_AUTHORITY_TOOLS | NATIVE_COMMAND_TOOLS | BUSINESS_TOOLS
 
     def __init__(self, settings: Settings, poster: WebhookPoster | None = None) -> None:
         hostname = urlsplit(settings.plugin_public_origin).hostname or "docket.you"
         super().__init__(
             "Docket", caller_profile="interactive", contract_profile="plugin",
-            instructions=render_contract("plugin"),
+            instructions=NATIVE_INSTRUCTIONS,
             extensions=[EventMethods(settings, poster)], middleware=[advertise_events],
             transport_security=TransportSecuritySettings(
                 enable_dns_rebinding_protection=True,
@@ -54,6 +60,7 @@ class PluginMCP(ProvenanceMCP):
         )
         self.plugin_settings = settings
         register_commands(self, settings)
+        register_business(self, settings)
         annotations = ToolAnnotations(
             read_only_hint=True, destructive_hint=False,
             idempotent_hint=True, open_world_hint=False,
@@ -155,7 +162,47 @@ class PluginMCP(ProvenanceMCP):
     def prepare_agent_call(
         self, name: str, authenticated: AgentCallContext, arguments: dict[str, Any],
     ) -> tuple[AgentCallContext, dict[str, Any]]:
-        if name in NATIVE_COMMAND_TOOLS:
+        if name == "docket_apply_change":
+            with session_scope() as session:
+                proposal = session.scalar(select(PreparedCommand).where(
+                    PreparedCommand.ref_id == arguments.get("change_id"),
+                    PreparedCommand.principal_ref == authenticated.principal.principal_ref,
+                ))
+                root = session.scalar(select(AuthenticatedRequest).where(
+                    AuthenticatedRequest.ref_id == proposal.request_ref,
+                )) if proposal is not None else None
+                if root is None or proposal is None:
+                    raise DocketError(code="change_unavailable",
+                                      message="Apply your exact owned change handle.")
+                return AgentCallContext(authenticated.principal, root.request_key,
+                    "native-exact-proposal", "apply:" + proposal.ref_id,
+                    supplied_argument_names=frozenset(arguments)), arguments
+        if name in NATIVE_COMMAND_TOOLS | BUSINESS_TOOLS and arguments.get("replaces_change_id"):
+            with session_scope() as session:
+                proposal = session.scalar(select(PreparedCommand).where(
+                    PreparedCommand.ref_id == arguments["replaces_change_id"],
+                    PreparedCommand.principal_ref == authenticated.principal.principal_ref,
+                ))
+                root = session.scalar(select(AuthenticatedRequest).where(
+                    AuthenticatedRequest.ref_id == proposal.request_ref,
+                )) if proposal is not None else None
+                draft = session.scalar(select(ChangeSet).where(
+                    ChangeSet.ref_id == proposal.changeset_ref,
+                )) if proposal is not None else None
+                if proposal is None or root is None or draft is None:
+                    raise DocketError(
+                        code="change_unavailable", message="Correct your owned preview.",
+                    )
+                if root.state != "active":
+                    raise DocketError(code="change_already_committed",
+                                      message="Use an update command for already committed work.")
+                if NativeCommandService.fingerprint(draft) != proposal.revision_hash:
+                    raise DocketError(code="prepared_change_stale",
+                                      message="Correct the exact preview you last observed.")
+                return AgentCallContext(authenticated.principal, root.request_key,
+                    "native-exact-proposal", "correct:" + str(arguments.get("operation_id")),
+                    supplied_argument_names=frozenset(arguments)), arguments
+        if name in NATIVE_COMMAND_TOOLS | BUSINESS_TOOLS:
             operation = arguments.get("operation_id")
             try:
                 work = NativeWork.model_validate({"request_id": (
@@ -165,7 +212,8 @@ class PluginMCP(ProvenanceMCP):
                 raise DocketError(code="invalid_operation_id",
                                   message="Supply a stable operation_id for this command.",
                                   details={"field": "operation_id"}) from exc
-            return work.bind(authenticated.principal), arguments
+            return replace(work.bind(authenticated.principal),
+                           supplied_argument_names=frozenset(arguments)), arguments
         if name not in self.authority_tools:
             return authenticated, arguments
         arguments = dict(arguments)
@@ -216,7 +264,7 @@ class PluginMCP(ProvenanceMCP):
                     key for key in tool.input_schema["required"] if key not in hidden
                 ]
             scopes = [self.plugin_settings.plugin_read_scope]
-            if tool.name in NATIVE_COMMAND_TOOLS:
+            if tool.name in NATIVE_COMMAND_TOOLS | BUSINESS_TOOLS:
                 scopes.append(self.plugin_settings.plugin_write_scope)
             elif tool.name in INTERACTIVE_AUTHORITY_TOOLS:
                 properties["work"] = NativeWork.model_json_schema()

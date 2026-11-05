@@ -241,3 +241,433 @@ def test_context_is_immutable_purpose_bound_and_has_no_ttl(session):
         session.rollback()
     finally:
         agent_call_context.reset(binding)
+
+
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+@pytest.mark.asyncio
+async def test_named_registry_commands_keep_sparse_fields_and_context_versions(
+    session_factory,
+    linked_plugin,
+):
+    from docket.models import Entity
+
+    app, _settings, token, _principal = linked_plugin
+    async with (
+        app.router.lifespan_context(app),
+        httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app),
+            headers={"Authorization": "Bearer " + token},
+        ) as http,
+        Client(
+            streamable_http_client(
+                "http://docket.you/mcp/",
+                http_client=http,
+            ),
+            mode="legacy",
+        ) as client,
+    ):
+        context = (await client.call_tool("docket_get_overview", {})).structured_content
+        created = (
+            await client.call_tool(
+                "docket_create_entity",
+                {
+                    "context_id": context["context_id"],
+                    "operation_id": "person-create",
+                    "entity_kind": "person",
+                    "display_name": "Example Person",
+                },
+            )
+        ).structured_content
+        assert created.get("disposition") == "committed", created
+        with session_factory() as session:
+            entity_ref = session.scalar(
+                select(Entity.ref_id).where(Entity.display_name == "Example Person")
+            )
+        selected = (
+            await client.call_tool("docket_get_context", {"refs": [entity_ref]})
+        ).structured_content
+        assert "docket_update_entity" in selected["objects"][0]["actions"]
+        updated = (
+            await client.call_tool(
+                "docket_update_entity",
+                {
+                    "context_id": selected["context_id"],
+                    "operation_id": "person-update",
+                    "target_ref": entity_ref,
+                    "display_name": "New Name",
+                },
+            )
+        ).structured_content
+        assert updated.get("disposition") == "committed", json.dumps(updated, indent=2)
+        refreshed = (
+            await client.call_tool(
+                "docket_get_context",
+                {
+                    "refs": [entity_ref],
+                },
+            )
+        ).structured_content
+        fact = (
+            await client.call_tool(
+                "docket_create_fact",
+                {
+                    "context_id": refreshed["context_id"],
+                    "operation_id": "person-fact",
+                    "subject_ref": entity_ref,
+                    "predicate": "home_city",
+                    "value_json": "Exampleton",
+                },
+            )
+        ).structured_content
+        assert fact.get("disposition") == "committed", fact
+        preference = (
+            await client.call_tool(
+                "docket_create_preference",
+                {
+                    "context_id": refreshed["context_id"],
+                    "operation_id": "person-preference",
+                    "preference_key": "example-person-contact",
+                    "policy_kind": "behavior",
+                    "target_type": "entity",
+                    "target_ref": entity_ref,
+                    "policy_text": "Prefer concise status updates.",
+                },
+            )
+        ).structured_content
+        assert preference.get("disposition") == "committed", preference
+    with session_factory() as session:
+        entity = session.scalar(select(Entity).where(Entity.ref_id == entity_ref))
+        assert entity.display_name == "New Name" and entity.canonical_status == "active"
+
+
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+@pytest.mark.asyncio
+async def test_task_due_and_completion_use_derived_records_and_current_versions(
+    session_factory,
+    linked_plugin,
+):
+    from docket.models import Task
+
+    app, _settings, token, _principal = linked_plugin
+    async with (
+        app.router.lifespan_context(app),
+        httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app),
+            headers={"Authorization": "Bearer " + token},
+        ) as http,
+        Client(
+            streamable_http_client(
+                "http://docket.you/mcp/",
+                http_client=http,
+            ),
+            mode="legacy",
+        ) as client,
+    ):
+        overview = (await client.call_tool("docket_get_overview", {})).structured_content
+        created = (
+            await client.call_tool(
+                "docket_create_task",
+                {
+                    "context_id": overview["context_id"],
+                    "operation_id": "task-create",
+                    "title": "Prepare agenda",
+                    "due": "2026-11-13",
+                    "priority": "high",
+                },
+            )
+        ).structured_content
+        assert created.get("disposition") == "committed", created
+        with session_factory() as session:
+            task_ref = session.scalar(select(Task.ref_id))
+        context = (
+            await client.call_tool("docket_get_context", {"refs": [task_ref]})
+        ).structured_content
+        assert {obj["type"] for obj in context["objects"]} == {"task", "temporal_binding"}
+        arguments = {
+            "context_id": context["context_id"],
+            "operation_id": "task-complete",
+            "task_ref": task_ref,
+        }
+        completed = (await client.call_tool("docket_complete_task", arguments)).structured_content
+        assert completed.get("disposition") == "committed", completed
+        retry = (await client.call_tool("docket_complete_task", arguments)).structured_content
+        assert retry.pop("replayed") is True and retry == completed
+        stale = (
+            await client.call_tool(
+                "docket_update_task",
+                {
+                    "context_id": context["context_id"],
+                    "operation_id": "task-stale",
+                    "task_ref": task_ref,
+                    "title": "Stale edit",
+                },
+            )
+        ).structured_content
+        assert stale.get("ok") is False
+    with session_factory() as session:
+        task = session.scalar(select(Task))
+        assert task.task_state == "completed" and task.completed_at is not None
+        assert task.title == "Prepare agenda" and task.priority == "high"
+        assert session.scalar(select(func.count()).select_from(Item)) == 1
+        assert session.scalar(select(func.count()).select_from(TemporalBinding)) == 1
+
+
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+@pytest.mark.asyncio
+async def test_event_edit_and_cancel_use_observed_versions_and_sparse_fields(
+    session_factory,
+    linked_plugin,
+):
+    from docket.providers.google.fake_calendar import FakeCalendarProvider
+    from docket.services.operations import OperationRunner
+
+    provider = FakeCalendarProvider()
+    runner = OperationRunner(session_factory, provider, consistency_window_seconds=0)
+    app, _settings, token, _principal = linked_plugin
+    with session_factory.begin() as session:
+        account = ProviderAccount(
+            provider="google",
+            external_account_id="event-edit-owner",
+            capabilities=["google_calendar"],
+        )
+        session.add(account)
+        session.flush()
+        session.add(
+            CalendarLane(
+                account_id=account.id,
+                lane="meetings",
+                display_name="Meetings",
+                color_hex="#123456",
+                calendar_id="synthetic-edit-calendar",
+                status="active",
+                created_by_changeset_ref="test-fixture",
+            )
+        )
+    async with (
+        app.router.lifespan_context(app),
+        httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app),
+            headers={"Authorization": "Bearer " + token},
+        ) as http,
+        Client(
+            streamable_http_client(
+                "http://docket.you/mcp/",
+                http_client=http,
+            ),
+            mode="legacy",
+        ) as client,
+    ):
+        choices = (await client.call_tool("docket_get_calendar_context", {})).structured_content
+        created = (
+            await client.call_tool(
+                "docket_create_event",
+                {
+                    "context_id": choices["context_id"],
+                    "operation_id": "editable-event",
+                    "title": "Original title",
+                    "start": "2026-11-13T13:00:00-08:00",
+                    "end": "2026-11-13T14:00:00-08:00",
+                    "timezone": "America/Los_Angeles",
+                    "calendar_ref": choices["calendars"][0]["calendar_ref"],
+                    "location": "Room A",
+                    "notes": "Keep these notes",
+                },
+            )
+        ).structured_content
+        assert created.get("disposition") == "committed", created
+        provider.next_create_outcome = "unknown_after_write"
+        assert runner.run_due_once()
+        assert not runner.run_due_once()  # Unknown writes reconcile rather than resend.
+        assert len(provider.events) == 1
+        assert runner.reconcile_once()
+
+        with session_factory() as session:
+            ref = session.scalar(select(CanonicalEvent.ref_id))
+        context = (await client.call_tool("docket_get_context", {"refs": [ref]})).structured_content
+        updated = (
+            await client.call_tool(
+                "docket_update_event",
+                {
+                    "context_id": context["context_id"],
+                    "operation_id": "event-edit",
+                    "event_ref": ref,
+                    "title": "Updated title",
+                    "location": None,
+                },
+            )
+        ).structured_content
+        assert updated.get("disposition") == "committed", json.dumps(updated, indent=2)
+        assert runner.run_due_once()  # Apply the guarded sparse provider patch.
+        stale = (
+            await client.call_tool(
+                "docket_cancel_event",
+                {
+                    "context_id": context["context_id"],
+                    "operation_id": "event-stale",
+                    "event_ref": ref,
+                },
+            )
+        ).structured_content
+        assert stale.get("ok") is False
+        current = (await client.call_tool("docket_get_context", {"refs": [ref]})).structured_content
+        cancelled = (
+            await client.call_tool(
+                "docket_cancel_event",
+                {
+                    "context_id": current["context_id"],
+                    "operation_id": "event-cancel",
+                    "event_ref": ref,
+                },
+            )
+        ).structured_content
+        assert cancelled.get("disposition") == "committed", cancelled
+        assert runner.run_due_once()
+        assert len(provider.events) == 0
+
+    with session_factory() as session:
+        event = session.scalar(select(CanonicalEvent))
+        assert event.status == "cancelled" and event.title == "Updated title"
+        assert event.event_spec["notes"] == "Keep these notes"
+        assert event.event_spec["location"] is None
+        assert event.event_spec["timing"]["start_local"] == "2026-11-13T13:00:00"
+
+
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+@pytest.mark.asyncio
+async def test_preview_correction_preserves_root_and_old_handle_never_applies_latest(
+    session_factory,
+    linked_plugin,
+):
+    from docket.models import Task
+
+    app, _settings, token, _principal = linked_plugin
+    async with (
+        app.router.lifespan_context(app),
+        httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app),
+            headers={"Authorization": "Bearer " + token},
+        ) as http,
+        Client(
+            streamable_http_client(
+                "http://docket.you/mcp/",
+                http_client=http,
+            ),
+            mode="legacy",
+        ) as client,
+    ):
+        context = (await client.call_tool("docket_get_overview", {})).structured_content
+        first = (
+            await client.call_tool(
+                "docket_create_task",
+                {
+                    "context_id": context["context_id"],
+                    "operation_id": "task-preview-1",
+                    "title": "First reading",
+                    "preview": True,
+                },
+            )
+        ).structured_content
+        assert first["disposition"] == "prepared", first
+        corrected = (
+            await client.call_tool(
+                "docket_create_task",
+                {
+                    "context_id": context["context_id"],
+                    "operation_id": "task-preview-2",
+                    "title": "Corrected reading",
+                    "preview": True,
+                    "replaces_change_id": first["change_id"],
+                },
+            )
+        ).structured_content
+        assert corrected["disposition"] == "prepared", corrected
+        assert corrected["change_id"] != first["change_id"]
+        with session_factory() as session:
+            assert session.scalar(select(func.count()).select_from(Task)) == 0
+            proposals = list(session.scalars(select(PreparedCommand)))
+            assert len(proposals) == 2
+            assert proposals[0].request_ref == proposals[1].request_ref
+            assert proposals[0].revision < proposals[1].revision
+        old = (
+            await client.call_tool(
+                "docket_read_change",
+                {
+                    "change_id": first["change_id"],
+                },
+            )
+        ).structured_content
+        assert old["stale"] and old["preview"]["title"] == "First reading"
+        rejected = (
+            await client.call_tool(
+                "docket_apply_change",
+                {
+                    "change_id": first["change_id"],
+                },
+            )
+        ).structured_content
+        assert rejected["error"]["code"] == "prepared_change_stale"
+        applied = (
+            await client.call_tool(
+                "docket_apply_change",
+                {
+                    "change_id": corrected["change_id"],
+                },
+            )
+        ).structured_content
+        assert applied["disposition"] == "committed", applied
+        retry = (
+            await client.call_tool(
+                "docket_apply_change",
+                {
+                    "change_id": corrected["change_id"],
+                },
+            )
+        ).structured_content
+        assert retry.pop("replayed") is True and retry == applied
+    with session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(Task)) == 1
+        assert session.scalar(select(Task.title)) == "Corrected reading"
+        assert session.scalar(select(func.count()).select_from(AuthenticatedRequest)) == 1
+
+
+@pytest.mark.asyncio
+async def test_named_contracts_cover_current_effects_without_public_compiler_bookkeeping(
+    linked_plugin,
+):
+    from docket.plugin.instructions import NATIVE_INSTRUCTIONS
+    from docket.schemas.business import BUSINESS_DEFINITIONS, CANONICAL_MUTATIONS, SPECIAL_MUTATIONS
+
+    app, _settings, _token, _principal = linked_plugin
+    tools = {tool.name: tool for tool in await app.state.mcp.list_tools()}
+    covered = {
+        definition.mutation.model_fields["mutation_type"].default
+        for definition in BUSINESS_DEFINITIONS
+    } | SPECIAL_MUTATIONS
+    assert covered == {model.model_fields["mutation_type"].default for model in CANONICAL_MUTATIONS}
+    assert len(NATIVE_INSTRUCTIONS.encode()) <= 2048
+
+    def check(schema):
+        if isinstance(schema, dict):
+            for name in schema.get("properties", {}):
+                assert name not in {
+                    "work",
+                    "mutation_type",
+                    "create_spec",
+                    "payload",
+                    "basis_refs",
+                    "affected_fields",
+                    "expected_versions",
+                }
+                assert (
+                    not name.endswith(("_change_id", "_change_ids")) or name == "replaces_change_id"
+                )
+            for value in schema.values():
+                check(value)
+        elif isinstance(schema, list):
+            for value in schema:
+                check(value)
+
+    for definition in BUSINESS_DEFINITIONS:
+        check(tools[definition.tool_name].input_schema)
+    # Required references remain required after removing internal create-ID alternatives.
+    assert "subject_ref" in tools["docket_create_fact"].input_schema["required"]

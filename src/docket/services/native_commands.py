@@ -1,9 +1,11 @@
 """Compile business commands through the existing exact-revision ChangeSet engine."""
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -11,8 +13,9 @@ from docket.agent_auth import require_principal
 from docket.config import Settings
 from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
-from docket.models import ChangeSet, PreparedCommand
+from docket.models import ChangeSet, NativeContext, PreparedCommand
 from docket.schemas.assembly import StageChangesInput
+from docket.schemas.calendar import TimedEventTiming
 from docket.schemas.native_commands import CreateEvent
 from docket.services.agent_requests import AgentRequestService
 from docket.services.changeset_assembly import (
@@ -85,13 +88,27 @@ def event_timing(start: str, end: str, timezone: str) -> dict[str, Any]:
             message="This interval crosses a repeated clock hour; choose exact times.",
             details={"field": "end"},
         )
-    return {
+    timing = {
         "kind": "timed",
         "start_local": values[0].replace(tzinfo=None).isoformat(),
         "end_local": values[1].replace(tzinfo=None).isoformat(),
         "timezone": timezone,
         "fold": shared_fold,
     }
+    try:
+        TimedEventTiming.model_validate(timing)
+    except ValidationError as exc:
+        raise DocketError(
+            code="invalid_event_timing",
+            message="These bounds cannot represent this local clock interval.",
+            details={
+                "field": "end",
+                "issues": [
+                    issue["msg"] for issue in exc.errors(include_input=False, include_url=False)
+                ],
+            },
+        ) from exc
+    return timing
 
 
 class NativeCommandService:
@@ -125,6 +142,37 @@ class NativeCommandService:
             }
         )
 
+    def require_replacement(self, change_id: str | None, request_ref: str) -> None:
+        if change_id is None:
+            return
+        principal = require_principal("commit")
+        proposal = self.session.scalar(
+            select(PreparedCommand).where(
+                PreparedCommand.ref_id == change_id,
+                PreparedCommand.principal_ref == principal.principal_ref,
+                PreparedCommand.request_ref == request_ref,
+            )
+        )
+        current = (
+            self.session.scalar(
+                select(ChangeSet)
+                .where(
+                    ChangeSet.ref_id == proposal.changeset_ref,
+                )
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            if proposal
+            else None
+        )
+        if proposal is None or current is None:
+            raise DocketError(code="change_unavailable", message="Correct your own exact proposal.")
+        if self.fingerprint(current) != proposal.revision_hash:
+            raise DocketError(
+                code="prepared_change_stale",
+                message="Another correction changed this proposal; read the retained work.",
+            )
+
     def create_event(
         self, command: CreateEvent, request_ref: str, request_key: str, *, prepare: bool = False
     ) -> dict[str, Any]:
@@ -132,7 +180,10 @@ class NativeCommandService:
         AgentRequestService(self.session).require(
             request_ref, permission="commit", allow_committed=True
         )
-        argument_hash = sha256_json(command.model_dump(mode="json"))
+        hash_input = command.model_dump(mode="json", exclude={"preview", "replaces_change_id"})
+        if command.replaces_change_id is not None:
+            hash_input["replaces_change_id"] = command.replaces_change_id
+        argument_hash = sha256_json(hash_input)
         existing = self.session.scalar(
             select(PreparedCommand).where(
                 PreparedCommand.principal_ref == principal.principal_ref,
@@ -148,6 +199,7 @@ class NativeCommandService:
                     details={"field": "operation_id"},
                 )
             return self.prepared(existing) if prepare else self.apply(existing.ref_id)
+        self.require_replacement(command.replaces_change_id, request_ref)
         context = NativeContextService(self.session, self.settings).require(
             command.context_id,
             "calendar",
@@ -188,37 +240,14 @@ class NativeCommandService:
                 },
             }
         )
-        admission = self._admission(request_ref, "prepare", "docket_stage_changes", argument_hash)
-        staged = ChangeSetAssemblyService(self.session).stage(
-            data,
-            assembly_operation_token=admission["assembly_operation_token"],
-            assembly_argument_hash=argument_hash,
-        )
-        if staged.get("disposition") != "ready_to_commit":
-            return {
-                "ok": False,
-                "error": {
-                    "code": "event_needs_correction",
-                    "message": "The event needs correction; inspect issues for affected fields.",
-                    "details": staged,
-                },
-            }
-        changeset = self.session.scalar(
-            select(ChangeSet).where(
-                ChangeSet.ref_id == staged["draft_ref"],
-            )
-        )
-        assert changeset is not None
-        proposal = PreparedCommand(
-            principal_ref=principal.principal_ref,
-            operation_id=command.operation_id,
+        if command.replaces_change_id is not None:
+            data.assembly_scope = None
+        return self.stage_plan(
             command="create_event",
+            operation_id=command.operation_id,
             argument_hash=argument_hash,
-            context_ref=context.ref_id,
-            request_ref=request_ref,
-            changeset_ref=changeset.ref_id,
-            revision=changeset.current_revision,
-            revision_hash=self.fingerprint(changeset),
+            context=context,
+            data=data,
             preview={
                 "title": command.title,
                 "start": command.start,
@@ -227,20 +256,235 @@ class NativeCommandService:
                 "calendar_ref": command.calendar_ref,
                 "location": command.location,
                 "notes": command.notes,
+                **(
+                    {"replaces_change_id": command.replaces_change_id}
+                    if command.replaces_change_id
+                    else {}
+                ),
             },
+            prepare=prepare,
+        )
+
+    def stage_plan(
+        self,
+        *,
+        command: str,
+        operation_id: str,
+        argument_hash: str,
+        context: NativeContext,
+        data: StageChangesInput,
+        preview: dict[str, Any],
+        prepare: bool = False,
+    ) -> dict[str, Any]:
+        admission = self._admission(
+            data.request_ref or "",
+            "prepare:" + argument_hash,
+            "docket_stage_changes",
+            argument_hash,
+        )
+        staged = ChangeSetAssemblyService(self.session).stage(
+            data,
+            assembly_operation_token=admission["assembly_operation_token"],
+            assembly_argument_hash=argument_hash,
+        )
+        changeset = self.session.scalar(
+            select(ChangeSet).where(
+                ChangeSet.ref_id == staged["draft_ref"],
+            )
+        )
+        assert changeset is not None
+        proposal = PreparedCommand(
+            principal_ref=require_principal("commit").principal_ref,
+            operation_id=operation_id,
+            command=command,
+            argument_hash=argument_hash,
+            context_ref=context.ref_id,
+            request_ref=data.request_ref or "",
+            changeset_ref=changeset.ref_id,
+            revision=changeset.current_revision,
+            revision_hash=self.fingerprint(changeset),
+            preview=preview,
         )
         self.session.add(proposal)
         self.session.flush()
+        if staged.get("disposition") != "ready_to_commit":
+            issues = self.public_issues(changeset.validation_errors)
+            return {
+                "ok": False,
+                "change_id": proposal.ref_id,
+                "error": {
+                    "code": "command_needs_correction",
+                    "message": "Correct the affected fields or follow provider delivery.",
+                    "details": {"issues": issues, "next_action": "docket_read_change"},
+                },
+            }
         return self.prepared(proposal) if prepare else self.apply(proposal.ref_id)
 
+    def execute(
+        self,
+        *,
+        command: str,
+        arguments: dict[str, Any],
+        request_ref: str,
+        request_key: str,
+        build: Callable[[NativeContext], dict[str, Any]],
+    ) -> dict[str, Any]:
+        principal = require_principal("commit")
+        AgentRequestService(self.session).require(
+            request_ref, permission="commit", allow_committed=True
+        )
+        operation_id = str(arguments["operation_id"])
+        argument_hash = sha256_json(
+            {key: value for key, value in arguments.items() if key != "preview"}
+        )
+        existing = self.session.scalar(
+            select(PreparedCommand).where(
+                PreparedCommand.principal_ref == principal.principal_ref,
+                PreparedCommand.operation_id == operation_id,
+            )
+        )
+        if existing:
+            if existing.argument_hash != argument_hash or existing.command != command:
+                raise DocketError(
+                    code="operation_id_reused",
+                    message="Use a new operation_id for changed intent.",
+                    details={"field": "operation_id"},
+                )
+            return (
+                self.prepared(existing) if arguments.get("preview") else self.apply(existing.ref_id)
+            )
+        self.require_replacement(arguments.get("replaces_change_id"), request_ref)
+        context = NativeContextService(self.session, self.settings).require(arguments["context_id"])
+        plan = build(context)
+        if arguments.get("replaces_change_id"):
+            plan["assembly_scope"] = None
+        request = StageChangesInput.model_validate(
+            {"request_ref": request_ref, "request_key": request_key, **plan}
+        )
+        return self.stage_plan(
+            command=command,
+            operation_id=operation_id,
+            argument_hash=argument_hash,
+            context=context,
+            data=request,
+            preview={
+                k: v
+                for k, v in arguments.items()
+                if k not in {"operation_id", "context_id", "preview"}
+            },
+            prepare=bool(arguments.get("preview")),
+        )
+
     @staticmethod
-    def prepared(proposal: PreparedCommand) -> dict[str, Any]:
+    def public_issues(errors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        issues = []
+        for error in errors[:20]:
+            details = error.get("details") or {}
+            code = error.get("code", "invalid_fields")
+            path = details.get("field_path", [])
+            field = ".".join(
+                str(part) for part in path if part not in {"payload", "create_spec", "event_spec"}
+            )
+            field = {"object_ref": "target_ref", "timing": "start/end/timezone"}.get(field, field)
+            issue = {
+                "code": code,
+                "field": field or "context_id",
+                "message": error.get("message", code.replace("_", " ")),
+            }
+            if code == "provider_event_binding_required":
+                issue.update(
+                    message="The existing event is awaiting Google delivery or reconciliation; "
+                    "follow its original receipt instead of creating another event.",
+                    next_action="docket_get_history_entry",
+                    delivery=details.get("status_read", {}).get("arguments", {}),
+                )
+            elif "version" in code or "stale" in code:
+                issue.update(
+                    message="The selected target changed. Read current context for that target.",
+                    next_action="docket_get_context",
+                )
+            issues.append(issue)
+        return issues
+
+    @staticmethod
+    def bounded_preview(value: dict[str, Any]) -> dict[str, Any]:
+        import json
+
+        result: dict[str, Any] = {}
+        omitted = []
+        used = 0
+        for key, item in value.items():
+            size = len(json.dumps(item, ensure_ascii=False).encode())
+            if size > 1500 or used + size > 6000:
+                omitted.append(key)
+                if isinstance(item, str):
+                    result[key + "_excerpt"] = item[:200]
+            else:
+                result[key] = item
+                used += size
+        if omitted:
+            result["omitted_fields"] = omitted
+        return result
+
+    def prepared(self, proposal: PreparedCommand) -> dict[str, Any]:
+        changeset = self.session.scalar(
+            select(ChangeSet).where(
+                ChangeSet.ref_id == proposal.changeset_ref,
+            )
+        )
+        if changeset is None or self.fingerprint(changeset) != proposal.revision_hash:
+            raise DocketError(
+                code="prepared_change_stale",
+                message="This retained proposal changed; read its exact saved preview.",
+            )
+        if changeset is not None and changeset.state == "committed":
+            return {**changeset.commit_receipt_json, "change_id": proposal.ref_id, "replayed": True}
         return {
             "ok": True,
             "disposition": "prepared",
             "change_id": proposal.ref_id,
-            "preview": proposal.preview,
+            "preview": self.bounded_preview(proposal.preview),
             "next": "docket_apply_change",
+        }
+
+    def read(self, change_id: str) -> dict[str, Any]:
+        principal = require_principal("read")
+        proposal = self.session.scalar(
+            select(PreparedCommand).where(
+                PreparedCommand.ref_id == change_id,
+                PreparedCommand.principal_ref == principal.principal_ref,
+            )
+        )
+        if proposal is None:
+            raise DocketError(code="change_unavailable", message="Read your own prepared change.")
+        changeset = self.session.scalar(
+            select(ChangeSet).where(
+                ChangeSet.ref_id == proposal.changeset_ref,
+            )
+        )
+        from docket.models import ChangeSetRevision
+
+        revision = (
+            self.session.scalar(
+                select(ChangeSetRevision).where(
+                    ChangeSetRevision.change_set_id == changeset.id,
+                    ChangeSetRevision.revision == proposal.revision,
+                )
+            )
+            if changeset is not None
+            else None
+        )
+        stale = changeset is None or self.fingerprint(changeset) != proposal.revision_hash
+        return {
+            "ok": True,
+            "change_id": proposal.ref_id,
+            "request_ref": proposal.request_ref,
+            "changeset_ref": proposal.changeset_ref,
+            "state": "unavailable" if changeset is None else changeset.state,
+            "stale": stale,
+            "preview": self.bounded_preview(proposal.preview),
+            "issues": self.public_issues(revision.validation_errors_json if revision else []),
+            "next": "read_current_context" if stale else "docket_apply_change",
         }
 
     def apply(self, change_id: str) -> dict[str, Any]:

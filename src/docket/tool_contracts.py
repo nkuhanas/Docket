@@ -6,7 +6,9 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-11-04-v49"
+from docket.schemas.business import BUSINESS_DEFINITIONS
+
+CONTRACT_VERSION = "docket-tools-2026-11-04-v50"
 ContractProfile = Literal["interactive", "triage", "plugin"]
 
 
@@ -344,9 +346,20 @@ _native_business_entries: tuple[ToolContractEntry, ...] = tuple({
     "required_next_action": "Follow returned context/receipt; retry unchanged operation IDs.",
     "important_errors": "context_unavailable|timezone_offset_conflict|operation_id_reused",
 } for index, (name, purpose) in enumerate((
+    ("docket_read_change", "Read the exact retained preview, state and field issues."),
+    ("docket_apply_change", "Commit the exact owned proposal with current permissions."),
+    ("docket_get_context", "Read selected objects, versions and available actions."),
     ("docket_get_overview", "Read timezone, capabilities and short next-tool guidance."),
     ("docket_get_calendar_context", "Read calendar choices and bounded canonical observations."),
     ("docket_create_event", "Create an event from title, ISO start/end and calendar context."),
+    ("docket_update_event", "Update supplied event fields and the chosen occurrence/series scope."),
+    ("docket_cancel_event", "Cancel one event, occurrence or series."),
+    ("docket_create_task", "Create a task with optional priority and due time."),
+    ("docket_update_task", "Update supplied task fields and observed due time."),
+    ("docket_complete_task", "Complete a task and record completion time."),
+    *((definition.tool_name,
+       f"{definition.action.capitalize()} {definition.object_type} with ordinary business fields.")
+      for definition in BUSINESS_DEFINITIONS),
 ), start=1))
 CONTRACT_ENTRIES = {**CONTRACT_ENTRIES,
                     "plugin": (*CONTRACT_ENTRIES["plugin"], *_native_business_entries)}
