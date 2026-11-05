@@ -5,7 +5,7 @@ Current specification: [SPEC 1.0](../SPEC.md).
 | Delta | Adoption | Implementation |
 | --- | --- | --- |
 | [2026-11-05T04-27-33Z — single SPEC, context and local CI](2026-11-05T04-27-33Z-single-spec-context-and-local-ci.md) | Adopted for SPEC 1.0 by Operator implementation instruction | Complete: implemented, deployed and live host verified; [evidence](../docs/native-context-local-ci.md) |
-| [2026-11-05T21-18-26Z — work attribution and personal operations](2026-11-05T21-18-26Z-work-attribution-and-personal-operations.md) | Draft against SPEC 1.0; not adopted | Reviews incorporated: P0a logging/context/exports, P1a–P1c finance, then intelligence; [contract sizes and capability report](../docs/work-attribution-contract-review.md); not implemented |
+| [2026-11-05T21-18-26Z — work attribution and personal operations](2026-11-05T21-18-26Z-work-attribution-and-personal-operations.md) | Draft against SPEC 1.0; not adopted | C0 catalogue consolidation, P0a logging/context/exports, P1a–P1c finance, then intelligence; [capability/size report](../docs/work-attribution-contract-review.md), [existing-catalogue review](../docs/catalogue-simplification-review.md); not implemented |
 
 The Operator additionally requested removal of Hermes/SearXNG directories and
 project Playwright artifacts. SPEC ADR 005 records that scoped amendment.

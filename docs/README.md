@@ -12,6 +12,9 @@ Draft design review: [work attribution contracts and capability extension](work-
 measures proposed schemas and describes future workflows; it does not change the
 current SPEC or deployed capabilities.
 
+The [existing-catalogue consolidation review](catalogue-simplification-review.md)
+extends that proposal with equivalent tool routes and unchanged surviving inputs.
+
 Start here when operating or changing the deployed stack:
 
 * [Operations runbook](operations-runbook.md) — current clean-runtime diagnosis,

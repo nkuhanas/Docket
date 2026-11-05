@@ -1,0 +1,486 @@
+{
+  "kind": "synthetic inventory/routing projection; not implemented or runtime-verified",
+  "source_commit": "c51e4b388389ad481fa52ff685b689270d0a38e5",
+  "uv_lock_sha256": "d51d1e42ba642b64dff6f5a178927337321ebbc74f41ad9679319f167b2ffc43",
+  "probe_sha256": "2888186118a9ce853df9d96b1bafe862abb0a93fd8e67c13a6793b6d324ce82f",
+  "work_measurement_sha256": "bb2fd2eb34b90e7fab9eaaf55770b77cd0d4ef756b1b5be6543e648a6feaae9b",
+  "measurement": "UTF-8 compact tools/list JSON; RPC envelope excluded; surviving descriptions unchanged",
+  "baseline": {
+    "tools": 84,
+    "discovery_bytes": 119691,
+    "input_bytes": 75450
+  },
+  "replacement": {
+    "tool": "docket_retract_record",
+    "input_bytes": 612,
+    "definition_bytes": 1141,
+    "fields": [
+      "context_id",
+      "operation_id",
+      "preview",
+      "replaces_change_id",
+      "target_ref"
+    ],
+    "required": [
+      "context_id",
+      "operation_id",
+      "target_ref"
+    ],
+    "target_pattern": "^(?:aff|ent|fact|idn|item|lane|pref|rel|rem|task|time|tproj)_[0-9A-HJKMNP-TV-Z]{26}$"
+  },
+  "scenarios": {
+    "primary": {
+      "tools": 71,
+      "net_tools_removed": 13,
+      "input_bytes": 68574,
+      "discovery_bytes": 105588,
+      "unchanged_survivor_input_schemas": true,
+      "removed_names": [
+        "docket_complete_task",
+        "docket_get_conflict",
+        "docket_retract_affiliation",
+        "docket_retract_calendar_lane",
+        "docket_retract_entity",
+        "docket_retract_fact",
+        "docket_retract_identity_handle",
+        "docket_retract_item",
+        "docket_retract_preference",
+        "docket_retract_relationship",
+        "docket_retract_reminder_plan",
+        "docket_retract_task",
+        "docket_retract_temporal_binding",
+        "docket_retract_temporal_calendar_projection"
+      ],
+      "with_P0a": {
+        "tools": 77,
+        "discovery_bytes": 120338
+      },
+      "with_complete_P0": {
+        "tools": 84,
+        "discovery_bytes": 132185
+      }
+    },
+    "conditional": {
+      "tools": 67,
+      "net_tools_removed": 17,
+      "input_bytes": 67273,
+      "discovery_bytes": 102437,
+      "unchanged_survivor_input_schemas": true,
+      "removed_names": [
+        "docket_cancel_event",
+        "docket_complete_task",
+        "docket_get_conflict",
+        "docket_get_item_context",
+        "docket_get_organization_or_institution_context",
+        "docket_get_person_context",
+        "docket_retract_affiliation",
+        "docket_retract_calendar_lane",
+        "docket_retract_entity",
+        "docket_retract_fact",
+        "docket_retract_identity_handle",
+        "docket_retract_item",
+        "docket_retract_preference",
+        "docket_retract_relationship",
+        "docket_retract_reminder_plan",
+        "docket_retract_task",
+        "docket_retract_temporal_binding",
+        "docket_retract_temporal_calendar_projection"
+      ],
+      "with_P0a": {
+        "tools": 73,
+        "discovery_bytes": 117187
+      },
+      "with_complete_P0": {
+        "tools": 80,
+        "discovery_bytes": 129034
+      }
+    }
+  },
+  "primary_effect_routes": {
+    "affiliation_create": "docket_create_affiliation",
+    "affiliation_retract": "docket_retract_record",
+    "affiliation_supersede": "docket_replace_affiliation",
+    "affiliation_update": "docket_update_affiliation",
+    "calendar_lane_create": "docket_create_calendar_lane",
+    "calendar_lane_modify": "docket_update_calendar_lane",
+    "calendar_lane_retract": "docket_retract_record",
+    "canonical_event_cancel": "docket_cancel_event",
+    "canonical_event_create": "docket_create_event",
+    "canonical_event_modify": "docket_update_event",
+    "entity_create": "docket_create_entity",
+    "entity_modify": "docket_update_entity",
+    "entity_retract": "docket_retract_record",
+    "fact_create": "docket_create_fact",
+    "fact_retract": "docket_retract_record",
+    "fact_supersede": "docket_replace_fact",
+    "fact_update": "docket_update_fact",
+    "identity_binding_bind": "docket_bind_identity_binding",
+    "identity_binding_unbind": "docket_unbind_identity_binding",
+    "identity_handle_create": "docket_create_identity_handle",
+    "identity_handle_modify": "docket_update_identity_handle",
+    "identity_handle_retract": "docket_retract_record",
+    "interaction_create": "docket_create_interaction",
+    "item_create": "docket_create_item",
+    "item_modify": "docket_update_item",
+    "item_retract": "docket_retract_record",
+    "lane_routing_decision_create": "docket_create_lane_routing_decision",
+    "preference_create": "docket_create_preference",
+    "preference_modify": "docket_update_preference",
+    "preference_retract": "docket_retract_record",
+    "relationship_create": "docket_create_relationship",
+    "relationship_retract": "docket_retract_record",
+    "relationship_supersede": "docket_replace_relationship",
+    "relationship_update": "docket_update_relationship",
+    "reminder_plan_create": "docket_create_reminder_plan",
+    "reminder_plan_modify": "docket_update_reminder_plan",
+    "reminder_plan_retract": "docket_retract_record",
+    "task_create": "docket_create_task",
+    "task_modify": "docket_update_task",
+    "task_retract": "docket_retract_record",
+    "temporal_binding_create": "docket_create_temporal_binding",
+    "temporal_binding_modify": "docket_update_temporal_binding",
+    "temporal_binding_retract": "docket_retract_record",
+    "temporal_binding_supersede": "docket_replace_temporal_binding",
+    "temporal_calendar_projection_create": "docket_create_temporal_calendar_projection",
+    "temporal_calendar_projection_modify": "docket_update_temporal_calendar_projection",
+    "temporal_calendar_projection_retract": "docket_retract_record"
+  },
+  "baseline_inventory": [
+    {
+      "tool": "docket_apply_change",
+      "input_bytes": 158
+    },
+    {
+      "tool": "docket_apply_existing_suppression",
+      "input_bytes": 705
+    },
+    {
+      "tool": "docket_bind_identity_binding",
+      "input_bytes": 1246
+    },
+    {
+      "tool": "docket_cancel_event",
+      "input_bytes": 827
+    },
+    {
+      "tool": "docket_complete_task",
+      "input_bytes": 644
+    },
+    {
+      "tool": "docket_create_affiliation",
+      "input_bytes": 1080
+    },
+    {
+      "tool": "docket_create_calendar_lane",
+      "input_bytes": 1193
+    },
+    {
+      "tool": "docket_create_entity",
+      "input_bytes": 1228
+    },
+    {
+      "tool": "docket_create_event",
+      "input_bytes": 2650
+    },
+    {
+      "tool": "docket_create_fact",
+      "input_bytes": 986
+    },
+    {
+      "tool": "docket_create_identity_handle",
+      "input_bytes": 834
+    },
+    {
+      "tool": "docket_create_interaction",
+      "input_bytes": 1654
+    },
+    {
+      "tool": "docket_create_item",
+      "input_bytes": 1279
+    },
+    {
+      "tool": "docket_create_lane_routing_decision",
+      "input_bytes": 1185
+    },
+    {
+      "tool": "docket_create_preference",
+      "input_bytes": 1502
+    },
+    {
+      "tool": "docket_create_relationship",
+      "input_bytes": 1083
+    },
+    {
+      "tool": "docket_create_reminder_plan",
+      "input_bytes": 1153
+    },
+    {
+      "tool": "docket_create_task",
+      "input_bytes": 1115
+    },
+    {
+      "tool": "docket_create_temporal_binding",
+      "input_bytes": 3422
+    },
+    {
+      "tool": "docket_create_temporal_calendar_projection",
+      "input_bytes": 2050
+    },
+    {
+      "tool": "docket_get_attention_case",
+      "input_bytes": 114
+    },
+    {
+      "tool": "docket_get_calendar_context",
+      "input_bytes": 179
+    },
+    {
+      "tool": "docket_get_calendar_sync_status",
+      "input_bytes": 239
+    },
+    {
+      "tool": "docket_get_conflict",
+      "input_bytes": 164
+    },
+    {
+      "tool": "docket_get_context",
+      "input_bytes": 188
+    },
+    {
+      "tool": "docket_get_context_neighborhood",
+      "input_bytes": 278
+    },
+    {
+      "tool": "docket_get_history_entry",
+      "input_bytes": 494
+    },
+    {
+      "tool": "docket_get_intent_session",
+      "input_bytes": 175
+    },
+    {
+      "tool": "docket_get_item_context",
+      "input_bytes": 114
+    },
+    {
+      "tool": "docket_get_notification",
+      "input_bytes": 130
+    },
+    {
+      "tool": "docket_get_organization_or_institution_context",
+      "input_bytes": 201
+    },
+    {
+      "tool": "docket_get_overview",
+      "input_bytes": 62
+    },
+    {
+      "tool": "docket_get_person_context",
+      "input_bytes": 159
+    },
+    {
+      "tool": "docket_get_profile",
+      "input_bytes": 62
+    },
+    {
+      "tool": "docket_get_triage_context",
+      "input_bytes": 62
+    },
+    {
+      "tool": "docket_list_calendar_lanes",
+      "input_bytes": 244
+    },
+    {
+      "tool": "docket_list_notifications",
+      "input_bytes": 213
+    },
+    {
+      "tool": "docket_list_provider_accounts",
+      "input_bytes": 135
+    },
+    {
+      "tool": "docket_list_provider_calendar_events",
+      "input_bytes": 1036
+    },
+    {
+      "tool": "docket_list_reminder_plans",
+      "input_bytes": 302
+    },
+    {
+      "tool": "docket_list_saved_work",
+      "input_bytes": 227
+    },
+    {
+      "tool": "docket_prepare_batch",
+      "input_bytes": 354
+    },
+    {
+      "tool": "docket_query_items",
+      "input_bytes": 940
+    },
+    {
+      "tool": "docket_query_people",
+      "input_bytes": 841
+    },
+    {
+      "tool": "docket_read_attachment_text",
+      "input_bytes": 406
+    },
+    {
+      "tool": "docket_read_change",
+      "input_bytes": 158
+    },
+    {
+      "tool": "docket_read_saved_work",
+      "input_bytes": 310
+    },
+    {
+      "tool": "docket_record_context",
+      "input_bytes": 689
+    },
+    {
+      "tool": "docket_replace_affiliation",
+      "input_bytes": 1165
+    },
+    {
+      "tool": "docket_replace_fact",
+      "input_bytes": 1072
+    },
+    {
+      "tool": "docket_replace_relationship",
+      "input_bytes": 1168
+    },
+    {
+      "tool": "docket_replace_temporal_binding",
+      "input_bytes": 3508
+    },
+    {
+      "tool": "docket_request_clarification",
+      "input_bytes": 823
+    },
+    {
+      "tool": "docket_resolve_attention_case",
+      "input_bytes": 860
+    },
+    {
+      "tool": "docket_resolve_conflict",
+      "input_bytes": 1120
+    },
+    {
+      "tool": "docket_retract_affiliation",
+      "input_bytes": 556
+    },
+    {
+      "tool": "docket_retract_calendar_lane",
+      "input_bytes": 557
+    },
+    {
+      "tool": "docket_retract_entity",
+      "input_bytes": 556
+    },
+    {
+      "tool": "docket_retract_fact",
+      "input_bytes": 557
+    },
+    {
+      "tool": "docket_retract_identity_handle",
+      "input_bytes": 556
+    },
+    {
+      "tool": "docket_retract_item",
+      "input_bytes": 557
+    },
+    {
+      "tool": "docket_retract_preference",
+      "input_bytes": 557
+    },
+    {
+      "tool": "docket_retract_relationship",
+      "input_bytes": 556
+    },
+    {
+      "tool": "docket_retract_reminder_plan",
+      "input_bytes": 556
+    },
+    {
+      "tool": "docket_retract_task",
+      "input_bytes": 557
+    },
+    {
+      "tool": "docket_retract_temporal_binding",
+      "input_bytes": 557
+    },
+    {
+      "tool": "docket_retract_temporal_calendar_projection",
+      "input_bytes": 558
+    },
+    {
+      "tool": "docket_search_entities",
+      "input_bytes": 466
+    },
+    {
+      "tool": "docket_search_history",
+      "input_bytes": 1332
+    },
+    {
+      "tool": "docket_submit_triage_analysis",
+      "input_bytes": 2124
+    },
+    {
+      "tool": "docket_unbind_identity_binding",
+      "input_bytes": 556
+    },
+    {
+      "tool": "docket_update_affiliation",
+      "input_bytes": 745
+    },
+    {
+      "tool": "docket_update_calendar_lane",
+      "input_bytes": 1174
+    },
+    {
+      "tool": "docket_update_entity",
+      "input_bytes": 891
+    },
+    {
+      "tool": "docket_update_event",
+      "input_bytes": 3352
+    },
+    {
+      "tool": "docket_update_fact",
+      "input_bytes": 746
+    },
+    {
+      "tool": "docket_update_identity_handle",
+      "input_bytes": 935
+    },
+    {
+      "tool": "docket_update_item",
+      "input_bytes": 1553
+    },
+    {
+      "tool": "docket_update_preference",
+      "input_bytes": 1388
+    },
+    {
+      "tool": "docket_update_relationship",
+      "input_bytes": 745
+    },
+    {
+      "tool": "docket_update_reminder_plan",
+      "input_bytes": 1330
+    },
+    {
+      "tool": "docket_update_task",
+      "input_bytes": 1630
+    },
+    {
+      "tool": "docket_update_temporal_binding",
+      "input_bytes": 3500
+    },
+    {
+      "tool": "docket_update_temporal_calendar_projection",
+      "input_bytes": 2117
+    }
+  ]
+}
