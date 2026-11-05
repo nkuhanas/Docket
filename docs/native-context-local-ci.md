@@ -60,3 +60,27 @@ migration uses the matching backup and migration-specific procedure, not an imag
 rollback or deletion of rows. The old public compiler remains available during
 this implementation slice; complete capability parity, shorter instructions,
 prepared-work discovery and registered-plugin refresh remain pending cutover.
+
+
+## Foundation activation
+
+[PR 56](https://github.com/nkuhanas/Docket/pull/56) merged by rebase to
+`51649e38f8a6fdb90a451c526fd12c58ca754b00`. The content-identical merge reused local
+receipt/tree `18255901b6218bb0787bb1b01b1abbe75d4d387f`, without Actions or a rebuild.
+The clean archive passed 330 selected cases, static checks, native MCP/PostgreSQL,
+migration round trips and seven focused PostgreSQL checks in 66.4 seconds.
+
+Production activated tested image
+`sha256:6290d57fc6c4d604e36e0c6189956d608eefb07a82a15f80575e5835ec442d9c`
+after durable drain and backup
+`backups/docket-20261105T045707Z-51649e38f8a6.dump`. Previous image is retained as
+`docket-docket:rollback-20261105T045705Z`. Schema is `20261104c1d2`;
+health/schema/OAuth readiness passed. Authentication grants were not reapproved.
+This activation exposes the first three context/event tools alongside the old
+compiler. The registered plugin refresh and full catalog cutover remain pending.
+
+The next branch implements the named domain tools, event/task edits and exact
+prepare/read/apply. Coverage includes sparse patches, current target versions,
+unknown-after-write reconciliation and correction handles sharing one authentic
+request with immutable revisions. No production business effects are part of
+these synthetic checks.

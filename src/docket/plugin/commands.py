@@ -1,28 +1,70 @@
-"""Thin business-tool registration; services retain domain and transaction rules."""
+"""Thin native business-tool registration; services own transactions and domain rules."""
 
 from typing import Annotated, Any
 
 from mcp.types import ToolAnnotations
-from pydantic import Field
+from pydantic import BaseModel, Field, ValidationError
 
 from docket.config import Settings
 from docket.database import session_scope
 from docket.domain.errors import DocketError
 from docket.mcp.instrumented import ProvenanceMCP
-from docket.schemas.native_commands import CalendarRef, ContextId, CreateEvent, OperationId
+from docket.plugin.business import model_function
+from docket.schemas.common import PublicRef
+from docket.schemas.native_commands import (
+    ApplyChange,
+    CalendarRef,
+    CancelEvent,
+    ChangeId,
+    CompleteTask,
+    CreateEvent,
+    CreateTask,
+    UpdateEvent,
+    UpdateTask,
+)
+from docket.services.business_commands import public_validation_error
 from docket.services.native_commands import NativeCommandService
 from docket.services.native_context import NativeContextService
+from docket.services.routine_commands import RoutineCommandService
 
-NATIVE_COMMAND_TOOLS = frozenset({"docket_create_event"})
-NATIVE_CONTEXT_TOOLS = frozenset({"docket_get_overview", "docket_get_calendar_context"})
+ROUTINE_COMMANDS: dict[str, tuple[type[BaseModel], str]] = {
+    "docket_create_event": (
+        CreateEvent,
+        "Create an event from title, ISO start/end, timezone and calendar_ref.",
+    ),
+    "docket_update_event": (
+        UpdateEvent,
+        "Update supplied fields; null clears location/notes. "
+        "Choose occurrence or series scope for recurring events.",
+    ),
+    "docket_cancel_event": (
+        CancelEvent,
+        "Cancel the selected event, original occurrence or entire series.",
+    ),
+    "docket_create_task": (
+        CreateTask,
+        "Create a task with title and optional notes/priority/due date. "
+        "Docket derives tracking records.",
+    ),
+    "docket_update_task": (
+        UpdateTask,
+        "Update supplied task fields. state=completed finishes the task; "
+        "null due clears its observed due entry.",
+    ),
+    "docket_complete_task": (
+        CompleteTask,
+        "Complete a task; Docket records completion time unless supplied.",
+    ),
+}
+NATIVE_COMMAND_TOOLS = frozenset(ROUTINE_COMMANDS) | {"docket_apply_change"}
+NATIVE_CONTEXT_TOOLS = frozenset(
+    {"docket_get_overview", "docket_get_calendar_context", "docket_get_context"}
+)
 
 
 def register_commands(server: ProvenanceMCP, settings: Settings) -> None:
     read = ToolAnnotations(
         read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
-    )
-    write = ToolAnnotations(
-        read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=True
     )
 
     @server.tool(annotations=read)
@@ -40,58 +82,89 @@ def register_commands(server: ProvenanceMCP, settings: Settings) -> None:
         except DocketError as exc:
             return exc.as_dict()
 
-    @server.tool(annotations=write)
-    def docket_create_event(
-        context_id: ContextId,
-        operation_id: OperationId,
-        title: Annotated[str, Field(min_length=1, max_length=512)],
-        start: Annotated[str, Field(max_length=64)],
-        end: Annotated[str, Field(max_length=64)],
-        timezone: Annotated[str, Field(max_length=128)],
-        calendar_ref: CalendarRef,
-        location: Annotated[str | None, Field(max_length=1000)] = None,
-        notes: Annotated[str | None, Field(max_length=4000)] = None,
-        request_ref: Annotated[
-            str | None,
-            Field(
-                json_schema_extra={"x-docket-internal": True},
-            ),
-        ] = None,
-        request_key: Annotated[
-            str | None,
-            Field(
-                json_schema_extra={"x-docket-internal": True},
-            ),
-        ] = None,
+    @server.tool(annotations=read)
+    def docket_get_context(
+        refs: Annotated[list[PublicRef], Field(min_length=1, max_length=25)],
     ) -> dict[str, Any]:
-        """Create one event and its tracking records; Google delivery follows canonical commit.
-
-        Read calendar context, choose its calendar_ref and supply ISO start/end with
-        timezone, e.g. 2026-11-13T13:00:00-08:00 / America/Los_Angeles.
-        Reuse operation_id and unchanged arguments for retries. Notes do not send invitations.
-        """
+        """Read selected canonical objects, observed versions and their available actions."""
         try:
-            if request_ref is None or request_key is None:
-                raise DocketError(
-                    code="request_context_required",
-                    message="An authenticated command request is required.",
-                )
-            command = CreateEvent(
-                context_id=context_id,
-                operation_id=operation_id,
-                title=title,
-                start=start,
-                end=end,
-                timezone=timezone,
-                calendar_ref=calendar_ref,
-                location=location,
-                notes=notes,
-            )
             with session_scope() as session:
-                return NativeCommandService(session, settings).create_event(
-                    command,
-                    request_ref,
-                    request_key,
-                )
+                return NativeContextService(session, settings).objects(refs)
         except DocketError as exc:
             return exc.as_dict()
+
+    @server.tool(annotations=read)
+    def docket_read_change(change_id: ChangeId) -> dict[str, Any]:
+        """Read the exact retained preview, state and field issues for an owned change handle."""
+        try:
+            with session_scope() as session:
+                return NativeCommandService(session, settings).read(change_id)
+        except DocketError as exc:
+            return exc.as_dict()
+
+    def apply(arguments: dict[str, Any]) -> dict[str, Any]:
+        arguments.pop("request_ref", None)
+        arguments.pop("request_key", None)
+        try:
+            value = ApplyChange.model_validate(arguments)
+            with session_scope() as session:
+                return NativeCommandService(session, settings).apply(value.change_id)
+        except ValidationError as exc:
+            return public_validation_error(exc).as_dict()
+        except DocketError as exc:
+            return exc.as_dict()
+
+    server.add_tool(
+        model_function(ApplyChange, "docket_apply_change", apply),
+        name="docket_apply_change",
+        description="Apply this exact owned prepared proposal; never the latest draft. "
+        "No mutation payload is accepted. Retrying returns its original receipt.",
+        annotations=ToolAnnotations(
+            read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=True
+        ),
+    )
+
+    def register(name: str, model: type[BaseModel], description: str) -> None:
+        def invoke(arguments: dict[str, Any]) -> dict[str, Any]:
+            request_ref = arguments.pop("request_ref", None)
+            request_key = arguments.pop("request_key", None)
+            try:
+                if request_ref is None or request_key is None:
+                    raise DocketError(
+                        code="request_context_required",
+                        message="An authenticated command request is required.",
+                    )
+                command = model.model_validate(arguments)
+                with session_scope() as session:
+                    if isinstance(command, CreateEvent):
+                        return NativeCommandService(session, settings).create_event(
+                            command,
+                            request_ref,
+                            request_key,
+                            prepare=command.preview,
+                        )
+                    service = RoutineCommandService(session, settings)
+                    if isinstance(command, UpdateEvent | CancelEvent):
+                        return service.event(command, request_ref, request_key)
+                    assert isinstance(command, CreateTask | UpdateTask | CompleteTask)
+                    return service.task(command, request_ref, request_key)
+            except ValidationError as exc:
+                return public_validation_error(exc).as_dict()
+            except DocketError as exc:
+                return exc.as_dict()
+
+        server.add_tool(
+            model_function(model, name, invoke),
+            name=name,
+            description=description + " Reuse operation_id for unchanged retries. "
+            "Set preview=true only when requested; apply the exact returned change_id.",
+            annotations=ToolAnnotations(
+                read_only_hint=False,
+                destructive_hint=name == "docket_cancel_event",
+                idempotent_hint=True,
+                open_world_hint=True,
+            ),
+        )
+
+    for name, (model, description) in ROUTINE_COMMANDS.items():
+        register(name, model, description)

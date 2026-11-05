@@ -63,6 +63,8 @@ class AgentCallContext:
     request_key: str | None = None
     execution_key: str | None = None
     operation_key: str | None = None
+    # Presence, not values; preserves sparse flat patches through SDK default expansion.
+    supplied_argument_names: frozenset[str] | None = None
 
 
 agent_call_context: ContextVar[AgentCallContext | None] = ContextVar(
