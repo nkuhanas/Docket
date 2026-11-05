@@ -13,7 +13,13 @@ from docket.agent_auth import require_principal
 from docket.config import Settings
 from docket.domain.canonical import sha256_json
 from docket.domain.errors import DocketError
-from docket.models import ChangeSet, NativeContext, PreparedCommand, PreparedConsumption
+from docket.models import (
+    ChangeSet,
+    NativeContext,
+    NativeOutcome,
+    PreparedCommand,
+    PreparedConsumption,
+)
 from docket.schemas.assembly import StageChangesInput
 from docket.schemas.calendar import TimedEventTiming
 from docket.schemas.native_commands import CreateEvent
@@ -180,6 +186,7 @@ class NativeCommandService:
         AgentRequestService(self.session).require(
             request_ref, permission="commit", allow_committed=True
         )
+        self.require_command_identity(request_ref)
         # Preserve retry identity for the first deployed flat contract's default fields.
         original_fields = {
             "context_id",
@@ -217,8 +224,11 @@ class NativeCommandService:
         self.require_replacement(command.replaces_change_id, request_ref)
         context = NativeContextService(self.session, self.settings).require(
             command.context_id,
-            "calendar",
         )
+        if context.purpose not in {"calendar", "objects"}:
+            raise DocketError(
+                code="context_unavailable", message="Read the calendar or object context."
+            )
         from docket.services.event_commands import create_event_plan
 
         plan = create_event_plan(self.session, context, command, request_key)
@@ -318,6 +328,7 @@ class NativeCommandService:
         AgentRequestService(self.session).require(
             request_ref, permission="commit", allow_committed=True
         )
+        self.require_command_identity(request_ref)
         operation_id = str(arguments["operation_id"])
         argument_hash = sha256_json(
             {key: value for key, value in arguments.items() if key != "preview"}
@@ -376,6 +387,10 @@ class NativeCommandService:
                 "field": field or "context_id",
                 "message": error.get("message", code.replace("_", " ")),
             }
+            if "remaining_required_case_item_refs" in details:
+                issue["remaining_required_case_item_refs"] = details[
+                    "remaining_required_case_item_refs"
+                ]
             if code == "provider_event_binding_required":
                 issue.update(
                     message="The existing event is awaiting Google delivery or reconciliation; "
@@ -390,6 +405,10 @@ class NativeCommandService:
                 )
             issues.append(issue)
         return issues
+
+    def require_command_identity(self, request_ref: str) -> None:
+        if self.session.get(NativeOutcome, request_ref) is not None:
+            raise DocketError(code="operation_id_reused", message="Choose a new operation_id.")
 
     @staticmethod
     def bounded_preview(value: dict[str, Any]) -> dict[str, Any]:
@@ -491,6 +510,9 @@ class NativeCommandService:
         root = AgentRequestService(self.session).require(
             proposal.request_ref, permission="commit", allow_committed=True
         )
+        outcome = self.session.get(NativeOutcome, root.ref_id)
+        if outcome is not None:
+            return {**outcome.receipt, "replayed": True}
         consumed = self.session.get(PreparedConsumption, proposal.ref_id)
         if consumed is not None:
             batch = self.session.scalar(
@@ -513,8 +535,11 @@ class NativeCommandService:
                     code="batch_receipt_unavailable",
                     message="The retained batch receipt needs recovery.",
                 )
+            parent_outcome = self.session.get(NativeOutcome, batch.request_ref) if batch else None
             return {
-                **parent.commit_receipt_json,
+                **(
+                    parent.commit_receipt_json or (parent_outcome.receipt if parent_outcome else {})
+                ),
                 "included_in_change": consumed.batch_ref,
                 "replayed": True,
             }

@@ -3,7 +3,7 @@
 import hashlib
 from copy import deepcopy
 from dataclasses import replace
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any
 from urllib.parse import urlsplit
 
 from mcp.server.mcpserver import Context
@@ -23,10 +23,7 @@ from docket.database import session_scope
 from docket.domain.errors import DocketError
 from docket.mcp.instrumented import (
     INFRASTRUCTURE_ARGUMENT_NAMES,
-    INTERACTIVE_AUTHORITY_TOOLS,
-    INTERACTIVE_CANONICAL_MUTATION_TOOLS,
     ProvenanceMCP,
-    _validation_issues,
 )
 from docket.mcp.server import mcp
 from docket.mcp.triage_server import triage_mcp
@@ -37,15 +34,15 @@ from docket.plugin.events import EventMethods, advertise_events
 from docket.plugin.instructions import NATIVE_INSTRUCTIONS
 from docket.plugin.schemas import compact_schema
 from docket.plugin.work import NativeWork
+from docket.plugin.workflows import NATIVE_WORKFLOW_TOOLS, register_workflows
 from docket.providers.webhooks import WebhookPoster
-from docket.services.agent_requests import AgentRequestService
 from docket.services.native_commands import NativeCommandService
 from docket.services.notifications import NotificationService
 from docket.tool_contracts import contract_tool_names
 
 
 class PluginMCP(ProvenanceMCP):
-    authority_tools = INTERACTIVE_AUTHORITY_TOOLS | NATIVE_COMMAND_TOOLS | BUSINESS_TOOLS
+    authority_tools = NATIVE_WORKFLOW_TOOLS | NATIVE_COMMAND_TOOLS | BUSINESS_TOOLS
 
     def __init__(self, settings: Settings, poster: WebhookPoster | None = None) -> None:
         hostname = urlsplit(settings.plugin_public_origin).hostname or "docket.you"
@@ -62,28 +59,18 @@ class PluginMCP(ProvenanceMCP):
         self.plugin_settings = settings
         register_commands(self, settings)
         register_business(self, settings)
+        register_workflows(self, settings)
         annotations = ToolAnnotations(
             read_only_hint=True, destructive_hint=False,
             idempotent_hint=True, open_world_hint=False,
         )
         names = contract_tool_names("plugin")
         for info in mcp._tool_manager.list_tools():
-            if info.name in names:
-                write = info.name in INTERACTIVE_AUTHORITY_TOOLS
-                description = (info.description or "").replace(
-                    "gateway supplies", "server supplies",
-                )
-                description = description.replace(
-                    "No model arguments or canonical-content payload.",
-                    "Only work correlation; no canonical-content payload or "
-                    "client-selected revision.",
-                )
-                self.add_tool(info.fn, name=info.name, description=description,
+            if info.name in names and info.name not in self.authority_tools:
+                self.add_tool(info.fn, name=info.name, description=info.description,
                               annotations=ToolAnnotations(
-                                  read_only_hint=not write,
-                                  destructive_hint=(
-                                      info.name in INTERACTIVE_CANONICAL_MUTATION_TOOLS
-                                  ),
+                                  read_only_hint=True,
+                                  destructive_hint=False,
                                   idempotent_hint=True, open_world_hint=False,
                               ))
         for info in triage_mcp._tool_manager.list_tools():
@@ -125,40 +112,6 @@ class PluginMCP(ProvenanceMCP):
             """Read an inbox record and follow its public subject for current canonical context."""
             with session_scope() as session:
                 return NotificationService(session, self.plugin_settings).get(notification_ref)
-
-        @self.tool(annotations=ToolAnnotations(
-            read_only_hint=False, destructive_hint=False,
-            idempotent_hint=True, open_world_hint=False,
-        ))
-        def docket_record_context(
-            record_key: Annotated[str, Field(min_length=1, max_length=255)],
-            record_kind: Literal["operator_transcript", "agent_response", "source_context"],
-            text: Annotated[str | None, Field(max_length=65536)] = None,
-            gap_code: Annotated[str | None, Field(min_length=1, max_length=128)] = None,
-            request_ref: Annotated[str | None, Field(
-                json_schema_extra={"x-docket-internal": True},
-            )] = None,
-            request_key: Annotated[str | None, Field(
-                json_schema_extra={"x-docket-internal": True},
-            )] = None,
-        ) -> dict[str, Any]:
-            """Optionally archive reported context in its own transaction; never required to act.
-
-            Supply text or a capture gap. Relayed text remains agent-reported, never
-            authenticated verbatim operator evidence. Append corrections with a new record key.
-            """
-            try:
-                if request_ref is None:
-                    raise DocketError(
-                        code="request_context_required", message="Supply work identity.",
-                    )
-                with session_scope() as session:
-                    return AgentRequestService(session).record(
-                        request_ref=request_ref, record_key=record_key, record_kind=record_kind,
-                        text=text, gap_code=gap_code,
-                    )
-            except DocketError as exc:
-                return exc.as_dict()
 
     def prepare_agent_call(
         self, name: str, authenticated: AgentCallContext, arguments: dict[str, Any],
@@ -203,7 +156,7 @@ class PluginMCP(ProvenanceMCP):
                 return AgentCallContext(authenticated.principal, root.request_key,
                     "native-exact-proposal", "correct:" + str(arguments.get("operation_id")),
                     supplied_argument_names=frozenset(arguments)), arguments
-        if name in NATIVE_COMMAND_TOOLS | BUSINESS_TOOLS:
+        if name in self.authority_tools:
             operation = arguments.get("operation_id")
             try:
                 work = NativeWork.model_validate({"request_id": (
@@ -215,17 +168,7 @@ class PluginMCP(ProvenanceMCP):
                                   details={"field": "operation_id"}) from exc
             return replace(work.bind(authenticated.principal),
                            supplied_argument_names=frozenset(arguments)), arguments
-        if name not in self.authority_tools:
-            return authenticated, arguments
-        arguments = dict(arguments)
-        try:
-            work = NativeWork.model_validate(arguments.pop("work", None))
-        except ValidationError as exc:
-            raise DocketError(
-                code="invalid_work_identity", message="Supply bounded native work correlation.",
-                details={"category": "structural_validation", "issues": _validation_issues(exc)},
-            ) from exc
-        return work.bind(authenticated.principal), arguments
+        return authenticated, arguments
 
     async def call_tool(
         self, name: str, arguments: dict[str, Any], context: Context[Any, Any] | None = None,
@@ -265,19 +208,8 @@ class PluginMCP(ProvenanceMCP):
                     key for key in tool.input_schema["required"] if key not in hidden
                 ]
             scopes = [self.plugin_settings.plugin_read_scope]
-            if tool.name in NATIVE_COMMAND_TOOLS | BUSINESS_TOOLS:
+            if tool.name in self.authority_tools:
                 scopes.append(self.plugin_settings.plugin_write_scope)
-            elif tool.name in INTERACTIVE_AUTHORITY_TOOLS:
-                properties["work"] = NativeWork.model_json_schema()
-                tool.input_schema.setdefault("required", []).append("work")
-                scopes.append(self.plugin_settings.plugin_write_scope)
-                tool.description = (
-                    "Use work for opaque request/run/operation identity; it grants no authority. "
-                    "The server binds the owned req_ and exact observed draft. "
-                    + ("Commit takes no mutation payload or revision. "
-                       if tool.name == "docket_commit_changeset" else "")
-                    + (tool.description or "")
-                )
             if tool.name in TRIAGE_WORK_TOOLS:
                 scopes.append(self.plugin_settings.plugin_triage_scope)
             tool.meta = {

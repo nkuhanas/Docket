@@ -1,4 +1,10 @@
 > Current requirements are in [SPEC.md](../SPEC.md). Hermes/SearXNG source and
+
+Current native commands/context and local-release behavior are specified in
+[SPEC 1.0](../SPEC.md). See [current implementation evidence](native-context-local-ci.md)
+and [flat command examples](native-command-examples.md). Older stage/work-envelope
+and fixed tool-count descriptions below are chronological evidence, superseded
+at the native catalog cutover; OAuth identities/scopes and grants remain intact.
 > gateway tooling are removed. Native startup also omits their internal callback
 > routes; local inference and scheduled clients use scoped MCP. Historical
 > gateway deployment instructions below are retained evidence.

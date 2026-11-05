@@ -13,6 +13,7 @@ from docket.models import (
     AttentionCase,
     AttentionCaseRevision,
     AuditEvent,
+    AuthenticatedRequest,
     CaseItem,
     ChangeSet,
     Decision,
@@ -51,6 +52,20 @@ class AttentionCaseResolutionService:
 
     def handlers(self) -> dict[str, Any]:
         return {"attention_case_resolution": self.apply}
+
+    def _actor(self, basis_refs: list[str]) -> str:
+        request = self.session.scalar(
+            select(AuthenticatedRequest).where(
+                AuthenticatedRequest.ref_id.in_(
+                    [ref for ref in basis_refs if ref.startswith("req_")]
+                ),
+            )
+        )
+        return (
+            request.actor_ref
+            if request
+            else f"discord_user:{get_settings().operator_discord_user_id}"
+        )
 
     def _current_revision(
         self,
@@ -112,9 +127,7 @@ class AttentionCaseResolutionService:
                 }
             ]
         items = list(
-            self.session.scalars(
-                select(CaseItem).where(CaseItem.attention_case_id == case.id)
-            )
+            self.session.scalars(select(CaseItem).where(CaseItem.attention_case_id == case.id))
         )
         by_ref = {item.ref_id: item for item in items}
         visible_refs = set(revision.case_item_refs)
@@ -181,7 +194,7 @@ class AttentionCaseResolutionService:
     ) -> Decision:
         decision = Decision(
             decision_kind="attention_case_resolution",
-            actor_ref=f"discord_user:{get_settings().operator_discord_user_id}",
+            actor_ref=self._actor(change.basis_refs),
             basis_refs=list(change.basis_refs),
             authorized_scope="attention_case_resolution",
             payload_json={
@@ -231,17 +244,16 @@ class AttentionCaseResolutionService:
         resolved_required_refs = {
             item.ref_id
             for item in items
-            if explicit.get(item.ref_id) == "resolved"
-            and item.resolution_role == "required"
+            if explicit.get(item.ref_id) == "resolved" and item.resolution_role == "required"
         }
         if not resolved_required_refs:
             return []
         intent_session = self.session.get(IntentSession, changeset.intent_session_id)
         if intent_session is None:
             return []
-        authority_utterances = ProvenanceRefService(
-            self.session
-        ).authority_utterance_refs(change.basis_refs)
+        authority_utterances = ProvenanceRefService(self.session).authority_utterance_refs(
+            change.basis_refs
+        )
         statement_refs: list[str] = []
         for turn in self.session.scalars(
             select(IntentTurn).where(
@@ -255,9 +267,7 @@ class AttentionCaseResolutionService:
         relevant_subjects = {case.ref_id, *resolved_required_refs}
         statements = list(
             self.session.scalars(
-                select(InterpretedStatement).where(
-                    InterpretedStatement.ref_id.in_(statement_refs)
-                )
+                select(InterpretedStatement).where(InterpretedStatement.ref_id.in_(statement_refs))
             )
         )
         decisions: list[Decision] = []
@@ -266,17 +276,14 @@ class AttentionCaseResolutionService:
             explicitly_durable = (
                 statement.interpretation_json.get("durable_case_resolution") is True
             )
-            if (
-                statement.predicate not in _DURABLE_CASE_PREDICATES
-                and not explicitly_durable
-            ):
+            if statement.predicate not in _DURABLE_CASE_PREDICATES and not explicitly_durable:
                 continue
             if not relevant_subjects.intersection(statement.subject_refs):
                 continue
             basis_refs = list(dict.fromkeys([statement.ref_id, *change.basis_refs]))
             decision = Decision(
                 decision_kind="case_semantic_resolution",
-                actor_ref=f"discord_user:{get_settings().operator_discord_user_id}",
+                actor_ref=self._actor(basis_refs),
                 basis_refs=basis_refs,
                 authorized_scope="deterministic_case_source_correlation",
                 payload_json={
@@ -303,9 +310,7 @@ class AttentionCaseResolutionService:
         change: AttentionCaseResolutionInput,
     ) -> list[str]:
         case = self.session.scalar(
-            select(AttentionCase)
-            .where(AttentionCase.ref_id == change.object_ref)
-            .with_for_update()
+            select(AttentionCase).where(AttentionCase.ref_id == change.object_ref).with_for_update()
         )
         if case is None:
             raise DocketError(
@@ -351,10 +356,7 @@ class AttentionCaseResolutionService:
             for item in items:
                 if item.status != "open":
                     continue
-                if (
-                    change.case_outcome == "resolved"
-                    and item.resolution_role == "required"
-                ):
+                if change.case_outcome == "resolved" and item.resolution_role == "required":
                     raise DocketError(
                         code="attention_case_items_unresolved",
                         message="Required CaseItems remain open.",
@@ -426,9 +428,7 @@ class AttentionCaseResolutionService:
                     ),
                     "system_not_pursued_case_item_refs": not_pursued_refs,
                     "resolution_decision_ref": resolution_decision.ref_id,
-                    "semantic_decision_refs": [
-                        decision.ref_id for decision in semantic_decisions
-                    ],
+                    "semantic_decision_refs": [decision.ref_id for decision in semantic_decisions],
                     "content_hash": sha256_json(
                         {
                             "case_outcome": change.case_outcome,

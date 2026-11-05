@@ -1,5 +1,11 @@
 # Native plugin integration
 
+Current native commands/context and local-release behavior are specified in
+[SPEC 1.0](../SPEC.md). See [current implementation evidence](native-context-local-ci.md)
+and [flat command examples](native-command-examples.md). Older stage/work-envelope
+and fixed tool-count descriptions below are chronological evidence, superseded
+at the native catalog cutover; OAuth identities/scopes and grants remain intact.
+
 The sections below retain chronological implementation evidence. The November 4
 delegated-write amendment supersedes the earlier foreground-only native gate;
 see the final section and the current [setup guide](plugin-setup.md).
