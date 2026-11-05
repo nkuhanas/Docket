@@ -60,6 +60,7 @@ from docket.models.intelligence import (
     DailyBriefCaseMembership,
     TriageRun,
 )
+from docket.models.native_context import NativeContext, PreparedCommand
 from docket.models.notifications import (
     MCPEventAttempt,
     MCPEventDelivery,
@@ -168,6 +169,7 @@ __all__ = [
     "MCPEventAttempt",
     "MCPEventDelivery",
     "MCPEventSubscription",
+    "NativeContext",
     "OAuthPrincipal",
     "Operation",
     "OperationTarget",
@@ -179,6 +181,7 @@ __all__ = [
     "PersonProfile",
     "PluginNotification",
     "Preference",
+    "PreparedCommand",
     "ProjectionDelivery",
     "ProviderAccount",
     "ProviderEventBinding",

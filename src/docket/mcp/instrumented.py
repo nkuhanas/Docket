@@ -392,6 +392,8 @@ def _operator_utterance_authority(
 
 
 class ProvenanceMCP(MCPServer[Any]):
+    authority_tools = INTERACTIVE_AUTHORITY_TOOLS
+
     def __init__(
         self,
         name: str,
@@ -420,7 +422,7 @@ class ProvenanceMCP(MCPServer[Any]):
             self.contract_profile == "plugin" and authenticated.principal.oauth_write_eligible
         ):
             registered = [
-                tool for tool in registered if tool.name not in INTERACTIVE_AUTHORITY_TOOLS
+                tool for tool in registered if tool.name not in self.authority_tools
             ]
         for tool in registered:
             tool.input_schema["additionalProperties"] = False
@@ -573,7 +575,7 @@ class ProvenanceMCP(MCPServer[Any]):
                     permission = (
                         "commit" if name == "docket_commit_changeset"
                         else "resolve_conflict" if name == "docket_resolve_conflict"
-                        else "stage" if name in INTERACTIVE_AUTHORITY_TOOLS
+                        else "stage" if name in self.authority_tools
                         else "triage" if name in TRIAGE_WORK_TOOLS else "read"
                     )
                     require_principal(permission)
@@ -590,7 +592,7 @@ class ProvenanceMCP(MCPServer[Any]):
                             request_key=authenticated.request_key,
                         )
                         invocation.authenticated_request_ref = root.ref_id
-                        if name in INTERACTIVE_AUTHORITY_TOOLS:
+                        if name in self.authority_tools:
                             arguments.update(request_ref=root.ref_id, request_key=root.request_key)
                         if name == "docket_list_provider_calendar_events":
                             arguments["request_ref"] = root.ref_id
@@ -614,7 +616,7 @@ class ProvenanceMCP(MCPServer[Any]):
                             ))
                             assert operation is not None
                             invocation.assembly_operation_id = operation.id
-                    elif name in INTERACTIVE_AUTHORITY_TOOLS:
+                    elif name in self.authority_tools:
                         raise DocketError(
                             code="request_context_required",
                             message="Trusted request and execution identity are required.",
@@ -725,7 +727,7 @@ class ProvenanceMCP(MCPServer[Any]):
         if (
             self.caller_profile == "interactive"
             and agent_call_context.get() is None
-            and name in INTERACTIVE_AUTHORITY_TOOLS
+            and name in self.authority_tools
             and normalized_arguments is not None
         ):
             attachment_error = False

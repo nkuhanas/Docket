@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-CONTRACT_VERSION = "docket-tools-2026-11-04-v48"
+CONTRACT_VERSION = "docket-tools-2026-11-04-v49"
 ContractProfile = Literal["interactive", "triage", "plugin"]
 
 
@@ -329,6 +329,27 @@ CONTRACT_ENTRIES: Mapping[str, tuple[ToolContractEntry, ...]] = {
         entry for entry in _triage_entries() if entry["tool_name"] != "docket_get_attention_case"
     )),
 }
+
+
+# Native business tools are documented independently from compiler infrastructure.
+_native_business_entries: tuple[ToolContractEntry, ...] = tuple({
+    "tool_ref": "DOCKET-NATIVE-" + str(index), "tool_name": name,
+    "purpose": purpose, "use_when": purpose,
+    "do_not_use_when": "The required OAuth/local-owner capability is absent.",
+    "authority": "Verified connection and current local owner grant.",
+    "preconditions": "Reuse suitable owner-bound context; IDs grant no permission.",
+    "side_effects": "Context snapshot or atomic canonical/provider intent as described.",
+    "success_dispositions": "ok|committed",
+    "output_interpretation": "Canonical commit and provider delivery are distinct.",
+    "required_next_action": "Follow returned context/receipt; retry unchanged operation IDs.",
+    "important_errors": "context_unavailable|timezone_offset_conflict|operation_id_reused",
+} for index, (name, purpose) in enumerate((
+    ("docket_get_overview", "Read timezone, capabilities and short next-tool guidance."),
+    ("docket_get_calendar_context", "Read calendar choices and bounded canonical observations."),
+    ("docket_create_event", "Create an event from title, ISO start/end and calendar context."),
+), start=1))
+CONTRACT_ENTRIES = {**CONTRACT_ENTRIES,
+                    "plugin": (*CONTRACT_ENTRIES["plugin"], *_native_business_entries)}
 
 
 def render_contract_payload(profile: ContractProfile) -> str:

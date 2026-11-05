@@ -36,8 +36,9 @@ def _ref(prefix: str) -> str:
 
 
 def test_clean_public_reference_registry_has_one_meaning_per_prefix() -> None:
-    assert len(PUBLIC_REF_TYPES) == 50
-    assert len(PUBLIC_REF_PREFIX_BY_TYPE) == 50
+    assert len(PUBLIC_REF_TYPES) == len(PUBLIC_REF_PREFIX_BY_TYPE)
+    assert prefix_for_type("NativeContext") == "nctx"
+    assert prefix_for_type("PreparedCommand") == "prep"
     assert prefix_for_type("PluginNotification") == "notice"
     assert prefix_for_type("MCPEventSubscription") == "sub"
     assert prefix_for_type("MCPEventDelivery") == "ndel"

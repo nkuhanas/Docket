@@ -17,6 +17,8 @@ class PublicRefDefinition:
 
 
 _DEFINITIONS = (
+    PublicRefDefinition("nctx", "NativeContext"),
+    PublicRefDefinition("prep", "PreparedCommand"),
     PublicRefDefinition("notice", "PluginNotification"),
     PublicRefDefinition("sub", "MCPEventSubscription"),
     PublicRefDefinition("ndel", "MCPEventDelivery"),

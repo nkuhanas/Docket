@@ -100,9 +100,8 @@ async def test_linked_plugin_schema_profile_audit_and_no_background_writes(
     ):
         tools = (await client.list_tools()).tools
         assert {tool.name for tool in tools} == (
-            contract_tool_names("plugin") - INTERACTIVE_AUTHORITY_TOOLS
+            contract_tool_names("plugin") - app.state.mcp.authority_tools
         )
-        assert len(tools) == 24
         assert all(
             tool.annotations.read_only_hint is (tool.name not in TRIAGE_WORK_TOOLS)
             for tool in tools
@@ -208,7 +207,9 @@ async def test_missing_scope_can_step_up_and_discover_tools_without_enrolling_ag
         async with Client(streamable_http_client(
             "https://docket.you/mcp/", http_client=http,
         ), mode="legacy") as client:
-            assert len((await client.list_tools()).tools) == 24
+            assert {t.name for t in (await client.list_tools()).tools} == (
+                contract_tool_names("plugin") - app.state.mcp.authority_tools
+            )
             result = await client.call_tool("docket_get_profile", {})
             assert result.structured_content == {"id": ref, "name": "Docket"}
     with session_factory() as session:
@@ -393,7 +394,7 @@ async def test_native_delegation_stages_commits_replays_and_optionally_records_c
         ), mode=mode) as client,
     ):
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
-        assert set(tools) == contract_tool_names("plugin") and len(tools) == 30
+        assert set(tools) == contract_tool_names("plugin")
         for name in INTERACTIVE_AUTHORITY_TOOLS:
             tool = tools[name]
             assert tool.annotations.read_only_hint is False
@@ -586,7 +587,7 @@ async def test_native_write_scope_upgrade_keeps_reads_and_prompts_existing_conne
             "https://docket.you/mcp/", http_client=http,
         ), mode="legacy") as client,
     ):
-        assert len((await client.list_tools()).tools) == 30
+        assert {t.name for t in (await client.list_tools()).tools} == contract_tool_names("plugin")
         assert (await client.call_tool("docket_get_profile", {})).structured_content["id"]
         args = {**_native_stage(), "work": _work("stage")}
         denied = await client.call_tool("docket_stage_changes", args)
