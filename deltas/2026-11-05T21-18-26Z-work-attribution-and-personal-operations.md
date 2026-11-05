@@ -484,6 +484,49 @@ global instructions or the generated reference catalogue. Page context choices
 and result details within byte limits while retaining full-set totals/coverage.
 These are engineering checks, not additional operator approval steps.
 
+### Consolidate the existing catalogue without more complex inputs
+
+The [existing-catalogue review](../docs/catalogue-simplification-review.md) proposes
+an independent C0 slice before or alongside work attribution:
+
+- Replace twelve `docket_retract_*` wrappers with `docket_retract_record`, retaining
+  exactly the same fields: context, operation identity, target reference and the
+  existing preview/correction options. Derive the existing typed effect from a
+  closed reference-prefix map. Add no object/action selector or generic payload.
+- Use existing `docket_update_task(state="completed")` for task completion and
+  existing `docket_get_context(refs=[conflict_ref])` for conflict detail. Their
+  surviving input schemas do not change.
+
+This projects 84 existing tools to 71 while retaining routes for all 47 baseline
+mutation variants. The new retraction schema is 612 bytes. Gross P0a/P0 additions
+remain six/thirteen tools: after C0, projected totals are 77/84. These are measured
+design projections, not an implemented inventory or a fixed-count invariant.
+
+Four further reductions are conditional. Person, organization/institution and Item
+detail reads can move into reference-based context only after their useful domain
+facets, provenance and bounded detail access are preserved. Generic row reflection
+is insufficient. Event cancellation can use the existing update `status` and scope
+fields only after the service dispatches the exact cancellation semantics and
+proves provider/recurrence equivalence. Retain those wrappers until then; added
+input modes or lost capabilities are not an acceptable trade for a count.
+
+Create/update and update/supersede retain their distinct business contracts. Keep
+identity unbinding separate from handle retraction: both use `idn_` but represent
+different intent. Preserve query/detail, provider-observation, profile, triage,
+capture, prepared-work and historical-recovery boundaries. Normal event/task
+commands continue deriving required support records internally; do not remove
+independent temporal/routing/projection functionality just because it looks like
+low-level storage.
+
+C0 changes dispatch and discovery, not permissions or history. Preserve current
+domain handlers, `req_`/`call_`, versions, immutable roots, exact prepared proposals,
+atomic provider intent and unknown-delivery recovery. Maintain a capability
+disposition for every old effect/read. Compatibility aliases may preserve cached
+clients during refresh; they keep original permission/retry checks and never
+rewrite old receipts or silently re-execute work. Update generated guidance, action
+names and the same hosted plugin together. Report gross and net discovery sizes;
+consolidation does not relax the per-tool budgets or block work attribution.
+
 Illustrative P0 inputs, using references returned by the proposed work context:
 
 ```json
@@ -569,7 +612,7 @@ the old reminder subject constraint. A weekly reconciliation is optional.
 
 ## 9. Implementation and rollout
 
-P0a is the first implementation target: create a minimal engagement when useful,
+P0a is the first feature implementation target: create a minimal engagement when useful,
 record incomplete work, correct it, and retrieve/export hours across engagements.
 P0b completes timer and lineage workflows. P1a–P1c/P2 retain the direction and
 integrity requirements here; their concrete calculation/document contracts should
@@ -579,6 +622,7 @@ sign-off gate for each ordinary command.
 
 | Milestone | Deliverable and completion condition |
 | --- | --- |
+| C0, independent/parallel | Consolidate twelve retraction wrappers and the task-completion/conflict-detail aliases without expanding surviving inputs. Preserve all baseline effects, authority, history and provider semantics; projected existing catalogue 84 → 71. Conditional rich-context/cancel reductions require their own equivalence evidence and do not block P0a. |
 | P0a | Typed work/revision/segment and minimal engagement persistence; flat retrospective/duration-only logging, corrections, reported compensation classification, optional event/mode/location context and daily/weekly queries with overlap flags and informal CSV/JSON export through real MCP/PostgreSQL. No money prerequisite or external spreadsheet. |
 | P0b | Durable timers, pause/resume, explicit switch and split/merge lineage for resolving overlaps and attribution. Together P0a/P0b complete core attribution. |
 | P1a | Effective-dated rates/policies, compensable-time evaluation, reporting periods and formal timesheets. Exact contribution identity, immutable submitted snapshots and duplicate-claim protection exist before formal claims are recorded. |
@@ -632,6 +676,7 @@ credentials or external submission are requested by this draft.
 | Aggregation | Bounded pages and full-set totals agree; duration-only, open and overlapping reports are identified separately. Coverage never implies inactivity or completeness. |
 | P0a informal export | Query, JSON and CSV agree on a synthetic 12.5 + 8.0 + 6.5 = 27.0 reported-hour week across engagements, including full totals across detail pages. Additional unknown/open/overlapping reports preserve their flags and calculation basis. Export is useful without rates and never implies a formal timesheet, claim or submission. |
 | Contract usability/size | Record actual per-tool and aggregate discovery sizes against section 8, including descriptions/output schemas and affected existing tools. Real MCP first-attempt interval/duration logging, sparse corrections and optional metadata succeed with visible fields and field-specific errors. Context/results stay bounded without losing coverage or totals. Unimplemented phases stay out of discovery. |
+| Catalogue consolidation | Every baseline effect/read has an equivalent retained route; surviving inputs do not acquire selectors, conditional requiredness or patch unions. Retries, stale/revoked/owner checks and domain-specific retraction/provider effects hold. Rich context and cancellation wrappers disappear only after coverage/behavior equivalence, with exact historical recovery and cached-client compatibility preserved. |
 | P1a policy/timesheets | A rate change affects only its effective scope; a boundary-crossing session uses both appropriate calculation segments. Raw time and reported classification stay unchanged. Missing/conflicting policy leaves a partial estimate. Formal submissions pin exact contributions, retain prior snapshots and prevent duplicate same-purpose claims before P1b exists. |
 | P1b claims/documents | Concurrent drafts cannot double-reserve eligible quantities. Timesheet/invoice reporting shares P1a lineage without double charging. A corrected/split work revision does not reset prior claims; it flags adjustments to an issued snapshot rather than editing it. Expense claims stay distinct from hours/wages. |
 | P1c settlement | Partial payments/reimbursements, credits, reversals and unexplained net/gross differences remain exact and auditable. A sent invoice or expected-payment message never marks paid. |

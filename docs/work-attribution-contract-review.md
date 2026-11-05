@@ -80,6 +80,14 @@ and document details require bounded reads. Context/result sizes, actual transpo
 shapes and first-valid-call usability must be verified during implementation;
 this schema probe does not establish those results.
 
+The subsequent [existing-catalogue review](catalogue-simplification-review.md)
+adds a separate C0 consolidation proposal: 84 existing tools project to 71, with
+unchanged surviving input schemas. P0a then projects to 77 tools and 120,338
+discovery bytes, only 647 bytes above today's source inventory. Complete P0
+projects to 84 tools. Four further removals depend on rich-context and cancellation
+equivalence; their savings are not assumed for C0. Gross P0 measurements above
+remain valid and are not rewritten as implemented results.
+
 ## Capability classes and interaction
 
 These are domain capabilities, not new OAuth scope names. Existing `docket.read`
