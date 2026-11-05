@@ -3,6 +3,7 @@
   "groups": {
     "native": [
       "tests/unit/test_agent_auth.py",
+      "tests/unit/test_work_time.py",
       "tests/unit/test_plugin_configuration.py",
       "tests/unit/test_plugin_package.py",
       "tests/unit/test_webhooks.py",

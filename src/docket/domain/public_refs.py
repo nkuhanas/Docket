@@ -17,6 +17,10 @@ class PublicRefDefinition:
 
 
 _DEFINITIONS = (
+    PublicRefDefinition("eng", "Engagement"),
+    PublicRefDefinition("erev", "EngagementRevision"),
+    PublicRefDefinition("work", "WorkSession"),
+    PublicRefDefinition("wrev", "WorkSessionRevision"),
     PublicRefDefinition("nctx", "NativeContext"),
     PublicRefDefinition("prep", "PreparedCommand"),
     PublicRefDefinition("notice", "PluginNotification"),

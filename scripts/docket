@@ -133,6 +133,12 @@ compose_smoke() (
         smoke_compose run -T --rm --no-deps -e "DOCKET_DATABASE_URL=$database_url" \
             -v "$ROOT:/workspace:ro" docket ./.venv/bin/python \
             /workspace/scripts/compose-assembly-postgres-smoke.py --native
+        smoke_compose exec -T postgres createdb -U docket docket_work_smoke
+        smoke_compose run -T --rm --no-deps \
+            -e DOCKET_ENVIRONMENT=test \
+            -e DOCKET_DATABASE_URL=postgresql+psycopg://docket:docket-smoke@postgres:5432/docket_work_smoke \
+            -v "$ROOT:/workspace:ro" docket ./.venv/bin/python \
+            /workspace/scripts/work-postgres-check.py
     fi
 )
 

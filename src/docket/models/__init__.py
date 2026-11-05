@@ -111,6 +111,13 @@ from docket.models.tracked_context import (
     TemporalBinding,
     TemporalCalendarProjection,
 )
+from docket.models.work import (
+    Engagement,
+    EngagementRevision,
+    WorkSegment,
+    WorkSession,
+    WorkSessionRevision,
+)
 
 __all__ = [
     "Affiliation",
@@ -148,6 +155,8 @@ __all__ = [
     "DiscordDailyThread",
     "DrainBarrier",
     "EncryptedAttachmentBlob",
+    "Engagement",
+    "EngagementRevision",
     "Entity",
     "EntityAlias",
     "EntityResolution",
@@ -211,4 +220,7 @@ __all__ = [
     "TriageRun",
     "TriageWindow",
     "TriageWindowMembership",
+    "WorkSegment",
+    "WorkSession",
+    "WorkSessionRevision",
 ]
