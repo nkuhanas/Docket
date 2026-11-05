@@ -24,7 +24,11 @@ class NativeWork(StrictModel):
 
     def bind(self, principal: AgentPrincipal) -> AgentCallContext:
         def identity(value: str) -> str:
-            return "native:" + hashlib.sha256(value.encode()).hexdigest()
+            # Some downstream retry keys are global, including conflict resolution.
+            # Bind every namespace to the verified principal, never just a caller ID.
+            return "native:" + hashlib.sha256(
+                f"{principal.principal_ref}\0{value}".encode(),
+            ).hexdigest()
 
         return AgentCallContext(
             principal, identity(self.request_id),
