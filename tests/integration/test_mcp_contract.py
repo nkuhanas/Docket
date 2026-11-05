@@ -217,12 +217,8 @@ def test_generated_tool_contracts_have_exact_profile_parity_and_hashes() -> None
         "required_next_action",
         "important_errors",
     }
-    interactive_path = Path("hermes/plugin/docket_discord/contracts/interactive.md")
-    triage_path = Path("hermes/plugin/docket_discord/contracts/triage.md")
-    interactive = interactive_path.read_text(encoding="utf-8")
-    triage = triage_path.read_text(encoding="utf-8")
-    assert interactive == render_contract("interactive")
-    assert triage == render_contract("triage")
+    interactive = render_contract("interactive")
+    triage = render_contract("triage")
     assert len(interactive.encode("utf-8")) <= 24 * 1024
     assert len(triage.encode("utf-8")) <= 12 * 1024
     assert f"contract_hash: {contract_hash('interactive')}" in interactive

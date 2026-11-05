@@ -1,5 +1,12 @@
 # Docket documentation
 
+Current requirements live in the root [SPEC.md](../SPEC.md). Procedures and
+verification evidence below implement it; historical requirements are not
+independent current specifications.
+
+* [Native context and local CI](native-context-local-ci.md) — current delta progress,
+  test inventory and contract/cutover evidence.
+
 Start here when operating or changing the deployed stack:
 
 * [Operations runbook](operations-runbook.md) — current clean-runtime diagnosis,
@@ -8,7 +15,7 @@ Start here when operating or changing the deployed stack:
   October 7 request attribution, nonblocking conversation capture, caller roles,
   and development authorization.
 * [Native plugin integration](plugin-integration-verification.md) — OAuth owner
-  enrollment, the foreground-authority boundary and implementation readiness.
+  enrollment, scoped delegated authority and implementation readiness.
 * [Private plugin setup](plugin-setup.md) — Operator Auth0 steps, candidate ingress
   routing and native connection acceptance before cutover.
 * [Interaction correction verification](interaction-correction-verification.md) —
@@ -50,7 +57,7 @@ Start here when operating or changing the deployed stack:
   — fail-closed production writes, paused execution, stale rejection, and the
   deployed pending-card state.
 
-The operations runbook describes the current runtime contract. Milestone and
+The operations runbook describes operational procedures for the current SPEC. Milestone and
 rollout documents retain historical evidence and are not compatibility
 instructions. None of these notes substitutes for private implementation
 provenance under `specs/` and `deltas/` or for migrations. When behavior and

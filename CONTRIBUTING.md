@@ -1,95 +1,67 @@
 # Contributing to Docket
 
-Docket is currently deployed as a credential-bearing, single-operator service.
-GitHub automation proves an artifact is eligible for deployment without receiving
-production credentials. Agents operating this checkout can carry out routine
-releases under the Operator's standing authorization in `AGENTS.md`.
+[SPEC.md](SPEC.md) is the current specification. Use dated forward deltas and
+`deltas/INDEX.md` to propose/adopt changes; reconcile SPEC decisions/history in
+the same change. Older private provenance sources remain ignored and immutable.
+Procedures here implement the SPEC rather than establish another specification.
 
 ## Change workflow
 
-Explicit Operator instructions in the current development conversation authorize
-local delta implementation and repository work. No Discord sign-off message or
-production ledger Decision is required. Preserve historical signed provenance;
-routine publishing, green-CI merges, related deployment and necessary runtime
-configuration also have standing authorization. Preserve deployment safeguards
-and runtime authority; destructive reset/restore and unrelated external actions
-remain outside that authorization.
+Operator development instructions authorize scoped work. Standing release
+authorization includes branches, PRs, locally validated merges and related deploys;
+no Discord, ledger or repeated approval step. Destructive reset/restore and
+unrelated external/provider actions remain outside that authorization.
 
-1. Create a short-lived branch from `main`.
-2. Keep private implementation provenance outside Git: versioned specifications
-   belong under `specs/`, and dated change handoffs belong under `deltas/`.
-   Both directories, along with `.env`, `secrets/local/`, and `.runtime/`, must
-   remain untracked; do not place specifications or deltas under `docs/`.
-3. Run `scripts/docket check`.
-4. Run `scripts/docket compose-smoke` for changes to migrations, dependencies,
-   Compose, health, MCP, authentication, or tool schemas.
-5. Open a pull request and wait for both required CI jobs.
-6. Merge only green source. Deploy on the configured host through
-   `scripts/docket deploy` without a repeated permission step.
+1. Create a short-lived branch and preserve unrelated working-tree changes.
+2. Implement coherent slices and relevant tests/procedures. Review staged diffs.
+3. Run `scripts/docket check` for native behavior, Ruff and strict mypy.
+4. For affected areas use `scripts/docket check --extended provider`, `storage`
+   or `release`. `all` is available for deliberate broad investigation.
+5. Commit completed slices. Run `scripts/docket validate-release` on clean
+   committed source before publishing/merging a release. It runs automatically
+   selected checks from a tracked archive, builds an image and tests that exact
+   artifact on disposable PostgreSQL. Storage changes include migration and
+   focused concurrency checks. No production credentials are used.
+6. Push reviewed source, open/merge its PR after local validation. GitHub Actions
+   is optional manual diagnostics, never a required status wait. History
+   protections remain. A content-identical merge/rebase reuses local evidence.
+7. Synchronize clean `main` with `origin/main`; run `scripts/docket predeploy`
+   then `scripts/docket deploy`. Routine related deployment needs no new approval.
 
-Live Google Calendar and Discord smokes are operator-present verification. They
-must never run in GitHub-hosted CI.
+`scripts/docket verify-release` verifies local evidence for the current tree.
+Evidence in ignored `.runtime/validation/` records tree/source digest, lockfile,
+check-policy/checker identity, successful groups and immutable image digest.
+Changed content/missing checks/different image reject. Do not hand-edit evidence
+or treat a development build as validated. If the image/evidence is missing,
+rerun `validate-release`; a changed commit SHA alone is not invalidation.
 
-## Commit messages
+Documentation/skill iteration needs relevant syntax/link/package checks, without
+an unconditional database rebuild. Producing a deployable image still requires
+its source-bound release validation. External provider acceptance uses explicit
+operator-authorized targets, never synthetic success in production.
 
-Use:
+## Commits
 
-```text
-type(scope): imperative lowercase description
-```
+Use `type(scope): imperative lowercase description`, with types `feat`, `fix`,
+`perf`, `refactor`, `test`, `docs`, `build`, `ci` or `chore`, and precise scopes
+such as `calendar`, `mcp`, `authority`, `ops`, `verification` or `repo`.
+Each commit is coherent and includes necessary tests/docs. Do not rewrite pushed
+history. Use `!` and a `BREAKING CHANGE:` footer for intentional wire breakage.
 
-Accepted types are `feat`, `fix`, `perf`, `refactor`, `test`, `docs`, `build`,
-`ci`, and `chore`. Choose a stable subsystem for the scope, such as `calendar`,
-`discord`, `mcp`, `hermes`, `ops`, or `repo`.
+## Deployment and recovery
 
-Examples:
+The supported path consumes the tested immutable image without rebuilding it.
+It requires clean synchronized main, production settings, current authentication
+and valid local evidence. It retains the prior image, creates a durable drain,
+waits for pre-barrier executions and in-flight work, makes a PostgreSQL backup,
+upgrades schema, recreates Docket and verifies health/schema/OAuth readiness.
+Queued operations/reconciliation/notifications survive. Failed checks release
+the drain without killing active work. Retired gateway containers are stopped
+only after drain/backup; their volumes and historical evidence are preserved.
 
-```text
-feat(calendar): add standalone event proposals
-fix(discord): preserve daily thread membership
-ci(repo): run the isolated Compose smoke
-```
-
-Keep each commit coherent and include its tests and operational documentation.
-Use `!` plus a `BREAKING CHANGE:` footer only for an intentional incompatible
-contract change.
-
-## Deployment boundary
-
-`scripts/docket deploy` deliberately fails unless:
-
-- the worktree is clean and on `main`;
-- `HEAD` exactly matches `origin/main`;
-- CI succeeded for that exact commit;
-- the configured environment is `production`;
-- no provider call, model turn, cron execution, or outbox delivery is currently
-  claimed/in flight.
-
-The command prepares the ignored backup directory for the invoking operator,
-creates a durable drain barrier, waits for pre-barrier execution leases, creates
-a PostgreSQL custom-format backup, retains the previous image under a
-timestamped rollback tag, applies migrations, and replaces Docket and Hermes
-while the restricted Discord ingress remains connected. It then verifies
-Docket health, Alembic head, the Hermes gateway, the pinned plugin version, the
-23-tool MCP registry, the private projection listener, and zero in-flight work.
-Queued Operations, reconciliation work, and unclaimed outbox entries survive
-the restart and do not block it.
-
-For a configured native-only deployment (`DOCKET_DISCORD_ADAPTER_ENABLED=false`),
-the same path retains drain/backup/migration checks, retires the existing drained
-adapter, starts only Docket and checks its OAuth boundary. Hermes, its triage cron,
-Discord ingress and SearXNG are then absent. The Operator selected this target;
-triage inference and scheduling belong to the connected MCP agent. Verify the
-scoped triage/inbox workflow with that client; see [plugin setup](docs/plugin-setup.md).
-
-With the adapter enabled, stable Discord ingress is excluded from normal deployment.
-Deploy ingress-only code with `scripts/docket deploy-ingress`; that path drains
-execution, removes all mutation-authorizing semantic controls, overlaps a
-temporary append-only ingress writer, replaces the primary writer, and
-regenerates exact persisted options before releasing the drain. Do not recreate
-the ingress ad hoc with Compose because that would reopen an undefined Discord
-receipt interval.
-
-An image rollback does not reverse a database migration. Use the backup and the
-migration-specific recovery procedure rather than blindly retagging an older
-image.
+Hermes, SearXNG and Discord gateway deployments/cron are retired. Inference and
+scheduling belong to the connected MCP client. The old one-time destructive
+clean-cutover CLI is retired; its signed artifacts remain historical evidence.
+Use `backup`/`verify-restore` and the migration-specific recovery procedure.
+An image rollback does not reverse a database migration. Never restore/reset
+or edit production rows merely to make a release check pass.

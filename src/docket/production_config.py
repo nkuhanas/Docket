@@ -93,21 +93,6 @@ def configure_database_credentials(
     return password_file
 
 
-def configure_searxng_secret(*, credentials_dir: Path, rotate: bool) -> Path:
-    secret_file = credentials_dir / "searxng_secret"
-    if secret_file.exists() and not rotate:
-        secret = secret_file.read_text(encoding="utf-8").strip()
-        if not _SECRET_PATTERN.fullmatch(secret):
-            raise ProductionConfigError(f"Existing SearXNG secret file is invalid: {secret_file}")
-    else:
-        secret = secrets.token_hex(32)
-
-    credentials_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(credentials_dir, 0o700)
-    _atomic_write(secret_file, f"{secret}\n", 0o600)
-    return secret_file
-
-
 def configure_backup_age_recipient(*, env_file: Path, recipient: str) -> None:
     if not env_file.is_file():
         raise ProductionConfigError(f"Environment file not found: {env_file}")
@@ -152,10 +137,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             credentials_dir=arguments.credentials_dir,
             rotate=arguments.rotate,
         )
-        searxng_secret_file = configure_searxng_secret(
-            credentials_dir=arguments.credentials_dir,
-            rotate=arguments.rotate,
-        )
         if arguments.backup_age_recipient is not None:
             configure_backup_age_recipient(
                 env_file=arguments.env_file,
@@ -165,5 +146,4 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Production credential setup failed: {exc}", file=sys.stderr)
         return 1
     print(f"Production database credentials installed; password stored at {password_file}")
-    print(f"SearXNG service secret installed at {searxng_secret_file}")
     return 0

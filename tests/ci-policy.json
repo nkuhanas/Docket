@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "groups": {
+    "native": [
+      "tests/unit/test_agent_auth.py",
+      "tests/unit/test_plugin_configuration.py",
+      "tests/unit/test_plugin_package.py",
+      "tests/unit/test_webhooks.py",
+      "tests/unit/test_local_ci.py",
+      "tests/integration/test_native_plugin.py",
+      "tests/integration/test_plugin_oauth.py",
+      "tests/integration/test_plugin_notifications.py",
+      "tests/integration/test_triage_inbox.py",
+      "tests/integration/test_calendar_operation_recovery.py"
+    ],
+    "provider": [
+      "tests/unit/test_calendar_provider.py",
+      "tests/unit/test_calendar_snapshot_provider.py",
+      "tests/unit/test_fake_provider.py",
+      "tests/unit/test_gmail_provider.py",
+      "tests/unit/test_google_oauth.py",
+      "tests/integration/test_calendar_outcome_contract.py",
+      "tests/integration/test_calendar_sync_scheduling.py",
+      "tests/integration/test_gmail_ingestion.py"
+    ],
+    "storage": [
+      "tests/integration/test_migrations.py",
+      "tests/integration/test_changeset_assembly.py",
+      "tests/integration/test_sparse_event_patches.py",
+      "tests/integration/test_tracked_context_changesets.py",
+      "tests/integration/test_occurrence_mutations.py",
+      "tests/integration/test_typed_registry.py",
+      "tests/integration/test_temporal_calendar_projection.py",
+      "tests/integration/test_preferences_and_lanes.py"
+    ],
+    "release": [
+      "tests/unit/test_local_ci.py",
+      "tests/unit/test_native_release.py",
+      "tests/unit/test_backups.py",
+      "tests/unit/test_production_config.py",
+      "tests/integration/test_deployment_continuity.py"
+    ]
+  }
+}

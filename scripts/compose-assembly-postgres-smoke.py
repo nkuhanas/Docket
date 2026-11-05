@@ -3267,6 +3267,16 @@ def main() -> None:
         test_notifications_claim_once_and_retain_postgresql_history,
         test_agent_triage_callbacks_serialize_and_inbox_survives_connections,
     )
+    if "--native" in __import__("sys").argv:
+        checks = (
+            test_calendar_sync_skips_locked_targets_and_commits_claim_before_io,
+            test_sparse_occurrence_patches_serialize_and_replay,
+            test_calendar_update_binding_pin_serializes_with_provider_observations,
+            test_authenticated_request_attribution_is_retained,
+            test_oauth_identity_is_retained_in_postgresql,
+            test_notifications_claim_once_and_retain_postgresql_history,
+            test_agent_triage_callbacks_serialize_and_inbox_survives_connections,
+        )
     for check in checks:
         check(factory)
     engine.dispose()

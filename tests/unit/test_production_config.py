@@ -7,7 +7,6 @@ from docket.production_config import (
     ProductionConfigError,
     configure_backup_age_recipient,
     configure_database_credentials,
-    configure_searxng_secret,
 )
 
 
@@ -71,31 +70,6 @@ def test_duplicate_environment_keys_are_rejected(tmp_path) -> None:
             credentials_dir=tmp_path / "secrets" / "local",
             rotate=False,
         )
-
-
-def test_searxng_secret_is_generated_and_reused(tmp_path) -> None:
-    credentials_dir = tmp_path / "secrets" / "local"
-
-    secret_file = configure_searxng_secret(
-        credentials_dir=credentials_dir,
-        rotate=False,
-    )
-    original = secret_file.read_text(encoding="utf-8")
-
-    configure_searxng_secret(credentials_dir=credentials_dir, rotate=False)
-
-    assert len(original.strip()) == 64
-    assert secret_file.read_text(encoding="utf-8") == original
-    assert stat.S_IMODE(secret_file.stat().st_mode) == 0o600
-
-
-def test_invalid_existing_searxng_secret_is_rejected(tmp_path) -> None:
-    credentials_dir = tmp_path / "secrets" / "local"
-    credentials_dir.mkdir(parents=True)
-    (credentials_dir / "searxng_secret").write_text("too-short\n", encoding="utf-8")
-
-    with pytest.raises(ProductionConfigError, match="SearXNG"):
-        configure_searxng_secret(credentials_dir=credentials_dir, rotate=False)
 
 
 def test_backup_recipient_is_public_configuration(tmp_path) -> None:

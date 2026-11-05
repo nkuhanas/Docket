@@ -1,5 +1,9 @@
 # Operations runbook
 
+Current requirements: [SPEC.md](../SPEC.md). Historical gateway/cutover
+sections retain diagnostic evidence; Hermes/SearXNG and their deployment CLI
+are retired. Use the native local-release procedure below.
+
 This runbook describes the clean tracked-context runtime. Historical rollout
 evidence is retained separately in
 [Ontology rollout verification](ontology-rollout-verification.md); retired
@@ -268,6 +272,11 @@ providers, or dependencies additionally require:
 ```bash
 scripts/docket compose-smoke
 ```
+
+Use `scripts/docket check --extended provider|storage|release` for affected
+checks. The native-only smoke supports `--extended` for migration and focused
+PostgreSQL concurrency checks; no gateway/cron/image-preparation rehearsal is
+required. `validate-release` selects the required groups automatically.
 
 The smoke stack uses `.env.example` and `secrets/smoke/`. It must never inherit
 the production `.env` or production credentials.
@@ -986,19 +995,24 @@ checks binding locks and stale ORM observations against PostgreSQL.
 
 ## Deployment and drain
 
-Deployment is distinct from push and requires explicit Operator direction.
+Deployment follows local validation under standing release authorization.
 Normal deployment is:
 
 ```bash
+scripts/docket validate-release
+# Publish/merge the validated tree and synchronize clean main.
 scripts/docket predeploy
 scripts/docket deploy
 ```
 
-`predeploy` requires a clean `main` exactly matching `origin/main`, both GitHub
-CI jobs green for that SHA, production configuration, and safe durable state.
+`predeploy` requires clean `main` exactly matching `origin/main`, current local
+source/policy/lockfile evidence and its immutable tested image, plus production
+configuration. It does not query GitHub Actions. A content-identical merge can
+reuse evidence; changed content or missing checks rejects.
 `deploy` establishes a drain barrier, lets pre-barrier execution leases finish,
 captures later ingress durably for deferred processing, creates a backup,
-upgrades the schema, replaces services, and verifies the result.
+upgrades the schema, activates the tested image without rebuilding, and verifies
+health, schema head and OAuth readiness. Evidence is in `.runtime/validation/`.
 
 Queued durable operations and outbox rows survive restart; only claimed/in-flight
 work blocks the drain. A drain timeout aborts without cancelling active work.
@@ -1059,8 +1073,13 @@ Before cutover, verify that it produced an immutable `utt_`, a
 `production_reset_authorization` `dec_`, and its `aud_`. A checkmark or ordinary
 chat response is not sufficient evidence.
 
-The destructive command is intentionally separate from rehearsal and from the
-Discord authorization:
+**Historical procedure:** the one-time `production-reset`/`readiness-rehearsal`
+CLI is retired. The following records the completed signed cutover, not current
+commands or permission requirements. Current recovery uses verified backups and
+a migration-specific procedure under explicit destructive-action authority.
+
+The historical destructive command was separate from rehearsal and Discord
+authorization:
 
 ```bash
 scripts/docket production-reset \
@@ -1069,7 +1088,7 @@ scripts/docket production-reset \
 ```
 
 Run it only after a separate explicit Operator direction to perform the reset
-and deployment. The command requires synchronized `main`, green GitHub CI, the
+and deployment. The command requires synchronized `main`, valid local release evidence, the
 exact evidence directory, the exact ledger Decision, and the matching old image.
 It verifies everything before drain and again after drain; stops all database
 writers; recomputes the final governance closure with the reset-authorization
