@@ -27,69 +27,36 @@ def definitions():
     return Path("scripts/docket").read_text().split('\ncase "${1:-}" in', 1)[0]
 
 
-@pytest.mark.parametrize(
-    "enabled,gateway,backup_fails",
-    [
-        ("true", "true", False),
-        ("false", "true", False),
-        ("false", "false", False),
-        ("false", "true", True),
-    ],
-)
-def test_deployment_mode_preserves_drain_backup_and_selected_adapter(
-    tmp_path,
-    enabled,
-    gateway,
-    backup_fails,
-):
+@pytest.mark.parametrize("failure", ["none", "drain", "backup", "migration", "health"])
+def test_native_deploy_preserves_backup_barrier_and_tested_artifact(tmp_path, failure):
     scripts = tmp_path / "scripts"
     scripts.mkdir()
-    prepare = scripts / "prepare-hermes-home.sh"
-    prepare.write_text('#!/bin/bash\nprintf "prepare-hermes\\n" >> "$CALL_LOG"\n')
-    prepare.chmod(0o700)
     log = tmp_path / "calls"
     harness = scripts / "harness"
     harness.write_text(
         definitions()
         + r"""
 log() { printf '%s\n' "$*" >> "$CALL_LOG"; }
-env_value() { printf '%s' "$TEST_ADAPTER"; }
-predeploy() { log predeploy; }
-ensure_ingress_credential() { log ingress-credential; }
+predeploy() { log validated-image; export DOCKET_IMAGE=sha256:tested; }
 ensure_attachment_encryption_key() { log encryption-key; }
 git() { printf 'synthetic-revision\n'; }
 docker_engine() { log "docker $*"; }
-build_image() { log build; }
 compose() {
-    log "compose $*"
-    if [[ "$*" == 'ps -q docket' || "$*" == 'ps -q discord-ingress' ||
-          ( "$*" == 'ps -q hermes' && "$TEST_GATEWAY" == true ) ]]; then
-        printf 'existing-container\n'
-    fi
+    log "compose $* image=$DOCKET_IMAGE"
+    if [[ "$*" == 'ps -q docket' ]]; then printf existing; fi
+    if [[ "$*" == *'alembic upgrade'* && "$TEST_FAILURE" == migration ]]; then return 1; fi
 }
 request_database_drain() { log db-drain; printf 'drain_synthetic\n'; }
-request_hermes_drain() { log hermes-drain; }
-wait_for_database_drain() { log db-wait; }
-wait_for_hermes_drain() { log hermes-wait; }
+wait_for_database_drain() { log db-wait; [[ "$TEST_FAILURE" != drain ]]; }
 wait_for_operational_idle() { log idle; }
-wait_for_discord_ingress() { log ingress-wait; }
 backup_database() {
     log backup
-    if [[ "$TEST_BACKUP_FAILS" == true ]]; then return 1; fi
+    [[ "$TEST_FAILURE" != backup ]] || return 1
     printf 'synthetic-backup\n'
 }
-python3() { log quarantine; }
-database_continuity() {
-    log "continuity $*"
-    if [[ "$*" == quiesce-ingress-options ]]; then
-        printf 'legacy projection listener unavailable\n' >&2
-        return 1
-    fi
-}
-wait_for_hermes() { log hermes-ready; }
-gmail_triage_setup() { log triage-setup; }
-postdeploy() { log postdeploy; }
-clear_hermes_drain() { log hermes-clear; }
+retire_gateway_containers() { log retire-gateway; }
+database_continuity() { log "continuity $*"; }
+postdeploy() { log health; [[ "$TEST_FAILURE" != health ]]; }
 deploy
 """
     )
@@ -97,59 +64,24 @@ deploy
         ["bash", str(harness)],
         capture_output=True,
         text=True,
-        env={
-            **os.environ,
-            "CALL_LOG": str(log),
-            "TEST_ADAPTER": enabled,
-            "TEST_GATEWAY": gateway,
-            "TEST_BACKUP_FAILS": str(backup_fails).lower(),
-        },
+        env={**os.environ, "CALL_LOG": str(log), "TEST_FAILURE": failure},
     )
     calls = log.read_text().splitlines()
-    if backup_fails:
+    assert calls.index("validated-image") < calls.index("db-drain") < calls.index("db-wait")
+    recreates = [c for c in calls if "--force-recreate" in c]
+    if failure != "none":
         assert result.returncode != 0
-        assert any(call.startswith("continuity abort") for call in calls)
-        assert "compose stop -t 30 discord-ingress hermes searxng" not in calls
-        assert not any("--force-recreate" in call for call in calls)
+        assert "continuity abort drain_synthetic" in calls
+        assert "continuity release drain_synthetic" not in calls
+        if failure in {"drain", "backup", "migration"}:
+            assert not recreates
         return
     assert result.returncode == 0, result.stderr
-    assert calls.index("db-drain") < calls.index("db-wait") < calls.index("backup")
-    assert calls.index("backup") < calls.index("postdeploy")
-    release = next(i for i, call in enumerate(calls) if call.startswith("continuity release"))
-    assert calls.index("postdeploy") < release
-    if enabled == "false":
-        stop = calls.index("compose stop -t 30 discord-ingress hermes searxng")
-        start = calls.index("compose up -d --no-build --force-recreate docket")
-        assert calls.index("backup") < stop < start < calls.index("postdeploy")
-        assert "continuity quiesce-ingress-options" not in calls
-        assert "prepare-hermes" not in calls and "triage-setup" not in calls
-        assert not any(call.endswith("--force-recreate docket hermes") for call in calls)
-    else:
-        assert "prepare-hermes" in calls and "triage-setup" in calls
-        assert "compose up -d --no-build --force-recreate docket hermes" in calls
-        assert "compose stop -t 30 discord-ingress hermes searxng" not in calls
-
-
-@pytest.mark.parametrize("value,expected", [("", "yes"), ("true", "yes"), ("'false'", "no")])
-def test_legacy_default_and_explicit_native_boolean(tmp_path, value, expected):
-    script = tmp_path / "mode"
-    script.write_text(
-        definitions()
-        + """
-env_value() { printf '%s' "$TEST_ADAPTER"; }
-if discord_adapter_enabled; then printf yes; else printf no; fi
-"""
-    )
-    result = subprocess.run(
-        ["bash", str(script)],
-        capture_output=True,
-        text=True,
-        env={
-            **os.environ,
-            "TEST_ADAPTER": value,
-        },
-    )
-    assert result.returncode == 0 and result.stdout == expected
+    assert calls.index("db-wait") < calls.index("idle") < calls.index("backup")
+    assert calls.index("backup") < calls.index("retire-gateway") < calls.index("health")
+    assert calls.index("health") < calls.index("continuity release drain_synthetic")
+    assert recreates == ["compose up -d --no-build --force-recreate docket image=sha256:tested"]
+    assert not any(c == "build" or "--build " in c for c in calls)
 
 
 def test_missing_shared_key_cannot_replace_retained_encrypted_callbacks(tmp_path):

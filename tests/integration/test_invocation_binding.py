@@ -2,11 +2,9 @@ import asyncio
 import base64
 import hashlib
 import hmac
-import importlib.util
 import json
 import time
 from datetime import UTC, datetime
-from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -155,23 +153,11 @@ def test_invalid_signed_scope_is_terminal_without_dispatch(session_factory, chan
         assert row.trace_ref is None
 
 
-def test_binding_is_hidden_and_plugin_signer_matches_service(session_factory):
+def test_binding_is_hidden_and_service_validates_signed_payload(session_factory):
     with session_factory.begin() as session:
         utterance = _evidence(session)
-    spec = importlib.util.spec_from_file_location(
-        "binding_plugin", Path("hermes/plugin/docket_discord/__init__.py")
-    )
-    plugin = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(plugin)
     payload = _payload(utterance)
-    token = plugin._invocation_binding(
-        {"trace_ref": payload["trace_ref"], "utterance_ref": utterance,
-         **{key: payload[key] for key in (
-             "execution_index", "execution_completion_token", "gateway_instance_ref",
-         )}},
-        {"call_id": payload["call_id"], "ordinal": 1,
-         "tool_name": payload["tool_name"], "received_argument_hash": payload["argument_hash"]},
-    )
+    token = _sign(payload)
     calls = []
     server = _server(calls)
     tool = asyncio.run(server.list_tools())[0]
