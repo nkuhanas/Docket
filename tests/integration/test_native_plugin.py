@@ -560,6 +560,7 @@ async def test_native_work_identity_is_owned_by_the_authenticated_principal(
             assert session.scalar(select(func.count(Item.id))) == 0
             roots = list(session.scalars(select(AuthenticatedRequest)))
             assert len(roots) == 2 and {row.principal_ref for row in roots} == {ref, other_ref}
+            assert len({row.request_key for row in roots}) == 2
         http.headers["Authorization"] = f"Bearer {token}"
         committed = (await client.call_tool("docket_commit_changeset", {
             "work": _work("commit"),
