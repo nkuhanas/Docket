@@ -44,6 +44,7 @@ class Settings(BaseSettings):
         default_factory=list, alias="DOCKET_PLUGIN_OAUTH_CLIENT_IDS"
     )
     plugin_read_scope: str = Field(default="docket.read", alias="DOCKET_PLUGIN_READ_SCOPE")
+    plugin_write_scope: str = Field(default="docket.write", alias="DOCKET_PLUGIN_WRITE_SCOPE")
     plugin_events_scope: str = Field(default="docket.events", alias="DOCKET_PLUGIN_EVENTS_SCOPE")
     plugin_triage_scope: str = Field(default="docket.triage", alias="DOCKET_PLUGIN_TRIAGE_SCOPE")
 
@@ -372,7 +373,8 @@ class Settings(BaseSettings):
                 not value or len(value) > 256 for value in self.plugin_oauth_client_ids
             ):
                 raise ValueError("Plugin requires explicitly allowed OAuth client IDs")
-            scopes = (self.plugin_read_scope, self.plugin_events_scope, self.plugin_triage_scope)
+            scopes = (self.plugin_read_scope, self.plugin_write_scope,
+                      self.plugin_events_scope, self.plugin_triage_scope)
             if any(not value or any(c.isspace() for c in value) for value in scopes) or len(
                 set(scopes)
             ) != len(scopes):

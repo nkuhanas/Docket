@@ -171,13 +171,18 @@ class OAuthVerifier:
                 permissions.add("events")
             if self.settings.plugin_triage_scope in scopes:
                 permissions.add("triage")
-            # A connected OAuth account proves no foreground task identity.
+            if self.settings.plugin_write_scope in scopes:
+                permissions.update({"stage", "commit", "resolve_conflict"})
+            # Explicit owner delegation authorizes this client, including automation.
+            # The interactive role is a capability, not proof of a live user turn.
             return AgentPrincipal(
                 principal_ref=row.ref_id, operator_ref=row.operator_ref,
-                role="triage" if "triage" in permissions else "read_only",
+                role=("interactive" if "stage" in permissions
+                      else "triage" if "triage" in permissions else "read_only"),
                 permissions=frozenset(permissions), integration="oauth",
                 expires_at=datetime.fromtimestamp(claims["exp"], UTC),
                 grant_epoch=row.valid_after,
+                oauth_write_eligible=self.settings.plugin_write_scope in row.scopes,
             )
 
 
@@ -186,7 +191,7 @@ class OAuthPrincipalService:
         self.session, self.settings = session, settings
 
     def approve(
-        self, subject: str, *, events: bool = False, triage: bool = False,
+        self, subject: str, *, events: bool = False, triage: bool = False, write: bool = False,
     ) -> OAuthPrincipal:
         issuer = self.settings.plugin_oauth_issuer
         if not issuer or not subject.strip() or len(subject) > 512 or subject.endswith("@clients"):
@@ -195,6 +200,8 @@ class OAuthPrincipalService:
             OAuthPrincipal.issuer == issuer, OAuthPrincipal.subject == subject,
         ).with_for_update())
         scopes = [self.settings.plugin_read_scope]
+        if write:
+            scopes.append(self.settings.plugin_write_scope)
         if events:
             scopes.append(self.settings.plugin_events_scope)
         if triage:
@@ -213,6 +220,19 @@ class OAuthPrincipalService:
         self.session.flush()
         self._audit(row, "approved")
         return row
+
+    def approve_existing(
+        self, principal_ref: str, *, events: bool = False,
+        triage: bool = False, write: bool = False,
+    ) -> OAuthPrincipal:
+        row = self.session.scalar(select(OAuthPrincipal).where(
+            OAuthPrincipal.ref_id == principal_ref,
+            OAuthPrincipal.issuer == self.settings.plugin_oauth_issuer,
+            OAuthPrincipal.operator_ref == self.settings.canonical_operator_ref,
+        ).with_for_update())
+        if row is None:
+            raise ValueError("Approved principal not found")
+        return self.approve(row.subject, events=events, triage=triage, write=write)
 
     def revoke(self, ref: str) -> OAuthPrincipal:
         row = self.session.scalar(select(OAuthPrincipal).where(

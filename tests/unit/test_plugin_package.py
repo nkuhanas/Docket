@@ -34,7 +34,8 @@ def test_private_plugin_candidate_is_self_contained_and_has_no_credentials():
                     "tokenEndpointAuthMethod": "none",
                 },
                 "baseScopes": [
-                    "docket.read", "docket.events", "docket.triage", "offline_access",
+                    "docket.read", "docket.write", "docket.events", "docket.triage",
+                    "offline_access",
                 ],
             }}},
         },
@@ -49,6 +50,7 @@ def test_skill_and_server_contract_share_the_native_boundary():
     metadata = yaml.safe_load(text.split("---", 2)[1])
     assert metadata["name"] == "docket"
     assert metadata["description"]
-    assert "non-authoritative triage" in text
+    assert "docket.write" in text
+    assert "scheduled and event-triggered" in text
     assert "docket.triage" in text
     assert (PACKAGE / "contracts" / "plugin.md").read_text() == render_contract("plugin")

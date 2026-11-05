@@ -13,7 +13,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from starlette.applications import Starlette
 
-from docket.agent_auth import TRIAGE_WORK_TOOLS, agent_call_context, require_principal
+from docket.agent_auth import (
+    TRIAGE_WORK_TOOLS,
+    AgentCallContext,
+    agent_call_context,
+    require_principal,
+)
 from docket.database import session_scope
 from docket.domain.canonical import sha256_json
 from docket.domain.enums import OutboxStatus
@@ -51,6 +56,7 @@ INTERACTIVE_AUTHORITY_TOOLS = frozenset(
         "docket_commit_changeset",
         "docket_resolve_conflict",
         "docket_request_clarification",
+        "docket_record_context",
     }
 )
 INTERACTIVE_ATTACHMENT_TOOLS = frozenset(
@@ -410,7 +416,9 @@ class ProvenanceMCP(MCPServer[Any]):
     async def list_tools(self) -> list[Tool]:
         registered = await super().list_tools()
         authenticated = agent_call_context.get()
-        if authenticated is not None and authenticated.principal.role == "read_only":
+        if authenticated is not None and authenticated.principal.role != "interactive" and not (
+            self.contract_profile == "plugin" and authenticated.principal.oauth_write_eligible
+        ):
             registered = [
                 tool for tool in registered if tool.name not in INTERACTIVE_AUTHORITY_TOOLS
             ]
@@ -422,6 +430,12 @@ class ProvenanceMCP(MCPServer[Any]):
                     "description": "Trusted gateway correlation envelope; never model supplied.",
                 }
         return registered
+
+    def prepare_agent_call(
+        self, name: str, authenticated: AgentCallContext, arguments: dict[str, Any],
+    ) -> tuple[AgentCallContext, dict[str, Any]]:
+        """Transport-specific correlation after authentication and permission checks."""
+        return authenticated, arguments
 
     @staticmethod
     def _finish_invocation(
@@ -563,6 +577,10 @@ class ProvenanceMCP(MCPServer[Any]):
                         else "triage" if name in TRIAGE_WORK_TOOLS else "read"
                     )
                     require_principal(permission)
+                    authenticated, arguments = self.prepare_agent_call(
+                        name, authenticated, arguments,
+                    )
+                    agent_call_context.set(authenticated)
                     arguments = {
                         key: value for key, value in arguments.items()
                         if key not in INFRASTRUCTURE_ARGUMENT_NAMES
@@ -603,7 +621,11 @@ class ProvenanceMCP(MCPServer[Any]):
                         )
                 except DocketError as exc:
                     admission_error = exc
-                    admission_disposition = "rejected_authority"
+                    admission_disposition = (
+                        "rejected_validation"
+                        if (exc.details or {}).get("category") == "structural_validation"
+                        else "rejected_authority"
+                    )
             elif binding_provided:
                 try:
                     bind_invocation(session, invocation, binding_token, arguments=arguments)

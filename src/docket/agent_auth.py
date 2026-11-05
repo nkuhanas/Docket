@@ -34,6 +34,8 @@ class AgentPrincipal:
     enabled: bool = True
     integration: Literal["service", "oauth"] = "service"
     grant_epoch: int | None = None
+    # Discovery/reauthorization eligibility only; never an execution permission.
+    oauth_write_eligible: bool = False
 
     def require(self, permission: str) -> None:
         expiry = self.expires_at

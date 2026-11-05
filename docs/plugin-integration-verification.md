@@ -1,5 +1,9 @@
 # Native plugin integration
 
+The sections below retain chronological implementation evidence. The November 4
+delegated-write amendment supersedes the earlier foreground-only native gate;
+see the final section and the current [setup guide](plugin-setup.md).
+
 The Operator authorized local implementation of the October 28 primary-plugin
 delta in the development conversation. Production, identity-provider and network
 configuration, plugin installation and live domain actions remain separate steps.
@@ -183,3 +187,28 @@ Discord control edits. Production configuration requires the legacy interactive
 credential disabled, so historical controls cannot execute. The separate rolling
 Discord-ingress deployment still requires quiescence. The release harness covers
 an unavailable projection listener and retained backup/drain/stop ordering.
+
+## November 4 delegated-write amendment
+
+The Operator authorized the approved ChatGPT connection to have full canonical
+capability, including scheduled and event-triggered runs. This explicitly replaces
+the previous foreground-attestation gate for that connection. The service makes
+no claim that OAuth/session metadata proves live human presence. Other service
+credentials and locally restricted OAuth grants remain read-only or triage-only.
+
+The native registry now adds the five existing ChangeSet/clarification/conflict
+tools and optional encrypted reported-context capture, for 30 tools total. A
+signed docket.write scope and matching local owner grant are both necessary.
+Owner-grant locks, enabled state, epoch and write scope are checked inside request
+and canonical transactions; revocation/reapproval cannot be bypassed with an
+already-resolved principal. No new schema or provider mutation bypass is added.
+
+Client work IDs are correlation only. The server binds owned req_ attribution,
+operation idempotency and the exact draft revision observed by an execution.
+Capture failures remain separate from action transactions. Real legacy and modern
+MCP HTTP tests exercise stage/commit, retries, changed-content rejection, missing
+work validation, resumed/stale execution rejection and optional reported capture.
+The isolated native PostgreSQL smoke additionally authenticates a synthetic scoped
+principal, stages and commits an item, verifies its request basis and revokes the
+grant, while starting no Hermes or Discord service. Release and live acceptance
+results are retained in the private implementation handoff.

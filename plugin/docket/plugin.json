@@ -1,18 +1,22 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "docket",
-  "version": "0.1.0",
-  "description": "Read personal operations, triage bounded evidence and receive inbox notifications.",
-  "author": { "name": "Docket" },
+  "version": "0.2.0",
+  "description": "Manage personal operations with delegated writes, bounded triage and inbox notifications.",
+  "author": {
+    "name": "Docket"
+  },
   "extensions": {
     "com.openai": {
       "interface": {
         "displayName": "Docket",
         "shortDescription": "Personal operations",
-        "longDescription": "Read Docket context and run explicitly permitted bounded triage with your chosen agent and model. Receive inbox notifications and inspect delivery history. Canonical writes require foreground authority.",
+        "longDescription": "Manage Docket context and canonical work through separate OAuth grants. Delegate chat, scheduled and event-triggered work to your chosen agent; receive inbox notifications and inspect provider delivery.",
         "developerName": "Docket",
         "category": "Productivity",
-        "capabilities": ["Interactive"],
+        "capabilities": [
+          "Interactive"
+        ],
         "defaultPrompt": "Show my Docket attention and upcoming work.",
         "logo": "./assets/icon.svg",
         "composerIcon": "./assets/icon.svg"

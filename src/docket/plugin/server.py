@@ -1,21 +1,36 @@
-"""An agent-neutral facade with separately permitted reads and intelligence work."""
+"""Native delegated operations, separately scoped from reads, triage and events."""
 
 from copy import deepcopy
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
+from mcp.server.mcpserver import Context
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import Tool, ToolAnnotations
-from pydantic import Field
+from mcp.types import CallToolResult, Tool, ToolAnnotations
+from pydantic import Field, ValidationError
 
-from docket.agent_auth import TRIAGE_WORK_TOOLS, require_principal
+from docket.agent_auth import (
+    TRIAGE_WORK_TOOLS,
+    AgentCallContext,
+    agent_call_context,
+    require_principal,
+)
 from docket.config import Settings
 from docket.database import session_scope
-from docket.mcp.instrumented import INFRASTRUCTURE_ARGUMENT_NAMES, ProvenanceMCP
+from docket.domain.errors import DocketError
+from docket.mcp.instrumented import (
+    INFRASTRUCTURE_ARGUMENT_NAMES,
+    INTERACTIVE_AUTHORITY_TOOLS,
+    INTERACTIVE_CANONICAL_MUTATION_TOOLS,
+    ProvenanceMCP,
+    _validation_issues,
+)
 from docket.mcp.server import mcp
 from docket.mcp.triage_server import triage_mcp
 from docket.plugin.events import EventMethods, advertise_events
+from docket.plugin.work import NativeWork
 from docket.providers.webhooks import WebhookPoster
+from docket.services.agent_requests import AgentRequestService
 from docket.services.notifications import NotificationService
 from docket.tool_contracts import contract_tool_names, render_contract
 
@@ -41,8 +56,23 @@ class PluginMCP(ProvenanceMCP):
         names = contract_tool_names("plugin")
         for info in mcp._tool_manager.list_tools():
             if info.name in names:
-                self.add_tool(info.fn, name=info.name, description=info.description,
-                              annotations=annotations)
+                write = info.name in INTERACTIVE_AUTHORITY_TOOLS
+                description = (info.description or "").replace(
+                    "gateway supplies", "server supplies",
+                )
+                description = description.replace(
+                    "No model arguments or canonical-content payload.",
+                    "Only work correlation; no canonical-content payload or "
+                    "client-selected revision.",
+                )
+                self.add_tool(info.fn, name=info.name, description=description,
+                              annotations=ToolAnnotations(
+                                  read_only_hint=not write,
+                                  destructive_hint=(
+                                      info.name in INTERACTIVE_CANONICAL_MUTATION_TOOLS
+                                  ),
+                                  idempotent_hint=True, open_world_hint=False,
+                              ))
         for info in triage_mcp._tool_manager.list_tools():
             if info.name in TRIAGE_WORK_TOOLS:
                 self.add_tool(info.fn, name=info.name, description=info.description,
@@ -83,6 +113,77 @@ class PluginMCP(ProvenanceMCP):
             with session_scope() as session:
                 return NotificationService(session, self.plugin_settings).get(notification_ref)
 
+        @self.tool(annotations=ToolAnnotations(
+            read_only_hint=False, destructive_hint=False,
+            idempotent_hint=True, open_world_hint=False,
+        ))
+        def docket_record_context(
+            record_key: Annotated[str, Field(min_length=1, max_length=255)],
+            record_kind: Literal["operator_transcript", "agent_response", "source_context"],
+            text: Annotated[str | None, Field(max_length=65536)] = None,
+            gap_code: Annotated[str | None, Field(min_length=1, max_length=128)] = None,
+            request_ref: Annotated[str | None, Field(
+                json_schema_extra={"x-docket-internal": True},
+            )] = None,
+            request_key: Annotated[str | None, Field(
+                json_schema_extra={"x-docket-internal": True},
+            )] = None,
+        ) -> dict[str, Any]:
+            """Optionally archive reported context in its own transaction; never required to act.
+
+            Supply text or a capture gap. Relayed text remains agent-reported, never
+            authenticated verbatim operator evidence. Append corrections with a new record key.
+            """
+            try:
+                if request_ref is None:
+                    raise DocketError(
+                        code="request_context_required", message="Supply work identity.",
+                    )
+                with session_scope() as session:
+                    return AgentRequestService(session).record(
+                        request_ref=request_ref, record_key=record_key, record_kind=record_kind,
+                        text=text, gap_code=gap_code,
+                    )
+            except DocketError as exc:
+                return exc.as_dict()
+
+    def prepare_agent_call(
+        self, name: str, authenticated: AgentCallContext, arguments: dict[str, Any],
+    ) -> tuple[AgentCallContext, dict[str, Any]]:
+        if name not in INTERACTIVE_AUTHORITY_TOOLS:
+            return authenticated, arguments
+        arguments = dict(arguments)
+        try:
+            work = NativeWork.model_validate(arguments.pop("work", None))
+        except ValidationError as exc:
+            raise DocketError(
+                code="invalid_work_identity", message="Supply bounded native work correlation.",
+                details={"category": "structural_validation", "issues": _validation_issues(exc)},
+            ) from exc
+        return work.bind(authenticated.principal), arguments
+
+    async def call_tool(
+        self, name: str, arguments: dict[str, Any], context: Context[Any, Any] | None = None,
+    ) -> CallToolResult:
+        authenticated = agent_call_context.get()
+        result = await super().call_tool(name, arguments, context)
+        if (
+            name in INTERACTIVE_AUTHORITY_TOOLS and authenticated is not None
+            and authenticated.principal.oauth_write_eligible
+            and "stage" not in authenticated.principal.permissions
+            and (result.structured_content or {}).get("error", {}).get("code")
+            == "agent_authority_denied"
+        ):
+            origin = self.plugin_settings.plugin_public_origin.rstrip("/")
+            scopes = (self.plugin_settings.plugin_read_scope + " "
+                      + self.plugin_settings.plugin_write_scope)
+            result.meta = {**(result.meta or {}), "mcp/www_authenticate": [
+                f'Bearer resource_metadata="{origin}/.well-known/oauth-protected-resource", '
+                f'scope="{scopes}", error="insufficient_scope", '
+                'error_description="Authorize delegated Docket writes to continue"',
+            ]}
+        return result
+
     async def list_tools(self) -> list[Tool]:
         tools = await super().list_tools()
         for tool in tools:
@@ -99,6 +200,17 @@ class PluginMCP(ProvenanceMCP):
                     key for key in tool.input_schema["required"] if key not in hidden
                 ]
             scopes = [self.plugin_settings.plugin_read_scope]
+            if tool.name in INTERACTIVE_AUTHORITY_TOOLS:
+                properties["work"] = NativeWork.model_json_schema()
+                tool.input_schema.setdefault("required", []).append("work")
+                scopes.append(self.plugin_settings.plugin_write_scope)
+                tool.description = (
+                    "Use work for opaque request/run/operation identity; it grants no authority. "
+                    "The server binds the owned req_ and exact observed draft. "
+                    + ("Commit takes no mutation payload or revision. "
+                       if tool.name == "docket_commit_changeset" else "")
+                    + (tool.description or "")
+                )
             if tool.name in TRIAGE_WORK_TOOLS:
                 scopes.append(self.plugin_settings.plugin_triage_scope)
             tool.meta = {

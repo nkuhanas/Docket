@@ -87,6 +87,113 @@ def test_triage_requires_local_approval_and_token_scope_and_never_grants_foregro
     ), session_factory).permissions
 
 
+@pytest.mark.parametrize(
+    "approved,scoped", [(False, False), (True, False), (False, True), (True, True)],
+)
+@pytest.mark.parametrize("rfc_profile", [False, True])
+def test_native_write_delegation_requires_both_owner_grant_and_signed_scope(
+    session_factory, oauth, approved, scoped, rfc_profile,
+):
+    from docket.services.agent_requests import AgentRequestService
+
+    settings, verifier, token, _ = oauth
+    with session_factory.begin() as session:
+        ref = OAuthPrincipalService(session, settings).approve(
+            "user-owner", write=approved, events=True, triage=True,
+        ).ref_id
+    scope = "docket.read docket.events docket.triage" + (" docket.write" if scoped else "")
+    claims = {"omit": ("azp",), "client_id": "docket-client"} if rfc_profile else {}
+    principal = verifier.authenticate(token(scope=scope, **claims), session_factory)
+    assert principal.principal_ref == ref
+    assert (principal.role == "interactive") == (approved and scoped)
+    assert principal.permissions >= {"read", "events", "triage"}
+    binding = agent_call_context.set(AgentCallContext(principal))
+    try:
+        if approved and scoped:
+            for permission in ("stage", "commit", "resolve_conflict"):
+                principal.require(permission)
+            with session_factory.begin() as session:
+                root = AgentRequestService(session).admit(request_key="scheduled-run")
+                assert root.principal_ref == ref and root.source_utterance_ref is None
+        else:
+            for permission in ("stage", "commit", "resolve_conflict"):
+                with pytest.raises(DocketError):
+                    principal.require(permission)
+            with pytest.raises(DocketError), session_factory.begin() as session:
+                AgentRequestService(session).admit(request_key="copied-request")
+    finally:
+        agent_call_context.reset(binding)
+
+
+def test_existing_owner_write_upgrade_preserves_identity_and_invalidates_old_tokens(
+    session_factory, oauth,
+):
+    settings, verifier, token, _ = oauth
+    with session_factory.begin() as session:
+        ref = OAuthPrincipalService(session, settings).approve("user-owner").ref_id
+    old = token(scope="docket.read docket.write")
+    assert verifier.authenticate(old, session_factory).role == "read_only"
+    with session_factory.begin() as session:
+        row = OAuthPrincipalService(session, settings).approve_existing(ref, write=True)
+        assert row.ref_id == ref
+        assert row.scopes == ["docket.read", "docket.write"]
+    with pytest.raises(OAuthAuthenticationError) as caught:
+        verifier.authenticate(old, session_factory)
+    assert caught.value.diagnostic == {"reason": "principal_stale"}
+    with pytest.raises(ValueError, match="not found"), session_factory.begin() as session:
+        OAuthPrincipalService(session, settings).approve_existing("prn_unknown", write=True)
+
+
+@pytest.mark.parametrize("change", ["revoke", "remove_write", "new_epoch"])
+def test_native_requests_recheck_the_owner_grant_inside_the_write_transaction(
+    session_factory, oauth, change,
+):
+    from docket.models import AuthenticatedRequest
+    from docket.services.agent_requests import AgentRequestService
+
+    settings, verifier, token, _ = oauth
+    with session_factory.begin() as session:
+        ref = OAuthPrincipalService(session, settings).approve("user-owner", write=True).ref_id
+    principal = verifier.authenticate(token(scope="docket.read docket.write"), session_factory)
+    with session_factory.begin() as session:
+        service = OAuthPrincipalService(session, settings)
+        if change == "revoke":
+            service.revoke(ref)
+        else:
+            service.approve_existing(ref, write=change == "new_epoch")
+    binding = agent_call_context.set(AgentCallContext(principal))
+    try:
+        with pytest.raises(DocketError), session_factory.begin() as session:
+            AgentRequestService(session).admit(request_key="already-authenticated")
+    finally:
+        agent_call_context.reset(binding)
+    with session_factory() as session:
+        assert session.scalar(select(func.count(AuthenticatedRequest.id))) == 0
+
+
+def test_cli_upgrades_an_existing_public_owner_without_exposing_subject(
+    session_factory, oauth, monkeypatch, capsys,
+):
+    from docket.plugin_auth_cli import main
+
+    settings, _, _, _ = oauth
+    with session_factory.begin() as session:
+        ref = OAuthPrincipalService(session, settings).approve("private-owner-subject").ref_id
+    monkeypatch.setattr("docket.plugin_auth_cli.get_settings", lambda: settings)
+    monkeypatch.setattr("docket.plugin_auth_cli.configure_database", lambda _: None)
+    monkeypatch.setattr("docket.plugin_auth_cli.session_scope", session_factory.begin)
+    assert main(["approve", "--principal-ref", ref, "--write", "--events", "--triage",
+                 "--execute"]) == 0
+    output = capsys.readouterr().out
+    receipt = json.loads(output)
+    assert receipt == {"principal_ref": ref, "enabled": True, "scopes": [
+        "docket.read", "docket.write", "docket.events", "docket.triage",
+    ]}
+    assert "private-owner-subject" not in output
+    with session_factory() as session:
+        assert session.scalar(select(func.count(OAuthPrincipal.id))) == 1
+
+
 @pytest.mark.parametrize("claims", [
     {"iss": "https://wrong.example.test/"}, {"aud": "https://aphelion.host"},
     {"sub": "other-user"}, {"azp": "other-client"}, {"exp": 1},
