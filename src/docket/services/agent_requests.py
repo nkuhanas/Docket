@@ -8,15 +8,39 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from docket.agent_auth import require_principal
+from docket.agent_auth import AgentPrincipal, require_principal
 from docket.config import get_settings
 from docket.domain.errors import DocketError
-from docket.models import AuditEvent, AuthenticatedRequest, ConversationRecord, ExecutionLease
+from docket.models import (
+    AuditEvent,
+    AuthenticatedRequest,
+    ConversationRecord,
+    ExecutionLease,
+    OAuthPrincipal,
+)
 
 
 class AgentRequestService:
     def __init__(self, session: Session) -> None:
         self.session = session
+
+    def _principal(self, permission: str) -> AgentPrincipal:
+        principal = require_principal(permission)
+        if principal.integration == "oauth":
+            owner = self.session.scalar(select(OAuthPrincipal).where(
+                OAuthPrincipal.ref_id == principal.principal_ref,
+            ).with_for_update().execution_options(populate_existing=True))
+            if (
+                owner is None or not owner.enabled
+                or owner.operator_ref != principal.operator_ref
+                or owner.valid_after != principal.grant_epoch
+                or get_settings().plugin_write_scope not in owner.scopes
+            ):
+                raise DocketError(
+                    code="agent_authority_denied",
+                    message="The delegated owner write grant is no longer current.",
+                )
+        return principal
 
     def admit(
         self,
@@ -25,7 +49,7 @@ class AgentRequestService:
         conversation_ref: str | None = None,
         source_utterance_ref: str | None = None,
     ) -> AuthenticatedRequest:
-        principal = require_principal("stage")
+        principal = self._principal("stage")
         if not request_key or len(request_key) > 512:
             raise DocketError(
                 code="invalid_request_identity", message="A bounded request identity is required."
@@ -78,7 +102,7 @@ class AgentRequestService:
         allow_committed: bool = False,
         allow_cancelled: bool = False,
     ) -> AuthenticatedRequest:
-        principal = require_principal(permission)
+        principal = self._principal(permission)
         row = self.session.scalar(
             select(AuthenticatedRequest)
             .where(

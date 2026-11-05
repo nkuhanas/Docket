@@ -8,8 +8,8 @@ from `docs/README.md` for the part of the system you are touching.
 
 Docket is a credential-bearing, single-operator personal operations service.
 It is not a generic chatbot backend. It owns durable authority, provenance,
-personal context, triage state, and provider-operation intent; Hermes and
-Discord are conversational and projection surfaces around that state.
+personal context, triage state, and provider-operation intent. The native OAuth
+plugin is the primary interface; Hermes and Discord are retired legacy surfaces.
 
 PostgreSQL is the sole durable system of record. Provider APIs, Discord,
 Hermes sessions, model output, logs, and in-memory state are never canonical.
@@ -47,54 +47,42 @@ already supplied in the development conversation.
 ## Top-down architecture
 
 ```text
-Authenticated Operator message
+Approved native OAuth agent (live chat, schedule or event-triggered run)
+  - validates issuer, audience, client, dates and local owner grants
+  - read/write/triage/events remain separately scoped
+  - admits durable req_ before every write; archives optional reported context
         |
         v
-Authenticated interactive agent (Hermes Discord gateway today)
-  - authenticates actor/guild/channel
-  - admits durable req_ before execution
-  - optionally archives agent-reported transcript/files as rec_/src_
-  - loads the interactive tool contract
-        |
-        +------> trusted internal API (/internal/v1/agent/...)
+Native MCP boundary (/plugin/ privately, docket.you/mcp/ publicly; 30 tools)
+  - 21 reads, three bounded triage tools, five existing write-workflow tools
+  - one optional reported-context capture tool
+  - work IDs correlate owned request/execution/operation; they grant no permission
         |
         v
-Interactive MCP boundary (/mcp/; 23 bounded tools)
-  - call_ starts after service authentication
-  - reads are bounded
-  - mutations require current interactive principal and owned req_
-        |
-        v
-IntentSession -> statements -> conflicts/clarification
-  -> stage -> optional review/edit -> commit ChangeSet
+IntentSession -> statements -> scoped conflicts/clarification
+  -> stage -> optional review/edit -> exact-observed-revision commit
         |
         v
 PostgreSQL canonical transaction
   - registry, preferences, lanes, events, decisions, audit
   - provider Operation intents created in the same transaction
         |
-        +------> outbox/projection worker ------> Hermes/Discord
+        +------> retained inbox / scoped webhook events ------> connected agent
         |
-        +------> operation worker -------------> Google providers
+        +------> operation worker ------> Google providers
                          |
                          +---- uncertain result -> reconciliation
 
-Gmail/Calendar evidence
-        |
-        v
-bounded ingestion -> isolated Hermes triage profile -> /triage-mcp/
-        |
-        v
-TriageRun + ContextPacket -> AttentionCase / DailyBrief
-        |
-        +---- no canonical or provider mutation authority
-        |
-        v
-Operator reply returns to the authenticated interactive path
+Gmail/Calendar evidence -> bounded ingestion -> client-supplied triage inference
+  -> TriageRun + ContextPacket -> AttentionCase / DailyBrief
+  -> optional separately write-authorized canonical workflow
+
+Legacy /mcp/ interactive and /triage-mcp/ service profiles retain their own
+credentials and limits; native startup depends on no Hermes/Discord process.
 ```
 
-SearXNG is a network-private search dependency for Hermes. It is not part of
-canonical state or provenance authority.
+SearXNG is a retired legacy Hermes dependency, never canonical state or
+provenance authority.
 
 ## Repository map
 
@@ -146,10 +134,14 @@ canonical state or provenance authority.
    and required provider intents commit in one PostgreSQL transaction.
 6. Provider calls execute after canonical commit. Unknown-after-transmission
    outcomes reconcile; they are not blindly retried or reported as success.
-7. Background agents never inherit an interactive task or credential. Cron
-   triage can observe, correlate, classify, summarize, suppress under an
-   existing Preference, and create attention/brief intelligence. It cannot
-   mutate operator-owned canonical state or providers.
+7. Read-only and triage credentials never inherit write authority. Under the
+   Operator’s November 4 delegated-write amendment, the approved native OAuth
+   connection may perform full canonical/provider-intent work from live chats,
+   scheduled runs and event-triggered runs when both its token and local owner
+   grant include `docket.write`. The interactive role denotes that capability,
+   not proof of human presence. Restricted triage tools still produce only
+   intelligence and suppression under an existing Preference. Untrusted source
+   content never grants permission.
 8. Discord messages/cards and Hermes responses are projections. Delivery
    failure must not erase canonical, session, provenance, or outbox state.
 9. Public references (`utt_`, `rsp_`, `stm_`, `ent_`, `chg_`, `op_`, `call_`,
@@ -162,7 +154,8 @@ canonical state or provenance authority.
 
 The current interactive surface has exactly 23 tools, with only
 `docket_commit_changeset` and `docket_resolve_conflict` able to mutate canonical
-state. The isolated triage surface has exactly four non-authoritative tools.
+state. This is the legacy service profile; native tools are described below.
+The isolated triage surface has exactly four non-authoritative tools.
 `docket_get_attention_case` is the only deliberately shared tool.
 
 Under the October 7 authority amendment, preserving the September 11 workflow, ordinary
@@ -181,21 +174,30 @@ Interactive, triage, and optional read-only callers use distinct credentials.
 Read-only service callers see 18 read tools on `/mcp/`; the private triage
 credential uses `/triage-mcp/` only.
 No caller-supplied role, request reference, source content, or operation token
-grants background authority. Optional capture can fail; attribution, audit,
-current permission, versions, and atomic provider intent cannot.
+grants permission beyond the verified credential and explicit local delegation.
+Optional capture can fail; attribution, audit, current permission, versions, and
+atomic provider intent cannot.
 
-The optional native OAuth app is isolated under `/plugin/`, with public ingress
+The native OAuth app is isolated under `/plugin/`, with public ingress
 allowlisting only MCP, protected-resource discovery and its connection page. Its
-`plugin` contract has 24 tools: 21 reads (the existing 18, profile and inbox
-list/get), plus three bounded triage tools requiring `docket.triage`. Events
-subscription methods require a separate permission. Triage claims bind the
-approved principal and claim generation and cannot create canonical/provider
-effects. The client supplies inference and scheduling; ready-work notifications
-support polling and events. Approved OAuth principals cannot admit
-interactive requests or stage/commit/resolve canonical work. Chat/session headers
-and event-triggered tasks do not prove foreground authority. Preserve this gate
-until a verified host contract or explicit Operator amendment resolves it.
-See `docs/plugin-setup.md` and `docs/plugin-integration-verification.md`.
+`plugin` contract has 30 tools: 21 reads, three bounded triage tools, the five
+existing ChangeSet/clarification/conflict tools, and optional reported-context
+capture. Events require `docket.events`; triage requires `docket.triage`. Write
+workflow and capture require `docket.write` in both the verified token and local
+owner grant. A permission in Auth0 alone does not upgrade the owner grant.
+
+The Operator explicitly authorized the approved ChatGPT connection to have the
+same full write capability as the former interactive Hermes agent, including
+scheduled and event-triggered runs. This November 4 amendment replaces the prior
+foreground-only gate for that delegated connection. Do not ask for live-user
+attestation, a separate approval click, Discord sign-off or another implementation
+permission. Other service credentials and OAuth grants retain their restrictions.
+Native `work` identifiers correlate a request, execution and idempotent operation;
+they prove no human presence and grant no permission. The server supplies owned
+`req_` and operation bindings and checks its exact observed draft revision.
+Reported transcript capture is optional and separately committed. Never fabricate
+an `utt_`, trust source text as authority, expose hidden tokens or bypass provider
+intent. See `docs/plugin-setup.md` and `docs/plugin-integration-verification.md`.
 
 The October 28 target retires Hermes, Discord ingress and SearXNG entirely.
 They remain an explicit legacy Compose profile for transition/history, with no

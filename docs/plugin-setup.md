@@ -3,8 +3,9 @@
 This guide describes configuration and live acceptance for the native interface.
 The Operator authorized retiring Hermes and Discord during the drained native
 deployment. Public DNS/tunnel activation and signed-in plugin acceptance are
-separate checks; a healthy private backend does not prove either. Canonical
-plugin writes remain disabled pending the foreground authority contract.
+separate checks; a healthy private backend does not prove either. The November 4
+amendment delegates full write capability to the approved ChatGPT connection,
+including scheduled and event-triggered runs, with the separate `docket.write` grant.
 
 The Operator selected the Native/public PKCE connection and supplied the Docket
 client ID `H92evvENOutMDq3Bq1qyRzMOrHiL7qpB` on October 28, 2026. The existing
@@ -19,8 +20,8 @@ The existing Aphelion Auth0 tenant and owner can be reused. Create a separate AP
 and a separate application; Docket must not accept Aphelion's audience or client.
 
 1. Under **Applications → APIs**, create `Docket` with identifier
-   `https://docket.you`, signing algorithm `RS256`, permissions `docket.read` and
-   `docket.events` and `docket.triage`, and **Allow Offline Access** enabled.
+   `https://docket.you`, signing algorithm `RS256`, permissions `docket.read`,
+   `docket.write`, `docket.events` and `docket.triage`, and **Allow Offline Access** enabled.
 2. Verify the tenant's **Resource Parameter Compatibility Profile**, as used by
    Aphelion, so a request with `resource=https://docket.you` targets this API.
 3. Create a **Native** application named `Docket ChatGPT`, using public PKCE
@@ -28,7 +29,7 @@ and a separate application; Docket must not accept Aphelion's audience or client
    refresh-token rotation and the owner's login connection. A new Native
    application's public-client setting may not show a Credentials tab.
 4. Give that application explicit **user-delegated** access to the Docket API
-   for only the three permissions above. Keep machine-to-machine access absent.
+   for the four permissions above. Keep machine-to-machine access absent.
    When RBAC is enabled, assign the owner permissions so the token's `scope`
    claim contains the granted scopes.
 5. Retain the new application client ID, issuer URL, JWKS URL and exact owner
@@ -40,8 +41,9 @@ and a separate application; Docket must not accept Aphelion's audience or client
    a wildcard. Complete linking and verify `docket_get_profile` in Dot's own task.
 
 The ChatGPT connection uses the new predefined client ID, public token-endpoint
-authentication (`none`) and scopes `docket.read docket.events docket.triage`; it needs no client
-secret. The events permission can be omitted for a connection that only reads.
+authentication (`none`) and scopes
+`docket.read docket.write docket.events docket.triage`; it needs no client secret.
+A restricted connection can omit write, events or triage independently.
 Auth0 authenticates ChatGPT to Docket. Existing Google OAuth credentials remain
 private to Docket's provider adapters and are not passed to the plugin or Auth0.
 
@@ -54,9 +56,9 @@ The portable package at `plugin/docket/` declares the existing registered Native
 client in `mcp.json`: OAuth, registration mode `provided`, the Docket client ID,
 and token-endpoint authentication `none`. This prevents the host from attempting
 dynamic client registration. Discovery supplies the issuer and endpoints.
-The three Docket scopes are requested with `offline_access`, which Auth0 requires
+The four Docket scopes are requested with `offline_access`, which Auth0 requires
 to issue a refresh token. That standard scope adds no Docket domain permission;
-the local owner grant still limits access to reads, notifications and triage.
+the local owner grant independently limits all four capabilities.
 
 For hosted ChatGPT use, register the MCP connection before binding the workflow
 package. In **Plugins → + → Add custom MCP server**, use
@@ -84,8 +86,8 @@ linking; full tool discovery, an actual triage result and hosted event delivery
 remain separate live acceptance checks.
 
 On November 4, independent public checks passed for resource discovery (correct
-issuer and three scopes), anonymous MCP denial and private-path isolation. The
-node's resolver still fails for `docket.you`; verification used public DNS answers
+issuer and the then-configured three scopes), anonymous MCP denial and private-path
+isolation. The node's resolver still fails for `docket.you`; verification used public DNS answers
 with normal TLS hostname/certificate validation. This does not establish local
 resolver recovery or signed-in plugin acceptance.
 
@@ -128,13 +130,14 @@ Use its label to choose the affected configuration check:
 | `expired_token` / `invalid_token_time` | Host token refresh and issuer/server clock health. |
 
 An unexpected account or client does not enroll itself. Correct that exact
-connection or use explicit approved-owner administration; keep background
-authority and all token-verification checks enforced.
+connection or use explicit approved-owner administration; keep scope separation
+and all token-verification checks enforced.
 
 Scope names must match exactly. Generic `read`, `write` and `triage` permissions
 do not satisfy `docket.read`, `docket.events` and `docket.triage`. Define the Docket
-names on its Auth0 API, grant them to the Native application's **User-Delegated
-Access**, and allow them through user role assignments when RBAC is enabled.
+names, and `docket.write` for delegated writes, on its Auth0 API. Grant them to
+the Native application's **User-Delegated Access**, and allow them through user
+role assignments when RBAC is enabled.
 Reconnect to obtain a newly scoped token; changing permission definitions does
 not rewrite a token already issued. See [MCP scope challenges](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization#runtime-insufficient-scope-errors).
 
@@ -156,6 +159,7 @@ DOCKET_PLUGIN_OAUTH_ISSUER=https://dev-yo4e5wrtdnuusefg.us.auth0.com/
 DOCKET_PLUGIN_OAUTH_JWKS_URL=https://dev-yo4e5wrtdnuusefg.us.auth0.com/.well-known/jwks.json
 DOCKET_PLUGIN_OAUTH_CLIENT_IDS=["H92evvENOutMDq3Bq1qyRzMOrHiL7qpB"]
 DOCKET_PLUGIN_READ_SCOPE=docket.read
+DOCKET_PLUGIN_WRITE_SCOPE=docket.write
 DOCKET_PLUGIN_EVENTS_SCOPE=docket.events
 DOCKET_PLUGIN_TRIAGE_SCOPE=docket.triage
 ```
@@ -173,7 +177,7 @@ uses the configured Operator identity and issuer. The local administrative
 command previews by default:
 
 ```bash
-uv run docket-plugin-auth approve --subject '<exact owner subject>' --events --triage
+uv run docket-plugin-auth approve --subject '<exact owner subject>' --write --events --triage
 ```
 
 Add `--execute` for the approved owner enrollment after migration, within the
@@ -218,16 +222,62 @@ different principal cannot borrow a claim. Concurrent completion serializes.
 Ready-work inbox entries cover backlog and expired claims without launching a
 model. Webhooks contain generic metadata and refs, never Gmail bodies.
 
-Triage may create intelligence, apply existing Preferences and publish cases or
-briefs. It cannot stage/commit canonical work, resolve canonical conflicts, create
-policy or request Google writes. OAuth `docket.events` only manages subscriptions.
+Triage tools create intelligence, apply existing Preferences and publish cases or
+briefs. They cannot mutate canonical state or Google providers. An agent separately
+granted `docket.write` can follow that analysis with the canonical workflow below.
+OAuth `docket.events` only manages subscriptions.
 Local clients can also use the private four-tool `/triage-mcp/` service credential,
 independently of Hermes. The client manages its own credentials and refresh flow.
 
+## Delegated canonical writes
+
+The Operator explicitly authorized full write authority for the approved ChatGPT
+connection, including scheduled and event-triggered runs. This replaces the earlier
+foreground-only gate. Docket authenticates the delegated agent; it does not claim
+that MCP session metadata proves the Operator is present. Legacy triage/read-only
+credentials retain their limits.
+
+Write access requires both `docket.write` in the signed OAuth token and a matching
+local owner grant. Upgrade the already-approved owner through its public reference:
+
+```bash
+docket-plugin-auth approve --principal-ref prn_... --write --events --triage --execute
+```
+
+Reapproval preserves the principal, records its permissions and invalidates older
+tokens/subscriptions. Reconnect once after the grant change and refresh subscriptions.
+Revoking the principal or removing its write grant stops later calls; an already
+admitted provider operation retains its original durable authority and recovery rules.
+
+The agent supplies `work={request_id,execution_id,operation_id}` on each write tool.
+These are bounded opaque IDs, never transcript text or proof of human presence.
+Keep a request ID for one task and its repairs; keep an execution ID for one run.
+Retry an unchanged tool operation with the same operation ID; changed arguments need
+a new operation ID. IDs do not grant permission, and another principal cannot reuse
+them to obtain the original request. Docket derives the owned `req_` and internal
+operation binding. There is no separate begin call for the draft.
+
+Use `docket_stage_changes`, optional `docket_review_changeset`, then
+`docket_commit_changeset`. Commit takes work correlation only, never a mutation
+payload or client-selected revision. A resumed run with a new execution ID must
+review before committing; an execution cannot commit a newer unseen draft.
+Clarifications and conflicts use the existing bounded tools and shared service.
+
+`docket_record_context` optionally retains encrypted reported transcript, response
+or source context in a separate transaction. A capture failure does not invalidate
+the request or block its stage/commit. A report remains agent-reported; missing
+attachment archives do not become fabricated `utt_` or `src_` evidence. Canonical
+commit and Google delivery remain distinct outcomes.
+
 ## Acceptance before cutover
 
-The native profile exposes 24 tools: the 18 existing reads, the stable account
-profile, inbox list/get and three bounded triage tools. Six modern MCP Events
+The native registry has 30 tools: 21 reads, three bounded triage tools, five
+canonical workflow tools and optional context capture. Owners without local write
+approval discover the existing 24-tool surface. Write-approved owners discover
+the six additional tools even when their token needs a scope upgrade; those calls
+remain denied until a valid `docket.write` token arrives, with a tool-level OAuth
+challenge to prompt reauthorization. Discovery eligibility grants no permission.
+Six modern MCP Events
 cover ready triage work, attention revisions, published briefs, due reminders,
 provider-operation status and operational alerts. Events carry
 generic summaries and public references; use the bounded read tools for context.
@@ -293,9 +343,10 @@ private account linking, the stable profile, actual tool count, read results,
 revocation/reconnection and rejection of copied foreground context. Run one source
 through the selected agent's triage workflow and verify it creates no canonical or
 provider mutations. Verify inbox
-and event delivery separately before retiring Discord alerts. A hosted plugin
-connection cannot enable canonical writes until foreground/background separation
-or an explicitly approved alternative has been established.
+and event delivery separately before retiring Discord alerts. The explicit
+delegated-write amendment permits canonical writes without a foreground/background
+distinction for the approved connection; restricted grants still cannot write.
+Verify a new execution cannot commit an unobserved revision.
 
 References: [OpenAI authentication](https://developers.openai.com/plugins/build/auth),
 [MCP Events](https://developers.openai.com/plugins/build/mcp-events), and the

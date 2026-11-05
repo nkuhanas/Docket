@@ -17,10 +17,13 @@ from test_attention_intelligence import _assert_no_canonical_mutation, _request,
 from docket.agent_auth import TRIAGE_WORK_TOOLS
 from docket.config import get_settings
 from docket.domain.errors import DocketError
-from docket.mcp.instrumented import BINDING_ARGUMENT
+from docket.mcp.instrumented import BINDING_ARGUMENT, INTERACTIVE_AUTHORITY_TOOLS
 from docket.models import (
     AttentionCase,
     AuthenticatedRequest,
+    ConversationRecord,
+    Item,
+    OperatorUtterance,
     OutboxEvent,
     PluginNotification,
     ToolInvocation,
@@ -52,7 +55,7 @@ def linked_plugin(session_factory, request):
     claims = {
         "iss": settings.plugin_oauth_issuer, "sub": "owner", "azp": "native-client",
         "aud": settings.plugin_public_origin, "iat": now, "exp": now + 3600,
-        "scope": "docket.read docket.events docket.triage write commit",
+        "scope": "docket.read docket.write docket.events docket.triage write commit",
     }
 
     def issue_token(**changes):
@@ -61,9 +64,11 @@ def linked_plugin(session_factory, request):
         )
 
     token = issue_token()
+    grants = getattr(request, "param", False)
+    grants = grants if isinstance(grants, dict) else {"triage": grants}
     with session_factory.begin() as session:
         ref = OAuthPrincipalService(session, settings).approve(
-            "owner", events=True, triage=getattr(request, "param", False),
+            "owner", events=True, **grants,
         ).ref_id
     poster = Mock()
     poster.post.side_effect = lambda _url, body, _headers: WebhookResponse(200, json.dumps({
@@ -94,7 +99,9 @@ async def test_linked_plugin_schema_profile_audit_and_no_background_writes(
         ), mode=mode) as client,
     ):
         tools = (await client.list_tools()).tools
-        assert {tool.name for tool in tools} == contract_tool_names("plugin")
+        assert {tool.name for tool in tools} == (
+            contract_tool_names("plugin") - INTERACTIVE_AUTHORITY_TOOLS
+        )
         assert len(tools) == 24
         assert all(
             tool.annotations.read_only_hint is (tool.name not in TRIAGE_WORK_TOOLS)
@@ -349,3 +356,251 @@ async def test_connected_agent_can_triage_without_canonical_or_provider_authorit
         notice = session.scalar(select(PluginNotification))
         assert notice.event_name == "docket.attention.created"
         assert all(row.claimed_by == principal_ref for row in session.scalars(select(TriageRun)))
+
+
+def _native_stage(title="Delegated item", *, scope=True):
+    return {
+        **({"assembly_scope": {
+            "resolved_intent": {"intent": "track the delegated item"},
+            "allowed_mutation_types": ["item_create"], "planned_create_types": ["item"],
+        }} if scope else {}),
+        "patch": {"operations": [{"operation": "action_upsert", "action": {
+            "change_id": "item-1", "mutation_type": "item_create", "action": "create",
+            "object_type": "item", "affected_fields": ["title"],
+            "create_spec": {"title": title, "kind": "test.delegation"},
+        }}]},
+    }
+
+
+def _work(operation, *, request="delegated-task", execution="scheduled-run"):
+    return {"request_id": request, "execution_id": execution, "operation_id": operation}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["legacy", "2026-07-28"])
+@pytest.mark.parametrize("linked_plugin", [{"write": True, "triage": True}], indirect=True)
+async def test_native_delegation_stages_commits_replays_and_optionally_records_context(
+    session_factory, linked_plugin, mode,
+):
+    app, settings, token, ref = linked_plugin
+    async with (
+        app.router.lifespan_context(app),
+        httpx2.AsyncClient(transport=httpx2.ASGITransport(app), headers={
+            "Authorization": f"Bearer {token}",
+        }) as http,
+        Client(streamable_http_client(
+            "https://docket.you/mcp/", http_client=http,
+        ), mode=mode) as client,
+    ):
+        tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+        assert set(tools) == contract_tool_names("plugin") and len(tools) == 30
+        for name in INTERACTIVE_AUTHORITY_TOOLS:
+            tool = tools[name]
+            assert tool.annotations.read_only_hint is False
+            assert "work" in tool.input_schema["required"]
+            assert tool.meta["securitySchemes"][0]["scopes"] == [
+                settings.plugin_read_scope, settings.plugin_write_scope,
+            ]
+            assert not (set(tool.input_schema["properties"]) & {
+                "request_ref", "request_key", "utterance_ref", "assembly_operation_token",
+            })
+        staged_args = {**_native_stage(), "work": _work("stage")}
+        staged = (await client.call_tool("docket_stage_changes", staged_args)).structured_content
+        assert staged["disposition"] == "ready_to_commit", staged
+        replay = (await client.call_tool("docket_stage_changes", staged_args)).structured_content
+        assert replay.get("ok"), replay
+        assert replay["draft_ref"] == staged["draft_ref"]
+        assert replay["current_revision"] == staged["current_revision"]
+        changed = (await client.call_tool("docket_stage_changes", {
+            **_native_stage("Changed content"), "work": _work("stage"),
+        })).structured_content
+        assert changed["error"]["code"] == "stage_idempotency_mismatch"
+        failed_capture = (await client.call_tool("docket_record_context", {
+            "work": _work("capture-invalid"), "record_key": "reported-1",
+            "record_kind": "operator_transcript", "text": "Reported request", "gap_code": "gap",
+        })).structured_content
+        assert failed_capture["error"]["code"] == "invalid_conversation_record"
+        captured = (await client.call_tool("docket_record_context", {
+            "work": _work("capture"), "record_key": "reported-1",
+            "record_kind": "operator_transcript", "text": "Reported request",
+        })).structured_content
+        assert captured["capture_method"] == "agent_reported"
+        committed = (await client.call_tool("docket_commit_changeset", {
+            "work": _work("commit"),
+        })).structured_content
+        assert committed["disposition"] == "committed", committed
+        replay = (await client.call_tool("docket_commit_changeset", {
+            "work": _work("commit"),
+        })).structured_content
+        assert replay["changeset_ref"] == committed["changeset_ref"]
+    with session_factory() as session:
+        assert session.scalar(select(func.count(Item.id))) == 1
+        item = session.scalar(select(Item))
+        root = session.scalar(select(AuthenticatedRequest))
+        assert item.basis_refs == [root.ref_id]
+        assert root.principal_ref == ref and root.state == "committed"
+        assert root.source_utterance_ref is None
+        assert session.scalar(select(func.count(OperatorUtterance.id))) == 0
+        assert session.scalar(select(func.count(ConversationRecord.id))) == 1
+        record = session.scalar(select(ConversationRecord))
+        assert record.capture_method == "agent_reported"
+        assert b"Reported request" not in record.ciphertext
+        calls = list(session.scalars(select(ToolInvocation)))
+        assert len(calls) == 7
+        assert all(call.actor_ref == ref and call.authenticated_request_ref == root.ref_id
+                   for call in calls)
+        assert all(not call.utterance_refs for call in calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+async def test_native_new_and_stale_executions_must_observe_exact_draft_before_commit(
+    session_factory, linked_plugin,
+):
+    app, _, token, _ = linked_plugin
+    async with (
+        app.router.lifespan_context(app),
+        httpx2.AsyncClient(transport=httpx2.ASGITransport(app), headers={
+            "Authorization": f"Bearer {token}",
+        }) as http,
+        Client(streamable_http_client(
+            "https://docket.you/mcp/", http_client=http,
+        ), mode="legacy") as client,
+    ):
+        staged = (await client.call_tool("docket_stage_changes", {
+            **_native_stage(), "work": _work("stage", execution="run-a"),
+        })).structured_content
+        assert staged["disposition"] == "ready_to_commit", staged
+        unobserved = (await client.call_tool("docket_commit_changeset", {
+            "work": _work("commit-unobserved", execution="run-b"),
+        })).structured_content
+        assert unobserved["disposition"] == "draft_revision_conflict", unobserved
+        reviewed = (await client.call_tool("docket_review_changeset", {
+            "work": _work("review", execution="run-b"),
+        })).structured_content
+        assert reviewed["ok"], reviewed
+        revised = (await client.call_tool("docket_stage_changes", {
+            **_native_stage("Corrected item", scope=False),
+            "work": _work("stage", execution="run-b"),
+        })).structured_content
+        assert revised["disposition"] == "ready_to_commit", revised
+        assert revised["current_revision"] == 2
+        stale = (await client.call_tool("docket_commit_changeset", {
+            "work": _work("commit", execution="run-a"),
+        })).structured_content
+        assert stale["disposition"] == "draft_revision_conflict", stale
+        with session_factory() as session:
+            assert session.scalar(select(func.count(Item.id))) == 0
+        committed = (await client.call_tool("docket_commit_changeset", {
+            "work": _work("commit", execution="run-b"),
+        })).structured_content
+        assert committed["disposition"] == "committed", committed
+    with session_factory() as session:
+        assert session.scalar(select(Item.title)) == "Corrected item"
+        assert session.scalar(select(func.count(ConversationRecord.id))) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+async def test_native_write_validation_is_audited_before_any_effect(session_factory, linked_plugin):
+    app, _, token, _ = linked_plugin
+    async with (
+        app.router.lifespan_context(app),
+        httpx2.AsyncClient(transport=httpx2.ASGITransport(app), headers={
+            "Authorization": f"Bearer {token}",
+        }) as http,
+        Client(streamable_http_client(
+            "https://docket.you/mcp/", http_client=http,
+        ), mode="legacy") as client,
+    ):
+        for work in (None, {**_work("commit"), "request_id": "private request text"},
+                     {**_work("commit"), "role": "operator"}):
+            result = (await client.call_tool("docket_commit_changeset", {
+                **({"work": work} if work is not None else {}),
+            })).structured_content
+            assert result["error"]["code"] == "invalid_work_identity", result
+            assert "private request text" not in json.dumps(result)
+    with session_factory() as session:
+        calls = list(session.scalars(select(ToolInvocation)))
+        assert len(calls) == 3 and all(call.domain_state == "rejected" for call in calls)
+        assert session.scalar(select(func.count(AuthenticatedRequest.id))) == 0
+        assert session.scalar(select(func.count(Item.id))) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+async def test_native_work_identity_is_owned_by_the_authenticated_principal(
+    session_factory, linked_plugin,
+):
+    app, settings, token, ref = linked_plugin
+    with session_factory.begin() as session:
+        other_ref = OAuthPrincipalService(session, settings).approve(
+            "other-owner", write=True,
+        ).ref_id
+    other_token = app.state.test_issue_token(sub="other-owner")
+    async with (
+        app.router.lifespan_context(app),
+        httpx2.AsyncClient(transport=httpx2.ASGITransport(app), headers={
+            "Authorization": f"Bearer {token}",
+        }) as http,
+        Client(streamable_http_client(
+            "https://docket.you/mcp/", http_client=http,
+        ), mode="legacy") as client,
+    ):
+        staged = (await client.call_tool("docket_stage_changes", {
+            **_native_stage(), "work": _work("stage"),
+        })).structured_content
+        assert staged["disposition"] == "ready_to_commit", staged
+        http.headers["Authorization"] = f"Bearer {other_token}"
+        borrowed = (await client.call_tool("docket_commit_changeset", {
+            "work": _work("commit"), "request_ref": staged["request_ref"],
+        })).structured_content
+        assert borrowed["ok"] is False, borrowed
+        with session_factory() as session:
+            assert session.scalar(select(func.count(Item.id))) == 0
+            roots = list(session.scalars(select(AuthenticatedRequest)))
+            assert len(roots) == 2 and {row.principal_ref for row in roots} == {ref, other_ref}
+        http.headers["Authorization"] = f"Bearer {token}"
+        committed = (await client.call_tool("docket_commit_changeset", {
+            "work": _work("commit"),
+        })).structured_content
+        assert committed["disposition"] == "committed", committed
+    with session_factory() as session:
+        assert session.scalar(select(func.count(Item.id))) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+async def test_native_write_scope_upgrade_keeps_reads_and_prompts_existing_connection(
+    session_factory, linked_plugin,
+):
+    app, _, granted_token, _ = linked_plugin
+    restricted_token = app.state.test_issue_token(scope="docket.read")
+    async with (
+        app.router.lifespan_context(app),
+        httpx2.AsyncClient(transport=httpx2.ASGITransport(app), headers={
+            "Authorization": f"Bearer {restricted_token}",
+        }) as http,
+        Client(streamable_http_client(
+            "https://docket.you/mcp/", http_client=http,
+        ), mode="legacy") as client,
+    ):
+        assert len((await client.list_tools()).tools) == 30
+        assert (await client.call_tool("docket_get_profile", {})).structured_content["id"]
+        args = {**_native_stage(), "work": _work("stage")}
+        denied = await client.call_tool("docket_stage_changes", args)
+        assert denied.structured_content["error"]["code"] == "agent_authority_denied"
+        challenge = denied.meta["mcp/www_authenticate"][0]
+        assert 'error="insufficient_scope"' in challenge
+        assert 'scope="docket.read docket.write"' in challenge
+        metadata = 'resource_metadata="https://docket.you/.well-known/oauth-protected-resource"'
+        assert metadata in challenge
+        with session_factory() as session:
+            assert session.scalar(select(func.count(AuthenticatedRequest.id))) == 0
+        http.headers["Authorization"] = f"Bearer {granted_token}"
+        staged = (await client.call_tool("docket_stage_changes", args)).structured_content
+        assert staged["disposition"] == "ready_to_commit", staged
+        committed = (await client.call_tool("docket_commit_changeset", {
+            "work": _work("commit"),
+        })).structured_content
+        assert committed["disposition"] == "committed", committed

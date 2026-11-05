@@ -15,6 +15,7 @@
             },
             "baseScopes": [
               "docket.read",
+              "docket.write",
               "docket.events",
               "docket.triage",
               "offline_access"

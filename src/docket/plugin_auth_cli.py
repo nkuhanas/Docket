@@ -13,9 +13,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="docket-plugin-auth")
     commands = parser.add_subparsers(dest="command", required=True)
     approve = commands.add_parser("approve", help="Approve an existing identity-provider user")
-    approve.add_argument(
-        "--subject", required=True, help="Exact provider user subject, never a token"
-    )
+    identity = approve.add_mutually_exclusive_group(required=True)
+    identity.add_argument("--subject", help="Exact provider user subject, never a token")
+    identity.add_argument("--principal-ref", help="Existing approved public principal ref")
+    approve.add_argument("--write", action="store_true")
     approve.add_argument("--events", action="store_true")
     approve.add_argument("--triage", action="store_true")
     approve.add_argument("--execute", action="store_true")
@@ -31,10 +32,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         with session_scope() as session:
             service = OAuthPrincipalService(session, settings)
-            row = (
-                service.approve(arguments.subject, events=arguments.events, triage=arguments.triage)
-                if arguments.command == "approve" else service.revoke(arguments.principal_ref)
-            )
+            if arguments.command == "approve":
+                approve_owner = (
+                    service.approve_existing if arguments.principal_ref else service.approve
+                )
+                row = approve_owner(
+                    arguments.principal_ref or arguments.subject,
+                    events=arguments.events, triage=arguments.triage, write=arguments.write,
+                )
+            else:
+                row = service.revoke(arguments.principal_ref)
             receipt = {"principal_ref": row.ref_id, "enabled": row.enabled, "scopes": row.scopes}
         print(json.dumps(receipt))
         return 0
