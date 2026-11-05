@@ -83,4 +83,28 @@ uses ISO start/end and optional breaks, each with start/end. Work context suppli
 current versions for `docket_update_work_session`; corrections append history.
 Supply only changed fields, use null to clear optional fields, or status="retracted"
 for a logical retraction. Earlier revisions remain readable through history.
-Aggregate/export, timer and financial capabilities remain later milestones.
+Query the reported week with `docket_query_work_sessions`:
+
+```json
+{"date_from":"2026-11-02","date_to":"2026-11-09","group_by":"engagement"}
+```
+
+Totals cover the entire matching set, independently of the bounded items/groups
+pages. They distinguish known quantities, unknown quantity, unique timed coverage,
+overlap, unallocated time and open estimates. Unknown attribution has its own bucket.
+Daily/weekly views never spread an imprecise period evenly across days. Intervals
+that match the period but have no active time remain visible with zero active time.
+
+For a CSV export of that exact report, use its report_cursor:
+
+```json
+{"cursor":"<report-cursor>","format":"csv"}
+```
+
+Concatenate content chunks, passing next_cursor back until it is absent. JSON
+exports use format="json" and the same continuation behavior. Chunks may end
+inside a long record; concatenation preserves every UTF-8 character and field.
+CSV contains total/group/work rows with stable references and reporting basis.
+report_cursor restarts the same retained basis; a fresh query sees later corrections.
+Read authority is sufficient. An export is neither a submitted timesheet nor a
+financial claim or provider operation. Timer commands and finance remain later milestones.

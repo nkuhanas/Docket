@@ -19,10 +19,10 @@ does not invent a payroll/banking integration or require its credentials.
 | Adoption | Single current SPEC, ADR/history and delta index reconciled | Adopted in working source; not activation |
 | C0 catalogue | Shared retraction through existing typed handlers; completion/context aliases; all baseline effects; no larger surviving inputs; cached-client permission/retry preservation | Implemented in source; native/storage checks pass; PostgreSQL/release pending |
 | Conditional consolidation | Rich person/org/Item facets and bounded detail remain reachable; exact recurrence/provider cancellation parity | Retain these four wrappers: generic context lacks the rich facets, and update/cancel use distinct canonical effects; no mandatory count target |
-| P0a domain | Typed owner/versioned Engagement and WorkSession, immutable revisions and normalized segments; additive migration; no forced Item/Event/payer/rate | Canonical handlers and five native context/recording tools implemented and checked; full P0a reporting/query acceptance pending |
-| P0a reporting | Flat interval, duration-only and incomplete recording, sparse audit-preserving correction/retraction; classification/event/mode/location; field-level validation | Recording/correction paths checked through MCP; aggregate/export acceptance pending |
-| P0a queries/export | Full-set daily/weekly/engagement/project totals, unique/overlap/unplaced/unknown coverage, stable bounded JSON/CSV exports independent of page size | Pending |
-| Time math | UTC elapsed/break union, midnight/travel/DST folds, no fabricated bounds or period allocation | Pure math and command integration checked; aggregate/query integration pending |
+| P0a domain | Typed owner/versioned Engagement and WorkSession, immutable revisions and normalized segments; additive migration; no forced Item/Event/payer/rate | Six native recording/context/query tools implemented and checked; tested-image and release acceptance pending |
+| P0a reporting | Flat interval, duration-only and incomplete recording, sparse audit-preserving correction/retraction; classification/event/mode/location; field-level validation | Recording, correction and informal reporting paths checked; full release acceptance pending |
+| P0a queries/export | Full-set daily/weekly/engagement/project totals, unique/overlap/unplaced/unknown coverage, stable bounded JSON/CSV exports independent of page size | Implemented: sealed revision membership, server aggregation, bounded lossless continuation; MCP and PostgreSQL checks pass |
+| Time math | UTC elapsed/break union, midnight/travel/DST folds, no fabricated bounds or period allocation | Pure math, command and aggregate/query integration checked |
 | P0b timers | Retry-stable instant, exact preview, start/pause/resume/stop/switch, restart survival; PostgreSQL single-active and races | Pending |
 | P0b lineage | Atomic split/merge preserves known quantities/gaps/attribution; superseded parents excluded; stale races reject affected operation | Pending |
 | P1a policies | Effective dates, exact rates/currencies, hourly/nonhourly/unpaid distinction, explicit rounding/period/limits; unknown eligibility/estimates remain partial | Pending |
@@ -170,6 +170,67 @@ These are actual `PluginMCP.list_tools()` definitions using synthetic configurat
 including OAuth metadata, annotations and output schemas, measured as compact JSON.
 The native transport tests enforce the same per-tool and gross phase budgets.
 
-Aggregate queries, stable paginated informal exports, timers/lineage, compensation,
-formal claims, settlement and operational views remain pending. No production
-migration/deployment, tested-image acceptance or hosted-plugin refresh is claimed.
+At that checkpoint, aggregate queries/exports and later milestones were still
+pending. The subsequent query slice is recorded below. No production migration,
+tested-image acceptance or hosted-plugin refresh was claimed by that checkpoint.
+
+### Full-set work queries and informal exports
+
+The query/export slice adds `docket_query_work_sessions`, completing the six P0a
+native tool routes in source. Default summaries group by engagement, organization,
+project, local day or local week. Integer-microsecond quantities remain exact;
+hours are display-only. Known reported quantities, time allocable to the query
+period, unallocated quantities, unique timed coverage, overlaps, unknown quantity
+and open-timer as-of estimates are independently visible. An empty history proves
+neither inactivity nor complete coverage. Period-only work is never evenly spread
+across days. A matching session with only break time in the selected window remains
+visible with zero active time.
+
+Migration `20261105b2c3` adds derived, owner/principal-bound report snapshots and
+exact work/engagement revision membership. One SQL INSERT/SELECT captures the
+visible revision set; PostgreSQL seals it against later additions or modification.
+Later corrections or new matching sessions do not enter continuation pages.
+The source window's UTC bounds, IANA reporting zone, cutoff and calculation version
+are retained. Unsupported calculation versions reject rather than silently rebase
+an old report. Reports are read-derived artifacts, not canonical financial claims
+or new authority roots.
+
+PostgreSQL computes totals and interval unions over the full retained set; bounded
+detail pages never determine the total. Daily/week allocation and union calculations
+run in SQL, including multi-year reads. SQLite uses equivalent deterministic test
+functions for its fast fixtures; PostgreSQL remains the storage/math evidence.
+Normal summaries and explicit JSON/CSV exports share the same basis and totals.
+Exports stream content chunks, including lossless fragments of large records,
+within the 16 KiB serialized response limit. report_cursor restarts that same basis
+in another format. No export creates a submission, claim or provider intent.
+
+Verification:
+
+- Three real MCP journeys verify the synthetic 12.5 + 8.0 + 6.5 = 27.0-hour week,
+  full totals across pages, corrections after capture, JSON/CSV agreement, optional
+  classification/location fields, DST/midnight/break unions, unplaced and partial
+  period quantities, zero-active coverage, read-only access, principal isolation,
+  OAuth revocation and long Unicode/quoted/multiline records without truncation.
+- Native gate: 205 cases passed in 21.51 seconds with Ruff and strict mypy.
+  Storage gate: 123 cases passed in 19.64 seconds with Ruff and strict mypy.
+  Subsequent focused report journeys/static checks also pass.
+- Disposable PostgreSQL 16.9 verifies both additive migrations and model parity,
+  empty downgrade/upgrade, actual command/query/export execution, day/week and
+  organization/project totals, a ten-year query, overlap unions, running estimates,
+  zero-active matching records, sealed membership, immutable rows, correction/timer
+  races and refusal to discard populated retained history. It uses no production
+  mounts, credentials or provider effects. The same rehearsal is wired into the
+  extended tested-image smoke; tested-image execution remains a release step.
+- Actual compact MCP discovery: 77 tools and 120,036 bytes. Query input is 1,360
+  bytes; its complete definition is 1,995 bytes. All six P0a definitions total
+  14,378 bytes, below the 20 KiB budget. The largest new input remains 3,494 bytes.
+  Instructions and surviving write schemas have not grown.
+
+Recovery remains additive. Retain the pre-migration backup and matching runtime;
+image rollback does not reverse schema. Populated work report tables cannot be
+downgraded by discarding retained membership. Use a forward repair or separately
+authorized restoration if necessary.
+
+Timers/split/merge, compensation, formal timesheets/claims/invoices, expenses,
+settlement and operational views remain pending. This is source implementation
+evidence, not activation of SPEC 1.1 or completion of the full delta.

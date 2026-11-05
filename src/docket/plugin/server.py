@@ -175,7 +175,7 @@ class PluginMCP(ProvenanceMCP):
                                   details={"field": "operation_id"}) from exc
             return replace(work.bind(authenticated.principal),
                            supplied_argument_names=frozenset(arguments)), arguments
-        return authenticated, arguments
+        return replace(authenticated, supplied_argument_names=frozenset(arguments)), arguments
 
     async def call_tool(
         self, name: str, arguments: dict[str, Any], context: Context[Any, Any] | None = None,

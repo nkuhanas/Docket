@@ -152,6 +152,22 @@ class WorkSessionSpec(WorkMetadata):
         return self
 
 
+class QueryWorkSessions(StrictModel):
+    date_from: date | None = None
+    date_to: date | None = Field(default=None, description="Exclusive; defaults to this week.")
+    timezone: str | None = Field(default=None, max_length=128)
+    engagement_ref: EngagementRef | None = None
+    organization_ref: EntityRef | None = None
+    project_ref: EntityRef | None = None
+    reported_compensation_class: Literal["billable", "paid_work", "unpaid", "unknown"] | None = None
+    include_unplaced: bool = True
+    group_by: Literal["engagement", "organization", "project", "day", "week"] = "engagement"
+    as_of: datetime | None = None
+    format: Literal["summary", "json", "csv"] = "summary"
+    limit: int = Field(default=25, ge=1, le=100)
+    cursor: str | None = Field(default=None, max_length=1024)
+
+
 class GetWorkContext(StrictModel):
     search: str | None = Field(default=None, min_length=1, max_length=128)
     refs: list[
@@ -165,6 +181,10 @@ class GetWorkContext(StrictModel):
 
 
 WORK_TOOL_PURPOSES = {
+    "docket_query_work_sessions": "Summarize actual work over the full matching set. "
+    "JSON/CSV exports share the retained basis; concatenate content chunks in order. "
+    "Reuse report_cursor to restart that basis in another format. "
+    "Unplaced quantities and overlapping time are not verified hours. Read-only; no submission.",
     "docket_get_work_context": "Read work, engagement and attribution choices with versions.",
     "docket_create_engagement": "Record an arrangement without requiring payer or pay terms.",
     "docket_update_engagement": "Correct supplied engagement fields; null clears optional values.",

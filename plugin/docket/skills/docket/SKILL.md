@@ -25,7 +25,18 @@ not establish eligibility or receipt of money. Event links do not establish atte
 Use `docket_update_work_session` for corrections or status="retracted"; null clears
 optional fields. A supplied duration selects duration-only reporting, while supplied
 bounds select interval time. No calendar/provider action follows from logging work.
-The timer, aggregate/export and finance milestones are not yet advertised.
+Use `docket_query_work_sessions` for full-set totals, grouped by engagement,
+organization, project, day or week. date_to is exclusive. Known reported quantities,
+unique timed coverage, overlaps, unallocated quantities and open estimates remain
+separate; these are informal reports without verified pay eligibility. An empty
+report does not establish inactivity or complete coverage.
+
+For JSON or CSV, set format and concatenate returned content chunks in order,
+following next_cursor until absent. Continuation retains its original work revisions,
+period, timezone and calculation basis even after corrections. Use report_cursor to
+restart that same basis in another format; a fresh query observes newer revisions.
+Exports require read authority and create no claim, submission or provider effect.
+The timer-command and finance milestones are not yet advertised.
 
 Use named business tools with ordinary fields. Creating a meeting takes title,
 ISO start/end, timezone and a calendar_ref from context. Docket derives its support

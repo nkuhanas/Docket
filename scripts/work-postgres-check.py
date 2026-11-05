@@ -26,6 +26,8 @@ async def check():
         AuthenticatedRequest,
         Engagement,
         EngagementRevision,
+        WorkReportMember,
+        WorkReportSnapshot,
         WorkSegment,
         WorkSession,
         WorkSessionRevision,
@@ -43,7 +45,15 @@ async def check():
     command.upgrade(config, "head")
     engine = configure_database(settings.database_url)
     factory = get_session_factory()
-    tables = (Engagement, EngagementRevision, WorkSession, WorkSessionRevision, WorkSegment)
+    tables = (
+        Engagement,
+        EngagementRevision,
+        WorkSession,
+        WorkSessionRevision,
+        WorkSegment,
+        WorkReportSnapshot,
+        WorkReportMember,
+    )
     for model in tables:
         columns = {
             column["name"]: column for column in inspect(engine).get_columns(model.__tablename__)
@@ -125,6 +135,184 @@ async def check():
             ).structured_content
             assert proposal.get("change_id"), proposal
             previews.append(proposal["change_id"])
+        report = (
+            await server.call_tool(
+                "docket_query_work_sessions",
+                {
+                    "date_from": "2026-11-02",
+                    "date_to": "2026-11-09",
+                    "limit": 1,
+                },
+            )
+        ).structured_content
+        assert report.get("ok"), report
+        assert report["totals"]["known_reported_us"] == 9_000_000_000
+        report_cursor = report["report_cursor"]
+        from docket.models import Entity
+
+        with factory.begin() as session:
+            organization = Entity(
+                entity_kind="organization",
+                display_name="Synthetic report employer",
+                normalized_name="synthetic report employer",
+                created_by_changeset_ref=logged["changeset_ref"],
+                basis_refs=[],
+            )
+            project = Entity(
+                entity_kind="project",
+                display_name="Synthetic report project",
+                normalized_name="synthetic report project",
+                created_by_changeset_ref=logged["changeset_ref"],
+                basis_refs=[],
+            )
+            session.add_all([organization, project])
+            session.flush()
+            org_ref, project_ref = organization.ref_id, project.ref_id
+        choices = (
+            await server.call_tool(
+                "docket_get_work_context",
+                {
+                    "refs": [org_ref, project_ref],
+                },
+            )
+        ).structured_content
+        arrangement = (
+            await server.call_tool(
+                "docket_create_engagement",
+                {
+                    "context_id": choices["context_id"],
+                    "operation_id": "report-employer-fixture",
+                    "label": "Synthetic report employer",
+                    "organization_ref": org_ref,
+                },
+            )
+        ).structured_content
+        assert arrangement.get("disposition") == "committed", arrangement
+        with factory() as session:
+            eng_ref = session.scalar(select(Engagement.ref_id))
+        choices = (
+            await server.call_tool(
+                "docket_get_work_context",
+                {
+                    "refs": [eng_ref, project_ref],
+                },
+            )
+        ).structured_content
+        intervals = [
+            {
+                "start": "2026-11-01T01:30:00-07:00",
+                "end": "2026-11-01T01:15:00-08:00",
+                "breaks": [
+                    {"start": "2026-11-01T01:50:00-07:00", "end": "2026-11-01T01:00:00-08:00"}
+                ],
+            },
+            {"start": "2026-11-01T01:40:00-07:00", "end": "2026-11-01T01:10:00-08:00"},
+            {"start": "2026-11-01T23:30:00-08:00", "end": "2026-11-02T00:30:00-08:00"},
+        ]
+        for index, fields in enumerate(intervals):
+            result = (
+                await server.call_tool(
+                    "docket_log_work_session",
+                    {
+                        "context_id": choices["context_id"],
+                        "operation_id": f"report-interval-{index}",
+                        "description": f"Synthetic reporting interval {index}",
+                        "engagement_ref": eng_ref,
+                        "project_ref": project_ref,
+                        "timezone": "America/Los_Angeles",
+                        **fields,
+                    },
+                )
+            ).structured_content
+            assert result.get("disposition") == "committed", result
+        for group in ("day", "week", "organization", "project"):
+            result = (
+                await server.call_tool(
+                    "docket_query_work_sessions",
+                    {
+                        "date_from": "2020-01-01",
+                        "date_to": "2030-01-01",
+                        "group_by": group,
+                        "timezone": "America/Los_Angeles",
+                        "organization_ref": org_ref,
+                    },
+                )
+            ).structured_content
+            assert result.get("ok"), result
+            assert result["totals"]["timed_us"] == 125 * 60_000_000, result
+            assert result["totals"]["unique_timed_us"] == 105 * 60_000_000, result
+            assert result["totals"]["overlap_us"] == 20 * 60_000_000
+            if group == "project":
+                assert result["groups"][0]["bucket"] == project_ref
+            if group == "organization":
+                assert result["groups"][0]["bucket"] == org_ref
+        retained_report = result
+        zero = (
+            await server.call_tool(
+                "docket_log_work_session",
+                {
+                    "context_id": choices["context_id"],
+                    "operation_id": "report-break-only-window",
+                    "description": "Synthetic active time outside the selected break day",
+                    "engagement_ref": eng_ref,
+                    "start": "2026-10-30T23:00:00-07:00",
+                    "end": "2026-11-02T01:00:00-08:00",
+                    "breaks": [
+                        {
+                            "start": "2026-10-31T00:00:00-07:00",
+                            "end": "2026-11-02T00:00:00-08:00",
+                        }
+                    ],
+                },
+            )
+        ).structured_content
+        assert zero.get("disposition") == "committed", zero
+        zero = (
+            await server.call_tool(
+                "docket_query_work_sessions",
+                {
+                    "engagement_ref": eng_ref,
+                    "date_from": "2026-10-31",
+                    "date_to": "2026-11-01",
+                    "group_by": "day",
+                    "timezone": "America/Los_Angeles",
+                },
+            )
+        ).structured_content
+        assert zero.get("ok"), zero
+        assert zero["totals"]["session_count"] == 1 and zero["totals"]["known_reported_us"] == 0
+        assert zero["groups"][0]["bucket"] == "no_active_time"
+        for export_format in ("json", "csv"):
+            chunks = []
+            arguments = {
+                "cursor": retained_report["report_cursor"],
+                "format": export_format,
+                "limit": 1,
+            }
+            for _ in range(30):
+                page = (
+                    await server.call_tool("docket_query_work_sessions", arguments)
+                ).structured_content
+                assert page.get("ok") and page["totals"] == retained_report["totals"], page
+                assert (
+                    len(json.dumps(page, ensure_ascii=False, separators=(",", ":")).encode())
+                    <= 16384
+                )
+                chunks.append(page["content"])
+                if not page.get("next_cursor"):
+                    break
+                arguments = {"cursor": page["next_cursor"], "limit": 1}
+            else:
+                raise AssertionError("PostgreSQL work export did not terminate")
+            if export_format == "json":
+                document = json.loads("".join(chunks))
+                assert len(document["entries"]) == 3
+            else:
+                import csv
+                import io
+
+                rows = list(csv.DictReader(io.StringIO("".join(chunks))))
+                assert len([row for row in rows if row["record_type"] == "work"]) == 3
     finally:
         agent_call_context.reset(context_token)
 
@@ -155,7 +343,8 @@ async def check():
     assert sum(result.get("ok") is False for result in corrections) == 1, corrections
     rejected = next(result for result in corrections if result.get("ok") is False)
     assert rejected["error"]["code"] in {
-        "work_version_conflict", "changeset_validation_failed",
+        "work_version_conflict",
+        "changeset_validation_failed",
     }, rejected
     with factory() as session:
         head = session.scalar(select(WorkSession).where(WorkSession.ref_id == canonical_ref))
@@ -172,6 +361,55 @@ async def check():
         assert len(revisions) == 2
         assert revisions[0].outcome is None and revisions[1].outcome
         assert all(row.duration_us == 9_000_000_000 for row in revisions)
+    context_token = agent_call_context.set(AgentCallContext(principal))
+    try:
+        old = (
+            await server.call_tool(
+                "docket_query_work_sessions",
+                {
+                    "cursor": report_cursor,
+                },
+            )
+        ).structured_content
+        assert old["totals"] == report["totals"] and old["items"][0].get("outcome") is None
+    finally:
+        agent_call_context.reset(context_token)
+    with factory() as session:
+        snapshot = session.scalar(select(WorkReportSnapshot))
+        member = session.scalar(
+            select(WorkReportMember).where(WorkReportMember.report_id == snapshot.id)
+        )
+        snapshot_id, member_ref, revision_ref = snapshot.id, member.work_ref, member.revision_ref
+    for statement in (
+        update(WorkReportSnapshot)
+        .where(WorkReportSnapshot.id == snapshot_id)
+        .values(sealed_at=None),
+        delete(WorkReportSnapshot).where(WorkReportSnapshot.id == snapshot_id),
+        update(WorkReportMember)
+        .where(WorkReportMember.report_id == snapshot_id)
+        .values(revision_ref=revision_ref),
+        delete(WorkReportMember).where(WorkReportMember.report_id == snapshot_id),
+    ):
+        try:
+            with factory.begin() as session:
+                session.execute(statement)
+        except DBAPIError as exc:
+            assert "append-only" in str(exc.orig)
+        else:
+            raise AssertionError("PostgreSQL modified a retained report basis")
+    try:
+        with factory.begin() as session:
+            session.execute(
+                WorkReportMember.__table__.insert().values(
+                    report_id=snapshot_id,
+                    work_ref=member_ref,
+                    revision_ref=revision_ref,
+                )
+            )
+    except DBAPIError as exc:
+        assert "open owned snapshot" in str(exc.orig)
+    else:
+        raise AssertionError("PostgreSQL appended to a sealed work report")
     changeset_ref = created["changeset_ref"]
     with factory.begin() as session:
         request_ref = session.scalar(
@@ -274,22 +512,31 @@ async def check():
                 )
                 session.add(timer)
                 session.flush()
+                revision = WorkSessionRevision(
+                    work_ref=timer.ref_id,
+                    revision=1,
+                    lifecycle="running",
+                    superseded=False,
+                    description="Synthetic timer",
+                    time_precision="timer",
+                    duration_us=0,
+                    start_at=datetime.now(UTC),
+                    start_offset_seconds=0,
+                    timezone="America/Los_Angeles",
+                    source_method="timer",
+                    basis_refs=[request_ref],
+                    source_refs=[],
+                    created_by_changeset_ref=changeset_ref,
+                )
+                session.add(revision)
+                session.flush()
                 session.add(
-                    WorkSessionRevision(
-                        work_ref=timer.ref_id,
-                        revision=1,
-                        lifecycle="running",
-                        superseded=False,
-                        description="Synthetic timer",
-                        time_precision="timer",
-                        duration_us=0,
-                        start_at=datetime.now(UTC),
+                    WorkSegment(
+                        revision_id=revision.id,
+                        ordinal=0,
+                        kind="active",
+                        start_at=revision.start_at,
                         start_offset_seconds=0,
-                        timezone="America/Los_Angeles",
-                        source_method="timer",
-                        basis_refs=[request_ref],
-                        source_refs=[],
-                        created_by_changeset_ref=changeset_ref,
                     )
                 )
             return "created"
@@ -299,6 +546,22 @@ async def check():
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         assert sorted(pool.map(start_timer, (1, 2))) == ["conflict", "created"]
+    context_token = agent_call_context.set(AgentCallContext(principal))
+    try:
+        estimated = (
+            await server.call_tool(
+                "docket_query_work_sessions",
+                {
+                    "date_from": "2020-01-01",
+                    "date_to": "2030-01-01",
+                },
+            )
+        ).structured_content
+        assert estimated.get("ok"), estimated
+        assert estimated["totals"]["open_timer_count"] == 1
+        assert estimated["totals"]["estimate_us"] > 0
+    finally:
+        agent_call_context.reset(context_token)
     try:
         command.downgrade(config, "20261104e3f4")
     except RuntimeError as exc:
@@ -312,6 +575,8 @@ async def check():
                 "work_schema_roundtrip": "passed",
                 "canonical_work_retry": "passed",
                 "canonical_correction_race": "passed",
+                "work_report_aggregates_and_exports": "passed",
+                "retained_report_membership": "sealed",
                 "revision_immutability": "passed",
                 "single_primary_timer_race": "passed",
                 "retained_downgrade": "refused",

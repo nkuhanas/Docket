@@ -118,6 +118,7 @@ from docket.models.work import (
     WorkSession,
     WorkSessionRevision,
 )
+from docket.models.work_reports import WorkReportMember, WorkReportSnapshot
 
 __all__ = [
     "Affiliation",
@@ -220,6 +221,8 @@ __all__ = [
     "TriageRun",
     "TriageWindow",
     "TriageWindowMembership",
+    "WorkReportMember",
+    "WorkReportSnapshot",
     "WorkSegment",
     "WorkSession",
     "WorkSessionRevision",

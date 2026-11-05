@@ -17,6 +17,7 @@ class PublicRefDefinition:
 
 
 _DEFINITIONS = (
+    PublicRefDefinition("wrep", "WorkReportSnapshot"),
     PublicRefDefinition("eng", "Engagement"),
     PublicRefDefinition("erev", "EngagementRevision"),
     PublicRefDefinition("work", "WorkSession"),

@@ -10,10 +10,11 @@ from docket.database import session_scope
 from docket.domain.errors import DocketError
 from docket.mcp.instrumented import ProvenanceMCP
 from docket.plugin.business import model_function
-from docket.schemas.work import WORK_TOOL_PURPOSES, GetWorkContext
+from docket.schemas.work import WORK_TOOL_PURPOSES, GetWorkContext, QueryWorkSessions
 from docket.services.business_commands import public_validation_error
 from docket.services.native_context import NativeContextService
 from docket.services.work_commands import WORK_COMMAND_MODELS, WorkCommandService
+from docket.services.work_reports import WorkReportService
 
 WORK_COMMAND_TOOLS = frozenset(WORK_COMMAND_MODELS)
 
@@ -71,6 +72,27 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
         model_function(GetWorkContext, "docket_get_work_context", context),
         name="docket_get_work_context",
         description=WORK_TOOL_PURPOSES["docket_get_work_context"],
+        annotations=ToolAnnotations(
+            read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
+        ),
+    )
+
+    def query(arguments: dict[str, Any]) -> dict[str, Any]:
+        arguments.pop("request_ref", None)
+        arguments.pop("request_key", None)
+        try:
+            public = QueryWorkSessions.model_validate(arguments)
+            with session_scope() as session:
+                return WorkReportService(session, settings).query(public)
+        except ValidationError as exc:
+            return public_validation_error(exc).as_dict()
+        except DocketError as exc:
+            return exc.as_dict()
+
+    server.add_tool(
+        model_function(QueryWorkSessions, "docket_query_work_sessions", query),
+        name="docket_query_work_sessions",
+        description=WORK_TOOL_PURPOSES["docket_query_work_sessions"],
         annotations=ToolAnnotations(
             read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
         ),
