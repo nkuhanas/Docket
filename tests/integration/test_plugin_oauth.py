@@ -11,7 +11,7 @@ from docket.agent_auth import AgentCallContext, agent_call_context
 from docket.config import get_settings
 from docket.domain.errors import DocketError
 from docket.models import AuditEvent, OAuthPrincipal
-from docket.services.oauth import OAuthPrincipalService, OAuthVerifier
+from docket.services.oauth import OAuthAuthenticationError, OAuthPrincipalService, OAuthVerifier
 
 
 @pytest.fixture
@@ -98,6 +98,36 @@ def test_invalid_grants_fail_closed(session_factory, oauth, claims):
         OAuthPrincipalService(session, settings).approve("user-owner")
     with pytest.raises(DocketError):
         verifier.authenticate(token(**claims), session_factory)
+
+
+@pytest.mark.parametrize("claims,diagnostic", [
+    ({"iss": "https://private-issuer.test/"}, {"reason": "invalid_issuer"}),
+    ({"aud": "private-audience"}, {"reason": "invalid_audience"}),
+    ({"azp": "private-client"}, {"reason": "client_not_allowed"}),
+    ({"azp": None}, {"reason": "missing_claim", "missing_claim": "azp"}),
+    ({"sub": "private-subject"}, {"reason": "principal_not_approved"}),
+    ({"scope": "private-scope"}, {"reason": "read_scope_missing"}),
+    ({"exp": 1}, {"reason": "expired_token"}),
+    ({"iat": 9999999999}, {"reason": "invalid_token_time"}),
+    ({"gty": "client-credentials"}, {"reason": "non_user_grant"}),
+])
+def test_oauth_failure_diagnostics_preserve_the_generic_error_without_claim_values(
+    session_factory, oauth, claims, diagnostic,
+):
+    settings, verifier, token, _ = oauth
+    with session_factory.begin() as session:
+        OAuthPrincipalService(session, settings).approve("user-owner")
+    with pytest.raises(OAuthAuthenticationError) as caught:
+        verifier.authenticate(token(**claims), session_factory)
+    assert caught.value.diagnostic == diagnostic
+    public = caught.value.as_dict()
+    assert public["error"]["details"] == {}
+    assert "private-" not in json.dumps(public) + json.dumps(caught.value.diagnostic)
+
+
+def test_unknown_missing_claim_names_are_not_retained():
+    error = OAuthAuthenticationError("missing_claim", missing_claim="private-claim-value")
+    assert error.diagnostic == {"reason": "missing_claim", "missing_claim": "other"}
 
 
 def test_revoke_and_reapprove_preserves_identity_without_reviving_tokens(session_factory, oauth):

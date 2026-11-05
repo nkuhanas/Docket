@@ -5,7 +5,7 @@ import math
 import threading
 import time
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import jwt
@@ -17,11 +17,28 @@ from docket.config import Settings
 from docket.domain.errors import DocketError
 from docket.models import AuditEvent, OAuthPrincipal
 
+OAuthFailureReason = Literal[
+    "credential_missing", "unsupported_token", "signing_keys_unavailable",
+    "signing_key_unknown", "missing_claim", "invalid_signature", "invalid_issuer",
+    "invalid_audience", "expired_token", "invalid_token_time", "invalid_claims",
+    "client_not_allowed", "non_user_grant", "principal_not_approved",
+    "principal_disabled", "principal_stale", "operator_mismatch", "read_scope_missing",
+]
+_REQUIRED_CLAIMS = ("iss", "aud", "sub", "exp", "iat", "azp", "scope")
 
-def _denied() -> DocketError:
-    return DocketError(
-        code="plugin_authentication_required", message="Link an approved Docket account."
-    )
+
+class OAuthAuthenticationError(DocketError):
+    """A generic public error with separate, value-free operational diagnostics."""
+
+    def __init__(self, reason: OAuthFailureReason, *, missing_claim: str | None = None) -> None:
+        super().__init__(
+            code="plugin_authentication_required", message="Link an approved Docket account."
+        )
+        self.diagnostic: dict[str, str] = {"reason": reason}
+        if missing_claim is not None:
+            self.diagnostic["missing_claim"] = (
+                missing_claim if missing_claim in _REQUIRED_CLAIMS else "other"
+            )
 
 
 class OAuthVerifier:
@@ -70,43 +87,56 @@ class OAuthVerifier:
                             keys[key_id] = key
                     self.keys, self.expires = keys, now + 300
                 except (httpx.HTTPError, ValueError, TypeError, KeyError, jwt.PyJWTError) as exc:
-                    raise _denied() from exc
+                    raise OAuthAuthenticationError("signing_keys_unavailable") from exc
             selected = self.keys.get(kid)
             if selected is None or now >= self.expires:
-                raise _denied()
+                raise OAuthAuthenticationError("signing_key_unknown")
             return selected
 
     def verify(self, token: str) -> dict[str, Any]:
         try:
             if not self.settings.plugin_enabled or not 1 <= len(token) <= 16384:
-                raise ValueError("Unavailable OAuth connection")
+                raise OAuthAuthenticationError("unsupported_token")
             header = jwt.get_unverified_header(token)
             kid = header.get("kid")
             if (
                 not isinstance(kid, str) or not 1 <= len(kid) <= 256
                 or header.get("alg") != "RS256" or "jku" in header or "x5u" in header
             ):
-                raise ValueError("Unsupported signing key")
+                raise OAuthAuthenticationError("unsupported_token")
             claims: dict[str, Any] = jwt.decode(
                 token, self._key(kid).key, algorithms=["RS256"],
                 issuer=self.settings.plugin_oauth_issuer,
                 audience=self.settings.plugin_public_origin.rstrip("/"),
-                options={"require": ["iss", "aud", "sub", "exp", "iat", "azp", "scope"]},
+                options={"require": list(_REQUIRED_CLAIMS)},
             )
             if (
                 not isinstance(claims["sub"], str) or not 1 <= len(claims["sub"]) <= 512
                 or not isinstance(claims["scope"], str)
-                or claims["azp"] not in self.settings.plugin_oauth_client_ids
-                or claims.get("gty") == "client-credentials"
-                or claims["sub"].endswith("@clients")
                 or any(type(claims[k]) not in (int, float) or not math.isfinite(claims[k])
                        for k in ("iat", "exp"))
                 or claims["exp"] <= claims["iat"]
             ):
                 raise ValueError("Invalid delegated grant")
+            if claims["azp"] not in self.settings.plugin_oauth_client_ids:
+                raise OAuthAuthenticationError("client_not_allowed")
+            if claims.get("gty") == "client-credentials" or claims["sub"].endswith("@clients"):
+                raise OAuthAuthenticationError("non_user_grant")
             return claims
+        except jwt.MissingRequiredClaimError as exc:
+            raise OAuthAuthenticationError("missing_claim", missing_claim=exc.claim) from exc
+        except jwt.InvalidSignatureError as exc:
+            raise OAuthAuthenticationError("invalid_signature") from exc
+        except jwt.InvalidIssuerError as exc:
+            raise OAuthAuthenticationError("invalid_issuer") from exc
+        except jwt.InvalidAudienceError as exc:
+            raise OAuthAuthenticationError("invalid_audience") from exc
+        except jwt.ExpiredSignatureError as exc:
+            raise OAuthAuthenticationError("expired_token") from exc
+        except (jwt.ImmatureSignatureError, jwt.InvalidIssuedAtError) as exc:
+            raise OAuthAuthenticationError("invalid_token_time") from exc
         except (ValueError, TypeError, KeyError, OverflowError, jwt.PyJWTError) as exc:
-            raise _denied() from exc
+            raise OAuthAuthenticationError("invalid_claims") from exc
 
     def authenticate(self, token: str, factory: sessionmaker[Session]) -> AgentPrincipal:
         claims = self.verify(token)
@@ -114,14 +144,17 @@ class OAuthVerifier:
             row = session.scalar(select(OAuthPrincipal).where(
                 OAuthPrincipal.issuer == claims["iss"], OAuthPrincipal.subject == claims["sub"],
             ))
-            if (
-                row is None or not row.enabled or claims["iat"] < row.valid_after
-                or row.operator_ref != self.settings.canonical_operator_ref
-            ):
-                raise _denied()
+            if row is None:
+                raise OAuthAuthenticationError("principal_not_approved")
+            if not row.enabled:
+                raise OAuthAuthenticationError("principal_disabled")
+            if claims["iat"] < row.valid_after:
+                raise OAuthAuthenticationError("principal_stale")
+            if row.operator_ref != self.settings.canonical_operator_ref:
+                raise OAuthAuthenticationError("operator_mismatch")
             scopes = set(row.scopes) & set(claims["scope"].split())
             if self.settings.plugin_read_scope not in scopes:
-                raise _denied()
+                raise OAuthAuthenticationError("read_scope_missing")
             permissions = {"read"}
             if self.settings.plugin_events_scope in scopes:
                 permissions.add("events")

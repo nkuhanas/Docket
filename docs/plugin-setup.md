@@ -94,6 +94,36 @@ References: [OpenAI registered clients](https://developers.openai.com/plugins/bu
 [OpenAI redirects](https://developers.openai.com/plugins/build/auth#redirect-url),
 and [Auth0 refresh tokens](https://auth0.com/docs/secure/tokens/refresh-tokens/get-refresh-tokens).
 
+## Authentication succeeds but tool discovery fails
+
+The OAuth callback returns to ChatGPT; its authorization code is transient and
+belongs to that host's PKCE flow. Diagnosis needs the displayed error and server
+status, not a pasted callback query or token. A successful identity-provider login
+does not establish that Docket accepted the subsequent access token.
+
+Private runtime logs emit `plugin_authentication_rejected` with a fixed reason
+code. A missing required claim also records its field name from a fixed allowlist.
+The public response remains the same generic `401` and OAuth challenge. No token,
+header, claim value, request body, subject or exception text enters this event.
+Use its label to choose the affected configuration check:
+
+| Reason | Check |
+| --- | --- |
+| `credential_missing` | Authorization forwarding and the host's saved connection. |
+| `signing_keys_unavailable` / `signing_key_unknown` | Configured JWKS reachability and signing-key rotation. |
+| `invalid_signature` / `invalid_issuer` / `invalid_audience` | Exact signing issuer, Docket API resource and audience. |
+| `missing_claim` | The Docket API's token profile and the required field shown. |
+| `client_not_allowed` | The saved host client must be the explicitly configured Docket Native client. |
+| `read_scope_missing` | Requested scopes, the application's user-delegated grant and user RBAC. |
+| `principal_not_approved` | Sign in as the enrolled owner, using the intended Auth0 login connection. |
+| `principal_disabled` / `principal_stale` | Local grant status and a fresh link after reapproval. |
+| `operator_mismatch` | Preserved local Operator binding; never rewrite historical identity to pass login. |
+| `expired_token` / `invalid_token_time` | Host token refresh and issuer/server clock health. |
+
+An unexpected account or client does not enroll itself. Correct that exact
+connection or use explicit approved-owner administration; keep background
+authority and all token-verification checks enforced.
+
 ## Prepared runtime configuration
 
 The selected nonsecret settings are prepared below. Apply them through the
