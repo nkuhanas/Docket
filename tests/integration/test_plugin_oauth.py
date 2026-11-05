@@ -33,7 +33,7 @@ def oauth(session_factory):
 
     verifier = OAuthVerifier(settings, httpx.Client(transport=httpx.MockTransport(keys)))
 
-    def token(**changes):
+    def token(*, omit=(), **changes):
         now = int(time.time())
         claims = {
             "iss": settings.plugin_oauth_issuer, "aud": settings.plugin_public_origin,
@@ -41,6 +41,8 @@ def oauth(session_factory):
             "scope": "docket.read docket.events write commit",
         }
         claims.update(changes)
+        for name in omit:
+            claims.pop(name, None)
         return jwt.encode(claims, key, algorithm="RS256", headers={"kid": "signing-key"})
 
     return settings, verifier, token, requests
@@ -104,7 +106,7 @@ def test_invalid_grants_fail_closed(session_factory, oauth, claims):
     ({"iss": "https://private-issuer.test/"}, {"reason": "invalid_issuer"}),
     ({"aud": "private-audience"}, {"reason": "invalid_audience"}),
     ({"azp": "private-client"}, {"reason": "client_not_allowed"}),
-    ({"azp": None}, {"reason": "missing_claim", "missing_claim": "azp"}),
+    ({"scope": None}, {"reason": "missing_claim", "missing_claim": "scope"}),
     ({"sub": "private-subject"}, {"reason": "principal_not_approved"}),
     ({"scope": "private-scope"}, {"reason": "read_scope_missing"}),
     ({"exp": 1}, {"reason": "expired_token"}),
@@ -128,6 +130,51 @@ def test_oauth_failure_diagnostics_preserve_the_generic_error_without_claim_valu
 def test_unknown_missing_claim_names_are_not_retained():
     error = OAuthAuthenticationError("missing_claim", missing_claim="private-claim-value")
     assert error.diagnostic == {"reason": "missing_claim", "missing_claim": "other"}
+
+
+@pytest.mark.parametrize("claims", [
+    {},
+    {"omit": ("azp",), "client_id": "docket-client"},
+    {"client_id": "docket-client"},
+])
+def test_signed_client_profiles_preserve_the_same_owner_and_authority(
+    session_factory, oauth, claims,
+):
+    settings, verifier, token, _ = oauth
+    with session_factory.begin() as session:
+        ref = OAuthPrincipalService(session, settings).approve("user-owner", triage=True).ref_id
+    principal = verifier.authenticate(token(scope="docket.read docket.triage", **claims),
+                                      session_factory)
+    assert principal.principal_ref == ref
+    assert principal.role == "triage" and principal.permissions == {"read", "triage"}
+    for permission in ("stage", "commit", "resolve_conflict"):
+        with pytest.raises(DocketError):
+            principal.require(permission)
+
+
+@pytest.mark.parametrize("claims,reason", [
+    ({"omit": ("azp",)}, "client_identity_missing"),
+    ({"client_id": "other-client"}, "client_identity_conflict"),
+    ({"azp": "other-client", "client_id": "docket-client"}, "client_identity_conflict"),
+    ({"azp": None, "client_id": "docket-client"}, "invalid_claims"),
+    ({"omit": ("azp",), "client_id": []}, "invalid_claims"),
+    ({"omit": ("azp",), "client_id": "other-client"}, "client_not_allowed"),
+    ({"omit": ("azp",), "client_id": "docket-client", "sub": "other-user"},
+     "principal_not_approved"),
+    ({"omit": ("azp",), "client_id": "docket-client", "sub": "machine@clients"},
+     "non_user_grant"),
+    ({"omit": ("azp",), "client_id": "docket-client", "gty": "client-credentials"},
+     "non_user_grant"),
+])
+def test_signed_client_profiles_reject_conflicts_and_unapproved_callers(
+    session_factory, oauth, claims, reason,
+):
+    settings, verifier, token, _ = oauth
+    with session_factory.begin() as session:
+        OAuthPrincipalService(session, settings).approve("user-owner")
+    with pytest.raises(OAuthAuthenticationError) as caught:
+        verifier.authenticate(token(**claims), session_factory)
+    assert caught.value.diagnostic == {"reason": reason}
 
 
 def test_revoke_and_reapprove_preserves_identity_without_reviving_tokens(session_factory, oauth):

@@ -103,6 +103,10 @@ does not establish that Docket accepted the subsequent access token.
 
 Private runtime logs emit `plugin_authentication_rejected` with a fixed reason
 code. A missing required claim also records its field name from a fixed allowlist.
+The verifier accepts Auth0's signed `azp` client claim and the RFC 9068 signed
+`client_id` claim. At least one is required; both must agree when present, and
+the value must match the configured client allowlist. Neither format bypasses
+the approved-owner or scope checks. See [Auth0 token profiles](https://auth0.com/docs/secure/tokens/access-tokens/access-token-profiles).
 The public response remains the same generic `401` and OAuth challenge. No token,
 header, claim value, request body, subject or exception text enters this event.
 Use its label to choose the affected configuration check:
@@ -114,6 +118,7 @@ Use its label to choose the affected configuration check:
 | `invalid_signature` / `invalid_issuer` / `invalid_audience` | Exact signing issuer, Docket API resource and audience. |
 | `missing_claim` | The Docket API's token profile and the required field shown. |
 | `client_not_allowed` | The saved host client must be the explicitly configured Docket Native client. |
+| `client_identity_missing` / `client_identity_conflict` | A signed client identity is required and both supported claims must agree. |
 | `read_scope_missing` | Requested scopes, the application's user-delegated grant and user RBAC. |
 | `principal_not_approved` | Sign in as the enrolled owner, using the intended Auth0 login connection. |
 | `principal_disabled` / `principal_stale` | Local grant status and a fresh link after reapproval. |
