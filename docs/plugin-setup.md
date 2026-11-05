@@ -1,3 +1,8 @@
+> Current requirements are in [SPEC.md](../SPEC.md). Hermes/SearXNG source and
+> gateway tooling are removed. Native startup also omits their internal callback
+> routes; local inference and scheduled clients use scoped MCP. Historical
+> gateway deployment instructions below are retained evidence.
+
 # Private Docket plugin setup
 
 This guide describes configuration and live acceptance for the native interface.

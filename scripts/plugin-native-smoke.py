@@ -55,6 +55,14 @@ async def check() -> None:
         assert metadata.status_code == 200
         assert metadata.json()["resource"] == "https://docket.you"
         assert (await http.post("http://docket:8000/plugin/mcp/", json={})).status_code == 401
+        for path in ("/internal/v1/operator-utterances", "/internal/v1/agent/requests",
+                     "/internal/v1/provenance/history"):
+            response = await http.post(
+                "http://docket:8000" + path, json={},
+                headers={"Authorization": "Bearer invalid-retired-credential"},
+            )
+            assert response.status_code == 404
+
         assert (await http.get("http://docket:8000/plugin/triage-mcp/")).status_code == 404
         tools = await plugin_app.state.mcp.list_tools()
         assert {tool.name for tool in tools} == contract_tool_names("plugin")
