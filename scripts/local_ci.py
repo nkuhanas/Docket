@@ -167,6 +167,9 @@ def validate(root: Path = ROOT) -> None:
     image_tag = "docket-verified:" + current["tree"]
     with tempfile.TemporaryDirectory(prefix="docket-validation-") as temporary:
         snapshot = Path(temporary)
+        # The archive contains only tracked source and synthetic fixtures. The
+        # non-root smoke container must traverse its read-only source mount.
+        snapshot.chmod(0o755)
         with tarfile.open(fileobj=io.BytesIO(archive)) as source:
             source.extractall(snapshot, filter="data")
         run(["bash", "scripts/docket", "_check-groups", *groups], cwd=snapshot)
