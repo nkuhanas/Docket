@@ -31,6 +31,8 @@ from docket.models import (
     Decision,
     DeferredIngress,
     DrainBarrier,
+    Engagement,
+    EngagementRevision,
     Entity,
     Fact,
     GatewayLifetime,
@@ -60,6 +62,8 @@ from docket.models import (
     TemporalCalendarProjection,
     ToolInvocation,
     TriageRun,
+    WorkSession,
+    WorkSessionRevision,
 )
 from docket.services.changeset_delivery import ChangeSetDeliveryService
 from docket.services.source_identities import (
@@ -76,6 +80,10 @@ AUDIT_OUTPUT_BYTES = 64 * 1024
 MAX_TEXT_CHUNK_BYTES = 32 * 1024
 
 _PREFIX_MODELS: dict[str, tuple[str, type[Any], str]] = {
+    "eng": ("engagement", Engagement, "created_at"),
+    "erev": ("engagement_revision", EngagementRevision, "created_at"),
+    "work": ("work_session", WorkSession, "created_at"),
+    "wrev": ("work_session_revision", WorkSessionRevision, "created_at"),
     "req": ("authenticated_request", AuthenticatedRequest, "admitted_at"),
     "rec": ("conversation_record", ConversationRecord, "recorded_at"),
     "utt": ("operator_utterance", OperatorUtterance, "recorded_at"),
@@ -197,6 +205,28 @@ class HistoryService:
 
     def _summary(self, object_type: str, item: Any) -> dict[str, Any]:
         base: dict[str, Any] = {"ref": item.ref_id, "type": object_type}
+        if isinstance(item, Engagement | WorkSession):
+            from docket.services.work_attribution import WorkAttributionService
+
+            WorkAttributionService(self.session).head(type(item), item.ref_id)
+            return {**base, "version": item.version,
+                    "created_by_changeset_ref": item.created_by_changeset_ref,
+                    "created_at": _iso(item.created_at),
+                    "state": WorkAttributionService(self.session).view(item)}
+        if isinstance(item, EngagementRevision | WorkSessionRevision):
+            from docket.services.work_attribution import WorkAttributionService
+
+            parent = item.engagement_ref if isinstance(item, EngagementRevision) else item.work_ref
+            WorkAttributionService(self.session).head(
+                Engagement if isinstance(item, EngagementRevision) else WorkSession, parent,
+            )
+            return {**base, "parent_ref": parent, "revision": item.revision,
+                    "description": getattr(item, "description", getattr(item, "label", ""))[:160],
+                    **({"duration_us": item.duration_us, "time_precision": item.time_precision,
+                        "status": item.lifecycle} if isinstance(item, WorkSessionRevision) else {}),
+                    "basis_refs": item.basis_refs,
+                    "created_by_changeset_ref": item.created_by_changeset_ref,
+                    "created_at": _iso(item.created_at)}
         if isinstance(item, AuthenticatedRequest):
             captures = list(self.session.scalars(select(ConversationRecord).where(
                 ConversationRecord.request_ref == item.ref_id,
@@ -876,6 +906,17 @@ class HistoryService:
             if isinstance(item, InterpretedStatement):
                 entry["value_json"] = item.value_json
                 entry["interpretation_json"] = item.interpretation_json
+            elif isinstance(item, EngagementRevision | WorkSessionRevision):
+                from docket.schemas.work import EngagementSpec
+                from docket.services.work_attribution import WorkAttributionService
+
+                entry["state"] = (
+                    WorkAttributionService(self.session).revision_spec(item).model_dump(
+                        mode="json", exclude_none=True,
+                    ) if isinstance(item, WorkSessionRevision) else EngagementSpec.model_validate({
+                        key: getattr(item, key) for key in EngagementSpec.model_fields
+                    }).model_dump(mode="json", exclude_none=True)
+                )
             elif isinstance(item, Decision):
                 entry["payload_json"] = item.payload_json
             elif isinstance(item, RuntimeLogEntry):
@@ -1004,6 +1045,20 @@ class HistoryService:
                 continue
             time_column = getattr(model, time_field)
             statement: Select[Any] = select(model)
+            if model in {Engagement, WorkSession, EngagementRevision, WorkSessionRevision}:
+                from docket.services.work_attribution import read_operator
+
+                owner = read_operator()
+                if model in {Engagement, WorkSession}:
+                    statement = statement.where(model.operator_ref == owner)
+                elif model is EngagementRevision:
+                    statement = statement.join(
+                        Engagement, Engagement.ref_id == model.engagement_ref,
+                    )
+                    statement = statement.where(Engagement.operator_ref == owner)
+                else:
+                    statement = statement.join(WorkSession, WorkSession.ref_id == model.work_ref)
+                    statement = statement.where(WorkSession.operator_ref == owner)
             if conversation_ref is not None:
                 statement = statement.where(model.conversation_ref == conversation_ref)
             if tool_name is not None:

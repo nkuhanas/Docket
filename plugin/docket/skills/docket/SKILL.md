@@ -16,6 +16,17 @@ context; refresh affected targets after they change. Packets state freshness and
 coverage. Missing observations do not prove an appointment is absent. The inbox
 is retained notification history, not the complete inventory of historical work.
 
+For actual work, use `docket_get_work_context` (optional engagement search or selected
+refs), then `docket_log_work_session`. Supply ISO start/end with offsets, or positive
+duration_minutes with work_date or a reporting period; incomplete reports are valid.
+Unknown attribution can remain attribution_label. Create an engagement only when
+useful; payer and compensation terms are optional. Reported billable/paid_work does
+not establish eligibility or receipt of money. Event links do not establish attendance.
+Use `docket_update_work_session` for corrections or status="retracted"; null clears
+optional fields. A supplied duration selects duration-only reporting, while supplied
+bounds select interval time. No calendar/provider action follows from logging work.
+The timer, aggregate/export and finance milestones are not yet advertised.
+
 Use named business tools with ordinary fields. Creating a meeting takes title,
 ISO start/end, timezone and a calendar_ref from context. Docket derives its support
 records, authenticated request, versions and atomic canonical/provider intent.

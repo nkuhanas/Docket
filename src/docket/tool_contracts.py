@@ -7,8 +7,9 @@ from collections.abc import Mapping
 from typing import Literal, TypedDict
 
 from docket.schemas.business import BUSINESS_DEFINITIONS, PLUGIN_COMPATIBILITY_TOOLS
+from docket.schemas.work import WORK_TOOL_PURPOSES
 
-CONTRACT_VERSION = "docket-tools-2026-11-05-v52"
+CONTRACT_VERSION = "docket-tools-2026-11-05-v53"
 ContractProfile = Literal["interactive", "triage", "plugin"]
 
 
@@ -367,6 +368,7 @@ _native_business_entries: tuple[ToolContractEntry, ...] = tuple({
     ("docket_create_task", "Create a task with optional priority and due time."),
     ("docket_update_task", "Update supplied task fields and observed due time."),
     ("docket_retract_record", "Retract a selected supported record through its domain handler."),
+    *WORK_TOOL_PURPOSES.items(),
     *((definition.tool_name,
        f"{definition.action.capitalize()} {definition.object_type} with ordinary business fields.")
       for definition in BUSINESS_DEFINITIONS

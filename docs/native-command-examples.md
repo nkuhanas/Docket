@@ -67,3 +67,20 @@ delivery. Optional `docket_record_context` capture is independent of these comma
 Other named domain tools use ordinary fields from their actual MCP schemas. See
 [the complete capability disposition](native-capabilities.md). Historical saved
 requests/revisions remain available through bounded owner-scoped recovery reads.
+
+Work recording is implemented in the current source; its release is still pending.
+For “log three hours of billable Example engineering yesterday,” read
+`docket_get_work_context(search="Example")`, then use the configured date/timezone
+and a known engagement_ref if available. An unresolved arrangement may remain a label:
+
+```json
+{"context_id":"<work-context>","operation_id":"example-work-1","description":"Engineering investigation","attribution_label":"Example","work_date":"2026-11-04","duration_minutes":180,"reported_compensation_class":"billable"}
+```
+
+This records performed work without creating a calendar event or assuming a payer,
+rate or payment. Unknown quantity is valid: omit duration and bounds. Exact work
+uses ISO start/end and optional breaks, each with start/end. Work context supplies
+current versions for `docket_update_work_session`; corrections append history.
+Supply only changed fields, use null to clear optional fields, or status="retracted"
+for a logical retraction. Earlier revisions remain readable through history.
+Aggregate/export, timer and financial capabilities remain later milestones.

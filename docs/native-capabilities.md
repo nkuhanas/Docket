@@ -1,7 +1,7 @@
 # Native capability disposition
 
 Generated from current canonical definitions and their native public routes.
-All 47 canonical mutation variants have an advertised route.
+All 51 canonical mutation variants have an advertised route.
 
 | Internal effect | Native business tool |
 | --- | --- |
@@ -52,6 +52,10 @@ All 47 canonical mutation variants have an advertised route.
 | `canonical_event_cancel` | `docket_cancel_event` |
 | `task_create` | `docket_create_task` |
 | `task_modify` | `docket_update_task` |
+| `engagement_create` | `docket_create_engagement` |
+| `engagement_modify` | `docket_update_engagement` |
+| `work_session_create` | `docket_log_work_session` |
+| `work_session_modify` | `docket_update_work_session` |
 
 Shared retraction dispatches the existing typed handler from the target reference.
 Identity unbinding and Calendar cancellation retain their distinct domain semantics.

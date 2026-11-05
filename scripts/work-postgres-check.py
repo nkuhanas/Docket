@@ -1,4 +1,4 @@
-"""Synthetic work-storage migration, immutability and uniqueness evidence."""
+"""Synthetic work migration, canonical commands, immutability and race evidence."""
 
 import asyncio
 import json
@@ -80,8 +80,98 @@ async def check():
             )
         ).structured_content
         assert created.get("disposition") == "committed", created
+        packet = (await server.call_tool("docket_get_work_context", {})).structured_content
+        logged_arguments = {
+            "context_id": packet["context_id"],
+            "operation_id": "canonical-work-fixture",
+            "description": "Synthetic performed work",
+            "duration_minutes": 150,
+            "work_date": "2026-11-05",
+            "reported_compensation_class": "billable",
+            "attribution_label": "Synthetic unconfigured arrangement",
+        }
+        logged = (
+            await server.call_tool("docket_log_work_session", logged_arguments)
+        ).structured_content
+        assert logged.get("disposition") == "committed", logged
+        replay = (
+            await server.call_tool("docket_log_work_session", logged_arguments)
+        ).structured_content
+        assert replay["replayed"] and replay["changeset_ref"] == logged["changeset_ref"]
+        with factory() as session:
+            canonical_ref = session.scalar(select(WorkSession.ref_id))
+        packet = (
+            await server.call_tool(
+                "docket_get_work_context",
+                {
+                    "refs": [canonical_ref],
+                },
+            )
+        ).structured_content
+        assert packet["objects"][0]["state"]["duration_us"] == 9_000_000_000
+        previews = []
+        for index in (1, 2):
+            proposal = (
+                await server.call_tool(
+                    "docket_update_work_session",
+                    {
+                        "context_id": packet["context_id"],
+                        "operation_id": f"racing-work-{index}",
+                        "work_ref": canonical_ref,
+                        "outcome": f"Synthetic correction {index}",
+                        "preview": True,
+                    },
+                )
+            ).structured_content
+            assert proposal.get("change_id"), proposal
+            previews.append(proposal["change_id"])
     finally:
         agent_call_context.reset(context_token)
+
+    correction_barrier = Barrier(2)
+
+    def apply_correction(change_id):
+        async def invoke():
+            token = agent_call_context.set(AgentCallContext(principal))
+            try:
+                endpoint = PluginMCP(settings)
+                correction_barrier.wait(timeout=10)
+                return (
+                    await endpoint.call_tool(
+                        "docket_apply_change",
+                        {
+                            "change_id": change_id,
+                        },
+                    )
+                ).structured_content
+            finally:
+                agent_call_context.reset(token)
+
+        return asyncio.run(invoke())
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        corrections = list(pool.map(apply_correction, previews))
+    assert sum(result.get("disposition") == "committed" for result in corrections) == 1, corrections
+    assert sum(result.get("ok") is False for result in corrections) == 1, corrections
+    rejected = next(result for result in corrections if result.get("ok") is False)
+    assert rejected["error"]["code"] in {
+        "work_version_conflict", "changeset_validation_failed",
+    }, rejected
+    with factory() as session:
+        head = session.scalar(select(WorkSession).where(WorkSession.ref_id == canonical_ref))
+        assert head.version == 2
+        revisions = list(
+            session.scalars(
+                select(WorkSessionRevision)
+                .where(
+                    WorkSessionRevision.work_ref == canonical_ref,
+                )
+                .order_by(WorkSessionRevision.revision)
+            )
+        )
+        assert len(revisions) == 2
+        assert revisions[0].outcome is None and revisions[1].outcome
+        assert all(row.duration_us == 9_000_000_000 for row in revisions)
     changeset_ref = created["changeset_ref"]
     with factory.begin() as session:
         request_ref = session.scalar(
@@ -220,6 +310,8 @@ async def check():
         json.dumps(
             {
                 "work_schema_roundtrip": "passed",
+                "canonical_work_retry": "passed",
+                "canonical_correction_race": "passed",
                 "revision_immutability": "passed",
                 "single_primary_timer_race": "passed",
                 "retained_downgrade": "refused",

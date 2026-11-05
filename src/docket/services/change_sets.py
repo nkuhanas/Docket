@@ -222,6 +222,8 @@ _GROUP_TYPES: dict[str, frozenset[str]] = {
     "event_changes": frozenset({"canonical_event"}),
     "tracked_context_changes": frozenset(
         {
+            "engagement",
+            "work_session",
             "item",
             "temporal_binding",
             "task",
@@ -233,6 +235,8 @@ _GROUP_TYPES: dict[str, frozenset[str]] = {
 }
 
 _OBJECT_PREFIXES: dict[str, str] = {
+    "engagement": "eng",
+    "work_session": "work",
     "entity": "ent",
     "identity_handle": "idn",
     "identity_binding": "idn",

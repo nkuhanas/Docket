@@ -158,6 +158,10 @@ SPECIAL_TOOL_BY_MUTATION = {
     "canonical_event_cancel": "docket_cancel_event",
     "task_create": "docket_create_task",
     "task_modify": "docket_update_task",
+    "engagement_create": "docket_create_engagement",
+    "engagement_modify": "docket_update_engagement",
+    "work_session_create": "docket_log_work_session",
+    "work_session_modify": "docket_update_work_session",
 }
 SPECIAL_MUTATIONS = frozenset(SPECIAL_TOOL_BY_MUTATION)
 BUSINESS_DEFINITIONS = tuple(

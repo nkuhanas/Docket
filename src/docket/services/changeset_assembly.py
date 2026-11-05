@@ -109,6 +109,8 @@ _GROUP_FOR_OBJECT_TYPE = {
     "task": "tracked_context_changes",
     "temporal_calendar_projection": "tracked_context_changes",
     "reminder_plan": "tracked_context_changes",
+    "engagement": "tracked_context_changes",
+    "work_session": "tracked_context_changes",
     "attention_case_resolution": "resolution_changes",
 }
 

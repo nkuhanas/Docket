@@ -52,6 +52,7 @@ from docket.schemas.tracked_context import (
     TemporalCalendarProjectionInput,
     TemporalCalendarProjectionPatchInput,
 )
+from docket.schemas.work import EngagementRef, EngagementSpec, WorkRef, WorkSessionSpec
 
 UtteranceRef = Annotated[str, Field(pattern=r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")]
 RequestRef = Annotated[str, Field(pattern=r"^req_[0-9A-HJKMNP-TV-Z]{26}$")]
@@ -561,6 +562,42 @@ def mutation_input_json(
 
     retain(value, result, patch=preserve_explicit_nulls)
     return result
+
+
+class EngagementCreate(MutationBase):
+    mutation_type: Literal["engagement_create"] = "engagement_create"
+    action: Literal["create"]
+    object_type: Literal["engagement"]
+    object_ref: None = None
+    create_spec: EngagementSpec
+    payload: None = None
+
+
+class EngagementModify(MutationBase):
+    mutation_type: Literal["engagement_modify"] = "engagement_modify"
+    action: Literal["update"]
+    object_type: Literal["engagement"]
+    object_ref: EngagementRef
+    create_spec: None = None
+    payload: EngagementSpec
+
+
+class WorkSessionCreate(MutationBase):
+    mutation_type: Literal["work_session_create"] = "work_session_create"
+    action: Literal["create"]
+    object_type: Literal["work_session"]
+    object_ref: None = None
+    create_spec: WorkSessionSpec
+    payload: None = None
+
+
+class WorkSessionModify(MutationBase):
+    mutation_type: Literal["work_session_modify"] = "work_session_modify"
+    action: Literal["update"]
+    object_type: Literal["work_session"]
+    object_ref: WorkRef
+    create_spec: None = None
+    payload: WorkSessionSpec
 
 
 class ItemCreate(MutationBase):
@@ -1077,7 +1114,11 @@ type LaneMutation = (
 )
 type EventMutation = CanonicalEventCreate | CanonicalEventModify | CanonicalEventCancel
 type TrackedContextMutation = (
-    ItemCreate
+    EngagementCreate
+    | EngagementModify
+    | WorkSessionCreate
+    | WorkSessionModify
+    | ItemCreate
     | ItemModify
     | ItemRetract
     | TemporalBindingCreate
@@ -1095,7 +1136,11 @@ type TrackedContextMutation = (
     | ReminderPlanRetract
 )
 type CanonicalMutation = (
-    EntityCreate
+    EngagementCreate
+    | EngagementModify
+    | WorkSessionCreate
+    | WorkSessionModify
+    | EntityCreate
     | EntityModify
     | EntityRetract
     | IdentityHandleCreate

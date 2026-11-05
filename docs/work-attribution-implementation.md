@@ -18,11 +18,11 @@ does not invent a payroll/banking integration or require its credentials.
 | --- | --- | --- |
 | Adoption | Single current SPEC, ADR/history and delta index reconciled | Adopted in working source; not activation |
 | C0 catalogue | Shared retraction through existing typed handlers; completion/context aliases; all baseline effects; no larger surviving inputs; cached-client permission/retry preservation | Implemented in source; native/storage checks pass; PostgreSQL/release pending |
-| Conditional consolidation | Rich person/org/Item facets and bounded detail remain reachable; exact recurrence/provider cancellation parity | Pending equivalence review |
-| P0a domain | Typed owner/versioned Engagement and WorkSession, immutable revisions and normalized segments; additive migration; no forced Item/Event/payer/rate | Storage/time foundation checked; canonical handler and MCP integration pending |
-| P0a reporting | Flat interval, duration-only and incomplete recording, sparse audit-preserving correction/retraction; classification/event/mode/location; field-level validation | Pending |
+| Conditional consolidation | Rich person/org/Item facets and bounded detail remain reachable; exact recurrence/provider cancellation parity | Retain these four wrappers: generic context lacks the rich facets, and update/cancel use distinct canonical effects; no mandatory count target |
+| P0a domain | Typed owner/versioned Engagement and WorkSession, immutable revisions and normalized segments; additive migration; no forced Item/Event/payer/rate | Canonical handlers and five native context/recording tools implemented and checked; full P0a reporting/query acceptance pending |
+| P0a reporting | Flat interval, duration-only and incomplete recording, sparse audit-preserving correction/retraction; classification/event/mode/location; field-level validation | Recording/correction paths checked through MCP; aggregate/export acceptance pending |
 | P0a queries/export | Full-set daily/weekly/engagement/project totals, unique/overlap/unplaced/unknown coverage, stable bounded JSON/CSV exports independent of page size | Pending |
-| Time math | UTC elapsed/break union, midnight/travel/DST folds, no fabricated bounds or period allocation | Pure normalization verified; command/query integration pending |
+| Time math | UTC elapsed/break union, midnight/travel/DST folds, no fabricated bounds or period allocation | Pure math and command integration checked; aggregate/query integration pending |
 | P0b timers | Retry-stable instant, exact preview, start/pause/resume/stop/switch, restart survival; PostgreSQL single-active and races | Pending |
 | P0b lineage | Atomic split/merge preserves known quantities/gaps/attribution; superseded parents excluded; stale races reject affected operation | Pending |
 | P1a policies | Effective dates, exact rates/currencies, hourly/nonhourly/unpaid distinction, explicit rounding/period/limits; unknown eligibility/estimates remain partial | Pending |
@@ -34,7 +34,7 @@ does not invent a payroll/banking integration or require its credentials.
 | P2 operations | Source-grounded workload/capacity/interval unions, outcomes/professional history, explicit assumptions/coverage and suggested omissions without invented performed work | Pending |
 | P2 follow-up | Typed work/finance reminder/case/event subjects, bounded exception reconciliation, retained inbox, suppression/preferences and client scheduling | Pending |
 | Optional visibility | Explicit correlated actual-time Calendar projection, no duplicate editable time/accounting or default provider effect | Pending |
-| Authority/provenance | OAuth/current local grant, req_/call_, owner isolation/revocation, full approved automation, restricted triage, optional honest capture and sensitive-log protection | Pending new-domain evidence |
+| Authority/provenance | OAuth/current local grant, req_/call_, owner isolation/revocation, full approved automation, restricted triage, optional honest capture and sensitive-log protection | New commands enforce write admission and retain req_/call_ roots; read-only rejection checked; complete new-domain isolation/revocation/privacy acceptance pending |
 | Contracts/host | Actual schemas and budgets, first-valid-attempt MCP journeys, generated reference/skill, same registered plugin identity and actual advertised capabilities | Pending |
 | Storage/operations | Fresh/populated PostgreSQL migrations, constraints/locking/races, protected history and migration-specific recovery | Initial work schema round-trip/immutability/uniqueness verified on PostgreSQL; full release pending |
 | Release | Local gate/affected groups, clean-source tested image, reviewed PR/merge, synchronized source, drain/idle/backup/migration/postdeploy and host evidence | Pending |
@@ -113,6 +113,63 @@ forward repair or separately authorized backup restoration when necessary. Never
 delete work rows to make a rollback/release check pass.
 
 No work-session commands, finance capabilities, production migrations or host
-refresh are claimed by this foundation checkpoint. The next slice must connect
-typed canonical effects, provenance/history/context and flat logging/correction/
-query/export tools through the existing atomic engine.
+refresh were claimed by that foundation checkpoint. The subsequent slice below
+connects canonical effects, provenance/history/context and flat recording commands.
+
+### Native recording and corrections
+
+Five new tools are implemented in source: work context, log/update work, and
+create/update engagement. They compile typed effects into the existing immutable
+ChangeSet/proposal engine. Corrections append revisions and retain earlier time,
+attribution and request roots; context holds optimistic versions. PostgreSQL row
+locks recheck the head version before any revision/head update.
+
+Work can be reported with interval/break inputs, positive minutes, or unknown
+quantity. An unresolved arrangement may remain a label. Reported billability,
+event/place links and location/mode remain independent optional fields. Recording
+work creates no support Item, calendar Event or provider operation. Supplied bounds
+replace prior unbounded date/period placement internally; ordinary corrections do
+not require the client to reconstruct that cleanup. Explicit conflicting inputs
+still receive business-field errors.
+
+Context supports engagement-label search and selected work/attribution references.
+It exposes compact state, revision references, coverage and allowed actions; exact
+past revisions are readable through the existing history tool. Cached old aliases,
+existing schemas and full approved native automation authority are preserved.
+
+- Actual MCP journeys cover first-attempt recording, DST/breaks, duration-only and
+  unknown time, billability, engagement correction, exact preview/apply, unchanged
+  retry, sparse null clearing, stale-version rejection, logical retraction, old
+  revision inspection, public-field errors and read-only write rejection.
+- Native gate: 202 cases passed in 18.80 seconds, with Ruff and strict mypy.
+  Storage cases: 123 passed in 19.52
+  seconds after preserving configured-owner scope for internal historical readers.
+  The final Ruff and strict mypy checks passed after a test-line formatting fix.
+  These measurements are local synthetic fixtures, not a release receipt.
+- Disposable PostgreSQL 16.9 verified canonical duration logging/retry and two
+  simultaneous exact corrections: one commits, the other rejects on version
+  preconditions, with exactly one new retained revision. Fresh/empty migration
+  round-trip, direct-SQL immutability, primary-timer uniqueness and refusal to
+  downgrade retained work history also passed.
+
+Actual source discovery has 76 tools (the consolidated 71 plus these five), with
+routes for 51 canonical effects (the original 47 plus four typed work/engagement
+effects). Compact UTF-8 discovery is 118,040 bytes; input schemas total 78,629
+bytes. The largest existing/new input remains 3,508 bytes, and global instructions
+remain 1,643 bytes. The five new complete definitions total 12,383 bytes:
+
+| New tool | Input bytes | Complete definition bytes |
+| --- | ---: | ---: |
+| Work context | 295 | 703 |
+| Create engagement | 1,380 | 1,805 |
+| Update engagement | 1,531 | 1,961 |
+| Log work | 3,281 | 3,852 |
+| Update work | 3,494 | 4,062 |
+
+These are actual `PluginMCP.list_tools()` definitions using synthetic configuration,
+including OAuth metadata, annotations and output schemas, measured as compact JSON.
+The native transport tests enforce the same per-tool and gross phase budgets.
+
+Aggregate queries, stable paginated informal exports, timers/lineage, compensation,
+formal claims, settlement and operational views remain pending. No production
+migration/deployment, tested-image acceptance or hosted-plugin refresh is claimed.

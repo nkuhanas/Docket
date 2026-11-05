@@ -10,6 +10,7 @@
       "tests/unit/test_local_ci.py",
       "tests/integration/test_native_plugin.py",
       "tests/integration/test_native_commands.py",
+      "tests/integration/test_native_work.py",
       "tests/integration/test_plugin_oauth.py",
       "tests/integration/test_plugin_notifications.py",
       "tests/integration/test_triage_inbox.py",

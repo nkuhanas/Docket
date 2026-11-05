@@ -25,6 +25,8 @@ from docket.models import (
     ConversationRecord,
     DailyBrief,
     Decision,
+    Engagement,
+    EngagementRevision,
     Entity,
     Fact,
     IdentityHandle,
@@ -49,10 +51,13 @@ from docket.models import (
     TemporalCalendarProjection,
     ToolInvocation,
     TriageRun,
+    WorkSession,
+    WorkSessionRevision,
 )
 
 PROVENANCE_PREFIXES = frozenset(
     {
+        "eng", "erev", "work", "wrev",
         "utt",
         "req",
         "rec",
@@ -97,6 +102,10 @@ PROVENANCE_PREFIXES = frozenset(
 )
 
 _PHASE_TWO_MODELS: dict[str, type[Any]] = {
+    "eng": Engagement,
+    "erev": EngagementRevision,
+    "work": WorkSession,
+    "wrev": WorkSessionRevision,
     "req": AuthenticatedRequest,
     "rec": ConversationRecord,
     "utt": OperatorUtterance,
@@ -180,6 +189,16 @@ class ProvenanceRefService:
                 message="A referenced provenance object does not exist.",
                 details={"ref": ref_id},
             )
+        if isinstance(item, Engagement | WorkSession | EngagementRevision | WorkSessionRevision):
+            from docket.services.work_attribution import WorkAttributionService
+
+            if isinstance(item, EngagementRevision | WorkSessionRevision):
+                WorkAttributionService(self.session).head(
+                    Engagement if isinstance(item, EngagementRevision) else WorkSession,
+                    item.engagement_ref if isinstance(item, EngagementRevision) else item.work_ref,
+                )
+            else:
+                WorkAttributionService(self.session).head(type(item), item.ref_id)
         return item
 
     def require_all(self, refs: Iterable[str]) -> list[Any]:
@@ -209,7 +228,12 @@ class ProvenanceRefService:
                 continue
             visited.add(ref_id)
             item = self.get(ref_id)
-            if isinstance(item, OperatorUtterance | AuthenticatedRequest):
+            if isinstance(item, Engagement | WorkSession):
+                stack.append(item.created_by_changeset_ref)
+            elif isinstance(item, EngagementRevision | WorkSessionRevision):
+                stack.extend(item.basis_refs)
+                stack.append(item.created_by_changeset_ref)
+            elif isinstance(item, OperatorUtterance | AuthenticatedRequest):
                 utterance_refs.add(item.ref_id)
             elif isinstance(item, InterpretedStatement):
                 if item.authenticated_request_ref is not None:

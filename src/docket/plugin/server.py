@@ -34,6 +34,7 @@ from docket.plugin.events import EventMethods, advertise_events
 from docket.plugin.instructions import NATIVE_INSTRUCTIONS
 from docket.plugin.schemas import compact_schema
 from docket.plugin.work import NativeWork
+from docket.plugin.work_tools import WORK_COMMAND_TOOLS, register_work
 from docket.plugin.workflows import NATIVE_WORKFLOW_TOOLS, register_workflows
 from docket.providers.webhooks import WebhookPoster
 from docket.schemas.business import PLUGIN_COMPATIBILITY_TOOLS
@@ -43,7 +44,9 @@ from docket.tool_contracts import contract_tool_names
 
 
 class PluginMCP(ProvenanceMCP):
-    authority_tools = NATIVE_WORKFLOW_TOOLS | NATIVE_COMMAND_TOOLS | BUSINESS_TOOLS
+    authority_tools = (
+        NATIVE_WORKFLOW_TOOLS | NATIVE_COMMAND_TOOLS | BUSINESS_TOOLS | WORK_COMMAND_TOOLS
+    )
 
     def __init__(self, settings: Settings, poster: WebhookPoster | None = None) -> None:
         hostname = urlsplit(settings.plugin_public_origin).hostname or "docket.you"
@@ -60,6 +63,7 @@ class PluginMCP(ProvenanceMCP):
         self.plugin_settings = settings
         register_commands(self, settings)
         register_business(self, settings)
+        register_work(self, settings)
         register_workflows(self, settings)
         annotations = ToolAnnotations(
             read_only_hint=True, destructive_hint=False,
@@ -133,7 +137,8 @@ class PluginMCP(ProvenanceMCP):
                 return AgentCallContext(authenticated.principal, root.request_key,
                     "native-exact-proposal", "apply:" + proposal.ref_id,
                     supplied_argument_names=frozenset(arguments)), arguments
-        if name in NATIVE_COMMAND_TOOLS | BUSINESS_TOOLS and arguments.get("replaces_change_id"):
+        if (name in NATIVE_COMMAND_TOOLS | BUSINESS_TOOLS | WORK_COMMAND_TOOLS
+                and arguments.get("replaces_change_id")):
             with session_scope() as session:
                 proposal = session.scalar(select(PreparedCommand).where(
                     PreparedCommand.ref_id == arguments["replaces_change_id"],

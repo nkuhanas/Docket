@@ -25,6 +25,10 @@ ProviderAccountRef = Annotated[
 ]
 
 HistoryObjectType = Literal[
+    "engagement",
+    "engagement_revision",
+    "work_session",
+    "work_session_revision",
     "authenticated_request",
     "conversation_record",
     "operator_utterance",
@@ -63,6 +67,7 @@ HistoryObjectType = Literal[
 
 _PROVENANCE_PREFIXES = frozenset(
     {
+        "eng", "erev", "work", "wrev",
         "req",
         "rec",
         "utt",

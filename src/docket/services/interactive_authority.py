@@ -68,6 +68,7 @@ from docket.services.semantic_scope import (
     require_current_semantic_scope,
 )
 from docket.services.tracked_context import TrackedContextService
+from docket.services.work_attribution import WorkAttributionService
 
 
 class InteractiveAuthorityService:
@@ -94,6 +95,7 @@ class InteractiveAuthorityService:
                 **policy_handlers,
                 **event_handlers,
                 **tracked_context_handlers,
+                **WorkAttributionService(session).handlers(),
                 **case_resolution_handlers,
                 **(handlers or {}),
             },
