@@ -8,6 +8,10 @@ independent current specifications.
   test inventory and contract/cutover evidence.
 * [Native capability disposition](native-capabilities.md) and [flat command examples](native-command-examples.md).
 
+Draft design review: [work attribution contracts and capability extension](work-attribution-contract-review.md)
+measures proposed schemas and describes future workflows; it does not change the
+current SPEC or deployed capabilities.
+
 Start here when operating or changing the deployed stack:
 
 * [Operations runbook](operations-runbook.md) — current clean-runtime diagnosis,

@@ -422,7 +422,8 @@ Proposed public vocabulary, to be verified with actual model-generated schemas:
 | P0a reads/reports | `docket_get_work_context`, `docket_query_work_sessions` with informal JSON/CSV output; reuse entity/project/task/history reads |
 | P0a recording | `docket_log_work_session`, `docket_update_work_session` including explicit retraction |
 | P0a attribution | `docket_create_engagement`, `docket_update_engagement` |
-| P0b timers/lineage | `docket_start_work_session`, `docket_pause_work_session`, `docket_resume_work_session`, `docket_stop_work_session`; explicit switch and bounded named split/merge operations |
+| P0b timers | `docket_start_work_session`, `docket_pause_work_session`, `docket_resume_work_session`, `docket_stop_work_session` |
+| P0b switch/lineage | `docket_switch_work_session`, `docket_split_work_session`, `docket_merge_work_sessions` |
 | P1a | Work/reporting context, effective policy commands, eligibility evaluation, reporting periods and formal timesheets with contribution/claim protection |
 | P1b | Contractor invoice drafting/finalization and expense recording, extending the same claim-allocation basis |
 | P1c | Payment recording, partial settlement, credits and financial reconciliation |
@@ -438,6 +439,50 @@ business fields. All corrections and claim operations retain exact versions and
 idempotency. Use existing preview/read/apply for meaningful previews; multi-object
 work compiles through the same atomic engine. Do not assume the current distinct-
 target prepared-batch adapter already implements work split/merge or claim locking.
+
+### Contract size and discovery discipline
+
+The initial design has six P0a tools and seven additional P0b tools. Export stays
+on the query tool; previews/apply, entity/project lookup and history reuse existing
+tools. This is a reviewed starting scope, not a permanent catalogue quota. Justify
+any additional tool in the implementation notes instead of exposing every table.
+Expose only implemented milestones; no placeholder P1/P2/P3 tools in discovery.
+
+Apply these checks to the actual MCP `tools/list` definitions, including changes
+to existing tools, under the same granted capabilities:
+
+| Surface | Proposed implementation limit |
+| --- | --- |
+| Each new input schema, including referenced definitions | 4 KiB |
+| Each complete new tool definition, including description, output schema and metadata | 6 KiB |
+| Additional discovery for P0a / complete P0 | 20 KiB / 32 KiB |
+| Shared instructions / routine work packet / normal result | Existing 2 KiB / 8 KiB / 16 KiB limits |
+
+Measure UTF-8 compact JSON, not Python source size or an estimated token count.
+The [contract and capability review](../docs/work-attribution-contract-review.md)
+records synthetic feasibility measurements: logging 3,385 bytes, correction 3,711
+bytes, six P0a definitions 14,744 bytes and all thirteen P0 definitions 26,584
+bytes before their list separators. These are candidate schemas through the native
+registration/compaction path, not evidence of implemented domain validation or a
+production deployment. Later finance schemas remain unmeasured and must meet the
+same per-tool limits when specified. Check context/result sizes during real MCP
+acceptance rather than assuming this probe proves them.
+
+Keep routine inputs flat. Bounded homogeneous break intervals or split parts are
+allowed; a family-wide mutation union, arbitrary patch/filter dictionary or full
+WorkSession/claim graph is not. Keep every accepted business field visible in the
+discovered schema. Nullable scalar fields are ordinary optionals, not separate
+business-operation variants. Docket derives versions, provenance, timer transitions,
+derived totals and claim lineage; the agent never reconstructs those internals.
+
+P1 tools must accept the fields for one business action, such as an engagement and
+period for a timesheet or an invoice reference for finalization. They must not
+repeat policy history, all work revisions and allocation graphs in each request.
+Keep full history in bounded reads and return compact receipts. Domain guidance,
+selected choices and relevant policy summaries belong in context, not expanded
+global instructions or the generated reference catalogue. Page context choices
+and result details within byte limits while retaining full-set totals/coverage.
+These are engineering checks, not additional operator approval steps.
 
 Illustrative P0 inputs, using references returned by the proposed work context:
 
@@ -586,6 +631,7 @@ credentials or external submission are requested by this draft.
 | Corrections | Prior revisions remain readable; split/merge preserves known time and gaps; current totals exclude superseded parents. No unrelated workflow blocks on an overlap. |
 | Aggregation | Bounded pages and full-set totals agree; duration-only, open and overlapping reports are identified separately. Coverage never implies inactivity or completeness. |
 | P0a informal export | Query, JSON and CSV agree on a synthetic 12.5 + 8.0 + 6.5 = 27.0 reported-hour week across engagements, including full totals across detail pages. Additional unknown/open/overlapping reports preserve their flags and calculation basis. Export is useful without rates and never implies a formal timesheet, claim or submission. |
+| Contract usability/size | Record actual per-tool and aggregate discovery sizes against section 8, including descriptions/output schemas and affected existing tools. Real MCP first-attempt interval/duration logging, sparse corrections and optional metadata succeed with visible fields and field-specific errors. Context/results stay bounded without losing coverage or totals. Unimplemented phases stay out of discovery. |
 | P1a policy/timesheets | A rate change affects only its effective scope; a boundary-crossing session uses both appropriate calculation segments. Raw time and reported classification stay unchanged. Missing/conflicting policy leaves a partial estimate. Formal submissions pin exact contributions, retain prior snapshots and prevent duplicate same-purpose claims before P1b exists. |
 | P1b claims/documents | Concurrent drafts cannot double-reserve eligible quantities. Timesheet/invoice reporting shares P1a lineage without double charging. A corrected/split work revision does not reset prior claims; it flags adjustments to an issued snapshot rather than editing it. Expense claims stay distinct from hours/wages. |
 | P1c settlement | Partial payments/reimbursements, credits, reversals and unexplained net/gross differences remain exact and auditable. A sent invoice or expected-payment message never marks paid. |
