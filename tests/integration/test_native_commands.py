@@ -26,6 +26,80 @@ from docket.services.native_commands import event_timing
 linked_plugin = test_native_plugin.linked_plugin
 
 
+@pytest.mark.parametrize("prefix", [
+    "ent", "idn", "aff", "rel", "fact", "pref", "lane", "item", "time", "task", "tproj", "rem",
+])
+def test_shared_retraction_preserves_each_existing_domain_plan(session, monkeypatch, prefix):
+    from docket.config import get_settings
+    from docket.domain.public_refs import new_public_ref
+    from docket.schemas.business import RETRACTION_BY_PREFIX
+    from docket.services.business_commands import BusinessCommandService
+
+    target = new_public_ref(prefix)
+    packet = NativeContext(snapshot={"objects": [{"ref": target, "state": {}}]},
+                           versions={target: 7})
+    service = BusinessCommandService(session, get_settings())
+    monkeypatch.setattr(service, "execute", lambda **kwargs: kwargs["build"](packet))
+    arguments = {"context_id": new_public_ref("nctx"), "operation_id": "retract",
+                 "target_ref": target}
+    original = service.perform(RETRACTION_BY_PREFIX[prefix], arguments, "req", "request")
+    shared = service.retract_record(arguments, "req", "request")
+    assert shared["patch"] == original["patch"]
+    assert shared["expected_versions"] == original["expected_versions"] == {target: 7}
+    assert shared["assembly_scope"]["allowed_mutation_types"] == (
+        original["assembly_scope"]["allowed_mutation_types"]
+    )
+    assert shared["assembly_scope"]["target_refs"] == [target]
+
+
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+@pytest.mark.asyncio
+async def test_shared_retraction_transport_keeps_history_retry_and_cached_alias(
+    session_factory, linked_plugin,
+):
+    from docket.schemas.business import PLUGIN_COMPATIBILITY_TOOLS, public_effect_tools
+
+    app, _settings, token, _principal = linked_plugin
+    async with (
+        app.router.lifespan_context(app),
+        httpx2.AsyncClient(transport=httpx2.ASGITransport(app),
+                          headers={"Authorization": "Bearer " + token}) as http,
+        Client(streamable_http_client("https://docket.you/mcp/", http_client=http),
+               mode="legacy") as client,
+    ):
+        tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+        assert PLUGIN_COMPATIBILITY_TOOLS.isdisjoint(tools)
+        assert set(public_effect_tools().values()) <= set(tools)
+        assert len(json.dumps(tools["docket_retract_record"].input_schema).encode()) <= 1024
+        overview = (await client.call_tool("docket_get_overview", {})).structured_content
+        for index, tool_name in enumerate(("docket_retract_record", "docket_retract_item")):
+            created = (await client.call_tool("docket_create_item", {
+                "context_id": overview["context_id"], "operation_id": f"create-{index}",
+                "title": f"Retraction sample {index}", "kind": "test.retraction",
+            })).structured_content
+            assert created.get("disposition") == "committed", created
+            with session_factory() as session:
+                item_ref = session.scalar(select(Item.ref_id).where(
+                    Item.title == f"Retraction sample {index}",
+                ))
+            packet = (await client.call_tool("docket_get_context", {
+                "refs": [item_ref],
+            })).structured_content
+            assert "docket_retract_record" in packet["objects"][0]["actions"]
+            assert "docket_retract_item" not in packet["objects"][0]["actions"]
+            args = {"context_id": packet["context_id"], "operation_id": f"retract-{index}",
+                    "target_ref": item_ref}
+            receipt = (await client.call_tool(tool_name, args)).structured_content
+            assert receipt.get("disposition") == "committed", receipt
+            retry = (await client.call_tool(tool_name, args)).structured_content
+            assert retry["replayed"] and retry["changeset_ref"] == receipt["changeset_ref"]
+    with session_factory() as session:
+        assert set(session.scalars(select(Item.canonical_status))) == {"retracted"}
+        assert session.scalar(select(func.count()).select_from(Operation)) == 0
+        assert session.scalar(select(func.count()).select_from(ChangeSet)) == 4
+        assert session.scalar(select(func.count()).select_from(AuthenticatedRequest)) == 4
+
+
 @pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
 @pytest.mark.asyncio
 async def test_flat_event_first_attempt_and_retry_through_real_transport(
@@ -636,7 +710,12 @@ async def test_named_contracts_cover_current_effects_without_public_compiler_boo
     linked_plugin,
 ):
     from docket.plugin.instructions import NATIVE_INSTRUCTIONS
-    from docket.schemas.business import BUSINESS_DEFINITIONS, CANONICAL_MUTATIONS, SPECIAL_MUTATIONS
+    from docket.schemas.business import (
+        BUSINESS_DEFINITIONS,
+        CANONICAL_MUTATIONS,
+        SPECIAL_MUTATIONS,
+        public_business_tool,
+    )
 
     app, _settings, _token, _principal = linked_plugin
     tools = {tool.name: tool for tool in await app.state.mcp.list_tools()}
@@ -669,7 +748,7 @@ async def test_named_contracts_cover_current_effects_without_public_compiler_boo
                 check(value)
 
     for definition in BUSINESS_DEFINITIONS:
-        check(tools[definition.tool_name].input_schema)
+        check(tools[public_business_tool(definition)].input_schema)
     # Required references remain required after removing internal create-ID alternatives.
     assert "subject_ref" in tools["docket_create_fact"].input_schema["required"]
 

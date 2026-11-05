@@ -36,6 +36,7 @@ from docket.plugin.schemas import compact_schema
 from docket.plugin.work import NativeWork
 from docket.plugin.workflows import NATIVE_WORKFLOW_TOOLS, register_workflows
 from docket.providers.webhooks import WebhookPoster
+from docket.schemas.business import PLUGIN_COMPATIBILITY_TOOLS
 from docket.services.native_commands import NativeCommandService
 from docket.services.notifications import NotificationService
 from docket.tool_contracts import contract_tool_names
@@ -64,7 +65,8 @@ class PluginMCP(ProvenanceMCP):
             read_only_hint=True, destructive_hint=False,
             idempotent_hint=True, open_world_hint=False,
         )
-        names = contract_tool_names("plugin")
+        # Cached clients retain their original registered aliases/permission path.
+        names = contract_tool_names("plugin") | PLUGIN_COMPATIBILITY_TOOLS
         for info in mcp._tool_manager.list_tools():
             if info.name in names and info.name not in self.authority_tools:
                 self.add_tool(info.fn, name=info.name, description=info.description,
@@ -193,7 +195,8 @@ class PluginMCP(ProvenanceMCP):
         return result
 
     async def list_tools(self) -> list[Tool]:
-        tools = await super().list_tools()
+        tools = [tool for tool in await super().list_tools()
+                 if tool.name not in PLUGIN_COMPATIBILITY_TOOLS]
         for tool in tools:
             tool.input_schema = deepcopy(tool.input_schema)
             properties = tool.input_schema.get("properties", {})

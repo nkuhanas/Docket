@@ -2,10 +2,12 @@
 
 Review date: November 5, 2026. Source baseline:
 `c51e4b388389ad481fa52ff685b689270d0a38e5`.
-Status: proposed amendment to the
+Status at review: proposed amendment to the
 [work-attribution delta](../deltas/2026-11-05T21-18-26Z-work-attribution-and-personal-operations.md),
-not an implemented catalogue change. [SPEC 1.0](../SPEC.md) and the deployed
-catalogue remain current.
+not an implemented catalogue change. Subsequent adoption is in [SPEC 1.1](../SPEC.md)
+and actual phase/release evidence is in the
+[implementation report](work-attribution-implementation.md). The projections below
+retain their original reviewed baseline; they are not activation evidence.
 
 There are clear reductions that preserve the surviving input schemas. The largest
 group is twelve retraction wrappers with identical arguments apart from the target

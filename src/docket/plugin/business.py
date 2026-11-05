@@ -12,10 +12,12 @@ from docket.config import Settings
 from docket.database import session_scope
 from docket.domain.errors import DocketError
 from docket.mcp.instrumented import ProvenanceMCP
-from docket.schemas.business import BUSINESS_DEFINITIONS, BusinessDefinition
+from docket.schemas.business import BUSINESS_DEFINITIONS, BusinessDefinition, RetractRecord
 from docket.services.business_commands import BusinessCommandService, public_validation_error
 
-BUSINESS_TOOLS = frozenset(definition.tool_name for definition in BUSINESS_DEFINITIONS)
+BUSINESS_TOOLS = frozenset(definition.tool_name for definition in BUSINESS_DEFINITIONS) | {
+    "docket_retract_record",
+}
 
 
 def model_function(
@@ -96,3 +98,32 @@ def register_business(server: ProvenanceMCP, settings: Settings) -> None:
 
     for definition in BUSINESS_DEFINITIONS:
         register(definition)
+
+    def retract(arguments: dict[str, Any]) -> dict[str, Any]:
+        request_ref = arguments.pop("request_ref", None)
+        request_key = arguments.pop("request_key", None)
+        try:
+            if request_ref is None or request_key is None:
+                raise DocketError(
+                    code="request_context_required", message="Use the authenticated connection.",
+                )
+            with session_scope() as session:
+                return BusinessCommandService(session, settings).retract_record(
+                    arguments, request_ref, request_key,
+                )
+        except ValidationError as exc:
+            return public_validation_error(exc).as_dict()
+        except DocketError as exc:
+            return exc.as_dict()
+
+    server.add_tool(
+        model_function(RetractRecord, "docket_retract_record", retract),
+        name="docket_retract_record",
+        description="Retract one supported canonical record with retained history. "
+        "Docket derives its type/effect from target_ref. "
+        "Calendar cancellation and identity unbinding remain separate.",
+        annotations=ToolAnnotations(
+            read_only_hint=False, destructive_hint=True, idempotent_hint=True,
+            open_world_hint=True,
+        ),
+    )

@@ -19,6 +19,10 @@ is retained notification history, not the complete inventory of historical work.
 Use named business tools with ordinary fields. Creating a meeting takes title,
 ISO start/end, timezone and a calendar_ref from context. Docket derives its support
 records, authenticated request, versions and atomic canonical/provider intent.
+Complete a task with `docket_update_task(state="completed")`. Use
+`docket_retract_record` for supported logical retractions: Docket derives the typed
+handler from target_ref and preserves history. Identity unbinding and Calendar
+cancellation remain separate. Read conflict detail through `docket_get_context`.
 Names in notes do not send invitations. Approved scheduled and event-triggered writes have the
 same delegated capability as live chat when docket.write is granted in both the
 token and current local owner grant. Read, triage and events remain separate.

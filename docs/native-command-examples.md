@@ -46,10 +46,10 @@ Update with `docket_update_task`:
 {"context_id":"<task-context>","operation_id":"agenda-edit","task_ref":"<task>","notes":"Include project updates","priority":"normal"}
 ```
 
-Complete with `docket_complete_task`:
+Complete with `docket_update_task`:
 
 ```json
-{"context_id":"<current-task-context>","operation_id":"agenda-done","task_ref":"<task>"}
+{"context_id":"<current-task-context>","operation_id":"agenda-done","task_ref":"<task>","state":"completed"}
 ```
 
 The same unchanged command and operation_id recovers its receipt. Different intent

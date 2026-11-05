@@ -1,8 +1,8 @@
 # Docket specification
 
-Version: 1.0
-Adopted: November 4, 2026
-Implementation baseline: `60c30ce5aea241b78b36fc75e51481b4680e496d`
+Version: 1.1
+Adopted: November 5, 2026
+Implementation baseline: `3a578859265431ac0270ab1acb62b48bfb8d6717`
 
 ## 1. Status and change control
 
@@ -21,6 +21,14 @@ scoped amendment. Reconcile SPEC, its decisions/history and [delta index](deltas
 together. Readers need not replay every delta to discover current requirements.
 Wire models remain machine definitions; AGENTS is an operating guide;
 CONTRIBUTING and runbooks describe procedures, not competing specifications.
+
+The Operator instruction to implement the [work-attribution delta](deltas/2026-11-05T21-18-26Z-work-attribution-and-personal-operations.md)
+adopts its catalogue, work, reporting/finance and operational requirements.
+Implementation is in progress, tracked requirement by requirement in the
+[implementation report](docs/work-attribution-implementation.md). The deployed
+1.0 behavior above remains the runtime baseline until validated activation.
+P0 is not evidence that finance/intelligence is complete. Chosen external P3
+providers still require the separate concrete provider delta specified there.
 
 Track the new SPEC and forward deltas. Older ignored `specs/` and delta sources
 remain private, in their existing provenance chain. Do not bulk import, rewrite
@@ -49,6 +57,12 @@ interactions; preferences, reminders and lane routing; attention cases, daily
 briefs, retained notifications and conflict resolution. Native cutover must
 account for all 47 baseline canonical mutation variants. An omitted capability
 requires explicit reviewed retirement, not accidental discovery loss.
+
+Extend this domain with typed WorkSession and Engagement aggregates, then
+effective compensation policies, formal reports, invoices, expenses, payments and
+source-grounded workload/outcome views. Reuse existing Entity projects/places and
+Item/Task/Event references. Affiliation does not establish a payer or compensation
+terms. Never seed real organizations, engagements or rates from illustrative text.
 
 ## 3. Authority and evidence
 
@@ -98,6 +112,101 @@ retain request/audit roots and receive new exact proposals. Current permission
 and target checks still apply. Handles/IDs grant no authority. Preserve unfinished
 historical requests and bounded recovery of exact saved drafts; never delete or
 silently translate unknown intent.
+
+### Performed work and engagement integrity
+
+WorkSession has a stable public reference, operator ownership, optimistic head,
+immutable revisions and normalized active/break segments. It supports bounded,
+duration-only and incomplete/unquantified reports; unknown is not zero. Preserve
+description, optional outcome/category, attribution to organization/engagement/
+project/Item/Task/Event, optional reported location/place and remote/onsite/travel
+mode, genuine request/evidence roots, source method and uncertainty. No support
+Item/Event, rate, receipt or affiliation bootstrap is required to record work.
+Unresolved attribution can remain a label. An Event link proves neither attendance
+nor actual bounds and never edits the event. Validate referenced kinds/ownership.
+
+Retain optional reported compensation class (`billable`, `paid_work`, `unpaid`,
+`unknown`) separately from evaluated eligibility and money received. `paid_work`
+reports expected compensation, not a payment. Policy evaluation never rewrites the
+operator's assertion; explicit corrections retain the earlier revision. Calendar,
+email, commits and model confidence are observations/candidates, not proof of work,
+billability or payment. Candidate adoption requires authorized intent/policy and
+does not add a live-user-presence requirement.
+
+Engagement records a particular employment, contract, research, volunteer or
+personal arrangement, known organization/legal payer, effective-date precision,
+role/reporting notes and later policy revisions. Projects may span engagements;
+project labels alone do not select a payer. Personal/unpaid/future arrangements
+remain useful without pay configuration. Split or allocate quantities for multiple
+engagements; never clone full hours into each one.
+
+Store actual instants in UTC with supplied offsets/timezone context. Support
+midnight, DST folds and travel between zones without Calendar's shared-fold limit.
+Validate real local times, half-open intervals, positive durations and break
+containment. Subtract the break union once; preserve raw elapsed time separately
+from report rounding. Duration-only date/period attribution does not invent clock
+bounds or evenly distribute work across periods. Unknown dates stay unplaced.
+
+Timer start/pause/resume/stop captures one effective server instant under a durable
+command identity; retries or exact-preview application cannot recapture now.
+PostgreSQL enforces one active primary timer per operator. Switch is atomic.
+Disconnect/restart never fabricates an end. Running durations are as-of estimates.
+Overlaps flag affected totals/claims without globally blocking reports or tasks.
+Sparse corrections preserve history. Atomic split/merge conserves known quantities
+and gaps; superseded parents no longer contribute to current totals. A reported
+outcome does not complete a Task without an explicit effect.
+
+### Reporting, claims and settlement
+
+Use effective-dated typed compensation/reporting policies with explicit payer,
+currency, basis, period timezone, rounding scope and configured hour/overtime
+rules. Split calculations at policy/period boundaries, not actual work history.
+Sum raw quantities before applicable rounding; use exact decimals. Keep worked,
+compensable, billable, reported, owed and received quantities distinct. Missing or
+conflicting terms yield partial estimates, not zero pay. Salary/fixed fees are not
+inferred hourly wages; legal/tax/student rules are never inferred from names.
+
+Formal timesheets have explicit reporting periods, exact contributions, preparation/
+review/submission/approval/rejection state and independent payment state. Establish
+stable contribution/claim identity and duplicate-quantity protection before formal
+claims, extending that same lineage for contractor invoices/expenses. Bind work or
+expense revision, quantity, policy revision and economic purpose. Prevent duplicate
+reservations/issued entitlements transactionally, including across corrected or
+split sessions; 90 claimed minutes becoming 120 creates a 30-minute adjustment,
+not 120 fresh unclaimed minutes. Distinct reporting references do not duplicate
+one obligation. Unresolved overlap affects the relevant finalization only.
+
+Noncanonical previews reserve nothing. Canonical claim-bearing drafts reserve
+applicable quantities; cancellation releases reservations with history. Finalization
+pins exact contributions, monetary basis, document number unique per issuer/series,
+client, terms and due date. Retrying never issues another document/number. Unknown
+rates/currency block the affected invoice finalization, not logging or report
+drafting. Submitted timesheets and issued invoices are immutable snapshots;
+corrections flag reconciliation and use retained amendments/replacements/credits.
+Draft-reserved, reported, issued and available quantities remain queryable.
+
+Expenses are separate records with date, exact amount/currency, vendor/category,
+attribution, reimbursement eligibility, optional protected receipt and reported
+equipment ownership. Missing optional capture does not block recording. Travel
+reimbursement does not establish paid travel time. Track claim/submission/approval
+separately from partial reimbursement, refunds and credits. Stable external IDs
+deduplicate transactions; matching amount/date/vendor only suggests a duplicate.
+
+Payments preserve reported versus externally observed origin and exact settlement
+allocations, with partial, unmatched, overpaid, credit and reversal states retained.
+Allocations cannot exceed available money/obligations. Net payroll deposits do not
+silently settle gross wages without known deduction/adjustment components; retain
+the unexplained balance. Derive due/overdue/outstanding from dates and settlement.
+Invoice delivery or expected-payment messages do not prove receipt. Gross earnings,
+reimbursements, expected net and received money remain separate.
+
+Informal work summaries/export work in P0 without finance setup. Formal CSV/JSON
+and usable document renditions retain stable references/calculation/revision basis.
+Export creates no submission/provider intent. Operator-reported manual submission,
+approval or delivery is useful without an integration and is not fabricated
+provider success. External submission/sending requires a concrete supported,
+authorized target/action. No bank transfers, payroll execution or tax filing is
+included in this amendment.
 
 ## 5. Native context and commands
 
@@ -153,6 +262,53 @@ lists use 25 items, maximum 100. Omit null optionals, internal UUIDs, duplicate
 snapshots and unsolicited verbatim history. Never rely on transport truncation
 or silently discard required facts.
 
+Work context supplies bounded engagements/projects, relevant event/place choices,
+active timer, observed versions, coverage, short policy summaries and actions.
+Connected agents interpret natural language; Docket validates/calculates/persists.
+P0 named tools log/correct/query/export work and manage minimal engagements, then
+start/pause/resume/stop/switch timers and split/merge. Ordinary interval or duration
+inputs are flat; bounded homogeneous break/split lists are permitted. Do not expose
+internal revision/claim graphs, an action union or every new storage table as CRUD.
+
+Each new input schema including definitions is at most 4 KiB; each complete new
+tool definition at most 6 KiB. Gross additional P0a/complete-P0 discovery budgets
+are 20/32 KiB. Measure compact UTF-8 actual MCP definitions, including affected
+existing tools, descriptions, output schemas and metadata. Keep the 2/8/16 KiB
+instruction/context/normal-result budgets. Publish only implemented milestones;
+future finance schemas must independently meet the same per-tool budgets.
+
+Consolidate twelve legacy retraction wrappers into one closed typed-reference
+command with the existing context/operation/target/preview/correction fields. It
+selects the existing domain handler, not generic deletion. Task completion uses
+existing task update state; conflict detail uses existing reference context.
+Preserve all 47 baseline effects and unchanged surviving inputs. Rich person/org/
+Item detail and event cancellation wrappers may retire only after equivalent
+facets/bounded detail access and exact cancellation/provider/recurrence behavior
+are verified. Keep distinct create/update, update/supersede, identity unbinding,
+provider observations, restricted triage and historical recovery. Preserve cached
+client aliases with original permission/retry checks during refresh, and genuine
+old receipts/exact saved drafts. No count reduction justifies more complex inputs.
+
+Queries aggregate the full matching set independently of detail pages, with explicit
+timezone, period, as-of basis, precision and coverage. Distinguish recorded totals,
+unique timed coverage, duration-only/unplaced reports, overlaps and timer estimates.
+CSV/JSON informal exports use the same basis and preserve reported classification,
+optional event/location context and continuation without truncation or invented
+completeness. Unknown attribution has its own bucket. Multi-year reads use indexes
+and server aggregation, not model-side summation of history.
+
+Planned activity, commitment firmness and actual work remain separate dimensions.
+Optional actual-time Calendar visibility is an explicitly requested correlated
+projection, never duplicate accounting time or a default provider effect. Workload
+views combine commitments, deadlines, travel, protected time, configured limits and
+budgets with interval unions and explicit assumptions/coverage. Free calendar space
+is potential availability, not guaranteed capacity. History/outcome summaries
+distinguish activity from asserted achievement. Missing work does not prove
+inactivity. Selective exception follow-up for timers, overlaps, cutoffs, unclassified
+work, money and reimbursements reuses inbox/preferences/client scheduling; extend
+typed reminder/event/case subjects explicitly. No fabricated Calendar events to
+satisfy an old reminder type; no compulsory daily maintenance or constant optimizing.
+
 ## 6. Providers, storage and recovery
 
 Google OAuth credentials are protected local material. Calendar/Gmail ingestion
@@ -171,6 +327,14 @@ Never edit production rows to pass checks or add compatibility domain backfills.
 Historical clean-ledger export/reset rules retain their original authority; this
 amendment authorizes no destructive reset/restore. Image rollback cannot reverse
 a migration. Retain a verified backup, prior image and migration-specific recovery.
+
+Work/engagement revisions, normalized segments and issued/submitted document
+snapshots are immutable in PostgreSQL as well as application code. Mutable heads,
+indexes and derived totals change atomically with the admitted canonical revision;
+invalidate affected caches durably rather than returning stale hours/money as
+current. Use locks/constraints for timer ownership, quantity reservations and
+settlement limits. New tables use ordered additive migrations and preserve existing
+rows/provenance; no semantic calendar backfill or destructive reset is implied.
 
 ## 7. Local validation and release
 
@@ -218,6 +382,16 @@ plugin/skill and reports schema/instruction/context sizes, removed tests and
 measured runtimes. No OAuth reapproval is planned. Local evidence must reject
 stale/missing checks and reuse content-identical merge evidence without Actions.
 
+For the 1.1 amendment, prove each phase's declared behavior against the
+[implementation matrix](docs/work-attribution-implementation.md): interval and
+incomplete work, corrections/timezone/breaks, timer/lineage races, full-set exports,
+effective-policy rounding, immutable formal claims/documents, concurrent quantity
+reservations and exact settlement, source-grounded workload and selective follow-up.
+Measure actual MCP contracts and first-valid-attempt user journeys on isolated
+PostgreSQL; verify owner/revocation/restricted-role and privacy boundaries. Report
+implemented and deployed milestones independently; work logging alone does not
+complete this amendment. Real financial/provider effects are not smoke fixtures.
+
 ## 9. Architecture decisions
 
 | ADR | Decision | Reason |
@@ -227,9 +401,13 @@ stale/missing checks and reuse content-identical merge evidence without Actions.
 | 003 | Owner-bound context and flat business commands | Agents supply intent rather than operate an internal compiler grammar. |
 | 004 | Full native delegated write authority and optional archives | Authority comes from verified grants, not presence/capture ceremonies. |
 | 005 | Remove Hermes/SearXNG trees and browser artifacts | Plugin and Google integrations own the supported user path. |
+| 006 | Typed performed work and independent engagement/policy state | Actual effort and reported attribution remain useful before finance, without overloading generic metadata or schedules. |
+| 007 | Stable quantity/claim lineage and immutable formal snapshots | Corrections cannot duplicate claims or silently rewrite issued/submitted history. |
+| 008 | Reference-dispatched shared retraction and equivalent alias consolidation | Reduce discovery without adding action unions, conditional input modes or lost domain effects. |
 
 ## 10. Version history
 
 | Version | Change |
 | --- | --- |
+| 1.1 | Adopts the November 5 work-attribution/personal-operations delta including catalogue consolidation. Implementation and activation remain in progress, with separate phase evidence; external provider choices remain a concrete follow-on delta. |
 | 1.0 | First current SPEC synthesized from signed ontology and Operator amendments; adopts November 4 context/local-CI delta and retirement cleanup. No invented prior version. Implemented, deployed and verified through live native-tool use. |

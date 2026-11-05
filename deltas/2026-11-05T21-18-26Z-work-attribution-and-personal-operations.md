@@ -1,10 +1,10 @@
 # Docket: work performed, reporting and money reconciliation
 
 Draft timestamp: 2026-11-05 21:18:26 UTC
-Status: draft for Operator review; not adopted or implemented
+Status: adopted by Operator implementation instruction; implementation in progress
 SPEC baseline: [1.0](../SPEC.md)
 Inspected source: `88ad4ff39526210a8a62464518de1c676e7b4c6e`
-Proposed SPEC target: 1.1 for the first work-attribution release
+Adopted SPEC target: [1.1](../SPEC.md); [implementation evidence](../docs/work-attribution-implementation.md)
 
 ## 1. Decision proposed
 
@@ -34,7 +34,8 @@ In particular, a project name does not establish who pays for its work.
 
 The Operator-supplied review is incorporated: P0 preserves reported compensation
 classification and optional event/location context, P0a includes informal CSV/JSON
-reports, and finance is split into P1a–P1c. The proposal remains unadopted.
+reports, and finance is split into P1a–P1c. The original reviews were proposals;
+the subsequent Operator implementation instruction adopts this scope into SPEC 1.1.
 
 ## 2. What the current implementation actually provides
 
@@ -719,5 +720,5 @@ Inspected primary implementation sources:
 
 Drafting used repository inspection, the supplied proposal and its four-amendment
 review. No production personal/financial records or external legal/payroll rules
-were queried. This draft changes no runtime, migration, permission, provider
-configuration or adopted SPEC.
+were queried during drafting. Adoption and implementation status now live in SPEC
+and the implementation report; earlier design probes are not runtime evidence.

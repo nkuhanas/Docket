@@ -23,6 +23,7 @@ from docket.models import (
     AuthenticatedRequest,
     CalendarLane,
     CanonicalEvent,
+    Item,
     Operation,
     PreparedConsumption,
     ProviderAccount,
@@ -320,14 +321,38 @@ async def check() -> None:
                 task_ref = session.scalar(select(Task.ref_id))
             task_context = await call("docket_get_context", {"refs": [task_ref]})
             complete = await call(
-                "docket_complete_task",
+                "docket_update_task",
                 {
                     "context_id": task_context["context_id"],
                     "operation_id": "smoke-complete",
                     "task_ref": task_ref,
+                    "state": "completed",
                 },
             )
             assert complete.get("disposition") == "committed", complete
+            standalone = await call("docket_create_item", {
+                "context_id": overview["context_id"], "operation_id": "smoke-retract-item-create",
+                "title": "Retraction smoke item", "kind": "test.retraction",
+            })
+            assert standalone.get("disposition") == "committed", standalone
+            with session_scope() as session:
+                item_ref = session.scalar(select(Item.ref_id).where(
+                    Item.title == "Retraction smoke item",
+                ))
+            item_context = await call("docket_get_context", {"refs": [item_ref]})
+            retract_args = {
+                "context_id": item_context["context_id"],
+                "operation_id": "smoke-retract-item", "target_ref": item_ref,
+            }
+            retracted = await call("docket_retract_record", retract_args)
+            assert retracted.get("disposition") == "committed", retracted
+            replayed = await call("docket_retract_record", retract_args)
+            assert replayed.get("replayed") is True
+            assert replayed["changeset_ref"] == retracted["changeset_ref"]
+            with session_scope() as session:
+                assert session.scalar(select(Item.canonical_status).where(
+                    Item.ref_id == item_ref,
+                )) == "retracted"
             members = []
             for index in range(2):
                 proposal = await call(
@@ -381,6 +406,7 @@ async def check() -> None:
                 "delegated_write": "passed",
                 "exact_preview_race": "passed",
                 "atomic_batch": "passed",
+                "shared_retraction": "passed",
                 "provider_unknown_recovery": "passed",
             }
         )

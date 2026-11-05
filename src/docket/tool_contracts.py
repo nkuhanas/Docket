@@ -6,9 +6,9 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-from docket.schemas.business import BUSINESS_DEFINITIONS
+from docket.schemas.business import BUSINESS_DEFINITIONS, PLUGIN_COMPATIBILITY_TOOLS
 
-CONTRACT_VERSION = "docket-tools-2026-11-04-v51"
+CONTRACT_VERSION = "docket-tools-2026-11-05-v52"
 ContractProfile = Literal["interactive", "triage", "plugin"]
 
 
@@ -366,13 +366,17 @@ _native_business_entries: tuple[ToolContractEntry, ...] = tuple({
     ("docket_cancel_event", "Cancel one event, occurrence or series."),
     ("docket_create_task", "Create a task with optional priority and due time."),
     ("docket_update_task", "Update supplied task fields and observed due time."),
-    ("docket_complete_task", "Complete a task and record completion time."),
+    ("docket_retract_record", "Retract a selected supported record through its domain handler."),
     *((definition.tool_name,
        f"{definition.action.capitalize()} {definition.object_type} with ordinary business fields.")
-      for definition in BUSINESS_DEFINITIONS),
+      for definition in BUSINESS_DEFINITIONS
+      if definition.tool_name not in PLUGIN_COMPATIBILITY_TOOLS),
 ), start=1))
-CONTRACT_ENTRIES = {**CONTRACT_ENTRIES,
-                    "plugin": (*CONTRACT_ENTRIES["plugin"], *_native_business_entries)}
+CONTRACT_ENTRIES = {
+    **CONTRACT_ENTRIES,
+    "plugin": tuple(entry for entry in (*CONTRACT_ENTRIES["plugin"], *_native_business_entries)
+                    if entry["tool_name"] not in PLUGIN_COMPATIBILITY_TOOLS),
+}
 
 
 def render_contract_payload(profile: ContractProfile) -> str:

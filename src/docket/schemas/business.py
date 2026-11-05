@@ -152,18 +152,58 @@ def _business_definition(mutation: type[BaseModel]) -> BusinessDefinition:
 
 CANONICAL_MUTATIONS = tuple(_models(authority.CanonicalChangeInput))
 # Calendar and tasks get purpose-built everyday commands with derived support records.
-SPECIAL_MUTATIONS = frozenset(
-    {
-        "canonical_event_create",
-        "canonical_event_modify",
-        "canonical_event_cancel",
-        "task_create",
-        "task_modify",
-    }
-)
+SPECIAL_TOOL_BY_MUTATION = {
+    "canonical_event_create": "docket_create_event",
+    "canonical_event_modify": "docket_update_event",
+    "canonical_event_cancel": "docket_cancel_event",
+    "task_create": "docket_create_task",
+    "task_modify": "docket_update_task",
+}
+SPECIAL_MUTATIONS = frozenset(SPECIAL_TOOL_BY_MUTATION)
 BUSINESS_DEFINITIONS = tuple(
     _business_definition(model)
     for model in CANONICAL_MUTATIONS
     if model.model_fields["mutation_type"].default not in SPECIAL_MUTATIONS
 )
 BUSINESS_BY_TOOL = {definition.tool_name: definition for definition in BUSINESS_DEFINITIONS}
+
+# This closed set dispatches one logical retraction to existing domain handlers.
+# Identity unbinding also uses idn_ but is a different operation and is excluded.
+RETRACTION_BY_PREFIX = {
+    prefix: BUSINESS_BY_TOOL["docket_retract_" + kind]
+    for prefix, kind in (
+        ("ent", "entity"), ("idn", "identity_handle"), ("aff", "affiliation"),
+        ("rel", "relationship"), ("fact", "fact"), ("pref", "preference"),
+        ("lane", "calendar_lane"), ("item", "item"), ("time", "temporal_binding"),
+        ("task", "task"), ("tproj", "temporal_calendar_projection"), ("rem", "reminder_plan"),
+    )
+}
+RETRACTION_ALIASES = frozenset(value.tool_name for value in RETRACTION_BY_PREFIX.values())
+PLUGIN_COMPATIBILITY_TOOLS = RETRACTION_ALIASES | {
+    "docket_complete_task", "docket_get_conflict",
+}
+
+
+class RetractRecord(BusinessCommand):
+    target_ref: Annotated[str, Field(
+        pattern="^(?:" + "|".join(sorted(RETRACTION_BY_PREFIX)) + ")_[0-9A-HJKMNP-TV-Z]{26}$",
+    )]
+
+
+def public_business_tool(definition: BusinessDefinition) -> str:
+    return (
+        "docket_retract_record"
+        if definition.tool_name in RETRACTION_ALIASES else definition.tool_name
+    )
+
+
+def public_effect_tools() -> dict[str, str]:
+    return {
+        **{
+            definition.mutation.model_fields["mutation_type"].default: (
+                public_business_tool(definition)
+            )
+            for definition in BUSINESS_DEFINITIONS
+        },
+        **SPECIAL_TOOL_BY_MUTATION,
+    }

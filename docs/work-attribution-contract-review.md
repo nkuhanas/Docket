@@ -3,9 +3,10 @@
 Review date: November 5, 2026. Proposal:
 [work attribution delta](../deltas/2026-11-05T21-18-26Z-work-attribution-and-personal-operations.md).
 Source baseline: `e349f23d557ea7e1b25de17d16932777da7dccb5`.
-Status: design feasibility checked; proposal remains unadopted and unimplemented.
-[SPEC 1.0](../SPEC.md) remains current. This report is supporting evidence, not a
-second specification.
+Status at review: design feasibility checked; proposal was unadopted/unimplemented.
+The subsequent Operator instruction adopts [SPEC 1.1](../SPEC.md); actual progress
+is in the [implementation report](work-attribution-implementation.md). Measurements
+below remain historical design evidence, not implementation or a second specification.
 
 The extension adds actual-work records first, then reporting/financial state and
 cross-domain operational views. Those capabilities can use compact business

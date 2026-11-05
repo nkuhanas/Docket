@@ -170,7 +170,7 @@ class NativeContextService:
         )
 
     def objects(self, refs: list[str]) -> dict[str, Any]:
-        from docket.schemas.business import BUSINESS_DEFINITIONS
+        from docket.schemas.business import BUSINESS_DEFINITIONS, public_business_tool
         from docket.services.history import _PREFIX_MODELS
 
         allowed = {
@@ -288,14 +288,14 @@ class NativeContextService:
             if hasattr(row, "version"):
                 versions[ref] = row.version
             actions = [
-                d.tool_name
+                public_business_tool(d)
                 for d in BUSINESS_DEFINITIONS
                 if d.object_type == kind and d.action != "create"
             ]
             if kind == "canonical_event":
                 actions += ["docket_update_event", "docket_cancel_event"]
             if kind == "task":
-                actions += ["docket_update_task", "docket_complete_task"]
+                actions += ["docket_update_task"]
             if kind == "conflict":
                 actions += ["docket_resolve_conflict"]
             if kind == "attention_case":

@@ -8,9 +8,10 @@ independent current specifications.
   test inventory and contract/cutover evidence.
 * [Native capability disposition](native-capabilities.md) and [flat command examples](native-command-examples.md).
 
-Draft design review: [work attribution contracts and capability extension](work-attribution-contract-review.md)
-measures proposed schemas and describes future workflows; it does not change the
-current SPEC or deployed capabilities.
+The [work-attribution implementation report](work-attribution-implementation.md)
+tracks the adopted SPEC 1.1 requirements and actual phase/release evidence.
+[Work attribution contracts and capability extension](work-attribution-contract-review.md)
+records earlier design measurements; those measurements do not prove implementation.
 
 The [existing-catalogue consolidation review](catalogue-simplification-review.md)
 extends that proposal with equivalent tool routes and unchanged surviving inputs.

@@ -5,10 +5,10 @@ from typing import Any
 from pydantic import ValidationError
 
 from docket.domain.errors import DocketError
-from docket.domain.public_refs import is_public_ref
+from docket.domain.public_refs import is_public_ref, parse_public_ref
 from docket.models import NativeContext
 from docket.schemas.authority import mutation_input_json
-from docket.schemas.business import BusinessDefinition
+from docket.schemas.business import RETRACTION_BY_PREFIX, BusinessDefinition, RetractRecord
 from docket.services.changeset_assembly import ChangeSetAssemblyService
 from docket.services.native_commands import NativeCommandService
 
@@ -154,15 +154,28 @@ def mutation_plan(
 
 
 class BusinessCommandService(NativeCommandService):
+    def retract_record(
+        self, arguments: dict[str, Any], request_ref: str, request_key: str,
+    ) -> dict[str, Any]:
+        command = RetractRecord.model_validate(arguments)
+        prefix, _ = parse_public_ref(command.target_ref)
+        return self.perform(
+            RETRACTION_BY_PREFIX[prefix], arguments, request_ref, request_key,
+            command_name="docket_retract_record",
+        )
+
     def perform(
         self,
         definition: BusinessDefinition,
         arguments: dict[str, Any],
         request_ref: str,
         request_key: str,
+        *,
+        command_name: str | None = None,
     ) -> dict[str, Any]:
         public = definition.input_model.model_validate(arguments)
         values = public.model_dump(mode="json", exclude_unset=True)
+        command_name = command_name or definition.tool_name
 
         def build(context: NativeContext) -> dict[str, Any]:
             fields = {
@@ -190,11 +203,11 @@ class BusinessCommandService(NativeCommandService):
             return mutation_plan(
                 context,
                 [mutation_input_json(mutation, preserve_explicit_nulls=True)],
-                definition.tool_name,
+                command_name,
             )
 
         return self.execute(
-            command=definition.tool_name,
+            command=command_name,
             arguments=values,
             request_ref=request_ref,
             request_key=request_key,

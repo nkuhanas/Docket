@@ -525,7 +525,7 @@ async def test_native_delegation_commits_replays_and_optionally_records_context(
             {"docket_stage_changes", "docket_review_changeset", "docket_commit_changeset"}
             & set(tools)
         )
-        for name in app.state.mcp.authority_tools:
+        for name in app.state.mcp.authority_tools & set(tools):
             tool = tools[name]
             assert tool.annotations.read_only_hint is False
             assert "work" not in tool.input_schema["properties"]
