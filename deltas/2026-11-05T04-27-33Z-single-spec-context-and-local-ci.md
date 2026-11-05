@@ -2,7 +2,7 @@
 
 Date: November 4, 2026 (America/Los_Angeles)
 Draft timestamp: 2026-11-05 04:27:33 UTC
-Status: adopted for SPEC 1.0; implemented and deployed, host catalog refresh pending
+Status: complete — adopted for SPEC 1.0, implemented, deployed and live host verified
 Inspected baseline: `60c30ce5aea241b78b36fc75e51481b4680e496d`
 
 ## 1. What changes
@@ -419,6 +419,8 @@ The local-CI foundation shipped in PR 56; the complete native command/context
 cutover shipped in PR 57 at `2ce9617c9328c3b6ca9637b3caa5989f76125e45`.
 The registered plugin is v2.0.0 with its original App, OAuth connection and audience.
 See [measured implementation/deployment evidence](../docs/native-context-local-ci.md)
-and [capability disposition](../docs/native-capabilities.md). The current ChatGPT
-connection still advertises an old 24-tool catalog and needs its host refresh;
-that manual cache step is separate from tested server activation.
+and [capability disposition](../docs/native-capabilities.md). On November 5, the
+Operator confirmed the deployment is functional. Bounded production invocation
+metadata independently records successful v51 overview/calendar-context reads and
+a committed flat event-create call. This closes the prior host-catalog acceptance
+step without additional authority, authentication changes or production test writes.
