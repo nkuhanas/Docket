@@ -30,7 +30,8 @@ secrets/restore/*
 !/deltas/docket-incremental-changeset-readiness-09-06-2026.yaml
 !/deltas/docket-incremental-changeset-traceability-09-06-2026.csv
 
-# Forward adopted specification history; older private sources remain ignored.
+# Explicit forward specification records; older private sources remain ignored.
 !/deltas/INDEX.md
 !/deltas/2026-11-05T04-27-33Z-single-spec-context-and-local-ci.md
+!/deltas/2026-11-05T21-18-26Z-work-attribution-and-personal-operations.md
 .playwright-cli/
