@@ -48,6 +48,52 @@ private to Docket's provider adapters and are not passed to the plugin or Auth0.
 These provider-account steps need the Operator's signed-in Auth0 dashboard. No
 credential extraction or management token is needed in chat.
 
+## Private plugin and account linking
+
+The portable package at `plugin/docket/` declares the existing registered Native
+client in `mcp.json`: OAuth, registration mode `provided`, the Docket client ID,
+and token-endpoint authentication `none`. This prevents the host from attempting
+dynamic client registration. Discovery supplies the issuer and endpoints.
+The three Docket scopes are requested with `offline_access`, which Auth0 requires
+to issue a refresh token. That standard scope adds no Docket domain permission;
+the local owner grant still limits access to reads, notifications and triage.
+
+For hosted ChatGPT use, register the MCP connection before binding the workflow
+package. In **Plugins → + → Add custom MCP server**, use
+`https://docket.you/mcp/`, OAuth and the predefined public client above. Copy the
+exact redirect URI shown there into **Applications → Docket ChatGPT → Settings
+→ Allowed Callback URLs** in Auth0, then save, finish account linking with the
+existing approved owner and select **Create as a plugin**. No client secret is
+required. Do not replace unrelated callback entries or use a wildcard.
+
+Retain the actual new ChatGPT connection URL and inspect its saved metadata to
+obtain the verified App ID. Bind that existing connection through `.app.json`
+and `extensions.com.openai.apps`, preserving the connection's identity. Do not
+invent an App ID, derive one by rewriting a plugin-ID prefix, or upload a second
+unbound plugin to work around missing registration. The bound hosted package
+omits duplicate direct-MCP wiring. The portable `mcp.json` remains useful for
+clients that consume it, but saving that file alone does not prove ChatGPT has
+registered or exposed the tools. PolyPath's October 28 hosted verification
+record documents this exact failure and its successful binding correction;
+Aphelion uses the registered-connection pattern as well.
+
+Auth0's public metadata currently advertises issuer identification. OpenAI
+documents a stable callback for compliant issuers, but the connection's displayed
+URI is the authoritative value to register. Verify `docket_get_profile` after
+linking; full tool discovery, an actual triage result and hosted event delivery
+remain separate live acceptance checks.
+
+On November 4, independent public checks passed for resource discovery (correct
+issuer and three scopes), anonymous MCP denial and private-path isolation. The
+node's resolver still fails for `docket.you`; verification used public DNS answers
+with normal TLS hostname/certificate validation. This does not establish local
+resolver recovery or signed-in plugin acceptance.
+
+References: [OpenAI registered clients](https://developers.openai.com/plugins/build/plugins#use-a-registered-oauth-client),
+[hosted connection setup](https://developers.openai.com/plugins/build/plugins#create-and-test-a-plugin-locally-with-an-mcp-server),
+[OpenAI redirects](https://developers.openai.com/plugins/build/auth#redirect-url),
+and [Auth0 refresh tokens](https://auth0.com/docs/secure/tokens/refresh-tokens/get-refresh-tokens).
+
 ## Prepared runtime configuration
 
 The selected nonsecret settings are prepared below. Apply them through the

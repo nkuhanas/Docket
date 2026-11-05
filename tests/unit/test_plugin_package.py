@@ -24,7 +24,20 @@ def test_private_plugin_candidate_is_self_contained_and_has_no_credentials():
         assert ElementTree.parse(target).getroot().attrib["viewBox"] == "0 0 96 96"
     mcp = json.loads((PACKAGE / "mcp.json").read_text())
     assert mcp["mcpServers"] == {
-        "docket": {"type": "streamable-http", "url": "https://docket.you/mcp/"},
+        "docket": {
+            "type": "streamable-http", "url": "https://docket.you/mcp/",
+            "extensions": {"com.openai": {"auth": {
+                "type": "oauth",
+                "client": {
+                    "mode": "provided",
+                    "clientId": "H92evvENOutMDq3Bq1qyRzMOrHiL7qpB",
+                    "tokenEndpointAuthMethod": "none",
+                },
+                "baseScopes": [
+                    "docket.read", "docket.events", "docket.triage", "offline_access",
+                ],
+            }}},
+        },
     }
     for item in PACKAGE.rglob("*"):
         assert not item.is_symlink()
