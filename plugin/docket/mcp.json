@@ -3,7 +3,25 @@
   "mcpServers": {
     "docket": {
       "type": "streamable-http",
-      "url": "https://docket.you/mcp/"
+      "url": "https://docket.you/mcp/",
+      "extensions": {
+        "com.openai": {
+          "auth": {
+            "type": "oauth",
+            "client": {
+              "mode": "provided",
+              "clientId": "H92evvENOutMDq3Bq1qyRzMOrHiL7qpB",
+              "tokenEndpointAuthMethod": "none"
+            },
+            "baseScopes": [
+              "docket.read",
+              "docket.events",
+              "docket.triage",
+              "offline_access"
+            ]
+          }
+        }
+      }
     }
   }
 }
