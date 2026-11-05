@@ -9,9 +9,10 @@ Proposed SPEC target: 1.1 for the first work-attribution release
 ## 1. Decision proposed
 
 Make reported work performed a first-class Docket capability. The first useful
-release must reliably record, correct and query work across several engagements,
-including running timers and incomplete reports. It must work without rates,
-receipts, payroll configuration or a second spreadsheet.
+release must reliably record, correct, query and export work across several
+engagements, including running timers and incomplete reports. P0a starts with
+retrospective logging, corrections and informal reports; P0b adds durable timers.
+It must work without rates, receipts, payroll configuration or a second spreadsheet.
 
 Build compensation, timesheets, contracting and capacity reasoning on that same
 work history in subsequent phases. Preserve those goals in this delta without
@@ -30,6 +31,10 @@ The suggested organizations, engagements and rates in the source proposal are
 unverified personal context. This draft uses anonymous examples and seeds none of
 them. A program, department, customer and legal payer may be different entities.
 In particular, a project name does not establish who pays for its work.
+
+The Operator-supplied review is incorporated: P0 preserves reported compensation
+classification and optional event/location context, P0a includes informal CSV/JSON
+reports, and finance is split into P1a–P1c. The proposal remains unadopted.
 
 ## 2. What the current implementation actually provides
 
@@ -65,7 +70,12 @@ optimistically versioned head and immutable retained revisions. Preserve:
 - Reported work description, optional outcome and category.
 - Time information and its precision: bounded intervals, duration-only, or
   explicitly incomplete/unquantified work. Unknown duration is not zero.
-- Optional organization, engagement, project, Item and Task references.
+- Optional organization, engagement, project, Item, Task and existing Event
+  references, with the event link exposed as `event_ref`.
+- Optional `reported_compensation_class`: `billable`, `paid_work`, `unpaid` or
+  `unknown`, retained as an assertion rather than evaluated eligibility.
+- Optional `work_mode` (`remote`, `onsite` or `travel`), `reported_location` text
+  and `place_ref` to an existing place entity. Omission leaves location/mode unknown.
 - Genuine request/evidence roots, source method and any uncertainty.
 - Active segments/breaks, lifecycle, correction and split/merge lineage.
 
@@ -87,6 +97,8 @@ Useful behavior includes:
   explicitly reported breaks, without requiring a compensation policy.
 - “Three hours on Project A yesterday” records a dated duration. It invents
   neither clock bounds nor an employer association.
+- “Three billable hours for Client A” preserves the reported billable classification
+  even when no rate or compensation policy has been configured.
 - “Actually, that session ended at 6:15” corrects the selected current revision,
   retains its earlier reading and recalculates affected current summaries.
 - An unknown payer or project can remain a reported label/unresolved attribution.
@@ -101,6 +113,14 @@ Use a small lifecycle such as running/paused/recorded/retracted; represent missi
 attribution, precision, review and financial disposition as separate facets.
 “Corrected” describes revision history, not a new kind of work.
 
+Reported compensation classification is available in P0a logging, corrections,
+queries and exports. `paid_work` means work reported as intended for compensation;
+it does not mean wages were received. `billable` does not establish an eligible
+claim. Omitted/unknown classification needs no follow-up before recording work.
+Later policy evaluation records its own eligibility/result without rewriting the
+reported assertion. An explicit classification correction creates a new revision;
+the original assertion and its provenance remain readable.
+
 ### Engagement and attribution
 
 Introduce a typed engagement for a particular employment, contract, research,
@@ -109,7 +129,7 @@ does not require an affiliation/person-bootstrap ceremony before recording work.
 
 Its initial useful fields are a label, relationship kind, organization/payer refs
 where known, effective dates at their reported precision, and role/reporting notes.
-P1 attaches typed compensation and reporting policy revisions. Unknown terms
+P1a attaches typed compensation and reporting policy revisions. Unknown terms
 remain unknown. Personal and unpaid work need no payer or rate configuration.
 
 Organization, sponsoring team and legal employer/payer must remain distinguishable.
@@ -211,13 +231,17 @@ contracts where needed; do not pretend existing CaseItem types already describe
 every new work/finance candidate. Restricted triage remains noncanonical.
 
 Missing rates, labels, optional receipts or review flags do not stop valid session
-recording, unrelated tasks or Calendar operations. They affect only calculations,
-claims or exports that depend on the missing facts. No activity evidence or empty
-work history proves inactivity or complete coverage.
+recording, informal work exports, unrelated tasks or Calendar operations. They
+affect only calculations or formal claims/documents that require those facts;
+informal reports retain the gaps. No activity evidence or empty work history
+proves inactivity or complete coverage.
 
 ## 6. Compensation, reporting and financial integrity
 
 These are downstream capabilities over work revisions, not P0 prerequisites.
+P1a supplies compensation evaluation and formal timesheets, P1b adds contractor
+invoices and reimbursable expenses, and P1c adds settlement and reconciliation.
+P0a's informal work report is already useful without any of these milestones.
 
 | Question | Canonical basis |
 | --- | --- |
@@ -227,9 +251,9 @@ These are downstream capabilities over work revisions, not P0 prerequisites.
 | What is owed? | An established obligation/claim with its adjustments |
 | What was received or reimbursed? | Recorded payment/credit and settlement allocations |
 
-### Effective-dated policies and calculations
+### Effective-dated policies and calculations: P1a
 
-P1 introduces typed, versioned compensation/reporting policies. Facts and free-text
+P1a introduces typed, versioned compensation/reporting policies. Facts and free-text
 Preferences can supply supporting terms, not silently become executable policy.
 Policies specify applicable engagement/employer, dates, currency, basis, reporting
 timezone/week/period boundaries, rounding and any configured hour-limit/overtime
@@ -253,14 +277,21 @@ an unexplained balance. Return estimates, policy coverage and unresolved amounts
 separately. Gross compensation, expense reimbursement and received net money must
 not collapse into one “earnings” number.
 
-### Timesheets, invoices and claim allocation
+### Formal reporting and claim integrity: P1a–P1b
 
-Prepare reporting periods from engagement rules or explicit bounds. A timesheet
+P1a prepares reporting periods from engagement rules or explicit bounds. A timesheet
 can be drafted with missing rates; identify missing/unplaced time, classification
 and overlap issues. Its own preparation/review/submission/approval/rejection state
 is independent of payment. Preparing/exporting a report is not external submission.
 
-Use a typed claim/allocation mechanism before introducing financial documents.
+Introduce the contribution/claim identity and quantity protections with P1a's
+formal timesheets, before they can represent a submitted compensation claim.
+Pin exact contributions, retain corrections and prevent duplicate claims for the
+same purpose. This dependency does not pull invoices, expenses or settlement into
+P1a. P1b extends the same mechanism to contractor invoices, partial billable
+allocations and reimbursable expenses; it must not create a second claim ledger.
+
+Use a typed claim/allocation mechanism before introducing claim-bearing documents.
 Bind contributions to exact work/expense revisions, quantities, policy revisions
 and economic obligation/purpose. Atomically prevent duplicate reserved/issued claims
 for the same eligible quantity. Timesheet and invoice references may legitimately
@@ -292,6 +323,9 @@ session/rate correction updates current reports and marks affected documents for
 reconciliation. It never silently changes an earlier invoice, official timesheet
 or its PDF. Use retained replacements, amendments, credit notes and adjustments.
 Draft regeneration reports its changed basis and requires current versions.
+P1a/P1b must retain reconciliation flags from the outset; financial credit and
+settlement workflows arrive in P1c. Their absence never permits an issued snapshot
+to be rewritten.
 
 Invoice issuance/finalization and delivery are different operations. Due/overdue,
 outstanding and partially paid amounts derive from obligations, dates and settlement
@@ -302,7 +336,7 @@ The operator can record that a manual submission, approval or delivery occurred;
 retain it as a reported observation without inventing successful provider execution.
 An external reporting integration is not required for useful manual bookkeeping.
 
-### Expenses and settlement
+### Reimbursable expenses: P1b
 
 Expense records are separate from hours and wages. Preserve amount/currency,
 incurred date, vendor/category and attribution where known, reimbursement eligibility,
@@ -311,11 +345,15 @@ flight does not establish paid travel time or ownership of purchased equipment.
 Missing optional receipt capture does not prevent recording an expense; a configured
 claim requirement can affect the reimbursement claim only.
 
-Track refunds, credits, partial approvals/reimbursements and unapplied amounts.
-Use stable external transaction identities for reliable deduplication; matching
-date/vendor/amount alone is only a duplicate candidate. Financial evidence is
-sensitive: reuse protected source/blob retention, avoid unnecessary receipt copies,
-and never place raw documents or payment details in invocation logs or webhooks.
+P1b tracks expense eligibility, claim amounts and reported submission/approval
+separately from money received. P1c adds refunds, credits, partial reimbursements
+and unapplied amounts. Use stable external transaction identities for reliable
+deduplication; matching date/vendor/amount alone is only a duplicate candidate.
+Financial evidence is sensitive: reuse protected source/blob retention, avoid
+unnecessary receipt copies, and never place raw documents or payment details in
+invocation logs or webhooks.
+
+### Payments, credits and reconciliation: P1c
 
 A payment record represents reported or externally observed money received, with
 that distinction preserved. Settlement allocations connect it to obligations and
@@ -334,6 +372,19 @@ Planned activity, commitment firmness and reported actual activity are separate
 dimensions. A planned block may itself be a commitment; do not force them into
 mutually exclusive time types. Link actual work to related plans/events without
 silently rewriting their original schedule or assuming attendance.
+
+P0a exposes optional `event_ref` on log/update/read contracts. It must resolve to
+an existing owner-accessible Docket `evt_` record; linking it neither creates nor
+edits the event and is not independent evidence of attendance or completion.
+Work may differ from the event's schedule. The link never supplies missing actual
+start/end bounds automatically.
+
+P0a also preserves reported `work_mode`, `reported_location` and optional
+`place_ref`; validate the latter against existing `ent_` entities of kind `place`.
+These fields are optional context, independent of reporting timezone, payer,
+compensation eligibility and expense reimbursement. Remote/onsite/travel is a
+reported mode, not inferred physical-location evidence or proof of paid travel.
+No place-creation ceremony is required to retain a location label or log valid work.
 
 Logging actual work creates no Calendar/provider intent by default. Optional
 actual-time visualization is an explicit projection with stable correlation,
@@ -357,8 +408,10 @@ historical/as-of views; absent reports do not mean nothing was accomplished.
 ## 8. Native context, commands and follow-up
 
 Extend the current native context pattern, not the retired generic compiler.
-A work packet supplies timezone/date, available engagements/projects, active timer,
-observed target versions, coverage, relevant policy summaries and useful actions.
+A work packet supplies timezone/date, available engagements/projects, relevant
+event/place references when useful, active timer, observed target versions,
+coverage, reported classification/mode choices, relevant policy summaries and
+useful actions. Optional context choices are not a mandatory questionnaire.
 Reuse suitable context without a TTL/reread ceremony. Do not invent TriageRuns
 to obtain an editing context or return the whole professional/financial history.
 
@@ -366,11 +419,13 @@ Proposed public vocabulary, to be verified with actual model-generated schemas:
 
 | Phase | Tools/workflow |
 | --- | --- |
-| P0 reads | `docket_get_work_context`, `docket_query_work_sessions`; reuse entity/project/task/history reads |
-| P0 recording | `docket_log_work_session`, `docket_update_work_session` including explicit retraction |
-| P0 timers | `docket_start_work_session`, `docket_pause_work_session`, `docket_resume_work_session`, `docket_stop_work_session`; explicit switch behavior |
-| P0 attribution | `docket_create_engagement`, `docket_update_engagement`; split/merge as bounded named business operations |
-| P1 | Work/reporting context, effective policy commands, timesheet preparation, invoice drafting/finalization, expense recording and settlement allocation |
+| P0a reads/reports | `docket_get_work_context`, `docket_query_work_sessions` with informal JSON/CSV output; reuse entity/project/task/history reads |
+| P0a recording | `docket_log_work_session`, `docket_update_work_session` including explicit retraction |
+| P0a attribution | `docket_create_engagement`, `docket_update_engagement` |
+| P0b timers/lineage | `docket_start_work_session`, `docket_pause_work_session`, `docket_resume_work_session`, `docket_stop_work_session`; explicit switch and bounded named split/merge operations |
+| P1a | Work/reporting context, effective policy commands, eligibility evaluation, reporting periods and formal timesheets with contribution/claim protection |
+| P1b | Contractor invoice drafting/finalization and expense recording, extending the same claim-allocation basis |
+| P1c | Payment recording, partial settlement, credits and financial reconciliation |
 | P2 | `docket_get_workload_context`, work/outcome summaries and bounded exception reconciliation |
 | P3 | Only concrete separately specified provider operations |
 
@@ -394,6 +449,9 @@ Illustrative P0 inputs, using references returned by the proposed work context:
   "start": "2026-11-05T10:00:00-08:00",
   "end": "2026-11-05T12:30:00-08:00",
   "timezone": "America/Los_Angeles",
+  "reported_compensation_class": "billable",
+  "work_mode": "onsite",
+  "reported_location": "Client A lab",
   "description": "Investigated intermittent device enumeration"
 }
 ```
@@ -411,11 +469,16 @@ Illustrative P0 inputs, using references returned by the proposed work context:
 ```
 
 These are future flat contracts, not payloads for today's Item/Time tools.
+Either time shape may also carry optional `event_ref`, `place_ref`, work mode
+and reported compensation classification; none requires the others. Context
+supplies existing references when needed. Updates can explicitly clear these
+optional fields, retaining their prior values in immutable revisions.
 Accept the two time shapes with clear field rules rather than a giant mutation
 union. Public errors identify the field and next useful action. Return a compact
 work reference, recorded precision, duration/active-timer as-of state, attribution
-and affected readiness issues. Preserve the existing 2/8/4 KiB instruction/context/
-routine-schema targets and 16 KiB normal output budget.
+and affected readiness issues, with reported classification separate from evaluated
+eligibility. Preserve the existing 2/8/4 KiB instruction/context/routine-schema
+targets and 16 KiB normal output budget.
 
 Queries compute totals over the full matching set, separately from paginated
 samples. Report recorded quantities, unique timed coverage, unplaced/duration-only
@@ -424,6 +487,32 @@ Never present a page subtotal or potentially double-counted sum as complete veri
 hours. Support engagement/project/day/week views and explicit period timezone.
 Queries over several years use indexed server aggregates and bounded pages, not
 model-side summation of every historical session.
+
+### Informal work reports: P0a
+
+Return ordinary daily/weekly summaries by engagement/organization and project, with
+unresolved attribution in its own bucket and a total of reported hours. Make the
+same filtered report available as JSON or CSV through the work-query surface;
+no finance setup or separate reporting lifecycle is required. Preserve the period,
+timezone, as-of basis, known quantities and incomplete/overlap flags in either
+format. Detail exports retain work references, reported classification and optional
+event/mode/location fields. Read authority is sufficient; exporting creates no
+claim, submission, payment or provider intent.
+
+For example, a synthetic weekly report could show Client A 12.5 h, Employer B
+8.0 h and Employer C 6.5 h, totaling 27.0 reported hours. These numbers are
+illustrative, not operator records. Label this an informal reported-work summary,
+not a verified or submitted timesheet. Unknown durations remain unknown, not zero;
+open estimates and potentially overlapping time remain distinguishable from
+recorded completed time and unique timed coverage.
+
+JSON, CSV and ordinary query totals must use the same calculation basis over the
+full matching set, independent of detail-page size. Support bounded continuation
+for larger exports under existing output limits without silently truncating rows
+or changing the report basis between pages. Formal document snapshots and financial
+exports remain P1 capabilities; do not defer this basic export until then.
+
+### Selective follow-up
 
 Follow-up is exception-driven: forgotten timers, material overlap, reporting cutoff,
 unclassified claimable work and overdue obligations. Reuse retained inbox,
@@ -435,17 +524,21 @@ the old reminder subject constraint. A weekly reconciliation is optional.
 
 ## 9. Implementation and rollout
 
-P0 is the recommended first implementation boundary. P1/P2 retain the direction
-and integrity requirements here; their concrete calculations/document contracts
-should be settled after the work primitive is exercised. External P3 integrations
-need a separate concrete provider delta. These are delivery boundaries, not a new
-manual sign-off gate for each ordinary command.
+P0a is the first implementation target: create a minimal engagement when useful,
+record incomplete work, correct it, and retrieve/export hours across engagements.
+P0b completes timer and lineage workflows. P1a–P1c/P2 retain the direction and
+integrity requirements here; their concrete calculation/document contracts should
+be settled after the work primitive is exercised. External P3 integrations need
+a separate concrete provider delta. These are delivery boundaries, not a new manual
+sign-off gate for each ordinary command.
 
 | Milestone | Deliverable and completion condition |
 | --- | --- |
-| P0a | Typed work/revision/segment and minimal engagement persistence; flat retrospective/duration-only logging, corrections and daily/weekly queries through real MCP/PostgreSQL. No money prerequisite. |
-| P0b | Durable timers, pause/resume, explicit switch, overlap reporting and split/merge lineage. Multi-engagement work is usable without an external timesheet spreadsheet. Together P0a/P0b complete core attribution. |
-| P1 | Typed effective policies, quantities/claim allocation, timesheet and invoice snapshots, expenses, payments and adjustments. The same work basis can support an employee report and a contractor invoice without conflation or duplicate claims. |
+| P0a | Typed work/revision/segment and minimal engagement persistence; flat retrospective/duration-only logging, corrections, reported compensation classification, optional event/mode/location context and daily/weekly queries with overlap flags and informal CSV/JSON export through real MCP/PostgreSQL. No money prerequisite or external spreadsheet. |
+| P0b | Durable timers, pause/resume, explicit switch and split/merge lineage for resolving overlaps and attribution. Together P0a/P0b complete core attribution. |
+| P1a | Effective-dated rates/policies, compensable-time evaluation, reporting periods and formal timesheets. Exact contribution identity, immutable submitted snapshots and duplicate-claim protection exist before formal claims are recorded. |
+| P1b | Contractor invoices and reimbursable expenses, extending P1a's contribution/claim basis to partial billable/expense allocations and reusing atomic quantity reservations. Employee reports and contractor invoices cannot double-charge the same obligation. |
+| P1c | Payments, partial settlement, credits, adjustments and financial reconciliation. Received money stays distinct from earned, reported, invoiced and reimbursable amounts. |
 | P2 | Source-grounded workload/outcome views, exception detection and selective inbox follow-up. Missing coverage remains explicit; no global daily administration requirement. |
 | P3 | Chosen external reporting/delivery/observation adapters with scoped credentials, provider intent, idempotency and uncertain-outcome reconciliation. |
 
@@ -486,13 +579,16 @@ credentials or external submission are requested by this draft.
 | First valid call | An independent MCP client logs 10:00–12:30 as 2.5 hours from flat fields; one canonical work record/revision, no forced Item/Event, no provider intent. Retry returns the same receipt. |
 | Incomplete reports | Three hours on a project/day remain duration-only with no invented timestamps or payer. Missing rates/receipts do not block recording. Unknown date/duration stay unknown and visible. |
 | Attribution | One project appears under two engagements and personal work without a global inferred payer. Unknown/future arrangements do not automatically become paid work. |
+| P0a reported classification | Reported `billable` survives logging, corrections, queries and exports without a rate policy. Later eligibility evaluation preserves that assertion separately. `paid_work` never marks payment received or eligibility verified. Omitted classification remains recordable. |
+| P0a event/location context | Optional existing Event/place links and remote/onsite/travel reports round-trip and can be corrected or cleared. Missing fields do not block logging; supplied references validate kind/ownership. No attendance, payer, compensation or provider effect is inferred. |
 | Clock math | Midnight, offset/zone changes, DST folds, pauses and breaks produce elapsed-UTC totals. Adjacent bounds do not overlap; ambiguous/nonexistent local input yields a field error. |
 | Timers and races | Crash/restart preserves an open timer. Duplicate start/stop and concurrent stop/correct/switch produce one valid transition or a useful stale conflict. Retrying does not recapture now. |
 | Corrections | Prior revisions remain readable; split/merge preserves known time and gaps; current totals exclude superseded parents. No unrelated workflow blocks on an overlap. |
 | Aggregation | Bounded pages and full-set totals agree; duration-only, open and overlapping reports are identified separately. Coverage never implies inactivity or completeness. |
-| P1 policy | A rate change affects only its effective scope; a boundary-crossing session uses both appropriate calculation segments. Raw time stays unchanged. Missing/conflicting policy leaves a partial estimate rather than fabricated money. |
-| P1 claims/documents | Concurrent drafts cannot double-reserve eligible quantities. Timesheet/invoice reporting can share lineage without double charging. A corrected/split work revision does not reset prior claims; it flags adjustments to an issued snapshot rather than editing it. |
-| P1 settlement | Partial payments/reimbursements, credits, reversals and unexplained net/gross differences remain exact and auditable. A sent invoice or expected-payment message never marks paid. |
+| P0a informal export | Query, JSON and CSV agree on a synthetic 12.5 + 8.0 + 6.5 = 27.0 reported-hour week across engagements, including full totals across detail pages. Additional unknown/open/overlapping reports preserve their flags and calculation basis. Export is useful without rates and never implies a formal timesheet, claim or submission. |
+| P1a policy/timesheets | A rate change affects only its effective scope; a boundary-crossing session uses both appropriate calculation segments. Raw time and reported classification stay unchanged. Missing/conflicting policy leaves a partial estimate. Formal submissions pin exact contributions, retain prior snapshots and prevent duplicate same-purpose claims before P1b exists. |
+| P1b claims/documents | Concurrent drafts cannot double-reserve eligible quantities. Timesheet/invoice reporting shares P1a lineage without double charging. A corrected/split work revision does not reset prior claims; it flags adjustments to an issued snapshot rather than editing it. Expense claims stay distinct from hours/wages. |
+| P1c settlement | Partial payments/reimbursements, credits, reversals and unexplained net/gross differences remain exact and auditable. A sent invoice or expected-payment message never marks paid. |
 | P2 intelligence | A scheduled meeting can suggest missing work but cannot create performed/paid hours automatically. Capacity states source coverage and assumptions. Optional outcomes and low-noise exception follow-up remain useful without minute-by-minute tracking. |
 | Authority/privacy | Token/local-grant revocation and owner isolation hold for new contexts/records/exports. Restricted triage cannot write work or money. No fabricated utterance or raw source/payment data appears in invocation logs. Full approved automation retains its existing capability. |
 | Operations | Fresh and populated PostgreSQL migration/recovery rehearsals pass as appropriate. Existing native calendar/task flows still pass; the same registered plugin exposes the implemented flat surface after refresh. |
@@ -530,6 +626,7 @@ Inspected primary implementation sources:
   [public business schemas](../src/docket/schemas/business.py) and
   [current capability disposition](../docs/native-capabilities.md).
 
-Drafting used repository inspection and the supplied proposal. No production
-personal/financial records or external legal/payroll rules were queried. This draft
-changes no runtime, migration, permission, provider configuration or adopted SPEC.
+Drafting used repository inspection, the supplied proposal and its four-amendment
+review. No production personal/financial records or external legal/payroll rules
+were queried. This draft changes no runtime, migration, permission, provider
+configuration or adopted SPEC.
