@@ -61,6 +61,7 @@ from docket.models.intelligence import (
     TriageRun,
 )
 from docket.models.native_context import NativeContext, PreparedCommand
+from docket.models.native_outcomes import NativeOutcome
 from docket.models.notifications import (
     MCPEventAttempt,
     MCPEventDelivery,
@@ -171,6 +172,7 @@ __all__ = [
     "MCPEventDelivery",
     "MCPEventSubscription",
     "NativeContext",
+    "NativeOutcome",
     "OAuthPrincipal",
     "Operation",
     "OperationTarget",

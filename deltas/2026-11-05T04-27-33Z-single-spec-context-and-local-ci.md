@@ -2,7 +2,7 @@
 
 Date: November 4, 2026 (America/Los_Angeles)
 Draft timestamp: 2026-11-05 04:27:33 UTC
-Status: adopted for SPEC 1.0; implementation in progress
+Status: adopted for SPEC 1.0; candidate implemented, final activation pending
 Inspected baseline: `60c30ce5aea241b78b36fc75e51481b4680e496d`
 
 ## 1. What changes

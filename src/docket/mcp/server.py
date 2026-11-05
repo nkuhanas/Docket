@@ -9,6 +9,7 @@ from pydantic import Field, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from docket.agent_auth import agent_call_context
 from docket.config import get_settings
 from docket.database import get_session_factory, session_scope
 from docket.domain.errors import DocketError
@@ -607,7 +608,12 @@ def docket_list_provider_calendar_events(
     tool never mutates a provider.
     """
     try:
-        if relative_day is not None and (request_ref or operator_utterance_ref) is None:
+        caller = agent_call_context.get()
+        native_read = caller is not None and caller.principal.integration == "oauth"
+        if (
+            relative_day is not None and (request_ref or operator_utterance_ref) is None
+            and not native_read
+        ):
             raise DocketError(
                 code="calendar_message_context_required",
                 message="Relative dates require the gateway's captured message binding.",

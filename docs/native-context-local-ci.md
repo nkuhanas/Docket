@@ -3,21 +3,21 @@
 Requirements: [SPEC 1.0](../SPEC.md). Adopted change:
 [November 4 delta](../deltas/2026-11-05T04-27-33Z-single-spec-context-and-local-ci.md).
 
-Implementation is in progress; this report does not claim the new command catalog
-is deployed. Baseline: `60c30ce5aea241b78b36fc75e51481b4680e496d`.
+The candidate implementation is complete; full catalog deployment/host refresh
+remain pending final release validation. Baseline: `60c30ce5aea241b78b36fc75e51481b4680e496d`.
 
-The next slice retains all-day/recurring events and event context links, and
+The candidate retains all-day/recurring events and event context links, and
 composes owned previews into one atomic batch. Immutable consumption records
 prevent a member from executing twice; original request/draft ownership remains
-unchanged. This slice awaits catalog activation and PostgreSQL rehearsal.
+unchanged. Catalog activation and PostgreSQL rehearsal are pending.
 
 | Measurement | Baseline | Implemented result |
 | --- | --- | --- |
-| Test modules / expanded cases | 102 / 1,139 | 90 modules / 963 retained cases (176 fewer cases net) |
-| Full pytest | About 92 seconds | 160 native cases passed in 10.74 seconds; static checks passed |
-| Stage schema | 109,578 bytes / 113 definitions | Pending command cutover |
-| Global MCP instructions | 25,981 bytes | Pending command cutover |
-| Canonical mutation variants | 47 | Capability disposition pending |
+| Test modules / expanded cases | 102 / 1,139 | 91 modules / 982 retained cases (157 fewer cases net) |
+| Full pytest | About 92 seconds | 179 native cases passed in 15.74 seconds; static checks passed |
+| Stage schema | 109,578 bytes / 113 definitions | 2,650-byte create / 3,352-byte update; all write schemas ≤3,508 bytes |
+| Global MCP instructions | 25,981 bytes | 1,643 bytes |
+| Canonical mutation variants | 47 | All 47 retained; [mapping](native-capabilities.md) |
 
 Retired gateway tests exercise Hermes hooks, Discord ingress, native image
 preparation and schema disclosure. Shared domain behavior remains covered by
@@ -89,3 +89,26 @@ prepare/read/apply. Coverage includes sparse patches, current target versions,
 unknown-after-write reconciliation and correction handles sharing one authentic
 request with immutable revisions. No production business effects are part of
 these synthetic checks.
+
+
+## Candidate catalog cutover
+
+The candidate has 84 tools (54 writes, 27 reads and three restricted triage tools).
+This is measured inventory, not a fixed count invariant. Generic stage/review/commit
+and the public three-field work envelope leave native discovery. Exact apply handles,
+flat event/task commands, named domain operations, conflict/clarification, optional
+reported capture and owner-scoped saved-work recovery replace that choreography.
+The global runtime guidance is separate from the generated reference catalog.
+[Routine examples](native-command-examples.md) use the actual flat contracts.
+
+The pre-cutover production metadata inventory found zero native authenticated
+requests and zero native drafts, including zero unfinished drafts. It queried only
+state/count metadata, without raw arguments, content or credentials. Historical
+service-backed state remains retained; no rows or authentic roots were rewritten.
+
+Forward migrations `20261104d2e3` and `20261104e3f4` retain immutable batch consumption
+and bounded workflow receipts. Downgrades refuse to discard populated tables.
+The candidate smoke uses signed OAuth over real MCP/PostgreSQL: synthetic event
+create/retry/update/cancel, uncertain fake-provider reconciliation, tasks, exact
+preview correction races, atomic batching, optional capture and current revocation.
+This remains synthetic acceptance, not a real calendar operation or host UI test.

@@ -190,6 +190,8 @@ class NativeContextService:
             "tproj",
             "rem",
             "acct",
+            "conf",
+            "case",
         }
         objects: list[dict[str, Any]] = []
         versions: dict[str, int] = {}
@@ -226,7 +228,26 @@ class NativeContextService:
                     message="The selected object no longer exists.",
                     details={"field": "refs", "ref": ref},
                 )
-            if prefix == "acct":
+            if prefix == "case":
+                from docket.models import AttentionCaseRevision
+
+                revision_ref = self.session.scalar(
+                    select(AttentionCaseRevision.ref_id).where(
+                        AttentionCaseRevision.attention_case_id == row.id,
+                        AttentionCaseRevision.revision == row.latest_revision,
+                    )
+                )
+                state = {
+                    "title": row.title,
+                    "status": row.status,
+                    "current_revision_ref": revision_ref,
+                    "details": "Use docket_get_attention_case for items and untrusted sources.",
+                }
+            elif prefix == "conf":
+                from docket.services.conflicts import ConflictService
+
+                state = ConflictService(self.session).projection(row)
+            elif prefix == "acct":
                 state = {
                     "provider": row.provider,
                     "name": row.display_name,
@@ -275,6 +296,10 @@ class NativeContextService:
                 actions += ["docket_update_event", "docket_cancel_event"]
             if kind == "task":
                 actions += ["docket_update_task", "docket_complete_task"]
+            if kind == "conflict":
+                actions += ["docket_resolve_conflict"]
+            if kind == "attention_case":
+                actions += ["docket_resolve_attention_case"]
             objects.append(
                 {
                     "ref": ref,

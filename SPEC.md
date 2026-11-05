@@ -8,8 +8,8 @@ Implementation baseline: `60c30ce5aea241b78b36fc75e51481b4680e496d`
 
 This is Docket's single current specification. It consolidates the signed ontology
 and Operator amendments, including the adopted [context/local CI delta](deltas/2026-11-05T04-27-33Z-single-spec-context-and-local-ci.md).
-Adoption and deployment are distinct. The context/command cutover is in progress;
-the baseline still exposes the generic native compiler. Actual implementation
+Adoption and deployment are distinct. The native command/context candidate is
+implemented; final release validation and activation are pending. Actual implementation
 and deployment evidence belongs in [the implementation report](docs/native-context-local-ci.md).
 
 Forward changes use dated `deltas/YYYY-MM-DDTHH-MM-SSZ-description.md` records,
@@ -136,6 +136,11 @@ Optional prepare/read/apply supports requested previews, imports and atomic
 multi-object work. Preparation returns bounded preview and immutable opaque
 handle; apply uses the handle's durable retry identity. The internal compiler
 and isolated historical recovery can remain without public compiler aliases.
+Batching composes owned ready previews for distinct targets. Applied members
+recover the parent receipt instead of executing again. Conflict decisions can
+atomically include an exact business preview; attention dispositions use observed
+case versions/revisions. Bounded saved-work reads preserve exact historical JSON
+and authentic roots without silently translating or executing retired drafts.
 
 Global instructions briefly explain authority, trust, retries and delivery.
 Domain guidance lives in packets. Never inject this SPEC or a giant generated

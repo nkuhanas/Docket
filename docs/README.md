@@ -6,6 +6,7 @@ independent current specifications.
 
 * [Native context and local CI](native-context-local-ci.md) — current delta progress,
   test inventory and contract/cutover evidence.
+* [Native capability disposition](native-capabilities.md) and [flat command examples](native-command-examples.md).
 
 Start here when operating or changing the deployed stack:
 

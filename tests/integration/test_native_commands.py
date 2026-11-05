@@ -829,3 +829,301 @@ async def test_batch_applies_once_and_members_cannot_duplicate_canonical_effects
             )
             == 1
         )
+
+
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+@pytest.mark.asyncio
+async def test_clarification_and_saved_work_are_bounded_non_executable_and_owner_bound(
+    session_factory,
+    linked_plugin,
+):
+    from docket.services.oauth import OAuthPrincipalService
+
+    app, settings, token, _principal = linked_plugin
+    with session_factory.begin() as session:
+        OAuthPrincipalService(session, settings).approve("other-owner", write=True)
+    async with (
+        app.router.lifespan_context(app),
+        httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app), headers={"Authorization": "Bearer " + token}
+        ) as http,
+        Client(
+            streamable_http_client("http://docket.you/mcp/", http_client=http), mode="legacy"
+        ) as client,
+    ):
+        question = {
+            "operation_id": "choose-time",
+            "question": "Which time?",
+            "choices": [
+                {"option_id": "morning", "label": "Morning", "interpretation": {"time": "morning"}},
+            ],
+        }
+        first = (
+            await client.call_tool("docket_request_clarification", question)
+        ).structured_content
+        assert first.get("disposition") == "clarification_required", first
+        replay = (
+            await client.call_tool("docket_request_clarification", question)
+        ).structured_content
+        assert replay["replayed"] and replay["ref"] == first["ref"]
+        changed = (
+            await client.call_tool(
+                "docket_request_clarification",
+                {
+                    **question,
+                    "question": "Different question",
+                },
+            )
+        ).structured_content
+        assert changed["error"]["code"] == "operation_id_reused"
+        context = (await client.call_tool("docket_get_overview", {})).structured_content
+        preview = (
+            await client.call_tool(
+                "docket_create_task",
+                {
+                    "context_id": context["context_id"],
+                    "operation_id": "saved-task",
+                    "title": "Saved task",
+                    "preview": True,
+                },
+            )
+        ).structured_content
+        read = (
+            await client.call_tool(
+                "docket_read_change",
+                {
+                    "change_id": preview["change_id"],
+                },
+            )
+        ).structured_content
+        saved_args = {"saved_request_ref": read["request_ref"]}
+        saved = (await client.call_tool("docket_read_saved_work", saved_args)).structured_content
+        assert "Saved task" in saved["saved_json_chunk"] and saved["revision"] == 1, saved
+        listed = (await client.call_tool("docket_list_saved_work", {})).structured_content
+        assert read["request_ref"] in [row["request_ref"] for row in listed["requests"]]
+        http.headers["Authorization"] = "Bearer " + app.state.test_issue_token(sub="other-owner")
+        rejected = (await client.call_tool("docket_read_saved_work", saved_args)).structured_content
+        assert rejected["error"]["code"] == "saved_work_unavailable"
+
+
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+@pytest.mark.asyncio
+async def test_conflict_resolution_can_atomically_consume_an_exact_business_preview(
+    session_factory,
+    linked_plugin,
+):
+    from docket.agent_auth import AgentCallContext, agent_call_context
+    from docket.models import Conflict, Task
+    from docket.schemas.authority import ConflictOpen, StatementInput
+    from docket.services.agent_requests import AgentRequestService
+    from docket.services.conflicts import ConflictService
+    from docket.services.statements import StatementService
+
+    app, _settings, token, _principal = linked_plugin
+    principal = app.user_middleware[0].kwargs["verifier"].authenticate(token, session_factory)
+    context_token = agent_call_context.set(AgentCallContext(principal))
+    try:
+        with session_factory.begin() as session:
+            roots = [
+                AgentRequestService(session).admit(request_key=key)
+                for key in ("prior-time", "incoming-time")
+            ]
+            subject = "ent_01M13MZZZZZZZZZZZZZZZZZZZZ"
+            statements = [
+                StatementService(session).derive(
+                    root.ref_id,
+                    [
+                        StatementInput(
+                            statement_kind="fact_assertion",
+                            subject_refs=[subject],
+                            predicate="office_hours",
+                            value_json=value,
+                            affected_fields=["office_hours"],
+                            interpreter_version="test-v1",
+                        )
+                    ],
+                )[0]
+                for root, value in zip(roots, ("Monday", "Wednesday"), strict=True)
+            ]
+            prior_ref, incoming_ref = [row.ref_id for row in statements]
+            conflict_ref = (
+                ConflictService(session)
+                .open(
+                    ConflictOpen(
+                        subject_refs=[subject],
+                        affected_fields=["office_hours"],
+                        prior_statement_refs=[prior_ref],
+                        incoming_statement_refs=[incoming_ref],
+                        conflicting_effects_json={"prior": "Monday", "incoming": "Wednesday"},
+                    )
+                )
+                .ref_id
+            )
+    finally:
+        agent_call_context.reset(context_token)
+    async with (
+        app.router.lifespan_context(app),
+        httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app), headers={"Authorization": "Bearer " + token}
+        ) as http,
+        Client(
+            streamable_http_client("http://docket.you/mcp/", http_client=http), mode="legacy"
+        ) as client,
+    ):
+        context = (await client.call_tool("docket_get_overview", {})).structured_content
+        preview = (
+            await client.call_tool(
+                "docket_create_task",
+                {
+                    "context_id": context["context_id"],
+                    "operation_id": "conflict-task",
+                    "title": "Resolved work",
+                    "preview": True,
+                },
+            )
+        ).structured_content
+        conflict = (
+            await client.call_tool(
+                "docket_get_context",
+                {
+                    "refs": [conflict_ref],
+                },
+            )
+        ).structured_content
+        arguments = {
+            "context_id": conflict["context_id"],
+            "operation_id": "resolve-time",
+            "conflict_ref": conflict_ref,
+            "resolution": "resolved_supersession",
+            "chosen_interpretation": {"office_hours": "Wednesday"},
+            "statements_superseded": [prior_ref],
+            "statements_retained": [incoming_ref],
+            "change_id": preview["change_id"],
+        }
+        resolved = (await client.call_tool("docket_resolve_conflict", arguments)).structured_content
+        assert resolved.get("disposition") == "committed", resolved
+        replay = (await client.call_tool("docket_resolve_conflict", arguments)).structured_content
+        assert replay["replayed"] and replay["ref"] == resolved["ref"]
+        member = (
+            await client.call_tool(
+                "docket_apply_change",
+                {
+                    "change_id": preview["change_id"],
+                },
+            )
+        ).structured_content
+        assert member["replayed"] and member["ref"] == resolved["ref"], member
+    with session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(Task)) == 1
+        assert session.scalar(select(Conflict.status)) == "resolved_supersession"
+
+
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+@pytest.mark.asyncio
+async def test_attention_resolution_blocks_only_affected_case_and_keeps_request_attribution(
+    session_factory,
+    linked_plugin,
+):
+    from docket.models import AttentionCase, AttentionCaseRevision, CaseItem, Decision
+    from docket.models.base import utc_now
+
+    app, _settings, token, principal_ref = linked_plugin
+    with session_factory.begin() as session:
+        case = AttentionCase(
+            situation_key="synthetic-case",
+            title="Synthetic case",
+            summary="Case",
+            first_observed_at=utc_now(),
+            last_observed_at=utc_now(),
+        )
+        session.add(case)
+        session.flush()
+        items = [
+            CaseItem(
+                attention_case_id=case.id,
+                item_key=role,
+                item_type="decision_required",
+                resolution_role=role,
+            )
+            for role in ("required", "supporting")
+        ]
+        session.add_all(items)
+        session.flush()
+        case_ref = case.ref_id
+        item_ref = items[0].ref_id
+        session.add(
+            AttentionCaseRevision(
+                attention_case_id=case.id,
+                case_ref=case.ref_id,
+                revision=1,
+                title=case.title,
+                summary=case.summary,
+                case_item_refs=[row.ref_id for row in items],
+                admission_rule_ref="synthetic",
+                admission_basis_refs=[],
+                required_case_item_refs=[item_ref],
+                canonical_consequence_classes=[],
+                content_hash="a" * 64,
+            )
+        )
+    async with (
+        app.router.lifespan_context(app),
+        httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app), headers={"Authorization": "Bearer " + token}
+        ) as http,
+        Client(
+            streamable_http_client("http://docket.you/mcp/", http_client=http), mode="legacy"
+        ) as client,
+    ):
+        context = (
+            await client.call_tool(
+                "docket_get_context",
+                {
+                    "refs": [case_ref],
+                },
+            )
+        ).structured_content
+        args = {
+            "context_id": context["context_id"],
+            "case_ref": case_ref,
+            "outcome": "resolved",
+            "operation_id": "case-resolve",
+        }
+        blocked = (await client.call_tool("docket_resolve_attention_case", args)).structured_content
+        assert blocked.get("ok") is False, blocked
+        overview = (await client.call_tool("docket_get_overview", {})).structured_content
+        unrelated = (
+            await client.call_tool(
+                "docket_create_task",
+                {
+                    "context_id": overview["context_id"],
+                    "operation_id": "independent-task",
+                    "title": "Unrelated work",
+                },
+            )
+        ).structured_content
+        assert unrelated.get("disposition") == "committed", unrelated
+        resolved = (
+            await client.call_tool(
+                "docket_resolve_attention_case",
+                {
+                    **args,
+                    "items": [{"case_item_ref": item_ref, "disposition": "resolved"}],
+                },
+            )
+        ).structured_content
+        assert resolved.get("disposition") == "committed", resolved
+    with session_factory() as session:
+        assert session.scalar(select(AttentionCase.status)) == "resolved"
+        assert {row.status for row in session.scalars(select(CaseItem))} == {
+            "resolved",
+            "not_pursued",
+        }
+        assert (
+            session.scalar(
+                select(Decision.actor_ref).where(
+                    Decision.decision_kind == "attention_case_resolution"
+                )
+            )
+            == principal_ref
+        )
