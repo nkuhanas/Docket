@@ -6,6 +6,11 @@ Requirements: [SPEC 1.0](../SPEC.md). Adopted change:
 Implementation is in progress; this report does not claim the new command catalog
 is deployed. Baseline: `60c30ce5aea241b78b36fc75e51481b4680e496d`.
 
+The next slice retains all-day/recurring events and event context links, and
+composes owned previews into one atomic batch. Immutable consumption records
+prevent a member from executing twice; original request/draft ownership remains
+unchanged. This slice awaits catalog activation and PostgreSQL rehearsal.
+
 | Measurement | Baseline | Implemented result |
 | --- | --- | --- |
 | Test modules / expanded cases | 102 / 1,139 | 90 modules / 963 retained cases (176 fewer cases net) |

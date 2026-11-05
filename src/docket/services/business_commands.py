@@ -33,7 +33,13 @@ def public_validation_error(error: ValidationError) -> DocketError:
     issues = []
     for issue in error.errors(include_url=False, include_input=False):
         location = [
-            "target_ref" if part == "object_ref" else part
+            {
+                "object_ref": "target_ref",
+                "start_local": "start",
+                "start_date": "start",
+                "end_local": "end",
+                "end_date": "end",
+            }.get(str(part), str(part))
             for part in issue["loc"]
             if part not in {"payload", "create_spec", "replacement"}
         ]
@@ -52,7 +58,16 @@ def public_validation_error(error: ValidationError) -> DocketError:
 
 
 def _named_refs(value: Any, field_name: str = "") -> set[str]:
-    if field_name in {"source_refs", "basis_refs"}:
+    if field_name in {
+        "source_refs",
+        "basis_refs",
+        "value_json",
+        "metadata_json",
+        "policy_json",
+        "scope_json",
+        "applicability_scope",
+        "interpretation_json",
+    }:
         return set()
     if isinstance(value, str):
         return {value} if field_name.endswith(("_ref", "_refs")) and is_public_ref(value) else set()
@@ -75,6 +90,8 @@ def context_targets(context: NativeContext) -> set[str]:
             for name in ("ref", "account_ref", "calendar_ref", "event_ref"):
                 if isinstance(obj.get(name), str):
                     targets.add(obj[name])
+    for obj in context.snapshot.get("objects", []):
+        targets.update(_named_refs(obj.get("state", {})))
     return targets
 
 
@@ -92,6 +109,17 @@ def mutation_plan(
                 "refs": sorted(missing)[:25],
                 "next_action": "docket_get_context",
             },
+        )
+    unobserved = {
+        action["object_ref"]
+        for action in actions
+        if action.get("object_ref") and action["object_ref"] not in context.versions
+    }
+    if unobserved:
+        raise DocketError(
+            code="target_version_not_observed",
+            message="Read the objects being changed to observe their versions.",
+            details={"field": "context_id", "refs": sorted(unobserved)},
         )
     # The existing compiler also recognizes opaque public-ref-shaped strings.
     # Admitting them as correlation never grants permission or invents a target version.

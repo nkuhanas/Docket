@@ -69,6 +69,7 @@ from docket.models.notifications import (
 )
 from docket.models.oauth import OAuthPrincipal
 from docket.models.policy import LaneRoutingDecision, Preference
+from docket.models.prepared_batches import PreparedConsumption
 from docket.models.projections import OperatorProjection, ProjectionDelivery
 from docket.models.provenance import (
     AgentResponse,
@@ -182,6 +183,7 @@ __all__ = [
     "PluginNotification",
     "Preference",
     "PreparedCommand",
+    "PreparedConsumption",
     "ProjectionDelivery",
     "ProviderAccount",
     "ProviderEventBinding",

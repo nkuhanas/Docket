@@ -346,6 +346,7 @@ _native_business_entries: tuple[ToolContractEntry, ...] = tuple({
     "required_next_action": "Follow returned context/receipt; retry unchanged operation IDs.",
     "important_errors": "context_unavailable|timezone_offset_conflict|operation_id_reused",
 } for index, (name, purpose) in enumerate((
+    ("docket_prepare_batch", "Combine owned previews into one atomic canonical/provider change."),
     ("docket_read_change", "Read the exact retained preview, state and field issues."),
     ("docket_apply_change", "Commit the exact owned proposal with current permissions."),
     ("docket_get_context", "Read selected objects, versions and available actions."),

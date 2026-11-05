@@ -71,6 +71,7 @@ class NativeContextService:
             {
                 "timezone": self.settings.timezone,
                 "current_date": datetime.now(ZoneInfo(self.settings.timezone)).date().isoformat(),
+                "provider_delivery_enabled": self.settings.external_writes_enabled,
                 "capabilities": {
                     "read": True,
                     "write": "commit" in principal.permissions,
@@ -159,7 +160,8 @@ class NativeContextService:
                     "absence_proven": False,
                 },
                 "guide": "Choose a calendar. Supply title, ISO start/end, timezone, operation_id. "
-                "Names in notes do not send invitations. Reuse suitable context.",
+                "Names in notes do not send invitations. Reuse suitable context. "
+                "Recurrence needs count or until_date; weekly needs weekdays, monthly month_days.",
             },
             {
                 **{lane.ref_id: lane.version for lane in lanes},
