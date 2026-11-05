@@ -49,11 +49,18 @@ def linked_plugin(session_factory, request):
         lambda _: httpx.Response(200, json={"keys": [jwk]}),
     )))
     now = int(time.time())
-    token = jwt.encode({
+    claims = {
         "iss": settings.plugin_oauth_issuer, "sub": "owner", "azp": "native-client",
         "aud": settings.plugin_public_origin, "iat": now, "exp": now + 3600,
         "scope": "docket.read docket.events docket.triage write commit",
-    }, key, algorithm="RS256", headers={"kid": "test-key"})
+    }
+
+    def issue_token(**changes):
+        return jwt.encode(
+            {**claims, **changes}, key, algorithm="RS256", headers={"kid": "test-key"},
+        )
+
+    token = issue_token()
     with session_factory.begin() as session:
         ref = OAuthPrincipalService(session, settings).approve(
             "owner", events=True, triage=getattr(request, "param", False),
@@ -64,6 +71,7 @@ def linked_plugin(session_factory, request):
     }).encode())
     app = create_plugin_app(settings, verifier=verifier, factory=session_factory, poster=poster)
     app.state.test_poster = poster
+    app.state.test_issue_token = issue_token
     return app, settings, token, ref
 
 
@@ -167,6 +175,38 @@ async def test_authentication_rejection_logs_only_bounded_reason_codes(
     assert "private-" not in json.dumps(logs) + response.text
     with session_factory() as session:
         assert session.scalar(select(func.count()).select_from(ToolInvocation)) == 0
+
+
+@pytest.mark.asyncio
+async def test_missing_scope_can_step_up_and_discover_tools_without_enrolling_again(
+    session_factory, linked_plugin,
+):
+    app, settings, granted_token, ref = linked_plugin
+    missing_scope_token = app.state.test_issue_token(scope="openid read write triage")
+    async with (
+        app.router.lifespan_context(app),
+        httpx2.AsyncClient(transport=httpx2.ASGITransport(app)) as http,
+    ):
+        response = await http.post("https://docket.you/mcp/", json={
+            "jsonrpc": "2.0", "id": "discovery", "method": "initialize", "params": {},
+        }, headers={"Authorization": f"Bearer {missing_scope_token}"})
+        assert response.status_code == 403
+        assert response.json() == {"error": "plugin_insufficient_scope"}
+        challenge = response.headers["www-authenticate"]
+        assert 'error="insufficient_scope"' in challenge
+        assert f'scope="{settings.plugin_read_scope}"' in challenge
+        metadata_url = settings.plugin_public_origin + "/.well-known/oauth-protected-resource"
+        assert f'resource_metadata="{metadata_url}"' in challenge
+        http.headers["Authorization"] = f"Bearer {granted_token}"
+        async with Client(streamable_http_client(
+            "https://docket.you/mcp/", http_client=http,
+        ), mode="legacy") as client:
+            assert len((await client.list_tools()).tools) == 24
+            result = await client.call_tool("docket_get_profile", {})
+            assert result.structured_content == {"id": ref, "name": "Docket"}
+    with session_factory() as session:
+        calls = session.scalars(select(ToolInvocation)).all()
+        assert len(calls) == 1 and calls[0].tool_name == "docket_get_profile"
 
 
 @pytest.mark.asyncio
