@@ -11,10 +11,12 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 from sqlalchemy import func, select
+from structlog.testing import capture_logs
 from test_attention_intelligence import _assert_no_canonical_mutation, _request, _stage
 
 from docket.agent_auth import TRIAGE_WORK_TOOLS
 from docket.config import get_settings
+from docket.domain.errors import DocketError
 from docket.mcp.instrumented import BINDING_ARGUMENT
 from docket.models import (
     AttentionCase,
@@ -29,7 +31,7 @@ from docket.providers.google.fake_gmail import FakeGmailProvider
 from docket.providers.webhooks import WebhookResponse
 from docket.schemas.intelligence import CaseItemInput
 from docket.services.intelligence import IntelligenceService
-from docket.services.oauth import OAuthPrincipalService, OAuthVerifier
+from docket.services.oauth import OAuthAuthenticationError, OAuthPrincipalService, OAuthVerifier
 from docket.tool_contracts import contract_tool_names
 
 
@@ -133,6 +135,38 @@ async def test_public_app_exposes_only_connection_and_discovery(linked_plugin):
                 "Authorization": f"Bearer {token}",
             })
             assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("known_failure", [True, False])
+async def test_authentication_rejection_logs_only_bounded_reason_codes(
+    session_factory, linked_plugin, known_failure,
+):
+    _, settings, _, _ = linked_plugin
+    verifier = Mock(spec=OAuthVerifier)
+    verifier.authenticate.side_effect = (
+        OAuthAuthenticationError("missing_claim", missing_claim="azp") if known_failure
+        else DocketError(
+            code="private-error", message="private-exception", details={"secret": "private-detail"},
+        )
+    )
+    app = create_plugin_app(settings, verifier=verifier, factory=session_factory)
+    with capture_logs() as logs:
+        async with httpx2.AsyncClient(transport=httpx2.ASGITransport(app)) as http:
+            response = await http.post("https://docket.you/mcp/", content=b"private-body", headers={
+                "Authorization": "Bearer private-token", "Content-Type": "application/json",
+            })
+    assert response.status_code == 401
+    assert response.json() == {"error": "plugin_authentication_required"}
+    assert "resource_metadata" in response.headers["www-authenticate"]
+    assert logs == [{
+        "event": "plugin_authentication_rejected", "log_level": "warning",
+        **({"reason": "missing_claim", "missing_claim": "azp"} if known_failure
+           else {"reason": "authentication_rejected"}),
+    }]
+    assert "private-" not in json.dumps(logs) + response.text
+    with session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(ToolInvocation)) == 0
 
 
 @pytest.mark.asyncio

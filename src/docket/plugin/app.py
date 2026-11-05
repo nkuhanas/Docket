@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
+import structlog
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
@@ -19,7 +20,9 @@ from docket.database import get_session_factory
 from docket.domain.errors import DocketError
 from docket.plugin.server import PluginMCP
 from docket.providers.webhooks import WebhookPoster
-from docket.services.oauth import OAuthVerifier
+from docket.services.oauth import OAuthAuthenticationError, OAuthVerifier
+
+logger = structlog.get_logger(__name__)
 
 
 class PluginAuthentication(BaseHTTPMiddleware):
@@ -41,12 +44,17 @@ class PluginAuthentication(BaseHTTPMiddleware):
         authorization = request.headers.get("authorization", "")
         try:
             if not authorization.startswith("Bearer "):
-                raise DocketError(code="plugin_authentication_required", message="Link Docket.")
+                raise OAuthAuthenticationError("credential_missing")
             principal = await asyncio.to_thread(
                 self.verifier.authenticate, authorization[7:],
                 self.factory or get_session_factory(),
             )
-        except DocketError:
+        except DocketError as exc:
+            diagnostic = (
+                exc.diagnostic if isinstance(exc, OAuthAuthenticationError)
+                else {"reason": "authentication_rejected"}
+            )
+            logger.warning("plugin_authentication_rejected", **diagnostic)
             metadata = self.settings.plugin_public_origin.rstrip("/")
             return JSONResponse(
                 {"error": "plugin_authentication_required"}, status_code=401,
