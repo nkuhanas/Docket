@@ -53,6 +53,12 @@ from docket.models.discord import (
     TraceExecutionSegment,
     TraceTimingObservation,
 )
+from docket.models.document_allocations import (
+    DocumentAllocation,
+    DocumentAllocationEvent,
+    InvoiceNumber,
+    InvoiceNumberSequence,
+)
 from docket.models.entities import Entity, EntityAlias, EntityResolution
 from docket.models.event_occurrences import CalendarDateBinding, EventOccurrence
 from docket.models.events import CanonicalEvent, ProviderEventBinding
@@ -186,6 +192,8 @@ __all__ = [
     "Decision",
     "DeferredIngress",
     "DiscordDailyThread",
+    "DocumentAllocation",
+    "DocumentAllocationEvent",
     "DrainBarrier",
     "EncryptedAttachmentBlob",
     "Engagement",
@@ -214,6 +222,8 @@ __all__ = [
     "Interaction",
     "InteractionParticipant",
     "InterpretedStatement",
+    "InvoiceNumber",
+    "InvoiceNumberSequence",
     "Item",
     "ItemSourceBinding",
     "LaneRoutingDecision",

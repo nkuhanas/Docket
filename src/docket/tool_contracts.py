@@ -12,7 +12,7 @@ from docket.schemas.expenses import EXPENSE_TOOL_PURPOSES
 from docket.schemas.financial_documents import FINANCIAL_TOOL_PURPOSES
 from docket.schemas.work import WORK_TOOL_PURPOSES
 
-CONTRACT_VERSION = "docket-tools-2026-11-05-v61"
+CONTRACT_VERSION = "docket-tools-2026-11-05-v62"
 ContractProfile = Literal["interactive", "triage", "plugin"]
 
 

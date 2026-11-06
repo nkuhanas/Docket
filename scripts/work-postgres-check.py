@@ -546,6 +546,212 @@ async def check_compensation_policies(settings, factory, principal):
         assert "80.123456789" not in json.dumps(rows, default=str)
 
 
+async def check_document_allocations(settings, factory, principal):
+    from fractions import Fraction
+
+    from docket.agent_auth import AgentCallContext, agent_call_context
+    from docket.domain.errors import DocketError
+    from docket.domain.public_refs import new_public_ref
+    from docket.models import (
+        DocumentAllocation,
+        DocumentAllocationEvent,
+        FinancialDocument,
+        FinancialDocumentRevision,
+        InvoiceNumber,
+        WorkClaim,
+    )
+    from docket.services.document_allocations import DocumentAllocationService
+
+    with factory() as session:
+        claim = session.scalar(
+            select(WorkClaim).where(WorkClaim.status == "reported").order_by(WorkClaim.ref_id)
+        )
+        source_ref = claim.ref_id
+        prior = session.scalar(
+            select(FinancialDocumentRevision)
+            .where(FinancialDocumentRevision.document_ref == claim.document_ref)
+            .order_by(FinancialDocumentRevision.revision.desc())
+        )
+        parameters = dict(
+            evaluation_ref=prior.evaluation_ref,
+            date_from=prior.date_from,
+            date_to=prior.date_to,
+            timezone=prior.timezone,
+            created_by_changeset_ref=prior.created_by_changeset_ref,
+            basis_refs=prior.basis_refs,
+        )
+        eng, component, start, end = (
+            claim.engagement_ref,
+            claim.component_key,
+            claim.start_us,
+            claim.end_us,
+        )
+        source_key = f"work:{claim.origin_ref}:{component}"
+    middle = start + (end - start) // 2
+    quote = {
+        "kind": "work",
+        "source_start": start,
+        "line_offset_us": 0,
+        "billable": True,
+        "basis": {
+            "raw_us": end - start,
+            "reportable_us": end - start,
+            "overtime_us": end - middle,
+            "rate": "80",
+            "overtime_multiplier": "1.5",
+        },
+    }
+    barrier = Barrier(2)
+
+    def create(lo, hi, synchronize=False):
+        token = agent_call_context.set(AgentCallContext(principal))
+        try:
+            with factory.begin() as session:
+                doc = FinancialDocument(
+                    ref_id=new_public_ref("fdoc"),
+                    operator_ref=principal.operator_ref,
+                    kind="invoice",
+                    engagement_ref=eng,
+                    component_key=component,
+                    status="draft",
+                    version=1,
+                    created_by_changeset_ref=parameters["created_by_changeset_ref"],
+                )
+                session.add(doc)
+                session.flush()
+                if synchronize:
+                    barrier.wait(timeout=10)
+                service = DocumentAllocationService(session)
+                rows = service.allocate(
+                    doc.ref_id,
+                    work_claim_ref=source_ref,
+                    source_key=source_key,
+                    start=lo,
+                    end=hi,
+                    currency="USD",
+                    quote=quote,
+                    changeset_ref=parameters["created_by_changeset_ref"],
+                )
+                revision = FinancialDocumentRevision(
+                    document_ref=doc.ref_id,
+                    revision=1,
+                    status="draft",
+                    snapshot_json={
+                        "allocation_refs": [row.ref_id for row in rows],
+                        "claim_refs": [source_ref],
+                    },
+                    **parameters,
+                )
+                session.add(revision)
+                session.flush()
+                service.persist(rows, revision)
+                return doc.ref_id
+        except DocketError as exc:
+            assert exc.code == "invoice_quantity_reserved", exc.as_dict()
+            return None
+        finally:
+            agent_call_context.reset(token)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        created = list(pool.map(lambda _: create(start, middle, True), (1, 2)))
+    assert sum(ref is not None for ref in created) == 1, created
+    first = next(ref for ref in created if ref)
+    second = create(middle, end)
+    assert second
+    barrier = Barrier(2)
+
+    def issue(ref):
+        token = agent_call_context.set(AgentCallContext(principal))
+        try:
+            with factory.begin() as session:
+                doc = session.scalar(
+                    select(FinancialDocument)
+                    .where(FinancialDocument.ref_id == ref)
+                    .with_for_update()
+                )
+                prior = session.scalar(
+                    select(FinancialDocumentRevision).where(
+                        FinancialDocumentRevision.document_ref == ref
+                    )
+                )
+                doc.version += 1
+                doc.status = "issued"
+                session.flush()
+                revision = FinancialDocumentRevision(
+                    document_ref=ref,
+                    revision=doc.version,
+                    status="issued",
+                    snapshot_json=prior.snapshot_json,
+                    **parameters,
+                )
+                session.add(revision)
+                session.flush()
+                service = DocumentAllocationService(session)
+                service.transition(ref, "issued", revision)
+                barrier.wait(timeout=10)
+                numbered = service.number(revision, "SYNTHETIC-2026")
+                assert service.number(revision, "SYNTHETIC-2026").number == numbered.number
+                return numbered.number
+        finally:
+            agent_call_context.reset(token)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        numbers = list(pool.map(issue, (first, second)))
+    assert sorted(numbers) == ["SYNTHETIC-2026-000001", "SYNTHETIC-2026-000002"], numbers
+    token = agent_call_context.set(AgentCallContext(principal))
+    try:
+        third = create(start, end)
+        assert third
+        with factory() as session:
+            rows = list(
+                session.scalars(
+                    select(DocumentAllocation).where(DocumentAllocation.source_key == source_key)
+                )
+            )
+            assert len(rows) == 2 and all(row.status == "issued" for row in rows)
+            service = DocumentAllocationService(session)
+            assert (
+                sum(service.amount(row) for row in rows)
+                == Fraction(end - start, 3_600_000_000) * 100
+            )
+            assert (
+                session.scalar(select(WorkClaim.status).where(WorkClaim.ref_id == source_ref))
+                == "reported"
+            )
+            allocation_ref = rows[0].ref_id
+    finally:
+        agent_call_context.reset(token)
+    for statement, message in (
+        (
+            update(DocumentAllocation)
+            .where(DocumentAllocation.ref_id == allocation_ref)
+            .values(gross_numerator="999"),
+            "immutable",
+        ),
+        (
+            delete(DocumentAllocationEvent).where(
+                DocumentAllocationEvent.allocation_ref == allocation_ref
+            ),
+            "immutable",
+        ),
+        (
+            update(InvoiceNumber)
+            .where(InvoiceNumber.document_ref == first)
+            .values(number="rewritten"),
+            "immutable",
+        ),
+    ):
+        try:
+            with factory.begin() as session:
+                session.execute(statement)
+        except DBAPIError as exc:
+            assert message in str(exc.orig), str(exc.orig)
+        else:
+            raise AssertionError(
+                "PostgreSQL allowed rewriting retained invoice allocations or numbers"
+            )
+
+
 async def check_expenses(settings, factory, principal):
     from sqlalchemy import func, insert
 
@@ -1226,6 +1432,8 @@ async def check():
         CompensationPolicyRevision,
         CompensationRevisionTerm,
         CompensationTerm,
+        DocumentAllocation,
+        DocumentAllocationEvent,
         Engagement,
         EngagementRevision,
         Expense,
@@ -1235,6 +1443,8 @@ async def check():
         ExpenseRevision,
         FinancialDocument,
         FinancialDocumentRevision,
+        InvoiceNumber,
+        InvoiceNumberSequence,
         WorkClaim,
         WorkClaimEvent,
         WorkLineageEdge,
@@ -1267,6 +1477,10 @@ async def check():
         ExpenseObservation,
         ExpenseReportSnapshot,
         ExpenseReportMember,
+        DocumentAllocation,
+        DocumentAllocationEvent,
+        InvoiceNumber,
+        InvoiceNumberSequence,
         FinancialDocument,
         FinancialDocumentRevision,
         WorkClaim,
@@ -1650,6 +1864,7 @@ async def check():
     await check_compensation_policies(settings, factory, principal)
     await check_financial_documents(settings, factory, principal)
     await check_expenses(settings, factory, principal)
+    await check_document_allocations(settings, factory, principal)
     changeset_ref = created["changeset_ref"]
     with factory.begin() as session:
         request_ref = session.scalar(
@@ -1850,6 +2065,7 @@ async def check():
                 "timesheet_claim_race_and_conserved_amendment": "passed",
                 "expense_import_race_exact_totals_and_frozen_approval": "passed",
                 "expense_owner_and_report_immutability": "passed",
+                "partial_invoice_allocation_race_and_numbering": "passed",
                 "compensation_owner_isolation_and_privacy": "passed",
                 "composite_time_precision_and_sealing": "passed",
                 "work_report_aggregates_and_exports": "passed",

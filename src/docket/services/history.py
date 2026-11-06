@@ -33,6 +33,8 @@ from docket.models import (
     DailyBrief,
     Decision,
     DeferredIngress,
+    DocumentAllocation,
+    DocumentAllocationEvent,
     DrainBarrier,
     Engagement,
     EngagementRevision,
@@ -90,6 +92,7 @@ AUDIT_OUTPUT_BYTES = 64 * 1024
 MAX_TEXT_CHUNK_BYTES = 32 * 1024
 
 _PREFIX_MODELS: dict[str, tuple[str, type[Any], str]] = {
+    "alloc": ("document_allocation", DocumentAllocation, "created_at"),
     "exp": ("expense", Expense, "created_at"),
     "exrev": ("expense_revision", ExpenseRevision, "created_at"),
     "exobs": ("expense_observation", ExpenseObservation, "created_at"),
@@ -282,7 +285,9 @@ class HistoryService:
                     "retracted": item.retracted,
                     "incurred_on": item.incurred_on.isoformat() if item.incurred_on else None,
                     "created_by_changeset_ref": item.created_by_changeset_ref}
-        if isinstance(item, FinancialDocument | FinancialDocumentRevision | WorkClaim):
+        if isinstance(
+            item, FinancialDocument | FinancialDocumentRevision | WorkClaim | DocumentAllocation
+        ):
             from docket.services.financial_documents import FinancialDocumentService
 
             documents = FinancialDocumentService(self.session)
@@ -297,6 +302,11 @@ class HistoryService:
                         "date_from": item.date_from.isoformat(),
                         "date_to": item.date_to.isoformat(),
                         "created_by_changeset_ref": item.created_by_changeset_ref}
+            if isinstance(item, DocumentAllocation):
+                return {**base, "document_ref": financial_head.ref_id, "version": item.version,
+                        "status": item.status, "work_claim_ref": item.work_claim_ref,
+                        "expense_ref": item.expense_ref, "currency": item.currency,
+                        "start_units": item.start_units, "end_units": item.end_units}
             return {**base, "document_ref": financial_head.ref_id, "status": item.status,
                     "source_revision_ref": item.source_revision_ref,
                     "raw_quantity_us": item.end_us - item.start_us,
@@ -982,6 +992,22 @@ class HistoryService:
                 chunk = _text_chunk(raw, text_offset, min(text_limit, 8192))
                 chunk["expense_json_chunk"] = chunk.pop("verbatim_text_chunk")
                 entry.update(chunk)
+            if isinstance(item, DocumentAllocation):
+                allocation_events = self.session.scalars(select(DocumentAllocationEvent).where(
+                    DocumentAllocationEvent.allocation_ref == item.ref_id
+                ).order_by(DocumentAllocationEvent.version)).all()
+                raw = json.dumps({"allocation_ref": item.ref_id, "quote": item.quote_json,
+                    "source_key": item.source_key, "start_units": item.start_units,
+                    "end_units": item.end_units, "gross_numerator": item.gross_numerator,
+                    "gross_denominator": item.gross_denominator,
+                    "history": [{"version": row.version, "status": row.status,
+                        "document_revision_ref": row.document_revision_ref,
+                        "created_by_changeset_ref": row.created_by_changeset_ref}
+                        for row in allocation_events]}, ensure_ascii=False, sort_keys=True,
+                        separators=(",", ":"))
+                chunk = _text_chunk(raw, text_offset, min(text_limit, 8192))
+                chunk["allocation_json_chunk"] = chunk.pop("verbatim_text_chunk")
+                entry.update(chunk)
             if isinstance(item, WorkClaim):
                 events = self.session.scalars(select(WorkClaimEvent).where(
                     WorkClaimEvent.claim_ref == item.ref_id
@@ -1212,7 +1238,9 @@ class HistoryService:
                 else:
                     statement = statement.join(Expense, Expense.ref_id == model.expense_ref).where(
                         Expense.operator_ref == read_operator())
-            if model in {FinancialDocument, FinancialDocumentRevision, WorkClaim}:
+            if model in {
+                FinancialDocument, FinancialDocumentRevision, WorkClaim, DocumentAllocation
+            }:
                 from docket.services.work_attribution import read_operator
 
                 if model is FinancialDocumentRevision:

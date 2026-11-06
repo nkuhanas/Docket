@@ -26,6 +26,7 @@ from docket.models import (
     ConversationRecord,
     DailyBrief,
     Decision,
+    DocumentAllocation,
     Engagement,
     EngagementRevision,
     Entity,
@@ -64,7 +65,7 @@ from docket.models import (
 
 PROVENANCE_PREFIXES = frozenset(
     {
-        "fdoc", "fdrev", "clm", "ceval", "exp", "exrev", "exobs",
+        "fdoc", "fdrev", "clm", "ceval", "alloc", "exp", "exrev", "exobs",
         "eng", "erev", "work", "wrev",
         "utt",
         "req",
@@ -110,6 +111,7 @@ PROVENANCE_PREFIXES = frozenset(
 )
 
 _PHASE_TWO_MODELS: dict[str, type[Any]] = {
+    "alloc": DocumentAllocation,
     "exp": Expense,
     "exrev": ExpenseRevision,
     "exobs": ExpenseObservation,
@@ -211,7 +213,8 @@ class ProvenanceRefService:
                 item.ref_id if isinstance(item, Expense) else item.expense_ref
             )
         if isinstance(
-            item, FinancialDocument | FinancialDocumentRevision | WorkClaim | CompensationEvaluation
+            item, (FinancialDocument | FinancialDocumentRevision | WorkClaim
+                   | DocumentAllocation | CompensationEvaluation)
         ):
             from docket.services.financial_documents import FinancialDocumentService
 

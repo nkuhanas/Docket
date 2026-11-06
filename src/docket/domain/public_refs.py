@@ -17,6 +17,7 @@ class PublicRefDefinition:
 
 
 _DEFINITIONS = (
+    PublicRefDefinition("alloc", "DocumentAllocation"),
     PublicRefDefinition("exp", "Expense"),
     PublicRefDefinition("exrev", "ExpenseRevision"),
     PublicRefDefinition("exobs", "ExpenseObservation"),

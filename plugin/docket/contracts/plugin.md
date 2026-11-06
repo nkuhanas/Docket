@@ -1,6 +1,6 @@
 # Docket Native plugin Tool Contract
 
-contract_version: docket-tools-2026-11-05-v61
+contract_version: docket-tools-2026-11-05-v62
 contract_hash: 3edd4942f8256c45331d76165dfb33b02afd4599be0641f17c7980d2bef49a86
 profile: plugin
 

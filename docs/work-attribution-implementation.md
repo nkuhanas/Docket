@@ -27,7 +27,7 @@ does not invent a payroll/banking integration or require its credentials.
 | P0b lineage | Atomic split/merge preserves known quantities/gaps/attribution; superseded parents excluded; stale races reject affected operation | Interval/duration and mixed/incomplete/differently dated composition implemented; MCP/PostgreSQL checks pass. Full release acceptance pending |
 | P1a policies | Effective dates, exact rates/currencies, hourly/nonhourly/unpaid distinction, explicit rounding/period/limits; unknown eligibility/estimates remain partial | Typed timelines and exact evaluation implemented; MCP/PostgreSQL history, snapshot isolation, rounding, overtime and coverage checks pass; full release acceptance pending |
 | P1a formal timesheets | Exact contributions, reporting lifecycle, immutable submitted snapshots, same-purpose duplicate-quantity protection, manual submission observations | Implemented in source; real MCP and PostgreSQL claim races, correction/amendment and immutable history checks pass; release acceptance pending |
-| P1b claims/invoices | Stable lineage across corrections/splits, partial reservations/concurrent drafts, cancellation release, exact numbered issued snapshots, adjustments/reconciliation flags | Shared work-claim ledger and timesheet reservations/reporting implemented; invoice issuance/numbering and financial adjustment workflows pending |
+| P1b claims/invoices | Stable lineage across corrections/splits, partial reservations/concurrent drafts, cancellation release, exact numbered issued snapshots, adjustments/reconciliation flags | Shared work claims, document-allocation/numbering storage and deterministic partial pricing implemented; native invoice commands and financial adjustments pending |
 | P1b expenses | Independent exact money/currency/date/attribution/eligibility/ownership, optional protected receipt, submission/approval and distinct reimbursement claim | Reported costs, immutable approval basis and bounded exact reports implemented; shared financial allocation/settlement pending |
 | P1c settlement | Partial/unmatched/overpaid payments, allocations/credits/reversals, external-ID dedup, gross/net differences and outstanding/due balances without false receipt | Pending |
 | Formal export | Deterministic CSV/JSON and usable invoice/timesheet rendition with references, policy/calculation/revision basis; no implicit sending | Timesheet JSON/CSV/Markdown and exact-revision continuation implemented; invoice/export-specific acceptance pending |
@@ -640,3 +640,52 @@ This finishes the reported-cost/observation slice, not all of P1b. Contractor
 invoice allocation/issuance, settlement/adjustments, operational intelligence and
 actual-time visibility still require implementation and release acceptance. No
 real expense, financial claim, provider effect or hosted-plugin change was made.
+
+
+### P1b: shared-source invoice allocation and numbering foundation
+
+Invoice-purpose allocations now reference the existing conserved WorkClaim source,
+with expense sources supported by the same document-allocation mechanism. This
+adds document purpose and frozen pricing to the shared source basis; it does not
+create another independent work entitlement or require the client to construct a
+claim graph. Stable source coordinates prevent corrected or split work from
+becoming newly billable. A timesheet may still reference that work without
+multiplying the economic quantity.
+
+The deterministic pricing kernel retains raw/reportable time, marginal overtime,
+exact rational prices and explicit unknowns. It prices a selected source range
+instead of prorating an entire session's average hourly price. Expense quantities
+use exact nanounits, including amounts too large for signed 64-bit nanounits.
+Currency conversion is not implied. Repricing an expense in another currency
+requires reconciliation with any earlier active claim.
+
+Migration `20261105c9d0` adds document allocations/events and retained invoice
+numbers with locked per-owner series. Reservations, issue and release retain
+immutable transition evidence. PostgreSQL protects source ownership/attribution,
+range bounds, overlap exclusion, exact draft membership and immutable quotes.
+Issuance requires numbered, priced, single-currency allocations and evaluated
+billability; affected expenses require their current eligible basis and any
+configured receipt. Issuing neither submits an invoice nor records payment.
+Populated downgrade refuses before dropping tables or guards; use roll-forward
+recovery. No historical claims or invoice numbers are synthesized.
+
+Verification:
+
+- Native gate: 240 passed in 38.72 seconds; Ruff and strict mypy passed for 226
+  source files. Includes exact partial-overtime/rounding tests and a synthetic
+  shared-claim reservation, issue, cancellation and number-reuse journey.
+- Storage: 123 passed in 21.94 seconds; release tooling: 52 in 2.33 seconds.
+- PostgreSQL 16.9: fresh metadata parity/empty round trip, one winner for contested
+  partial invoice quantities, concurrent distinct sequential numbers, unchanged
+  shared timesheet source, exclusion of already issued quantities, immutable quote/
+  transition/number history and populated downgrade refusal. The broader existing
+  work/policy/timesheet/expense proofs also pass. Disposable containers were removed.
+- The native catalogue remains 94 tools / 63 mutation effects. The owned history
+  read gains allocation detail; no placeholder invoice commands are advertised.
+  Actual discovery is 155,981 compact UTF-8 bytes; largest input remains 3,508
+  bytes and global instructions 1,643. Contract metadata is v62.
+
+This is internal service/storage evidence. Native invoice preparation, refresh,
+issuance, usable invoice exports and financial settlement remain unfinished,
+alongside P2, optional actual-time visibility and release/host activation. The
+source services are not evidence that the connected plugin can invoice yet.
