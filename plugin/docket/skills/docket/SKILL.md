@@ -45,7 +45,13 @@ stops from_work_ref and starts the new work at one instant. An existing primary
 timer is returned rather than silently replaced. Running values are as-of estimates.
 Metadata corrections are allowed while running; ordinary bound corrections follow
 stopping. Explicit retraction can abandon a timer without inventing an end.
-The split/merge and finance milestones are not yet advertised.
+Use `docket_split_work_session` for two or more parts of recorded work. Bounded
+parts supply start/end and inherit breaks; duration-only parts supply minutes.
+`docket_merge_work_sessions` takes selected work_refs and any conflicting attribution
+overrides. Docket conserves quantity and known gaps, retains lineage and supersedes
+parents atomically. Refresh affected context; retry an unchanged command unchanged.
+Mixed/incomplete time or differing duration dates currently need separate records.
+No claim graph is a client input. Finance milestones are not yet advertised.
 
 Use named business tools with ordinary fields. Creating a meeting takes title,
 ISO start/end, timezone and a calendar_ref from context. Docket derives its support

@@ -138,6 +138,10 @@ class WorkTimeSpec(StrictModel):
 
 
 class WorkSessionSpec(WorkAttributionFields):
+    source_refs: list[Annotated[str, Field(pattern=r"^src_[0-9A-HJKMNP-TV-Z]{26}$")]] = Field(
+        default_factory=list,
+        max_length=625,
+    )
     source_method: Literal["report", "import", "inference", "timer"] = "report"
     description: str = Field(min_length=1, max_length=4000)
     status: Literal["recorded", "retracted", "running", "paused"] = "recorded"
@@ -207,6 +211,35 @@ class WorkTimerSwitchSpec(WorkTimerStartSpec):
     previous_offset_seconds: int
 
 
+class WorkSplitPart(StrictModel):
+    start: str | None = Field(default=None, max_length=64)
+    end: str | None = Field(default=None, max_length=64)
+    duration_minutes: Decimal | None = Field(default=None, gt=0)
+    description: str | None = Field(default=None, min_length=1, max_length=4000)
+    engagement_ref: EngagementRef | None = None
+    organization_ref: EntityRef | None = None
+    project_ref: EntityRef | None = None
+    reported_compensation_class: Literal["billable", "paid_work", "unpaid", "unknown"] | None = None
+    work_mode: Literal["remote", "onsite", "travel"] | None = None
+    reported_location: str | None = Field(default=None, max_length=1000)
+    work_date: date | None = None
+
+
+class SplitWorkSession(CommandBase):
+    work_ref: WorkRef
+    parts: list[WorkSplitPart] = Field(min_length=2, max_length=25)
+
+
+class MergeWorkSessions(WorkAttributionFields, CommandBase):
+    work_refs: list[WorkRef] = Field(min_length=2, max_length=25)
+    description: str | None = Field(default=None, min_length=1, max_length=4000)
+
+
+class WorkLineageSpec(StrictModel):
+    parent_refs: list[WorkRef] = Field(min_length=1, max_length=25)
+    children: list[WorkSessionSpec] = Field(min_length=1, max_length=25)
+
+
 class QueryWorkSessions(StrictModel):
     date_from: date | None = None
     date_to: date | None = Field(default=None, description="Exclusive; defaults to this week.")
@@ -232,10 +265,14 @@ class GetWorkContext(StrictModel):
                 pattern=r"^(eng|work|ent|evt|item|task|aff)_[0-9A-HJKMNP-TV-Z]{26}$",
             ),
         ]
-    ] = Field(default_factory=list, max_length=10)
+    ] = Field(default_factory=list, max_length=32)
 
 
 WORK_TOOL_PURPOSES = {
+    "docket_split_work_session": "Split recorded work into parts without changing total work. "
+    "Use start/end for bounded work or minutes for duration-only work; breaks are inherited.",
+    "docket_merge_work_sessions": "Merge recorded work, preserving quantities, gaps and history. "
+    "Supply overrides for conflicting attribution; source evidence is retained internally.",
     "docket_start_work_session": "Start the primary timer at its retained request time. "
     "Preview and unchanged retries retain that exact instant; no calendar effect.",
     "docket_pause_work_session": "Pause the selected running timer at the retained request time.",

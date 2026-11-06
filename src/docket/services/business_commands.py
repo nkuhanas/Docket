@@ -96,10 +96,14 @@ def context_targets(context: NativeContext) -> set[str]:
 
 
 def mutation_plan(
-    context: NativeContext, actions: list[dict[str, Any]], command: str
+    context: NativeContext,
+    actions: list[dict[str, Any]],
+    command: str,
+    *,
+    retained_refs: set[str] | None = None,
 ) -> dict[str, Any]:
     substantive = {ref for action in actions for ref in _named_refs(action)}
-    missing = substantive - context_targets(context)
+    missing = substantive - context_targets(context) - (retained_refs or set())
     if missing:
         raise DocketError(
             code="targets_not_in_context",
@@ -139,6 +143,7 @@ def mutation_plan(
                     action["object_type"]
                     for action in actions
                     if action["action"] in {"create", "supersede"}
+                    or action["mutation_type"] in {"work_session_split", "work_session_merge"}
                 }
             ),
             "event_scopes": {

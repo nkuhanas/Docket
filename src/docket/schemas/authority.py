@@ -55,6 +55,7 @@ from docket.schemas.tracked_context import (
 from docket.schemas.work import (
     EngagementRef,
     EngagementSpec,
+    WorkLineageSpec,
     WorkRef,
     WorkSessionSpec,
     WorkTimerStartSpec,
@@ -608,6 +609,24 @@ class WorkSessionModify(MutationBase):
     payload: WorkSessionSpec
 
 
+class WorkSessionSplit(MutationBase):
+    mutation_type: Literal["work_session_split"] = "work_session_split"
+    action: Literal["update"]
+    object_type: Literal["work_session"]
+    object_ref: WorkRef
+    create_spec: None = None
+    payload: WorkLineageSpec
+
+
+class WorkSessionMerge(MutationBase):
+    mutation_type: Literal["work_session_merge"] = "work_session_merge"
+    action: Literal["update"]
+    object_type: Literal["work_session"]
+    object_ref: WorkRef
+    create_spec: None = None
+    payload: WorkLineageSpec
+
+
 class WorkTimerStart(MutationBase):
     mutation_type: Literal["work_timer_start"] = "work_timer_start"
     action: Literal["create"]
@@ -1153,6 +1172,8 @@ type LaneMutation = (
 type EventMutation = CanonicalEventCreate | CanonicalEventModify | CanonicalEventCancel
 type TrackedContextMutation = (
     WorkTimerStart
+    | WorkSessionSplit
+    | WorkSessionMerge
     | WorkTimerTransition
     | WorkTimerSwitch
     | EngagementCreate
@@ -1178,6 +1199,8 @@ type TrackedContextMutation = (
 )
 type CanonicalMutation = (
     WorkTimerStart
+    | WorkSessionSplit
+    | WorkSessionMerge
     | WorkTimerTransition
     | WorkTimerSwitch
     | EngagementCreate

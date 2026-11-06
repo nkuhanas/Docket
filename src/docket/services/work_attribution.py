@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from docket.agent_auth import agent_call_context, require_principal
 from docket.config import get_settings
@@ -22,12 +22,14 @@ from docket.models import (
     Item,
     Source,
     Task,
+    WorkLineageEdge,
     WorkSegment,
     WorkSession,
     WorkSessionRevision,
 )
 from docket.models.base import utc_now
 from docket.schemas.work import EngagementSpec, WorkMetadata, WorkSessionSpec, WorkTimeSpec
+from docket.services.work_quantities import WorkQuantityService, WorkSpan
 
 
 def frozen_time(value: WorkTime, zone: str) -> WorkTimeSpec:
@@ -202,6 +204,29 @@ class WorkAttributionService:
         state["time_precision"] = spec.time.precision
         state["duration_us"] = spec.time.duration_us
         state["revision_ref"] = revision.ref_id
+        state["superseded"] = head.superseded
+        parent_revision = aliased(WorkSessionRevision)
+        child_revision = aliased(WorkSessionRevision)
+        for direction, target, selected in (
+            ("parents", parent_revision, child_revision),
+            ("children", child_revision, parent_revision),
+        ):
+            refs = self.session.scalars(
+                select(target.work_ref)
+                .select_from(WorkLineageEdge)
+                .join(
+                    parent_revision, parent_revision.ref_id == WorkLineageEdge.parent_revision_ref
+                )
+                .join(child_revision, child_revision.ref_id == WorkLineageEdge.child_revision_ref)
+                .where(selected.work_ref == head.ref_id)
+                .distinct()
+                .order_by(target.work_ref)
+                .limit(26)
+            ).all()
+            if refs:
+                state.setdefault("lineage", {})[direction] = list(refs[:25])
+                if len(refs) > 25:
+                    state["lineage"]["complete"] = False
         if spec.time.precision == "timer" and spec.status in {"running", "paused"}:
             observed = utc_now()
             state["as_of"] = observed.isoformat()
@@ -325,6 +350,10 @@ class WorkAttributionService:
         return [head.ref_id]
 
     def apply_work(self, session: Session, changeset: ChangeSet, change: Any) -> list[str]:
+        if change.mutation_type in {"work_session_split", "work_session_merge"}:
+            from docket.services.work_lineage import apply_lineage
+
+            return apply_lineage(self, changeset, change)
         if change.mutation_type.startswith("work_timer_"):
             from docket.services.work_timers import apply_timer
 
@@ -361,10 +390,15 @@ class WorkAttributionService:
         spec: WorkSessionSpec,
         *,
         head: WorkSession | None = None,
+        superseded: bool = False,
+        quantity_spans: list[WorkSpan] | None = None,
     ) -> list[str]:
         self.validate_links(spec)
         validate_work_time(spec)
         session = self.session
+        quantities = WorkQuantityService(session)
+        if head is not None:
+            quantities.ensure_history(head, changeset.ref_id)
         if head is None:
             head = WorkSession(
                 operator_ref=require_principal("commit").operator_ref,
@@ -379,6 +413,7 @@ class WorkAttributionService:
             head.version += 1
             head.updated_at = utc_now()
             head.lifecycle = spec.status
+        head.superseded = superseded
         metadata = spec.model_dump(exclude={"time", "status"})
         revision = WorkSessionRevision(
             work_ref=head.ref_id,
@@ -403,6 +438,7 @@ class WorkAttributionService:
                 WorkSegment(revision_id=revision.id, ordinal=ordinal, **segment.model_dump())
             )
         session.flush()
+        quantities.record(head, revision, changeset.ref_id, spans=quantity_spans)
         self.audit(head, revision.ref_id, changeset, change)
         return [head.ref_id]
 

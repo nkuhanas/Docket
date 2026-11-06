@@ -8,6 +8,12 @@ The subsequent Operator instruction adopts [SPEC 1.1](../SPEC.md); actual progre
 is in the [implementation report](work-attribution-implementation.md). Measurements
 below remain historical design evidence, not implementation or a second specification.
 
+Current source now implements the primary catalogue consolidation and thirteen P0
+definitions: 84 advertised tools total, with 28,292 bytes of work definitions.
+Every new input is below 4 KiB and complete definition below 6 KiB. Known-time
+split/merge is checked; composite lineage and finance/intelligence remain unfinished.
+The implementation report records exact evidence and the separate release boundary.
+
 The extension adds actual-work records first, then reporting/financial state and
 cross-domain operational views. Those capabilities can use compact business
 commands. Claim allocation, immutable revisions and compensation evaluation are

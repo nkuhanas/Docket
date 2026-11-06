@@ -202,6 +202,7 @@ class NativeContextService:
         objects: list[dict[str, Any]] = []
         versions: dict[str, int] = {}
         principal = require_principal("read")
+        compact = purpose == "work" and len(refs) > 6
         expanded_refs = list(dict.fromkeys(refs))
         due_refs = list(
             self.session.scalars(
@@ -319,12 +320,18 @@ class NativeContextService:
                 actions += ["docket_resolve_conflict"]
             if kind == "attention_case":
                 actions += ["docket_resolve_attention_case"]
-            if kind in {"work_session", "engagement"}:
+            if kind == "engagement" or (kind == "work_session" and not row.superseded):
                 actions += ["docket_update_" + kind]
+            if kind == "work_session" and row.lifecycle == "recorded" and not row.superseded:
+                actions += ["docket_split_work_session", "docket_merge_work_sessions"]
             if kind == "work_session" and row.lifecycle in {"running", "paused"}:
-                actions += ["docket_stop_work_session", "docket_switch_work_session",
-                            "docket_pause_work_session" if row.lifecycle == "running"
-                            else "docket_resume_work_session"]
+                actions += [
+                    "docket_stop_work_session",
+                    "docket_switch_work_session",
+                    "docket_pause_work_session"
+                    if row.lifecycle == "running"
+                    else "docket_resume_work_session",
+                ]
             objects.append(
                 {
                     "ref": ref,
@@ -333,30 +340,59 @@ class NativeContextService:
                     "actions": actions if "commit" in principal.permissions else [],
                 }
             )
-        return self.retain(
-            purpose,
-            {
-                "timezone": self.settings.timezone,
-                **({
+        snapshot: dict[str, Any] = {
+            "timezone": self.settings.timezone,
+            **(
+                {
                     "current_date": datetime.now(
                         ZoneInfo(self.settings.timezone),
-                    ).date().isoformat(),
+                    )
+                    .date()
+                    .isoformat(),
                     "guide": "Report actual work with bounds, minutes or incomplete quantity. "
                     "Use a reported attribution_label if the arrangement is unresolved. "
                     "Billable/paid_work is reported classification, never proof of payment. "
                     "Calendar links do not establish attendance. "
                     "Reuse context; refresh changed targets. Optional null clears a field.",
-                } if purpose == "work" else {}),
-                "objects": objects,
-                "coverage": {
-                    "canonical": "selected objects only",
-                    "provider_observations": "not_refreshed",
-                    "reported_context": "not included",
-                    "related_due_complete": len(due_refs) <= 25,
-                },
+                }
+                if purpose == "work"
+                else {}
+            ),
+            "objects": objects,
+            "coverage": {
+                "canonical": "selected objects only",
+                "provider_observations": "not_refreshed",
+                "reported_context": "not included",
+                "related_due_complete": len(due_refs) <= 25,
             },
-            versions,
-        )
+        }
+        if purpose == "work" and (
+            compact or len(json.dumps(snapshot, ensure_ascii=False).encode()) > 7 * 1024
+        ):
+            for obj in objects:
+                state = {
+                    key: value
+                    for key, value in obj["state"].items()
+                    if key
+                    in {
+                        "description",
+                        "label",
+                        "name",
+                        "status",
+                        "time_precision",
+                        "duration_us",
+                        "superseded",
+                    }
+                }
+                for key, value in list(state.items()):
+                    if isinstance(value, str) and len(value) > 64:
+                        state[key] = value[:61] + "..."
+                obj["state"] = state
+                obj.pop("actions", None)
+            snapshot["coverage"]["detail"] = (
+                "compact selection; narrow refs for full fields and actions"
+            )
+        return self.retain(purpose, snapshot, versions)
 
     def work(self, refs: list[str], search: str | None = None) -> dict[str, Any]:
         principal = require_principal("read")

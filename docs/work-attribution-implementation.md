@@ -24,7 +24,7 @@ does not invent a payroll/banking integration or require its credentials.
 | P0a queries/export | Full-set daily/weekly/engagement/project totals, unique/overlap/unplaced/unknown coverage, stable bounded JSON/CSV exports independent of page size | Implemented: sealed revision membership, server aggregation, bounded lossless continuation; MCP and PostgreSQL checks pass |
 | Time math | UTC elapsed/break union, midnight/travel/DST folds, no fabricated bounds or period allocation | Pure math, command and aggregate/query integration checked |
 | P0b timers | Retry-stable instant, exact preview, start/pause/resume/stop/switch, restart survival; PostgreSQL single-active and races | Five named commands implemented; native/PostgreSQL races and fresh-process recovery checked; release acceptance pending |
-| P0b lineage | Atomic split/merge preserves known quantities/gaps/attribution; superseded parents excluded; stale races reject affected operation | Pending |
+| P0b lineage | Atomic split/merge preserves known quantities/gaps/attribution; superseded parents excluded; stale races reject affected operation | Known interval/same-placement duration workflows and stable quantity coordinates implemented; MCP/PostgreSQL checks pass. Composite mixed/incomplete/differently dated duration lineage remains pending |
 | P1a policies | Effective dates, exact rates/currencies, hourly/nonhourly/unpaid distinction, explicit rounding/period/limits; unknown eligibility/estimates remain partial | Pending |
 | P1a formal timesheets | Exact contributions, reporting lifecycle, immutable submitted snapshots, same-purpose duplicate-quantity protection, manual submission observations | Pending |
 | P1b claims/invoices | Stable lineage across corrections/splits, partial reservations/concurrent drafts, cancellation release, exact numbered issued snapshots, adjustments/reconciliation flags | Pending |
@@ -35,7 +35,7 @@ does not invent a payroll/banking integration or require its credentials.
 | P2 follow-up | Typed work/finance reminder/case/event subjects, bounded exception reconciliation, retained inbox, suppression/preferences and client scheduling | Pending |
 | Optional visibility | Explicit correlated actual-time Calendar projection, no duplicate editable time/accounting or default provider effect | Pending |
 | Authority/provenance | OAuth/current local grant, req_/call_, owner isolation/revocation, full approved automation, restricted triage, optional honest capture and sensitive-log protection | New commands enforce write admission and retain req_/call_ roots; read-only rejection checked; complete new-domain isolation/revocation/privacy acceptance pending |
-| Contracts/host | Actual schemas and budgets, first-valid-attempt MCP journeys, generated reference/skill, same registered plugin identity and actual advertised capabilities | Pending |
+| Contracts/host | Actual schemas and budgets, first-valid-attempt MCP journeys, generated reference/skill, same registered plugin identity and actual advertised capabilities | Thirteen P0 definitions measured within budgets; generated reference/skill aligned. Hosted refresh/release pending |
 | Storage/operations | Fresh/populated PostgreSQL migrations, constraints/locking/races, protected history and migration-specific recovery | Initial work schema round-trip/immutability/uniqueness verified on PostgreSQL; full release pending |
 | Release | Local gate/affected groups, clean-source tested image, reviewed PR/merge, synchronized source, drain/idle/backup/migration/postdeploy and host evidence | Pending |
 
@@ -287,7 +287,69 @@ compact UTF-8 bytes, below the full P0 32 KiB budget. Timer inputs are 1,982 byt
 each full definition below 6 KiB. Discovery totals 128,326 bytes. P0a's six-tool
 budget and the unchanged global instruction budget remain enforced separately.
 
-The full goal remains in progress: split/merge and stable financial quantity
-lineage, compensation/formal reporting/claims/settlement, operational intelligence,
-tested-image validation, publication/merge, deployment and same-plugin refresh are
-not complete. Source evidence does not substitute for activation.
+At the timer checkpoint, lineage, finance/intelligence and release work remained
+pending. Subsequent source progress follows; source evidence never substitutes for
+activation.
+
+### P0b: known-quantity split/merge and stable work-unit identity
+
+Two flat commands accept homogeneous time parts or selected work references.
+They compile to typed effects inside the existing exact-preview/ChangeSet path,
+lock observed parents, supersede them and create linked children atomically.
+Replacement records appear first in the bounded receipt, including a 25-parent
+merge; count/truncation fields describe omitted parent summaries. Work context
+links direct parents/children and advertises actions only on editable leaves.
+
+Interval splits inherit original breaks and conserve every active instant. Merging
+separated intervals records the gap as excluded time for that work session, never
+global inactivity. Overlapping active intervals require an affected-record correction
+or retraction. Duration-only splits conserve exact quantities; merges currently
+require the same reported date/period and reporting timezone. Timers must be stopped.
+Mixed/incomplete time and differently placed duration reports remain useful as
+separate records; composite lineage remains an explicit unfinished P0 requirement.
+
+Stable private origin coordinates retain units across revisions. A 90-to-120-minute
+correction adds 30 new minutes; shrinking and regrowing reuses earlier coordinates.
+Children inherit disjoint spans, merges retain their origins, and concurrent growth
+allocates separate tails under locks. Ambiguous growth after retired lineage is
+marked for later financial review without blocking the work correction. Adjacent
+spans compact internally; clients never construct coordinates, revision graphs or
+claim allocations. This is a foundation for P1, not implemented financial claims.
+
+Migration `20261105c3d4` adds quantity origins, immutable allocations/bases and
+lineage edges. PostgreSQL enforces append-only origins, one-way sealing, exact
+revision quantity at sealing, owned/nonoverlapping coordinates per basis and
+immutable allocations/edges. No semantic migration backfill occurs. An authorized
+mutation may initialize missing derived quantity mappings for retained work history.
+The prior work revisions and genuine roots remain unchanged.
+
+Verification at this source checkpoint:
+
+- Final native gate: 211 passed in 26.29 seconds; Ruff and strict mypy passed.
+  Includes compact context, replacement receipts and review-marked growth after
+  retired quantities. Five focused MCP cases also passed in 4.40 seconds.
+  Storage: 123 passed in 20.32 seconds with static checks.
+- Disposable PostgreSQL 16.9 verifies migration/model parity and empty round-trip,
+  one winner for concurrent exact split proposals, concurrent child growth with
+  disjoint units, atomic merge, original retained totals, sealing/immutability and
+  populated-downgrade refusal. A fresh final rehearsal also rejects presealed
+  inserts and sealing a basis whose allocated quantity differs from its revision.
+  Release tooling: 52 cases passed in 2.13 seconds with static checks. Disposable
+  rehearsal containers are removed after verification.
+- Real transport checks include duration corrections, timed breaks/gaps, stale
+  exact proposals, unchanged retries and a 25-session context under 8 KiB.
+- Actual discovery: 84 tools, all 47 baseline effects plus nine work/engagement
+  effect variants. Thirteen P0 definitions total 28,292 compact UTF-8 bytes, within
+  32 KiB. Split input is 1,975 bytes; merge is 2,622 bytes. All work inputs remain
+  below 4 KiB and complete definitions below 6 KiB. Discovery totals 133,957 bytes;
+  the 1,643-byte global instructions remain unchanged. These are source measurements,
+  not deployed inventories or token estimates.
+
+Recovery: retain the pre-migration backup and prior image. Populated quantity/lineage
+tables refuse downgrade; prefer a compatible forward repair. An image rollback does
+not reverse this migration or establish compatibility with newly retained work.
+Never delete work/evidence or reset the database to make rollback succeed.
+
+Composite lineage, P1a–P1c, P2, tested-image validation, reviewed publication/merge,
+deployment and the same hosted-plugin refresh remain pending. No production rows,
+OAuth grants, finance/provider effects or hosted publication changed here.

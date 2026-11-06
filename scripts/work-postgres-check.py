@@ -7,6 +7,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime
+from itertools import pairwise
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Barrier
@@ -196,6 +197,199 @@ asyncio.run(check())
         agent_call_context.reset(token)
 
 
+async def check_native_lineage(settings, factory, principal):
+    from docket.agent_auth import AgentCallContext, agent_call_context
+    from docket.models import (
+        WorkLineageEdge,
+        WorkQuantityAllocation,
+        WorkQuantityBasis,
+        WorkQuantityOrigin,
+        WorkSession,
+        WorkSessionRevision,
+    )
+    from docket.plugin.server import PluginMCP
+
+    minute = 60_000_000
+
+    async def call(name, arguments):
+        token = agent_call_context.set(AgentCallContext(principal))
+        try:
+            return (await PluginMCP(settings).call_tool(name, arguments)).structured_content
+        finally:
+            agent_call_context.reset(token)
+
+    packet = await call("docket_get_work_context", {})
+    logged = await call(
+        "docket_log_work_session",
+        {
+            "context_id": packet["context_id"],
+            "operation_id": "pg-lineage-log",
+            "description": "Synthetic lineage",
+            "duration_minutes": 90,
+            "work_date": "2001-01-02",
+        },
+    )
+    assert logged.get("disposition") == "committed", logged
+    work_ref = logged["work_records"][0]["ref"]
+    historical = await call(
+        "docket_query_work_sessions",
+        {
+            "date_from": "2001-01-01",
+            "date_to": "2001-01-08",
+        },
+    )
+    for index, minutes in enumerate((120, 60, 120)):
+        packet = await call("docket_get_work_context", {"refs": [work_ref]})
+        changed = await call(
+            "docket_update_work_session",
+            {
+                "context_id": packet["context_id"],
+                "operation_id": f"pg-lineage-correct-{index}",
+                "work_ref": work_ref,
+                "duration_minutes": minutes,
+            },
+        )
+        assert changed.get("disposition") == "committed", changed
+    packet = await call("docket_get_work_context", {"refs": [work_ref]})
+    previews = []
+    for index, durations in enumerate(((45, 75), (60, 60))):
+        preview = await call(
+            "docket_split_work_session",
+            {
+                "context_id": packet["context_id"],
+                "operation_id": f"pg-lineage-split-{index}",
+                "work_ref": work_ref,
+                "preview": True,
+                "parts": [{"duration_minutes": value} for value in durations],
+            },
+        )
+        assert preview.get("disposition") == "prepared", preview
+        previews.append(preview)
+    barrier = Barrier(2)
+
+    def apply(preview):
+        barrier.wait(timeout=10)
+        return asyncio.run(call("docket_apply_change", {"change_id": preview["change_id"]}))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(apply, previews))
+    assert sum(r.get("disposition") == "committed" for r in results) == 1, results
+    winner = next(r for r in results if r.get("disposition") == "committed")
+    children = [r for r in winner["work_records"] if not r["superseded"]]
+    assert len(children) == 2
+    with factory() as session:
+        origin = session.scalar(
+            select(WorkQuantityOrigin).where(WorkQuantityOrigin.source_work_ref == work_ref)
+        )
+        origin_ref = origin.ref_id
+        assert origin.next_offset_us == 120 * minute
+    packet = await call("docket_get_work_context", {"refs": [r["ref"] for r in children]})
+
+    def grow(child):
+        barrier.wait(timeout=10)
+        return asyncio.run(
+            call(
+                "docket_update_work_session",
+                {
+                    "context_id": packet["context_id"],
+                    "operation_id": "pg-grow-" + child["ref"],
+                    "work_ref": child["ref"],
+                    "duration_minutes": child["duration_us"] // minute + 15,
+                },
+            )
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(grow, children))
+    assert all(r.get("disposition") == "committed" for r in results), results
+    with factory() as session:
+        origin = session.scalar(
+            select(WorkQuantityOrigin).where(WorkQuantityOrigin.ref_id == origin_ref)
+        )
+        assert origin.next_offset_us == 150 * minute
+        revision_refs = (
+            select(WorkSessionRevision.ref_id)
+            .join(
+                WorkSession,
+                (WorkSession.ref_id == WorkSessionRevision.work_ref)
+                & (WorkSession.version == WorkSessionRevision.revision),
+            )
+            .where(
+                WorkSession.ref_id.in_([r["ref"] for r in children]),
+            )
+        )
+        allocations = session.scalars(
+            select(WorkQuantityAllocation)
+            .where(
+                WorkQuantityAllocation.revision_ref.in_(revision_refs),
+            )
+            .order_by(WorkQuantityAllocation.start_us)
+        ).all()
+        assert sum(a.end_us - a.start_us for a in allocations) == 150 * minute
+        assert all(a.end_us <= b.start_us for a, b in pairwise(allocations))
+        basis_ref = allocations[0].revision_ref
+        edge_id = session.scalar(select(WorkLineageEdge.id))
+    for statement, message in (
+        (
+            update(WorkQuantityOrigin)
+            .where(WorkQuantityOrigin.ref_id == origin_ref)
+            .values(next_offset_us=0),
+            "append-only",
+        ),
+        (
+            update(WorkQuantityBasis)
+            .where(WorkQuantityBasis.revision_ref == basis_ref)
+            .values(sealed=False),
+            "append-only",
+        ),
+        (
+            update(WorkQuantityAllocation)
+            .where(WorkQuantityAllocation.revision_ref == basis_ref)
+            .values(start_us=0),
+            "append-only",
+        ),
+        (delete(WorkLineageEdge).where(WorkLineageEdge.id == edge_id), "append-only"),
+        (
+            WorkQuantityAllocation.__table__.insert().values(
+                revision_ref=basis_ref,
+                ordinal=999,
+                origin_ref=origin_ref,
+                start_us=0,
+                end_us=1,
+                needs_review=False,
+            ),
+            "sealed",
+        ),
+    ):
+        try:
+            with factory.begin() as session:
+                session.execute(statement)
+        except DBAPIError as exc:
+            assert message in str(exc.orig)
+        else:
+            raise AssertionError("PostgreSQL permitted rewriting retained work lineage")
+    packet = await call("docket_get_work_context", {"refs": [r["ref"] for r in children]})
+    merged = await call(
+        "docket_merge_work_sessions",
+        {
+            "context_id": packet["context_id"],
+            "operation_id": "pg-lineage-merge",
+            "work_refs": [r["ref"] for r in children],
+        },
+    )
+    assert merged.get("disposition") == "committed", merged
+    assert (
+        next(r for r in merged["work_records"] if not r["superseded"])["duration_us"]
+        == 150 * minute
+    )
+    current = await call(
+        "docket_query_work_sessions", {"date_from": "2001-01-01", "date_to": "2001-01-08"}
+    )
+    retained = await call("docket_query_work_sessions", {"cursor": historical["report_cursor"]})
+    assert current["totals"]["known_reported_us"] == 150 * minute
+    assert retained["totals"]["known_reported_us"] == 90 * minute
+
+
 async def check():
     from docket.agent_auth import AgentCallContext, AgentPrincipal, agent_call_context
     from docket.config import get_settings
@@ -204,6 +398,10 @@ async def check():
         AuthenticatedRequest,
         Engagement,
         EngagementRevision,
+        WorkLineageEdge,
+        WorkQuantityAllocation,
+        WorkQuantityBasis,
+        WorkQuantityOrigin,
         WorkReportMember,
         WorkReportSnapshot,
         WorkSegment,
@@ -231,6 +429,10 @@ async def check():
         WorkSegment,
         WorkReportSnapshot,
         WorkReportMember,
+        WorkQuantityOrigin,
+        WorkQuantityBasis,
+        WorkQuantityAllocation,
+        WorkLineageEdge,
     )
     for model in tables:
         columns = {
@@ -589,6 +791,7 @@ async def check():
     else:
         raise AssertionError("PostgreSQL appended to a sealed work report")
     await check_native_timers(settings, factory, principal)
+    await check_native_lineage(settings, factory, principal)
     changeset_ref = created["changeset_ref"]
     with factory.begin() as session:
         request_ref = session.scalar(
@@ -668,6 +871,32 @@ async def check():
                 assert "append-only" in str(exc.orig)
             else:
                 raise AssertionError("PostgreSQL allowed immutable work history to change")
+    for already_sealed in (True, False):
+        try:
+            with factory.begin() as session:
+                session.add(
+                    WorkQuantityBasis(
+                        revision_ref=revision.ref_id,
+                        status="resolved",
+                        sealed=already_sealed,
+                        created_by_changeset_ref=changeset_ref,
+                    )
+                )
+                session.flush()
+                session.execute(
+                    update(WorkQuantityBasis)
+                    .where(
+                        WorkQuantityBasis.revision_ref == revision.ref_id,
+                    )
+                    .values(sealed=True)
+                )
+        except DBAPIError as exc:
+            expected = (
+                "assembled before sealing" if already_sealed else "does not match its revision"
+            )
+            assert expected in str(exc.orig)
+        else:
+            raise AssertionError("PostgreSQL sealed an incomplete quantity basis")
     for model, identity in heads:
         try:
             with factory.begin() as session:
@@ -756,6 +985,8 @@ async def check():
                 "canonical_correction_race": "passed",
                 "native_timer_start_and_switch_races": "passed",
                 "timer_fresh_process_survival": "passed",
+                "native_lineage_and_concurrent_quantity_growth": "passed",
+                "quantity_and_lineage_immutability": "passed",
                 "work_report_aggregates_and_exports": "passed",
                 "retained_report_membership": "sealed",
                 "revision_immutability": "passed",

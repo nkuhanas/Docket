@@ -14,10 +14,15 @@ from docket.schemas.work import WORK_TOOL_PURPOSES, GetWorkContext, QueryWorkSes
 from docket.services.business_commands import public_validation_error
 from docket.services.native_context import NativeContextService
 from docket.services.work_commands import WORK_COMMAND_MODELS, WorkCommandService
+from docket.services.work_lineage import LINEAGE_COMMAND_MODELS, WorkLineageCommandService
 from docket.services.work_reports import WorkReportService
 from docket.services.work_timers import TIMER_COMMAND_MODELS, WorkTimerCommandService
 
-WORK_COMMAND_TOOLS = frozenset(WORK_COMMAND_MODELS) | frozenset(TIMER_COMMAND_MODELS)
+WORK_COMMAND_TOOLS = (
+    frozenset(WORK_COMMAND_MODELS)
+    | frozenset(TIMER_COMMAND_MODELS)
+    | frozenset(LINEAGE_COMMAND_MODELS)
+)
 
 
 def register_work(server: ProvenanceMCP, settings: Settings) -> None:
@@ -34,6 +39,8 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
                     service = (
                         WorkTimerCommandService
                         if name in TIMER_COMMAND_MODELS
+                        else WorkLineageCommandService
+                        if name in LINEAGE_COMMAND_MODELS
                         else WorkCommandService
                     )
                     return service(session, settings).perform(
@@ -48,7 +55,11 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
                 return exc.as_dict()
 
         server.add_tool(
-            model_function(({**WORK_COMMAND_MODELS, **TIMER_COMMAND_MODELS})[name], name, invoke),
+            model_function(
+                ({**WORK_COMMAND_MODELS, **TIMER_COMMAND_MODELS, **LINEAGE_COMMAND_MODELS})[name],
+                name,
+                invoke,
+            ),
             name=name,
             description=WORK_TOOL_PURPOSES[name],
             annotations=ToolAnnotations(
@@ -59,7 +70,7 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
             ),
         )
 
-    for name in (*WORK_COMMAND_MODELS, *TIMER_COMMAND_MODELS):
+    for name in (*WORK_COMMAND_MODELS, *TIMER_COMMAND_MODELS, *LINEAGE_COMMAND_MODELS):
         register(name)
 
     def context(arguments: dict[str, Any]) -> dict[str, Any]:

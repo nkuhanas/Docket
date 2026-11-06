@@ -118,6 +118,12 @@ from docket.models.work import (
     WorkSession,
     WorkSessionRevision,
 )
+from docket.models.work_quantities import (
+    WorkLineageEdge,
+    WorkQuantityAllocation,
+    WorkQuantityBasis,
+    WorkQuantityOrigin,
+)
 from docket.models.work_reports import WorkReportMember, WorkReportSnapshot
 
 __all__ = [
@@ -221,6 +227,10 @@ __all__ = [
     "TriageRun",
     "TriageWindow",
     "TriageWindowMembership",
+    "WorkLineageEdge",
+    "WorkQuantityAllocation",
+    "WorkQuantityBasis",
+    "WorkQuantityOrigin",
     "WorkReportMember",
     "WorkReportSnapshot",
     "WorkSegment",

@@ -107,7 +107,7 @@ inside a long record; concatenation preserves every UTF-8 character and field.
 CSV contains total/group/work rows with stable references and reporting basis.
 report_cursor restarts the same retained basis; a fresh query sees later corrections.
 Read authority is sufficient. An export is neither a submitted timesheet nor a
-financial claim or provider operation. Split/merge and finance remain later milestones.
+financial claim or provider operation. Finance remains a later milestone.
 
 Current work uses a primary timer:
 
@@ -134,3 +134,21 @@ time; restarts/disconnects do not end a timer. Running durations are as-of estim
 Metadata remains editable while active. Explicit status="retracted" abandons a
 timer and preserves its unknown end and history. Canonical receipts retain compact
 work states/times from the commit; unchanged retries recover those exact receipts.
+
+Split known recorded work with `docket_split_work_session`:
+
+```json
+{"context_id":"<work-context>","operation_id":"validation-split","work_ref":"<selected-work>","parts":[{"duration_minutes":90},{"duration_minutes":30}]}
+```
+
+For bounded work, supply each part's start/end instead; Docket inherits the relevant
+breaks. Parts preserve exactly the original active time. Attribution can differ per
+part without cloning hours. `docket_merge_work_sessions` accepts context_id,
+operation_id and work_refs, with explicit overrides for conflicting attribution.
+Docket preserves quantities and gaps, excludes superseded parents from new totals
+and retains all history. Work context links the replacement records. Split/merge
+uses the same optional exact preview and retry path as other commands.
+
+Current merge supports known intervals or duration-only reports with identical date
+placement. Incomplete or mixed time remains separately recordable/queryable;
+composite lineage support is still pending. No claim/allocation graph is supplied.
