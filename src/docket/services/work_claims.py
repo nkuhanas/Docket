@@ -14,6 +14,7 @@ from docket.domain.errors import DocketError
 from docket.domain.public_refs import new_public_ref
 from docket.models import (
     CompensationEvaluation,
+    DocumentAllocation,
     FinancialDocument,
     FinancialDocumentRevision,
     WorkClaim,
@@ -66,6 +67,24 @@ class WorkClaimService:
             )
         )
 
+    def source_spans(self, refs: list[str]) -> dict[str, list[WorkSpan]]:
+        source_spans: dict[str, list[WorkSpan]] = {ref: [] for ref in refs}
+        for offset in range(0, len(refs), 1000):
+            for allocation in self.session.scalars(
+                select(WorkQuantityAllocation)
+                .where(WorkQuantityAllocation.revision_ref.in_(refs[offset : offset + 1000]))
+                .order_by(WorkQuantityAllocation.revision_ref, WorkQuantityAllocation.ordinal)
+            ):
+                source_spans[allocation.revision_ref].append(
+                    WorkSpan(
+                        allocation.origin_ref,
+                        allocation.start_us,
+                        allocation.end_us,
+                        allocation.needs_review,
+                    )
+                )
+        return source_spans
+
     def plan(
         self,
         document: FinancialDocument,
@@ -87,21 +106,7 @@ class WorkClaimService:
         plan = ClaimPlan(document_ref=document.ref_id)
         lines: list[dict[str, Any]] = evaluation.result_json["contributions"]
         refs = sorted({line["revision_ref"] for line in lines})
-        source_spans: dict[str, list[WorkSpan]] = {ref: [] for ref in refs}
-        for offset in range(0, len(refs), 1000):
-            for allocation in self.session.scalars(
-                select(WorkQuantityAllocation)
-                .where(WorkQuantityAllocation.revision_ref.in_(refs[offset : offset + 1000]))
-                .order_by(WorkQuantityAllocation.revision_ref, WorkQuantityAllocation.ordinal)
-            ):
-                source_spans[allocation.revision_ref].append(
-                    WorkSpan(
-                        allocation.origin_ref,
-                        allocation.start_us,
-                        allocation.end_us,
-                        allocation.needs_review,
-                    )
-                )
+        source_spans = self.source_spans(refs)
         origins = sorted({span.origin_ref for spans in source_spans.values() for span in spans})
         existing = self.active(origins, document.component_key, lock=True)
         plan.replaced = [
@@ -290,6 +295,30 @@ class WorkClaimService:
                 if claim.origin_ref == span.origin_ref:
                     overlap = max(0, min(span.end, claim.end_us) - max(span.start, claim.start_us))
                     result[claim.status + "_us"] += overlap
+        result.update(invoice_reserved_us=0, invoiced_us=0)
+        keys = {f"work:{span.origin_ref}:{component}" for span in spans}
+        allocations = self.session.scalars(
+            select(DocumentAllocation).where(
+                DocumentAllocation.operator_ref == require_principal("read").operator_ref,
+                DocumentAllocation.source_key.in_(keys),
+                DocumentAllocation.status != "released",
+            )
+        ).all()
+        for span in spans:
+            key = f"work:{span.origin_ref}:{component}"
+            for allocation in allocations:
+                if allocation.source_key == key:
+                    overlap = max(
+                        0,
+                        min(span.end, int(allocation.end_units))
+                        - max(span.start, int(allocation.start_units)),
+                    )
+                    result[
+                        "invoice_reserved_us" if allocation.status == "reserved" else "invoiced_us"
+                    ] += overlap
+        result["uninvoiced_us"] = (
+            result["known_us"] - result["invoice_reserved_us"] - result["invoiced_us"]
+        )
         result["available_us"] = result["known_us"] - sum(
             result[key] for key in ("reserved_us", "reported_us", "issued_us")
         )

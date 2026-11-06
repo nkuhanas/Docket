@@ -11,7 +11,12 @@ from sqlalchemy.orm import Session
 
 from docket.agent_auth import require_principal
 from docket.domain.errors import DocketError
-from docket.models import CompensationEvaluation, FinancialDocumentRevision, WorkSessionRevision
+from docket.models import (
+    CompensationEvaluation,
+    FinancialDocumentRevision,
+    InvoiceNumber,
+    WorkSessionRevision,
+)
 from docket.schemas.common import StrictModel
 from docket.schemas.financial_documents import ReadDocument
 from docket.services.financial_documents import FinancialDocumentService
@@ -85,6 +90,40 @@ class FinancialDocumentReadService:
             )
         )
         assert evaluation is not None
+        if head.kind == "invoice":
+            body = revision.snapshot_json
+            number = self.session.get(InvoiceNumber, head.ref_id)
+            return {
+                "document_ref": head.ref_id,
+                "revision_ref": revision.ref_id,
+                "kind": "invoice",
+                "revision": revision.revision,
+                "status": revision.status,
+                "engagement_ref": head.engagement_ref,
+                "engagement_label": body["engagement_label"],
+                "component_key": head.component_key,
+                "date_from": revision.date_from.isoformat(),
+                "date_to": revision.date_to.isoformat(),
+                "timezone": revision.timezone,
+                "evaluation_ref": evaluation.ref_id,
+                "calculation_version": evaluation.calculation_version,
+                "calculation_as_of": evaluation.parameters_json["as_of"],
+                "work_report_ref": evaluation.work_report_ref,
+                "summary": body["summary"],
+                "claim_refs": body["claim_refs"],
+                "allocation_refs": body["allocation_refs"],
+                "header": body["header"],
+                "issued_at": body.get("issued_at"),
+                "invoice_calculation_version": body.get("invoice_calculation_version"),
+                "number": number.number
+                if number and number.issued_revision_ref == revision.ref_id
+                else None,
+                "lines": body["lines"],
+                "policy_basis": evaluation.result_json["basis"],
+                "basis_refs": revision.basis_refs,
+                "amends_ref": revision.amends_ref,
+                "created_by_changeset_ref": revision.created_by_changeset_ref,
+            }
         rows = evaluation.result_json["contributions"]
         refs = {line["revision_ref"] for line in rows}
         descriptions = {
@@ -144,9 +183,21 @@ class FinancialDocumentReadService:
                 "timezone",
                 "calculation_version",
                 "calculation_as_of",
+                "amends_ref",
             )
         }
-        fields = sorted({key for line in data["lines"] for key in line} - set(metadata))
+        if data["kind"] == "invoice":
+            metadata.update(
+                number=data["number"],
+                issued_at=data["issued_at"],
+                **{
+                    key: data["header"].get(key)
+                    for key in ("issuer_label", "client_label", "due_on", "payment_terms")
+                },
+            )
+        fields = sorted(
+            {key for line in data["lines"] for key in line} - set(metadata) - {"record_type"}
+        )
         writer = csv.DictWriter(
             stream, fieldnames=["record_type", *metadata, *fields, "summary_json"]
         )
@@ -157,7 +208,7 @@ class FinancialDocumentReadService:
         for line in data["lines"]:
             writer.writerow(
                 {
-                    "record_type": "work",
+                    "record_type": line.get("record_type", "work"),
                     **metadata,
                     **{
                         key: compact(value) if isinstance(value, (dict, list)) else value
@@ -177,6 +228,59 @@ class FinancialDocumentReadService:
                 .replace("\n", " ")
             )
 
+        if data["kind"] == "invoice":
+            header = data["header"]
+            rows = [
+                f"# Invoice {cell(data['number'] or 'DRAFT')}",
+                "",
+                f"Issuer: {cell(header['issuer_label'])}",
+                f"Client: {cell(header['client_label'])}",
+                f"Status: {data['status']}",
+                f"Issued: {cell(data['issued_at'])}",
+                f"Due: {cell(header.get('due_on'))}",
+                f"Terms: {cell(header.get('payment_terms'))}",
+                f"Period: {data['date_from']} to {data['date_to']} (end exclusive); "
+                f"{data['timezone']}",
+                "",
+                "| Date/start | Description | Hours | Line estimate | Source |",
+                "| --- | --- | ---: | ---: | --- |",
+            ]
+            from decimal import Decimal
+
+            for row in data["lines"]:
+                quantity = row.get("reportable_us")
+                hours = (
+                    format(Decimal(quantity) / Decimal(3_600_000_000), ".6f")
+                    if quantity is not None
+                    else "—"
+                )
+                amount = (
+                    str(row["gross_line_estimate"]) + " " + str(row.get("currency", ""))
+                    if row.get("gross_line_estimate") is not None
+                    else "unresolved"
+                )
+                source = row.get("work_ref") or row.get("expense_ref")
+                rows.append(
+                    f"| {cell(row.get('day') or row.get('start'))} | "
+                    f"{cell(row['description'])} | {hours} | {cell(amount)} | {cell(source)} |"
+                )
+            rows += ["", "Total:"] + [
+                f"- {item['amount']} {item['currency']}"
+                for item in data["summary"]["gross_estimates"]
+            ]
+            if data["summary"]["flags"]:
+                rows += ["", "Unresolved: " + ", ".join(data["summary"]["flags"])]
+            if header.get("notes"):
+                rows += ["", header["notes"]]
+            rows += [
+                "",
+                f"Document: {data['document_ref']} · Revision: {data['revision_ref']}",
+                f"Calculation: {data['evaluation_ref']} ({data['calculation_version']}); "
+                f"as of {data['calculation_as_of']}.",
+                "The document total rounds once over exact contributions. "
+                "Issuance, delivery and payment are separate. This export sends nothing.",
+            ]
+            return "\n".join(rows) + "\n"
         lines = [
             f"# {data['kind'].capitalize()}: {cell(data['engagement_label'])}",
             "",

@@ -120,7 +120,11 @@ class WorkAttributionService:
             model.operator_ref == read_operator(),
         )
         if lock:
-            statement = statement.with_for_update().execution_options(populate_existing=True)
+            # Head identities cannot change. Serialize writers without blocking
+            # the key-share locks retained report foreign keys acquire.
+            statement = statement.with_for_update(key_share=True).execution_options(
+                populate_existing=True
+            )
         row = self.session.scalar(statement)
         if row is None:
             raise DocketError(

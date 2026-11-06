@@ -18,6 +18,7 @@
       "tests/integration/test_compensation_policies.py",
       "tests/integration/test_compensation_evaluations.py",
       "tests/integration/test_financial_documents.py",
+      "tests/integration/test_invoices.py",
       "tests/integration/test_document_allocations.py",
       "tests/integration/test_expenses.py",
       "tests/integration/test_work_reports.py",

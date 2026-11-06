@@ -23,6 +23,7 @@ from docket.schemas.events import (
 from docket.schemas.evidence import FieldEvidenceInput
 from docket.schemas.expenses import ExpenseRef, ExpenseSpec
 from docket.schemas.financial_documents import DocumentRef, TimesheetSpec, TimesheetStatusSpec
+from docket.schemas.invoices import InvoiceSpec, InvoiceStatusSpec
 from docket.schemas.policy import (
     CalendarLaneCreateSpec,
     CalendarLanePatchSpec,
@@ -592,6 +593,33 @@ class ExpenseModify(MutationBase):
     object_ref: ExpenseRef
     create_spec: None = None
     payload: ExpenseSpec
+
+
+class InvoicePrepare(MutationBase):
+    mutation_type: Literal["invoice_prepare"] = "invoice_prepare"
+    action: Literal["create"]
+    object_type: Literal["financial_document"]
+    object_ref: None = None
+    create_spec: InvoiceSpec
+    payload: None = None
+
+
+class InvoiceRefresh(MutationBase):
+    mutation_type: Literal["invoice_refresh"] = "invoice_refresh"
+    action: Literal["update"]
+    object_type: Literal["financial_document"]
+    object_ref: DocumentRef
+    create_spec: None = None
+    payload: InvoiceSpec
+
+
+class InvoiceTransition(MutationBase):
+    mutation_type: Literal["invoice_transition"] = "invoice_transition"
+    action: Literal["update"]
+    object_type: Literal["financial_document"]
+    object_ref: DocumentRef
+    create_spec: None = None
+    payload: InvoiceStatusSpec
 
 
 class TimesheetPrepare(MutationBase):
@@ -1237,7 +1265,10 @@ type LaneMutation = (
 )
 type EventMutation = CanonicalEventCreate | CanonicalEventModify | CanonicalEventCancel
 type TrackedContextMutation = (
-    ExpenseCreate
+    InvoicePrepare
+    | InvoiceRefresh
+    | InvoiceTransition
+    | ExpenseCreate
     | ExpenseModify
     | TimesheetPrepare
     | TimesheetTransition
@@ -1271,7 +1302,10 @@ type TrackedContextMutation = (
     | ReminderPlanRetract
 )
 type CanonicalMutation = (
-    ExpenseCreate
+    InvoicePrepare
+    | InvoiceRefresh
+    | InvoiceTransition
+    | ExpenseCreate
     | ExpenseModify
     | TimesheetPrepare
     | TimesheetTransition

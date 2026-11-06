@@ -73,7 +73,7 @@ not invented hourly earnings. Read the summary before quoting a total; known
 subtotals do not establish complete reporting or payment. Follow next_cursor for
 bounded details. The export_cursor starts lossless JSON/CSV of the same frozen
 calculation, unaffected by later work/rate corrections. Evaluation creates no claim,
-submission or payment. Invoice and settlement operations remain unfinished.
+submission or payment. Settlement operations remain unfinished.
 For complete
 immutable policy history, follow the returned audit ref and concatenate
 policy_json_chunk using text_next_offset until absent.
@@ -97,6 +97,24 @@ amends_ref on a new prepared report for later corrections; review its reconcilia
 flags and existing claims. A new revision does not make previously claimed hours fresh.
 `docket_read_document` reads a document or exact revision as summary, JSON, CSV or
 Markdown. Follow cursor until complete; export creates no delivery or payment.
+
+Use `docket_prepare_invoice` with an engagement and optional period, work_refs,
+max_work_minutes and expenses. Omit expense_refs for related dated costs, or use
+[] to exclude them. Docket derives remaining claim quantities and exact marginal
+prices, including overtime, while preserving timesheet references to the same work.
+Missing rates can remain in a draft; only affected finalization is blocked.
+Use `docket_refresh_invoice` after correcting draft work/terms or to change supplied
+selection/header fields. Omitted fields retain earlier choices. A stale preview
+must be refreshed; applying it never silently claims a different set of hours.
+`docket_update_invoice(status="issued")` retains an exact numbered snapshot;
+status="cancelled" releases draft reservations. Issued content stays immutable.
+status="delivered" records reported manual delivery with optional observed_at/note,
+without a provider call or payment. Do not infer it from export. Use the shared
+`docket_read_document` for immutable JSON/CSV/Markdown renditions. The document total
+rounds once over exact contributions. Select currency or money_decimals when the
+draft flags conflicting choices. Work context distinguishes invoice-reserved,
+invoiced and uninvoiced quantities. Corrections flag older issued documents for
+reconciliation; they do not erase earlier billed units or manufacture payment.
 
 Use `docket_record_expense` for amount, currency and description; date, attribution,
 reimbursement classification and protected receipt source are optional. Missing

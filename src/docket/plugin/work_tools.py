@@ -13,6 +13,7 @@ from docket.plugin.business import model_function
 from docket.schemas.compensation import POLICY_TOOL_PURPOSES, GetCompensation
 from docket.schemas.expenses import EXPENSE_TOOL_PURPOSES, QueryExpenses
 from docket.schemas.financial_documents import FINANCIAL_TOOL_PURPOSES, ReadDocument
+from docket.schemas.invoices import INVOICE_TOOL_PURPOSES
 from docket.schemas.work import WORK_TOOL_PURPOSES, GetWorkContext, QueryWorkSessions
 from docket.services.business_commands import public_validation_error
 from docket.services.compensation_evaluations import CompensationEvaluationService
@@ -27,6 +28,7 @@ from docket.services.financial_documents import (
     DOCUMENT_COMMAND_MODELS,
     FinancialDocumentCommandService,
 )
+from docket.services.invoices import INVOICE_COMMAND_MODELS, InvoiceCommandService
 from docket.services.native_context import NativeContextService
 from docket.services.work_commands import WORK_COMMAND_MODELS, WorkCommandService
 from docket.services.work_lineage import LINEAGE_COMMAND_MODELS, WorkLineageCommandService
@@ -40,6 +42,7 @@ WORK_COMMAND_TOOLS = (
     | frozenset(POLICY_COMMAND_MODELS)
     | frozenset(DOCUMENT_COMMAND_MODELS)
     | frozenset(EXPENSE_COMMAND_MODELS)
+    | frozenset(INVOICE_COMMAND_MODELS)
 )
 
 
@@ -57,6 +60,8 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
                     service = (
                         WorkTimerCommandService
                         if name in TIMER_COMMAND_MODELS
+                        else InvoiceCommandService
+                        if name in INVOICE_COMMAND_MODELS
                         else ExpenseCommandService
                         if name in EXPENSE_COMMAND_MODELS
                         else FinancialDocumentCommandService
@@ -88,6 +93,7 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
                         **POLICY_COMMAND_MODELS,
                         **DOCUMENT_COMMAND_MODELS,
                         **EXPENSE_COMMAND_MODELS,
+                        **INVOICE_COMMAND_MODELS,
                     }
                 )[name],
                 name,
@@ -99,6 +105,7 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
                 **POLICY_TOOL_PURPOSES,
                 **FINANCIAL_TOOL_PURPOSES,
                 **EXPENSE_TOOL_PURPOSES,
+                **INVOICE_TOOL_PURPOSES,
             }[name],
             annotations=ToolAnnotations(
                 read_only_hint=False,
@@ -115,6 +122,7 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
         *POLICY_COMMAND_MODELS,
         *DOCUMENT_COMMAND_MODELS,
         *EXPENSE_COMMAND_MODELS,
+        *INVOICE_COMMAND_MODELS,
     ):
         register(name)
 

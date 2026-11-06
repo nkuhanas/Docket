@@ -94,7 +94,9 @@ class FinancialDocumentService:
             )
         return row
 
-    def guard_basis(self, evaluation: CompensationEvaluation, changeset: Any) -> None:
+    def guard_basis(
+        self, evaluation: CompensationEvaluation, changeset: Any, work_refs: set[str] | None = None
+    ) -> None:
         engagement = self.session.scalar(
             select(Engagement)
             .where(
@@ -110,6 +112,7 @@ class FinancialDocumentService:
         captured = {
             line["work_ref"]: line["revision_ref"]
             for line in evaluation.result_json["contributions"]
+            if work_refs is None or line["work_ref"] in work_refs
         }
         heads = self.session.execute(
             select(WorkSession, WorkSessionRevision.ref_id)
@@ -126,6 +129,12 @@ class FinancialDocumentService:
             .with_for_update(read=True)
             .execution_options(populate_existing=True)
         ).all()
+        missing = set(captured) - {head.ref_id for head, _current_ref in heads}
+        if missing:
+            raise document_error(
+                "financial_basis_changed", "Refresh the draft from current work.",
+                work_ref=sorted(missing)[0],
+            )
         for head, current_ref in heads:
             if current_ref != captured[head.ref_id] or head.superseded:
                 raise document_error(
@@ -134,7 +143,9 @@ class FinancialDocumentService:
                     work_ref=head.ref_id,
                 )
 
-    def reconcile_flags(self, revision: FinancialDocumentRevision) -> list[str]:
+    def reconcile_flags(
+        self, revision: FinancialDocumentRevision, work_refs: set[str] | None = None
+    ) -> list[str]:
         evaluation = self.session.scalar(
             select(CompensationEvaluation).where(
                 CompensationEvaluation.ref_id == revision.evaluation_ref
@@ -144,6 +155,7 @@ class FinancialDocumentService:
         captured = {
             line["work_ref"]: line["revision_ref"]
             for line in evaluation.result_json["contributions"]
+            if work_refs is None or line["work_ref"] in work_refs
         }
         current = {
             row[0]: row[1]
@@ -164,7 +176,8 @@ class FinancialDocumentService:
         )
         policy = CompensationPolicyService(self.session)
         eng = evaluation.parameters_json["engagement_ref"]
-        lines = evaluation.result_json["contributions"]
+        lines = [line for line in evaluation.result_json["contributions"]
+                 if work_refs is None or line["work_ref"] in work_refs]
         zones = dict(
             self.session.execute(
                 select(WorkSessionRevision.ref_id, WorkSessionRevision.timezone).where(
@@ -228,6 +241,10 @@ class FinancialDocumentService:
         self, head: FinancialDocument, revision: FinancialDocumentRevision | None = None
     ) -> dict[str, Any]:
         revision = revision or self.revision(head)
+        if head.kind == "invoice":
+            from docket.services.invoices import InvoiceService
+
+            return InvoiceService(self.session).view(head, revision)
         return {
             "ref": head.ref_id,
             "version": revision.revision,
@@ -261,6 +278,10 @@ class FinancialDocumentService:
         }
 
     def apply(self, session: Session, changeset: Any, change: Any) -> list[str]:
+        if change.mutation_type.startswith("invoice_"):
+            from docket.services.invoices import InvoiceService
+
+            return InvoiceService(self.session).apply(changeset, change)
         head = self.head(change.object_ref, lock=True) if change.object_ref else None
         if head:
             self.work.check_version(head, changeset)

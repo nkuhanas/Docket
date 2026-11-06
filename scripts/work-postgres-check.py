@@ -546,6 +546,228 @@ async def check_compensation_policies(settings, factory, principal):
         assert "80.123456789" not in json.dumps(rows, default=str)
 
 
+async def check_native_invoices(settings, factory, principal):
+    from docket.agent_auth import AgentCallContext, agent_call_context
+    from docket.models import (
+        FinancialDocumentObservation,
+        FinancialDocumentRevision,
+        InvoiceNumber,
+        WorkClaim,
+    )
+    from docket.plugin.server import PluginMCP
+
+    async def call(name, arguments):
+        token = agent_call_context.set(AgentCallContext(principal))
+        try:
+            return (await PluginMCP(settings).call_tool(name, arguments)).structured_content
+        finally:
+            agent_call_context.reset(token)
+
+    async def change(name, refs, identity, **fields):
+        packet = await call("docket_get_work_context", {"refs": refs})
+        result = await call(
+            name, {"context_id": packet["context_id"], "operation_id": identity, **fields}
+        )
+        assert result.get("disposition") in {"committed", "prepared"}, result
+        return result
+
+    engagement = await change(
+        "docket_create_engagement",
+        [],
+        "pg-native-invoice-eng",
+        label="Synthetic invoice client",
+        kind="contract",
+    )
+    eng = next(ref for ref in engagement["affected_refs"] if ref.startswith("eng_"))
+    await change(
+        "docket_set_pay_terms",
+        [eng],
+        "pg-native-invoice-rate",
+        engagement_ref=eng,
+        effective_from="2020-01-01",
+        rate="80",
+        currency="USD",
+        billable=True,
+    )
+    logged = await change(
+        "docket_log_work_session",
+        [eng],
+        "pg-native-invoice-work",
+        engagement_ref=eng,
+        description="Synthetic native invoice work",
+        duration_minutes=90,
+        work_date="2026-11-03",
+        reported_compensation_class="billable",
+    )
+    work = logged["work_records"][0]["ref"]
+    previews = [
+        await change(
+            "docket_prepare_invoice",
+            [eng],
+            f"pg-native-invoice-preview-{i}",
+            engagement_ref=eng,
+            date_from="2026-11-02",
+            date_to="2026-11-09",
+            timezone="UTC",
+            expense_refs=[],
+            preview=True,
+            number_series="PG-NATIVE",
+        )
+        for i in (1, 2)
+    ]
+    barrier = Barrier(2)
+
+    def apply(preview):
+        barrier.wait(timeout=10)
+        return asyncio.run(call("docket_apply_change", {"change_id": preview["change_id"]}))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(apply, previews))
+    assert sum(row.get("disposition") == "committed" for row in results) == 1, results
+    failed = next(row for row in results if row.get("ok") is False)
+    assert failed["error"]["code"] == "invoice_claim_basis_changed", failed
+    winner = next(row for row in results if row.get("disposition") == "committed")
+    ref = winner["documents"][0]["ref"]
+    assert winner["documents"][0]["gross_estimates"][0]["amount"] == "120.00", winner
+    await change(
+        "docket_update_work_session",
+        [work],
+        "pg-native-invoice-grow",
+        work_ref=work,
+        duration_minutes=120,
+    )
+    refreshed = await change(
+        "docket_refresh_invoice", [ref], "pg-native-invoice-refresh", invoice_ref=ref
+    )
+    assert refreshed["documents"][0]["gross_estimates"][0]["amount"] == "160.00", refreshed
+    packet = await call("docket_get_work_context", {"refs": [ref]})
+    arguments = {
+        "context_id": packet["context_id"],
+        "operation_id": "pg-native-invoice-issue",
+        "invoice_ref": ref,
+        "status": "issued",
+    }
+    issued = await call("docket_update_invoice", arguments)
+    assert issued.get("disposition") == "committed", issued
+    assert issued["documents"][0]["number"] == "PG-NATIVE-000001", issued
+    replay = await call("docket_update_invoice", arguments)
+    assert replay.pop("replayed") and replay == issued
+    issued_revision = issued["documents"][0]["revision_ref"]
+    with factory() as session:
+        frozen = session.scalar(
+            select(FinancialDocumentRevision.snapshot_json).where(
+                FinancialDocumentRevision.ref_id == issued_revision
+            )
+        )
+    delivery = await change(
+        "docket_update_invoice",
+        [ref],
+        "pg-native-invoice-delivery",
+        invoice_ref=ref,
+        status="delivered",
+        note="Synthetic reported manual delivery",
+    )
+    observation = next(value for value in delivery["affected_refs"] if value.startswith("fobs_"))
+    audit = await call("docket_get_history_entry", {"ref": observation, "view": "audit"})
+    assert audit.get("ok") and "financial_observation_json_chunk" in audit["entry"], audit
+    await change(
+        "docket_update_work_session",
+        [work],
+        "pg-native-invoice-grow-after-issue",
+        work_ref=work,
+        duration_minutes=150,
+    )
+    amendment = await change(
+        "docket_prepare_invoice",
+        [eng],
+        "pg-native-invoice-new-quantity",
+        engagement_ref=eng,
+        date_from="2026-11-02",
+        date_to="2026-11-09",
+        timezone="UTC",
+        expense_refs=[],
+        number_series="PG-NATIVE",
+        amends_ref=ref,
+    )
+    assert amendment["documents"][0]["worked_us"] == 30 * 60_000_000, amendment
+    assert amendment["documents"][0]["gross_estimates"][0]["amount"] == "40.00", amendment
+    await change(
+        "docket_update_invoice",
+        [amendment["documents"][0]["ref"]],
+        "pg-native-invoice-cancel-remainder",
+        invoice_ref=amendment["documents"][0]["ref"],
+        status="cancelled",
+    )
+    with factory() as session:
+        current = session.scalar(
+            select(FinancialDocumentRevision.snapshot_json).where(
+                FinancialDocumentRevision.ref_id == issued_revision
+            )
+        )
+        assert current == frozen
+        assert (
+            session.scalar(select(InvoiceNumber.number).where(InvoiceNumber.document_ref == ref))
+            == "PG-NATIVE-000001"
+        )
+        claim = session.scalar(
+            select(WorkClaim).where(WorkClaim.document_ref == ref, WorkClaim.status == "issued")
+        )
+        assert claim.end_us - claim.start_us == 120 * 60_000_000
+    # Compiling a preview must not take quantity/expense locks before canonical
+    # work-head locks. A correction can finish while this read transaction is open.
+    from docket.schemas.compensation import GetCompensation
+    from docket.schemas.invoices import InvoiceFields
+    from docket.services.compensation_evaluations import CompensationEvaluationService
+    from docket.services.invoice_claims import InvoiceClaimPlanner
+
+    compiler_actor = agent_call_context.set(AgentCallContext(principal))
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        with factory.begin() as session:
+            evaluation = CompensationEvaluationService(session, settings).capture(
+                GetCompensation(
+                    engagement_ref=eng,
+                    date_from=date(2026, 11, 2),
+                    date_to=date(2026, 11, 9),
+                    timezone="UTC",
+                )
+            )
+            InvoiceClaimPlanner(session).sources(
+                evaluation, InvoiceFields(expense_refs=[]), "fdoc_" + "0" * 26, [], lock=False
+            )
+            future = pool.submit(
+                lambda: asyncio.run(
+                    change(
+                        "docket_update_work_session",
+                        [work],
+                        "pg-native-invoice-compile-lock-order",
+                        work_ref=work,
+                        duration_minutes=180,
+                    )
+                )
+            )
+            corrected = await asyncio.to_thread(future.result, 10)
+            assert corrected.get("disposition") == "committed", corrected
+    finally:
+        agent_call_context.reset(compiler_actor)
+        pool.shutdown(wait=True)
+    for statement in (
+        update(FinancialDocumentObservation)
+        .where(FinancialDocumentObservation.ref_id == observation)
+        .values(note="rewrite"),
+        delete(FinancialDocumentObservation).where(
+            FinancialDocumentObservation.ref_id == observation
+        ),
+    ):
+        try:
+            with factory.begin() as session:
+                session.execute(statement)
+        except DBAPIError as exc:
+            assert "immutable" in str(exc.orig)
+        else:
+            raise AssertionError("PostgreSQL allowed rewriting reported invoice delivery")
+
+
 async def check_document_allocations(settings, factory, principal):
     from fractions import Fraction
 
@@ -1442,6 +1664,7 @@ async def check():
         ExpenseReportSnapshot,
         ExpenseRevision,
         FinancialDocument,
+        FinancialDocumentObservation,
         FinancialDocumentRevision,
         InvoiceNumber,
         InvoiceNumberSequence,
@@ -1483,6 +1706,7 @@ async def check():
         InvoiceNumberSequence,
         FinancialDocument,
         FinancialDocumentRevision,
+        FinancialDocumentObservation,
         WorkClaim,
         WorkClaimEvent,
         CompensationEvaluation,
@@ -1865,6 +2089,7 @@ async def check():
     await check_financial_documents(settings, factory, principal)
     await check_expenses(settings, factory, principal)
     await check_document_allocations(settings, factory, principal)
+    await check_native_invoices(settings, factory, principal)
     changeset_ref = created["changeset_ref"]
     with factory.begin() as session:
         request_ref = session.scalar(
@@ -2066,6 +2291,7 @@ async def check():
                 "expense_import_race_exact_totals_and_frozen_approval": "passed",
                 "expense_owner_and_report_immutability": "passed",
                 "partial_invoice_allocation_race_and_numbering": "passed",
+                "native_invoice_preview_race_refresh_issue_delivery_and_lineage": "passed",
                 "compensation_owner_isolation_and_privacy": "passed",
                 "composite_time_precision_and_sealing": "passed",
                 "work_report_aggregates_and_exports": "passed",

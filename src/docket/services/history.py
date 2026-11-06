@@ -44,6 +44,7 @@ from docket.models import (
     ExpenseRevision,
     Fact,
     FinancialDocument,
+    FinancialDocumentObservation,
     FinancialDocumentRevision,
     GatewayLifetime,
     GmailSource,
@@ -92,6 +93,7 @@ AUDIT_OUTPUT_BYTES = 64 * 1024
 MAX_TEXT_CHUNK_BYTES = 32 * 1024
 
 _PREFIX_MODELS: dict[str, tuple[str, type[Any], str]] = {
+    "fobs": ("financial_document_observation", FinancialDocumentObservation, "created_at"),
     "alloc": ("document_allocation", DocumentAllocation, "created_at"),
     "exp": ("expense", Expense, "created_at"),
     "exrev": ("expense_revision", ExpenseRevision, "created_at"),
@@ -286,7 +288,8 @@ class HistoryService:
                     "incurred_on": item.incurred_on.isoformat() if item.incurred_on else None,
                     "created_by_changeset_ref": item.created_by_changeset_ref}
         if isinstance(
-            item, FinancialDocument | FinancialDocumentRevision | WorkClaim | DocumentAllocation
+            item, (FinancialDocument | FinancialDocumentRevision | WorkClaim
+                   | DocumentAllocation | FinancialDocumentObservation)
         ):
             from docket.services.financial_documents import FinancialDocumentService
 
@@ -302,6 +305,12 @@ class HistoryService:
                         "date_from": item.date_from.isoformat(),
                         "date_to": item.date_to.isoformat(),
                         "created_by_changeset_ref": item.created_by_changeset_ref}
+            if isinstance(item, FinancialDocumentObservation):
+                return {**base, "document_ref":financial_head.ref_id,
+                        "document_revision_ref":item.document_revision_ref, "kind":item.kind,
+                        "observed_at":_iso(item.observed_at),
+                        "note_preview":(item.note or "")[:200],
+                        "created_by_changeset_ref":item.created_by_changeset_ref}
             if isinstance(item, DocumentAllocation):
                 return {**base, "document_ref": financial_head.ref_id, "version": item.version,
                         "status": item.status, "work_claim_ref": item.work_claim_ref,
@@ -992,6 +1001,15 @@ class HistoryService:
                 chunk = _text_chunk(raw, text_offset, min(text_limit, 8192))
                 chunk["expense_json_chunk"] = chunk.pop("verbatim_text_chunk")
                 entry.update(chunk)
+            if isinstance(item, FinancialDocumentObservation):
+                raw = json.dumps({"ref":item.ref_id,"document_ref":item.document_ref,
+                    "document_revision_ref":item.document_revision_ref,"kind":item.kind,
+                    "observed_at":_iso(item.observed_at),"note":item.note,"basis_refs":item.basis_refs,
+                    "created_by_changeset_ref":item.created_by_changeset_ref},
+                    ensure_ascii=False,sort_keys=True,separators=(",", ":"))
+                chunk = _text_chunk(raw,text_offset,min(text_limit,8192))
+                chunk["financial_observation_json_chunk"] = chunk.pop("verbatim_text_chunk")
+                entry.update(chunk)
             if isinstance(item, DocumentAllocation):
                 allocation_events = self.session.scalars(select(DocumentAllocationEvent).where(
                     DocumentAllocationEvent.allocation_ref == item.ref_id
@@ -1239,11 +1257,12 @@ class HistoryService:
                     statement = statement.join(Expense, Expense.ref_id == model.expense_ref).where(
                         Expense.operator_ref == read_operator())
             if model in {
-                FinancialDocument, FinancialDocumentRevision, WorkClaim, DocumentAllocation
+                FinancialDocument, FinancialDocumentRevision, WorkClaim, DocumentAllocation,
+                FinancialDocumentObservation
             }:
                 from docket.services.work_attribution import read_operator
 
-                if model is FinancialDocumentRevision:
+                if model in {FinancialDocumentRevision, FinancialDocumentObservation}:
                     statement = statement.join(
                         FinancialDocument, FinancialDocument.ref_id == model.document_ref
                     ).where(FinancialDocument.operator_ref == read_operator())

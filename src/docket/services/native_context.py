@@ -353,9 +353,14 @@ class NativeContextService:
                 actions += ["docket_update_" + kind]
             if kind == "engagement":
                 actions += ["docket_set_pay_terms", "docket_set_reporting_rules",
-                            "docket_get_compensation", "docket_prepare_timesheet"]
+                            "docket_get_compensation", "docket_prepare_timesheet",
+                            "docket_prepare_invoice"]
             if kind == "expense":
                 actions += ["docket_update_expense"]
+            if kind == "financial_document" and row.kind == "invoice":
+                actions += ["docket_update_invoice"]
+                if row.status == "draft":
+                    actions += ["docket_refresh_invoice"]
             if kind == "financial_document" and row.kind == "timesheet":
                 actions += ["docket_update_timesheet"]
                 if row.status in {"draft", "verified"}:

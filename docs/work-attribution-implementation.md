@@ -27,15 +27,15 @@ does not invent a payroll/banking integration or require its credentials.
 | P0b lineage | Atomic split/merge preserves known quantities/gaps/attribution; superseded parents excluded; stale races reject affected operation | Interval/duration and mixed/incomplete/differently dated composition implemented; MCP/PostgreSQL checks pass. Full release acceptance pending |
 | P1a policies | Effective dates, exact rates/currencies, hourly/nonhourly/unpaid distinction, explicit rounding/period/limits; unknown eligibility/estimates remain partial | Typed timelines and exact evaluation implemented; MCP/PostgreSQL history, snapshot isolation, rounding, overtime and coverage checks pass; full release acceptance pending |
 | P1a formal timesheets | Exact contributions, reporting lifecycle, immutable submitted snapshots, same-purpose duplicate-quantity protection, manual submission observations | Implemented in source; real MCP and PostgreSQL claim races, correction/amendment and immutable history checks pass; release acceptance pending |
-| P1b claims/invoices | Stable lineage across corrections/splits, partial reservations/concurrent drafts, cancellation release, exact numbered issued snapshots, adjustments/reconciliation flags | Shared work claims, document-allocation/numbering storage and deterministic partial pricing implemented; native invoice commands and financial adjustments pending |
-| P1b expenses | Independent exact money/currency/date/attribution/eligibility/ownership, optional protected receipt, submission/approval and distinct reimbursement claim | Reported costs, immutable approval basis and bounded exact reports implemented; shared financial allocation/settlement pending |
+| P1b claims/invoices | Stable lineage across corrections/splits, partial reservations/concurrent drafts, cancellation release, exact numbered issued snapshots, adjustments/reconciliation flags | Native preparation/refresh/issuance/cancellation, numbered snapshots and shared-source work/expense claims implemented; settlement/financial adjustments remain P1c |
+| P1b expenses | Independent exact money/currency/date/attribution/eligibility/ownership, optional protected receipt, submission/approval and distinct reimbursement claim | Reported costs/approval basis, bounded reports and shared invoice allocation implemented; actual reimbursement/settlement pending |
 | P1c settlement | Partial/unmatched/overpaid payments, allocations/credits/reversals, external-ID dedup, gross/net differences and outstanding/due balances without false receipt | Pending |
-| Formal export | Deterministic CSV/JSON and usable invoice/timesheet rendition with references, policy/calculation/revision basis; no implicit sending | Timesheet JSON/CSV/Markdown and exact-revision continuation implemented; invoice/export-specific acceptance pending |
+| Formal export | Deterministic CSV/JSON and usable invoice/timesheet rendition with references, policy/calculation/revision basis; no implicit sending | Timesheet and invoice JSON/CSV/Markdown with exact-revision continuation implemented; release acceptance pending |
 | P2 operations | Source-grounded workload/capacity/interval unions, outcomes/professional history, explicit assumptions/coverage and suggested omissions without invented performed work | Pending |
 | P2 follow-up | Typed work/finance reminder/case/event subjects, bounded exception reconciliation, retained inbox, suppression/preferences and client scheduling | Pending |
 | Optional visibility | Explicit correlated actual-time Calendar projection, no duplicate editable time/accounting or default provider effect | Pending |
 | Authority/provenance | OAuth/current local grant, req_/call_, owner isolation/revocation, full approved automation, restricted triage, optional honest capture and sensitive-log protection | New commands enforce write admission and retain req_/call_ roots; read-only rejection checked; complete new-domain isolation/revocation/privacy acceptance pending |
-| Contracts/host | Actual schemas and budgets, first-valid-attempt MCP journeys, generated reference/skill, same registered plugin identity and actual advertised capabilities | Thirteen P0, three policy/evaluation, four formal-report and three expense definitions fit per-tool budgets; generated reference/skill aligned. Hosted refresh/release pending |
+| Contracts/host | Actual schemas and budgets, first-valid-attempt MCP journeys, generated reference/skill, same registered plugin identity and actual advertised capabilities | Thirteen P0, three policy/evaluation, four formal-report, three expense and three invoice definitions fit per-tool budgets; generated reference/skill aligned. Hosted refresh/release pending |
 | Storage/operations | Fresh/populated PostgreSQL migrations, constraints/locking/races, protected history and migration-specific recovery | Initial work schema round-trip/immutability/uniqueness verified on PostgreSQL; full release pending |
 | Release | Local gate/affected groups, clean-source tested image, reviewed PR/merge, synchronized source, drain/idle/backup/migration/postdeploy and host evidence | Pending |
 
@@ -689,3 +689,77 @@ This is internal service/storage evidence. Native invoice preparation, refresh,
 issuance, usable invoice exports and financial settlement remain unfinished,
 alongside P2, optional actual-time visibility and release/host activation. The
 source services are not evidence that the connected plugin can invoice yet.
+
+
+### P1b: native invoice commands and immutable renditions
+
+Three flat commands now prepare, refresh and update invoices. Preparation takes an
+engagement plus optional period, selected work/expenses, a maximum work quantity,
+and ordinary invoice terms. The default period includes earlier related dated
+costs and work through today; it does not silently omit an old uninvoiced cost
+just because there is no current-month work. Selected owned work/amendment links
+are validated internally instead of demanding redundant context reads. The calling
+agent does not construct claims, allocation graphs or normalized generic entries.
+
+Drafts reserve exact remaining work and expense source units. Noncanonical previews
+reserve nothing and pin their financial basis: another claimant makes a preview
+stale rather than changing which hours it will bill. Cancelling a draft releases
+reservations with history. Submitted timesheets can share the same conserved work
+source with invoices without creating another WorkClaim. Draft reservations remain
+exclusive until their owner is resolved or cancelled. Work context distinguishes
+invoice-reserved, invoiced and uninvoiced quantities independently from reporting.
+
+Prices use effective retained policy, exact marginal overtime and document-level
+rounding. A maximum work quantity selects only that quantity, preserving the
+remainder for another invoice. Currencies, explicit monetary precision and known
+payers are kept distinct. Unresolved money/billability, affected overlap/review,
+required receipts or reported expense rejection block the affected invoice's
+issuance, without blocking valid work or expense recording.
+
+Issuance pins a unique series number, client/issuer, due/terms, exact source and
+calculation basis. Retry returns the same receipt/number. Submitted/issued bodies
+remain immutable after work, rate or expense corrections and expose reconciliation
+flags. Refresh replaces only a draft's reservations. A later amendment invoices
+only newly available units; financial credits/reversals remain P1c work.
+
+The shared document reader renders immutable invoice JSON, CSV and usable Markdown
+with source/revision identifiers, exact calculation basis, terms and rounded total.
+A reported manual delivery is a separate immutable `fobs_` observation; unknown
+actual delivery time remains unknown. It creates neither provider success nor
+money received. Migration `20261105d0e1` protects that exact issued-revision link,
+reported-rejection/precision checks and expense currency reconciliation. Populated
+downgrade refuses before dropping history. Recovery remains roll-forward.
+
+Concurrency verification found a retained-report foreign-key lock interaction.
+Immutable head writers now use PostgreSQL `FOR NO KEY UPDATE`: competing writers
+still serialize, while retained report key-share locks no longer prevent a work
+correction. Preview source capture takes no canonical quantity locks; actual
+application validates versions and the exact financial basis under locks. A
+concurrent join returning fewer captured work heads is rejected rather than
+silently omitting the missing version check.
+
+Evidence for this source slice:
+
+- Native gate: 244 passed in 46.04 seconds, Ruff and strict mypy for 230 source
+  files. Storage: 123 in 21.67 seconds. Release tooling: 52 in 2.15 seconds.
+- Real MCP journeys verify $80 regular / $120 overtime partial invoices from one
+  two-hour timesheet source, an additional $10 expense, number retry, cancellation,
+  stale previews, unavailable receipt/rate handling, draft refresh and unchanged
+  issued exports after work correction/delivery. Earlier dated expense defaults,
+  read-only rejection and actual 4/6 KiB schema budgets are checked.
+- Fresh PostgreSQL 16.9 rehearsal: migration/model parity and empty round trip;
+  invoice preview race has one winner; refresh, numbered issuance/retry and manual
+  delivery retain history; a later work extension exposes only its 30-minute
+  remainder. A correction completes while retained report/preview capture remains
+  open. Existing timer, lineage, policy, timesheet, expense and allocation races,
+  immutable history/numbering, and populated downgrade refusal also pass.
+- Actual discovery: 97 tools / 66 canonical mutation variants, 163,380 compact
+  UTF-8 bytes. Invoice prepare input/definition: 2,420/3,074 bytes; refresh:
+  2,213/2,785; update: 910/1,504. All fit 4/6 KiB. Global instructions remain
+  1,643 bytes. Contract metadata v63, context actions, generated reference and
+  packaged skill are aligned. No new scope, UUID or client claim graph is required.
+
+This is source acceptance, not production/host activation. No real invoice,
+expense, payment or provider message was created. P1c settlement/adjustments, P2
+workload/follow-up, optional actual-time visibility and the full release/host
+refresh remain unfinished parts of the adopted objective.

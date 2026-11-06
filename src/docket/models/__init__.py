@@ -75,6 +75,7 @@ from docket.models.financial_documents import (
     WorkClaim,
     WorkClaimEvent,
 )
+from docket.models.financial_observations import FinancialDocumentObservation
 from docket.models.gmail import ConnectorCheckpoint, GmailSource
 from docket.models.intelligence import (
     AttentionCase,
@@ -212,6 +213,7 @@ __all__ = [
     "ExpenseRevision",
     "Fact",
     "FinancialDocument",
+    "FinancialDocumentObservation",
     "FinancialDocumentRevision",
     "GatewayLifetime",
     "GmailSource",

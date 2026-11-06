@@ -10,12 +10,12 @@ below remain historical design evidence, not implementation or a second specific
 
 Current source implements the primary catalogue consolidation, thirteen P0
 definitions, two effective-policy commands, one evaluation read and four formal-report
-tools and three expense tools: 94 advertised tools total. Policy/evaluation definitions occupy 6,982 bytes;
+tools, three expense and three invoice tools: 97 advertised tools total. Policy/evaluation definitions occupy 6,982 bytes;
 the four formal-report definitions add 5,172 bytes.
 Every new input is below 4 KiB and complete definition below 6 KiB. Known-time
 and mixed-time split/merge, effective-policy configuration and compensation
-evaluation, formal timesheets and expense recording/reporting are checked; invoices, settlement and
-intelligence remain unfinished.
+evaluation, formal timesheets, expenses and native invoice workflows are checked; settlement
+and intelligence remain unfinished.
 The implementation report records exact evidence and the separate release boundary.
 
 The extension adds actual-work records first, then reporting/financial state and

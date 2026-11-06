@@ -670,6 +670,9 @@ class ChangeSetService:
                             "gross_estimates_truncated": len(summary["gross_estimates"]) > 3,
                             "flags": summary["flags"][:10],
                             "flags_truncated": len(summary["flags"]) > 10,
+                            **({key:state.get(key) for key in ("number", "due_on",
+                                "allocation_count", "delivery_observations")}
+                               if state["kind"] == "invoice" else {}),
                             "reconciliation_flags": state["reconciliation_flags"],
                             "detail": {"tool": "docket_read_document", "ref": ref},
                         })

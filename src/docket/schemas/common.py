@@ -25,6 +25,7 @@ ProviderAccountRef = Annotated[
 ]
 
 HistoryObjectType = Literal[
+    "financial_document_observation",
     "document_allocation",
     "expense", "expense_revision", "expense_observation",
     "financial_document",
@@ -72,7 +73,7 @@ HistoryObjectType = Literal[
 
 _PROVENANCE_PREFIXES = frozenset(
     {
-        "fdoc", "fdrev", "clm", "ceval", "alloc", "exp", "exrev", "exobs",
+        "fdoc", "fdrev", "clm", "ceval", "alloc", "fobs", "exp", "exrev", "exobs",
         "eng", "erev", "work", "wrev",
         "req",
         "rec",
