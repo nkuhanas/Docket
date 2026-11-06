@@ -73,7 +73,7 @@ not invented hourly earnings. Read the summary before quoting a total; known
 subtotals do not establish complete reporting or payment. Follow next_cursor for
 bounded details. The export_cursor starts lossless JSON/CSV of the same frozen
 calculation, unaffected by later work/rate corrections. Evaluation creates no claim,
-submission or payment. Invoice/expense and settlement operations remain unfinished.
+submission or payment. Invoice and settlement operations remain unfinished.
 For complete
 immutable policy history, follow the returned audit ref and concatenate
 policy_json_chunk using text_next_offset until absent.
@@ -97,6 +97,19 @@ amends_ref on a new prepared report for later corrections; review its reconcilia
 flags and existing claims. A new revision does not make previously claimed hours fresh.
 `docket_read_document` reads a document or exact revision as summary, JSON, CSV or
 Markdown. Follow cursor until complete; export creates no delivery or payment.
+
+Use `docket_record_expense` for amount, currency and description; date, attribution,
+reimbursement classification and protected receipt source are optional. Missing
+receipt capture leaves a gap and does not block recording. Stable external_source
+plus external_id prevents duplicate imports; similarity alone is a suggestion.
+Use `docket_update_expense` for corrections or a reported submission_status and
+optional claim_amount/observed_at. Omit an unknown decision time. Earlier approvals
+keep their exact cost revision, amount and currency after a correction. A reported
+approval is not money received. Use `docket_query_expenses` for full-set currency
+totals, explicit undated/unknown amounts and captured JSON/CSV exports. Follow
+totals_next_cursor for additional currencies and next_cursor for expense details.
+Use export_cursor to restart the same retained basis in another format. Export
+chunks concatenate in order; none of these commands sends a reimbursement claim.
 
 Use named business tools with ordinary fields. Creating a meeting takes title,
 ISO start/end, timezone and a calendar_ref from context. Docket derives its support

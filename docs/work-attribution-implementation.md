@@ -28,14 +28,14 @@ does not invent a payroll/banking integration or require its credentials.
 | P1a policies | Effective dates, exact rates/currencies, hourly/nonhourly/unpaid distinction, explicit rounding/period/limits; unknown eligibility/estimates remain partial | Typed timelines and exact evaluation implemented; MCP/PostgreSQL history, snapshot isolation, rounding, overtime and coverage checks pass; full release acceptance pending |
 | P1a formal timesheets | Exact contributions, reporting lifecycle, immutable submitted snapshots, same-purpose duplicate-quantity protection, manual submission observations | Implemented in source; real MCP and PostgreSQL claim races, correction/amendment and immutable history checks pass; release acceptance pending |
 | P1b claims/invoices | Stable lineage across corrections/splits, partial reservations/concurrent drafts, cancellation release, exact numbered issued snapshots, adjustments/reconciliation flags | Shared work-claim ledger and timesheet reservations/reporting implemented; invoice issuance/numbering and financial adjustment workflows pending |
-| P1b expenses | Independent exact money/currency/date/attribution/eligibility/ownership, optional protected receipt, submission/approval and distinct reimbursement claim | Pending |
+| P1b expenses | Independent exact money/currency/date/attribution/eligibility/ownership, optional protected receipt, submission/approval and distinct reimbursement claim | Reported costs, immutable approval basis and bounded exact reports implemented; shared financial allocation/settlement pending |
 | P1c settlement | Partial/unmatched/overpaid payments, allocations/credits/reversals, external-ID dedup, gross/net differences and outstanding/due balances without false receipt | Pending |
 | Formal export | Deterministic CSV/JSON and usable invoice/timesheet rendition with references, policy/calculation/revision basis; no implicit sending | Timesheet JSON/CSV/Markdown and exact-revision continuation implemented; invoice/export-specific acceptance pending |
 | P2 operations | Source-grounded workload/capacity/interval unions, outcomes/professional history, explicit assumptions/coverage and suggested omissions without invented performed work | Pending |
 | P2 follow-up | Typed work/finance reminder/case/event subjects, bounded exception reconciliation, retained inbox, suppression/preferences and client scheduling | Pending |
 | Optional visibility | Explicit correlated actual-time Calendar projection, no duplicate editable time/accounting or default provider effect | Pending |
 | Authority/provenance | OAuth/current local grant, req_/call_, owner isolation/revocation, full approved automation, restricted triage, optional honest capture and sensitive-log protection | New commands enforce write admission and retain req_/call_ roots; read-only rejection checked; complete new-domain isolation/revocation/privacy acceptance pending |
-| Contracts/host | Actual schemas and budgets, first-valid-attempt MCP journeys, generated reference/skill, same registered plugin identity and actual advertised capabilities | Thirteen P0, three policy/evaluation and four formal-report definitions fit per-tool budgets; generated reference/skill aligned. Hosted refresh/release pending |
+| Contracts/host | Actual schemas and budgets, first-valid-attempt MCP journeys, generated reference/skill, same registered plugin identity and actual advertised capabilities | Thirteen P0, three policy/evaluation, four formal-report and three expense definitions fit per-tool budgets; generated reference/skill aligned. Hosted refresh/release pending |
 | Storage/operations | Fresh/populated PostgreSQL migrations, constraints/locking/races, protected history and migration-specific recovery | Initial work schema round-trip/immutability/uniqueness verified on PostgreSQL; full release pending |
 | Release | Local gate/affected groups, clean-source tested image, reviewed PR/merge, synchronized source, drain/idle/backup/migration/postdeploy and host evidence | Pending |
 
@@ -586,3 +586,57 @@ Evidence:
 P1b invoices/expenses, P1c settlement, P2 workload/follow-up, optional actual-time
 visibility and full release/host activation remain unfinished. These source checks
 create no real employer/work/payment data and do not complete the full amendment.
+
+### P1b: reported expenses and retained reimbursement observations
+
+Three flat tools now record, correct and query/export reported expenses. Recording
+requires amount, currency and description, without a forced engagement, date,
+receipt, rate or financial document. Optional links use existing organizations,
+projects, engagements and protected source records. Unavailable receipt capture
+retains a gap instead of blocking the cost. Similar costs suggest duplicates;
+only an exact external source/transaction identity deduplicates reliably.
+
+A cost revision and a reported submission/approval/rejection are separate immutable
+records. Corrections preserve the earlier approval's exact cost basis, amount and
+currency, and expose a reconciliation flag. A conflicting imported decision asks
+for correction of the existing expense rather than silently recording approval.
+Unknown decision dates, incurred dates and reimbursement amounts remain unknown.
+No received reimbursement, provider submission or paid travel time is inferred.
+
+The query captures owned revisions and observations, then seals its exact currency
+aggregates. Full-set totals distinguish dated and unplaced costs, known eligible
+amounts, reported claims and reported approvals, including unknown-amount counts.
+Currencies page independently from detail records. JSON/CSV exports retain the
+captured basis after later corrections and continue within UTF-8 records without
+losing fields or duplicating expense rows. Earlier approval currency remains
+separate when the current cost currency changes. Export is an informal retained
+report, not an issued claim or proof of settlement.
+
+Migration `20261105b8c9` adds five tables, stable `exp_` heads, immutable `exrev_`
+costs and `exobs_` observations, plus principal-bound `exrep_` report membership.
+PostgreSQL guards owned/versioned heads, complete revision history, exact money,
+observation basis and one-way report sealing. Populated downgrade refuses before
+dropping anything. Recovery is roll-forward under the retained history; an image
+rollback does not remove the schema. No historical schedule/cost backfill occurs.
+
+Verification for this source slice:
+
+- Native gate: 235 passed in 40.25 seconds; Ruff and strict mypy passed for 223
+  source files. The focused expense journeys also pass after the final sparse-input
+  and large multibyte export checks.
+- Storage: 123 passed in 21.77 seconds. Release tooling: 52 passed in 2.19 seconds.
+- Disposable PostgreSQL 16.9: fresh metadata parity and empty schema round trip;
+  concurrent exact-ID imports create one cost; competing prepared corrections have
+  one winner; approval snapshots retain earlier amounts; exact nine-place currency
+  sums; protected ownership/history, deferred complete revisions, sealed membership,
+  cross-principal continuation rejection and populated downgrade refusal. The broad
+  existing work/timer/policy/timesheet proofs also passed. Containers were removed.
+- Actual discovery: 94 tools / 63 canonical mutation variants, 155,959 compact
+  UTF-8 bytes. Expense record input/definition: 3,380/3,983 bytes; update:
+  3,310/3,889; query: 1,336/1,901. Each stays below 4/6 KiB. Global instructions
+  remain 1,643 bytes. Generated reference, context actions and packaged skill align.
+
+This finishes the reported-cost/observation slice, not all of P1b. Contractor
+invoice allocation/issuance, settlement/adjustments, operational intelligence and
+actual-time visibility still require implementation and release acceptance. No
+real expense, financial claim, provider effect or hosted-plugin change was made.

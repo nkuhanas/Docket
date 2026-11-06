@@ -160,6 +160,8 @@ SPECIAL_TOOL_BY_MUTATION = {
     "task_modify": "docket_update_task",
     "engagement_create": "docket_create_engagement",
     "timesheet_prepare": "docket_prepare_timesheet",
+    "expense_create": "docket_record_expense",
+    "expense_modify": "docket_update_expense",
     "timesheet_transition": "docket_update_timesheet",
     "timesheet_refresh": "docket_refresh_timesheet",
     "engagement_modify": "docket_update_engagement",

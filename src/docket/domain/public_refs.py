@@ -17,6 +17,10 @@ class PublicRefDefinition:
 
 
 _DEFINITIONS = (
+    PublicRefDefinition("exp", "Expense"),
+    PublicRefDefinition("exrev", "ExpenseRevision"),
+    PublicRefDefinition("exobs", "ExpenseObservation"),
+    PublicRefDefinition("exrep", "ExpenseReportSnapshot"),
     PublicRefDefinition("fdoc", "FinancialDocument"),
     PublicRefDefinition("fdrev", "FinancialDocumentRevision"),
     PublicRefDefinition("clm", "WorkClaim"),

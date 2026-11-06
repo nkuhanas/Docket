@@ -200,6 +200,7 @@ class NativeContextService:
             "work",
             "cpol",
             "fdoc",
+            "exp",
         }
         objects: list[dict[str, Any]] = []
         versions: dict[str, int] = {}
@@ -237,12 +238,17 @@ class NativeContextService:
                     message="The selected object no longer exists.",
                     details={"field": "refs", "ref": ref},
                 )
-            if prefix in {"eng", "work", "cpol", "fdoc"}:
+            if prefix in {"eng", "work", "cpol", "fdoc", "exp"}:
                 from docket.services.work_attribution import WorkAttributionService
 
                 service = WorkAttributionService(self.session)
-                row = service.head(model, ref)
-                if prefix == "fdoc":
+                if prefix == "exp":
+                    from docket.services.expenses import ExpenseService
+
+                    expenses = ExpenseService(self.session)
+                    row = expenses.head(ref)
+                    state = expenses.view(row)
+                elif prefix == "fdoc":
                     from docket.services.financial_documents import FinancialDocumentService
 
                     documents = FinancialDocumentService(self.session)
@@ -261,6 +267,7 @@ class NativeContextService:
                         Engagement, row.engagement_ref,
                     ).version
                 else:
+                    row = service.head(model, ref)
                     state = service.view(row)
                 omitted = []
                 for key, value in list(state.items()):
@@ -347,6 +354,8 @@ class NativeContextService:
             if kind == "engagement":
                 actions += ["docket_set_pay_terms", "docket_set_reporting_rules",
                             "docket_get_compensation", "docket_prepare_timesheet"]
+            if kind == "expense":
+                actions += ["docket_update_expense"]
             if kind == "financial_document" and row.kind == "timesheet":
                 actions += ["docket_update_timesheet"]
                 if row.status in {"draft", "verified"}:

@@ -56,6 +56,13 @@ from docket.models.discord import (
 from docket.models.entities import Entity, EntityAlias, EntityResolution
 from docket.models.event_occurrences import CalendarDateBinding, EventOccurrence
 from docket.models.events import CanonicalEvent, ProviderEventBinding
+from docket.models.expenses import (
+    Expense,
+    ExpenseObservation,
+    ExpenseReportMember,
+    ExpenseReportSnapshot,
+    ExpenseRevision,
+)
 from docket.models.financial_documents import (
     FinancialDocument,
     FinancialDocumentRevision,
@@ -190,6 +197,11 @@ __all__ = [
     "EventOccurrence",
     "ExecutionAttempt",
     "ExecutionLease",
+    "Expense",
+    "ExpenseObservation",
+    "ExpenseReportMember",
+    "ExpenseReportSnapshot",
+    "ExpenseRevision",
     "Fact",
     "FinancialDocument",
     "FinancialDocumentRevision",

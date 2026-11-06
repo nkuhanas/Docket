@@ -133,6 +133,7 @@ class ChangeSetApplicationReceipt:
     provider_operations: list[ProviderOperationReceipt] = field(default_factory=list)
     work_records: list[dict[str, Any]] = field(default_factory=list)
     financial_documents: list[dict[str, Any]] = field(default_factory=list)
+    expenses: list[dict[str, Any]] = field(default_factory=list)
 
     def add_refs(self, refs: list[str]) -> None:
         for ref_id in refs:
@@ -216,7 +217,11 @@ class ChangeSetApplicationReceipt:
                 **({"documents": self.financial_documents[:min(limit, 3)],
                     "document_count": len(self.financial_documents),
                     "documents_truncated": len(self.financial_documents) > min(limit, 3)}
-                   if self.financial_documents else {})}
+                   if self.financial_documents else {}),
+                **({"expenses": self.expenses[:min(limit, 3)],
+                    "expense_count": len(self.expenses),
+                    "expenses_truncated": len(self.expenses) > min(limit, 3)}
+                   if self.expenses else {})}
 
 
 _GROUP_TYPES: dict[str, frozenset[str]] = {
@@ -238,6 +243,7 @@ _GROUP_TYPES: dict[str, frozenset[str]] = {
         {
             "engagement",
             "financial_document",
+            "expense",
             "work_session",
             "item",
             "temporal_binding",
@@ -250,6 +256,7 @@ _GROUP_TYPES: dict[str, frozenset[str]] = {
 }
 
 _OBJECT_PREFIXES: dict[str, str] = {
+    "expense": "exp",
     "financial_document": "fdoc",
     "engagement": "eng",
     "work_session": "work",
@@ -633,6 +640,17 @@ class ChangeSetService:
             refs = self.handlers[change.object_type](self.session, changeset, resolved_change)
             refs_by_change_id[change.change_id] = refs
             receipt.add_refs(refs)
+            if change.object_type == "expense":
+                from docket.services.expenses import ExpenseService
+
+                expenses = ExpenseService(self.session)
+                for ref in refs:
+                    if ref.startswith("exp_"):
+                        state = expenses.view(expenses.head(ref))
+                        receipt.expenses.append({key: state.get(key) for key in (
+                            "ref", "version", "revision_ref", "amount", "currency",
+                            "incurred_on", "receipt_status", "submission_status", "flags",
+                        )})
             if change.object_type == "financial_document":
                 from docket.services.financial_documents import FinancialDocumentService
 

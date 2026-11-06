@@ -29,6 +29,9 @@ from docket.models import (
     Engagement,
     EngagementRevision,
     Entity,
+    Expense,
+    ExpenseObservation,
+    ExpenseRevision,
     Fact,
     FinancialDocument,
     FinancialDocumentRevision,
@@ -61,7 +64,7 @@ from docket.models import (
 
 PROVENANCE_PREFIXES = frozenset(
     {
-        "fdoc", "fdrev", "clm", "ceval",
+        "fdoc", "fdrev", "clm", "ceval", "exp", "exrev", "exobs",
         "eng", "erev", "work", "wrev",
         "utt",
         "req",
@@ -107,6 +110,9 @@ PROVENANCE_PREFIXES = frozenset(
 )
 
 _PHASE_TWO_MODELS: dict[str, type[Any]] = {
+    "exp": Expense,
+    "exrev": ExpenseRevision,
+    "exobs": ExpenseObservation,
     "fdoc": FinancialDocument,
     "fdrev": FinancialDocumentRevision,
     "clm": WorkClaim,
@@ -197,6 +203,12 @@ class ProvenanceRefService:
                 code="provenance_ref_not_found",
                 message="A referenced provenance object does not exist.",
                 details={"ref": ref_id},
+            )
+        if isinstance(item, Expense | ExpenseRevision | ExpenseObservation):
+            from docket.services.expenses import ExpenseService
+
+            ExpenseService(self.session).head(
+                item.ref_id if isinstance(item, Expense) else item.expense_ref
             )
         if isinstance(
             item, FinancialDocument | FinancialDocumentRevision | WorkClaim | CompensationEvaluation

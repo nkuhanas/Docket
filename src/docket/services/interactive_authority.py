@@ -82,6 +82,7 @@ class InteractiveAuthorityService:
         provider_handler: ProviderIntentHandler | None = None,
     ) -> None:
         self.session = session
+        from docket.services.expenses import ExpenseService
         from docket.services.financial_documents import FinancialDocumentService
 
         registry_handlers = RegistryService(session).handlers()
@@ -99,6 +100,7 @@ class InteractiveAuthorityService:
                 **tracked_context_handlers,
                 **WorkAttributionService(session).handlers(),
                 "financial_document": FinancialDocumentService(session).apply,
+                "expense": ExpenseService(session).apply,
                 **case_resolution_handlers,
                 **(handlers or {}),
             },

@@ -546,6 +546,165 @@ async def check_compensation_policies(settings, factory, principal):
         assert "80.123456789" not in json.dumps(rows, default=str)
 
 
+async def check_expenses(settings, factory, principal):
+    from sqlalchemy import func, insert
+
+    from docket.agent_auth import AgentCallContext, AgentPrincipal, agent_call_context
+    from docket.models import (
+        Expense,
+        ExpenseObservation,
+        ExpenseReportMember,
+        ExpenseReportSnapshot,
+        ExpenseRevision,
+    )
+    from docket.plugin.server import PluginMCP
+
+    async def call(name, arguments, actor=principal):
+        token = agent_call_context.set(AgentCallContext(actor))
+        try:
+            return (await PluginMCP(settings).call_tool(name, arguments)).structured_content
+        finally:
+            agent_call_context.reset(token)
+
+    packet = await call("docket_get_work_context", {})
+
+    def imported(index):
+        return {
+            "context_id": packet["context_id"],
+            "operation_id": f"pg-expense-import-{index}",
+            "amount": "0.000000003",
+            "currency": "USD",
+            "description": "Synthetic expense",
+            "external_source": "synthetic-import",
+            "external_id": "example-transaction",
+            "reimbursable": True,
+        }
+
+    barrier = Barrier(2)
+
+    def run_import(index):
+        barrier.wait(timeout=10)
+        return asyncio.run(call("docket_record_expense", imported(index)))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(run_import, (1, 2)))
+    assert all(row.get("disposition") == "committed" for row in results), results
+    refs = {row["expenses"][0]["ref"] for row in results}
+    assert len(refs) == 1
+    ref = refs.pop()
+    packet = await call("docket_get_work_context", {"refs": [ref]})
+    approved = await call(
+        "docket_update_expense",
+        {
+            "context_id": packet["context_id"],
+            "operation_id": "pg-expense-approve",
+            "expense_ref": ref,
+            "submission_status": "approved",
+            "claim_amount": "0.000000002",
+        },
+    )
+    assert approved.get("disposition") == "committed", approved
+    approved_ref = approved["expenses"][0]["revision_ref"]
+    packet = await call("docket_get_work_context", {"refs": [ref]})
+    previews = [
+        await call(
+            "docket_update_expense",
+            {
+                "context_id": packet["context_id"],
+                "operation_id": f"pg-expense-correct-{index}",
+                "expense_ref": ref,
+                "amount": "0.000000005",
+                "preview": True,
+            },
+        )
+        for index in (1, 2)
+    ]
+    assert all(row.get("disposition") == "prepared" for row in previews), previews
+    barrier = Barrier(2)
+
+    def apply(preview):
+        barrier.wait(timeout=10)
+        return asyncio.run(call("docket_apply_change", {"change_id": preview["change_id"]}))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(apply, previews))
+    assert sum(row.get("disposition") == "committed" for row in results) == 1, results
+    packet = await call("docket_get_work_context", {"refs": [ref]})
+    state = packet["objects"][0]["state"]
+    assert state["approved_amount"] == "0.000000002" and state["approved_basis_ref"] == approved_ref
+    assert "expense_changed_since_approval" in state["flags"]
+    report = await call("docket_query_expenses", {})
+    assert report.get("ok"), report
+    assert report["totals"][0]["reported_cost"] == "0.000000005", report
+    assert report["totals"][0]["approved_amount"] == "0.000000002", report
+    with factory() as session:
+        assert session.scalar(select(func.count()).select_from(Expense)) == 1
+        head = session.scalar(select(Expense).where(Expense.ref_id == ref))
+        revision = session.scalar(
+            select(ExpenseRevision).where(
+                ExpenseRevision.expense_ref == ref, ExpenseRevision.revision == head.version
+            )
+        )
+        version, revision_ref = head.version, revision.ref_id
+        snapshot = session.scalar(
+            select(ExpenseReportSnapshot).where(
+                ExpenseReportSnapshot.ref_id == report["report"]["ref"]
+            )
+        )
+        snapshot_id = snapshot.id
+    for statement, message in (
+        (
+            update(Expense).where(Expense.ref_id == ref).values(operator_ref="wrong-owner"),
+            "immutable",
+        ),
+        (
+            update(Expense).where(Expense.ref_id == ref).values(version=version + 1),
+            "retained revision",
+        ),
+        (
+            update(ExpenseRevision)
+            .where(ExpenseRevision.ref_id == revision_ref)
+            .values(amount="8"),
+            "immutable",
+        ),
+        (delete(ExpenseObservation).where(ExpenseObservation.expense_ref == ref), "immutable"),
+        (
+            update(ExpenseReportSnapshot)
+            .where(ExpenseReportSnapshot.id == snapshot_id)
+            .values(totals_json=[]),
+            "seal",
+        ),
+        (
+            insert(ExpenseReportMember).values(
+                report_id=snapshot_id, expense_ref=ref, revision_ref=revision_ref
+            ),
+            "unsealed",
+        ),
+    ):
+        try:
+            with factory.begin() as session:
+                session.execute(statement)
+        except DBAPIError as exc:
+            assert message in str(exc.orig), str(exc.orig)
+        else:
+            raise AssertionError("PostgreSQL allowed invalid expense or retained report mutation")
+    other = AgentPrincipal(
+        "synthetic-other-expense", "synthetic-other-owner", "interactive", frozenset({"read"})
+    )
+    same_owner = AgentPrincipal(
+        "synthetic-alternate-expense", principal.operator_ref, "interactive", frozenset({"read"})
+    )
+    for name, arguments, actor in (
+        ("docket_get_work_context", {"refs": [ref]}, other),
+        ("docket_get_history_entry", {"ref": approved_ref, "view": "audit"}, other),
+        ("docket_query_expenses", {"cursor": report["export_cursor"]}, same_owner),
+    ):
+        denied = await call(name, arguments, actor)
+        assert denied.get("ok") is False, denied
+    denied = await call("docket_query_expenses", {}, other)
+    assert denied.get("ok") is False, denied
+
+
 async def check_financial_documents(settings, factory, principal):
     from docket.agent_auth import AgentCallContext, AgentPrincipal, agent_call_context
     from docket.models import (
@@ -1069,6 +1228,11 @@ async def check():
         CompensationTerm,
         Engagement,
         EngagementRevision,
+        Expense,
+        ExpenseObservation,
+        ExpenseReportMember,
+        ExpenseReportSnapshot,
+        ExpenseRevision,
         FinancialDocument,
         FinancialDocumentRevision,
         WorkClaim,
@@ -1098,6 +1262,11 @@ async def check():
     engine = configure_database(settings.database_url)
     factory = get_session_factory()
     tables = (
+        Expense,
+        ExpenseRevision,
+        ExpenseObservation,
+        ExpenseReportSnapshot,
+        ExpenseReportMember,
         FinancialDocument,
         FinancialDocumentRevision,
         WorkClaim,
@@ -1480,6 +1649,7 @@ async def check():
     await check_native_lineage(settings, factory, principal)
     await check_compensation_policies(settings, factory, principal)
     await check_financial_documents(settings, factory, principal)
+    await check_expenses(settings, factory, principal)
     changeset_ref = created["changeset_ref"]
     with factory.begin() as session:
         request_ref = session.scalar(
@@ -1678,6 +1848,8 @@ async def check():
                 "effective_compensation_policies_and_concurrency": "passed",
                 "frozen_compensation_evaluation_and_owner_isolation": "passed",
                 "timesheet_claim_race_and_conserved_amendment": "passed",
+                "expense_import_race_exact_totals_and_frozen_approval": "passed",
+                "expense_owner_and_report_immutability": "passed",
                 "compensation_owner_isolation_and_privacy": "passed",
                 "composite_time_precision_and_sealing": "passed",
                 "work_report_aggregates_and_exports": "passed",

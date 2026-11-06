@@ -21,6 +21,7 @@ from docket.schemas.events import (
     MaterializedEventPatchSpec,
 )
 from docket.schemas.evidence import FieldEvidenceInput
+from docket.schemas.expenses import ExpenseRef, ExpenseSpec
 from docket.schemas.financial_documents import DocumentRef, TimesheetSpec, TimesheetStatusSpec
 from docket.schemas.policy import (
     CalendarLaneCreateSpec,
@@ -573,6 +574,24 @@ def mutation_input_json(
 
     retain(value, result, patch=preserve_explicit_nulls)
     return result
+
+
+class ExpenseCreate(MutationBase):
+    mutation_type: Literal["expense_create"] = "expense_create"
+    action: Literal["create"]
+    object_type: Literal["expense"]
+    object_ref: None = None
+    create_spec: ExpenseSpec
+    payload: None = None
+
+
+class ExpenseModify(MutationBase):
+    mutation_type: Literal["expense_modify"] = "expense_modify"
+    action: Literal["update"]
+    object_type: Literal["expense"]
+    object_ref: ExpenseRef
+    create_spec: None = None
+    payload: ExpenseSpec
 
 
 class TimesheetPrepare(MutationBase):
@@ -1218,7 +1237,9 @@ type LaneMutation = (
 )
 type EventMutation = CanonicalEventCreate | CanonicalEventModify | CanonicalEventCancel
 type TrackedContextMutation = (
-    TimesheetPrepare
+    ExpenseCreate
+    | ExpenseModify
+    | TimesheetPrepare
     | TimesheetTransition
     | TimesheetRefresh
     | WorkTimerStart
@@ -1250,7 +1271,9 @@ type TrackedContextMutation = (
     | ReminderPlanRetract
 )
 type CanonicalMutation = (
-    TimesheetPrepare
+    ExpenseCreate
+    | ExpenseModify
+    | TimesheetPrepare
     | TimesheetTransition
     | TimesheetRefresh
     | WorkTimerStart

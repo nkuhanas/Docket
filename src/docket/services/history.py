@@ -37,6 +37,9 @@ from docket.models import (
     Engagement,
     EngagementRevision,
     Entity,
+    Expense,
+    ExpenseObservation,
+    ExpenseRevision,
     Fact,
     FinancialDocument,
     FinancialDocumentRevision,
@@ -87,6 +90,9 @@ AUDIT_OUTPUT_BYTES = 64 * 1024
 MAX_TEXT_CHUNK_BYTES = 32 * 1024
 
 _PREFIX_MODELS: dict[str, tuple[str, type[Any], str]] = {
+    "exp": ("expense", Expense, "created_at"),
+    "exrev": ("expense_revision", ExpenseRevision, "created_at"),
+    "exobs": ("expense_observation", ExpenseObservation, "created_at"),
     "fdoc": ("financial_document", FinancialDocument, "created_at"),
     "fdrev": ("financial_document_revision", FinancialDocumentRevision, "created_at"),
     "clm": ("work_claim", WorkClaim, "created_at"),
@@ -256,6 +262,26 @@ class HistoryService:
                 "created_by_changeset_ref": item.created_by_changeset_ref,
                 "created_at": _iso(item.created_at),
             }
+        if isinstance(item, Expense | ExpenseRevision | ExpenseObservation):
+            from docket.services.expenses import ExpenseService
+
+            expenses = ExpenseService(self.session)
+            expense_head = expenses.head(
+                item.ref_id if isinstance(item, Expense) else item.expense_ref
+            )
+            if isinstance(item, Expense):
+                return {**base, "state": expenses.view(expense_head)}
+            if isinstance(item, ExpenseObservation):
+                return {**base, "parent_ref": expense_head.ref_id, "version": item.version,
+                        "status": item.status, "amount": item.amount, "currency": item.currency,
+                        "basis_revision_ref": item.basis_revision_ref,
+                        "observed_at": _iso(item.observed_at),
+                        "created_by_changeset_ref": item.created_by_changeset_ref}
+            return {**base, "parent_ref": expense_head.ref_id, "revision": item.revision,
+                    "amount": item.amount, "currency": item.currency,
+                    "retracted": item.retracted,
+                    "incurred_on": item.incurred_on.isoformat() if item.incurred_on else None,
+                    "created_by_changeset_ref": item.created_by_changeset_ref}
         if isinstance(item, FinancialDocument | FinancialDocumentRevision | WorkClaim):
             from docket.services.financial_documents import FinancialDocumentService
 
@@ -949,6 +975,13 @@ class HistoryService:
                 select(OperatorUtterance.ref_id).where(OperatorUtterance.id == item.utterance_id)
             )
         if view == "audit":
+            if isinstance(item, ExpenseRevision | ExpenseObservation):
+                raw = json.dumps({column.name: getattr(item, column.name)
+                    for column in item.__table__.columns if column.name != "id"},
+                    ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+                chunk = _text_chunk(raw, text_offset, min(text_limit, 8192))
+                chunk["expense_json_chunk"] = chunk.pop("verbatim_text_chunk")
+                entry.update(chunk)
             if isinstance(item, WorkClaim):
                 events = self.session.scalars(select(WorkClaimEvent).where(
                     WorkClaimEvent.claim_ref == item.ref_id
@@ -1171,6 +1204,14 @@ class HistoryService:
                 continue
             time_column = getattr(model, time_field)
             statement: Select[Any] = select(model)
+            if model in {Expense, ExpenseRevision, ExpenseObservation}:
+                from docket.services.work_attribution import read_operator
+
+                if model is Expense:
+                    statement = statement.where(Expense.operator_ref == read_operator())
+                else:
+                    statement = statement.join(Expense, Expense.ref_id == model.expense_ref).where(
+                        Expense.operator_ref == read_operator())
             if model in {FinancialDocument, FinancialDocumentRevision, WorkClaim}:
                 from docket.services.work_attribution import read_operator
 

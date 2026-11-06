@@ -1,7 +1,7 @@
 # Native capability disposition
 
 Generated from current canonical definitions and their native public routes.
-All 61 canonical mutation variants have an advertised route.
+All 63 canonical mutation variants have an advertised route.
 
 | Internal effect | Native business tool |
 | --- | --- |
@@ -54,6 +54,8 @@ All 61 canonical mutation variants have an advertised route.
 | `task_modify` | `docket_update_task` |
 | `engagement_create` | `docket_create_engagement` |
 | `timesheet_prepare` | `docket_prepare_timesheet` |
+| `expense_create` | `docket_record_expense` |
+| `expense_modify` | `docket_update_expense` |
 | `timesheet_transition` | `docket_update_timesheet` |
 | `timesheet_refresh` | `docket_refresh_timesheet` |
 | `engagement_modify` | `docket_update_engagement` |
