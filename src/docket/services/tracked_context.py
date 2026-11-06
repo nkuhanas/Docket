@@ -29,6 +29,8 @@ from docket.models import (
     TemporalBinding,
     TemporalCalendarProjection,
 )
+from docket.models.tracked_context import TaskItemTitleOwnership
+from docket.schemas.authority import ItemCreate
 from docket.schemas.tracked_context import (
     ItemInput,
     ItemPatchInput,
@@ -41,6 +43,7 @@ from docket.schemas.tracked_context import (
     TemporalCalendarProjectionInput,
     TemporalCalendarProjectionPatchInput,
 )
+from docket.services.task_item_titles import relinquish, title_relationship
 
 TrackedContextHandler = Callable[[Session, ChangeSet, Any], list[str]]
 
@@ -501,6 +504,7 @@ class TrackedContextService:
             "ok": True,
             "ref": item.ref_id,
             "title": item.title,
+            "item_title_relationship": title_relationship(self.session, item.ref_id),
             "kind": item.kind,
             "description": item.description,
             "canonical_status": item.canonical_status,
@@ -825,6 +829,8 @@ class TrackedContextService:
             elif change.action == "update":
                 patch = ItemPatchInput.model_validate(change.payload)
                 values = patch.model_dump(exclude_unset=True)
+                if "title" in values:
+                    relinquish(self.session, item.ref_id, changeset.ref_id)
                 if "context_entity_refs" in values:
                     self._require_context_entities(values["context_entity_refs"] or [])
                 if values.get("parent_item_ref") is not None:
@@ -946,8 +952,31 @@ class TrackedContextService:
     def apply_task(self, _session: Session, changeset: ChangeSet, change: Any) -> list[str]:
         if change.action == "create":
             spec = TaskInput.model_validate(change.create_spec)
+            derived = spec.item_ref is None
+            if derived:
+                item_refs = self.apply_item(
+                    self.session,
+                    changeset,
+                    ItemCreate.model_validate(
+                        {
+                            "change_id": change.change_id + ".derived-item",
+                            "object_type": "item",
+                            "action": "create",
+                            "basis_refs": list(change.basis_refs),
+                            "affected_fields": ["title", "description", "kind"],
+                            "create_spec": {
+                                "title": spec.title,
+                                "description": spec.description,
+                                "kind": "work.task",
+                            },
+                        }
+                    ),
+                )
+                spec = spec.model_copy(update={"item_ref": item_refs[0]})
             assert spec.item_ref is not None
             self._item(spec.item_ref)
+            if not derived:
+                relinquish(self.session, spec.item_ref, changeset.ref_id)
             statement_refs = {ref for ref in change.basis_refs if ref.startswith("stm_")}
             exact_tasks = list(
                 self.session.scalars(
@@ -993,6 +1022,14 @@ class TrackedContextService:
             )
             self.session.add(task)
             self.session.flush()
+            if derived:
+                self.session.add(
+                    TaskItemTitleOwnership(
+                        item_ref=task.item_ref,
+                        task_ref=task.ref_id,
+                        created_by_changeset_ref=changeset.ref_id,
+                    )
+                )
         else:
             task = self._task(change.object_ref)
             if change.action == "retract":
@@ -1002,6 +1039,21 @@ class TrackedContextService:
                 values = patch.model_dump(exclude_unset=True)
                 if values.get("item_ref") is not None:
                     self._item(values["item_ref"])
+                    if values["item_ref"] != task.item_ref:
+                        relinquish(self.session, task.item_ref, changeset.ref_id)
+                        relinquish(self.session, values["item_ref"], changeset.ref_id)
+                owner = self.session.get(TaskItemTitleOwnership, task.item_ref)
+                if "title" in values and owner is not None and owner.relinquished_at is None:
+                    item = self._item(task.item_ref)
+                    item.title = values["title"]
+                    item.version += 1
+                    self._audit(
+                        event_type="item.changed",
+                        subject=item,
+                        changeset=changeset,
+                        change=change,
+                        affected_refs=[item.ref_id, task.ref_id],
+                    )
                 for key, value in values.items():
                     setattr(task, key, value)
             else:
@@ -1183,17 +1235,31 @@ class TrackedContextService:
 
                 spec_op = OperationalReminderSpec.model_validate(change.create_spec)
                 operational_subject(self.session, spec_op.subject_ref)
-                reminder = ReminderPlan(subject_ref=spec_op.subject_ref,
-                    delivery_channels=["docket_queue"], lead_seconds=[0], timezone=spec_op.timezone,
-                    basis_refs=list(change.basis_refs), created_by_changeset_ref=changeset.ref_id)
+                reminder = ReminderPlan(
+                    subject_ref=spec_op.subject_ref,
+                    delivery_channels=["docket_queue"],
+                    lead_seconds=[0],
+                    timezone=spec_op.timezone,
+                    basis_refs=list(change.basis_refs),
+                    created_by_changeset_ref=changeset.ref_id,
+                )
                 self.session.add(reminder)
                 self.session.flush()
-                self.session.add(OperationalReminder(reminder_ref=reminder.ref_id,
-                    operator_ref=require_principal("commit").operator_ref,
-                    trigger_at=spec_op.trigger_at, label=spec_op.label))
-                self._audit(event_type="reminder_plan.changed", subject=reminder,
-                    changeset=changeset, change=change,
-                    affected_refs=[reminder.ref_id, reminder.subject_ref])
+                self.session.add(
+                    OperationalReminder(
+                        reminder_ref=reminder.ref_id,
+                        operator_ref=require_principal("commit").operator_ref,
+                        trigger_at=spec_op.trigger_at,
+                        label=spec_op.label,
+                    )
+                )
+                self._audit(
+                    event_type="reminder_plan.changed",
+                    subject=reminder,
+                    changeset=changeset,
+                    change=change,
+                    affected_refs=[reminder.ref_id, reminder.subject_ref],
+                )
                 return [reminder.ref_id]
             spec = ReminderPlanInput.model_validate(change.create_spec)
             assert spec.subject_ref is not None
@@ -1227,8 +1293,10 @@ class TrackedContextService:
                 from docket.models import OperationalReminder
 
                 if self.session.get(OperationalReminder, reminder.ref_id) is not None:
-                    raise DocketError(code="operational_reminder_immutable",
-                        message="Retract this follow-up and schedule its replacement.")
+                    raise DocketError(
+                        code="operational_reminder_immutable",
+                        message="Retract this follow-up and schedule its replacement.",
+                    )
                 patch = ReminderPlanPatchInput.model_validate(change.payload)
                 values = patch.model_dump(exclude_unset=True)
                 if values.get("subject_ref") is not None:

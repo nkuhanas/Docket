@@ -11,7 +11,6 @@ from docket.models import NativeContext
 from docket.schemas.authority import (
     CanonicalEventCancel,
     CanonicalEventModify,
-    ItemCreate,
     TaskCreate,
     TaskModify,
     TemporalBindingCreate,
@@ -279,23 +278,6 @@ class RoutineCommandService(NativeCommandService):
                 )
             elif payload.get("task_state"):
                 payload["completed_at"] = None
-            if isinstance(command, CreateTask) and not command.item_ref:
-                actions.append(
-                    ItemCreate.model_validate(
-                        {
-                            "change_id": "item",
-                            "object_type": "item",
-                            "action": "create",
-                            "affected_fields": ["title", "description"],
-                            "create_spec": {
-                                "title": command.title,
-                                "description": command.notes,
-                                "kind": "work.task",
-                            },
-                        }
-                    )
-                )
-                payload["item_change_id"] = "item"
             try:
                 if create:
                     actions.append(

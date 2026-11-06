@@ -386,6 +386,12 @@ class NativeContextService:
                         state[key] = value
                 if omitted:
                     state["omitted_fields"] = omitted
+            if prefix in {"task", "item"}:
+                from docket.services.task_item_titles import title_relationship
+
+                state["item_title_relationship"] = title_relationship(
+                    self.session, row.item_ref if prefix == "task" else row.ref_id
+                )
             if kind == "work_session" and state.get("calendar_visibility"):
                 visibility = state["calendar_visibility"]
                 versions[visibility["ref"]] = visibility["version"]

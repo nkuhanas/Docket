@@ -147,9 +147,10 @@ def test_datetime_rejects_nonexistent_and_unresolved_ambiguous_local_time() -> N
         )
 
 
-def test_task_requires_exactly_one_item_and_exact_completion_time() -> None:
-    with pytest.raises(ValidationError, match="one item ref or change id"):
-        TaskInput(title="Complete Problem Set 4")
+def test_task_derives_item_when_omitted_and_requires_exact_completion_time() -> None:
+    assert TaskInput(title="Complete Problem Set 4").item_ref is None
+    with pytest.raises(ValidationError, match="not both"):
+        TaskInput(title="Complete Problem Set 4", item_ref=_ref("item"), item_change_id="new")
     with pytest.raises(ValidationError, match="completed_at"):
         TaskInput(item_ref=_ref("item"), title="Complete Problem Set 4", task_state="completed")
     task = TaskInput(

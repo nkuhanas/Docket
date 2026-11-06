@@ -100,7 +100,7 @@ class CancelEvent(EventScope):
 
 
 class CreateTask(CommandBase):
-    title: str = Field(min_length=1, max_length=512)
+    title: str = Field(min_length=1, max_length=1024)
     notes: str | None = Field(default=None, max_length=16000)
     state: TaskState = "not_started"
     priority: TaskPriority = "normal"
@@ -111,7 +111,7 @@ class CreateTask(CommandBase):
 
 class UpdateTask(CommandBase):
     task_ref: TaskRef
-    title: str | None = Field(default=None, min_length=1, max_length=512)
+    title: str | None = Field(default=None, min_length=1, max_length=1024)
     notes: str | None = Field(default=None, max_length=16000)
     state: TaskState | None = None
     priority: TaskPriority | None = None

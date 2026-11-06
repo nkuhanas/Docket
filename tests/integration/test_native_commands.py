@@ -445,7 +445,7 @@ async def test_task_due_and_completion_use_derived_records_and_current_versions(
                 {
                     "context_id": overview["context_id"],
                     "operation_id": "task-create",
-                    "title": "Prepare agenda",
+                    "title": "A" * 1024,
                     "due": "2026-11-13",
                     "priority": "high",
                 },
@@ -482,9 +482,59 @@ async def test_task_due_and_completion_use_derived_records_and_current_versions(
     with session_factory() as session:
         task = session.scalar(select(Task))
         assert task.task_state == "completed" and task.completed_at is not None
-        assert task.title == "Prepare agenda" and task.priority == "high"
+        assert task.title == "A" * 1024 and task.priority == "high"
+        assert session.scalar(select(Item.title)) == "A" * 1024
         assert session.scalar(select(func.count()).select_from(Item)) == 1
         assert session.scalar(select(func.count()).select_from(TemporalBinding)) == 1
+
+
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+@pytest.mark.asyncio
+async def test_derived_title_renames_stop_after_independent_same_title_edit(
+    session_factory, linked_plugin,
+):
+    from docket.models import Task
+    from docket.models.tracked_context import TaskItemTitleOwnership
+
+    app, _settings, token, _principal = linked_plugin
+    async with (
+        app.router.lifespan_context(app),
+        httpx2.AsyncClient(transport=httpx2.ASGITransport(app),
+                          headers={"Authorization": "Bearer " + token}) as http,
+        Client(streamable_http_client("https://docket.you/mcp/", http_client=http),
+               mode="legacy") as client,
+    ):
+        context = (await client.call_tool("docket_get_overview", {})).structured_content
+        created = (await client.call_tool("docket_create_task", {
+            "context_id": context["context_id"], "operation_id": "owned-task",
+            "title": "Original",
+        })).structured_content
+        assert created.get("disposition") == "committed", created
+        with session_factory() as session:
+            task = session.scalar(select(Task))
+            task_ref, item_ref = task.ref_id, task.item_ref
+            owner = session.get(TaskItemTitleOwnership, item_ref)
+            assert owner.task_ref == task_ref and owner.relinquished_at is None
+
+        for index, (tool, fields) in enumerate([
+            ("docket_update_task", {"task_ref": task_ref, "title": "Renamed"}),
+            ("docket_update_item", {"target_ref": item_ref, "title": "Renamed"}),
+            ("docket_update_task", {"task_ref": task_ref, "title": "Task only"}),
+        ]):
+            packet = (await client.call_tool("docket_get_context", {
+                "refs": [task_ref, item_ref],
+            })).structured_content
+            result = (await client.call_tool(tool, {
+                "context_id": packet["context_id"], "operation_id": f"rename-{index}", **fields,
+            })).structured_content
+            assert result.get("disposition") == "committed", result
+            with session_factory() as session:
+                item = session.scalar(select(Item).where(Item.ref_id == item_ref))
+                assert item.title == "Renamed"
+                owner = session.get(TaskItemTitleOwnership, item_ref)
+                assert (owner.relinquished_at is None) == (index == 0)
+        with session_factory() as session:
+            assert session.scalar(select(Task.title)) == "Task only"
 
 
 @pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)

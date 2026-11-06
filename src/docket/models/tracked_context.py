@@ -41,7 +41,7 @@ class Item(Base):
     ref_id: Mapped[str] = mapped_column(
         String(40), unique=True, nullable=False, default=lambda: new_public_ref("item")
     )
-    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    title: Mapped[str] = mapped_column(String(1024), nullable=False)
     kind: Mapped[str | None] = mapped_column(String(128))
     description: Mapped[str | None] = mapped_column(Text)
     context_entity_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
@@ -174,7 +174,7 @@ class Task(Base):
     item_ref: Mapped[str] = mapped_column(
         ForeignKey("items.ref_id", ondelete="RESTRICT"), nullable=False
     )
-    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    title: Mapped[str] = mapped_column(String(1024), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     task_state: Mapped[str] = mapped_column(String(32), default="not_started", nullable=False)
     priority: Mapped[str] = mapped_column(String(16), default="normal", nullable=False)
@@ -191,6 +191,33 @@ class Task(Base):
         DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
     )
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+
+class TaskItemTitleOwnership(Base):
+    """A service-created derived pair; relinquishment never transfers ownership."""
+
+    __tablename__ = "task_item_title_ownership"
+    __table_args__ = (
+        CheckConstraint(
+            "(relinquished_by_changeset_ref IS NULL) = (relinquished_at IS NULL)",
+            name="ck_task_item_title_ownership_relinquishment",
+        ),
+    )
+
+    item_ref: Mapped[str] = mapped_column(
+        ForeignKey("items.ref_id", ondelete="RESTRICT"), primary_key=True
+    )
+    task_ref: Mapped[str] = mapped_column(
+        ForeignKey("tasks.ref_id", ondelete="RESTRICT"), unique=True, nullable=False
+    )
+    created_by_changeset_ref: Mapped[str] = mapped_column(
+        ForeignKey("change_sets.ref_id", ondelete="RESTRICT"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    relinquished_by_changeset_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("change_sets.ref_id", ondelete="RESTRICT")
+    )
+    relinquished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class EventItemLink(Base):

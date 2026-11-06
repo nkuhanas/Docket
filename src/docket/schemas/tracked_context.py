@@ -157,7 +157,7 @@ TemporalValue = Annotated[
 
 
 class ItemInput(StrictModel):
-    title: str = Field(min_length=1, max_length=512)
+    title: str = Field(min_length=1, max_length=1024)
     kind: str | None = Field(
         default=None,
         pattern=r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$",
@@ -192,7 +192,7 @@ class ItemInput(StrictModel):
 
 
 class ItemPatchInput(StrictModel):
-    title: str | None = Field(default=None, min_length=1, max_length=512)
+    title: str | None = Field(default=None, min_length=1, max_length=1024)
     kind: str | None = Field(
         default=None,
         pattern=r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$",
@@ -293,7 +293,7 @@ class TemporalBindingPatchInput(StrictModel):
 class TaskInput(StrictModel):
     item_ref: ItemRef | None = None
     item_change_id: str | None = Field(default=None, min_length=1, max_length=128)
-    title: str = Field(min_length=1, max_length=512)
+    title: str = Field(min_length=1, max_length=1024)
     description: str | None = Field(default=None, max_length=16_000)
     task_state: TaskState = "not_started"
     priority: TaskPriority = "normal"
@@ -308,8 +308,8 @@ class TaskInput(StrictModel):
 
     @model_validator(mode="after")
     def item_and_completion_are_exact(self) -> TaskInput:
-        if (self.item_ref is None) == (self.item_change_id is None):
-            raise ValueError("task requires one item ref or change id")
+        if self.item_ref is not None and self.item_change_id is not None:
+            raise ValueError("task item uses a ref or change id, not both")
         if (self.task_state == "completed") != (self.completed_at is not None):
             raise ValueError("completed_at is present exactly when task_state is completed")
         return self
@@ -318,7 +318,7 @@ class TaskInput(StrictModel):
 class TaskPatchInput(StrictModel):
     item_ref: ItemRef | None = None
     item_change_id: str | None = Field(default=None, min_length=1, max_length=128)
-    title: str | None = Field(default=None, min_length=1, max_length=512)
+    title: str | None = Field(default=None, min_length=1, max_length=1024)
     description: str | None = Field(default=None, max_length=16_000)
     task_state: TaskState | None = None
     priority: TaskPriority | None = None

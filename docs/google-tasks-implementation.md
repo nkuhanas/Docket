@@ -18,8 +18,8 @@ acceptance is claimed by a fixture or disabled capability.
 | G0 OAuth/readiness | Tasks scope profiles preserve granted scopes; atomic verified replacement and isolated feature readiness | Scope upgrade implemented and tested; runtime capability readiness pending |
 | G0 adapter | Real/fake/disabled Tasks read/write protocols, exact field/marker handling and guarded method dispatch | Transport/pagination, exact-version writes, unknown outcomes and scoped notes implemented with synthetic tests; runtime dispatch and live validation pending |
 | G0 live capabilities | Method-specific controlled insert/patch/move/delete/date/time/uncertainty evidence | Pending; unverified methods remain disabled |
-| G1 title path | Full 1,024-character Task and required Item schemas/columns/mutations/context/export, including creation without Item | Pending |
-| G1 title ownership | Typed derived-pair ownership, atomic renames, independent/shared/relinked relinquishment and concurrency | Pending; no historical title inference |
+| G1 title path | Full 1,024-character Task and required Item schemas/columns/mutations/context/export, including creation without Item | Implemented with ordered widening migration and real native MCP roundtrip; PostgreSQL rehearsal/import delivery pending |
+| G1 title ownership | Typed derived-pair ownership, atomic renames, independent/shared/relinked relinquishment and concurrency | Shared services and explicit retained ownership implemented; native rename/same-title relinquishment verified; PostgreSQL race evidence pending |
 | G1 durable domain | Scheduling/hierarchy, lists/policies, immutable observations, bindings/generations, baselines/conflicts and sync state | Pending |
 | G1 reads/import | Context/query/export and selected-list import through admitted canonical services with policy/observation roots | Pending |
 | G1 polling | Full hidden/completed/deleted pagination, overlap watermarks, resumability/full inventories and coverage | Pending |

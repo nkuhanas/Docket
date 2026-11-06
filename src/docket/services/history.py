@@ -651,9 +651,12 @@ class HistoryService:
                 "created_at": _iso(item.created_at),
             }
         if isinstance(item, Item):
+            from docket.services.task_item_titles import title_relationship
+
             return {
                 **base,
                 "title": item.title,
+                "item_title_relationship": title_relationship(self.session, item.ref_id),
                 "kind": item.kind,
                 "context_entity_refs": item.context_entity_refs,
                 "parent_item_ref": item.parent_item_ref,
@@ -666,10 +669,13 @@ class HistoryService:
                 "created_at": _iso(item.created_at),
             }
         if isinstance(item, Task):
+            from docket.services.task_item_titles import title_relationship
+
             return {
                 **base,
                 "item_ref": item.item_ref,
                 "title": item.title,
+                "item_title_relationship": title_relationship(self.session, item.item_ref),
                 "task_state": item.task_state,
                 "priority": item.priority,
                 "canonical_status": item.canonical_status,

@@ -2173,6 +2173,10 @@ class ChangeSetService:
             )
 
         changes = _all_changes(content)
+        if require_handlers:
+            from docket.services.task_item_titles import lock_title_targets
+
+            lock_title_targets(self.session, list(content.tracked_context_changes))
         event_guard = EventScopeGuard(self.session)
         # Lock canonical targets before provider bindings, also matching auth
         # recovery's lock order. Refresh before expected-version validation.
