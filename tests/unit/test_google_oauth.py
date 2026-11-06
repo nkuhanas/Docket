@@ -14,6 +14,8 @@ from docket.providers.google.oauth import (
     DOCS_SCOPE,
     GMAIL_MODIFY_SCOPE,
     SHEETS_SCOPE,
+    TASKS_READONLY_SCOPE,
+    TASKS_SCOPE,
     GoogleOAuthSetupError,
     authorized_user_file_status,
     perform_setup,
@@ -306,10 +308,7 @@ def test_token_status_fails_closed_when_required_scope_is_absent(tmp_path) -> No
         encoding="utf-8",
     )
 
-    assert (
-        authorized_user_file_status(token_file, required_scopes=[CALENDARS_SCOPE])
-        == "invalid"
-    )
+    assert authorized_user_file_status(token_file, required_scopes=[CALENDARS_SCOPE]) == "invalid"
 
 
 def test_client_validation_requires_desktop_credentials(tmp_path) -> None:
@@ -322,3 +321,51 @@ def test_client_validation_requires_desktop_credentials(tmp_path) -> None:
 def test_missing_and_dummy_token_status(tmp_path) -> None:
     assert authorized_user_file_status(tmp_path / "missing.json") == "setup_required"
     assert authorized_user_file_status(Path("secrets/smoke/google_oauth_token.json")) == "dummy"
+
+
+def test_tasks_scope_upgrade_preserves_calendar_and_requires_confirmed_grants(tmp_path) -> None:
+    client_file = tmp_path / "client.json"
+    token_file = tmp_path / "credentials" / "token.json"
+    _write_client(client_file)
+    options: dict[str, Any] = dict(
+        client_file=client_file,
+        token_file=token_file,
+        open_browser=False,
+        port=0,
+        timeout_seconds=60,
+        force=True,
+    )
+    perform_setup(**options, profiles=["calendar"], flow_factory=lambda *_: FakeFlow({}))
+    original = token_file.read_bytes()
+    requested: list[str] = []
+
+    def denied(_client: Path, scopes: Any) -> FakeFlow:
+        requested.extend(scopes)
+        credentials = FakeCredentials()
+        credentials.granted_scopes = [TASKS_SCOPE]  # type: ignore[attr-defined]
+        return FakeFlow({}, credentials)
+
+    with pytest.raises(GoogleOAuthSetupError, match="existing credentials were preserved"):
+        perform_setup(**options, profiles=["tasks"], flow_factory=denied)
+    assert token_file.read_bytes() == original
+    assert set(resolve_scopes(["calendar", "tasks"])) == set(requested)
+
+    def accepted(_client: Path, scopes: Any) -> FakeFlow:
+        credentials = FakeCredentials()
+        credentials.granted_scopes = list(scopes)  # type: ignore[attr-defined]
+        return FakeFlow({}, credentials)
+
+    perform_setup(**options, profiles=["tasks"], flow_factory=accepted)
+    assert (
+        authorized_user_file_status(
+            token_file, required_scopes=resolve_scopes(["calendar", "tasks"])
+        )
+        == "configured"
+    )
+    assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
+
+
+def test_tasks_scope_profiles_do_not_expand_default_workspace() -> None:
+    assert resolve_scopes(["tasks-read"]) == (TASKS_READONLY_SCOPE,)
+    assert resolve_scopes(["tasks", "tasks-read"]) == (TASKS_SCOPE,)
+    assert TASKS_SCOPE not in resolve_scopes(DEFAULT_SCOPE_PROFILES)

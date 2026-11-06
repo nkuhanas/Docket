@@ -16,6 +16,8 @@ DOCS_SCOPE = "https://www.googleapis.com/auth/documents"
 GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
 SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
+TASKS_SCOPE = "https://www.googleapis.com/auth/tasks"
+TASKS_READONLY_SCOPE = "https://www.googleapis.com/auth/tasks.readonly"
 
 SCOPE_PROFILES: dict[str, tuple[str, ...]] = {
     "calendar": (CALENDAR_EVENTS_SCOPE, CALENDAR_LIST_SCOPE, CALENDARS_SCOPE),
@@ -23,6 +25,8 @@ SCOPE_PROFILES: dict[str, tuple[str, ...]] = {
     "gmail-read": (GMAIL_READONLY_SCOPE,),
     "gmail-modify": (GMAIL_MODIFY_SCOPE,),
     "sheets": (SHEETS_SCOPE,),
+    "tasks": (TASKS_SCOPE,),
+    "tasks-read": (TASKS_READONLY_SCOPE,),
     "workspace": (
         CALENDAR_EVENTS_SCOPE,
         CALENDAR_LIST_SCOPE,
@@ -85,6 +89,8 @@ def resolve_scopes(profiles: Sequence[str]) -> tuple[str, ...]:
     scopes = {scope for profile in profiles for scope in SCOPE_PROFILES[profile]}
     if GMAIL_MODIFY_SCOPE in scopes:
         scopes.discard(GMAIL_READONLY_SCOPE)
+    if TASKS_SCOPE in scopes:
+        scopes.discard(TASKS_READONLY_SCOPE)
     if not scopes:
         raise GoogleOAuthSetupError("At least one Google OAuth scope profile is required")
     return tuple(sorted(scopes))
@@ -142,7 +148,11 @@ def authorized_user_file_status(
     if token_uri != "https://oauth2.googleapis.com/token":
         return "invalid"
     scopes = document.get("scopes")
-    if not isinstance(scopes, list) or not set(required_scopes).issubset(scopes):
+    if (
+        not isinstance(scopes, list)
+        or not all(isinstance(scope, str) for scope in scopes)
+        or not set(required_scopes).issubset(scopes)
+    ):
         return "invalid"
     return "configured"
 
@@ -223,7 +233,17 @@ def perform_setup(
     if callback_host not in {"127.0.0.1", "localhost"}:
         raise GoogleOAuthSetupError("OAuth callback host must remain loopback-only")
 
-    scopes = resolve_scopes(profiles)
+    requested = set(resolve_scopes(profiles))
+    # Scope upgrades must not silently discard working Calendar/Gmail grants.
+    # This file has already passed structural validation; its contents stay private.
+    if token_status == "configured":
+        existing = json.loads(token_file.read_text(encoding="utf-8"))
+        requested.update(existing["scopes"])
+    if GMAIL_MODIFY_SCOPE in requested:
+        requested.discard(GMAIL_READONLY_SCOPE)
+    if TASKS_SCOPE in requested:
+        requested.discard(TASKS_READONLY_SCOPE)
+    scopes = tuple(sorted(requested))
     flow = flow_factory(client_file, scopes)
     authorization_options = {
         "access_type": "offline",
@@ -275,5 +295,18 @@ def perform_setup(
             success_message="Docket authorization completed. You may close this window.",
             **authorization_options,
         )
+    if {TASKS_SCOPE, TASKS_READONLY_SCOPE}.intersection(scopes):
+        # Credentials.scopes reflects what we asked for, not what Google granted.
+        granted = getattr(credentials, "granted_scopes", None)
+        if isinstance(granted, str):
+            granted = granted.split()
+        if (
+            not isinstance(granted, (list, tuple, set))
+            or not all(isinstance(scope, str) for scope in granted)
+            or not set(scopes).issubset(granted)
+        ):
+            raise GoogleOAuthSetupError(
+                "Google did not confirm every required scope; existing credentials were preserved"
+            )
     _write_credentials(token_file, credentials, scopes)
     return scopes

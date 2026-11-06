@@ -39,6 +39,7 @@
       "tests/unit/test_fake_provider.py",
       "tests/unit/test_gmail_provider.py",
       "tests/unit/test_google_oauth.py",
+      "tests/unit/test_tasks_provider.py",
       "tests/integration/test_calendar_outcome_contract.py",
       "tests/integration/test_calendar_sync_scheduling.py",
       "tests/integration/test_gmail_ingestion.py"

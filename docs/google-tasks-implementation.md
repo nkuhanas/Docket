@@ -15,8 +15,8 @@ acceptance is claimed by a fixture or disabled capability.
 | Adoption | One current SPEC, decisions/history and index reconciled | SPEC 1.2 adopted in working source |
 | R0 inventory | Exact ownership/status of NocoDB containers, networks, volumes, startup/access and unique data | Six evaluation containers stopped; three dedicated volumes identified by current read-only Docker metadata; data disposition pending |
 | R0 protected data | Consistent encrypted archive, checksums/recovery, schema/count/identity comparison and unique-data disposition | Pending; stopped storage is not assumed empty |
-| G0 OAuth/readiness | Tasks scope profiles preserve granted scopes; atomic verified replacement and isolated feature readiness | Pending |
-| G0 adapter | Real/fake/disabled Tasks read/write protocols, exact field/marker handling and guarded method dispatch | Pending |
+| G0 OAuth/readiness | Tasks scope profiles preserve granted scopes; atomic verified replacement and isolated feature readiness | Scope upgrade implemented and tested; runtime capability readiness pending |
+| G0 adapter | Real/fake/disabled Tasks read/write protocols, exact field/marker handling and guarded method dispatch | Transport/pagination, exact-version writes, unknown outcomes and scoped notes implemented with synthetic tests; runtime dispatch and live validation pending |
 | G0 live capabilities | Method-specific controlled insert/patch/move/delete/date/time/uncertainty evidence | Pending; unverified methods remain disabled |
 | G1 title path | Full 1,024-character Task and required Item schemas/columns/mutations/context/export, including creation without Item | Pending |
 | G1 title ownership | Typed derived-pair ownership, atomic renames, independent/shared/relinked relinquishment and concurrency | Pending; no historical title inference |
@@ -56,3 +56,15 @@ uses expressly designated disposable targets, not real personal tasks as fixture
 Keep per-method G0 disabled until actual evidence passes; do not call G2/G3 done
 with a required advertised method disabled. Preserve genuine history and restore
 material without callable legacy aliases. No NocoDB fallback is a recovery path.
+
+## Implementation evidence
+
+The first transport slice adds separate `tasks`/`tasks-read` OAuth profiles without
+expanding the default Workspace profile. Reauthorization requests the union with
+existing grants and, for Tasks, requires Google's actual granted scopes before
+atomically replacing the refresh credential. A partial/missing grant preserves
+the old file. Real transport writes require an admitted per-method gate; the
+default gate admits no writes. Synthetic tests exercise hidden/completed/deleted
+pagination, native cross-list movement, exact ETags, uncertain inserts without
+retries, and correlation suffix separation. These are local adapter tests, not
+G0 live-provider acceptance.
