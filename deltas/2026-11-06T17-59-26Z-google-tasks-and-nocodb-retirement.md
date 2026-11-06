@@ -21,8 +21,12 @@ Google Tasks is a task interface, not a replacement for every relational table.
 
 Use scheduled dates for the Google task interface and leave Google's separate
 Deadline feature unused. Exact-time notifications in Google's UI are a distinct
-capability from its date-only public API. Existing Docket deadlines remain valid,
-but neither creating a Google task nor requesting a reminder requires one.
+capability from its date-only public API. For an operator-requested timed alert,
+automatically create a linked Google Calendar reminder through the existing
+Calendar integration. The Task remains the canonical work/checkbox record; the
+Calendar entry is its explicit reminder projection. Existing Docket deadlines
+remain valid, but neither creating a task nor requesting a reminder requires one.
+This is the Operator-accepted alternative to manually editing each Google task.
 
 The architectural review is incorporated below: the complete Task/Item title
 path, ownership of automatically derived Item titles, explicit deletion-policy
@@ -76,7 +80,8 @@ changes. Ordinary work does not require learning import graphs or provider IDs.
 | --- | --- |
 | “Use my Personal Google list for new tasks.” | Bind the selected existing list and set its explicit default; show import scope and last successful scan |
 | “Add renew passport to Personal for Friday.” | One canonical Task and derived Item if needed; Friday is its scheduled date; one queued Google create |
-| “Remind me about the report Friday at 5 PM.” | Google receives Friday's scheduled day; a requested Docket follow-up retains 5 PM and uses its configured inbox/delivery route, without creating a deadline or claiming a Google-native timed alert |
+| “Remind me about the report Friday at 5 PM.” | Google Tasks receives the task/day; Docket automatically creates one linked Calendar reminder at 5 PM, without a deadline or manual per-task time editing |
+| “Move that reminder to Monday at 4 PM.” | Update the logical reminder and its Calendar projection, retaining the Task and prior history; do not create a second task |
 | “Bring in my Work list.” | Import eligible tasks under that list's admitted sync policy; retain original source identity and flag possible matches to existing records |
 | “I checked that off on my phone.” | The next successful poll imports completion once; an explicit refresh can request a sooner check |
 | “Reopen it; move it to next Monday.” | Reopen the same canonical task and update its scheduled day without replacing its identity |
@@ -105,6 +110,12 @@ scheduled clock time. Avoiding Deadline is the chosen product behavior; it does
 not make a 5 PM Google-native alert programmable through this API. A time set in
 Google's UI stays unobserved by the adapter. Sparse updates and G0 checks must
 prevent unsupported assumptions about preserving or changing it.
+
+Google Calendar separately supports timestamped events and
+[popup reminder offsets, including zero minutes](https://developers.google.com/workspace/calendar/api/v3/reference/events).
+Use that supported path for automatic timed alerts. A Calendar companion is a
+separate visible reminder entry, not a Tasks-native scheduled clock or an invented
+Google Task feature. Its lifecycle is specified in section 12.
 
 The [list method](https://developers.google.com/workspace/tasks/reference/rest/v1/tasks/list)
 is paginated, with at most 100 tasks per page and an `updatedMin` filter.
@@ -185,6 +196,16 @@ per-deletion approval prompt. Disabling/detaching stops new affected dispatches
 and imports at the recorded policy boundary. Requests already transmitted may
 finish and require honest outcome reconciliation; do not claim they were unsent.
 
+Configure a reminder Calendar destination once, using the owner's existing
+Calendar routing/default or a flat `reminder_calendar_ref` on task-list policy.
+The policy/context states that requested timed reminders create entries there.
+Use an existing authorized calendar; provisioning a dedicated calendar is an
+explicit configuration action, not a side effect of every task. Missing Tasks
+permission does not invalidate existing Calendar permission, or vice versa.
+The admitted policy also scopes clock/deletion reconciliation to exact owned
+reminder companions. It grants no authority over unrelated Calendar events or
+other lists; explicit native reminder edits retain their own current write grant.
+
 Workers retain the policy revision, provider observation and authenticated policy
 root behind imported ChangeSets. They do not fabricate a live-user request or
 utterance for every poll. Extend the authority engine's typed service admission
@@ -240,7 +261,7 @@ establishes ownership. This is a domain distinction, not a legacy dispatch path.
 | Notes | Existing description, up to 16,000 characters | Preserve full canonical text; Google has a smaller field limit, so report a blocked notes projection rather than silently truncate |
 | Scheduled day | New date-only field | Map Google's `due` calendar-date component directly, without UTC-to-local day shifting |
 | Deadline | Existing date/datetime `due_by` | Never overwrite it with a Google scheduled day; no invented midnight or lost deadline clock |
-| Timed reminder | Existing explicit-instant operational reminder, extended to Task subjects | Deliver through the configured Docket inbox/notification route; no Google-native time/Deadline write is claimed |
+| Timed reminder | Typed Task-owned reminder plan with an exact instant/zone, exposed as `remind_at` | Derive one linked Calendar projection and its popup; no Tasks-native time/Deadline write is claimed |
 | Open status | not_started / in_progress / blocked | All project to `needsAction`; an unchanged Google open status does not reset Docket's richer state |
 | Completion | completed plus exact completion basis | Project/import completion; repeated observations do not rewrite completion time |
 | Reopening | Nonterminal canonical state | A genuine completed → open transition reopens; default to not_started, while retaining history |
@@ -248,9 +269,10 @@ establishes ownership. This is a domain distinction, not a legacy dispatch path.
 | Parent/list/order | Typed parent plus provider binding and observed order | Use supported move semantics; validate same-list parent/sibling, descendants and cycles |
 | Deleted/hidden | Distinct lifecycle observations | Hiding preserves completion/history; confirmed deletion is handled separately below |
 
-Scheduling a task does not allocate a duration, reserve capacity, create a Calendar
-Event or set a financial reporting deadline. The normal Google task path uses
-scheduled/display dates and leaves Google's Deadline feature unused. Do not
+Scheduling a task's day alone does not allocate a duration, reserve capacity,
+create a Calendar entry or set a financial reporting deadline. An explicitly
+requested timed reminder creates the section 12 Calendar companion. The normal
+Google task path uses scheduled/display dates and leaves Google's Deadline feature unused. Do not
 automatically create a Docket `due_by` binding as a workaround for a scheduled
 task or a timed reminder. Existing or explicitly requested Docket obligations
 retain their independent deadlines and precision. A later Google date edit changes
@@ -418,6 +440,7 @@ one general checkbox for the adapter. Retain a capability/evidence matrix:
 | Patch, including completion/reopening | Actual sparse/null semantics and stale-version precondition behavior; unmodified fields, including opaque first-party time settings, remain protected |
 | Within-list and cross-list move | Actual conditional-write behavior or a valid constrained reconciliation strategy; identity, hierarchy and ordering effects under a concurrent Google edit |
 | Delete | Actual stale-delete protection or a valid constrained strategy; verified ordinary/assigned/parent effects and no confusion with moves or inaccessible lists |
+| Linked Calendar reminder | Reuse verified Calendar primitives and prove the new Task/plan/projection flow: exact-time popup, correlation/retry, stale-source rejection, reschedule and cancellation after uncertain delivery |
 
 Test scheduled-day writes against a task with a time set in Google's UI. An
 API-returned day cannot establish that the clock survived a write. If preservation
@@ -447,7 +470,7 @@ completion wrapper or generic `manage_google_tasks(action, payload)` tool.
 | `docket_link_google_task` | Link one existing canonical Task to one selected provider observation without a text-based identity guess |
 | `docket_resolve_task_sync` | Resolve one current field conflict with keep-Docket/accept-Google; context holds both versions |
 
-Add `task_list_ref`, `scheduled_date`, `parent_task_ref` and `after_task_ref` as
+Add `task_list_ref`, `scheduled_date`, `parent_task_ref`, `after_task_ref` and `remind_at` as
 optional flat fields to existing task create/update. A configured default supplies
 the list for new tasks; an omitted update list preserves its binding. Explicit
 null detaches without deleting either record. A different non-null list moves a
@@ -455,6 +478,15 @@ bound task or publishes an unbound local task, derived internally. An omitted
 ordering field preserves order; explicit parent/sibling changes have documented
 null behavior and field-specific errors. The agent never supplies positions,
 ETags, cursor timestamps, Google IDs, Operation parameters or baseline graphs.
+
+`remind_at` is one optional flat ISO timestamp, using the existing timezone
+normalization rules. On update, omission preserves the reminder, a value schedules
+or reschedules the primary timed reminder, and null cancels it. Docket derives
+the plan, source-time record and Calendar projection internally. Task-list
+configuration adds only the optional flat `reminder_calendar_ref` destination;
+normal task calls use that/default routing rather than asking for it every time.
+No public reminder-operation union, second task-create tool or companion-event
+CRUD sequence is required. Include these modified definitions in the same budgets.
 
 Selected-list import is the normal adoption path. Explicit linking covers existing
 equivalents; one-off migration/adoption can use internal services through the
@@ -527,20 +559,89 @@ and explicit synchronization coverage in existing workload context. Count each
 canonical Task once, even if seen in Google Calendar, a Google Tasks observation
 and Docket. Scheduling alone supplies neither effort nor a busy interval.
 
-Keep existing task/deadline reminder behavior and extend typed subjects only where
-needed; no fabricated Calendar Event or `due_by` deadline to make reminders work.
-Extend the existing `docket_schedule_followup` command to accept Task subjects,
-including typed reminder storage/validation, cancellation and current-state checks, instead
-of adding another public reminder tool. A requested 5 PM follow-up preserves its
-offset/zone and uses Docket's retained inbox and configured delivery route. An inbox
-entry becoming due is not proof of push delivery or a Google-native alarm; native
-Google time selection remains a UI action while the API cannot express it.
+Keep existing independent deadline/work/finance reminder behavior. The ordinary
+task path uses `remind_at` to automate a Google Calendar companion; it does not
+need a new public tool or the previously proposed Task-subject expansion of
+`docket_schedule_followup`. Preserve that command's existing domain behavior.
+Google Deadline creation/sync and Tasks-native reminder/recurrence editing remain
+excluded. No fake deadline or fabricated attendance is needed to express an alert.
 
-Google Deadline creation/sync is excluded from this integration. Preserve existing
-independent Docket deadlines, without requiring one for ordinary tasks or reminders.
-Do not promise Google-native reminder or recurring-rule editing absent API support.
-Completion can stop task-specific pending reminders without altering genuine
-work/finance obligations, and reopening uses versioned deterministic reconciliation.
+### Linked Calendar reminders
+
+For a request such as “remind me about the report Friday at 5 PM,” the connected
+agent supplies the task/day and `remind_at` through the normal command. Once the
+existing Calendar target is configured, no per-task manual Google UI editing is
+required. Creation commits the canonical Task, necessary Item, typed primary
+reminder plan, linked projection and required Tasks/Calendar provider intents in
+one transaction. Each provider delivers afterward and has its own receipt status.
+Task identity never depends on the companion Event or successful Google delivery.
+
+Reuse ReminderPlan, typed time/projection services and Calendar Operations where
+their semantics fit; add only the typed Task/primary-reminder/projection ownership
+needed. Keep one authoritative reminder instant, not independently editable copies
+in Task, ReminderPlan and Event. Preserve immutable plan revisions when replacing
+or rescheduling. Retain stable logical companion identity and source versions;
+at most one active primary projection may exist for a Task's primary reminder.
+
+The Calendar entry is explicitly labelled as a task reminder, uses no attendees,
+and requests a popup at zero minutes before the requested instant. Use private
+visibility and `transparency="transparent"` through supported provider fields.
+If the Calendar API needs a span, use a documented one-minute display span; it
+does not record work duration or reserve time. Exclude these entries, including
+cached provider observations, from commitments, free-capacity subtraction,
+attendance inference and actual-work/financial totals. A date-only task creates
+no companion. The helper is a real requested reminder projection, not a new task,
+meeting or Tasks-native scheduled-time claim.
+
+Preserve full 1,024-character Task/Item titles. A Calendar helper label can be a
+bounded, clearly labelled display excerpt with a stable task reference; it must
+not force truncation of the canonical/imported title to fit a narrower Event/cache
+title field. Do not automatically copy all task notes or linked private records
+into a possibly shared calendar. The task context remains the full detail source.
+
+Changing `remind_at` updates the owned companion or uses an ordered, versioned
+replacement when necessary; never clone the Task or leave two active alerts.
+Null cancels the reminder and queues companion cancellation. Task completion,
+cancellation or retraction, including accepted Google-side changes, retires its
+pending primary reminder and atomically records required Calendar cancellation.
+Reopening does not resurrect an expired/already delivered alert; a new requested
+time is explicit. Changing the scheduled day alone does not silently reinterpret
+an independently specified reminder instant; a requested reminder move supplies
+the new instant through `remind_at` and preserves its zone/precision.
+
+Canonical task changes remain saved while Calendar cancellation/delivery is
+pending, failed or uncertain. Retry/reconciliation follows the original operation,
+and queued stale creates cannot resurrect a retired reminder: dispatch checks its
+current reminder/projection generation and prerequisites. Completion learned from
+Google is subject to polling latency; do not promise cancellation of a notification
+that already fired before that observation or before Calendar accepted cancellation.
+
+Only exact linked Calendar entries participate in reminder reconciliation. Apply
+the same baseline/version rules to their observed clock changes; they affect the
+reminder, not the Task deadline, scheduled day, title or work history. Divergence
+is a reminder-only conflict. A confirmed companion deletion cancels that reminder,
+preserves the Task and does not trigger automatic recreation. Arbitrary Calendar
+events acquire no task authority. Guard direct Docket Event editing of managed
+companions so it cannot bypass their typed reminder lifecycle.
+
+Disabling task-list sync preserves already created Calendar entries; it cannot
+silently mute a notification that lives in Google. Context/configuration explains
+this, and explicit reminder cancellation remains a separate authorized action.
+Calendar scope/target failure leaves the valid task and reminder intent retained
+with an actionable delivery state. Never ask the operator to enter each time
+manually as the normal fallback, or silently switch notification channels after
+an uncertain Calendar outcome.
+
+Use one default push route for a requested timed task alert. Retained Docket inbox
+status/catch-up remains available, but do not also publish a duplicate Docket push
+unless requested. Distinguish committed reminder intent, Calendar acceptance and
+actual notification/read acknowledgement. No mandatory `docket.events` grant is
+needed for the Calendar popup route; normal Google Calendar permissions apply.
+
+Google Tasks may separately issue its own first-party date-only notifications.
+Expose that behavior once in setup; do not claim that creating a Calendar popup
+suppresses Tasks-app alerts or lets the adapter configure an opaque native clock.
+Any app-level notification preference is distinct from manual per-task time entry.
 
 Retain actionable sync exceptions in the existing inbox: authorization needed,
 stale selected-list coverage, field conflict, uncertain create, unavailable list
@@ -556,10 +657,10 @@ is not authority and never justifies an inference loop inside Docket.
 | R0 — retirement inventory | Identify NocoDB-owned resources and unique data; produce protected export/disposition and a precise removal list; no runtime fallback |
 | G0 — adapter contract | Scope upgrade/readiness and real/fake/disabled Tasks protocols; retain real method-specific date/null/time-preservation, ETag, move/delete/completion and unknown-insert evidence. Passing evidence for each operation is required before activating that write |
 | G1 — task read and import foundation | First widen the full Task/Item title path to 1,024 and establish derived-Item title ownership; then typed lists/observations/bindings/sync state, bounded queries and selected-list imports through admitted services; full pagination, owner isolation and no provider side effects from ordinary reads |
-| G2 — useful two-way tasks | Flat create/edit/complete/reopen, scheduled dates, explicit deletion policy, marker-safe note reconciliation and deterministic conflicts; each activated write passes G0 and ordinary Google UI edits converge without per-edit approval |
+| G2 — useful two-way tasks | Flat create/edit/complete/reopen, scheduled dates and automatic `remind_at` Calendar companions with one-time routing, explicit deletion policy, marker-safe note reconciliation and deterministic conflicts; each activated write passes G0 and ordinary Google UI edits converge without per-edit approval |
 | G3 — hierarchy and integrated planning | Parent/sibling/cross-list moves with provider constraints, cancellation/retraction boundaries, workload/reminder integration and meaningful selective inbox exceptions |
 | R1 — clean-break cutover | Migrate verified unique NocoDB data, remove runtime/access residue and fifteen MCP aliases, verify cold start with none present; current refs/history remain |
-| A — activation | Local tested-image validation, supported deploy, same private plugin update/rescan and real host acceptance with an expressly designated Tasks test target |
+| A — activation | Local tested-image validation, supported deploy, same private plugin update/rescan and real host acceptance with expressly designated Tasks and reminder-Calendar test targets |
 
 R0 inventory and G0 validation can proceed independently. G1 requires the complete
 title-path fix before import activation; subsequent G2/G3 writes activate only as
@@ -581,8 +682,10 @@ schema wording/count tests. Use fake providers and synthetic accounts by default
 | Area | Required proof |
 | --- | --- |
 | Scope isolation | Adding Tasks preserves existing Google scopes; Tasks revocation leaves local tasks and Calendar/Gmail usable; read/triage credentials cannot configure or mutate |
-| First valid call | Context then flat task creation produces one Task, necessary Item and one Google intent; unchanged retry returns the same receipt; no Event is created |
-| Scheduling and reminders | Date-only values survive zone/DST changes; Google Deadline is unused and no Docket deadline is fabricated for a task/reminder. Existing real deadlines remain unchanged; an explicit 5 PM Docket follow-up retains its instant and truthful delivery status without claiming a Google-native time write |
+| First valid call | Context then flat date-only task creation produces one Task, necessary Item and one Tasks intent; unchanged retry returns the same receipt; no reminder Event is created without `remind_at` |
+| Scheduling and reminders | Date-only values survive zone/DST changes; Google Deadline is unused and no Docket deadline is fabricated. A flat 5 PM `remind_at` request atomically records the Task, owned reminder/projection and separate Tasks/Calendar intents; one private/free Calendar companion has a zero-minute popup and truthful delivery state, without manual per-task setup or a Tasks-native clock claim |
+| Reminder lifecycle/races | Retrying and competing schedules cannot duplicate the primary companion. Rescheduling uses current source versions; completion/null/retraction cancels it, including unknown-after-create recovery. Old queued writes cannot resurrect it; Task/work/finance records survive, reopening never replays a past alert and Calendar/Tasks failures remain separate |
+| Reminder planning/privacy | Canonical/cache workload and capacity exclude reminder display spans. Calendar labels can be bounded while Task/Item titles stay lossless, including a 1,024-character title with `remind_at`. No attendee invite, copied private note or duplicate default Docket push is created; owned-helper edits/deletion affect only its reminder |
 | Completion | Google UI completion/hidden completion imports once; Docket completion reaches Google; reopening works; blocked/in-progress and existing work links survive ordinary open observations |
 | Coverage | Multi-page scans include hidden/completed/deleted records; failed/truncated scans cannot imply deletion; watermark overlap and restart recover without skipping changes |
 | Reconciliation | External one-sided/disjoint edits converge; divergent same-field edits and delete-versus-edit retain both bases and block only affected work; echo loops do not occur |
@@ -597,20 +700,20 @@ schema wording/count tests. Use fake providers and synthetic accounts by default
 | Local usefulness | Google outage, missing optional data, one conflict and a disabled list cannot block unrelated tasks, work recording, finance or Calendar/Gmail |
 | NocoDB retirement | Protected export/disposition covers unique data; owned runtime, startup paths, access and dependencies are gone; no broad prune, production reset or compatibility service; cold start passes |
 | Alias retirement | All fifteen old names are unregistered/rejected without side effects; current replacements work and old receipt/history reads preserve original identity |
-| Contracts | Measure actual six new/modified definitions and aggregate discovery; first-attempt MCP journeys use visible flat fields; packet/export continuation stays within budgets |
+| Contracts | Measure all six new definitions, every modified task/list definition and aggregate discovery; `remind_at`/routing remain optional flat fields and no companion-event grammar is exposed. First-attempt MCP journeys and packet/export continuation stay within budgets |
 | PostgreSQL | Fresh/additive populated migration rehearsal, uniqueness/ownership/history guards, concurrent import/link/write/version conflicts and restart/drain behavior pass |
 | Release/host | Source-bound local gate, affected provider/storage/release checks, tested image, drain/backup/migration/health; same App/plugin rescan and successful real task-context/query call |
 
 Do not create disposable tasks in the operator's real lists under routine release
-authority. Live mutation checks need an expressly designated disposable list/task
-and narrowly scoped cleanup. State exactly which real-provider behaviors are
+authority. Live mutation checks need expressly designated disposable list/task
+and Calendar reminder targets with narrowly scoped cleanup. State exactly which real-provider behaviors are
 verified and which remain fixture-only. A deployment receipt is not proof of
 Google UI round-trip, and a skill publication is not proof of App tool rescan.
 
 ## 15. Storage, recovery and SPEC reconciliation
 
 Use ordered additive migrations for the full Task/Item 1,024-character title path,
-audited derived-title ownership, Task reminder subjects, typed scheduling/hierarchy, policies,
+audited derived-title ownership, typed Task-owned reminder/projection links, scheduling/hierarchy, policies,
 observations, bindings/baselines/conflicts and explicit Tasks operation constraints.
 Reuse current versions, public refs, immutable revisions/evidence and atomic
 canonical/provider transactions. PostgreSQL is authoritative for uniqueness,
@@ -624,7 +727,7 @@ archives stay intact; no destructive database reset or speculative row repair.
 
 On adoption, advance SPEC to 1.2 and reconcile sections 2–6 and 8, including the
 bounded provider-import authority root, scheduled-day/deadline mapping, typed
-Tasks delivery/recovery and explicit alias retirement. Add decisions for one
+Tasks/linked-Calendar delivery and recovery and explicit alias retirement. Add decisions for one
 canonical task model with a Google interface, deterministic selected-list sync,
 and complete NocoDB/compatibility retirement. Keep local CI/release requirements.
 Update registries/history/context, native capability disposition, real schemas,
@@ -641,8 +744,9 @@ compatibility endpoints. This proposal itself changes no published wire version.
   [task inputs](../src/docket/schemas/tracked_context.py),
   [flat task commands](../src/docket/schemas/native_commands.py) and
   [derived Item/due-time compilation](../src/docket/services/routine_commands.py).
-- [Existing follow-up inputs and subject validation](../src/docket/schemas/followup.py),
-  extended for explicit Task reminders without creating another public tool.
+- [Existing reminder and temporal projection inputs](../src/docket/schemas/tracked_context.py)
+  and [Calendar provider rendering](../src/docket/providers/google/calendar.py)
+  for the derived Task reminder path; keep existing independent follow-up behavior.
 - [Provider intents](../src/docket/services/provider_intents.py),
   [operation runner](../src/docket/services/operations.py),
   [Operation/sync storage](../src/docket/models/calendar.py),
