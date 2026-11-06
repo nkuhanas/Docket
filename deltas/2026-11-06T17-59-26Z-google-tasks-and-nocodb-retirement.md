@@ -32,6 +32,10 @@ The architectural review is incorporated below: the complete Task/Item title
 path, ownership of automatically derived Item titles, explicit deletion-policy
 consequences, transport-only creation markers and per-operation G0 activation
 evidence. These amendments refine this proposal without adopting or implementing it.
+The revised review adds three concrete G2 integration requirements: private
+visibility through rendering/reconciliation, persistent reminder-origin exclusion
+from cached workload observations, and instant-based one-minute DST arithmetic.
+Device notification acceptance remains separate from successful provider creation.
 
 The Operator additionally requests a clean break without legacy compatibility.
 Remove the fifteen hidden native MCP compatibility aliases retained by the prior
@@ -56,6 +60,9 @@ and release authority applies; add no Discord, ledger or repeated approval gate.
 | Due time | `TemporalBinding(role="due_by")` supports Docket deadlines | Keep distinct from Google's scheduled day and from time spent working |
 | Provider account | Existing Google account, capabilities and protected credential reference | Add Tasks capabilities and scope readiness without duplicating account identity |
 | Provider execution | Durable Operations, targets, attempts, leases and uncertain-outcome recovery | Current intent types, account checks and runner are Calendar-specific; add typed Tasks dispatch and recovery |
+| Calendar reminder rendering | `_standalone_event_body` emits transparency but not visibility; normalized snapshots/reconciliation also omit visibility; `_google_reminders` already supports a zero-minute popup | Carry and verify explicit private visibility through the entire write/read path; reuse popup encoding |
+| Calendar workload/cache | Actual-work displays have exclusions; reminder companions have no typed origin persisted across refresh in `CalendarEventCache` | Retain validated reminder classification through synchronization and filter both canonical and cached workload paths |
+| Timed marker endpoints | `_temporal_timing` adds duration to local wall time; the renderer can apply one fold to both endpoints | Build reminder start/end from unambiguous instants and preserve independent endpoint offsets |
 | Google OAuth | Workspace/Calendar/Gmail/Docs/Sheets scope profiles | No Tasks scope/profile currently exists; consent extension must preserve existing scopes |
 | Context and history | Owner-bound packets, exact versions, prepared changes, audit and delivery reads | Add task-list choices, task observations, synchronization baselines and task delivery facets |
 | NocoDB | No dependency found in the inspected tracked runtime/source; current Compose is Docket plus PostgreSQL | Inventory remaining stopped evaluation resources and any unique persisted data, then remove them |
@@ -593,6 +600,40 @@ attendance inference and actual-work/financial totals. A date-only task creates
 no companion. The helper is a real requested reminder projection, not a new task,
 meeting or Tasks-native scheduled-time claim.
 
+The following are mandatory G2 implementation corrections, not features already
+provided by the current Calendar infrastructure:
+
+- Carry `visibility="private"` from the owned reminder specification through
+  provider-intent parameters and `_standalone_event_body` into the actual Google
+  create/patch body. Include visibility and transparency in applicable read-field
+  selections and normalized snapshots; carry visibility through
+  `normalize_event_body`, `event_matches_request` and uncertain-outcome reconciliation. Private
+  visibility and free transparency are independent properties. An intermediate
+  specification value cannot prove the serialized request or observed event is
+  private; missing/different observed visibility must not pass a required privacy
+  check. Reuse `_google_reminders` for `useDefault=false` and the zero-minute popup.
+- Give each companion a stable typed Docket origin, for example
+  `origin_kind="task_reminder"`, plus its logical projection/owner binding. This
+  is application origin metadata, not a new Google `eventType`. Propagate it through
+  provider snapshots, synchronization read models and validated cache storage.
+  `CalendarEventCache` needs the small typed classification/link fields required
+  to preserve it across refresh, new snapshot generations and process restart.
+  Exclude owned reminders in both canonical and provider-observed paths of
+  `WorkloadCalendarService`, before commitment/count/interval-union/capacity work.
+  Do not depend solely on an in-memory join, title prefix, transparency or an
+  unverified copied private property. Validate against the scoped owned binding
+  or retained operation identity; ordinary events retain their existing policy.
+- Resolve the reminder start to an unambiguous UTC instant, add exactly 60 elapsed
+  seconds, then serialize each endpoint with its independently resolved offset
+  (or UTC). Retain the IANA zone for display/context. Do not add a minute to naive
+  wall time or apply one shared fold to both endpoints. In `America/Los_Angeles`,
+  `2026-11-01T01:59:00-07:00` must end at `2026-11-01T01:00:00-08:00`:
+  08:59Z → 09:00Z, exactly 60 seconds, despite the local clock moving backward.
+  The reminder path must accept those ordered instants without requiring the
+  naive local endpoint to be later. Cover actual rendered and reconciled endpoints,
+  not only an isolated duration helper. Keep this fix scoped to the reminder/timed
+  marker path rather than redesigning general Calendar recurrence or timing.
+
 Preserve full 1,024-character Task/Item titles. A Calendar helper label can be a
 bounded, clearly labelled display excerpt with a stable task reference; it must
 not force truncation of the canonical/imported title to fit a narrower Event/cache
@@ -638,6 +679,17 @@ unless requested. Distinguish committed reminder intent, Calendar acceptance and
 actual notification/read acknowledgement. No mandatory `docket.events` grant is
 needed for the Calendar popup route; normal Google Calendar permissions apply.
 
+Before declaring timed reminders accepted on the operator's intended device,
+perform one separately recorded end-to-end notification check using the designated
+test target. Record the client/device, test zone, requested instant, API acceptance
+and whether/when the notification was actually observed. Google's
+[notification settings and client permissions](https://support.google.com/calendar/answer/37242)
+affect display. A 2xx create, event read-back or popup override is API evidence,
+not proof of notification display; report device acceptance as pending if it has
+not been observed. Do not promise guaranteed display or treat settings changes as
+a reason to redesign task synchronization. This is a focused client check, not a
+new browser-automation dependency or recurring per-task manual configuration.
+
 Google Tasks may separately issue its own first-party date-only notifications.
 Expose that behavior once in setup; do not claim that creating a Calendar popup
 suppresses Tasks-app alerts or lets the adapter configure an opaque native clock.
@@ -657,7 +709,7 @@ is not authority and never justifies an inference loop inside Docket.
 | R0 — retirement inventory | Identify NocoDB-owned resources and unique data; produce protected export/disposition and a precise removal list; no runtime fallback |
 | G0 — adapter contract | Scope upgrade/readiness and real/fake/disabled Tasks protocols; retain real method-specific date/null/time-preservation, ETag, move/delete/completion and unknown-insert evidence. Passing evidence for each operation is required before activating that write |
 | G1 — task read and import foundation | First widen the full Task/Item title path to 1,024 and establish derived-Item title ownership; then typed lists/observations/bindings/sync state, bounded queries and selected-list imports through admitted services; full pagination, owner isolation and no provider side effects from ordinary reads |
-| G2 — useful two-way tasks | Flat create/edit/complete/reopen, scheduled dates and automatic `remind_at` Calendar companions with one-time routing, explicit deletion policy, marker-safe note reconciliation and deterministic conflicts; each activated write passes G0 and ordinary Google UI edits converge without per-edit approval |
+| G2 — useful two-way tasks | Flat create/edit/complete/reopen, scheduled dates and automatic `remind_at` Calendar companions; require serialized/reconciled private visibility, cached typed-origin workload exclusion and 60-elapsed-second DST-safe markers. Explicit policy/marker/conflict semantics remain; each write passes G0 and device notification evidence is separate from API acceptance |
 | G3 — hierarchy and integrated planning | Parent/sibling/cross-list moves with provider constraints, cancellation/retraction boundaries, workload/reminder integration and meaningful selective inbox exceptions |
 | R1 — clean-break cutover | Migrate verified unique NocoDB data, remove runtime/access residue and fifteen MCP aliases, verify cold start with none present; current refs/history remain |
 | A — activation | Local tested-image validation, supported deploy, same private plugin update/rescan and real host acceptance with expressly designated Tasks and reminder-Calendar test targets |
@@ -686,6 +738,9 @@ schema wording/count tests. Use fake providers and synthetic accounts by default
 | Scheduling and reminders | Date-only values survive zone/DST changes; Google Deadline is unused and no Docket deadline is fabricated. A flat 5 PM `remind_at` request atomically records the Task, owned reminder/projection and separate Tasks/Calendar intents; one private/free Calendar companion has a zero-minute popup and truthful delivery state, without manual per-task setup or a Tasks-native clock claim |
 | Reminder lifecycle/races | Retrying and competing schedules cannot duplicate the primary companion. Rescheduling uses current source versions; completion/null/retraction cancels it, including unknown-after-create recovery. Old queued writes cannot resurrect it; Task/work/finance records survive, reopening never replays a past alert and Calendar/Tasks failures remain separate |
 | Reminder planning/privacy | Canonical/cache workload and capacity exclude reminder display spans. Calendar labels can be bounded while Task/Item titles stay lossless, including a 1,024-character title with `remind_at`. No attendee invite, copied private note or duplicate default Docket push is created; owned-helper edits/deletion affect only its reminder |
+| G2 private renderer | Follow a companion through intent compilation and real request serialization: explicit `visibility=private`, `transparency=transparent`, `useDefault=false` and a popup override at zero minutes. Read-back/snapshot/reconciliation must retain and compare required visibility; missing/public visibility cannot falsely match a private request |
+| G2 cached origin/workload | Create the owned companion, perform Calendar refresh/new cache generation and restart/read from persisted observations. Its validated typed origin/link survives and both canonical/cache paths exclude it from commitment counts and capacity. A normal transparent event or copied reminder-looking title/property is not blanket-excluded; existing actual-work exclusions remain |
+| G2 DST marker | At the specified Los Angeles fall-back boundary, the rendered start/end are 08:59Z/09:00Z with independent -07:00/-08:00 offsets and exactly 60 elapsed seconds. Shared-fold/wall-time arithmetic must fail the regression; include a spring-forward boundary to check that the endpoint is a real instant and reconcile the emitted result |
 | Completion | Google UI completion/hidden completion imports once; Docket completion reaches Google; reopening works; blocked/in-progress and existing work links survive ordinary open observations |
 | Coverage | Multi-page scans include hidden/completed/deleted records; failed/truncated scans cannot imply deletion; watermark overlap and restart recover without skipping changes |
 | Reconciliation | External one-sided/disjoint edits converge; divergent same-field edits and delete-versus-edit retain both bases and block only affected work; echo loops do not occur |
@@ -703,6 +758,7 @@ schema wording/count tests. Use fake providers and synthetic accounts by default
 | Contracts | Measure all six new definitions, every modified task/list definition and aggregate discovery; `remind_at`/routing remain optional flat fields and no companion-event grammar is exposed. First-attempt MCP journeys and packet/export continuation stay within budgets |
 | PostgreSQL | Fresh/additive populated migration rehearsal, uniqueness/ownership/history guards, concurrent import/link/write/version conflicts and restart/drain behavior pass |
 | Release/host | Source-bound local gate, affected provider/storage/release checks, tested image, drain/backup/migration/health; same App/plugin rescan and successful real task-context/query call |
+| Intended-device notification | One designated end-to-end timed reminder is actually observed on the intended client/device and recorded separately from API acceptance. Record pending/failed display honestly; successful event creation alone cannot satisfy this check or guarantee future notification display |
 
 Do not create disposable tasks in the operator's real lists under routine release
 authority. Live mutation checks need expressly designated disposable list/task
@@ -714,7 +770,10 @@ Google UI round-trip, and a skill publication is not proof of App tool rescan.
 
 Use ordered additive migrations for the full Task/Item 1,024-character title path,
 audited derived-title ownership, typed Task-owned reminder/projection links, scheduling/hierarchy, policies,
-observations, bindings/baselines/conflicts and explicit Tasks operation constraints.
+observations, bindings/baselines/conflicts, persisted validated Calendar origin
+classification and explicit Tasks operation constraints. Extend synchronization
+read models and cache migration deliberately; do not infer historical origin from
+titles or reinterpret Google's ordinary `eventType` as Docket authority.
 Reuse current versions, public refs, immutable revisions/evidence and atomic
 canonical/provider transactions. PostgreSQL is authoritative for uniqueness,
 locking and retained-source immutability; SQLite checks do not prove races.
@@ -747,6 +806,9 @@ compatibility endpoints. This proposal itself changes no published wire version.
 - [Existing reminder and temporal projection inputs](../src/docket/schemas/tracked_context.py)
   and [Calendar provider rendering](../src/docket/providers/google/calendar.py)
   for the derived Task reminder path; keep existing independent follow-up behavior.
+- [Calendar synchronization](../src/docket/services/calendar_sync.py) and
+  [canonical/provider workload capture](../src/docket/services/workload_calendar.py)
+  for persisted origin classification and exclusions after cache refresh.
 - [Provider intents](../src/docket/services/provider_intents.py),
   [operation runner](../src/docket/services/operations.py),
   [Operation/sync storage](../src/docket/models/calendar.py),
