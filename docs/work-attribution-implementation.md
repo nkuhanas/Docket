@@ -960,3 +960,44 @@ C0–P2 and optional visibility are now implemented and checked in source. Compl
 clean-source tested-image validation, publication/merge/deployment and the same
 hosted-plugin refresh remain required. No real Calendar/work/financial records were
 created for verification. P3 still requires its separate concrete provider choice.
+
+
+## November 6 activation
+
+[PR 64](https://github.com/nkuhanas/Docket/pull/64) is merged by linear fast-forward;
+all 17 implementation commits and their hashes remain. Clean synchronized main at
+`3f8c23b412c307ec3172a97c00ae11000d900748` was deployed using immutable image
+`sha256:6c3bc754c7c12ea1cfcdc00710371d746a4bebd18929f0b92071ba25a7284b4f`.
+The tracked source tree is `4729a22ebf9bb2aa5f9080e9b3c8fcce4ad7dc6b`.
+Source-bound validation took 203.41 seconds: 425 selected native/release/storage
+checks, static checks, exact-image native startup and disposable PostgreSQL proof.
+The affected provider group separately passed 77 checks.
+
+The supported deploy passed predeploy, drain, backup, schema upgrade, health and
+native-boundary checks. Database head is `20261105a3b4`; the prior image and backup
+remain. Public OAuth discovery returns 200 with all four existing scope names;
+anonymous MCP returns 401. Runtime introspection confirms v67 and 108 definitions.
+The existing ChatGPT connection reads the new overview with read/write/triage.
+Its current token does not include events; inbox reads/reconciliation remain useful,
+while event subscriptions need that separate existing grant.
+
+The same private USER-scoped plugin is now
+[2.1.0](https://chatgpt.com/plugins/plugin_asdk_app_6aebd82ba1108191a77747be377965f8),
+release `pluginrel_6aed8a3a0cc881918fff5ef23158ae83`. App identity, connection,
+audience, presentation and prompts are unchanged. Both manifests preserve everything
+except version. Read-back matches all seven hosted skill/reference/contract files
+to source and retains the App binding. No replacement plugin or new OAuth scope.
+
+This conversation still exposes its 84-tool cache. A fresh ChatGPT work-context
+invocation is requested from the operator; do not call that accepted until observed.
+The [machine-readable activation receipt](../evidence/work-attribution-release/activation.json)
+distinguishes this remaining host check from deployed backend/package acceptance.
+The [final source measurement](../evidence/work-attribution-release/contracts.json)
+confirms 37 additions after the 13-tool consolidation. The full tools/list result
+is 182,175 bytes; its array alone is the earlier reported 182,165 bytes. Largest
+new input/complete definition is 3,494/4,062 bytes. These are byte measurements,
+not token counts or evidence that a 108-tool catalogue is small.
+
+No real work, Calendar or financial fixture was created in production. P3 remains
+a separate concrete provider choice. Earlier pending markers in this report are
+historical source checkpoints; this activation section is the current release state.

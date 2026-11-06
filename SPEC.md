@@ -8,11 +8,15 @@ Implementation baseline: `3a578859265431ac0270ab1acb62b48bfb8d6717`
 
 This is Docket's single current specification. It consolidates the signed ontology
 and Operator amendments, including the adopted [context/local CI delta](deltas/2026-11-05T04-27-33Z-single-spec-context-and-local-ci.md).
-Adoption and deployment are distinct. The native command/context release is
-implemented, deployed and accepted through the working native connection. Plugin
-v2.0.0 is published; successful v51 overview, calendar-context and event-create
-invocations verify the live surface. Implementation and deployment evidence belongs
-in [the implementation report](docs/native-context-local-ci.md).
+Adoption and deployment are distinct. SPEC 1.1's C0–P2 and optional work Calendar
+visibility are implemented and deployed from `3f8c23b412c3` (November 6, 2026), with
+contract v67 and plugin 2.1.0. The tested image, migrations, native boundary and
+hosted package read-back pass. This conversation retains its earlier tool cache;
+fresh work-tool invocation in ChatGPT remains the separate host check recorded in
+[the activation receipt](evidence/work-attribution-release/activation.json).
+The prior native command/context baseline used plugin 2.0.0 and successful v51
+invocations; its historical evidence remains in
+[the original report](docs/native-context-local-ci.md).
 
 Forward changes use dated `deltas/YYYY-MM-DDTHH-MM-SSZ-description.md` records,
 identifying the SPEC baseline, changed requirements, rationale, compatibility,
@@ -24,10 +28,9 @@ CONTRIBUTING and runbooks describe procedures, not competing specifications.
 
 The Operator instruction to implement the [work-attribution delta](deltas/2026-11-05T21-18-26Z-work-attribution-and-personal-operations.md)
 adopts its catalogue, work, reporting/finance and operational requirements.
-Implementation is in progress, tracked requirement by requirement in the
-[implementation report](docs/work-attribution-implementation.md). The deployed
-1.0 behavior above remains the runtime baseline until validated activation.
-P0 is not evidence that finance/intelligence is complete. Chosen external P3
+Implementation, deployment and phase-specific acceptance are tracked in the
+[implementation report](docs/work-attribution-implementation.md). P0 alone never
+substitutes for finance/intelligence acceptance. Chosen external P3
 providers still require the separate concrete provider delta specified there.
 
 Track the new SPEC and forward deltas. Older ignored `specs/` and delta sources
@@ -415,5 +418,5 @@ complete this amendment. Real financial/provider effects are not smoke fixtures.
 
 | Version | Change |
 | --- | --- |
-| 1.1 | Adopts the November 5 work-attribution/personal-operations delta including catalogue consolidation. Implementation and activation remain in progress, with separate phase evidence; external provider choices remain a concrete follow-on delta. Implementation clarifies revision-pinned visibility and nonblocking invalidation (ADR 009). |
+| 1.1 | Adopts the November 5 work-attribution/personal-operations delta including catalogue consolidation. C0–P2 and optional visibility are implemented/deployed, with separate phase evidence; external provider choices remain a concrete follow-on delta. Implementation clarifies revision-pinned visibility and nonblocking invalidation (ADR 009). |
 | 1.0 | First current SPEC synthesized from signed ontology and Operator amendments; adopts November 4 context/local-CI delta and retirement cleanup. No invented prior version. Implemented, deployed and verified through live native-tool use. |

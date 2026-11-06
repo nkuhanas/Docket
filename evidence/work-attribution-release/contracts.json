@@ -1,0 +1,411 @@
+{
+  "kind": "current source discovery; synthetic settings; no domain command executed",
+  "source_commit": "3f8c23b412c307ec3172a97c00ae11000d900748",
+  "measurement": "compact UTF-8 tools/list result object with tools key; JSON-RPC envelope excluded; bytes are not tokens",
+  "baseline_measurement_sha256": "4d87c2bb3459db8d6695ef53b4247e93fb159823b5a816b77cec1c0c228cace1",
+  "baseline_tools": 84,
+  "consolidated_existing_tools": 71,
+  "added_domain_tools": 37,
+  "advertised_tools": 108,
+  "canonical_variants": 72,
+  "discovery_bytes": 182175,
+  "global_instructions_bytes": 1643,
+  "entry_skill_bytes": 4441,
+  "new_tools": [
+    {
+      "tool": "docket_update_work_session",
+      "input_bytes": 3494,
+      "definition_bytes": 4062,
+      "declared_fields": 31,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "work_ref"
+      ]
+    },
+    {
+      "tool": "docket_record_expense",
+      "input_bytes": 3380,
+      "definition_bytes": 3983,
+      "declared_fields": 29,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "amount",
+        "currency",
+        "description"
+      ]
+    },
+    {
+      "tool": "docket_update_expense",
+      "input_bytes": 3310,
+      "definition_bytes": 3889,
+      "declared_fields": 29,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "expense_ref"
+      ]
+    },
+    {
+      "tool": "docket_log_work_session",
+      "input_bytes": 3281,
+      "definition_bytes": 3852,
+      "declared_fields": 29,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "description"
+      ]
+    },
+    {
+      "tool": "docket_prepare_invoice",
+      "input_bytes": 2420,
+      "definition_bytes": 3074,
+      "declared_fields": 21,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "engagement_ref"
+      ]
+    },
+    {
+      "tool": "docket_set_reporting_rules",
+      "input_bytes": 2354,
+      "definition_bytes": 2882,
+      "declared_fields": 19,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "effective_from",
+        "engagement_ref"
+      ]
+    },
+    {
+      "tool": "docket_merge_work_sessions",
+      "input_bytes": 2351,
+      "definition_bytes": 2868,
+      "declared_fields": 21,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "work_refs"
+      ]
+    },
+    {
+      "tool": "docket_record_payment",
+      "input_bytes": 2336,
+      "definition_bytes": 2941,
+      "declared_fields": 20,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "amount",
+        "currency"
+      ]
+    },
+    {
+      "tool": "docket_refresh_invoice",
+      "input_bytes": 2213,
+      "definition_bytes": 2785,
+      "declared_fields": 19,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "invoice_ref"
+      ]
+    },
+    {
+      "tool": "docket_switch_work_session",
+      "input_bytes": 2171,
+      "definition_bytes": 2590,
+      "declared_fields": 20,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "description",
+        "from_work_ref"
+      ]
+    },
+    {
+      "tool": "docket_split_work_session",
+      "input_bytes": 2168,
+      "definition_bytes": 2697,
+      "declared_fields": 6,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "work_ref",
+        "parts"
+      ]
+    },
+    {
+      "tool": "docket_set_workload_preferences",
+      "input_bytes": 2113,
+      "definition_bytes": 2727,
+      "declared_fields": 14,
+      "required_fields": [
+        "context_id",
+        "operation_id"
+      ]
+    },
+    {
+      "tool": "docket_set_pay_terms",
+      "input_bytes": 2048,
+      "definition_bytes": 2576,
+      "declared_fields": 17,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "effective_from",
+        "engagement_ref"
+      ]
+    },
+    {
+      "tool": "docket_start_work_session",
+      "input_bytes": 1982,
+      "definition_bytes": 2480,
+      "declared_fields": 18,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "description"
+      ]
+    },
+    {
+      "tool": "docket_update_engagement",
+      "input_bytes": 1531,
+      "definition_bytes": 1961,
+      "declared_fields": 14,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "engagement_ref"
+      ]
+    },
+    {
+      "tool": "docket_create_engagement",
+      "input_bytes": 1380,
+      "definition_bytes": 1805,
+      "declared_fields": 13,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "label"
+      ]
+    },
+    {
+      "tool": "docket_apply_payment",
+      "input_bytes": 1374,
+      "definition_bytes": 1953,
+      "declared_fields": 10,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "target_ref",
+        "payment_ref"
+      ]
+    },
+    {
+      "tool": "docket_query_work_sessions",
+      "input_bytes": 1360,
+      "definition_bytes": 1995,
+      "declared_fields": 13,
+      "required_fields": []
+    },
+    {
+      "tool": "docket_query_expenses",
+      "input_bytes": 1336,
+      "definition_bytes": 1901,
+      "declared_fields": 13,
+      "required_fields": []
+    },
+    {
+      "tool": "docket_prepare_timesheet",
+      "input_bytes": 1101,
+      "definition_bytes": 1680,
+      "declared_fields": 10,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "engagement_ref"
+      ]
+    },
+    {
+      "tool": "docket_adjust_financial_claim",
+      "input_bytes": 986,
+      "definition_bytes": 1568,
+      "declared_fields": 9,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "target_ref",
+        "direction",
+        "amount",
+        "reason"
+      ]
+    },
+    {
+      "tool": "docket_update_invoice",
+      "input_bytes": 910,
+      "definition_bytes": 1504,
+      "declared_fields": 8,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "invoice_ref",
+        "status"
+      ]
+    },
+    {
+      "tool": "docket_get_compensation",
+      "input_bytes": 900,
+      "definition_bytes": 1524,
+      "declared_fields": 9,
+      "required_fields": []
+    },
+    {
+      "tool": "docket_set_project_budget",
+      "input_bytes": 892,
+      "definition_bytes": 1447,
+      "declared_fields": 8,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "project_ref",
+        "weekly_hours"
+      ]
+    },
+    {
+      "tool": "docket_reconcile_workload",
+      "input_bytes": 851,
+      "definition_bytes": 1503,
+      "declared_fields": 8,
+      "required_fields": [
+        "context_id",
+        "operation_id"
+      ]
+    },
+    {
+      "tool": "docket_update_timesheet",
+      "input_bytes": 846,
+      "definition_bytes": 1399,
+      "declared_fields": 8,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "timesheet_ref",
+        "status"
+      ]
+    },
+    {
+      "tool": "docket_schedule_followup",
+      "input_bytes": 841,
+      "definition_bytes": 1414,
+      "declared_fields": 8,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "subject_ref",
+        "at"
+      ]
+    },
+    {
+      "tool": "docket_reverse_financial_record",
+      "input_bytes": 835,
+      "definition_bytes": 1401,
+      "declared_fields": 7,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "ref",
+        "reason"
+      ]
+    },
+    {
+      "tool": "docket_stop_work_session",
+      "input_bytes": 804,
+      "definition_bytes": 1247,
+      "declared_fields": 7,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "work_ref"
+      ]
+    },
+    {
+      "tool": "docket_show_work_session",
+      "input_bytes": 643,
+      "definition_bytes": 1350,
+      "declared_fields": 6,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "work_ref",
+        "calendar_ref"
+      ]
+    },
+    {
+      "tool": "docket_get_financial_context",
+      "input_bytes": 627,
+      "definition_bytes": 1257,
+      "declared_fields": 6,
+      "required_fields": []
+    },
+    {
+      "tool": "docket_refresh_timesheet",
+      "input_bytes": 563,
+      "definition_bytes": 1124,
+      "declared_fields": 5,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "timesheet_ref"
+      ]
+    },
+    {
+      "tool": "docket_get_workload_context",
+      "input_bytes": 556,
+      "definition_bytes": 1151,
+      "declared_fields": 5,
+      "required_fields": []
+    },
+    {
+      "tool": "docket_pause_work_session",
+      "input_bytes": 553,
+      "definition_bytes": 983,
+      "declared_fields": 5,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "work_ref"
+      ]
+    },
+    {
+      "tool": "docket_resume_work_session",
+      "input_bytes": 553,
+      "definition_bytes": 985,
+      "declared_fields": 5,
+      "required_fields": [
+        "context_id",
+        "operation_id",
+        "work_ref"
+      ]
+    },
+    {
+      "tool": "docket_read_document",
+      "input_bytes": 429,
+      "definition_bytes": 969,
+      "declared_fields": 4,
+      "required_fields": []
+    },
+    {
+      "tool": "docket_get_work_context",
+      "input_bytes": 309,
+      "definition_bytes": 717,
+      "declared_fields": 2,
+      "required_fields": []
+    }
+  ],
+  "tools_array_bytes": 182165
+}

@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "activated_at_utc": "2026-11-06T08:03:45Z",
+  "spec": "1.1",
+  "implementation_commit": "3f8c23b412c307ec3172a97c00ae11000d900748",
+  "source_tree": "4729a22ebf9bb2aa5f9080e9b3c8fcce4ad7dc6b",
+  "pull_request": "https://github.com/nkuhanas/Docket/pull/64",
+  "merge": "fast-forward; all 17 implementation commits retained",
+  "image": "sha256:6c3bc754c7c12ea1cfcdc00710371d746a4bebd18929f0b92071ba25a7284b4f",
+  "database_revision": "20261105a3b4",
+  "contract": "docket-tools-2026-11-05-v67",
+  "advertised_tools": 108,
+  "canonical_variants": 72,
+  "discovery_compact_utf8_bytes": 182175,
+  "validation": {
+    "selected_tests": 425,
+    "provider_tests_separately": 77,
+    "static": "passed",
+    "exact_image_native_smoke": "passed",
+    "exact_image_postgres": "passed",
+    "elapsed_seconds": 203.41
+  },
+  "deployment": {
+    "predeploy": "passed",
+    "drain": "passed",
+    "backup": "backups/docket-20261106T080345Z-3f8c23b412c3.dump",
+    "previous_image": "docket-docket:rollback-20261106T080343Z",
+    "native_boundary": "passed",
+    "public_oauth_discovery": 200,
+    "anonymous_mcp": 401
+  },
+  "plugin": {
+    "id": "plugin_asdk_app_6aebd82ba1108191a77747be377965f8",
+    "app_id": "asdk_app_6aebd82ba1108191a77747be377965f8",
+    "version": "2.1.0",
+    "release": "pluginrel_6aed8a3a0cc881918fff5ef23158ae83",
+    "url": "https://chatgpt.com/plugins/plugin_asdk_app_6aebd82ba1108191a77747be377965f8",
+    "scope": "USER",
+    "audience": "PRIVATE",
+    "app_configuration_and_presentation": "preserved",
+    "hosted_text_files_matching_source": 7
+  },
+  "host_acceptance": {
+    "existing_connection_new_overview": "passed",
+    "read": true,
+    "write": true,
+    "triage": true,
+    "events": false,
+    "current_conversation_cached_tool_count": 84,
+    "fresh_work_context_invocation": "pending operator check"
+  },
+  "real_business_records_created_for_smoke": false,
+  "tools_array_compact_utf8_bytes": 182165,
+  "contract_measurement": "contracts.json; tools/list result object, excluding JSON-RPC envelope"
+}

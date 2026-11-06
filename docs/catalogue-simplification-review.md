@@ -15,7 +15,11 @@ removals remain deferred because their current routes are not behaviorally
 equivalent. Work, policy, documents, expenses, invoices, settlement and operational
 review/visibility add 37 purpose-built definitions, making the current source
 catalogue 108 tools. This adds domain capability without making a shared command's input more conditional;
-it is not a production/host inventory claim. See the implementation report.
+runtime introspection also confirms 108 definitions. The hosted plugin is 2.1.0;
+fresh-chat discovery remains the separate pending check in the
+[activation receipt](../evidence/work-attribution-release/activation.json).
+See the [current contract measurements](../evidence/work-attribution-release/contracts.json)
+and implementation report; the projection tables below retain their original baseline.
 
 There are clear reductions that preserve the surviving input schemas. The largest
 group is twelve retraction wrappers with identical arguments apart from the target

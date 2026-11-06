@@ -18,7 +18,9 @@ Every new input is below 4 KiB and complete definition below 6 KiB. Known-time
 and mixed-time split/merge, effective-policy configuration and compensation
 evaluation, formal timesheets, expenses, native invoice and settlement workflows
 are checked. Workload context/settings and selective follow-up are implemented in
-source, including revision-pinned Calendar visibility; activation remains unfinished.
+source, including revision-pinned Calendar visibility. Backend activation and plugin
+2.1.0 publication/read-back pass; fresh-chat work-tool invocation remains the final
+host check in the [activation receipt](../evidence/work-attribution-release/activation.json).
 The implementation report records exact evidence and the separate release boundary.
 
 The current settlement additions use 627–2,336 bytes per input and 1,257–2,941
@@ -34,6 +36,46 @@ The extension adds actual-work records first, then reporting/financial state and
 cross-domain operational views. Those capabilities can use compact business
 commands. Claim allocation, immutable revisions and compensation evaluation are
 service responsibilities; the calling agent does not construct their graphs.
+
+## Final catalogue disposition
+
+The November 6 [source measurement](../evidence/work-attribution-release/contracts.json)
+records the implemented contracts rather than the candidate models below.
+
+| Surface | Before | Current result |
+| --- | ---: | ---: |
+| Existing domain tools | 84 | 71 after removing 13 redundancies |
+| New work, finance and operations tools | 0 | 37 |
+| Total advertised tools | 84 | 108 |
+| Compact discovery result | 119,691 bytes | 182,175 bytes |
+| Global instructions | 1,643 bytes | 1,643 bytes |
+| Largest new input / complete definition | — | 3,494 / 4,062 bytes |
+
+Discovery here includes the `tools` result key, excluding JSON-RPC framing.
+The tool array alone is 182,165 bytes, the earlier implementation measurements'
+convention. Neither measure is a token count. The entry skill is 4,441 bytes;
+five workflow references load only when relevant.
+
+The safe consolidations are twelve retraction wrappers into `docket_retract_record`,
+task completion into the existing task update, and conflict detail into context.
+Surviving inputs retain their structure. Support records, due-time bindings,
+provider intents, compensation evaluation and claim allocation derive internally.
+Export uses the ordinary work query; hiding a work Calendar snapshot uses shared
+retraction. Cached-client aliases remain outside discovery with their old checks.
+
+Four possible removals stay deferred: person, organization and Item detail reads
+have richer coverage than general context, and cancellation has distinct occurrence
+and provider semantics. Create/update and timer transitions retain named commands
+instead of gaining conditional targets, action selectors or patch unions.
+
+The largest input is work correction: 31 declared fields, with context, operation
+identity and work reference required. Logging has 29 fields, with context, operation
+identity and description required; reported time is validated by the service.
+These are broad optional schemas, so size limits alone do not prove easy use.
+The normal path supplies the reported description, time and attribution; bounded
+context provides references, and Docket derives revisions, calculations and effects.
+Native first-call journeys and PostgreSQL transaction/race checks cover these paths.
+No internal effect union or allocation graph is exposed as an ordinary input.
 
 ## Contract size findings
 
