@@ -149,6 +149,18 @@ Docket preserves quantities and gaps, excludes superseded parents from new total
 and retains all history. Work context links the replacement records. Split/merge
 uses the same optional exact preview and retry path as other commands.
 
-Current merge supports known intervals or duration-only reports with identical date
-placement. Incomplete or mixed time remains separately recordable/queryable;
-composite lineage support is still pending. No claim/allocation graph is supplied.
+Mixed time and differing duration dates retain immutable components, including any
+unknown quantity. known_duration_us is a partial subtotal, not a completed estimate.
+Work context returns time_components. Split selected components by ordinary work
+references; no revision or allocation graph is supplied:
+
+```json
+{"context_id":"<work-context>","operation_id":"validation-unmerge","work_ref":"<composite-work>","parts":[{"source_work_ref":"<first-component-work>"},{"source_work_ref":"<second-component-work>"}]}
+```
+
+Known component parts may also supply start/end or duration_minutes when dividing
+them further. Dated quantities keep their reported placement; Docket never invents
+clock times for duration-only or incomplete work. Queries aggregate the matching
+components in SQL. JSON/CSV exports preserve the same immutable basis and precision.
+Report calculation/export version v2 includes components; retained v1 exports keep
+their original shape.

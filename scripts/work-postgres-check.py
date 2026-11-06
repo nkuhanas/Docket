@@ -389,6 +389,138 @@ async def check_native_lineage(settings, factory, principal):
     assert current["totals"]["known_reported_us"] == 150 * minute
     assert retained["totals"]["known_reported_us"] == 90 * minute
 
+    refs = [merged["work_records"][0]["ref"]]
+    for index, fields in enumerate(
+        (
+            {"work_date": "2001-01-03"},
+            {
+                "start": "2001-01-04T10:00:00+00:00",
+                "end": "2001-01-04T10:30:00+00:00",
+                "timezone": "UTC",
+            },
+        )
+    ):
+        packet = await call("docket_get_work_context", {})
+        logged = await call(
+            "docket_log_work_session",
+            {
+                "context_id": packet["context_id"],
+                "operation_id": f"pg-composite-{index}",
+                "description": f"Synthetic time component {index}",
+                **fields,
+            },
+        )
+        assert logged.get("disposition") == "committed", logged
+        refs.append(logged["work_records"][0]["ref"])
+    packet = await call("docket_get_work_context", {"refs": refs})
+    composite = await call(
+        "docket_merge_work_sessions",
+        {
+            "context_id": packet["context_id"],
+            "operation_id": "pg-composite-merge",
+            "work_refs": refs,
+        },
+    )
+    assert composite.get("disposition") == "committed", composite
+    record = composite["work_records"][0]
+    packet = await call("docket_get_work_context", {})
+    extra = await call(
+        "docket_log_work_session",
+        {
+            "context_id": packet["context_id"],
+            "operation_id": "pg-nested-unknown",
+            "description": "Synthetic additional incomplete work",
+            "work_date": "2001-01-05",
+        },
+    )
+    assert extra.get("disposition") == "committed", extra
+    extra_ref = extra["work_records"][0]["ref"]
+    nested_refs = [record["ref"], extra_ref]
+    packet = await call("docket_get_work_context", {"refs": nested_refs})
+    nested = await call(
+        "docket_merge_work_sessions",
+        {
+            "context_id": packet["context_id"],
+            "operation_id": "pg-nested-merge",
+            "work_refs": nested_refs,
+        },
+    )
+    assert nested.get("disposition") == "committed", nested
+    record = nested["work_records"][0]
+    refs.append(extra_ref)
+    assert record.get("duration_us") is None and record["has_unknown_quantity"]
+    assert record["known_duration_us"] == 180 * minute
+    grouped = await call(
+        "docket_query_work_sessions",
+        {
+            "date_from": "2001-01-01",
+            "date_to": "2001-01-08",
+            "group_by": "day",
+        },
+    )
+    assert grouped.get("ok"), grouped
+    assert grouped["totals"]["known_reported_us"] == 180 * minute
+    assert grouped["totals"]["unknown_quantity_count"] == 1
+    narrow = await call(
+        "docket_query_work_sessions",
+        {
+            "date_from": "2001-01-02",
+            "date_to": "2001-01-03",
+        },
+    )
+    assert narrow["totals"]["known_reported_us"] == 150 * minute
+    assert narrow["totals"]["unknown_quantity_count"] == 0
+    from docket.models import WorkTimeComponent
+
+    with factory() as session:
+        current_ref = session.scalar(
+            select(WorkSessionRevision.ref_id)
+            .join(
+                WorkSession,
+                (WorkSession.ref_id == WorkSessionRevision.work_ref)
+                & (WorkSession.version == WorkSessionRevision.revision),
+            )
+            .where(WorkSession.ref_id == record["ref"])
+        )
+        source_ref = session.scalar(
+            select(WorkTimeComponent.source_revision_ref).where(
+                WorkTimeComponent.revision_ref == current_ref,
+            )
+        )
+    for statement, message in (
+        (
+            delete(WorkTimeComponent).where(WorkTimeComponent.revision_ref == current_ref),
+            "append-only",
+        ),
+        (
+            WorkTimeComponent.__table__.insert().values(
+                revision_ref=current_ref, ordinal=24, source_revision_ref=source_ref
+            ),
+            "sealed",
+        ),
+    ):
+        try:
+            with factory.begin() as session:
+                session.execute(statement)
+        except DBAPIError as exc:
+            assert message in str(exc.orig)
+        else:
+            raise AssertionError("PostgreSQL allowed rewriting sealed time composition")
+    packet = await call("docket_get_work_context", {"refs": [record["ref"]]})
+    split = await call(
+        "docket_split_work_session",
+        {
+            "context_id": packet["context_id"],
+            "operation_id": "pg-composite-split",
+            "work_ref": record["ref"],
+            "parts": [{"source_work_ref": ref} for ref in refs],
+        },
+    )
+    assert split.get("disposition") == "committed", split
+    restored = [r for r in split["work_records"] if not r["superseded"]]
+    assert len(restored) == 4
+    assert sum(r.get("duration_us", 0) for r in restored) == 180 * minute
+
 
 async def check():
     from docket.agent_auth import AgentCallContext, AgentPrincipal, agent_call_context
@@ -407,6 +539,7 @@ async def check():
         WorkSegment,
         WorkSession,
         WorkSessionRevision,
+        WorkTimeComponent,
     )
     from docket.plugin.server import PluginMCP
 
@@ -433,6 +566,7 @@ async def check():
         WorkQuantityBasis,
         WorkQuantityAllocation,
         WorkLineageEdge,
+        WorkTimeComponent,
     )
     for model in tables:
         columns = {
@@ -987,6 +1121,7 @@ async def check():
                 "timer_fresh_process_survival": "passed",
                 "native_lineage_and_concurrent_quantity_growth": "passed",
                 "quantity_and_lineage_immutability": "passed",
+                "composite_time_precision_and_sealing": "passed",
                 "work_report_aggregates_and_exports": "passed",
                 "retained_report_membership": "sealed",
                 "revision_immutability": "passed",

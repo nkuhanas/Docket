@@ -24,9 +24,16 @@ from sqlalchemy import (
 from sqlalchemy.orm import Session
 
 from docket.domain.work_time import elapsed_us
-from docket.models import EngagementRevision, WorkReportMember, WorkReportSnapshot, WorkSegment
+from docket.models import (
+    EngagementRevision,
+    WorkReportMember,
+    WorkReportSnapshot,
+    WorkSegment,
+    WorkTimeComponent,
+)
 from docket.models import WorkSessionRevision as Revision
 from docket.services.work_attribution import utc_instant
+from docket.services.work_composition import time_leaves
 
 
 def period_bounds(parameters: dict[str, Any]) -> tuple[datetime, datetime]:
@@ -51,7 +58,7 @@ def unplaced(rows: Any) -> Any:
     )
 
 
-def matching(rows: Any, parameters: dict[str, Any]) -> Any:
+def time_matching(rows: Any, parameters: dict[str, Any]) -> Any:
     start, end = period_bounds(parameters)
     return or_(
         and_(
@@ -75,6 +82,28 @@ def matching(rows: Any, parameters: dict[str, Any]) -> Any:
             ),
         ),
         and_(literal(parameters["include_unplaced"]), unplaced(rows)),
+    )
+
+
+def matching(rows: Any, parameters: dict[str, Any]) -> Any:
+    roots = (
+        select(WorkTimeComponent.revision_ref.label("ref_id"))
+        .where(
+            WorkTimeComponent.revision_ref == rows.ref_id,
+        )
+        .distinct()
+        .correlate(rows)
+        .subquery()
+    )
+    leaves = time_leaves(roots)
+    return or_(
+        and_(rows.time_precision != "composite", time_matching(rows, parameters)),
+        and_(
+            rows.time_precision == "composite",
+            exists(
+                select(1).select_from(leaves).where(time_matching(leaves.c, parameters)),
+            ),
+        ),
     )
 
 
@@ -105,6 +134,34 @@ class WorkReportQuery:
             )
             .where(WorkReportMember.report_id == report.id)
             .cte("reported_work")
+        )
+        leaves = time_leaves(select(self.rows.c.ref_id).subquery())
+        time_fields = {
+            "id",
+            "time_precision",
+            "duration_us",
+            "start_at",
+            "end_at",
+            "start_offset_seconds",
+            "end_offset_seconds",
+            "timezone",
+            "work_date",
+            "period_start",
+            "period_end",
+        }
+        self.time_rows = (
+            select(
+                *(
+                    getattr(leaves.c, column.name) if column.name in time_fields else column
+                    for column in self.rows.c
+                ),
+                leaves.c.ref_id.label("source_ref"),
+            )
+            .select_from(self.rows.join(leaves, leaves.c.root_ref == self.rows.c.ref_id))
+            .where(
+                time_matching(leaves.c, self.parameters),
+            )
+            .cte("reported_time_parts")
         )
         self.intervals = self._intervals()
         self.group_intervals = self._group_intervals()
@@ -206,13 +263,14 @@ class WorkReportQuery:
         )
 
     def _intervals(self) -> Any:
-        r = self.rows.c
+        r = self.time_rows.c
         end: Any = func.coalesce(WorkSegment.end_at, utc_instant(self.report.as_of))
         start = case((WorkSegment.start_at > self.start, WorkSegment.start_at), else_=self.start)
         end = case((end < self.end, end), else_=self.end)
         return (
             select(
                 r.work_ref,
+                r.source_ref,
                 start.label("start_at"),
                 end.label("end_at"),
                 (r.lifecycle != "recorded").label("estimate"),
@@ -258,6 +316,7 @@ class WorkReportQuery:
         return (
             select(
                 i.work_ref,
+                i.source_ref,
                 start.label("start_at"),
                 end.label("end_at"),
                 i.estimate,
@@ -268,7 +327,7 @@ class WorkReportQuery:
         )
 
     def _parts(self) -> Any:
-        r, i = self.rows.c, self.group_intervals.c
+        r, i = self.time_rows.c, self.group_intervals.c
         zero = literal(0, BigInteger)
         elapsed = self.elapsed(i.end_at, i.start_at)
         timed = select(
@@ -278,6 +337,10 @@ class WorkReportQuery:
             zero.label("duration_only_us"),
             zero.label("unallocated_us"),
             case((i.estimate.is_(True), elapsed), else_=zero).label("estimate_us"),
+            i.estimate.is_(False).label("known"),
+            literal(False).label("unknown"),
+            literal(False).label("unplaced"),
+            i.estimate.label("open"),
         )
         allocated = or_(
             r.work_date.is_not(None),
@@ -321,11 +384,15 @@ class WorkReportQuery:
             quantity.label("duration_only_us"),
             case((allocated, zero), else_=quantity).label("unallocated_us"),
             zero.label("estimate_us"),
+            and_(r.lifecycle == "recorded", r.duration_us.is_not(None)).label("known"),
+            and_(r.lifecycle == "recorded", r.duration_us.is_(None)).label("unknown"),
+            unplaced(r).label("unplaced"),
+            (r.lifecycle != "recorded").label("open"),
         ).where(
             or_(
                 r.time_precision != "interval",
                 r.duration_us == 0,
-                ~exists(select(1).where(self.intervals.c.work_ref == r.work_ref)),
+                ~exists(select(1).where(self.intervals.c.source_ref == r.source_ref)),
             )
         )
         return union_all(timed, other).cte("work_quantities")
@@ -357,16 +424,14 @@ class WorkReportQuery:
 
     def stats(self, *, grouped: bool = False) -> Any:
         p, r = self.parts.c, self.rows.c
-        known = and_(r.lifecycle == "recorded", r.duration_us.is_not(None))
-        unknown = and_(r.lifecycle == "recorded", r.duration_us.is_(None))
         counters = {
-            "known_quantity_count": known,
-            "unknown_quantity_count": unknown,
-            "unplaced_count": unplaced(r),
+            "known_quantity_count": p.known,
+            "unknown_quantity_count": p.unknown,
+            "unplaced_count": p.unplaced,
             "classification_unknown_count": or_(
                 r.reported_compensation_class.is_(None), r.reported_compensation_class == "unknown"
             ),
-            "open_timer_count": r.lifecycle != "recorded",
+            "open_timer_count": p.open,
         }
         columns = [
             func.count(distinct(p.work_ref)).label("session_count"),

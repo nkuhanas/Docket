@@ -1,5 +1,8 @@
 """Atomic split/merge business operations with server-derived work-unit lineage."""
 
+import json
+from collections import Counter
+from collections.abc import Sequence
 from typing import Any
 
 from pydantic import BaseModel
@@ -21,6 +24,7 @@ from docket.schemas.work import (
 from docket.services.business_commands import _named_refs, mutation_plan
 from docket.services.native_commands import NativeCommandService
 from docket.services.work_attribution import WorkAttributionService, frozen_time, validate_work_time
+from docket.services.work_composition import component_leaves, component_quantity
 from docket.services.work_quantities import WorkQuantityService, WorkSpan, slice_spans
 
 LINEAGE_COMMAND_MODELS: dict[str, type[BaseModel]] = {
@@ -50,11 +54,15 @@ def split_part(parent: WorkSessionSpec, part: WorkSplitPart) -> WorkSessionSpec:
     fields = parent.model_dump(exclude={"time"})
     supplied = part.model_dump(exclude_unset=True)
     for name, value in supplied.items():
-        if name not in {"start", "end", "duration_minutes"}:
+        if name not in {"start", "end", "duration_minutes", "source_work_ref"}:
             fields[name] = value
     if "engagement_ref" in supplied and "organization_ref" not in supplied:
         fields["organization_ref"] = None
     fields["source_method"] = "report"
+    if part.source_work_ref and not any(
+        key in supplied for key in ("start", "end", "duration_minutes")
+    ):
+        return WorkSessionSpec.model_validate({**fields, "time": parent.time})
     if parent.time.precision == "interval":
         if not part.start or not part.end or part.duration_minutes is not None:
             raise invalid(
@@ -123,12 +131,16 @@ def split_part(parent: WorkSessionSpec, part: WorkSplitPart) -> WorkSessionSpec:
         )
         if "work_date" in supplied:
             fields.update(period_start=None, period_end=None)
+    elif not any(key in supplied for key in ("start", "end", "duration_minutes")):
+        time = parent.time
     else:
         raise invalid("work_ref", "Specify the unknown quantity before splitting this record.")
     return WorkSessionSpec.model_validate({**fields, "time": time})
 
 
-def merged_time(parents: list[WorkSessionSpec]) -> WorkTimeSpec:
+def merged_time(
+    parents: list[WorkSessionSpec], service: WorkAttributionService, source_refs: list[str]
+) -> WorkTimeSpec:
     first = parents[0].time
     if all(p.time.precision == "duration" for p in parents):
         placement = (
@@ -137,21 +149,20 @@ def merged_time(parents: list[WorkSessionSpec]) -> WorkTimeSpec:
             parents[0].period_end,
             first.timezone,
         )
-        if any(
+        if not any(
             (p.work_date, p.period_start, p.period_end, p.time.timezone) != placement
             for p in parents
         ):
-            raise invalid(
-                "work_refs",
-                "These duration reports have different date placement; retain separate records.",
+            return first.model_copy(
+                update={"duration_us": sum(p.time.duration_us or 0 for p in parents)}
             )
-        return first.model_copy(
-            update={"duration_us": sum(p.time.duration_us or 0 for p in parents)}
-        )
     if not all(p.time.precision == "interval" for p in parents):
-        raise invalid(
-            "work_refs",
-            "Merge requires compatible known time; retain mixed or incomplete records separately.",
+        quantity, unknown = component_quantity(service.session, source_refs)
+        return WorkTimeSpec(
+            precision="composite",
+            timezone=first.timezone,
+            duration_us=None if unknown else quantity,
+            component_revision_refs=source_refs,
         )
     active = sorted(
         (s for p in parents for s in p.time.segments if s.kind == "active"),
@@ -205,9 +216,14 @@ def merged_time(parents: list[WorkSessionSpec]) -> WorkTimeSpec:
     )
 
 
-def merged_spec(parents: list[WorkSessionSpec], values: dict[str, Any]) -> WorkSessionSpec:
+def merged_spec(
+    parents: list[WorkSessionSpec],
+    values: dict[str, Any],
+    service: WorkAttributionService,
+    source_refs: list[str],
+) -> WorkSessionSpec:
     fields: dict[str, Any] = {}
-    time = merged_time(parents)
+    time = merged_time(parents, service, source_refs)
     for key in WorkSessionSpec.model_fields:
         if key in {"time", "status", "source_method"}:
             continue
@@ -218,7 +234,10 @@ def merged_spec(parents: list[WorkSessionSpec], values: dict[str, Any]) -> WorkS
             )
         elif key in values:
             fields[key] = values[key]
-        elif key in {"work_date", "period_start", "period_end"} and time.precision == "interval":
+        elif key in {"work_date", "period_start", "period_end"} and time.precision in {
+            "interval",
+            "composite",
+        }:
             fields[key] = None
         else:
             candidates = [getattr(p, key) for p in parents]
@@ -256,15 +275,54 @@ class WorkLineageCommandService(NativeCommandService):
             refs = [public.work_ref] if isinstance(public, SplitWorkSession) else public.work_refs
             heads = recorded(service, refs)
             parents = [service.work_spec(head) for head in heads]
-            children = (
-                [split_part(parents[0], part) for part in public.parts]
-                if isinstance(public, SplitWorkSession)
-                else [merged_spec(parents, values)]
-            )
+            source_refs = [service.work_revision(head).ref_id for head in heads]
+            split_sources = []
+            if isinstance(public, SplitWorkSession):
+                children = []
+                leaves = component_leaves(service.session, parents[0].time.component_revision_refs)
+                for part in public.parts:
+                    if parents[0].time.precision == "composite":
+                        source = next(
+                            (r for r in leaves if r.work_ref == part.source_work_ref), None
+                        )
+                        if source is None:
+                            raise invalid(
+                                "parts.source_work_ref",
+                                "Select a source_work_ref from the returned time components.",
+                            )
+                        original = service.revision_spec(source)
+                        basis = WorkSessionSpec.model_validate(
+                            {
+                                **parents[0].model_dump(
+                                    exclude={"time", "work_date", "period_start", "period_end"}
+                                ),
+                                "time": original.time,
+                                "work_date": original.work_date,
+                                "period_start": original.period_start,
+                                "period_end": original.period_end,
+                            }
+                        )
+                        children.append(
+                            basis
+                            if not (set(part.model_fields_set) - {"source_work_ref"})
+                            else split_part(basis, part)
+                        )
+                        split_sources.append(source.work_ref)
+                    else:
+                        if part.source_work_ref:
+                            raise invalid(
+                                "parts.source_work_ref",
+                                "This field selects composite source work only.",
+                            )
+                        children.append(split_part(parents[0], part))
+            else:
+                children = [merged_spec(parents, values, service, source_refs)]
             for child in children:
                 service.validate_links(child)
                 validate_work_time(child)
-            validate_conservation(parents, children)
+            if splitting and parents[0].time.precision == "composite":
+                validate_component_split(parents[0], children, split_sources, service)
+            validate_conservation(parents, children, service)
             variant = WorkSessionSplit if splitting else WorkSessionMerge
             action = variant(
                 change_id="work_lineage",
@@ -272,7 +330,9 @@ class WorkLineageCommandService(NativeCommandService):
                 object_type="work_session",
                 object_ref=refs[0],
                 affected_fields=["lineage"],
-                payload=WorkLineageSpec(parent_refs=refs, children=children),
+                payload=WorkLineageSpec(
+                    parent_refs=refs, children=children, child_source_work_refs=split_sources
+                ),
             )
             for ref in refs:
                 if ref not in context.versions:
@@ -282,6 +342,8 @@ class WorkLineageCommandService(NativeCommandService):
             retained = {
                 ref for parent in parents for ref in _named_refs(parent.model_dump(mode="json"))
             }
+            retained.update(source_refs)
+            retained.update(r.work_ref for r in component_leaves(service.session, source_refs))
             return mutation_plan(
                 context, [mutation_input_json(action)], command, retained_refs=retained
             )
@@ -301,29 +363,83 @@ def active_windows(specs: list[WorkSessionSpec]) -> list[tuple[Any, Any]]:
     )
 
 
-def validate_conservation(parents: list[WorkSessionSpec], children: list[WorkSessionSpec]) -> None:
-    quantities = [p.time.duration_us for p in parents + children]
-    if any(q is None for q in quantities) or sum(p.time.duration_us or 0 for p in parents) != sum(
+def expanded(
+    specs: list[WorkSessionSpec], service: WorkAttributionService
+) -> list[WorkSessionSpec]:
+    return [
+        leaf
+        for spec in specs
+        for leaf in (
+            [
+                service.revision_spec(row)
+                for row in component_leaves(service.session, spec.time.component_revision_refs)
+            ]
+            if spec.time.precision == "composite"
+            else [spec]
+        )
+    ]
+
+
+def validate_component_split(
+    parent: WorkSessionSpec,
+    children: list[WorkSessionSpec],
+    sources: Sequence[str | None],
+    service: WorkAttributionService,
+) -> None:
+    if len(sources) != len(children):
+        raise invalid("parts.source_work_ref", "Select a time source for every part.")
+    rows = component_leaves(service.session, parent.time.component_revision_refs)
+    assigned: dict[str | None, int] = {}
+    counts = Counter(sources)
+    for source_ref, child in zip(sources, children, strict=True):
+        assigned[source_ref] = assigned.get(source_ref, 0) + (child.time.duration_us or 0)
+    if set(sources) != {row.work_ref for row in rows}:
+        raise invalid("parts.source_work_ref", "Retain each source component in the split.")
+    for row in rows:
+        if assigned[row.work_ref] != (row.duration_us or 0) or (
+            row.duration_us is None and counts[row.work_ref] != 1
+        ):
+            raise invalid(
+                "parts",
+                "Parts must preserve each source component's known quantity or incomplete report.",
+            )
+
+
+def validate_conservation(
+    parents: list[WorkSessionSpec], children: list[WorkSessionSpec], service: WorkAttributionService
+) -> None:
+    parents, children = expanded(parents, service), expanded(children, service)
+    if sum(p.time.duration_us or 0 for p in parents) != sum(
         c.time.duration_us or 0 for c in children
     ):
         raise invalid("parts", "The parts must preserve exactly the original known work quantity.")
-    if all(p.time.precision == "interval" for p in parents + children):
 
-        def canonical(specs: list[WorkSessionSpec]) -> list[tuple[Any, Any]]:
-            result: list[tuple[Any, Any]] = []
-            for start, end in active_windows(specs):
-                if result and start < result[-1][1]:
-                    raise invalid("parts", "Parts cannot count the same active time twice.")
-                if result and start == result[-1][1]:
-                    result[-1] = (result[-1][0], end)
-                else:
-                    result.append((start, end))
-            return result
+    def unknown(specs: list[WorkSessionSpec]) -> Counter[str]:
+        return Counter(
+            json.dumps(s.time.model_dump(mode="json"), sort_keys=True)
+            for s in specs
+            if s.time.duration_us is None
+        )
 
-        if canonical(parents) != canonical(children):
-            raise invalid("parts", "Parts must retain every original active interval and its gaps.")
-    elif not all(p.time.precision == "duration" for p in parents + children):
-        raise invalid("parts", "Splitting/merging must preserve the reported time precision.")
+    if unknown(parents) != unknown(children):
+        raise invalid(
+            "parts",
+            "Retain each incomplete time report once; do not invent its quantity or bounds.",
+        )
+
+    def canonical(specs: list[WorkSessionSpec]) -> list[tuple[Any, Any]]:
+        result: list[tuple[Any, Any]] = []
+        for start, end in active_windows(specs):
+            if result and start < result[-1][1]:
+                raise invalid("parts", "Parts cannot count the same active time twice.")
+            if result and start == result[-1][1]:
+                result[-1] = (result[-1][0], end)
+            else:
+                result.append((start, end))
+        return result
+
+    if canonical(parents) != canonical(children):
+        raise invalid("parts", "Parts must retain every original active interval and its gaps.")
 
 
 def interval_spans(
@@ -360,9 +476,22 @@ def apply_lineage(service: WorkAttributionService, changeset: ChangeSet, change:
     for head in heads:
         service.check_version(head, changeset)
     parents = [service.work_spec(head) for head in heads]
-    validate_conservation(parents, spec.children)
+    if splitting and parents[0].time.precision == "composite":
+        validate_component_split(parents[0], spec.children, spec.child_source_work_refs, service)
+    validate_conservation(parents, spec.children, service)
     quantities = WorkQuantityService(service.session)
     revisions = [service.work_revision(head) for head in heads]
+    if not splitting:
+        expected_time = merged_time(parents, service, [row.ref_id for row in revisions])
+        if spec.children[0].time != expected_time:
+            raise invalid("work_refs", "Merge must retain the selected source time exactly.")
+        if expected_time.precision == "duration" and any(
+            getattr(spec.children[0], key) != getattr(parents[0], key)
+            for key in ("work_date", "period_start", "period_end")
+        ):
+            raise invalid(
+                "work_refs", "Merge retains reported dates; correct dates separately when needed."
+            )
     for head in heads:
         quantities.ensure_history(head, changeset.ref_id)
     mappings = [quantities.spans(revision.ref_id) for revision in revisions]
@@ -381,8 +510,33 @@ def apply_lineage(service: WorkAttributionService, changeset: ChangeSet, change:
         )
     cursor = 0
     child_refs: list[str] = []
-    for child in spec.children:
-        if splitting:
+    source_cursors: dict[str, int] = {}
+    composite_sources = component_leaves(service.session, parents[0].time.component_revision_refs)
+    if (
+        parents[0].time.precision == "composite"
+        and splitting
+        and len(spec.child_source_work_refs) != len(spec.children)
+    ):
+        raise invalid("parts", "Select the time source for every composite split part.")
+    for child_index, child in enumerate(spec.children):
+        if splitting and parents[0].time.precision == "composite":
+            source_ref = spec.child_source_work_refs[child_index]
+            offset = 0
+            for source in composite_sources:
+                if source.work_ref == source_ref:
+                    break
+                offset += source.duration_us or 0
+            else:
+                raise invalid("parts.source_work_ref", "Select a source of this composite record.")
+            source_spans = slice_spans(mappings[0], offset, offset + (source.duration_us or 0))
+            if child.time.precision == "interval":
+                spans = interval_spans(service.revision_spec(source), child, source_spans)
+            else:
+                source_cursor = source_cursors.get(source.work_ref, 0)
+                quantity = child.time.duration_us or 0
+                spans = slice_spans(source_spans, source_cursor, source_cursor + quantity)
+                source_cursors[source.work_ref] = source_cursor + quantity
+        elif splitting:
             quantity = child.time.duration_us or 0
             spans = (
                 interval_spans(parents[0], child, mappings[0])

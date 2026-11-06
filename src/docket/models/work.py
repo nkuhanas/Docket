@@ -143,7 +143,7 @@ class WorkSessionRevision(Base):
             name="ck_work_revision_lifecycle",
         ),
         CheckConstraint(
-            "time_precision IN ('interval', 'duration', 'incomplete', 'timer')",
+            "time_precision IN ('interval', 'duration', 'incomplete', 'timer', 'composite')",
             name="ck_work_precision",
         ),
         CheckConstraint("duration_us IS NULL OR duration_us >= 0", name="ck_work_duration"),

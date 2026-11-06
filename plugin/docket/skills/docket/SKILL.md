@@ -50,7 +50,11 @@ parts supply start/end and inherit breaks; duration-only parts supply minutes.
 `docket_merge_work_sessions` takes selected work_refs and any conflicting attribution
 overrides. Docket conserves quantity and known gaps, retains lineage and supersedes
 parents atomically. Refresh affected context; retry an unchanged command unchanged.
-Mixed/incomplete time or differing duration dates currently need separate records.
+Mixed/incomplete reports and duration reports with different dates retain their own
+precision and placement inside composite work. Unknown quantities stay unknown;
+known_duration_us is only the known subtotal. Work context returns time_components.
+Select a component's source_work_ref in each split part, optionally providing bounds
+or minutes when dividing known work. Docket derives quantity identity internally.
 No claim graph is a client input. Finance milestones are not yet advertised.
 
 Use named business tools with ordinary fields. Creating a meeting takes title,

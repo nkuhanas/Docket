@@ -9,9 +9,9 @@ is in the [implementation report](work-attribution-implementation.md). Measureme
 below remain historical design evidence, not implementation or a second specification.
 
 Current source now implements the primary catalogue consolidation and thirteen P0
-definitions: 84 advertised tools total, with 28,292 bytes of work definitions.
+definitions: 84 advertised tools total, with 28,228 bytes of work definitions.
 Every new input is below 4 KiB and complete definition below 6 KiB. Known-time
-split/merge is checked; composite lineage and finance/intelligence remain unfinished.
+and mixed-time split/merge are checked; finance/intelligence remain unfinished.
 The implementation report records exact evidence and the separate release boundary.
 
 The extension adds actual-work records first, then reporting/financial state and

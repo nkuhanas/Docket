@@ -24,7 +24,7 @@ from docket.schemas.work import (
     WorkSessionSpec,
     WorkTimeFields,
 )
-from docket.services.business_commands import mutation_plan
+from docket.services.business_commands import _named_refs, mutation_plan
 from docket.services.native_commands import NativeCommandService
 from docket.services.work_attribution import WorkAttributionService, frozen_time, raw_time
 
@@ -46,6 +46,7 @@ class WorkCommandService(NativeCommandService):
 
         def build(context: NativeContext) -> dict[str, Any]:
             mutation: BaseModel
+            retained_refs: set[str] = set()
             if command in {"docket_create_engagement", "docket_update_engagement"}:
                 ref = (
                     values.get("engagement_ref") if command == "docket_update_engagement" else None
@@ -76,6 +77,8 @@ class WorkCommandService(NativeCommandService):
             else:
                 ref = values.get("work_ref")
                 previous = service.work_spec(service.head(WorkSession, ref)) if ref else None
+                if previous:
+                    retained_refs = _named_refs(previous.model_dump(mode="json"))
                 fields = previous.model_dump() if previous else {}
                 patch = {
                     key: value
@@ -99,6 +102,14 @@ class WorkCommandService(NativeCommandService):
                     )
                 if previous and not time_patch:
                     time = previous.time
+                elif (
+                    previous
+                    and previous.time.precision == "composite"
+                    and set(time_patch) <= {"timezone"}
+                ):
+                    time = previous.time.model_copy(
+                        update={"timezone": time_patch["timezone"] or self.settings.timezone}
+                    )
                 else:
                     raw = (
                         raw_time(previous.time)
@@ -170,7 +181,9 @@ class WorkCommandService(NativeCommandService):
                 raise DocketError(
                     code="empty_work_update", message="Supply at least one changed field."
                 )
-            return mutation_plan(context, [mutation_input_json(mutation)], command)
+            return mutation_plan(
+                context, [mutation_input_json(mutation)], command, retained_refs=retained_refs
+            )
 
         return self.execute(
             command=command,

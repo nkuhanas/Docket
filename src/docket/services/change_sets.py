@@ -642,6 +642,13 @@ class ChangeSetService:
                             "superseded": head.superseded,
                             "time_precision": snapshot.time.precision,
                             "duration_us": snapshot.time.duration_us}
+                    if snapshot.time.precision == "composite":
+                        from docket.services.work_composition import component_quantity
+
+                        known, unknown = component_quantity(
+                            self.session, snapshot.time.component_revision_refs,
+                        )
+                        item.update(known_duration_us=known, has_unknown_quantity=unknown)
                     for name in ("start", "end"):
                         bound = reported_bound(getattr(snapshot.time, name + "_at"),
                                                getattr(snapshot.time, name + "_offset_seconds"))

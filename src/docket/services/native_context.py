@@ -243,7 +243,8 @@ class NativeContextService:
                 state = service.view(row)
                 omitted = []
                 for key, value in list(state.items()):
-                    if len(json.dumps(value, ensure_ascii=False).encode()) > 1024:
+                    ceiling = 3072 if key == "time_components" else 1024
+                    if len(json.dumps(value, ensure_ascii=False).encode()) > ceiling:
                         del state[key]
                         omitted.append(key)
                 if omitted:

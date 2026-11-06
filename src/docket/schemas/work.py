@@ -79,12 +79,15 @@ class WorkAttributionFields(StrictModel):
         default_factory=list,
         max_length=25,
     )
+
+
+class WorkPlacementFields(StrictModel):
     work_date: date | None = None
     period_start: date | None = None
     period_end: date | None = None
 
 
-class WorkMetadata(WorkAttributionFields):
+class WorkMetadata(WorkAttributionFields, WorkPlacementFields):
     source_method: Literal["report", "import", "inference"] = "report"
 
 
@@ -127,7 +130,7 @@ class WorkSegmentSpec(StrictModel):
 
 
 class WorkTimeSpec(StrictModel):
-    precision: Literal["interval", "duration", "incomplete", "timer"]
+    precision: Literal["interval", "duration", "incomplete", "timer", "composite"]
     timezone: str = Field(min_length=1, max_length=128)
     start_at: datetime | None = None
     end_at: datetime | None = None
@@ -135,12 +138,14 @@ class WorkTimeSpec(StrictModel):
     end_offset_seconds: int | None = None
     duration_us: int | None = Field(default=None, ge=0, le=2**63 - 1)
     segments: list[WorkSegmentSpec] = Field(default_factory=list, max_length=4097)
+    component_revision_refs: list[
+        Annotated[str, Field(pattern=r"^wrev_[0-9A-HJKMNP-TV-Z]{26}$")]
+    ] = Field(default_factory=list, max_length=25)
 
 
-class WorkSessionSpec(WorkAttributionFields):
+class WorkSessionSpec(WorkAttributionFields, WorkPlacementFields):
     source_refs: list[Annotated[str, Field(pattern=r"^src_[0-9A-HJKMNP-TV-Z]{26}$")]] = Field(
         default_factory=list,
-        max_length=625,
     )
     source_method: Literal["report", "import", "inference", "timer"] = "report"
     description: str = Field(min_length=1, max_length=4000)
@@ -155,7 +160,9 @@ class WorkSessionSpec(WorkAttributionFields):
             raise ValueError("period_end must follow period_start")
         if self.work_date and self.period_start:
             raise ValueError("use work_date or a reporting period")
-        if self.time.precision == "interval" and (self.work_date or self.period_start):
+        if self.time.precision in {"interval", "composite"} and (
+            self.work_date or self.period_start
+        ):
             raise ValueError("bounded time establishes its own dates; omit work_date/period")
         return self
 
@@ -212,6 +219,9 @@ class WorkTimerSwitchSpec(WorkTimerStartSpec):
 
 
 class WorkSplitPart(StrictModel):
+    source_work_ref: WorkRef | None = Field(
+        default=None, description="For composite work, select a returned source component."
+    )
     start: str | None = Field(default=None, max_length=64)
     end: str | None = Field(default=None, max_length=64)
     duration_minutes: Decimal | None = Field(default=None, gt=0)
@@ -238,6 +248,7 @@ class MergeWorkSessions(WorkAttributionFields, CommandBase):
 class WorkLineageSpec(StrictModel):
     parent_refs: list[WorkRef] = Field(min_length=1, max_length=25)
     children: list[WorkSessionSpec] = Field(min_length=1, max_length=25)
+    child_source_work_refs: list[WorkRef | None] = Field(default_factory=list, max_length=25)
 
 
 class QueryWorkSessions(StrictModel):
@@ -270,7 +281,8 @@ class GetWorkContext(StrictModel):
 
 WORK_TOOL_PURPOSES = {
     "docket_split_work_session": "Split recorded work into parts without changing total work. "
-    "Use start/end for bounded work or minutes for duration-only work; breaks are inherited.",
+    "Use start/end or minutes; breaks are inherited. "
+    "For composite work select a returned source_work_ref.",
     "docket_merge_work_sessions": "Merge recorded work, preserving quantities, gaps and history. "
     "Supply overrides for conflicting attribution; source evidence is retained internally.",
     "docket_start_work_session": "Start the primary timer at its retained request time. "

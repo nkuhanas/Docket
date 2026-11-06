@@ -24,7 +24,7 @@ does not invent a payroll/banking integration or require its credentials.
 | P0a queries/export | Full-set daily/weekly/engagement/project totals, unique/overlap/unplaced/unknown coverage, stable bounded JSON/CSV exports independent of page size | Implemented: sealed revision membership, server aggregation, bounded lossless continuation; MCP and PostgreSQL checks pass |
 | Time math | UTC elapsed/break union, midnight/travel/DST folds, no fabricated bounds or period allocation | Pure math, command and aggregate/query integration checked |
 | P0b timers | Retry-stable instant, exact preview, start/pause/resume/stop/switch, restart survival; PostgreSQL single-active and races | Five named commands implemented; native/PostgreSQL races and fresh-process recovery checked; release acceptance pending |
-| P0b lineage | Atomic split/merge preserves known quantities/gaps/attribution; superseded parents excluded; stale races reject affected operation | Known interval/same-placement duration workflows and stable quantity coordinates implemented; MCP/PostgreSQL checks pass. Composite mixed/incomplete/differently dated duration lineage remains pending |
+| P0b lineage | Atomic split/merge preserves known quantities/gaps/attribution; superseded parents excluded; stale races reject affected operation | Interval/duration and mixed/incomplete/differently dated composition implemented; MCP/PostgreSQL checks pass. Full release acceptance pending |
 | P1a policies | Effective dates, exact rates/currencies, hourly/nonhourly/unpaid distinction, explicit rounding/period/limits; unknown eligibility/estimates remain partial | Pending |
 | P1a formal timesheets | Exact contributions, reporting lifecycle, immutable submitted snapshots, same-purpose duplicate-quantity protection, manual submission observations | Pending |
 | P1b claims/invoices | Stable lineage across corrections/splits, partial reservations/concurrent drafts, cancellation release, exact numbered issued snapshots, adjustments/reconciliation flags | Pending |
@@ -350,6 +350,61 @@ tables refuse downgrade; prefer a compatible forward repair. An image rollback d
 not reverse this migration or establish compatibility with newly retained work.
 Never delete work/evidence or reset the database to make rollback succeed.
 
-Composite lineage, P1a–P1c, P2, tested-image validation, reviewed publication/merge,
-deployment and the same hosted-plugin refresh remain pending. No production rows,
+At this checkpoint composite lineage, finance/intelligence and release remained
+pending. The next section records subsequent source progress. No production rows,
 OAuth grants, finance/provider effects or hosted publication changed here.
+
+### P0b: mixed precision and nested composition
+
+Mixed intervals, duration-only reports with different date placement, and incomplete
+reports now merge without discarding known quantities, dates, offsets or uncertainty.
+A composite work revision references sealed immutable source periods internally.
+Nested composition retains a finite source graph; the connected agent does not
+construct that graph. Each split part selects an ordinary source_work_ref from work
+context, optionally dividing its known bounds/minutes. Per-source and aggregate
+conservation reject duplicate/lost quantities or incomplete reports with a public
+parts error. Parents remain superseded in current totals and readable in history.
+
+Unknown total quantity stays null/omitted; known_duration_us is a partial subtotal.
+Current reports expand exact time contributions in SQL, filter each source to the
+selected period and count matching work independently of contribution count. Timed
+coverage, dated quantities, open estimates and unquantified reports remain distinct.
+An unknown component cannot erase known hours or become zero completed work.
+Normal work context reads at most five source details with explicit more coverage;
+explicit report exports include all components and original source provenance.
+
+Report calculation/export v2 adds component detail to JSON/CSV. Retained v1 reports
+remain readable and their CSV shape/content stay unchanged. Immutable source refs,
+dates and versions pin both formats through later corrections and split/merge.
+Metadata-only composite corrections reuse the source basis. A deliberate complete
+time correction can replace that reported time while retaining earlier history.
+
+Migration 20261105d4e5 adds immutable work_time_components and extends the precision
+constraint. PostgreSQL requires owned, recorded, previously sealed source revisions,
+blocks late inserts and history edits, and checks known/unknown quantities at sealing.
+There is no source-data backfill. Populated composite history refuses downgrade;
+use compatible forward repair and retained backups rather than deleting history.
+
+Evidence:
+
+- Final native gate: 212 passed in 28.53 seconds, Ruff and strict mypy passed.
+  Storage: 123 passed in 21.31 seconds; release tooling: 52 passed in 2.21 seconds,
+  both with static checks. Nine focused work/report/contract cases also passed.
+- Disposable PostgreSQL 16.9 passes fresh migration/model parity and empty rollback,
+  nested mixed-time merge, period-specific totals, preserved unknown contributions,
+  immutable/sealed composition, split recovery, existing timer/quantity races and
+  populated-downgrade refusal. Synthetic containers are removed after verification.
+- Real MCP verifies 60 timed + 90 duration-only minutes alongside an unknown report;
+  narrower reads exclude the other dates, JSON/CSV agree, corrections and nested
+  merge/split preserve quantities, and an earlier v1 CSV remains byte-identical.
+- Source discovery remains 84 tools / 56 typed effects. The thirteen work definitions
+  total 28,228 bytes; discovery is 133,893 bytes. Split input is 2,168 bytes, merge
+  2,351 bytes, largest new input 3,494 bytes. Merge derives placement rather than
+  accepting redundant date overrides; explicit corrections use work update.
+  Per-tool 4/6 KiB and full-P0 32 KiB
+  budgets remain satisfied. The 1,643-byte global instructions are unchanged.
+
+Core P0 behavior is implemented in source. P1a–P1c, P2, full release acceptance,
+tested-image validation, reviewed publication/merge, deployment and same hosted
+plugin refresh remain unfinished. This checkpoint adds no finance/provider effect
+or production-data change, and does not complete the full amendment.

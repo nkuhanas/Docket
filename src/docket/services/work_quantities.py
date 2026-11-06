@@ -12,7 +12,9 @@ from docket.models import (
     WorkQuantityOrigin,
     WorkSession,
     WorkSessionRevision,
+    WorkTimeComponent,
 )
+from docket.services.work_composition import component_quantity
 
 
 @dataclass(frozen=True)
@@ -163,6 +165,18 @@ class WorkQuantityService:
         if self.session.get(WorkQuantityBasis, revision.ref_id) is not None:
             raise ValueError("Work quantity basis already exists")
         quantity = revision.duration_us
+        has_unknown = quantity is None
+        if revision.time_precision == "composite":
+            refs = list(
+                self.session.scalars(
+                    select(WorkTimeComponent.source_revision_ref)
+                    .where(
+                        WorkTimeComponent.revision_ref == revision.ref_id,
+                    )
+                    .order_by(WorkTimeComponent.ordinal)
+                )
+            )
+            quantity, has_unknown = component_quantity(self.session, refs)
         if spans is None:
             pool = self.pool(head.ref_id)
             refs = sorted({s.origin_ref for s in pool})
@@ -206,7 +220,7 @@ class WorkQuantityService:
         basis = WorkQuantityBasis(
             revision_ref=revision.ref_id,
             status="unknown"
-            if quantity is None
+            if has_unknown
             else "review"
             if any(s.needs_review for s in spans)
             else "resolved",

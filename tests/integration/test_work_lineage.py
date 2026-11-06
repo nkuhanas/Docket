@@ -1,11 +1,13 @@
 """Real MCP lineage journeys: conserved reports, quantity identity and compact context."""
 
+import csv
+import io
 import json
 
 import pytest
 import test_native_plugin
 from sqlalchemy import func, select
-from test_work_reports import MINUTE, work_client
+from test_work_reports import MINUTE, export, work_client
 
 from docket.models import (
     Operation,
@@ -311,3 +313,176 @@ async def test_maximum_merge_uses_compact_context_and_preserves_all_quantity(
             assert session.scalar(select(func.count()).select_from(WorkLineageEdge)) == 25
         totals = await report(call)
         assert totals["totals"]["known_reported_us"] == 125 * MINUTE
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+async def test_composite_time_retains_dated_quantities_unknowns_exports_and_split(
+    session_factory, linked_plugin, monkeypatch
+):
+    async with work_client(linked_plugin) as call:
+        refs = []
+        for index, fields in enumerate(
+            (
+                {"start": "2026-11-04T10:00:00-08:00", "end": "2026-11-04T11:00:00-08:00"},
+                {"duration_minutes": 90, "work_date": "2026-11-05"},
+                {"work_date": "2026-11-06"},
+            )
+        ):
+            logged = await change(
+                call,
+                "docket_log_work_session",
+                [],
+                f"composite-{index}",
+                description=f"Example component {index}",
+                timezone="America/Los_Angeles",
+                **fields,
+            )
+            refs.append(logged["work_records"][0]["ref"])
+        with monkeypatch.context() as legacy:
+            legacy.setattr("docket.services.work_reports.CALCULATION_VERSION", "work-report-v1")
+            old_basis = await report(call)
+            old_csv, _ = await export(call, old_basis["report_cursor"], "csv")
+            assert "time_components" not in old_csv.splitlines()[0]
+        merged = await change(
+            call, "docket_merge_work_sessions", refs, "mixed-merge", work_refs=refs
+        )
+        work = merged["work_records"][0]["ref"]
+        assert merged["work_records"][0].get("duration_us") is None
+        context = await call("docket_get_work_context", {"refs": [work]})
+        state = context["objects"][0]["state"]
+        assert state["time_precision"] == "composite"
+        assert state["known_duration_us"] == 150 * MINUTE
+        assert state["has_unknown_quantity"]
+        assert {c["source_work_ref"] for c in state["time_components"]} == set(refs)
+        query = await call(
+            "docket_query_work_sessions",
+            {
+                "date_from": "2026-11-04",
+                "date_to": "2026-11-07",
+                "timezone": "America/Los_Angeles",
+                "group_by": "day",
+            },
+        )
+        assert query.get("ok"), query
+        assert query["totals"]["known_reported_us"] == 150 * MINUTE
+        assert query["totals"]["session_count"] == 1
+        assert query["totals"]["unknown_quantity_count"] == 1
+        groups = {g["bucket"]: g for g in query["groups"]}
+        assert groups["2026-11-04"]["known_reported_us"] == 60 * MINUTE
+        assert groups["2026-11-05"]["known_reported_us"] == 90 * MINUTE
+        assert groups["2026-11-06"]["unknown_quantity_count"] == 1
+        narrow = await call(
+            "docket_query_work_sessions",
+            {
+                "date_from": "2026-11-04",
+                "date_to": "2026-11-05",
+                "timezone": "America/Los_Angeles",
+            },
+        )
+        assert narrow["totals"]["known_reported_us"] == 60 * MINUTE
+        assert narrow["totals"]["unknown_quantity_count"] == 0
+        text, _ = await export(call, query["report_cursor"], "json")
+        entry = json.loads(text)["entries"][0]
+        assert entry["has_unknown_quantity"] and entry["known_duration_us"] == 150 * MINUTE
+        assert len(entry["time_components"]) == 3
+        csv_text, _ = await export(call, query["report_cursor"], "csv")
+        row = next(
+            row for row in csv.DictReader(io.StringIO(csv_text)) if row["record_type"] == "work"
+        )
+        assert len(json.loads(row["time_components"])) == 3
+        await change(
+            call,
+            "docket_update_work_session",
+            [work],
+            "mixed-description",
+            work_ref=work,
+            description="Example consolidated work",
+        )
+        split = await change(
+            call,
+            "docket_split_work_session",
+            [work],
+            "mixed-split",
+            work_ref=work,
+            parts=[{"source_work_ref": ref} for ref in refs],
+        )
+        leaves = [r for r in split["work_records"] if not r["superseded"]]
+        assert sorted(r["duration_us"] for r in leaves if r.get("duration_us") is not None) == [
+            60 * MINUTE,
+            90 * MINUTE,
+        ]
+        unknown = next(r["ref"] for r in leaves if r.get("duration_us") is None)
+        await change(
+            call,
+            "docket_update_work_session",
+            [unknown],
+            "resolve-incomplete-component",
+            work_ref=unknown,
+            duration_minutes=30,
+        )
+        current = await report(call)
+        assert current["totals"]["known_reported_us"] == 180 * MINUTE
+        assert current["totals"]["unknown_quantity_count"] == 0
+        restored_refs = [r["ref"] for r in leaves]
+        first_merge = await change(
+            call,
+            "docket_merge_work_sessions",
+            restored_refs,
+            "known-composite-again",
+            work_refs=restored_refs,
+        )
+        extra = await change(
+            call,
+            "docket_log_work_session",
+            [],
+            "nested-extra",
+            description="Example extra",
+            duration_minutes=15,
+            work_date="2026-11-07",
+        )
+        nested_refs = [first_merge["work_records"][0]["ref"], extra["work_records"][0]["ref"]]
+        nested = await change(
+            call,
+            "docket_merge_work_sessions",
+            nested_refs,
+            "nested-composite",
+            work_refs=nested_refs,
+        )
+        total = await report(call)
+        assert total["totals"]["known_reported_us"] == 195 * MINUTE
+        final_sources = [*restored_refs, extra["work_records"][0]["ref"]]
+        context = await call(
+            "docket_get_work_context", {"refs": [nested["work_records"][0]["ref"]]}
+        )
+        invalid_parts = [{"source_work_ref": ref} for ref in final_sources]
+        invalid_parts[1]["duration_minutes"] = 100
+        invalid_parts[2]["duration_minutes"] = 20
+        rejected = await call(
+            "docket_split_work_session",
+            {
+                "context_id": context["context_id"],
+                "operation_id": "invalid-component-quantity",
+                "work_ref": nested["work_records"][0]["ref"],
+                "parts": invalid_parts,
+            },
+        )
+        assert rejected["error"]["code"] == "work_lineage_invalid"
+        assert rejected["error"]["details"]["field"] == "parts"
+        separated = await change(
+            call,
+            "docket_split_work_session",
+            [nested["work_records"][0]["ref"]],
+            "nested-split",
+            work_ref=nested["work_records"][0]["ref"],
+            parts=[{"source_work_ref": ref} for ref in final_sources],
+        )
+        assert (
+            sum(r["duration_us"] for r in separated["work_records"] if not r["superseded"])
+            == 195 * MINUTE
+        )
+        retained = await call("docket_query_work_sessions", {"cursor": query["report_cursor"]})
+        assert retained["totals"]["known_reported_us"] == 150 * MINUTE
+        assert retained["totals"]["unknown_quantity_count"] == 1
+        replayed_csv, _ = await export(call, old_basis["report_cursor"], "csv")
+        assert replayed_csv == old_csv

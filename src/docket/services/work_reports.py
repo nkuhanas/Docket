@@ -31,7 +31,7 @@ from docket.services.work_attribution import WorkAttributionService, raw_time, u
 from docket.services.work_report_query import WorkReportQuery, matching, period_bounds
 
 MAX_OUTPUT = 16 * 1024
-CALCULATION_VERSION = "work-report-v1"
+CALCULATION_VERSION = "work-report-v2"
 METRICS = (
     "session_count",
     "known_quantity_count",
@@ -358,6 +358,17 @@ class WorkReportService:
             )
             assert record is not None
             spec = WorkAttributionService(self.session).revision_spec(record)
+            if spec.time.precision == "composite":
+                from docket.services.work_composition import component_quantity
+
+                known, unknown = component_quantity(self.session, spec.time.component_revision_refs)
+                state.update(
+                    known_duration_us=known,
+                    has_unknown_quantity=unknown,
+                    time_components=WorkAttributionService(self.session).component_view(
+                        spec, full=True
+                    ),
+                )
             raw = raw_time(spec.time)
             state.update({key: value for key, value in raw.items() if value is not None})
             state["breaks"] = [{"start": a, "end": b} for a, b in raw["breaks"]]
@@ -428,7 +439,7 @@ class WorkReportService:
         return output
 
     @staticmethod
-    def _csv_row(values: dict[str, Any]) -> str:
+    def _csv_row(values: dict[str, Any], fields: tuple[str, ...] = CSV_FIELDS) -> str:
         stream = io.StringIO(newline="")
         writer = csv.writer(stream, lineterminator="\n")
         writer.writerow(
@@ -436,7 +447,7 @@ class WorkReportService:
                 compact(values[key])
                 if isinstance(values.get(key), list | dict)
                 else values.get(key, "")
-                for key in CSV_FIELDS
+                for key in fields
             ]
         )
         return stream.getvalue()
@@ -446,6 +457,11 @@ class WorkReportService:
     ) -> Any:
         mode = state.mode
         metadata = base["report"]
+        fields = CSV_FIELDS + (
+            ("known_duration_us", "has_unknown_quantity", "time_components")
+            if metadata["calculation_version"] != "work-report-v1"
+            else ()
+        )
         common = {
             "report_ref": metadata["ref"],
             "date_from": metadata["date_from"],
@@ -462,14 +478,15 @@ class WorkReportService:
                 + compact(base["totals"])
                 + ',"groups":['
                 if mode == "json"
-                else ",".join(CSV_FIELDS)
+                else ",".join(fields)
                 + "\n"
                 + self._csv_row(
                     {
                         **common,
                         "record_type": "total",
                         **base["totals"],
-                    }
+                    },
+                    fields,
                 )
             )
             next_state = state.model_copy(update={"stage": 1, "offset": 0})
@@ -481,7 +498,7 @@ class WorkReportService:
                 value = (
                     ("," if state.group_after is not None else "") + compact(group)
                     if mode == "json"
-                    else self._csv_row({**common, "record_type": "group", **group})
+                    else self._csv_row({**common, "record_type": "group", **group}, fields)
                 )
                 next_state = state.model_copy(update={"group_after": group["bucket"], "offset": 0})
                 yield value, next_state
@@ -499,7 +516,7 @@ class WorkReportService:
                 value = (
                     ("," if state.work_after is not None else "") + compact(entry)
                     if mode == "json"
-                    else self._csv_row({**common, "record_type": "work", **entry})
+                    else self._csv_row({**common, "record_type": "work", **entry}, fields)
                 )
                 next_state = state.model_copy(update={"work_after": entry["ref"], "offset": 0})
                 yield value, next_state
@@ -554,7 +571,10 @@ class WorkReportService:
         else:
             report = self._capture(public)
             state = ReportCursor(report_ref=report.ref_id, mode=public.format)
-        if report.parameters_json.get("calculation_version") != CALCULATION_VERSION:
+        if report.parameters_json.get("calculation_version") not in {
+            "work-report-v1",
+            CALCULATION_VERSION,
+        }:
             raise DocketError(
                 code="work_report_calculation_unavailable",
                 message="Start a new report with the current calculation version.",

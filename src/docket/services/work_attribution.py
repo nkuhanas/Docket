@@ -26,9 +26,11 @@ from docket.models import (
     WorkSegment,
     WorkSession,
     WorkSessionRevision,
+    WorkTimeComponent,
 )
 from docket.models.base import utc_now
 from docket.schemas.work import EngagementSpec, WorkMetadata, WorkSessionSpec, WorkTimeSpec
+from docket.services.work_composition import component_leaves, component_quantity
 from docket.services.work_quantities import WorkQuantityService, WorkSpan
 
 
@@ -186,6 +188,15 @@ class WorkAttributionService:
                         }
                         for s in segments
                     ],
+                    "component_revision_refs": list(
+                        self.session.scalars(
+                            select(WorkTimeComponent.source_revision_ref)
+                            .where(
+                                WorkTimeComponent.revision_ref == row.ref_id,
+                            )
+                            .order_by(WorkTimeComponent.ordinal),
+                        )
+                    ),
                 },
             }
         )
@@ -205,6 +216,11 @@ class WorkAttributionService:
         state["duration_us"] = spec.time.duration_us
         state["revision_ref"] = revision.ref_id
         state["superseded"] = head.superseded
+        if spec.time.precision == "composite":
+            known, unknown = component_quantity(self.session, spec.time.component_revision_refs)
+            state["known_duration_us"] = known
+            state["has_unknown_quantity"] = unknown
+            state["time_components"] = self.component_view(spec, full=False)
         parent_revision = aliased(WorkSessionRevision)
         child_revision = aliased(WorkSessionRevision)
         for direction, target, selected in (
@@ -272,6 +288,31 @@ class WorkAttributionService:
                     details={"field": key},
                 )
         if isinstance(spec, WorkSessionSpec):
+            if spec.time.precision == "composite":
+                refs = spec.time.component_revision_refs
+                owned = self.session.scalars(
+                    select(WorkSessionRevision.ref_id)
+                    .join(
+                        WorkSession,
+                        WorkSession.ref_id == WorkSessionRevision.work_ref,
+                    )
+                    .where(
+                        WorkSession.operator_ref == read_operator(),
+                        WorkSessionRevision.lifecycle == "recorded",
+                        WorkSessionRevision.ref_id.in_(refs),
+                    )
+                ).all()
+                known, unknown = component_quantity(self.session, refs)
+                if (
+                    len(refs) < 2
+                    or len(set(refs)) != len(refs)
+                    or set(owned) != set(refs)
+                    or spec.time.duration_us != (None if unknown else known)
+                ):
+                    raise DocketError(
+                        code="invalid_work_components",
+                        message="Select owned, recorded source work.",
+                    )
             if spec.engagement_ref:
                 engagement = self.engagement_spec(self.head(Engagement, spec.engagement_ref))
                 if (
@@ -284,13 +325,61 @@ class WorkAttributionService:
                         message="Organization conflicts with the selected engagement.",
                         details={"field": "organization_ref"},
                     )
-            for ref in spec.source_refs:
-                if self.session.scalar(select(Source).where(Source.ref_id == ref)) is None:
+            source_refs = sorted(set(spec.source_refs))
+            for offset in range(0, len(source_refs), 1000):
+                selected = set(source_refs[offset : offset + 1000])
+                found = set(
+                    self.session.scalars(select(Source.ref_id).where(Source.ref_id.in_(selected)))
+                )
+                if found != selected:
                     raise DocketError(
                         code="invalid_work_reference",
                         message="Select retained source evidence.",
                         details={"field": "source_refs"},
                     )
+
+    def component_view(self, spec: WorkSessionSpec, *, full: bool) -> list[dict[str, Any]]:
+        rows = component_leaves(
+            self.session, spec.time.component_revision_refs, limit=None if full else 6
+        )
+        result: list[dict[str, Any]] = []
+        for row in rows if full else rows[:5]:
+            value: dict[str, Any] = {
+                "source_work_ref": row.work_ref,
+                "revision_ref": row.ref_id,
+                "time_precision": row.time_precision,
+                "duration_us": row.duration_us,
+                "timezone": row.timezone,
+                "source_method": row.source_method,
+            }
+            for key in ("work_date", "period_start", "period_end", "start_at", "end_at"):
+                item = getattr(row, key)
+                if item is not None:
+                    if isinstance(item, datetime):
+                        normalized = utc_instant(item)
+                        assert normalized is not None
+                        value[key] = normalized.isoformat()
+                    else:
+                        value[key] = item.isoformat()
+            if full:
+                value.update(
+                    description=row.description,
+                    outcome=row.outcome,
+                    uncertainty=row.uncertainty,
+                    basis_refs=row.basis_refs,
+                    source_refs=row.source_refs,
+                )
+                raw = raw_time(self.revision_spec(row).time)
+                value.update({key: item for key, item in raw.items() if item is not None})
+            result.append(value)
+        if not full and len(rows) > 5:
+            result.append(
+                {
+                    "more_components": True,
+                    "detail": "Read source work context or export the complete report.",
+                }
+            )
+        return result
 
     @staticmethod
     def check_version(head: Any, changeset: ChangeSet) -> None:
@@ -361,6 +450,11 @@ class WorkAttributionService:
         spec = WorkSessionSpec.model_validate(change.create_spec or change.payload)
         head = None
         if change.action == "create":
+            if spec.time.precision == "composite":
+                raise DocketError(
+                    code="work_transition_required",
+                    message="Use work merge to compose retained time.",
+                )
             if spec.status in {"running", "paused"} or spec.time.precision == "timer":
                 raise DocketError(
                     code="timer_command_required", message="Use the timer start command."
@@ -370,6 +464,17 @@ class WorkAttributionService:
             self.check_version(head, changeset)
             if head.superseded:
                 raise DocketError(code="work_transition_required", message="Select current work.")
+            if (
+                spec.time.precision == "composite"
+                and spec.time.model_copy(
+                    update={"timezone": self.work_spec(head).time.timezone},
+                )
+                != self.work_spec(head).time
+            ):
+                raise DocketError(
+                    code="work_transition_required",
+                    message="Use split/merge to change time composition.",
+                )
             if head.lifecycle in {"running", "paused"}:
                 previous = self.work_spec(head)
                 if (
@@ -438,6 +543,15 @@ class WorkAttributionService:
                 WorkSegment(revision_id=revision.id, ordinal=ordinal, **segment.model_dump())
             )
         session.flush()
+        for ordinal, source_ref in enumerate(spec.time.component_revision_refs):
+            session.add(
+                WorkTimeComponent(
+                    revision_ref=revision.ref_id,
+                    ordinal=ordinal,
+                    source_revision_ref=source_ref,
+                )
+            )
+        session.flush()
         quantities.record(head, revision, changeset.ref_id, spans=quantity_spans)
         self.audit(head, revision.ref_id, changeset, change)
         return [head.ref_id]
@@ -448,7 +562,18 @@ def validate_work_time(spec: WorkSessionSpec) -> None:
     value = spec.time
     work_zone(value.timezone)
     valid = True
-    if value.precision == "duration":
+    if value.precision == "composite":
+        valid = (
+            len(value.component_revision_refs) >= 2
+            and not value.segments
+            and value.start_at is None
+            and value.end_at is None
+            and value.start_offset_seconds is None
+            and value.end_offset_seconds is None
+        )
+    elif value.component_revision_refs:
+        valid = False
+    elif value.precision == "duration":
         valid = (
             value.duration_us is not None
             and value.duration_us > 0
