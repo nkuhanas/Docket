@@ -3,6 +3,8 @@
 import asyncio
 import json
 import os
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -16,6 +18,182 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+async def check_native_timers(settings, factory, principal):
+    from docket.agent_auth import AgentCallContext, agent_call_context
+    from docket.models import WorkSession, WorkSessionRevision
+    from docket.plugin.server import PluginMCP
+
+    server = PluginMCP(settings)
+    token = agent_call_context.set(AgentCallContext(principal))
+    try:
+        packet = (await server.call_tool("docket_get_work_context", {})).structured_content
+    finally:
+        agent_call_context.reset(token)
+    barrier = Barrier(2)
+
+    def run_call(name, arguments, *, synchronize=True):
+        async def invoke():
+            context = agent_call_context.set(AgentCallContext(principal))
+            try:
+                endpoint = PluginMCP(settings)
+                if synchronize:
+                    barrier.wait(timeout=10)
+                return (await endpoint.call_tool(name, arguments)).structured_content
+            finally:
+                agent_call_context.reset(context)
+
+        return asyncio.run(invoke())
+
+    start_arguments = [
+        {
+            "context_id": packet["context_id"],
+            "operation_id": f"timer-start-race-{index}",
+            "description": f"Synthetic timer start {index}",
+        }
+        for index in (1, 2)
+    ]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(
+            pool.map(lambda args: run_call("docket_start_work_session", args), start_arguments)
+        )
+    assert sum(result.get("disposition") == "committed" for result in results) == 1, results
+    rejected = next(result for result in results if result.get("ok") is False)
+    assert rejected["error"]["code"] == "primary_timer_exists", rejected
+    winner_index = next(
+        index for index, result in enumerate(results) if result.get("disposition") == "committed"
+    )
+    winner = results[winner_index]
+    old_ref = winner["work_records"][0]["ref"]
+    assert rejected["error"]["details"]["work_ref"] == old_ref
+    cold_read = """
+import asyncio, sys
+from docket.agent_auth import AgentPrincipal, AgentCallContext, agent_call_context
+from docket.config import get_settings
+from docket.database import configure_database
+from docket.plugin.server import PluginMCP
+settings = get_settings()
+configure_database(settings.database_url)
+permissions = frozenset({'read', 'stage', 'commit', 'resolve_conflict'})
+principal = AgentPrincipal(sys.argv[1], sys.argv[2], 'interactive', permissions)
+async def check():
+    token = agent_call_context.set(AgentCallContext(principal))
+    try:
+        result = (await PluginMCP(settings).call_tool(
+            'docket_get_work_context', {'refs':[sys.argv[3]]})).structured_content
+        assert result['ok'] and any(
+            item['ref'] == sys.argv[3] and item['state']['status'] == 'running'
+            for item in result['objects'])
+    finally:
+        agent_call_context.reset(token)
+asyncio.run(check())
+"""
+    cold = await asyncio.to_thread(
+        subprocess.run,
+        [sys.executable, "-c", cold_read, principal.principal_ref, principal.operator_ref, old_ref],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    if cold.returncode != 0:
+        raise AssertionError("Fresh-process timer read failed: " + cold.stderr[-1500:])
+    replay = await asyncio.to_thread(
+        run_call,
+        "docket_start_work_session",
+        start_arguments[winner_index],
+        synchronize=False,
+    )
+    assert replay.pop("replayed") and replay == winner
+    # A fresh MCP service instance observes the retained primary timer.
+    token = agent_call_context.set(AgentCallContext(principal))
+    try:
+        fresh = PluginMCP(settings)
+        packet = (
+            await fresh.call_tool("docket_get_work_context", {"refs": [old_ref]})
+        ).structured_content
+        assert any(
+            item["ref"] == old_ref and item["state"]["status"] == "running"
+            for item in packet["objects"]
+        )
+        previews = []
+        for index in (1, 2):
+            preview = (
+                await fresh.call_tool(
+                    "docket_switch_work_session",
+                    {
+                        "context_id": packet["context_id"],
+                        "operation_id": f"timer-switch-race-{index}",
+                        "from_work_ref": old_ref,
+                        "description": f"Synthetic switched timer {index}",
+                        "preview": True,
+                    },
+                )
+            ).structured_content
+            assert preview.get("disposition") == "prepared", preview
+            previews.append(preview)
+    finally:
+        agent_call_context.reset(token)
+    barrier = Barrier(2)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        switched = list(
+            pool.map(
+                lambda preview: run_call(
+                    "docket_apply_change",
+                    {
+                        "change_id": preview["change_id"],
+                    },
+                ),
+                previews,
+            )
+        )
+    assert sum(result.get("disposition") == "committed" for result in switched) == 1, switched
+    rejected = next(result for result in switched if result.get("ok") is False)
+    assert rejected["error"]["code"] in {"changeset_validation_failed", "work_version_conflict"}, (
+        rejected
+    )
+    winner = next(result for result in switched if result.get("disposition") == "committed")
+    old, new = winner["work_records"]
+    assert old["ref"] == old_ref and old["status"] == "recorded" and new["status"] == "running"
+    with factory() as session:
+        active = list(
+            session.scalars(
+                select(WorkSession).where(WorkSession.lifecycle.in_(["running", "paused"]))
+            )
+        )
+        assert len(active) == 1 and active[0].ref_id == new["ref"]
+        old_revision = session.scalar(
+            select(WorkSessionRevision).where(
+                WorkSessionRevision.work_ref == old_ref,
+                WorkSessionRevision.revision == 2,
+            )
+        )
+        new_revision = session.scalar(
+            select(WorkSessionRevision).where(
+                WorkSessionRevision.work_ref == new["ref"],
+                WorkSessionRevision.revision == 1,
+            )
+        )
+        assert old_revision.end_at == new_revision.start_at
+    token = agent_call_context.set(AgentCallContext(principal))
+    try:
+        packet = (
+            await fresh.call_tool("docket_get_work_context", {"refs": [new["ref"]]})
+        ).structured_content
+        stopped = (
+            await fresh.call_tool(
+                "docket_stop_work_session",
+                {
+                    "context_id": packet["context_id"],
+                    "operation_id": "timer-race-clean-stop",
+                    "work_ref": new["ref"],
+                },
+            )
+        ).structured_content
+        assert stopped.get("disposition") == "committed", stopped
+    finally:
+        agent_call_context.reset(token)
 
 
 async def check():
@@ -410,6 +588,7 @@ async def check():
         assert "open owned snapshot" in str(exc.orig)
     else:
         raise AssertionError("PostgreSQL appended to a sealed work report")
+    await check_native_timers(settings, factory, principal)
     changeset_ref = created["changeset_ref"]
     with factory.begin() as session:
         request_ref = session.scalar(
@@ -575,6 +754,8 @@ async def check():
                 "work_schema_roundtrip": "passed",
                 "canonical_work_retry": "passed",
                 "canonical_correction_race": "passed",
+                "native_timer_start_and_switch_races": "passed",
+                "timer_fresh_process_survival": "passed",
                 "work_report_aggregates_and_exports": "passed",
                 "retained_report_membership": "sealed",
                 "revision_immutability": "passed",

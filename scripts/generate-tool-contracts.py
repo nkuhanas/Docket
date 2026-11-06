@@ -22,6 +22,7 @@ def main() -> None:
         "Shared retraction dispatches the existing typed handler from the target reference.",
         "Identity unbinding and Calendar cancellation retain their distinct domain semantics.",
         "Compatibility aliases retain original authority/retry handling outside discovery.", "",
+        "Timer transitions also have named resume/stop tools; switching is one atomic effect.", "",
         "Conflict and attention decisions retain observed versions and exact proposals.",
         "Capture is optional. Batching remains one atomic canonical/provider transaction.",
         "Saved work retains exact historical revisions and authentic roots.", "",

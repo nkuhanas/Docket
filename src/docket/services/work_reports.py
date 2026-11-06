@@ -357,16 +357,10 @@ class WorkReportService:
                 )
             )
             assert record is not None
-            if record.time_precision != "timer":
-                spec = WorkAttributionService(self.session).revision_spec(record)
-                raw = raw_time(spec.time)
-                state.update({key: value for key, value in raw.items() if value is not None})
-                state["breaks"] = [{"start": a, "end": b} for a, b in raw["breaks"]]
-            else:
-                from docket.services.work_attribution import reported_bound
-
-                state["start"] = reported_bound(record.start_at, record.start_offset_seconds)
-                state["end"] = reported_bound(record.end_at, record.end_offset_seconds)
+            spec = WorkAttributionService(self.session).revision_spec(record)
+            raw = raw_time(spec.time)
+            state.update({key: value for key, value in raw.items() if value is not None})
+            state["breaks"] = [{"start": a, "end": b} for a, b in raw["breaks"]]
             state["changeset_ref"] = record.created_by_changeset_ref
         else:
             omitted = []

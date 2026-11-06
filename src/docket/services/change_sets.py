@@ -131,6 +131,7 @@ class ChangeSetApplicationReceipt:
     affected_refs: list[str] = field(default_factory=list)
     effects: list[ChangeSetEffectReceipt] = field(default_factory=list)
     provider_operations: list[ProviderOperationReceipt] = field(default_factory=list)
+    work_records: list[dict[str, Any]] = field(default_factory=list)
 
     def add_refs(self, refs: list[str]) -> None:
         for ref_id in refs:
@@ -154,6 +155,7 @@ class ChangeSetApplicationReceipt:
 
     def projection(self, *, limit: int = 10) -> dict[str, Any]:
         return {
+            **self.work_projection(limit=limit),
             "effects": [effect.projection() for effect in self.effects[:limit]],
             "effect_count": len(self.effects),
             "effect_counts": self._counts(self.effects, "mutation_type"),
@@ -176,6 +178,7 @@ class ChangeSetApplicationReceipt:
         """Minimal restart-safe receipt; never claims asynchronous provider completion."""
         provider_counts = self._counts(self.provider_operations, "operation_type")
         return {
+            **self.work_projection(limit=limit),
             "ok": True,
             "disposition": "committed",
             "changeset_ref": changeset_ref,
@@ -203,6 +206,12 @@ class ChangeSetApplicationReceipt:
                 "when": "provider_status_needed",
             },
         }
+
+    def work_projection(self, *, limit: int) -> dict[str, Any]:
+        return ({"work_records": self.work_records[:limit],
+                 "work_record_count": len(self.work_records),
+                 "work_records_truncated": len(self.work_records) > limit}
+                if self.work_records else {})
 
 
 _GROUP_TYPES: dict[str, frozenset[str]] = {
@@ -617,6 +626,40 @@ class ChangeSetService:
             refs = self.handlers[change.object_type](self.session, changeset, resolved_change)
             refs_by_change_id[change.change_id] = refs
             receipt.add_refs(refs)
+            if change.object_type == "work_session":
+                from docket.domain.work_time import elapsed_us
+                from docket.models import WorkSession
+                from docket.services.work_attribution import WorkAttributionService, reported_bound
+
+                work_service = WorkAttributionService(self.session)
+                for ref in refs:
+                    if not ref.startswith("work_"):
+                        continue
+                    head = work_service.head(WorkSession, ref)
+                    revision = work_service.work_revision(head)
+                    snapshot = work_service.revision_spec(revision)
+                    item = {"ref": ref, "version": head.version, "status": head.lifecycle,
+                            "superseded": head.superseded,
+                            "time_precision": snapshot.time.precision,
+                            "duration_us": snapshot.time.duration_us}
+                    for name in ("start", "end"):
+                        bound = reported_bound(getattr(snapshot.time, name + "_at"),
+                                               getattr(snapshot.time, name + "_offset_seconds"))
+                        if bound is not None:
+                            item[name] = bound
+                    if (snapshot.time.precision == "timer"
+                            and head.lifecycle in {"running", "paused"}):
+                        from docket.services.work_attribution import utc_instant
+
+                        observed = utc_instant(revision.created_at)
+                        assert observed is not None
+                        item["as_of"] = observed.isoformat()
+                        item["estimated_duration_us"] = (snapshot.time.duration_us or 0) + sum(
+                            max(0, elapsed_us(observed - segment.start_at))
+                            for segment in snapshot.time.segments
+                            if segment.kind == "active" and segment.end_at is None
+                        )
+                    receipt.work_records.append(item)
             if isinstance(change, MaterializedEventModify) and change.no_op:
                 continue
             receipt.effects.append(

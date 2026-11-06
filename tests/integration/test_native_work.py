@@ -43,7 +43,7 @@ async def test_flat_work_engagement_correction_preview_and_retry(session_factory
             return result
 
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
-        additional_bytes = 0
+        additional_bytes = p0a_bytes = 0
         for name in WORK_TOOL_PURPOSES:
             tool = tools[name]
             schema = json.dumps(tool.input_schema, separators=(",", ":")).encode()
@@ -55,7 +55,14 @@ async def test_flat_work_engagement_correction_preview_and_retry(session_factory
                                   separators=(",", ":")).encode())
             assert size <= 6144, (name, size)
             additional_bytes += size
-        assert additional_bytes <= 20 * 1024
+            if name in {
+                "docket_get_work_context", "docket_query_work_sessions", "docket_log_work_session",
+                "docket_update_work_session", "docket_create_engagement",
+                "docket_update_engagement",
+            }:
+                p0a_bytes += size
+        assert p0a_bytes <= 20 * 1024
+        assert additional_bytes <= 32 * 1024
         packet = await call("docket_get_work_context", {})
         assert packet["objects"] == []
         created = await call("docket_create_engagement", {

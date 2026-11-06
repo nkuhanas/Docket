@@ -6,7 +6,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from docket.domain.errors import DocketError
-from docket.domain.work_time import normalize_work_time
+from docket.domain.work_time import normalize_work_time, work_instant
 from docket.models import Engagement, NativeContext, WorkSession
 from docket.schemas.authority import (
     EngagementCreate,
@@ -87,6 +87,16 @@ class WorkCommandService(NativeCommandService):
                     for key, value in values.items()
                     if key in WorkTimeFields.model_fields
                 }
+                if (
+                    previous
+                    and previous.status in {"running", "paused"}
+                    and previous.time.precision == "timer"
+                    and time_patch
+                ):
+                    raise DocketError(
+                        code="timer_command_required",
+                        message="Stop the timer before correcting its bounds.",
+                    )
                 if previous and not time_patch:
                     time = previous.time
                 else:
@@ -114,6 +124,21 @@ class WorkCommandService(NativeCommandService):
                         (b["start"], b["end"]) if isinstance(b, dict) else b
                         for b in (raw["breaks"] or [])
                     ]
+                    if previous and previous.time.precision == "timer":
+                        if raw["end"] is None and raw["duration_minutes"] is None:
+                            raise DocketError(
+                                code="work_end_required",
+                                message="Provide end or duration to correct an abandoned timer.",
+                                details={"field": "end"},
+                            )
+                        if raw["end"] is not None:
+                            final = work_instant(raw["end"], raw["timezone"], "end").instant
+                            raw["breaks"] = [
+                                (a, b or raw["end"])
+                                for a, b in raw["breaks"]
+                                if b is not None
+                                or work_instant(a, raw["timezone"], "breaks.start").instant != final
+                            ]
                     time = frozen_time(normalize_work_time(**raw), raw["timezone"])
                 if time.precision == "interval":
                     # Known bounds replace earlier unbounded placement; callers need not
@@ -121,6 +146,13 @@ class WorkCommandService(NativeCommandService):
                     for key in ("work_date", "period_start", "period_end"):
                         if key not in patch:
                             fields.pop(key, None)
+                if (
+                    time_patch
+                    and previous
+                    and previous.source_method == "timer"
+                    and "source_method" not in patch
+                ):
+                    patch["source_method"] = "report"
                 work_spec = WorkSessionSpec.model_validate({**fields, **patch, "time": time})
                 service.validate_links(work_spec)
                 work_variant = WorkSessionModify if ref else WorkSessionCreate

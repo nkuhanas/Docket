@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from docket.agent_auth import agent_call_context, require_principal
 from docket.config import get_settings
 from docket.domain.errors import DocketError
-from docket.domain.work_time import WorkTime, normalize_work_time, work_zone
+from docket.domain.work_time import WorkTime, elapsed_us, normalize_work_time, work_zone
 from docket.models import (
     Affiliation,
     AuditEvent,
@@ -75,8 +75,11 @@ def utc_instant(value: datetime | None) -> datetime | None:
 
 def read_operator() -> str:
     """Internal history readers retain configured-owner scope without an agent session."""
-    return (require_principal("read").operator_ref if agent_call_context.get() is not None
-            else get_settings().canonical_operator_ref)
+    return (
+        require_principal("read").operator_ref
+        if agent_call_context.get() is not None
+        else get_settings().canonical_operator_ref
+    )
 
 
 def raw_time(value: WorkTimeSpec) -> dict[str, Any]:
@@ -199,6 +202,14 @@ class WorkAttributionService:
         state["time_precision"] = spec.time.precision
         state["duration_us"] = spec.time.duration_us
         state["revision_ref"] = revision.ref_id
+        if spec.time.precision == "timer" and spec.status in {"running", "paused"}:
+            observed = utc_now()
+            state["as_of"] = observed.isoformat()
+            state["estimated_duration_us"] = (spec.time.duration_us or 0) + sum(
+                max(0, elapsed_us(observed - segment.start_at))
+                for segment in spec.time.segments
+                if segment.kind == "active" and segment.end_at is None
+            )
         return state
 
     def validate_links(self, spec: EngagementSpec | WorkSessionSpec) -> None:
@@ -314,25 +325,47 @@ class WorkAttributionService:
         return [head.ref_id]
 
     def apply_work(self, session: Session, changeset: ChangeSet, change: Any) -> list[str]:
+        if change.mutation_type.startswith("work_timer_"):
+            from docket.services.work_timers import apply_timer
+
+            return apply_timer(self, changeset, change)
         spec = WorkSessionSpec.model_validate(change.create_spec or change.payload)
-        self.validate_links(spec)
-        work_zone(spec.time.timezone)
-        if spec.time.precision == "duration":
-            valid = (
-                spec.time.duration_us is not None and spec.time.duration_us > 0
-                and spec.time.start_at is None and spec.time.end_at is None
-                and spec.time.start_offset_seconds is None
-                and spec.time.end_offset_seconds is None and not spec.time.segments
-            )
-        else:
-            normalized = frozen_time(normalize_work_time(**raw_time(spec.time)), spec.time.timezone)
-            valid = normalized == spec.time
-        if not valid:
-            raise DocketError(
-                code="invalid_work_time_snapshot",
-                message="Work time must retain its exact normalized basis.",
-            )
+        head = None
         if change.action == "create":
+            if spec.status in {"running", "paused"} or spec.time.precision == "timer":
+                raise DocketError(
+                    code="timer_command_required", message="Use the timer start command."
+                )
+        else:
+            head = self.head(WorkSession, change.object_ref, lock=True)
+            self.check_version(head, changeset)
+            if head.superseded:
+                raise DocketError(code="work_transition_required", message="Select current work.")
+            if head.lifecycle in {"running", "paused"}:
+                previous = self.work_spec(head)
+                if (
+                    spec.time != previous.time
+                    or spec.status not in {previous.status, "retracted"}
+                    or spec.source_method != "timer"
+                ):
+                    raise DocketError(
+                        code="timer_command_required",
+                        message="Use a timer transition to change active time.",
+                    )
+        return self.persist_work(changeset, change, spec, head=head)
+
+    def persist_work(
+        self,
+        changeset: ChangeSet,
+        change: Any,
+        spec: WorkSessionSpec,
+        *,
+        head: WorkSession | None = None,
+    ) -> list[str]:
+        self.validate_links(spec)
+        validate_work_time(spec)
+        session = self.session
+        if head is None:
             head = WorkSession(
                 operator_ref=require_principal("commit").operator_ref,
                 created_by_changeset_ref=changeset.ref_id,
@@ -343,13 +376,6 @@ class WorkAttributionService:
             session.add(head)
             session.flush()
         else:
-            head = self.head(WorkSession, change.object_ref, lock=True)
-            self.check_version(head, changeset)
-            if head.superseded or head.lifecycle in {"running", "paused"}:
-                raise DocketError(
-                    code="work_transition_required",
-                    message="Use the appropriate timer or lineage operation.",
-                )
             head.version += 1
             head.updated_at = utc_now()
             head.lifecycle = spec.status
@@ -379,3 +405,85 @@ class WorkAttributionService:
         session.flush()
         self.audit(head, revision.ref_id, changeset, change)
         return [head.ref_id]
+
+
+def validate_work_time(spec: WorkSessionSpec) -> None:
+    """Validate normalized segments without reinterpreting time or inventing gaps."""
+    value = spec.time
+    work_zone(value.timezone)
+    valid = True
+    if value.precision == "duration":
+        valid = (
+            value.duration_us is not None
+            and value.duration_us > 0
+            and not value.segments
+            and value.start_at is None
+            and value.end_at is None
+            and value.start_offset_seconds is None
+            and value.end_offset_seconds is None
+        )
+    elif value.precision == "incomplete":
+        valid = all(segment.end_at is not None for segment in value.segments)
+        if valid:
+            valid = frozen_time(normalize_work_time(**raw_time(value)), value.timezone) == value
+    else:
+        timer = value.precision == "timer"
+        valid = value.start_at is not None and bool(value.segments)
+        if timer:
+            valid = (
+                valid
+                and spec.status in {"running", "paused", "retracted"}
+                and spec.source_method == "timer"
+                and value.end_at is None
+                and value.end_offset_seconds is None
+            )
+        else:
+            valid = valid and value.end_at is not None and spec.status in {"recorded", "retracted"}
+        total, cursor = 0, value.start_at
+        for index, segment in enumerate(value.segments):
+            valid = (
+                valid
+                and segment.start_at == cursor
+                and segment.start_at.tzinfo is not None
+                and abs(segment.start_offset_seconds) < 86400
+            )
+            if not valid:
+                break
+            if segment.end_at is None:
+                valid = (
+                    valid
+                    and timer
+                    and index == len(value.segments) - 1
+                    and segment.end_offset_seconds is None
+                    and (
+                        spec.status == "retracted"
+                        or segment.kind == ("active" if spec.status == "running" else "break")
+                    )
+                )
+            else:
+                valid = (
+                    valid
+                    and segment.end_at.tzinfo is not None
+                    and segment.end_at >= segment.start_at
+                    and segment.end_offset_seconds is not None
+                    and abs(segment.end_offset_seconds) < 86400
+                )
+                if not valid:
+                    break
+                if segment.kind == "active":
+                    total += elapsed_us(segment.end_at - segment.start_at)
+            cursor = segment.end_at
+        valid = (
+            valid
+            and cursor == value.end_at
+            and total == value.duration_us
+            and value.start_offset_seconds == value.segments[0].start_offset_seconds
+            and (timer or value.end_offset_seconds == value.segments[-1].end_offset_seconds)
+        )
+    if spec.status in {"running", "paused"} and value.precision != "timer":
+        valid = False
+    if not valid:
+        raise DocketError(
+            code="invalid_work_time_snapshot",
+            message="Work time must retain its exact normalized basis.",
+        )

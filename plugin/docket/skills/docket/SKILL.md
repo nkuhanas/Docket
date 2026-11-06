@@ -36,7 +36,16 @@ following next_cursor until absent. Continuation retains its original work revis
 period, timezone and calculation basis even after corrections. Use report_cursor to
 restart that same basis in another format; a fresh query observes newer revisions.
 Exports require read authority and create no claim, submission or provider effect.
-The timer-command and finance milestones are not yet advertised.
+Use `docket_start_work_session` to track current work. Pause/resume/stop take the
+selected work_ref and its context. Default transition times are retained request
+instants, including previews and unchanged retries. A preview starts no timer.
+`docket_stop_work_session` accepts an optional reported past end when the operator
+supplies it; this remains reported time. `docket_switch_work_session` atomically
+stops from_work_ref and starts the new work at one instant. An existing primary
+timer is returned rather than silently replaced. Running values are as-of estimates.
+Metadata corrections are allowed while running; ordinary bound corrections follow
+stopping. Explicit retraction can abandon a timer without inventing an end.
+The split/merge and finance milestones are not yet advertised.
 
 Use named business tools with ordinary fields. Creating a meeting takes title,
 ISO start/end, timezone and a calendar_ref from context. Docket derives its support

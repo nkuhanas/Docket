@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AwareDatetime, Field, field_validator, model_validator
 
 from docket.schemas.common import StrictModel
 from docket.schemas.native_commands import CommandBase
@@ -60,7 +60,7 @@ class UpdateEngagement(EngagementFields, CommandBase):
         return value
 
 
-class WorkMetadata(StrictModel):
+class WorkAttributionFields(StrictModel):
     outcome: str | None = Field(default=None, max_length=4000)
     category: str | None = Field(default=None, max_length=128)
     organization_ref: EntityRef | None = None
@@ -74,7 +74,6 @@ class WorkMetadata(StrictModel):
     reported_compensation_class: Literal["billable", "paid_work", "unpaid", "unknown"] | None = None
     work_mode: Literal["remote", "onsite", "travel"] | None = None
     reported_location: str | None = Field(default=None, max_length=1000)
-    source_method: Literal["report", "import", "inference"] = "report"
     uncertainty: str | None = Field(default=None, max_length=2000)
     source_refs: list[Annotated[str, Field(pattern=r"^src_[0-9A-HJKMNP-TV-Z]{26}$")]] = Field(
         default_factory=list,
@@ -83,6 +82,10 @@ class WorkMetadata(StrictModel):
     work_date: date | None = None
     period_start: date | None = None
     period_end: date | None = None
+
+
+class WorkMetadata(WorkAttributionFields):
+    source_method: Literal["report", "import", "inference"] = "report"
 
 
 class WorkBreak(StrictModel):
@@ -118,25 +121,26 @@ class UpdateWorkSession(WorkMetadata, WorkTimeFields, CommandBase):
 class WorkSegmentSpec(StrictModel):
     kind: Literal["active", "break"]
     start_at: datetime
-    end_at: datetime
+    end_at: datetime | None = None
     start_offset_seconds: int
-    end_offset_seconds: int
+    end_offset_seconds: int | None = None
 
 
 class WorkTimeSpec(StrictModel):
-    precision: Literal["interval", "duration", "incomplete"]
+    precision: Literal["interval", "duration", "incomplete", "timer"]
     timezone: str = Field(min_length=1, max_length=128)
     start_at: datetime | None = None
     end_at: datetime | None = None
     start_offset_seconds: int | None = None
     end_offset_seconds: int | None = None
     duration_us: int | None = Field(default=None, ge=0, le=2**63 - 1)
-    segments: list[WorkSegmentSpec] = Field(default_factory=list, max_length=51)
+    segments: list[WorkSegmentSpec] = Field(default_factory=list, max_length=4097)
 
 
-class WorkSessionSpec(WorkMetadata):
+class WorkSessionSpec(WorkAttributionFields):
+    source_method: Literal["report", "import", "inference", "timer"] = "report"
     description: str = Field(min_length=1, max_length=4000)
-    status: Literal["recorded", "retracted"] = "recorded"
+    status: Literal["recorded", "retracted", "running", "paused"] = "recorded"
     time: WorkTimeSpec
 
     @model_validator(mode="after")
@@ -150,6 +154,57 @@ class WorkSessionSpec(WorkMetadata):
         if self.time.precision == "interval" and (self.work_date or self.period_start):
             raise ValueError("bounded time establishes its own dates; omit work_date/period")
         return self
+
+
+class StartWorkSession(CommandBase):
+    description: str = Field(min_length=1, max_length=4000)
+    timezone: str | None = Field(default=None, max_length=128)
+    engagement_ref: EngagementRef | None = None
+    organization_ref: EntityRef | None = None
+    project_ref: EntityRef | None = None
+    item_ref: Annotated[str, Field(pattern=r"^item_[0-9A-HJKMNP-TV-Z]{26}$")] | None = None
+    task_ref: Annotated[str, Field(pattern=r"^task_[0-9A-HJKMNP-TV-Z]{26}$")] | None = None
+    event_ref: Annotated[str, Field(pattern=r"^evt_[0-9A-HJKMNP-TV-Z]{26}$")] | None = None
+    place_ref: EntityRef | None = None
+    attribution_label: str | None = Field(default=None, max_length=512)
+    category: str | None = Field(default=None, max_length=128)
+    reported_compensation_class: Literal["billable", "paid_work", "unpaid", "unknown"] | None = None
+    work_mode: Literal["remote", "onsite", "travel"] | None = None
+    reported_location: str | None = Field(default=None, max_length=1000)
+
+
+class WorkTimerTarget(CommandBase):
+    work_ref: WorkRef
+
+
+class StopWorkSession(WorkTimerTarget):
+    end: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Reported past stop timestamp; omit to use retained request time.",
+    )
+    outcome: str | None = Field(default=None, max_length=4000)
+
+
+class SwitchWorkSession(StartWorkSession):
+    from_work_ref: WorkRef
+    previous_outcome: str | None = Field(default=None, max_length=4000)
+
+
+class WorkTimerStartSpec(StrictModel):
+    effective_at: AwareDatetime
+    snapshot: WorkSessionSpec
+
+
+class WorkTimerTransitionSpec(WorkTimerStartSpec):
+    transition: Literal["pause", "resume", "stop"]
+    offset_seconds: int
+    reported_end: bool = False
+
+
+class WorkTimerSwitchSpec(WorkTimerStartSpec):
+    previous_snapshot: WorkSessionSpec
+    previous_offset_seconds: int
 
 
 class QueryWorkSessions(StrictModel):
@@ -181,6 +236,13 @@ class GetWorkContext(StrictModel):
 
 
 WORK_TOOL_PURPOSES = {
+    "docket_start_work_session": "Start the primary timer at its retained request time. "
+    "Preview and unchanged retries retain that exact instant; no calendar effect.",
+    "docket_pause_work_session": "Pause the selected running timer at the retained request time.",
+    "docket_resume_work_session": "Resume the selected paused timer at the retained request time.",
+    "docket_stop_work_session": "Stop at retained request time or a reported past end. "
+    "An outcome is optional.",
+    "docket_switch_work_session": "Stop from_work_ref and start new work atomically.",
     "docket_query_work_sessions": "Summarize actual work over the full matching set. "
     "JSON/CSV exports share the retained basis; concatenate content chunks in order. "
     "Reuse report_cursor to restart that basis in another format. "

@@ -23,7 +23,7 @@ does not invent a payroll/banking integration or require its credentials.
 | P0a reporting | Flat interval, duration-only and incomplete recording, sparse audit-preserving correction/retraction; classification/event/mode/location; field-level validation | Recording, correction and informal reporting paths checked; full release acceptance pending |
 | P0a queries/export | Full-set daily/weekly/engagement/project totals, unique/overlap/unplaced/unknown coverage, stable bounded JSON/CSV exports independent of page size | Implemented: sealed revision membership, server aggregation, bounded lossless continuation; MCP and PostgreSQL checks pass |
 | Time math | UTC elapsed/break union, midnight/travel/DST folds, no fabricated bounds or period allocation | Pure math, command and aggregate/query integration checked |
-| P0b timers | Retry-stable instant, exact preview, start/pause/resume/stop/switch, restart survival; PostgreSQL single-active and races | Pending |
+| P0b timers | Retry-stable instant, exact preview, start/pause/resume/stop/switch, restart survival; PostgreSQL single-active and races | Five named commands implemented; native/PostgreSQL races and fresh-process recovery checked; release acceptance pending |
 | P0b lineage | Atomic split/merge preserves known quantities/gaps/attribution; superseded parents excluded; stale races reject affected operation | Pending |
 | P1a policies | Effective dates, exact rates/currencies, hourly/nonhourly/unpaid distinction, explicit rounding/period/limits; unknown eligibility/estimates remain partial | Pending |
 | P1a formal timesheets | Exact contributions, reporting lifecycle, immutable submitted snapshots, same-purpose duplicate-quantity protection, manual submission observations | Pending |
@@ -231,6 +231,63 @@ image rollback does not reverse schema. Populated work report tables cannot be
 downgraded by discarding retained membership. Use a forward repair or separately
 authorized restoration if necessary.
 
-Timers/split/merge, compensation, formal timesheets/claims/invoices, expenses,
-settlement and operational views remain pending. This is source implementation
-evidence, not activation of SPEC 1.1 or completion of the full delta.
+At the query checkpoint, timers and later milestones were still pending. The
+subsequent timer slice is recorded below. This source evidence does not establish
+activation of SPEC 1.1 or completion of the full delta.
+
+### Durable primary timers
+
+Five named flat tools now start, pause, resume, stop and switch the primary timer.
+Default effective time and timezone come from the immutable authenticated request,
+so retries and delayed preview application do not recapture now. Previews include
+request/effective time and proposed timer state; a preview changes no timer. An
+explicitly reported past stop is accepted through the ordinary end field and keeps
+reported provenance. It cannot silently become a future stop or precede the retained
+current segment. Outcomes do not automatically complete linked tasks.
+
+The canonical engine has typed start/transition/switch effects. Switch performs the
+old stop and new start under one effect/transaction and one effective instant.
+PostgreSQL advisory locking plus the existing partial unique index enforce one
+primary open timer, including a paused one. Another start returns the existing
+reference and a useful context/switch action. Mutable heads and immutable revisions/
+segments persist transitions; no background process closes unattended timers.
+Metadata edits remain available while active. Explicit retraction abandons a timer
+with its unknown end retained, freeing the primary slot without fabricating work.
+An abandoned record can later be explicitly corrected into reported work with a
+known end or quantity; its earlier retracted revision and unknown end remain genuine.
+
+Compact work state/time summaries are retained in canonical commit receipts,
+including their as-of basis for running estimates. Retries recover those same
+receipts even after subsequent timer changes. The existing recording tables/index
+already support this state; no additional timer migration or authority grant is
+introduced. Split/merge lineage is still a separate pending requirement.
+
+Evidence:
+
+- Native gate: 208 cases passed in 22.80 seconds with Ruff and strict mypy.
+  Storage gate: 123 cases passed in 19.61 seconds with static checks. Focused
+  timer journeys also pass after the reported-end and receipt refinements.
+- Actual MCP journeys prove preview isolation, admitted-time equality, pause/resume
+  exclusion, atomic switch, unchanged receipt recovery, metadata edits, stale
+  proposal rejection, explicit abandonment without an invented end, and reported
+  zero-duration stopping. A DST fold case verifies independent offsets and elapsed
+  UTC quantities through pause/resume/stop.
+- Disposable PostgreSQL 16.9 proves concurrent native starts produce one primary
+  timer and a typed existing-timer result, concurrent exact switch previews produce
+  one atomic replacement and one version rejection, and old end equals new start.
+  A separate Python process recovers the running state without auto-closing it.
+  Existing schema round-trip, report/export, immutable-history, correction-race,
+  unique-index and retained-downgrade checks also pass. Only synthetic databases
+  and credentials are used; the containers are removed after verification.
+
+Current source discovery has 82 tools and 54 canonical effect variants, including
+all 47 original effects. The eleven implemented work definitions total 22,663
+compact UTF-8 bytes, below the full P0 32 KiB budget. Timer inputs are 1,982 bytes
+(start), 553 (pause/resume), 804 (stop) and 2,171 (switch); each is below 4 KiB and
+each full definition below 6 KiB. Discovery totals 128,326 bytes. P0a's six-tool
+budget and the unchanged global instruction budget remain enforced separately.
+
+The full goal remains in progress: split/merge and stable financial quantity
+lineage, compensation/formal reporting/claims/settlement, operational intelligence,
+tested-image validation, publication/merge, deployment and same-plugin refresh are
+not complete. Source evidence does not substitute for activation.

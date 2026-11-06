@@ -107,4 +107,30 @@ inside a long record; concatenation preserves every UTF-8 character and field.
 CSV contains total/group/work rows with stable references and reporting basis.
 report_cursor restarts the same retained basis; a fresh query sees later corrections.
 Read authority is sufficient. An export is neither a submitted timesheet nor a
-financial claim or provider operation. Timer commands and finance remain later milestones.
+financial claim or provider operation. Split/merge and finance remain later milestones.
+
+Current work uses a primary timer:
+
+```json
+{"context_id":"<work-context>","operation_id":"validation-start","description":"Hardware qualification","attribution_label":"Example"}
+```
+
+Call `docket_start_work_session` with that input. Docket retains the request's
+instant/timezone; optional preview/apply and unchanged retries use that same instant.
+A preview starts no timer. Work context returns the active timer, versions and
+available pause/resume/stop actions. Those commands take context_id, operation_id
+and work_ref. Stop optionally records an outcome. A reported past end timestamp
+can stop a forgotten timer without first recording an invented current end.
+
+Switch work atomically with `docket_switch_work_session`:
+
+```json
+{"context_id":"<current-work-context>","operation_id":"validation-switch","from_work_ref":"<primary-work>","description":"Second activity","previous_outcome":"Qualification recorded"}
+```
+
+The old end and new start are one retained instant. Starting while a timer is
+already running or paused returns that timer and context guidance. Pauses exclude
+time; restarts/disconnects do not end a timer. Running durations are as-of estimates.
+Metadata remains editable while active. Explicit status="retracted" abandons a
+timer and preserves its unknown end and history. Canonical receipts retain compact
+work states/times from the commit; unchanged retries recover those exact receipts.

@@ -15,8 +15,9 @@ from docket.services.business_commands import public_validation_error
 from docket.services.native_context import NativeContextService
 from docket.services.work_commands import WORK_COMMAND_MODELS, WorkCommandService
 from docket.services.work_reports import WorkReportService
+from docket.services.work_timers import TIMER_COMMAND_MODELS, WorkTimerCommandService
 
-WORK_COMMAND_TOOLS = frozenset(WORK_COMMAND_MODELS)
+WORK_COMMAND_TOOLS = frozenset(WORK_COMMAND_MODELS) | frozenset(TIMER_COMMAND_MODELS)
 
 
 def register_work(server: ProvenanceMCP, settings: Settings) -> None:
@@ -30,7 +31,12 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
                         code="request_context_required", message="Use the authenticated connection."
                     )
                 with session_scope() as session:
-                    return WorkCommandService(session, settings).perform(
+                    service = (
+                        WorkTimerCommandService
+                        if name in TIMER_COMMAND_MODELS
+                        else WorkCommandService
+                    )
+                    return service(session, settings).perform(
                         name,
                         arguments,
                         request_ref,
@@ -42,7 +48,7 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
                 return exc.as_dict()
 
         server.add_tool(
-            model_function(WORK_COMMAND_MODELS[name], name, invoke),
+            model_function(({**WORK_COMMAND_MODELS, **TIMER_COMMAND_MODELS})[name], name, invoke),
             name=name,
             description=WORK_TOOL_PURPOSES[name],
             annotations=ToolAnnotations(
@@ -53,7 +59,7 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
             ),
         )
 
-    for name in WORK_COMMAND_MODELS:
+    for name in (*WORK_COMMAND_MODELS, *TIMER_COMMAND_MODELS):
         register(name)
 
     def context(arguments: dict[str, Any]) -> dict[str, Any]:

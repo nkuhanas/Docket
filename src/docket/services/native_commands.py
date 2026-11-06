@@ -352,6 +352,7 @@ class NativeCommandService:
         self.require_replacement(arguments.get("replaces_change_id"), request_ref)
         context = NativeContextService(self.session, self.settings).require(arguments["context_id"])
         plan = build(context)
+        command_preview = plan.pop("command_preview", {})
         if arguments.get("replaces_change_id"):
             plan["assembly_scope"] = None
         request = StageChangesInput.model_validate(
@@ -364,9 +365,9 @@ class NativeCommandService:
             context=context,
             data=request,
             preview={
-                k: v
-                for k, v in arguments.items()
-                if k not in {"operation_id", "context_id", "preview"}
+                **{k: v for k, v in arguments.items()
+                   if k not in {"operation_id", "context_id", "preview"}},
+                **command_preview,
             },
             prepare=bool(arguments.get("preview")),
         )

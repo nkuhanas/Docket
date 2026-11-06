@@ -52,7 +52,15 @@ from docket.schemas.tracked_context import (
     TemporalCalendarProjectionInput,
     TemporalCalendarProjectionPatchInput,
 )
-from docket.schemas.work import EngagementRef, EngagementSpec, WorkRef, WorkSessionSpec
+from docket.schemas.work import (
+    EngagementRef,
+    EngagementSpec,
+    WorkRef,
+    WorkSessionSpec,
+    WorkTimerStartSpec,
+    WorkTimerSwitchSpec,
+    WorkTimerTransitionSpec,
+)
 
 UtteranceRef = Annotated[str, Field(pattern=r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")]
 RequestRef = Annotated[str, Field(pattern=r"^req_[0-9A-HJKMNP-TV-Z]{26}$")]
@@ -600,6 +608,36 @@ class WorkSessionModify(MutationBase):
     payload: WorkSessionSpec
 
 
+class WorkTimerStart(MutationBase):
+    mutation_type: Literal["work_timer_start"] = "work_timer_start"
+    action: Literal["create"]
+    object_type: Literal["work_session"]
+    object_ref: None = None
+    create_spec: WorkTimerStartSpec
+    payload: None = None
+
+
+
+class WorkTimerTransition(MutationBase):
+    mutation_type: Literal["work_timer_transition"] = "work_timer_transition"
+    action: Literal["update"]
+    object_type: Literal["work_session"]
+    object_ref: WorkRef
+    create_spec: None = None
+    payload: WorkTimerTransitionSpec
+
+
+
+class WorkTimerSwitch(MutationBase):
+    mutation_type: Literal["work_timer_switch"] = "work_timer_switch"
+    action: Literal["update"]
+    object_type: Literal["work_session"]
+    object_ref: WorkRef
+    create_spec: None = None
+    payload: WorkTimerSwitchSpec
+
+
+
 class ItemCreate(MutationBase):
     mutation_type: Literal["item_create"] = "item_create"
     action: Literal["create"]
@@ -1114,7 +1152,10 @@ type LaneMutation = (
 )
 type EventMutation = CanonicalEventCreate | CanonicalEventModify | CanonicalEventCancel
 type TrackedContextMutation = (
-    EngagementCreate
+    WorkTimerStart
+    | WorkTimerTransition
+    | WorkTimerSwitch
+    | EngagementCreate
     | EngagementModify
     | WorkSessionCreate
     | WorkSessionModify
@@ -1136,7 +1177,10 @@ type TrackedContextMutation = (
     | ReminderPlanRetract
 )
 type CanonicalMutation = (
-    EngagementCreate
+    WorkTimerStart
+    | WorkTimerTransition
+    | WorkTimerSwitch
+    | EngagementCreate
     | EngagementModify
     | WorkSessionCreate
     | WorkSessionModify

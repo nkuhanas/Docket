@@ -162,6 +162,9 @@ SPECIAL_TOOL_BY_MUTATION = {
     "engagement_modify": "docket_update_engagement",
     "work_session_create": "docket_log_work_session",
     "work_session_modify": "docket_update_work_session",
+    "work_timer_start": "docket_start_work_session",
+    "work_timer_transition": "docket_pause_work_session",
+    "work_timer_switch": "docket_switch_work_session",
 }
 SPECIAL_MUTATIONS = frozenset(SPECIAL_TOOL_BY_MUTATION)
 BUSINESS_DEFINITIONS = tuple(

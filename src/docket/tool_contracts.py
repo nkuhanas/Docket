@@ -9,7 +9,7 @@ from typing import Literal, TypedDict
 from docket.schemas.business import BUSINESS_DEFINITIONS, PLUGIN_COMPATIBILITY_TOOLS
 from docket.schemas.work import WORK_TOOL_PURPOSES
 
-CONTRACT_VERSION = "docket-tools-2026-11-05-v54"
+CONTRACT_VERSION = "docket-tools-2026-11-05-v55"
 ContractProfile = Literal["interactive", "triage", "plugin"]
 
 

@@ -1,7 +1,7 @@
 # Native capability disposition
 
 Generated from current canonical definitions and their native public routes.
-All 51 canonical mutation variants have an advertised route.
+All 54 canonical mutation variants have an advertised route.
 
 | Internal effect | Native business tool |
 | --- | --- |
@@ -56,10 +56,15 @@ All 51 canonical mutation variants have an advertised route.
 | `engagement_modify` | `docket_update_engagement` |
 | `work_session_create` | `docket_log_work_session` |
 | `work_session_modify` | `docket_update_work_session` |
+| `work_timer_start` | `docket_start_work_session` |
+| `work_timer_transition` | `docket_pause_work_session` |
+| `work_timer_switch` | `docket_switch_work_session` |
 
 Shared retraction dispatches the existing typed handler from the target reference.
 Identity unbinding and Calendar cancellation retain their distinct domain semantics.
 Compatibility aliases retain original authority/retry handling outside discovery.
+
+Timer transitions also have named resume/stop tools; switching is one atomic effect.
 
 Conflict and attention decisions retain observed versions and exact proposals.
 Capture is optional. Batching remains one atomic canonical/provider transaction.

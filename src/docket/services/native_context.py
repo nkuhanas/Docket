@@ -321,6 +321,10 @@ class NativeContextService:
                 actions += ["docket_resolve_attention_case"]
             if kind in {"work_session", "engagement"}:
                 actions += ["docket_update_" + kind]
+            if kind == "work_session" and row.lifecycle in {"running", "paused"}:
+                actions += ["docket_stop_work_session", "docket_switch_work_session",
+                            "docket_pause_work_session" if row.lifecycle == "running"
+                            else "docket_resume_work_session"]
             objects.append(
                 {
                     "ref": ref,
