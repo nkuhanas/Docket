@@ -1,4 +1,4 @@
-"""Derived title ownership and a shared Item → Task lock order."""
+"""Task graph → lists → Items → Tasks, followed by derived title ownership."""
 
 from typing import Any
 
@@ -6,10 +6,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from docket.models.base import utc_now
+from docket.models.google_tasks import GoogleTaskList
 from docket.models.tracked_context import Item, Task, TaskItemTitleOwnership
+from docket.services.notifications import identity_lock
+from docket.services.work_attribution import read_operator
 
 
 def lock_title_targets(session: Session, changes: list[Any]) -> None:
+    if any(change.object_type == "task" for change in changes):
+        identity_lock(session, "task-graph:" + read_operator())
     task_refs = sorted(
         {
             change.object_ref
@@ -17,6 +22,34 @@ def lock_title_targets(session: Session, changes: list[Any]) -> None:
             if change.object_type == "task" and change.object_ref
         }
     )
+    for change in changes:
+        if change.object_type == "task":
+            spec = change.create_spec if change.action == "create" else change.payload
+            if spec is not None:
+                task_refs.extend(
+                    ref
+                    for ref in (
+                        getattr(spec, "parent_task_ref", None),
+                        getattr(spec, "after_task_ref", None),
+                    )
+                    if ref
+                )
+    task_refs = sorted(set(task_refs))
+    list_refs = set(session.scalars(select(Task.task_list_ref).where(Task.ref_id.in_(task_refs))))
+    for change in changes:
+        if change.object_type == "task":
+            spec = change.create_spec if change.action == "create" else change.payload
+            ref = getattr(spec, "task_list_ref", None)
+            if ref:
+                list_refs.add(ref)
+    if any(list_refs):
+        session.scalars(
+            select(GoogleTaskList)
+            .where(GoogleTaskList.ref_id.in_(sorted(ref for ref in list_refs if ref)))
+            .order_by(GoogleTaskList.ref_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
     item_refs = {
         change.object_ref
         for change in changes
@@ -53,6 +86,14 @@ def lock_title_targets(session: Session, changes: list[Any]) -> None:
             raise DocketError(
                 code="version_conflict", message="The task's Item changed; refresh context."
             )
+    if item_refs:
+        session.scalars(
+            select(TaskItemTitleOwnership)
+            .where(TaskItemTitleOwnership.item_ref.in_(sorted(item_refs)))
+            .order_by(TaskItemTitleOwnership.item_ref)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
 
 
 def relinquish(session: Session, item_ref: str, changeset_ref: str) -> None:

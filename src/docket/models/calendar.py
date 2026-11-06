@@ -75,8 +75,7 @@ class OperationTarget(TimestampMixin, Base):
     __tablename__ = "operation_targets"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending', 'running', 'succeeded', 'failed', "
-            "'reconciliation_required')",
+            "status IN ('pending', 'running', 'succeeded', 'failed', 'reconciliation_required')",
             name="ck_operation_targets_status",
         ),
         UniqueConstraint("operation_id", "target_key", name="uq_operation_targets_key"),
@@ -110,12 +109,18 @@ class ExecutionAttempt(Base):
             name="ck_attempts_status",
         ),
         Index(
-            "uq_attempts_parent_number", "operation_id", "attempt_number", unique=True,
+            "uq_attempts_parent_number",
+            "operation_id",
+            "attempt_number",
+            unique=True,
             postgresql_where=text("operation_target_id IS NULL"),
             sqlite_where=text("operation_target_id IS NULL"),
         ),
         Index(
-            "uq_attempts_target_number", "operation_target_id", "attempt_number", unique=True,
+            "uq_attempts_target_number",
+            "operation_target_id",
+            "attempt_number",
+            unique=True,
             postgresql_where=text("operation_target_id IS NOT NULL"),
             sqlite_where=text("operation_target_id IS NOT NULL"),
         ),
@@ -176,7 +181,9 @@ class CalendarEventCache(TimestampMixin, Base):
             name="ck_calendar_event_cache_status",
         ),
         UniqueConstraint(
-            "account_id", "calendar_id", "provider_event_id",
+            "account_id",
+            "calendar_id",
+            "provider_event_id",
             name="uq_calendar_event_cache_provider_event",
         ),
         Index("ix_calendar_event_cache_timed", "account_id", "calendar_id", "start_at"),
@@ -190,6 +197,13 @@ class CalendarEventCache(TimestampMixin, Base):
     calendar_id: Mapped[str] = mapped_column(String(1024), nullable=False)
     provider_event_id: Mapped[str] = mapped_column(String(1024), nullable=False)
     event_type: Mapped[str] = mapped_column(String(32), default="unknown", nullable=False)
+    origin_kind: Mapped[str | None] = mapped_column(String(32))
+    origin_owner_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("tasks.ref_id", ondelete="RESTRICT")
+    )
+    origin_projection_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("temporal_calendar_projections.ref_id", ondelete="RESTRICT")
+    )
     snapshot_generation: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
     recurring_event_id: Mapped[str | None] = mapped_column(String(1024))
     original_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -264,7 +278,8 @@ class ScheduledNotification(TimestampMixin, Base):
             name="ck_scheduled_notifications_status",
         ),
         UniqueConstraint(
-            "reminder_plan_ref", "trigger_key",
+            "reminder_plan_ref",
+            "trigger_key",
             name="uq_scheduled_notifications_plan_trigger",
         ),
         Index("ix_scheduled_notifications_due", "status", "scheduled_for"),

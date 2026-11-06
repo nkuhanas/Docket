@@ -1585,7 +1585,10 @@ class ChangeSetService:
         from docket.services.request_interpretations import verify_draft_interpretation
 
         source_request = self.session.get(IntentSession, changeset.intent_session_id)
-        if source_request is None or source_request.source_request_ref is None:
+        if source_request is None or (
+            source_request.source_request_ref is None
+            and source_request.source_policy_effect_ref is None
+        ):
             verify_draft_interpretation(self.session, changeset)
         if pin.compiled_effect_hash is None:
             return None
@@ -1604,7 +1607,8 @@ class ChangeSetService:
     def _session_utterance_refs(self, intent_session: IntentSession) -> set[str]:
         refs = {
             ref
-            for ref in (intent_session.source_utterance_ref, intent_session.source_request_ref)
+            for ref in (intent_session.source_utterance_ref, intent_session.source_request_ref,
+                        intent_session.source_policy_effect_ref)
             if ref is not None
         }
         from docket.models import ClarificationReply
@@ -2124,6 +2128,15 @@ class ChangeSetService:
     ) -> list[dict[str, Any]]:
         errors: list[dict[str, Any]] = []
         provenance = ProvenanceRefService(self.session)
+        if intent_session.source_policy_effect_ref is not None and not require_handlers:
+            from docket.services.task_policy_authority import TaskPolicyAuthority
+
+            try:
+                TaskPolicyAuthority(self.session).require(
+                    intent_session.source_policy_effect_ref, content,
+                )
+            except DocketError as exc:
+                errors.append({"code": exc.code, "details": exc.details or {}})
         if intent_session.source_request_ref is not None:
             from docket.services.agent_requests import AgentRequestService
 
@@ -2139,7 +2152,8 @@ class ChangeSetService:
 
         errors.extend(validate_reply_effects(self.session, intent_session, content))
 
-        if intent_session.source_request_ref is None:
+        if (intent_session.source_request_ref is None
+                and intent_session.source_policy_effect_ref is None):
             errors.extend(
                 compiled_interpretation_errors(
                     self.session,
@@ -2177,6 +2191,15 @@ class ChangeSetService:
             from docket.services.task_item_titles import lock_title_targets
 
             lock_title_targets(self.session, list(content.tracked_context_changes))
+            if intent_session.source_policy_effect_ref is not None:
+                from docket.services.task_policy_authority import TaskPolicyAuthority
+
+                try:
+                    TaskPolicyAuthority(self.session).require(
+                        intent_session.source_policy_effect_ref, content, lock=True,
+                    )
+                except DocketError as exc:
+                    errors.append({"code": exc.code, "details": exc.details or {}})
         event_guard = EventScopeGuard(self.session)
         # Lock canonical targets before provider bindings, also matching auth
         # recovery's lock order. Refresh before expected-version validation.
@@ -2237,7 +2260,8 @@ class ChangeSetService:
                 session_utterance_refs=session_utterance_refs,
                 request_ref=intent_session.semantic_request_ref,
             )
-            if intent_session.source_request_ref is None
+            if (intent_session.source_request_ref is None
+                and intent_session.source_policy_effect_ref is None)
             else []
         )
         case_resolutions = AttentionCaseResolutionService(self.session)
@@ -3360,6 +3384,18 @@ class ChangeSetService:
                     code="request_authority_denied",
                     message="The authenticated request has already committed another ChangeSet.",
                 )
+        policy_effect = None
+        if request.authority_policy_effect_ref is not None:
+            from docket.services.task_policy_authority import TaskPolicyAuthority
+
+            bound_session = self.session.get(IntentSession, changeset.intent_session_id)
+            if (bound_session is None
+                    or bound_session.source_policy_effect_ref != request.authority_ref):
+                raise DocketError(
+                    code="task_sync_policy_denied",
+                    message="Select the exact admitted policy effect.",
+                )
+            policy_effect = TaskPolicyAuthority(self.session).require(request.authority_ref)
         if changeset.state == "committed":
             return changeset, ChangeSetApplicationReceipt()
         if changeset.state != "validated":
@@ -3390,7 +3426,7 @@ class ChangeSetService:
         utterance = self.session.scalar(
             select(OperatorUtterance).where(OperatorUtterance.ref_id == request.authority_ref)
         )
-        if authority_request is None and (
+        if authority_request is None and policy_effect is None and (
             utterance is None
             or utterance.actor_ref != f"discord_user:{get_settings().operator_discord_user_id}"
         ):
@@ -3401,6 +3437,8 @@ class ChangeSetService:
         content = self.verify_execution_revision(changeset)
         if content is None:
             raise migration_required()
+        if policy_effect is not None:
+            TaskPolicyAuthority(self.session).require(policy_effect.ref_id, content)
         # Revalidation may reject current preconditions, but must not rewrite
         # defaults, compiler products or provider intents from a previous turn.
         authority_refs = ProvenanceRefService(self.session).authority_root_refs(content.basis_refs)
@@ -3446,8 +3484,9 @@ class ChangeSetService:
                 event_type="changeset.committed",
                 entity_type="changeset",
                 entity_id=changeset.id,
-                actor_type="operator",
-                actor_id=get_settings().operator_discord_user_id,
+                actor_type="task_sync_policy" if policy_effect is not None else "operator",
+                actor_id=(policy_effect.policy_ref if policy_effect is not None
+                          else get_settings().operator_discord_user_id),
                 request_id=None,
                 primary_ref=changeset.ref_id,
                 affected_refs=[

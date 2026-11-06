@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import (
     JSON,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -164,6 +165,10 @@ class Task(Base):
             name="ck_tasks_completed_at",
         ),
         CheckConstraint("version >= 1", name="ck_tasks_version"),
+        CheckConstraint("reminder_generation >= 0", name="ck_tasks_reminder_generation"),
+        CheckConstraint(
+            "(remind_at IS NULL) = (reminder_timezone IS NULL)", name="ck_tasks_reminder_zone"
+        ),
         Index("ix_tasks_item_state", "item_ref", "task_state", "canonical_status"),
     )
 
@@ -176,6 +181,16 @@ class Task(Base):
     )
     title: Mapped[str] = mapped_column(String(1024), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
+    task_list_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("google_task_lists.ref_id", ondelete="RESTRICT")
+    )
+    scheduled_date: Mapped[date | None] = mapped_column(Date)
+    parent_task_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("tasks.ref_id", ondelete="RESTRICT")
+    )
+    remind_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reminder_timezone: Mapped[str | None] = mapped_column(String(128))
+    reminder_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     task_state: Mapped[str] = mapped_column(String(32), default="not_started", nullable=False)
     priority: Mapped[str] = mapped_column(String(16), default="normal", nullable=False)
     canonical_status: Mapped[str] = mapped_column(String(16), default="active", nullable=False)

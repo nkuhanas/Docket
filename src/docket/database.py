@@ -13,7 +13,9 @@ _session_factory: sessionmaker[Session] | None = None
 def configure_database(database_url: str) -> Engine:
     global _engine, _session_factory
     connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
-    _engine = create_engine(database_url, pool_pre_ping=True, connect_args=connect_args)
+    _engine = create_engine(
+        database_url, pool_pre_ping=True, connect_args=connect_args, hide_parameters=True,
+    )
     _session_factory = sessionmaker(bind=_engine, expire_on_commit=False, class_=Session)
     return _engine
 

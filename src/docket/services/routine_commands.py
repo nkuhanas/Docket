@@ -5,9 +5,10 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ValidationError
+from sqlalchemy import select
 
 from docket.domain.errors import DocketError
-from docket.models import NativeContext
+from docket.models import GoogleTaskList, NativeContext
 from docket.schemas.authority import (
     CanonicalEventCancel,
     CanonicalEventModify,
@@ -29,6 +30,7 @@ from docket.schemas.native_commands import (
 from docket.schemas.tracked_context import DateTimeTemporalValue
 from docket.services.business_commands import mutation_plan, public_validation_error
 from docket.services.native_commands import NativeCommandService, event_timing
+from docket.services.work_attribution import read_operator
 
 
 def context_object(context: NativeContext, ref: str) -> dict[str, Any]:
@@ -254,6 +256,7 @@ class RoutineCommandService(NativeCommandService):
 
         def build(context: NativeContext) -> dict[str, Any]:
             actions: list[BaseModel] = []
+            derived_refs: set[str] = set()
             task_ref = command.task_ref if isinstance(command, UpdateTask | CompleteTask) else ""
             payload = {
                 ({"notes": "description", "state": "task_state"}.get(key, key)): value
@@ -268,8 +271,25 @@ class RoutineCommandService(NativeCommandService):
                     "canonical_status",
                     "completed_at",
                     "source_refs",
+                    "task_list_ref",
+                    "scheduled_date",
+                    "parent_task_ref",
+                    "after_task_ref",
+                    "remind_at",
                 }
             }
+            if create and "task_list_ref" not in values:
+                default = self.session.scalar(select(GoogleTaskList).where(
+                    GoogleTaskList.operator_ref == read_operator(),
+                    GoogleTaskList.is_default.is_(True), GoogleTaskList.policy_mode == "two_way",
+                ))
+                if default is not None:
+                    # Resolve this once at staging. Applying a retained proposal
+                    # never consults a later default or exports older local tasks.
+                    payload["task_list_ref"] = default.ref_id
+                    derived_refs.add(default.ref_id)
+            if "remind_at" in values and values["remind_at"] is not None:
+                payload["reminder_timezone"] = values.get("timezone") or self.settings.timezone
             if isinstance(command, CompleteTask):
                 payload["task_state"] = "completed"
             if payload.get("task_state") == "completed":
@@ -402,6 +422,7 @@ class RoutineCommandService(NativeCommandService):
                 context,
                 [mutation_input_json(action, preserve_explicit_nulls=True) for action in actions],
                 name,
+                retained_refs=derived_refs,
             )
 
         return self.execute(

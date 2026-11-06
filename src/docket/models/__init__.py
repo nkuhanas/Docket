@@ -77,6 +77,18 @@ from docket.models.financial_documents import (
 )
 from docket.models.financial_observations import FinancialDocumentObservation
 from docket.models.gmail import ConnectorCheckpoint, GmailSource
+from docket.models.google_tasks import (
+    GoogleTaskList,
+    GoogleTaskObservation,
+    TaskBindingRevision,
+    TaskConflictResolution,
+    TaskListPolicyRevision,
+    TaskPolicyEffect,
+    TaskProviderBinding,
+    TaskReminderGeneration,
+    TaskSyncConflict,
+    TaskSyncState,
+)
 from docket.models.intelligence import (
     AttentionCase,
     AttentionCaseRevision,
@@ -229,6 +241,8 @@ __all__ = [
     "FinancialTransaction",
     "GatewayLifetime",
     "GmailSource",
+    "GoogleTaskList",
+    "GoogleTaskObservation",
     "IdentityBinding",
     "IdentityHandle",
     "IntentSession",
@@ -279,6 +293,14 @@ __all__ = [
     "Source",
     "StatementRelation",
     "Task",
+    "TaskBindingRevision",
+    "TaskConflictResolution",
+    "TaskListPolicyRevision",
+    "TaskPolicyEffect",
+    "TaskProviderBinding",
+    "TaskReminderGeneration",
+    "TaskSyncConflict",
+    "TaskSyncState",
     "TemporalBinding",
     "TemporalCalendarProjection",
     "ToolInvocation",

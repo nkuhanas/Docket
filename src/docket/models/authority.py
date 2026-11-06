@@ -27,8 +27,14 @@ class IntentSession(Base):
     __tablename__ = "intent_sessions"
     __table_args__ = (
         CheckConstraint(
-            "source_utterance_ref IS NOT NULL OR source_request_ref IS NOT NULL",
+            "source_utterance_ref IS NOT NULL OR source_request_ref IS NOT NULL "
+            "OR source_policy_effect_ref IS NOT NULL",
             name="ck_intent_sessions_authority_root",
+        ),
+        CheckConstraint(
+            "source_policy_effect_ref IS NULL OR "
+            "(source_request_ref IS NULL AND source_utterance_ref IS NULL)",
+            name="ck_intent_sessions_distinct_policy_root",
         ),
         Index(
             "ix_intent_sessions_conversation_semantic_state",
@@ -58,6 +64,10 @@ class IntentSession(Base):
     source_request_ref: Mapped[str | None] = mapped_column(
         ForeignKey("authenticated_requests.ref_id", ondelete="RESTRICT"),
         unique=True,
+    )
+    source_policy_effect_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("task_policy_effects.ref_id", ondelete="RESTRICT",
+                   name="fk_intent_task_policy_effect", use_alter=True), unique=True
     )
     case_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     case_revision_refs: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
@@ -603,6 +613,12 @@ def _guard_changeset_delete(
 
 
 event.listen(ChangeSet, "before_delete", _guard_changeset_delete)
+
+
+@event.listens_for(IntentSession, "before_update")
+def _retain_task_policy_source(_mapper: object, _connection: object, target: IntentSession) -> None:
+    if inspect(target).attrs.source_policy_effect_ref.history.has_changes():
+        raise ValueError("Task policy admission is an immutable service root")
 
 
 def _guard_intent_turn_enrichment(

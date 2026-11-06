@@ -74,6 +74,7 @@ HistoryObjectType = Literal[
 
 _PROVENANCE_PREFIXES = frozenset(
     {
+        "tlist", "tpol", "tobs", "tbnd", "tbrv", "tscf", "teff", "trgen",
         "fdoc", "fdrev", "clm", "ceval", "alloc", "fobs", "exp", "exrev", "exobs",
         "eng", "erev", "work", "wrev",
         "req",

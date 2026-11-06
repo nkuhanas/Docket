@@ -43,6 +43,7 @@ from docket.schemas.tracked_context import (
     TemporalCalendarProjectionInput,
     TemporalCalendarProjectionPatchInput,
 )
+from docket.services.task_fields import TaskFieldService
 from docket.services.task_item_titles import relinquish, title_relationship
 
 TrackedContextHandler = Callable[[Session, ChangeSet, Any], list[str]]
@@ -1007,10 +1008,16 @@ class TrackedContextService:
             if exact_source_replays:
                 return [exact_source_replays[0].ref_id]
             provenance = self._provenance(changeset, change)
+            task_fields, _after = TaskFieldService(self.session).values(spec, None)
             task = Task(
                 item_ref=spec.item_ref,
                 title=spec.title,
                 description=spec.description,
+                task_list_ref=task_fields.get("task_list_ref"),
+                scheduled_date=spec.scheduled_date,
+                parent_task_ref=spec.parent_task_ref,
+                remind_at=task_fields.get("remind_at"),
+                reminder_timezone=task_fields.get("reminder_timezone"),
                 task_state=spec.task_state,
                 priority=spec.priority,
                 canonical_status=spec.canonical_status,
@@ -1034,9 +1041,11 @@ class TrackedContextService:
             task = self._task(change.object_ref)
             if change.action == "retract":
                 task.canonical_status = "retracted"
+                task.remind_at = None
+                task.reminder_timezone = None
             elif change.action == "update":
                 patch = TaskPatchInput.model_validate(change.payload)
-                values = patch.model_dump(exclude_unset=True)
+                values, _after = TaskFieldService(self.session).values(patch, task)
                 if values.get("item_ref") is not None:
                     self._item(values["item_ref"])
                     if values["item_ref"] != task.item_ref:

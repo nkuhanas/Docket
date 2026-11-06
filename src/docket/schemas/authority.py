@@ -1789,16 +1789,24 @@ class ChangeSetCommit(StrictModel):
     idempotency_key: str = Field(min_length=8, max_length=512)
     authority_utterance_ref: UtteranceRef | None = None
     authority_request_ref: RequestRef | None = None
+    authority_policy_effect_ref: (
+        Annotated[str, Field(pattern=r"^teff_[0-9A-HJKMNP-TV-Z]{26}$")] | None
+    ) = None
 
     @property
     def authority_ref(self) -> str:
-        value = self.authority_request_ref or self.authority_utterance_ref
+        value = (self.authority_policy_effect_ref
+                 or self.authority_request_ref or self.authority_utterance_ref)
         if value is None:
             raise ValueError("Commit requires an authority root")
         return value
 
     @model_validator(mode="after")
     def authority_is_present(self) -> ChangeSetCommit:
+        if self.authority_policy_effect_ref and (
+            self.authority_request_ref or self.authority_utterance_ref
+        ):
+            raise ValueError("Policy admission and user authority are distinct roots")
         _ = self.authority_ref
         return self
 

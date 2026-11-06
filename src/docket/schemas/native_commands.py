@@ -3,11 +3,11 @@
 from datetime import date
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import AwareDatetime, Field, field_validator
 
 from docket.schemas.calendar import CalendarRecurrenceInput
 from docket.schemas.common import StrictModel
-from docket.schemas.tracked_context import TaskPriority, TaskState
+from docket.schemas.tracked_context import TaskListRef, TaskPriority, TaskRef, TaskState
 
 ContextId = Annotated[str, Field(pattern=r"^nctx_[0-9A-HJKMNP-TV-Z]{26}$")]
 OperationId = Annotated[
@@ -56,7 +56,6 @@ class CreateEvent(CommandBase):
 
 
 EventRef = Annotated[str, Field(pattern=r"^evt_[0-9A-HJKMNP-TV-Z]{26}$")]
-TaskRef = Annotated[str, Field(pattern=r"^task_[0-9A-HJKMNP-TV-Z]{26}$")]
 ItemRef = Annotated[str, Field(pattern=r"^item_[0-9A-HJKMNP-TV-Z]{26}$")]
 ChangeId = Annotated[str, Field(pattern=r"^prep_[0-9A-HJKMNP-TV-Z]{26}$")]
 
@@ -107,6 +106,11 @@ class CreateTask(CommandBase):
     due: str | None = Field(default=None, max_length=64)
     timezone: str | None = Field(default=None, max_length=128)
     item_ref: ItemRef | None = None
+    task_list_ref: TaskListRef | None = None
+    scheduled_date: date | None = None
+    parent_task_ref: TaskRef | None = None
+    after_task_ref: TaskRef | None = None
+    remind_at: AwareDatetime | None = None
 
 
 class UpdateTask(CommandBase):
@@ -121,6 +125,11 @@ class UpdateTask(CommandBase):
     canonical_status: Literal["active", "historical", "retracted"] | None = None
     completed_at: str | None = Field(default=None, max_length=64)
     source_refs: list[Annotated[str, Field(pattern=r"^src_[0-9A-HJKMNP-TV-Z]{26}$")]] | None = None
+    task_list_ref: TaskListRef | None = None
+    scheduled_date: date | None = None
+    parent_task_ref: TaskRef | None = None
+    after_task_ref: TaskRef | None = None
+    remind_at: AwareDatetime | None = None
 
 
 class CompleteTask(CommandBase):

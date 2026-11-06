@@ -5,12 +5,13 @@ from datetime import UTC, date, datetime, time
 from typing import Annotated, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import AwareDatetime, Field, field_validator, model_validator
 
 from docket.schemas.common import StrictModel, validate_refs
 
 ItemRef = Annotated[str, Field(pattern=r"^item_[0-9A-HJKMNP-TV-Z]{26}$")]
 TaskRef = Annotated[str, Field(pattern=r"^task_[0-9A-HJKMNP-TV-Z]{26}$")]
+TaskListRef = Annotated[str, Field(pattern=r"^tlist_[0-9A-HJKMNP-TV-Z]{26}$")]
 TemporalBindingRef = Annotated[str, Field(pattern=r"^time_[0-9A-HJKMNP-TV-Z]{26}$")]
 EventRef = Annotated[str, Field(pattern=r"^evt_[0-9A-HJKMNP-TV-Z]{26}$")]
 EntityRef = Annotated[str, Field(pattern=r"^ent_[0-9A-HJKMNP-TV-Z]{26}$")]
@@ -295,6 +296,12 @@ class TaskInput(StrictModel):
     item_change_id: str | None = Field(default=None, min_length=1, max_length=128)
     title: str = Field(min_length=1, max_length=1024)
     description: str | None = Field(default=None, max_length=16_000)
+    task_list_ref: TaskListRef | None = None
+    scheduled_date: date | None = None
+    parent_task_ref: TaskRef | None = None
+    after_task_ref: TaskRef | None = None
+    remind_at: AwareDatetime | None = None
+    reminder_timezone: str | None = Field(default=None, max_length=128)
     task_state: TaskState = "not_started"
     priority: TaskPriority = "normal"
     canonical_status: CanonicalStatus = "active"
@@ -320,6 +327,12 @@ class TaskPatchInput(StrictModel):
     item_change_id: str | None = Field(default=None, min_length=1, max_length=128)
     title: str | None = Field(default=None, min_length=1, max_length=1024)
     description: str | None = Field(default=None, max_length=16_000)
+    task_list_ref: TaskListRef | None = None
+    scheduled_date: date | None = None
+    parent_task_ref: TaskRef | None = None
+    after_task_ref: TaskRef | None = None
+    remind_at: AwareDatetime | None = None
+    reminder_timezone: str | None = Field(default=None, max_length=128)
     task_state: TaskState | None = None
     priority: TaskPriority | None = None
     canonical_status: CanonicalStatus | None = None

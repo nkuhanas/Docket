@@ -1,0 +1,159 @@
+{
+  "phase": "R0",
+  "status": "archive and isolated inventory verified; unique-record disposition pending",
+  "project": "docket-workspace-eval",
+  "containers": [
+    {
+      "name": "docket-workspace-eval-docket-1",
+      "image": "docket-workspace-eval:local",
+      "state": "exited",
+      "mounts": [
+        {
+          "Type": "bind",
+          "Name": null,
+          "Destination": "/run/docket-secrets"
+        }
+      ]
+    },
+    {
+      "name": "docket-workspace-eval-nocodb-worker-1",
+      "image": "nocodb/nocodb:2026.09.0@sha256:4ccfc5114506b1725ffc63be56445fc6fe453a6e6d5cb56eb5f88f0540d4e56e",
+      "state": "exited",
+      "mounts": [
+        {
+          "Type": "volume",
+          "Name": "docket-workspace-eval_nocodb-data",
+          "Destination": "/usr/app/data"
+        }
+      ]
+    },
+    {
+      "name": "docket-workspace-eval-nocodb-1",
+      "image": "nocodb/nocodb:2026.09.0@sha256:4ccfc5114506b1725ffc63be56445fc6fe453a6e6d5cb56eb5f88f0540d4e56e",
+      "state": "exited",
+      "mounts": [
+        {
+          "Type": "volume",
+          "Name": "docket-workspace-eval_nocodb-data",
+          "Destination": "/usr/app/data"
+        }
+      ]
+    },
+    {
+      "name": "docket-workspace-eval-metadata-1",
+      "image": "postgres:16.9-bookworm",
+      "state": "exited",
+      "mounts": [
+        {
+          "Type": "volume",
+          "Name": "docket-workspace-eval_metadata-data",
+          "Destination": "/var/lib/postgresql/data"
+        }
+      ]
+    },
+    {
+      "name": "docket-workspace-eval-redis-1",
+      "image": "redis:7.4.5-alpine",
+      "state": "exited",
+      "mounts": [
+        {
+          "Type": "volume",
+          "Name": "34086db380e4c060f45e73f50b4ee6d421e4fecbd9881a9e38998426e7e71b8b",
+          "Destination": "/data"
+        }
+      ]
+    },
+    {
+      "name": "docket-workspace-eval-postgres-1",
+      "image": "postgres:16.9-bookworm",
+      "state": "exited",
+      "mounts": [
+        {
+          "Type": "volume",
+          "Name": "docket-workspace-eval_canonical-data",
+          "Destination": "/var/lib/postgresql/data"
+        }
+      ]
+    }
+  ],
+  "archives": [
+    {
+      "volume": "docket-workspace-eval_canonical-data",
+      "archive": "docket-workspace-eval_canonical-data.tar.gz.aes256gcm",
+      "ciphertext_sha256": "d3a7bdeeefd06d15568bc18e753716b8f5136dc8476db88cb062dd61896e946d",
+      "ciphertext_bytes": 15594046,
+      "authenticated_decryption_and_tar_verified": true,
+      "files": 1779,
+      "uncompressed_file_bytes": 72197919
+    },
+    {
+      "volume": "docket-workspace-eval_metadata-data",
+      "archive": "docket-workspace-eval_metadata-data.tar.gz.aes256gcm",
+      "ciphertext_sha256": "999c1a2a28f637655564562892d8f26b469b753263cb718fa947b6f8aa53a850",
+      "ciphertext_bytes": 9104069,
+      "authenticated_decryption_and_tar_verified": true,
+      "files": 2287,
+      "uncompressed_file_bytes": 75432248
+    },
+    {
+      "volume": "docket-workspace-eval_nocodb-data",
+      "archive": "docket-workspace-eval_nocodb-data.tar.gz.aes256gcm",
+      "ciphertext_sha256": "7d939583633d1ac4e0b59ad4b94cc1a7ae431965c45e9262b77b361b2e81e178",
+      "ciphertext_bytes": 157,
+      "authenticated_decryption_and_tar_verified": true,
+      "files": 0,
+      "uncompressed_file_bytes": 0
+    }
+  ],
+  "isolated_postgresql_restores_verified": 2,
+  "temporary_inspection_resources_removed": true,
+  "production_rows_changed": false,
+  "original_volumes_changed": false,
+  "canonical_identity_comparison": [
+    {
+      "table": "items",
+      "archived_rows": 11,
+      "same_identity_same_fields": 0,
+      "same_identity_changed_fields": 0,
+      "identity_absent_from_current": 11
+    },
+    {
+      "table": "tasks",
+      "archived_rows": 9,
+      "same_identity_same_fields": 0,
+      "same_identity_changed_fields": 0,
+      "identity_absent_from_current": 9
+    },
+    {
+      "table": "temporal_bindings",
+      "archived_rows": 16,
+      "same_identity_same_fields": 0,
+      "same_identity_changed_fields": 0,
+      "identity_absent_from_current": 16
+    },
+    {
+      "table": "entities",
+      "archived_rows": 2,
+      "same_identity_same_fields": 0,
+      "same_identity_changed_fields": 0,
+      "identity_absent_from_current": 2
+    },
+    {
+      "table": "operator_utterances",
+      "archived_rows": 5,
+      "same_identity_same_fields": 0,
+      "same_identity_changed_fields": 0,
+      "identity_absent_from_current": 5
+    },
+    {
+      "table": "change_sets",
+      "archived_rows": 3,
+      "same_identity_same_fields": 0,
+      "same_identity_changed_fields": 0,
+      "identity_absent_from_current": 3
+    }
+  ],
+  "private_recovery_directory": ".runtime/nocodb-retirement",
+  "private_archive_key": "secrets/local/nocodb-retirement-archive.key",
+  "private_content_in_this_evidence": false
+}

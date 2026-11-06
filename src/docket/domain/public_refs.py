@@ -17,6 +17,14 @@ class PublicRefDefinition:
 
 
 _DEFINITIONS = (
+    PublicRefDefinition("tlist", "GoogleTaskList"),
+    PublicRefDefinition("tpol", "TaskListPolicyRevision"),
+    PublicRefDefinition("tobs", "GoogleTaskObservation"),
+    PublicRefDefinition("tbnd", "TaskProviderBinding"),
+    PublicRefDefinition("tbrv", "TaskBindingRevision"),
+    PublicRefDefinition("tscf", "TaskSyncConflict"),
+    PublicRefDefinition("teff", "TaskPolicyEffect"),
+    PublicRefDefinition("trgen", "TaskReminderGeneration"),
     PublicRefDefinition("pay", "Payment"),
     PublicRefDefinition("ftxn", "FinancialTransaction"),
     PublicRefDefinition("fent", "FinancialEntry"),

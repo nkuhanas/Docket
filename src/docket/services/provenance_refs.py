@@ -39,6 +39,8 @@ from docket.models import (
     FinancialDocumentRevision,
     FinancialEntry,
     FinancialTransaction,
+    GoogleTaskList,
+    GoogleTaskObservation,
     IdentityHandle,
     IntentSession,
     IntentTurn,
@@ -58,6 +60,12 @@ from docket.models import (
     SemanticRequestAttempt,
     Source,
     Task,
+    TaskBindingRevision,
+    TaskListPolicyRevision,
+    TaskPolicyEffect,
+    TaskProviderBinding,
+    TaskReminderGeneration,
+    TaskSyncConflict,
     TemporalBinding,
     TemporalCalendarProjection,
     ToolInvocation,
@@ -72,6 +80,7 @@ from docket.models import (
 
 PROVENANCE_PREFIXES = frozenset(
     {
+        "tlist", "tpol", "tobs", "tbnd", "tbrv", "tscf", "teff", "trgen",
         "pay", "ftxn", "fent",
         "fdoc", "fdrev", "clm", "ceval", "alloc", "fobs", "exp", "exrev", "exobs",
         "eng", "erev", "work", "wrev", "wrec", "wcal", "wcrv",
@@ -119,6 +128,14 @@ PROVENANCE_PREFIXES = frozenset(
 )
 
 _PHASE_TWO_MODELS: dict[str, type[Any]] = {
+    "tlist": GoogleTaskList,
+    "tpol": TaskListPolicyRevision,
+    "tobs": GoogleTaskObservation,
+    "tbnd": TaskProviderBinding,
+    "tbrv": TaskBindingRevision,
+    "tscf": TaskSyncConflict,
+    "teff": TaskPolicyEffect,
+    "trgen": TaskReminderGeneration,
     "wrec": WorkloadReconciliation,
     "wcal": WorkCalendarProjection,
     "wcrv": WorkCalendarRevision,
@@ -272,6 +289,30 @@ class ProvenanceRefService:
                 )
             else:
                 WorkAttributionService(self.session).head(type(item), item.ref_id)
+        if isinstance(item, GoogleTaskList | TaskListPolicyRevision):
+            from docket.services.work_attribution import read_operator
+
+            if item.operator_ref != read_operator():
+                raise DocketError(
+                    code="task_basis_unavailable", message="Select owned task records."
+                )
+        elif isinstance(item, GoogleTaskObservation | TaskProviderBinding
+                        | TaskBindingRevision | TaskSyncConflict | TaskPolicyEffect):
+            if isinstance(item, TaskPolicyEffect):
+                policy = self.session.get(TaskListPolicyRevision, item.policy_ref)
+                list_ref = policy.task_list_ref if policy else None
+            elif isinstance(item, TaskSyncConflict):
+                binding = self.session.get(TaskProviderBinding, item.binding_ref)
+                list_ref = binding.task_list_ref if binding else None
+            else:
+                list_ref = item.task_list_ref
+            listing = self.session.get(GoogleTaskList, list_ref) if list_ref else None
+            from docket.services.work_attribution import read_operator
+
+            if listing is None or listing.operator_ref != read_operator():
+                raise DocketError(
+                    code="task_basis_unavailable", message="Select owned task records."
+                )
         return item
 
     def require_all(self, refs: Iterable[str]) -> list[Any]:
@@ -306,6 +347,10 @@ class ProvenanceRefService:
             elif isinstance(item, EngagementRevision | WorkSessionRevision):
                 stack.extend(item.basis_refs)
                 stack.append(item.created_by_changeset_ref)
+            elif isinstance(item, TaskPolicyEffect):
+                # This is a bounded service root. The authority engine separately
+                # verifies its exact effects and current standing policy.
+                utterance_refs.add(item.ref_id)
             elif isinstance(item, OperatorUtterance | AuthenticatedRequest):
                 utterance_refs.add(item.ref_id)
             elif isinstance(item, InterpretedStatement):
@@ -325,7 +370,8 @@ class ProvenanceRefService:
                 stack.extend(item.incoming_statement_refs)
             elif isinstance(item, IntentSession):
                 stack.extend(
-                    ref for ref in (item.source_utterance_ref, item.source_request_ref) if ref
+                    ref for ref in (item.source_utterance_ref, item.source_request_ref,
+                                    item.source_policy_effect_ref) if ref
                 )
             elif isinstance(item, IntentTurn):
                 stack.extend(ref for ref in (item.utterance_ref, item.request_ref) if ref)
