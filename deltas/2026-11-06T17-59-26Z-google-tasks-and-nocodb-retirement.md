@@ -19,6 +19,16 @@ with another self-hosted table UI. Rich organizations, projects, work, compensat
 and financial records stay in Docket and remain accessible through MCP and exports;
 Google Tasks is a task interface, not a replacement for every relational table.
 
+Use scheduled dates for the Google task interface and leave Google's separate
+Deadline feature unused. Exact-time notifications in Google's UI are a distinct
+capability from its date-only public API. Existing Docket deadlines remain valid,
+but neither creating a Google task nor requesting a reminder requires one.
+
+The architectural review is incorporated below: the complete Task/Item title
+path, ownership of automatically derived Item titles, explicit deletion-policy
+consequences, transport-only creation markers and per-operation G0 activation
+evidence. These amendments refine this proposal without adopting or implementing it.
+
 The Operator additionally requests a clean break without legacy compatibility.
 Remove the fifteen hidden native MCP compatibility aliases retained by the prior
 catalogue consolidation and visibility extension as part of this release. Keep their underlying domain
@@ -37,6 +47,7 @@ and release authority applies; add no Discord, ledger or repeated approval gate.
 | Surface | Present | Required extension |
 | --- | --- | --- |
 | Canonical `Task` | Stable `task_`, required Item link, title/notes, five task states, priority, completion time, provenance and version | Reuse it; add typed scheduled date and task hierarchy rather than another task registry |
+| Required Item/title path | Both Task and Item columns and their create/patch inputs currently limit titles to 512; auto-derived Item creation copies the Task title | Widen the entire path to 1,024 before G1; record explicit title ownership for newly auto-derived Items |
 | Native task commands | Flat create/update; completion through update; shared logical retraction; due time derived internally | Add small scheduling/list/hierarchy fields and derive Google effects internally |
 | Due time | `TemporalBinding(role="due_by")` supports Docket deadlines | Keep distinct from Google's scheduled day and from time spent working |
 | Provider account | Existing Google account, capabilities and protected credential reference | Add Tasks capabilities and scope readiness without duplicating account identity |
@@ -65,7 +76,7 @@ changes. Ordinary work does not require learning import graphs or provider IDs.
 | --- | --- |
 | “Use my Personal Google list for new tasks.” | Bind the selected existing list and set its explicit default; show import scope and last successful scan |
 | “Add renew passport to Personal for Friday.” | One canonical Task and derived Item if needed; Friday is its scheduled date; one queued Google create |
-| “Finish the report by Friday at 3 PM.” | Preserve the exact Docket deadline and zone; when publishing to Google, use Friday as the ordinary visibility-day default without claiming Google stores the deadline clock |
+| “Remind me about the report Friday at 5 PM.” | Google receives Friday's scheduled day; a requested Docket follow-up retains 5 PM and uses its configured inbox/delivery route, without creating a deadline or claiming a Google-native timed alert |
 | “Bring in my Work list.” | Import eligible tasks under that list's admitted sync policy; retain original source identity and flag possible matches to existing records |
 | “I checked that off on my phone.” | The next successful poll imports completion once; an explicit refresh can request a sooner check |
 | “Reopen it; move it to next Monday.” | Reopen the same canonical task and update its scheduled day without replacing its identity |
@@ -86,6 +97,14 @@ links. Its scheduled value cannot carry a clock time or a deadline. It has no
 documented writable recurrence, reminder or priority field. Treat unsupported
 first-party features as unobserved; never clear them through full-resource writes.
 Assigned tasks have additional restrictions and remain observation-only initially.
+
+Google's [UI documentation](https://support.google.com/tasks/answer/7675838)
+supports a scheduled date/time with a notification at that time, separately from
+its Deadline feature. The public Tasks API still cannot read or write that
+scheduled clock time. Avoiding Deadline is the chosen product behavior; it does
+not make a 5 PM Google-native alert programmable through this API. A time set in
+Google's UI stays unobserved by the adapter. Sparse updates and G0 checks must
+prevent unsupported assumptions about preserving or changing it.
 
 The [list method](https://developers.google.com/workspace/tasks/reference/rest/v1/tasks/list)
 is paginated, with at most 100 tasks per page and an `updatedMin` filter.
@@ -150,6 +169,22 @@ new tasks. In two-way mode it explicitly permits importing supported task fields
 and confirmed per-task lifecycle changes. Polling performs no inference and gains
 no authority to edit other lists, organizations, work sessions or money.
 
+The `two_way` mode description, task-list context and configuration receipt must
+plainly state that Google deletion can retract the linked canonical Task. Use the
+following fixed lifecycle semantics, rather than adding another policy grammar:
+
+| Operator action | Canonical consequence |
+| --- | --- |
+| Complete in Google | Complete the linked Task once, retaining valid completion evidence |
+| Delete in Google under two-way policy | Retract the unchanged linked Task and retain history; pending local edits create a conflict |
+| Detach the Google representation | Preserve both records and suppress automatic relinking |
+| Disable list synchronization | Preserve canonical tasks and suspend further sync under that policy |
+
+These consequences are visible when configuring the list; they introduce no
+per-deletion approval prompt. Disabling/detaching stops new affected dispatches
+and imports at the recorded policy boundary. Requests already transmitted may
+finish and require honest outcome reconciliation; do not claim they were unsent.
+
 Workers retain the policy revision, provider observation and authenticated policy
 root behind imported ChangeSets. They do not fabricate a live-user request or
 utterance for every poll. Extend the authority engine's typed service admission
@@ -169,7 +204,35 @@ services. Add `scheduled_date: date | null` and `parent_task_ref: TaskRef | null
 with owner, cycle and active-parent validation. Preserve true deadlines in the
 existing `due_by` bindings. Provider sibling order is a projection concern, not
 an inferred priority or dependency graph. Widen canonical Task titles to 1,024
-characters so valid imported titles are not truncated; update all affected inputs.
+characters so valid imported titles are not truncated. The required Item path is
+part of the same G1 prerequisite: widen `Item.title` as well as `Task.title`,
+their database columns and applicable constraints, `ItemInput`/`ItemPatchInput`,
+`TaskInput`/`TaskPatchInput`, native and generated Item/Task contracts, and canonical
+create/modify validation. Check derived Item compilation, import validation,
+context/query/history/export and subsequent synchronization against the full
+title. Widening only Task is insufficient: an imported 900-character title must
+not fail while constructing its required Item. Do not truncate, hash or substitute
+a placeholder title to bypass the model mismatch.
+
+Automatically derived Items have a typed, service-owned title-ownership marker
+tied to their Task/Item pair and recorded creation provenance. While that Item is
+exclusively title-owned by the Task, a task rename, including a Google import,
+updates both titles in the same canonical transaction with normal versions/audit.
+The agent supplies no companion Item mutation or ownership selector.
+
+An explicit independent Item-title edit relinquishes title ownership, even if the
+new text happens to be equal. Sharing that Item with another Task or relinking the
+owning Task also ends the old title ownership. Existing independently selected or
+shared Items are never task-owned by default. Unrelated Item-field edits do not
+overwrite those fields or require the agent to repair a title graph.
+
+Lock/version the Task, ownership state and Item in a consistent order. A concurrent
+independent Item-title edit cannot be overwritten by a delayed Google task rename.
+Retain ownership transitions in canonical history and expose the relationship in
+bounded Task/Item reads once titles are independent. Do not infer historical title
+ownership from matching titles, `kind="work.task"` or a sole current relationship;
+old unmarked pairs remain independent unless provenance or explicit new intent
+establishes ownership. This is a domain distinction, not a legacy dispatch path.
 
 | Meaning | Docket | Google projection/import rule |
 | --- | --- | --- |
@@ -177,6 +240,7 @@ characters so valid imported titles are not truncated; update all affected input
 | Notes | Existing description, up to 16,000 characters | Preserve full canonical text; Google has a smaller field limit, so report a blocked notes projection rather than silently truncate |
 | Scheduled day | New date-only field | Map Google's `due` calendar-date component directly, without UTC-to-local day shifting |
 | Deadline | Existing date/datetime `due_by` | Never overwrite it with a Google scheduled day; no invented midnight or lost deadline clock |
+| Timed reminder | Existing explicit-instant operational reminder, extended to Task subjects | Deliver through the configured Docket inbox/notification route; no Google-native time/Deadline write is claimed |
 | Open status | not_started / in_progress / blocked | All project to `needsAction`; an unchanged Google open status does not reset Docket's richer state |
 | Completion | completed plus exact completion basis | Project/import completion; repeated observations do not rewrite completion time |
 | Reopening | Nonterminal canonical state | A genuine completed → open transition reopens; default to not_started, while retaining history |
@@ -185,13 +249,13 @@ characters so valid imported titles are not truncated; update all affected input
 | Deleted/hidden | Distinct lifecycle observations | Hiding preserves completion/history; confirmed deletion is handled separately below |
 
 Scheduling a task does not allocate a duration, reserve capacity, create a Calendar
-Event or set a financial reporting deadline. An agent can set a scheduled day and
-a true deadline together. For a newly published deadline request, using that
-deadline's local date as the Google visibility day is a reasonable agent default;
-it is not evidence of a reserved work block or a second exact deadline. The
-operator need not articulate two date semantics for a routine request. A later
-Google date edit changes only the scheduled/display day, never the true deadline.
-Omission is useful and does not create a clarification ceremony.
+Event or set a financial reporting deadline. The normal Google task path uses
+scheduled/display dates and leaves Google's Deadline feature unused. Do not
+automatically create a Docket `due_by` binding as a workaround for a scheduled
+task or a timed reminder. Existing or explicitly requested Docket obligations
+retain their independent deadlines and precision. A later Google date edit changes
+only the scheduled/display day. Omission is useful and does not create a date-type
+clarification ceremony for a routine task request.
 
 Represent list policy, provider task binding, retained observations, sync state and
 field baselines as typed storage. Reuse the Google ProviderAccount. Bind one active
@@ -315,18 +379,58 @@ repeating an HTTP insert is safe.
 Before create dispatch, persist a creation correlation and bounded recovery basis.
 If no verified provider idempotency facility exists, a compact visible Docket
 reference in notes may assist reconciliation; reserve its space and document it.
+The marker is transport correlation data, separate from canonical user-authored
+notes and the user-note three-way baseline. Store its known version/correlation
+in binding/operation metadata. An outbound encoder combines user text with at most
+one recognized marker, accounting for both within Google's notes limit; canonical
+notes, exports and ordinary Task views retain only the user text.
+
+Inbound decoding separates only a recognized marker matching the scoped known
+binding/correlation before comparing notes. Preserve unrecognized or lookalike
+user text. A marker-only difference must not create a user-note conflict, canonical
+note revision or endless echo patch. Outbound note changes preserve the marker or
+deliberately replace it under the documented binding/correlation policy, without
+copying it into canonical notes or accumulating duplicates. Observing user removal
+alone does not trigger a notes rewrite to put it back.
+
 It is a correlation aid, not authority or permission to bind an arbitrary matching
 title. A fully scoped, uniquely corroborated match can recover the original result;
-zero/multiple matches, removed markers or incomplete coverage remain uncertain.
-Never blindly reinsert after an unknown-after-send result or repeated empty scans.
-Show unresolved delivery and permit an explicit new repair intent when needed.
+zero/multiple matches, an unavailable marker or incomplete coverage remain uncertain
+when exact outcome identity cannot otherwise be established. An already known task
+ID still permits normal user-note comparison when its marker is absent. Never
+blindly reinsert after an unknown-after-send result or repeated empty scans. Show
+unresolved delivery and permit an explicit new repair intent when needed.
 
 For patch/move/delete, retain exact identity, affected fields and before/after
 basis. Reconcile unknown delivery against those facts before retrying; a later
 user edit is not proof of the original outcome. Verify method-specific ETag and
 retry behavior against controlled Google targets before write activation. If a
-method cannot meet the promised guard, narrow its supported provider action and
-report the limit instead of claiming race safety from a preflight GET alone.
+method cannot meet the promised guard, keep that operation disabled or constrain
+its supported behavior with a valid evidenced strategy. Report the limit instead
+of claiming race safety from a preflight GET alone.
+
+G0 is a hard activation prerequisite for each corresponding provider write, not
+one general checkbox for the adapter. Retain a capability/evidence matrix:
+
+| Write capability | Evidence required before activation |
+| --- | --- |
+| Insert | Actual identifier/idempotency behavior; timeout-after-send and restart recovery; unique/ambiguous/no-match correlation and marker separation |
+| Patch, including completion/reopening | Actual sparse/null semantics and stale-version precondition behavior; unmodified fields, including opaque first-party time settings, remain protected |
+| Within-list and cross-list move | Actual conditional-write behavior or a valid constrained reconciliation strategy; identity, hierarchy and ordering effects under a concurrent Google edit |
+| Delete | Actual stale-delete protection or a valid constrained strategy; verified ordinary/assigned/parent effects and no confusion with moves or inaccessible lists |
+
+Test scheduled-day writes against a task with a time set in Google's UI. An
+API-returned day cannot establish that the clock survived a write. If preservation
+or the intended effect cannot be established, constrain the affected date write
+and state that Google-native timed scheduling is unsupported; never silently
+erase it or promise an unchanged 5 PM Google alert. Unchanged date fields are not
+resent during unrelated title/notes updates.
+
+Fixtures and generic API examples do not prove real method preconditions. In
+particular, `move`/`delete` do not inherit patch guarantees, and `If-Match: *` is
+not a stale-write guard. A method with missing, failed or invalidated G0 evidence
+cannot execute merely because list policy permits two-way sync or to finish G2
+sooner. Local task work, observations and separately verified methods remain useful.
 
 ## 10. Small native MCP surface
 
@@ -338,7 +442,7 @@ completion wrapper or generic `manage_google_tasks(action, payload)` tool.
 | --- | --- |
 | `docket_get_tasks_context` | List choices, selected task/observation/conflict refs, versions, coverage and short allowed actions |
 | `docket_query_tasks` | Task-first filtering, paging, full-set counts and JSON/CSV export; Item queries do not already provide equivalent task-row pagination |
-| `docket_configure_task_list` | Select an existing list's disabled/observe/two-way policy and optional default; one context, operation and list ref |
+| `docket_configure_task_list` | Select an existing list's disabled/observe/two-way policy and optional default; its mode description/context/receipt explicitly state completion, deletion, detachment and disabling consequences |
 | `docket_refresh_tasks` | Queue/coalesce a bounded refresh for a selected list or enabled lists; return job/coverage status |
 | `docket_link_google_task` | Link one existing canonical Task to one selected provider observation without a text-based identity guess |
 | `docket_resolve_task_sync` | Resolve one current field conflict with keep-Docket/accept-Google; context holds both versions |
@@ -424,10 +528,19 @@ canonical Task once, even if seen in Google Calendar, a Google Tasks observation
 and Docket. Scheduling alone supplies neither effort nor a busy interval.
 
 Keep existing task/deadline reminder behavior and extend typed subjects only where
-needed; no fabricated Calendar Event to make reminders work. Do not promise
-Google-native reminder or recurring-rule editing absent API support. Completion
-can stop task-specific pending reminders without altering genuine work/finance
-obligations, and reopening uses versioned deterministic reconciliation.
+needed; no fabricated Calendar Event or `due_by` deadline to make reminders work.
+Extend the existing `docket_schedule_followup` command to accept Task subjects,
+including typed reminder storage/validation, cancellation and current-state checks, instead
+of adding another public reminder tool. A requested 5 PM follow-up preserves its
+offset/zone and uses Docket's retained inbox and configured delivery route. An inbox
+entry becoming due is not proof of push delivery or a Google-native alarm; native
+Google time selection remains a UI action while the API cannot express it.
+
+Google Deadline creation/sync is excluded from this integration. Preserve existing
+independent Docket deadlines, without requiring one for ordinary tasks or reminders.
+Do not promise Google-native reminder or recurring-rule editing absent API support.
+Completion can stop task-specific pending reminders without altering genuine
+work/finance obligations, and reopening uses versioned deterministic reconciliation.
 
 Retain actionable sync exceptions in the existing inbox: authorization needed,
 stale selected-list coverage, field conflict, uncertain create, unavailable list
@@ -441,17 +554,24 @@ is not authority and never justifies an inference loop inside Docket.
 | Milestone | Deliverable and completion condition |
 | --- | --- |
 | R0 — retirement inventory | Identify NocoDB-owned resources and unique data; produce protected export/disposition and a precise removal list; no runtime fallback |
-| G0 — adapter contract | Scope upgrade/readiness and real/fake/disabled Tasks protocols; pin and check date, null, ETag, move, completion and unknown-insert behavior |
-| G1 — task read and import foundation | Typed lists/observations/bindings/sync state; bounded contexts/task queries; selected-list imports through admitted canonical services; full pagination, owner isolation and no provider side effects from ordinary reads |
-| G2 — useful two-way tasks | Flat create/edit/complete/reopen, scheduled dates, deterministic conflict handling and safe provider delivery; ordinary Google UI edits converge without per-edit approval |
+| G0 — adapter contract | Scope upgrade/readiness and real/fake/disabled Tasks protocols; retain real method-specific date/null/time-preservation, ETag, move/delete/completion and unknown-insert evidence. Passing evidence for each operation is required before activating that write |
+| G1 — task read and import foundation | First widen the full Task/Item title path to 1,024 and establish derived-Item title ownership; then typed lists/observations/bindings/sync state, bounded queries and selected-list imports through admitted services; full pagination, owner isolation and no provider side effects from ordinary reads |
+| G2 — useful two-way tasks | Flat create/edit/complete/reopen, scheduled dates, explicit deletion policy, marker-safe note reconciliation and deterministic conflicts; each activated write passes G0 and ordinary Google UI edits converge without per-edit approval |
 | G3 — hierarchy and integrated planning | Parent/sibling/cross-list moves with provider constraints, cancellation/retraction boundaries, workload/reminder integration and meaningful selective inbox exceptions |
 | R1 — clean-break cutover | Migrate verified unique NocoDB data, remove runtime/access residue and fifteen MCP aliases, verify cold start with none present; current refs/history remain |
 | A — activation | Local tested-image validation, supported deploy, same private plugin update/rescan and real host acceptance with an expressly designated Tasks test target |
+
+R0 inventory and G0 validation can proceed independently. G1 requires the complete
+title-path fix before import activation; subsequent G2/G3 writes activate only as
+their G0 evidence passes. R1 waits for the data-disposition checks, not another
+broad architectural redesign.
 
 G2 is the first everyday-use milestone. Do not label read-only list enumeration
 as complete Google Tasks support. G3 and R1 are required for this delta's full
 completion; unsupported first-party recurrence/assignment writes and bulk list
 administration are explicit exclusions, not silently advertised future tools.
+An advertised required G2/G3 operation that remains disabled is incomplete work;
+do not weaken its concurrency requirement or redefine the milestone to claim done.
 
 ## 14. Acceptance evidence
 
@@ -462,14 +582,18 @@ schema wording/count tests. Use fake providers and synthetic accounts by default
 | --- | --- |
 | Scope isolation | Adding Tasks preserves existing Google scopes; Tasks revocation leaves local tasks and Calendar/Gmail usable; read/triage credentials cannot configure or mutate |
 | First valid call | Context then flat task creation produces one Task, necessary Item and one Google intent; unchanged retry returns the same receipt; no Event is created |
-| Schedule/deadline | Date-only values survive zone/DST changes without shifting; Google schedule updates never erase an exact Docket deadline |
+| Scheduling and reminders | Date-only values survive zone/DST changes; Google Deadline is unused and no Docket deadline is fabricated for a task/reminder. Existing real deadlines remain unchanged; an explicit 5 PM Docket follow-up retains its instant and truthful delivery status without claiming a Google-native time write |
 | Completion | Google UI completion/hidden completion imports once; Docket completion reaches Google; reopening works; blocked/in-progress and existing work links survive ordinary open observations |
 | Coverage | Multi-page scans include hidden/completed/deleted records; failed/truncated scans cannot imply deletion; watermark overlap and restart recover without skipping changes |
 | Reconciliation | External one-sided/disjoint edits converge; divergent same-field edits and delete-versus-edit retain both bases and block only affected work; echo loops do not occur |
-| Provider races | Actual method preconditions reject stale patch/delete/move; concurrent local edits/imports cannot silently overwrite the pinned basis; unsupported methods are honestly constrained |
+| Provider activation/races | Missing/failed G0 evidence prevents the corresponding HTTP write; real method guards reject stale patch/delete/move or a valid constrained strategy is proven. Concurrent local edits/imports cannot overwrite the pinned basis; unverified move/delete and scheduled-time preservation cannot inherit a patch checkbox |
 | Uncertain creation | Crash/timeout after insert never causes a blind second insert; exact/ambiguous/no-match cases preserve the original intent and honest unresolved status |
+| Correlation versus notes | Recognized transport markers never enter canonical user notes/exports/baselines; marker-only changes do not conflict or echo. Edits preserve one intended marker, lookalike user text survives, absent-marker outcomes remain uncertain where identity cannot be recovered, and combined provider notes respect the size limit |
 | Identity and hierarchy | Cross-list moves preserve canonical refs and WorkSession links; verified provider identity changes update binding generations; duplicates, cycles and unobserved child cascades are prevented |
-| Field limits | Long imported titles remain exact; oversized notes/unsupported assignments remain useful and visibly limited rather than truncated or falsely delivered |
+| G1 title path | Import a 1,024-character Google title without an existing Item; the required Item and Task persist the full text, and context/export plus subsequent sync preserve it. Cover create/patch inputs and canonical mutation validation, not only Task storage |
+| Derived Item title ownership | A Google Task rename updates its exclusively owned derived Item atomically; an independently titled/shared/relinked Item stays untouched. Concurrent Item-title edits cannot be overwritten, and unmarked historical pairs are not auto-adopted from matching names |
+| Other field limits | Oversized notes and unsupported assignments remain useful and visibly limited rather than truncated or falsely delivered |
+| Lifecycle policy | Configuration text/context/receipt disclose Google-delete → canonical-retraction. Completion, confirmed deletion, detachment and disabling have the four distinct consequences specified above; in-flight outcomes remain honest and history/work links survive |
 | Local usefulness | Google outage, missing optional data, one conflict and a disabled list cannot block unrelated tasks, work recording, finance or Calendar/Gmail |
 | NocoDB retirement | Protected export/disposition covers unique data; owned runtime, startup paths, access and dependencies are gone; no broad prune, production reset or compatibility service; cold start passes |
 | Alias retirement | All fifteen old names are unregistered/rejected without side effects; current replacements work and old receipt/history reads preserve original identity |
@@ -485,7 +609,8 @@ Google UI round-trip, and a skill publication is not proof of App tool rescan.
 
 ## 15. Storage, recovery and SPEC reconciliation
 
-Use ordered additive migrations for typed scheduling/hierarchy, policies,
+Use ordered additive migrations for the full Task/Item 1,024-character title path,
+audited derived-title ownership, Task reminder subjects, typed scheduling/hierarchy, policies,
 observations, bindings/baselines/conflicts and explicit Tasks operation constraints.
 Reuse current versions, public refs, immutable revisions/evidence and atomic
 canonical/provider transactions. PostgreSQL is authoritative for uniqueness,
@@ -516,6 +641,8 @@ compatibility endpoints. This proposal itself changes no published wire version.
   [task inputs](../src/docket/schemas/tracked_context.py),
   [flat task commands](../src/docket/schemas/native_commands.py) and
   [derived Item/due-time compilation](../src/docket/services/routine_commands.py).
+- [Existing follow-up inputs and subject validation](../src/docket/schemas/followup.py),
+  extended for explicit Task reminders without creating another public tool.
 - [Provider intents](../src/docket/services/provider_intents.py),
   [operation runner](../src/docket/services/operations.py),
   [Operation/sync storage](../src/docket/models/calendar.py),
@@ -532,5 +659,5 @@ compatibility endpoints. This proposal itself changes no published wire version.
   [preceding accepted release evidence](../evidence/work-attribution-release/activation.json).
 
 Drafting used current repository files, read-only container metadata and linked
-official Google API documentation. No personal task rows, OAuth secrets or NocoDB
+official Google API/UI documentation. No personal task rows, OAuth secrets or NocoDB
 database contents were read; no provider effects, migration or retirement ran.
