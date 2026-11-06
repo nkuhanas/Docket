@@ -1,10 +1,10 @@
 # Docket: Google Tasks synchronization and NocoDB retirement
 
 Draft timestamp: 2026-11-06 17:59:26 UTC
-Status: proposed; no implementation, adoption or provider changes
+Status: adopted by Operator implementation goal; implementation in progress
 SPEC baseline: [1.1](../SPEC.md)
 Inspected source: `8488f165efc100436813f1bebda7d014dcd5846c`
-Proposed SPEC target: 1.2 on an Operator instruction to implement
+Adopted SPEC target: [1.2](../SPEC.md); [implementation evidence](../docs/google-tasks-implementation.md)
 
 ## 1. Decision
 
@@ -31,7 +31,8 @@ This is the Operator-accepted alternative to manually editing each Google task.
 The architectural review is incorporated below: the complete Task/Item title
 path, ownership of automatically derived Item titles, explicit deletion-policy
 consequences, transport-only creation markers and per-operation G0 activation
-evidence. These amendments refine this proposal without adopting or implementing it.
+evidence. The subsequent Operator implementation goal adopts the reviewed scope
+into SPEC 1.2; implementation and provider acceptance are tracked separately.
 The revised review adds three concrete G2 integration requirements: private
 visibility through rendering/reconciliation, persistent reminder-origin exclusion
 from cached workload observations, and instant-based one-minute DST arithmetic.
@@ -45,9 +46,9 @@ readable evidence, without callable aliases, payload translators or old-tool rep
 This deliberately supersedes SPEC 1.1's standing cached-client alias requirement
 on adoption. It does not retire legitimate canonical Tasks or their public refs.
 
-This is a forward proposal, not a second master SPEC. Drafting it authorizes no
-Google writes, data deletion, credential changes or runtime shutdown. Adoption
-updates SPEC, decisions/history and the delta index together. Existing development
+This forward delta is not a second master SPEC. Its original drafting performed
+no provider/runtime changes. The Operator implementation goal adopts its scoped
+requirements; SPEC, decisions/history and the index are reconciled together. Existing development
 and release authority applies; add no Discord, ledger or repeated approval gate.
 
 ## 2. Inspected baseline and actual gaps

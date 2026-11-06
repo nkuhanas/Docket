@@ -4,6 +4,9 @@ Current requirements live in the root [SPEC.md](../SPEC.md). Procedures and
 verification evidence below implement it; historical requirements are not
 independent current specifications.
 
+The [Google Tasks implementation report](google-tasks-implementation.md) tracks
+SPEC 1.2's adopted provider/reminder and NocoDB/compatibility retirement requirements.
+
 * [Native context and local CI](native-context-local-ci.md) — current delta progress,
   test inventory and contract/cutover evidence.
 * [Native capability disposition](native-capabilities.md) and [flat command examples](native-command-examples.md).

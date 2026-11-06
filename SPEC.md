@@ -1,8 +1,8 @@
 # Docket specification
 
-Version: 1.1
-Adopted: November 5, 2026
-Implementation baseline: `3a578859265431ac0270ab1acb62b48bfb8d6717`
+Version: 1.2
+Adopted: November 6, 2026
+Implementation baseline: `8488f165efc100436813f1bebda7d014dcd5846c`
 
 ## 1. Status and change control
 
@@ -25,6 +25,12 @@ scoped amendment. Reconcile SPEC, its decisions/history and [delta index](deltas
 together. Readers need not replay every delta to discover current requirements.
 Wire models remain machine definitions; AGENTS is an operating guide;
 CONTRIBUTING and runbooks describe procedures, not competing specifications.
+
+The Operator goal to implement the [Google Tasks/NocoDB delta](deltas/2026-11-06T17-59-26Z-google-tasks-and-nocodb-retirement.md)
+adopts SPEC 1.2. Its implementation is in progress, with requirement/release evidence
+in the [implementation report](docs/google-tasks-implementation.md). The deployed
+1.1 baseline above is unchanged until validated activation. Neither partial source
+work nor read-only task discovery completes two-way sync, reminders or retirement.
 
 The Operator instruction to implement the [work-attribution delta](deltas/2026-11-05T21-18-26Z-work-attribution-and-personal-operations.md)
 adopts its catalogue, work, reporting/finance and operational requirements.
@@ -67,6 +73,18 @@ source-grounded workload/outcome views. Reuse existing Entity projects/places an
 Item/Task/Event references. Affiliation does not establish a payer or compensation
 terms. Never seed real organizations, engagements or rates from illustrative text.
 
+Google Tasks is an everyday synchronized interface to the existing canonical Task,
+not another task registry. Selected lists support explicit observation/two-way
+policies, capture, edits, completion/reopening, hierarchy and supported native moves.
+Google's Deadline feature is excluded. Scheduled day, actual Docket deadline and
+reminder instant remain distinct. Requested timed task alerts use linked private,
+free Google Calendar companions automatically; date-only tasks create none.
+
+Retire NocoDB completely after inventory/export/disposition of unique data. Remove
+its dedicated runtime, access and startup paths without a fallback or dual write.
+Historical private archives/evidence remain genuine; richer records remain in
+Docket through MCP/exports rather than being forced into Google task notes.
+
 ## 3. Authority and evidence
 
 Verify OAuth issuer, audience, approved client, token dates and local owner grant.
@@ -95,6 +113,13 @@ honestly agent-reported. Missing archives do not block valid work. Never fabrica
 Evidence truth and canonical truth remain distinct. Never persist raw arguments,
 results, authorization headers, Gmail bodies or transcripts in invocation logs.
 
+Selected-list synchronization is a deterministic admitted service, not an inference
+agent. Policy revisions scope the account/list and supported fields/lifecycle.
+Imported changes retain policy/request roots and provider observations without
+fabricated live-user requests. Revocation/disable/scope loss stops affected work.
+Only exact owned Calendar reminder bindings admit reminder clock/deletion changes;
+unrelated events and task text grant no authority.
+
 ## 4. Canonical workflow and concurrency
 
 Handlers authenticate and validate; services own business rules/transactions.
@@ -115,6 +140,23 @@ retain request/audit roots and receive new exact proposals. Current permission
 and target checks still apply. Handles/IDs grant no authority. Preserve unfinished
 historical requests and bounded recovery of exact saved drafts; never delete or
 silently translate unknown intent.
+
+### Task and synchronized representation integrity
+
+Keep one canonical Task with its required Item and stable public refs. Both title
+paths, schemas and mutation validation support 1,024 characters without truncation.
+New automatically derived Items have typed title ownership: Task renames update
+their exclusively owned titles atomically. Independent title edits, sharing or
+relinking relinquish ownership; matching old titles do not establish ownership.
+Concurrent independent Item edits cannot be overwritten by imported task renames.
+
+Typed task scheduling/hierarchy, list policies, retained observations/bindings and
+field baselines support three-way synchronization. One-sided/disjoint changes
+converge; same-field divergences and delete-versus-edit retain conflicts for affected
+work. Hidden completion is not deletion. A confirmed ordinary Google task deletion
+may retract its unchanged linked Task under visible two-way policy; detachment and
+disable preserve records. List loss never cascades into mass canonical deletion.
+Assignments/recurrence unsupported by public APIs remain explicit observations.
 
 ### Performed work and engagement integrity
 
@@ -288,9 +330,11 @@ Preserve all 47 baseline effects and unchanged surviving inputs. Rich person/org
 Item detail and event cancellation wrappers may retire only after equivalent
 facets/bounded detail access and exact cancellation/provider/recurrence behavior
 are verified. Keep distinct create/update, update/supersede, identity unbinding,
-provider observations, restricted triage and historical recovery. Preserve cached
-client aliases with original permission/retry checks during refresh, and genuine
-old receipts/exact saved drafts. No count reduction justifies more complex inputs.
+provider observations, restricted triage and historical recovery. SPEC 1.2 retires
+all fifteen hidden native compatibility aliases: use current commands and rescan
+the same App. No callable legacy aliases, payload translators or versioned fallback
+endpoints remain. Genuine old receipts/exact drafts stay readable without old-tool
+execution or invented history. No count reduction justifies more complex inputs.
 
 Queries aggregate the full matching set independently of detail pages, with explicit
 timezone, period, as-of basis, precision and coverage. Distinguish recorded totals,
@@ -317,6 +361,25 @@ work, money and reimbursements reuses inbox/preferences/client scheduling; exten
 typed reminder/event/case subjects explicitly. No fabricated Calendar events to
 satisfy an old reminder type; no compulsory daily maintenance or constant optimizing.
 
+The task extension targets six compact new tools for task context/query, list policy,
+refresh, linking and field-conflict resolution. Reuse create/update/retract and
+exact prepared workflows. Optional flat list/scheduled-date/parent/sibling and
+`remind_at` fields derive support records and provider intent internally. A list
+policy's optional `reminder_calendar_ref` supplies one-time reminder routing.
+Each new input is at most 4 KiB, each complete definition 6 KiB and gross additional
+discovery including modified tools 24 KiB. Publish only implemented capabilities.
+
+Requested timed reminders have one authoritative exact instant and a typed owned
+Calendar companion. Use explicit private visibility, free transparency, zero-minute
+popup and no attendees. Preserve/compare privacy through actual rendering and
+reconciliation. Persist validated app origin/binding through Calendar refresh and
+exclude companions from canonical/cache commitments and capacity, not just by title
+or transparency. Compute the one-minute display span as UTC start plus 60 elapsed
+seconds, with independent endpoint offsets across DST. It is not performed work.
+Completion/cancel/null retires the reminder and queues cancellation atomically;
+stale/uncertain creates cannot resurrect it. Separate Calendar/Tasks delivery and
+observed device notification; canonical success never guarantees device display.
+
 ## 6. Providers, storage and recovery
 
 Google OAuth credentials are protected local material. Calendar/Gmail ingestion
@@ -325,6 +388,22 @@ truth. Report queued, successful, failed and uncertain delivery honestly.
 Unknown-after-transmission outcomes reconcile before retry; never blindly resend
 or invent success. Disabled production gates pause/fail closed. A canonical
 commit does not prove provider delivery.
+
+Google Tasks adds explicit read/write scope profiles while preserving existing
+Google grants and defaults. Use bounded overlapping updated-time polling with
+pagination, hidden/completed/deleted observations, resumable generations and periodic
+full inventories. Partial coverage/absence cannot prove deletion. Native supported
+cross-list moves preserve canonical identity; do not create copy/delete duplicates.
+Each write method requires its own G0 provider evidence before activation. Generic
+ETag examples or a preflight GET cannot establish stale-write safety. Creation
+without verified upstream idempotency never blindly retries after unknown send;
+scope correlation/identity recovery and retain unresolved outcomes honestly.
+Recognized transport note markers are separate from canonical notes/baselines.
+
+NocoDB retirement inventories dedicated resources and unique data, preserves a
+protected verified archive/disposition, imports useful records through admitted
+services and removes runtime/access/startup paths. No broad prune, production row
+repair or reset, backup/history deletion, fallback service or dual writes.
 
 Use SQLAlchemy models/services and ordered forward Alembic migrations for durable
 changes. PostgreSQL is authoritative for locking, constraints, triggers and JSON;
@@ -387,7 +466,8 @@ stale/timezone errors; exact prepared proposal; permission/revocation/owner
 isolation. Preserve delegated automation and restricted service credentials.
 Cutover accounts for 47 effects and unfinished drafts, updates the same registered
 plugin/skill and reports schema/instruction/context sizes, removed tests and
-measured runtimes. No OAuth reapproval is planned. Local evidence must reject
+measured runtimes. No native owner reapproval is planned; a new Google Tasks scope
+can require separate Google consent. Local evidence must reject
 stale/missing checks and reuse content-identical merge evidence without Actions.
 
 For the 1.1 amendment, prove each phase's declared behavior against the
@@ -399,6 +479,16 @@ Measure actual MCP contracts and first-valid-attempt user journeys on isolated
 PostgreSQL; verify owner/revocation/restricted-role and privacy boundaries. Report
 implemented and deployed milestones independently; work logging alone does not
 complete this amendment. Real financial/provider effects are not smoke fixtures.
+
+For 1.2, prove the full [Google Tasks matrix](docs/google-tasks-implementation.md):
+R0 data inventory/disposition; per-method real-provider G0; complete title path and
+ownership; selected-list imports and bidirectional task fields; explicit conflicts,
+markers, moves/deletion and uncertainty; automatic reminders with private-renderer,
+persisted-origin workload exclusion and UTC/DST checks; R1 NocoDB/alias retirement;
+tested-image activation and same-host tool acceptance. Real provider mutation checks
+use expressly designated disposable Tasks/Calendar targets. Record intended-device
+notification observation separately from API acceptance. Read-only discovery or
+disabled required operations do not complete two-way synchronization.
 
 ## 9. Architecture decisions
 
@@ -413,10 +503,15 @@ complete this amendment. Real financial/provider effects are not smoke fixtures.
 | 007 | Stable quantity/claim lineage and immutable formal snapshots | Corrections cannot duplicate claims or silently rewrite issued/submitted history. |
 | 008 | Reference-dispatched shared retraction and equivalent alias consolidation | Reduce discovery without adding action unions, conditional input modes or lost domain effects. |
 | 009 | Opt-in revision-pinned work Calendar snapshots with durable source invalidation | Provider readiness affects display refresh, preserving usable actual-work records and one accounting source. |
+| 010 | Existing canonical Tasks with deterministic selected-list Google synchronization | Keep stable relationships/history while enabling everyday provider-side capture and completion. |
+| 011 | Scheduled day, deadline and reminder instant remain distinct; exact alerts use owned Calendar companions | Public Tasks APIs expose a day; private/free reminders need full rendering, cache-origin and instant-based timing support. |
+| 012 | Typed ownership of automatically derived Item titles | Preserve long imported titles and useful synchronized names without overwriting independently edited/shared Items. |
+| 013 | Retire NocoDB and fifteen hidden native aliases completely | Preserve data/provenance while removing running legacy/compatibility debt rather than adding fallback paths. |
 
 ## 10. Version history
 
 | Version | Change |
 | --- | --- |
+| 1.2 | Adopts the November 6 Google Tasks/NocoDB delta and revised reviews under the Operator implementation goal. Implementation/acceptance is in progress; deployed 1.1 remains the runtime baseline until validated activation. |
 | 1.1 | Adopts the November 5 work-attribution/personal-operations delta including catalogue consolidation. C0–P2 and optional visibility are implemented, deployed and host-accepted, with separate phase evidence; external provider choices remain a concrete follow-on delta. Implementation clarifies revision-pinned visibility and nonblocking invalidation (ADR 009). |
 | 1.0 | First current SPEC synthesized from signed ontology and Operator amendments; adopts November 4 context/local-CI delta and retirement cleanup. No invented prior version. Implemented, deployed and verified through live native-tool use. |
