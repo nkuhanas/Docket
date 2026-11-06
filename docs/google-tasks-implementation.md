@@ -27,9 +27,9 @@ acceptance is claimed by a fixture or disabled capability.
 | G2 conflict/lifecycle | Three-way field merge, delete/edit conflict, detachment/disable/list loss without global blocking | Pending |
 | G2 markers/limits | Transport-only marker baseline separation, no blind insert retry or silent field truncation | Pending |
 | G2 reminders | Flat remind_at derives exact owned primary Calendar companion, routing, reschedule/null/completion cancellation and uncertainty | Pending |
-| G2 privacy | Private/free actual request and read-back/reconciliation, existing zero-minute popup reused | Pending |
+| G2 privacy | Private/free actual request and read-back/reconciliation, existing zero-minute popup reused | Calendar renderer/read masks/reconciliation implemented and covered through HTTP adapter; Task intent derivation pending |
 | G2 workload origin | Validated typed origin survives cache refresh/restart and excludes canonical/cache commitment/capacity accounting | Pending |
-| G2 DST | UTC start plus 60 elapsed seconds with independent offsets, actual rendering and reconciliation | Pending |
+| G2 DST | UTC start plus 60 elapsed seconds with independent offsets, actual rendering and reconciliation | Timed-marker compilation and actual rendering/reconciliation pass autumn and spring transitions; Task reminder flow pending |
 | G3 hierarchy/planning | Native cross-list/parent/sibling moves, exact identity and constraints; workload/reminder/inbox integration | Pending |
 | Authority/privacy | OAuth/local grant, owner isolation/revocation/triage rejection, genuine service roots, no sensitive invocation payloads | Pending for new domain |
 | Contracts | Six compact tools, every modified schema, 4/6/24 KiB and context/result budgets, generated docs/skill | Pending; future tools are not yet advertised |

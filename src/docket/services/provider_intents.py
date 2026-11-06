@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -197,13 +198,18 @@ class ProviderIntentService:
             }
         if value_kind == "datetime" and policy_kind == "timed_marker":
             start = datetime.fromisoformat(str(value["local_datetime"]))
+            zone = ZoneInfo(str(value["timezone"]))
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=zone, fold=int(value.get("fold") or 0))
+            else:
+                start = start.astimezone(zone)
             duration = int(display_policy["duration_seconds"])
+            marker_end = (start.astimezone(UTC) + timedelta(seconds=duration)).astimezone(zone)
             return {
                 "kind": "timed",
                 "start_local": start.isoformat(),
-                "end_local": (start + timedelta(seconds=duration)).isoformat(),
+                "end_local": marker_end.isoformat(),
                 "timezone": str(value["timezone"]),
-                **({"fold": value["fold"]} if value.get("fold") is not None else {}),
             }
         if value_kind == "date_interval" and policy_kind == "interval_span":
             start = date.fromisoformat(str(value["start_date"]))

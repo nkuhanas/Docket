@@ -1,5 +1,6 @@
 import json
 from dataclasses import replace
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -63,6 +64,77 @@ def test_calendar_body_uses_local_recurrence_and_private_correlation() -> None:
     assert body["extendedProperties"]["private"]["docket_correlation"] == (
         request.provider_correlation
     )
+
+
+@pytest.mark.parametrize(
+    "local_start,fold,expected_end",
+    [
+        ("2026-11-01T01:59:00", 0, "2026-11-01T01:00:00-08:00"),
+        ("2026-03-08T01:59:00", 0, "2026-03-08T03:00:00-07:00"),
+    ],
+)
+def test_private_popup_marker_uses_elapsed_minute_and_independent_endpoint_offsets(
+    monkeypatch,
+    local_start,
+    fold,
+    expected_end,
+):
+    from docket.models import TemporalBinding
+    from docket.services.provider_intents import ProviderIntentService
+
+    binding = TemporalBinding(
+        temporal_value={
+            "kind": "datetime",
+            "local_datetime": local_start,
+            "timezone": "America/Los_Angeles",
+            "fold": fold,
+        }
+    )
+    timing = ProviderIntentService._temporal_timing(
+        binding,
+        {
+            "kind": "timed_marker",
+            "duration_seconds": 60,
+        },
+    )
+    request = replace(
+        event_request(),
+        schedule=None,
+        origin_kind="task_reminder",
+        event_spec={
+            "title": "Task reminder",
+            "timing": timing,
+            "visibility": "private",
+            "transparency": "transparent",
+        },
+        reminder_plan={"delivery_channels": ["google_popup"], "lead_seconds": [0]},
+    )
+    provider = GoogleCalendarProvider("unused")
+    monkeypatch.setattr(provider, "_authorization_header", lambda: "synthetic")
+
+    def remote(method, url, **kwargs):
+        assert method == "POST"
+        body = kwargs["json"]
+        assert body["visibility"] == "private" and body["transparency"] == "transparent"
+        assert body["reminders"] == {
+            "useDefault": False,
+            "overrides": [{"method": "popup", "minutes": 0}],
+        }
+        assert body["end"]["dateTime"] == expected_end
+        start = datetime.fromisoformat(body["start"]["dateTime"]).astimezone(UTC)
+        end = datetime.fromisoformat(body["end"]["dateTime"]).astimezone(UTC)
+        assert (end - start).total_seconds() == 60
+        return response(200, {**body, "etag": '"delivered"', "status": "confirmed"})
+
+    monkeypatch.setattr(httpx, "request", remote)
+    result = provider.create_event(request)
+    assert event_matches_request(result, request)
+    for observed in ("public", "default", None):
+        snapshot = {**result.snapshot, "visibility": observed}
+        assert not event_matches_request(replace(result, snapshot=snapshot), request)
+    snapshot = dict(result.snapshot)
+    del snapshot["visibility"]
+    assert not event_matches_request(replace(result, snapshot=snapshot), request)
 
 
 @pytest.mark.parametrize("notes", ["New room details", None])

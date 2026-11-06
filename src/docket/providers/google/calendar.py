@@ -18,7 +18,7 @@ from docket.providers.google.oauth import (
 
 _SNAPSHOT_FIELDS = (
     "nextPageToken,timeZone,"
-    "items(id,status,eventType,summary,location,start,end,recurringEventId,"
+    "items(id,status,eventType,summary,location,visibility,transparency,start,end,recurringEventId,"
     "originalStartTime,recurrence,attendees(self),organizer(self),reminders,"
     "extendedProperties(private),etag,updated)"
 )
@@ -212,10 +212,16 @@ def _standalone_event_body(event: dict[str, Any]) -> dict[str, Any]:
         end_local = datetime.fromisoformat(str(timing["end_local"]))
         # A replacement occurrence may be in the repeated DST hour. Carry the
         # retained fold as an RFC3339 offset instead of leaving Google to choose.
-        if timing.get("fold") is not None:
-            zone = ZoneInfo(timezone)
-            start_local = start_local.replace(tzinfo=zone, fold=int(timing["fold"]))
-            end_local = end_local.replace(tzinfo=zone, fold=int(timing["fold"]))
+        zone = ZoneInfo(timezone)
+
+        def zoned_endpoint(value: datetime) -> datetime:
+            if value.tzinfo is not None:
+                return value.astimezone(zone)
+            if timing.get("fold") is not None:
+                return value.replace(tzinfo=zone, fold=int(timing["fold"]))
+            return value
+
+        start_local, end_local = zoned_endpoint(start_local), zoned_endpoint(end_local)
         start = {
             "dateTime": start_local.isoformat(timespec="seconds"),
             "timeZone": timezone,
@@ -232,6 +238,11 @@ def _standalone_event_body(event: dict[str, Any]) -> dict[str, Any]:
     transparency = event.get("transparency")
     if transparency is not None:
         body["transparency"] = str(transparency)
+    visibility = event.get("visibility")
+    if visibility is not None:
+        if visibility not in {"default", "public", "private"}:
+            raise ValueError("Invalid Calendar visibility")
+        body["visibility"] = visibility
     location = event.get("location")
     notes = event.get("notes")
     body["location"] = str(location) if location is not None else None
@@ -443,6 +454,7 @@ def normalize_event_body(body: dict[str, Any]) -> dict[str, Any]:
         "description_sha256": sha256_json(body.get("description") or ""),
         "location": body.get("location"),
         "transparency": body.get("transparency"),
+        "visibility": body.get("visibility", "default"),
         "start": endpoint(body.get("start")),
         "end": endpoint(body.get("end")),
         "recurrence": normalize_recurrence_lines(body.get("recurrence")),
@@ -487,6 +499,8 @@ def event_matches_request(event: CalendarEventResult, request: CalendarEventRequ
         )
         if request.reminder_plan is not None:
             keys += ("reminders",)
+    if request.event_spec is not None and request.event_spec.get("visibility") is not None:
+        keys += ("visibility",)
     return all(event.snapshot.get(key) == expected.get(key) for key in keys)
 
 
