@@ -18,6 +18,8 @@ GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
 SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
 TASKS_SCOPE = "https://www.googleapis.com/auth/tasks"
 TASKS_READONLY_SCOPE = "https://www.googleapis.com/auth/tasks.readonly"
+GOOGLE_AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_LEGACY_AUTHORIZATION_ENDPOINT = "https://accounts.google.com/o/oauth2/auth"
 
 SCOPE_PROFILES: dict[str, tuple[str, ...]] = {
     "calendar": (CALENDAR_EVENTS_SCOPE, CALENDAR_LIST_SCOPE, CALENDARS_SCOPE),
@@ -116,7 +118,9 @@ def validate_client_file(path: Path) -> None:
         raise GoogleOAuthSetupError(
             f"Google OAuth client is missing required fields: {', '.join(missing)}"
         )
-    if installed["auth_uri"] != "https://accounts.google.com/o/oauth2/auth":
+    if installed["auth_uri"] not in {
+        GOOGLE_AUTHORIZATION_ENDPOINT, GOOGLE_LEGACY_AUTHORIZATION_ENDPOINT,
+    }:
         raise GoogleOAuthSetupError("Google OAuth client has an unexpected authorization endpoint")
     if installed["token_uri"] != "https://oauth2.googleapis.com/token":
         raise GoogleOAuthSetupError("Google OAuth client has an unexpected token endpoint")
@@ -160,9 +164,13 @@ def authorized_user_file_status(
 def _default_flow_factory(client_file: Path, scopes: Sequence[str]) -> OAuthFlow:
     from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore[import-untyped]
 
+    # Downloaded Desktop credentials can still name the older endpoint. Use
+    # Google's documented endpoint without modifying the protected client file.
+    config = json.loads(client_file.read_text(encoding="utf-8"))
+    config["installed"]["auth_uri"] = GOOGLE_AUTHORIZATION_ENDPOINT
     return cast(
         OAuthFlow,
-        InstalledAppFlow.from_client_secrets_file(str(client_file), scopes=list(scopes)),
+        InstalledAppFlow.from_client_config(config, scopes=list(scopes)),
     )
 
 

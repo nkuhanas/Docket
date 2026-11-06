@@ -2,6 +2,7 @@ import json
 import stat
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -13,10 +14,12 @@ from docket.providers.google.oauth import (
     DEFAULT_SCOPE_PROFILES,
     DOCS_SCOPE,
     GMAIL_MODIFY_SCOPE,
+    GOOGLE_AUTHORIZATION_ENDPOINT,
     SHEETS_SCOPE,
     TASKS_READONLY_SCOPE,
     TASKS_SCOPE,
     GoogleOAuthSetupError,
+    _default_flow_factory,
     authorized_user_file_status,
     perform_setup,
     resolve_scopes,
@@ -55,6 +58,47 @@ class FakeCredentials:
                 "client_secret": "dummy-client-secret",
             }
         )
+
+
+@pytest.mark.parametrize("endpoint", [
+    "https://accounts.google.com/o/oauth2/auth", GOOGLE_AUTHORIZATION_ENDPOINT,
+])
+def test_real_library_uses_v2_endpoint_and_single_oauth_parameters(tmp_path, endpoint) -> None:
+    client_file = tmp_path / "client.json"
+    _write_client(client_file)
+    document = json.loads(client_file.read_text())
+    document["installed"]["auth_uri"] = endpoint
+    original = json.dumps(document)
+    client_file.write_text(original)
+    validate_client_file(client_file)
+    flow = _default_flow_factory(client_file, [TASKS_SCOPE, CALENDAR_EVENTS_SCOPE])
+    flow.redirect_uri = "http://127.0.0.1:8765/"
+    url, state = flow.authorization_url(
+        access_type="offline", include_granted_scopes="false", prompt="consent",
+    )
+    parsed = urlsplit(url)
+    assert f"{parsed.scheme}://{parsed.netloc}{parsed.path}" == GOOGLE_AUTHORIZATION_ENDPOINT
+    query = parse_qs(parsed.query)
+    assert all(len(values) == 1 for values in query.values())
+    assert query["access_type"] == ["offline"]
+    assert query["state"] == [state]
+    assert query["code_challenge_method"] == ["S256"]
+    assert set(query["scope"][0].split()) == {TASKS_SCOPE, CALENDAR_EVENTS_SCOPE}
+    assert client_file.read_text() == original
+
+
+@pytest.mark.parametrize("endpoint", [
+    "https://accounts.google.com/o/oauth2/v2/auth?access_type=online",
+    "https://accounts.google.com.example/o/oauth2/v2/auth",
+])
+def test_setup_rejects_unexpected_authorization_endpoint(tmp_path, endpoint) -> None:
+    client_file = tmp_path / "client.json"
+    _write_client(client_file)
+    document = json.loads(client_file.read_text())
+    document["installed"]["auth_uri"] = endpoint
+    client_file.write_text(json.dumps(document))
+    with pytest.raises(GoogleOAuthSetupError, match="unexpected authorization endpoint"):
+        validate_client_file(client_file)
 
 
 class FakeFlow:

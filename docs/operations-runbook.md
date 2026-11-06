@@ -877,6 +877,24 @@ On an existing running instance, reauthorize with:
 scripts/setup-google-oauth.sh --force
 ```
 
+Setup uses Google's documented `https://accounts.google.com/o/oauth2/v2/auth`
+endpoint, including when the downloaded Desktop client file names the older
+endpoint. It does not modify that protected file. To add Tasks while preserving
+the current Google grants, run:
+
+```bash
+scripts/setup-google-oauth.sh --scope-profile tasks --force --credentials-only
+```
+
+If Google's page freezes during account selection, generate a fresh link and
+try it in a supported external browser's private window with extensions disabled.
+This is a diagnostic, not proof that the browser caused the failure. Never share
+the authorization or callback URL. In remote mode the final loopback page is
+expected to fail to load; paste its URL only into the setup program's hidden
+prompt. Old credentials remain intact until complete consent succeeds.
+See Google's [Desktop OAuth flow](https://developers.google.com/identity/protocols/oauth2/native-app)
+and [supported-browser guidance](https://support.google.com/accounts/answer/7675428).
+
 Successful consent and the atomic credential-file write are followed by an
 explicit runtime recovery command. It validates the Google refresh grant and
 requeues eligible committed Calendar operations whose **operation and target**
