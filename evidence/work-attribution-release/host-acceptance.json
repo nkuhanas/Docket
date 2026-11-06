@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "accepted_at_utc": "2026-11-06T17:48:14Z",
+  "method": "operator-confirmed fresh ChatGPT work context, corroborated by retained server invocation metadata",
+  "operator_confirmation": "Work context loads",
+  "plugin_version": "2.1.0",
+  "contract_version": "docket-tools-2026-11-05-v67",
+  "contract_hash": "b0b1ed2a87d8bd2a9ead24637cf951019f98a31eebee363d285b9e9bc4b99024",
+  "history_query": {
+    "object_type": "tool_invocation",
+    "tool_name": "docket_get_work_context",
+    "limit": 5
+  },
+  "successful_calls": [
+    {
+      "ref": "call_01M6RZHPNZK1P87BVWSDB53TE8",
+      "tool_name": "docket_get_work_context",
+      "transport_state": "completed",
+      "domain_state": "succeeded",
+      "completed_at": "2026-11-06T17:47:18.619326+00:00"
+    },
+    {
+      "ref": "call_01M6RZGF2KNPMGT4JE2V3VZX8J",
+      "tool_name": "docket_get_work_context",
+      "transport_state": "completed",
+      "domain_state": "succeeded",
+      "completed_at": "2026-11-06T17:46:38.053820+00:00"
+    },
+    {
+      "ref": "call_01M6RZDQBX2BMAKNTJ6XTE9ZR8",
+      "tool_name": "docket_get_work_context",
+      "transport_state": "completed",
+      "domain_state": "succeeded",
+      "completed_at": "2026-11-06T17:45:08.227967+00:00"
+    },
+    {
+      "ref": "call_01M6RZDJ6XJP2WZRNFBWW85235",
+      "tool_name": "docket_get_work_context",
+      "transport_state": "completed",
+      "domain_state": "succeeded",
+      "completed_at": "2026-11-06T17:45:02.951928+00:00"
+    }
+  ],
+  "discovery_refresh_procedure": {
+    "source": "https://developers.openai.com/plugins/deploy/submission#scan-your-latest-changes",
+    "steps": [
+      "Open the existing plugin and select MCPs",
+      "Choose the connected server",
+      "Under Issues select Rescan",
+      "After the scan check tool availability and invoke work context"
+    ]
+  },
+  "privacy": "Only invocation metadata is retained here; no arguments, result contents, source bodies or transcripts.",
+  "production_business_smoke_mutations": false
+}

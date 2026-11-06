@@ -46,8 +46,11 @@
     "write": true,
     "triage": true,
     "events": false,
-    "current_conversation_cached_tool_count": 84,
-    "fresh_work_context_invocation": "pending operator check"
+    "previous_conversation_cached_tool_count": 84,
+    "fresh_work_context_invocation": "passed",
+    "accepted_at_utc": "2026-11-06T17:48:14Z",
+    "verification": "operator confirmation plus four completed, successful v67 server invocations",
+    "evidence": "host-acceptance.json"
   },
   "real_business_records_created_for_smoke": false,
   "tools_array_compact_utf8_bytes": 182165,

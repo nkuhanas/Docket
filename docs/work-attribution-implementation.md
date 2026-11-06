@@ -5,7 +5,7 @@ Requirements: [SPEC 1.1](../SPEC.md), adopted from the
 Starting source: `3a578859265431ac0270ab1acb62b48bfb8d6717`.
 Status: C0–P2 and optional Calendar visibility implemented and deployed from
 `3f8c23b412c3`; the same private plugin is published as 2.1.0. Fresh-chat work-tool
-invocation remains the single unverified host acceptance item in the
+acceptance is Operator-confirmed and corroborated by successful v67 server calls in the
 [activation receipt](../evidence/work-attribution-release/activation.json).
 Design probes and catalogue projections are not implementation acceptance evidence.
 
@@ -44,9 +44,9 @@ by later documentation receipts. Current source contract sizes are recorded
 | P2 follow-up | Typed work/finance reminder/case/event subjects, bounded exception reconciliation, retained inbox, suppression/preferences and client scheduling | Implemented/deployed; native late-once delivery/review/preference journeys and exact-image PostgreSQL owner/history/concurrent-review checks pass |
 | Optional visibility | Explicit correlated actual-time Calendar projection, no duplicate editable time/accounting or default provider effect | Implemented/deployed; native unknown-delivery/refresh/hide journeys and exact-image PostgreSQL atomic intent race and nonblocking source invalidation pass |
 | Authority/provenance | OAuth/current local grant, req_/call_, owner isolation/revocation, full approved automation, restricted triage, optional honest capture and sensitive-log protection | Native admission/revocation/context isolation/report-cursor checks pass; every new command family has read-only denial coverage. Exact-image PostgreSQL compensation/expense/settlement privacy and owner checks pass; real provider/business records were not smoke fixtures |
-| Contracts/host | Actual schemas and budgets, first-valid-attempt MCP journeys, generated reference/skill, same registered plugin identity and actual advertised capabilities | Source/runtime v67 advertise 108 tools; all 37 added definitions meet budgets. Same private plugin 2.1.0 read-back matches source and preserves App configuration. Fresh-chat work-tool invocation remains unverified; this conversation still exposes 84 cached tools |
+| Contracts/host | Actual schemas and budgets, first-valid-attempt MCP journeys, generated reference/skill, same registered plugin identity and actual advertised capabilities | Source/runtime v67 advertise 108 tools; all 37 added definitions meet budgets. Same private plugin 2.1.0 read-back matches source and preserves App configuration. Operator confirms fresh-chat work context; four successful v67 server calls corroborate acceptance |
 | Storage/operations | Fresh/populated PostgreSQL migrations, constraints/locking/races, protected history and migration-specific recovery | Exact tested image passes fresh migration/model parity, empty round-trip, populated constraints/races/history and retained downgrade refusal; supported deployment upgrades production to 20261105a3b4 without business backfill |
-| Release | Local gate/affected groups, clean-source tested image, reviewed PR/merge, synchronized source, drain/idle/backup/migration/postdeploy and host evidence | PR 64 merged with 17 commits retained; tested-image validation and supported deploy pass. Receipt pins source/image/backup/schema. Hosted package published/read back; fresh-chat work-tool check is the sole pending host item |
+| Release | Local gate/affected groups, clean-source tested image, reviewed PR/merge, synchronized source, drain/idle/backup/migration/postdeploy and host evidence | PR 64 merged with 17 commits retained; tested-image validation and supported deploy pass. Receipt pins source/image/backup/schema. Hosted package published/read back; fresh-chat work context is accepted with matching successful server calls |
 
 ## Implementation evidence
 
@@ -997,10 +997,10 @@ audience, presentation and prompts are unchanged. Both manifests preserve everyt
 except version. Read-back matches all seven hosted skill/reference/contract files
 to source and retains the App binding. No replacement plugin or new OAuth scope.
 
-This conversation still exposes its 84-tool cache. A fresh ChatGPT work-context
-invocation is requested from the operator; do not call that accepted until observed.
+Initial activation left this development conversation on the earlier 84-tool
+declarations. Fresh ChatGPT work context is now accepted as recorded below.
 The [machine-readable activation receipt](../evidence/work-attribution-release/activation.json)
-distinguishes this remaining host check from deployed backend/package acceptance.
+distinguishes host evidence from deployed backend/package acceptance.
 The [final source measurement](../evidence/work-attribution-release/contracts.json)
 confirms 37 additions after the 13-tool consolidation. The full tools/list result
 is 182,175 bytes; its array alone is the earlier reported 182,165 bytes. Largest
@@ -1009,4 +1009,28 @@ not token counts or evidence that a 108-tool catalogue is small.
 
 No real work, Calendar or financial fixture was created in production. P3 remains
 a separate concrete provider choice. Earlier pending markers in this report are
-historical source checkpoints; this activation section is the current release state.
+historical source checkpoints; this activation and the host acceptance below are
+the current release state.
+
+## November 6 host acceptance
+
+The Operator reports “Work context loads” in a fresh ChatGPT chat. Retained server
+history independently contains four completed, successful `docket_get_work_context`
+calls under `docket-tools-2026-11-05-v67`, from 17:45:02 through 17:47:18 UTC.
+The [host receipt](../evidence/work-attribution-release/host-acceptance.json) retains
+only call references, contract identity, timestamps and success states. It excludes
+arguments, result contents, source bodies and transcripts. No synthetic business
+record or provider effect was created for this acceptance check.
+
+The earlier fresh-chat-only instruction omitted the App's discovery scan step.
+[Official OpenAI guidance](https://developers.openai.com/plugins/deploy/submission#scan-your-latest-changes)
+requires rescanning after MCP changes: existing plugin → MCPs → connected server
+→ Issues → Rescan, then check tool availability and invoke the relevant read.
+Publishing the skill does not establish that its App-owned discovery has refreshed.
+The package/App identity and OAuth grants stay intact; no replacement plugin or
+new permission is needed for work and finance.
+
+C0–P2 and optional revision-pinned Calendar visibility are implemented, locally
+validated, merged, deployed and host-accepted. P3 remains the separately scoped
+provider selection/integration described in the adopted delta. This release has
+no remaining acceptance item requiring Operator action.

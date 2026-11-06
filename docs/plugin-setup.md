@@ -107,6 +107,24 @@ References: [OpenAI registered clients](https://developers.openai.com/plugins/bu
 [OpenAI redirects](https://developers.openai.com/plugins/build/auth#redirect-url),
 and [Auth0 refresh tokens](https://auth0.com/docs/secure/tokens/refresh-tokens/get-refresh-tokens).
 
+## Refresh the existing App after MCP changes
+
+Deploy the server and publish any changed workflow skill through their existing
+release paths. Updating an App-backed plugin's skill does not by itself verify
+that ChatGPT has scanned its new tool catalogue.
+
+Open the existing plugin, select **MCPs**, choose the connected server, and under
+**Issues** select **Rescan**. Wait for completion and inspect tool availability;
+then test the affected read in a fresh chat. A scan can be unavailable while
+another scan or appeal is active, or when the plugin is ineligible. Preserve the
+existing App/plugin identity and connection rather than uploading a replacement.
+These are the [official OpenAI scan instructions](https://developers.openai.com/plugins/deploy/submission#scan-your-latest-changes).
+
+For plugin 2.1.0, the Operator confirms that fresh work context loads. Four
+successful v67 server calls corroborate that result in the
+[host acceptance receipt](../evidence/work-attribution-release/host-acceptance.json).
+No work or financial record is needed as a discovery smoke fixture.
+
 ## Authentication succeeds but tool discovery fails
 
 The OAuth callback returns to ChatGPT; its authorization code is transient and

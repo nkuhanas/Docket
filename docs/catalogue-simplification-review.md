@@ -16,7 +16,7 @@ equivalent. Work, policy, documents, expenses, invoices, settlement and operatio
 review/visibility add 37 purpose-built definitions, making the current source
 catalogue 108 tools. This adds domain capability without making a shared command's input more conditional;
 runtime introspection also confirms 108 definitions. The hosted plugin is 2.1.0;
-fresh-chat discovery remains the separate pending check in the
+fresh-chat work context is Operator-confirmed and corroborated by v67 calls in the
 [activation receipt](../evidence/work-attribution-release/activation.json).
 See the [current contract measurements](../evidence/work-attribution-release/contracts.json)
 and implementation report; the projection tables below retain their original baseline.

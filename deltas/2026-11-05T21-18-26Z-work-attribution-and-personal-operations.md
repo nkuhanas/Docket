@@ -1,7 +1,7 @@
 # Docket: work performed, reporting and money reconciliation
 
 Draft timestamp: 2026-11-05 21:18:26 UTC
-Status: implemented and deployed; plugin 2.1.0 published; fresh-chat work-tool acceptance pending
+Status: implemented, deployed and host-accepted for C0–P2 and optional visibility; plugin 2.1.0 published
 SPEC baseline: [1.0](../SPEC.md)
 Inspected source: `88ad4ff39526210a8a62464518de1c676e7b4c6e`
 Adopted SPEC target: [1.1](../SPEC.md); [implementation evidence](../docs/work-attribution-implementation.md)

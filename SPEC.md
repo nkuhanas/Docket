@@ -11,8 +11,8 @@ and Operator amendments, including the adopted [context/local CI delta](deltas/2
 Adoption and deployment are distinct. SPEC 1.1's C0–P2 and optional work Calendar
 visibility are implemented and deployed from `3f8c23b412c3` (November 6, 2026), with
 contract v67 and plugin 2.1.0. The tested image, migrations, native boundary and
-hosted package read-back pass. This conversation retains its earlier tool cache;
-fresh work-tool invocation in ChatGPT remains the separate host check recorded in
+hosted package read-back pass. The Operator confirms fresh ChatGPT work context;
+four completed, successful v67 server calls corroborate host acceptance in
 [the activation receipt](evidence/work-attribution-release/activation.json).
 The prior native command/context baseline used plugin 2.0.0 and successful v51
 invocations; its historical evidence remains in
@@ -418,5 +418,5 @@ complete this amendment. Real financial/provider effects are not smoke fixtures.
 
 | Version | Change |
 | --- | --- |
-| 1.1 | Adopts the November 5 work-attribution/personal-operations delta including catalogue consolidation. C0–P2 and optional visibility are implemented/deployed, with separate phase evidence; external provider choices remain a concrete follow-on delta. Implementation clarifies revision-pinned visibility and nonblocking invalidation (ADR 009). |
+| 1.1 | Adopts the November 5 work-attribution/personal-operations delta including catalogue consolidation. C0–P2 and optional visibility are implemented, deployed and host-accepted, with separate phase evidence; external provider choices remain a concrete follow-on delta. Implementation clarifies revision-pinned visibility and nonblocking invalidation (ADR 009). |
 | 1.0 | First current SPEC synthesized from signed ontology and Operator amendments; adopts November 4 context/local-CI delta and retirement cleanup. No invented prior version. Implemented, deployed and verified through live native-tool use. |

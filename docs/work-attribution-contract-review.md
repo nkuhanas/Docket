@@ -19,8 +19,9 @@ and mixed-time split/merge, effective-policy configuration and compensation
 evaluation, formal timesheets, expenses, native invoice and settlement workflows
 are checked. Workload context/settings and selective follow-up are implemented in
 source, including revision-pinned Calendar visibility. Backend activation and plugin
-2.1.0 publication/read-back pass; fresh-chat work-tool invocation remains the final
-host check in the [activation receipt](../evidence/work-attribution-release/activation.json).
+2.1.0 publication/read-back and fresh-chat work-tool invocation pass, with Operator
+confirmation corroborated by successful v67 server calls in the
+[activation receipt](../evidence/work-attribution-release/activation.json).
 The implementation report records exact evidence and the separate release boundary.
 
 The current settlement additions use 627–2,336 bytes per input and 1,257–2,941
