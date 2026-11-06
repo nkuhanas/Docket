@@ -56,6 +56,12 @@ from docket.models.discord import (
 from docket.models.entities import Entity, EntityAlias, EntityResolution
 from docket.models.event_occurrences import CalendarDateBinding, EventOccurrence
 from docket.models.events import CanonicalEvent, ProviderEventBinding
+from docket.models.financial_documents import (
+    FinancialDocument,
+    FinancialDocumentRevision,
+    WorkClaim,
+    WorkClaimEvent,
+)
 from docket.models.gmail import ConnectorCheckpoint, GmailSource
 from docket.models.intelligence import (
     AttentionCase,
@@ -185,6 +191,8 @@ __all__ = [
     "ExecutionAttempt",
     "ExecutionLease",
     "Fact",
+    "FinancialDocument",
+    "FinancialDocumentRevision",
     "GatewayLifetime",
     "GmailSource",
     "IdentityBinding",
@@ -240,6 +248,8 @@ __all__ = [
     "TriageRun",
     "TriageWindow",
     "TriageWindowMembership",
+    "WorkClaim",
+    "WorkClaimEvent",
     "WorkLineageEdge",
     "WorkQuantityAllocation",
     "WorkQuantityBasis",

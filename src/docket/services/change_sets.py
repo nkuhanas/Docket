@@ -132,6 +132,7 @@ class ChangeSetApplicationReceipt:
     effects: list[ChangeSetEffectReceipt] = field(default_factory=list)
     provider_operations: list[ProviderOperationReceipt] = field(default_factory=list)
     work_records: list[dict[str, Any]] = field(default_factory=list)
+    financial_documents: list[dict[str, Any]] = field(default_factory=list)
 
     def add_refs(self, refs: list[str]) -> None:
         for ref_id in refs:
@@ -208,10 +209,14 @@ class ChangeSetApplicationReceipt:
         }
 
     def work_projection(self, *, limit: int) -> dict[str, Any]:
-        return ({"work_records": self.work_records[:limit],
+        return {**({"work_records": self.work_records[:limit],
                  "work_record_count": len(self.work_records),
                  "work_records_truncated": len(self.work_records) > limit}
-                if self.work_records else {})
+                if self.work_records else {}),
+                **({"documents": self.financial_documents[:min(limit, 3)],
+                    "document_count": len(self.financial_documents),
+                    "documents_truncated": len(self.financial_documents) > min(limit, 3)}
+                   if self.financial_documents else {})}
 
 
 _GROUP_TYPES: dict[str, frozenset[str]] = {
@@ -232,6 +237,7 @@ _GROUP_TYPES: dict[str, frozenset[str]] = {
     "tracked_context_changes": frozenset(
         {
             "engagement",
+            "financial_document",
             "work_session",
             "item",
             "temporal_binding",
@@ -244,6 +250,7 @@ _GROUP_TYPES: dict[str, frozenset[str]] = {
 }
 
 _OBJECT_PREFIXES: dict[str, str] = {
+    "financial_document": "fdoc",
     "engagement": "eng",
     "work_session": "work",
     "entity": "ent",
@@ -626,6 +633,28 @@ class ChangeSetService:
             refs = self.handlers[change.object_type](self.session, changeset, resolved_change)
             refs_by_change_id[change.change_id] = refs
             receipt.add_refs(refs)
+            if change.object_type == "financial_document":
+                from docket.services.financial_documents import FinancialDocumentService
+
+                documents = FinancialDocumentService(self.session)
+                for ref in refs:
+                    if ref.startswith("fdoc_"):
+                        state = documents.view(documents.head(ref))
+                        summary = state["summary"]
+                        receipt.financial_documents.append({
+                            **{key: state[key] for key in (
+                                "ref", "version", "kind", "status", "revision_ref",
+                                "date_from", "date_to", "claim_count",
+                            )},
+                            "worked_us": summary["worked_us"],
+                            "unknown_quantity_count": summary["unknown_quantity_count"],
+                            "gross_estimates": summary["gross_estimates"][:3],
+                            "gross_estimates_truncated": len(summary["gross_estimates"]) > 3,
+                            "flags": summary["flags"][:10],
+                            "flags_truncated": len(summary["flags"]) > 10,
+                            "reconciliation_flags": state["reconciliation_flags"],
+                            "detail": {"tool": "docket_read_document", "ref": ref},
+                        })
             if change.object_type == "work_session":
                 from docket.domain.work_time import elapsed_us
                 from docket.models import WorkSession

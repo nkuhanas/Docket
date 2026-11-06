@@ -11,12 +11,18 @@ from docket.domain.errors import DocketError
 from docket.mcp.instrumented import ProvenanceMCP
 from docket.plugin.business import model_function
 from docket.schemas.compensation import POLICY_TOOL_PURPOSES, GetCompensation
+from docket.schemas.financial_documents import FINANCIAL_TOOL_PURPOSES, ReadDocument
 from docket.schemas.work import WORK_TOOL_PURPOSES, GetWorkContext, QueryWorkSessions
 from docket.services.business_commands import public_validation_error
 from docket.services.compensation_evaluations import CompensationEvaluationService
 from docket.services.compensation_policies import (
     POLICY_COMMAND_MODELS,
     CompensationPolicyCommandService,
+)
+from docket.services.financial_document_reads import FinancialDocumentReadService
+from docket.services.financial_documents import (
+    DOCUMENT_COMMAND_MODELS,
+    FinancialDocumentCommandService,
 )
 from docket.services.native_context import NativeContextService
 from docket.services.work_commands import WORK_COMMAND_MODELS, WorkCommandService
@@ -29,6 +35,7 @@ WORK_COMMAND_TOOLS = (
     | frozenset(TIMER_COMMAND_MODELS)
     | frozenset(LINEAGE_COMMAND_MODELS)
     | frozenset(POLICY_COMMAND_MODELS)
+    | frozenset(DOCUMENT_COMMAND_MODELS)
 )
 
 
@@ -46,6 +53,8 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
                     service = (
                         WorkTimerCommandService
                         if name in TIMER_COMMAND_MODELS
+                        else FinancialDocumentCommandService
+                        if name in DOCUMENT_COMMAND_MODELS
                         else CompensationPolicyCommandService
                         if name in POLICY_COMMAND_MODELS
                         else WorkLineageCommandService
@@ -71,13 +80,16 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
                         **TIMER_COMMAND_MODELS,
                         **LINEAGE_COMMAND_MODELS,
                         **POLICY_COMMAND_MODELS,
+                        **DOCUMENT_COMMAND_MODELS,
                     }
                 )[name],
                 name,
                 invoke,
             ),
             name=name,
-            description={**WORK_TOOL_PURPOSES, **POLICY_TOOL_PURPOSES}[name],
+            description={**WORK_TOOL_PURPOSES, **POLICY_TOOL_PURPOSES, **FINANCIAL_TOOL_PURPOSES}[
+                name
+            ],
             annotations=ToolAnnotations(
                 read_only_hint=False,
                 destructive_hint=False,
@@ -91,6 +103,7 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
         *TIMER_COMMAND_MODELS,
         *LINEAGE_COMMAND_MODELS,
         *POLICY_COMMAND_MODELS,
+        *DOCUMENT_COMMAND_MODELS,
     ):
         register(name)
 
@@ -152,6 +165,27 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
         model_function(GetCompensation, "docket_get_compensation", compensation),
         name="docket_get_compensation",
         description=POLICY_TOOL_PURPOSES["docket_get_compensation"],
+        annotations=ToolAnnotations(
+            read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
+        ),
+    )
+
+    def document(arguments: dict[str, Any]) -> dict[str, Any]:
+        arguments.pop("request_ref", None)
+        arguments.pop("request_key", None)
+        try:
+            public = ReadDocument.model_validate(arguments)
+            with session_scope() as session:
+                return FinancialDocumentReadService(session).read(public)
+        except ValidationError as exc:
+            return public_validation_error(exc).as_dict()
+        except DocketError as exc:
+            return exc.as_dict()
+
+    server.add_tool(
+        model_function(ReadDocument, "docket_read_document", document),
+        name="docket_read_document",
+        description=FINANCIAL_TOOL_PURPOSES["docket_read_document"],
         annotations=ToolAnnotations(
             read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
         ),

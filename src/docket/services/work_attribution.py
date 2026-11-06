@@ -209,10 +209,36 @@ class WorkAttributionService:
             policies = CompensationPolicyService(self.session).summaries(head.ref_id)
             if policies:
                 result["policies"] = policies
+            from docket.models import FinancialDocument
+
+            documents = self.session.scalars(
+                select(FinancialDocument)
+                .where(
+                    FinancialDocument.engagement_ref == head.ref_id,
+                    FinancialDocument.operator_ref == read_operator(),
+                )
+                .order_by(FinancialDocument.updated_at.desc(), FinancialDocument.ref_id)
+                .limit(4)
+            ).all()
+            if documents:
+                result["documents"] = [
+                    {"ref": row.ref_id, "kind": row.kind, "status": row.status}
+                    for row in documents[:3]
+                ]
+                if len(documents) > 3:
+                    result["more_documents"] = {
+                        "object_type": "financial_document",
+                        "history_available": True,
+                    }
             return result
         revision = self.work_revision(head)
         spec = self.revision_spec(revision)
         state = spec.model_dump(mode="json", exclude_none=True, exclude={"time"})
+        from docket.services.work_claims import WorkClaimService
+
+        claimed = WorkClaimService(self.session).context(revision.ref_id)
+        if claimed:
+            state["claim_quantities"] = claimed
         raw = raw_time(spec.time)
         raw["breaks"] = [{"start": start, "end": end} for start, end in raw["breaks"]]
         state.update({key: value for key, value in raw.items() if value is not None})

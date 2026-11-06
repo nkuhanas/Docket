@@ -93,6 +93,7 @@ MAX_CANONICAL_ACTIONS = 1_000
 MAX_PROVIDER_OPERATIONS = 500
 
 _GROUP_FOR_OBJECT_TYPE = {
+    "financial_document": "tracked_context_changes",
     "entity": "registry_changes",
     "identity_handle": "registry_changes",
     "identity_binding": "registry_changes",

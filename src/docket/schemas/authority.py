@@ -21,6 +21,7 @@ from docket.schemas.events import (
     MaterializedEventPatchSpec,
 )
 from docket.schemas.evidence import FieldEvidenceInput
+from docket.schemas.financial_documents import DocumentRef, TimesheetSpec, TimesheetStatusSpec
 from docket.schemas.policy import (
     CalendarLaneCreateSpec,
     CalendarLanePatchSpec,
@@ -572,6 +573,33 @@ def mutation_input_json(
 
     retain(value, result, patch=preserve_explicit_nulls)
     return result
+
+
+class TimesheetPrepare(MutationBase):
+    mutation_type: Literal["timesheet_prepare"] = "timesheet_prepare"
+    action: Literal["create"]
+    object_type: Literal["financial_document"]
+    object_ref: None = None
+    create_spec: TimesheetSpec
+    payload: None = None
+
+
+class TimesheetTransition(MutationBase):
+    mutation_type: Literal["timesheet_transition"] = "timesheet_transition"
+    action: Literal["update"]
+    object_type: Literal["financial_document"]
+    object_ref: DocumentRef
+    create_spec: None = None
+    payload: TimesheetStatusSpec
+
+
+class TimesheetRefresh(MutationBase):
+    mutation_type: Literal["timesheet_refresh"] = "timesheet_refresh"
+    action: Literal["update"]
+    object_type: Literal["financial_document"]
+    object_ref: DocumentRef
+    create_spec: None = None
+    payload: TimesheetSpec
 
 
 class EngagementCreate(MutationBase):
@@ -1190,7 +1218,10 @@ type LaneMutation = (
 )
 type EventMutation = CanonicalEventCreate | CanonicalEventModify | CanonicalEventCancel
 type TrackedContextMutation = (
-    WorkTimerStart
+    TimesheetPrepare
+    | TimesheetTransition
+    | TimesheetRefresh
+    | WorkTimerStart
     | EngagementPayTermsSet
     | EngagementReportingRulesSet
     | WorkSessionSplit
@@ -1219,7 +1250,10 @@ type TrackedContextMutation = (
     | ReminderPlanRetract
 )
 type CanonicalMutation = (
-    WorkTimerStart
+    TimesheetPrepare
+    | TimesheetTransition
+    | TimesheetRefresh
+    | WorkTimerStart
     | EngagementPayTermsSet
     | EngagementReportingRulesSet
     | WorkSessionSplit

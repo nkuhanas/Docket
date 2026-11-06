@@ -199,6 +199,7 @@ class NativeContextService:
             "eng",
             "work",
             "cpol",
+            "fdoc",
         }
         objects: list[dict[str, Any]] = []
         versions: dict[str, int] = {}
@@ -236,13 +237,21 @@ class NativeContextService:
                     message="The selected object no longer exists.",
                     details={"field": "refs", "ref": ref},
                 )
-            if prefix in {"eng", "work", "cpol"}:
+            if prefix in {"eng", "work", "cpol", "fdoc"}:
                 from docket.services.work_attribution import WorkAttributionService
 
                 service = WorkAttributionService(self.session)
                 row = service.head(model, ref)
-                if prefix == "cpol":
-                    from docket.models import Engagement
+                if prefix == "fdoc":
+                    from docket.services.financial_documents import FinancialDocumentService
+
+                    documents = FinancialDocumentService(self.session)
+                    row = documents.head(ref)
+                    state = documents.view(row)
+                    versions[row.engagement_ref] = service.head(
+                        Engagement, row.engagement_ref,
+                    ).version
+                elif prefix == "cpol":
                     from docket.services.compensation_policies import CompensationPolicyService
 
                     policy_service = CompensationPolicyService(self.session)
@@ -337,7 +346,11 @@ class NativeContextService:
                 actions += ["docket_update_" + kind]
             if kind == "engagement":
                 actions += ["docket_set_pay_terms", "docket_set_reporting_rules",
-                            "docket_get_compensation"]
+                            "docket_get_compensation", "docket_prepare_timesheet"]
+            if kind == "financial_document" and row.kind == "timesheet":
+                actions += ["docket_update_timesheet"]
+                if row.status in {"draft", "verified"}:
+                    actions += ["docket_refresh_timesheet"]
             if kind == "compensation_policy":
                 actions += ["docket_set_pay_terms" if row.kind == "pay"
                             else "docket_set_reporting_rules"]

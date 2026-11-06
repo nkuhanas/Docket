@@ -20,6 +20,7 @@ from docket.models import (
     CanonicalEvent,
     CaseItem,
     ChangeSet,
+    CompensationEvaluation,
     Conflict,
     ContextPacket,
     ConversationRecord,
@@ -29,6 +30,8 @@ from docket.models import (
     EngagementRevision,
     Entity,
     Fact,
+    FinancialDocument,
+    FinancialDocumentRevision,
     IdentityHandle,
     IntentSession,
     IntentTurn,
@@ -51,12 +54,14 @@ from docket.models import (
     TemporalCalendarProjection,
     ToolInvocation,
     TriageRun,
+    WorkClaim,
     WorkSession,
     WorkSessionRevision,
 )
 
 PROVENANCE_PREFIXES = frozenset(
     {
+        "fdoc", "fdrev", "clm", "ceval",
         "eng", "erev", "work", "wrev",
         "utt",
         "req",
@@ -102,6 +107,10 @@ PROVENANCE_PREFIXES = frozenset(
 )
 
 _PHASE_TWO_MODELS: dict[str, type[Any]] = {
+    "fdoc": FinancialDocument,
+    "fdrev": FinancialDocumentRevision,
+    "clm": WorkClaim,
+    "ceval": CompensationEvaluation,
     "eng": Engagement,
     "erev": EngagementRevision,
     "work": WorkSession,
@@ -189,6 +198,22 @@ class ProvenanceRefService:
                 message="A referenced provenance object does not exist.",
                 details={"ref": ref_id},
             )
+        if isinstance(
+            item, FinancialDocument | FinancialDocumentRevision | WorkClaim | CompensationEvaluation
+        ):
+            from docket.services.financial_documents import FinancialDocumentService
+
+            if isinstance(item, CompensationEvaluation):
+                from docket.agent_auth import require_principal
+
+                if item.operator_ref != require_principal("read").operator_ref:
+                    raise DocketError(
+                        code="financial_basis_unavailable", message="Select owned work."
+                    )
+            else:
+                FinancialDocumentService(self.session).head(
+                    item.ref_id if isinstance(item, FinancialDocument) else item.document_ref
+                )
         if isinstance(item, Engagement | WorkSession | EngagementRevision | WorkSessionRevision):
             from docket.services.work_attribution import WorkAttributionService
 

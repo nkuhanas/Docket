@@ -38,6 +38,8 @@ from docket.models import (
     EngagementRevision,
     Entity,
     Fact,
+    FinancialDocument,
+    FinancialDocumentRevision,
     GatewayLifetime,
     GmailSource,
     IdentityBinding,
@@ -65,6 +67,8 @@ from docket.models import (
     TemporalCalendarProjection,
     ToolInvocation,
     TriageRun,
+    WorkClaim,
+    WorkClaimEvent,
     WorkSession,
     WorkSessionRevision,
 )
@@ -83,6 +87,9 @@ AUDIT_OUTPUT_BYTES = 64 * 1024
 MAX_TEXT_CHUNK_BYTES = 32 * 1024
 
 _PREFIX_MODELS: dict[str, tuple[str, type[Any], str]] = {
+    "fdoc": ("financial_document", FinancialDocument, "created_at"),
+    "fdrev": ("financial_document_revision", FinancialDocumentRevision, "created_at"),
+    "clm": ("work_claim", WorkClaim, "created_at"),
     "cpol": ("compensation_policy", CompensationPolicy, "created_at"),
     "cprv": ("compensation_policy_revision", CompensationPolicyRevision, "created_at"),
     "cptr": ("compensation_term", CompensationTerm, "created_at"),
@@ -249,6 +256,26 @@ class HistoryService:
                 "created_by_changeset_ref": item.created_by_changeset_ref,
                 "created_at": _iso(item.created_at),
             }
+        if isinstance(item, FinancialDocument | FinancialDocumentRevision | WorkClaim):
+            from docket.services.financial_documents import FinancialDocumentService
+
+            documents = FinancialDocumentService(self.session)
+            financial_head = documents.head(
+                item.ref_id if isinstance(item, FinancialDocument) else item.document_ref
+            )
+            if isinstance(item, FinancialDocument):
+                return {**base, "state": documents.view(financial_head)}
+            if isinstance(item, FinancialDocumentRevision):
+                return {**base, "parent_ref": financial_head.ref_id, "revision": item.revision,
+                        "status": item.status, "evaluation_ref": item.evaluation_ref,
+                        "date_from": item.date_from.isoformat(),
+                        "date_to": item.date_to.isoformat(),
+                        "created_by_changeset_ref": item.created_by_changeset_ref}
+            return {**base, "document_ref": financial_head.ref_id, "status": item.status,
+                    "source_revision_ref": item.source_revision_ref,
+                    "raw_quantity_us": item.end_us - item.start_us,
+                    "component_key": item.component_key, "engagement_ref": item.engagement_ref,
+                    "version": item.version}
         if isinstance(item, Engagement | WorkSession):
             from docket.services.work_attribution import WorkAttributionService
 
@@ -922,6 +949,33 @@ class HistoryService:
                 select(OperatorUtterance.ref_id).where(OperatorUtterance.id == item.utterance_id)
             )
         if view == "audit":
+            if isinstance(item, WorkClaim):
+                events = self.session.scalars(select(WorkClaimEvent).where(
+                    WorkClaimEvent.claim_ref == item.ref_id
+                ).order_by(WorkClaimEvent.version)).all()
+                raw = json.dumps({"claim_ref": item.ref_id,
+                    "origin_ref": item.origin_ref, "start_us": item.start_us, "end_us": item.end_us,
+                    "component_key": item.component_key, "evaluation_ref": item.evaluation_ref,
+                    "source_revision_ref": item.source_revision_ref,
+                    "history": [{"version": row.version, "status": row.status,
+                        "document_revision_ref": row.document_revision_ref,
+                        "created_by_changeset_ref": row.created_by_changeset_ref,
+                        "created_at": _iso(row.created_at)} for row in events]},
+                    ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                chunk = _text_chunk(raw, text_offset, min(text_limit, 8192))
+                chunk["claim_json_chunk"] = chunk.pop("verbatim_text_chunk")
+                entry.update(chunk)
+            if isinstance(item, FinancialDocumentRevision):
+                raw = json.dumps({"revision_ref": item.ref_id, "document_ref": item.document_ref,
+                    "revision": item.revision, "status": item.status,
+                    "evaluation_ref": item.evaluation_ref, "snapshot": item.snapshot_json,
+                    "basis_refs": item.basis_refs,
+                    "created_by_changeset_ref": item.created_by_changeset_ref,
+                    "observation": item.observation, "observation_at": _iso(item.observation_at)},
+                    ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                chunk = _text_chunk(raw, text_offset, min(text_limit, 8192))
+                chunk["document_json_chunk"] = chunk.pop("verbatim_text_chunk")
+                entry.update(chunk)
             if isinstance(item, CompensationPolicyRevision):
                 from docket.services.compensation_policies import (
                     CompensationPolicyService,
@@ -1117,6 +1171,15 @@ class HistoryService:
                 continue
             time_column = getattr(model, time_field)
             statement: Select[Any] = select(model)
+            if model in {FinancialDocument, FinancialDocumentRevision, WorkClaim}:
+                from docket.services.work_attribution import read_operator
+
+                if model is FinancialDocumentRevision:
+                    statement = statement.join(
+                        FinancialDocument, FinancialDocument.ref_id == model.document_ref
+                    ).where(FinancialDocument.operator_ref == read_operator())
+                else:
+                    statement = statement.where(model.operator_ref == read_operator())
             if model in {CompensationPolicy, CompensationPolicyRevision, CompensationTerm}:
                 from docket.services.work_attribution import read_operator
 

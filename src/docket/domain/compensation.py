@@ -269,6 +269,10 @@ class CompensationCalculator:
                 continue
             group = self.grouping(piece)
             scope = r.rounding_scope
+            if r.group_with_payer and not group[1] and scope in {"day", "period"}:
+                piece.flags.add("rounding_group_payer_unknown")
+                piece.reportable_us = None
+                continue
             if scope in {"day", "period"} and piece.day is None:
                 if scope == "period" and piece.source.period_start and piece.source.period_end:
                     lo, hi = period(piece.source.period_start, r, self.first, self.last)
@@ -378,6 +382,17 @@ class CompensationCalculator:
                 ot_groups[bucket].append(p)
             for eligible in ot_groups.values():
                 self._overtime_bucket(eligible, Fraction(threshold) * HOUR)
+
+        for piece in pieces:
+            rules = piece.rules.terms if piece.rules else None
+            if (
+                rules
+                and rules.group_with_payer
+                and rules.overtime_after_hours is not None
+                and (piece.pay is None or piece.pay.terms.payer_ref is None)
+            ):
+                piece.overtime_us = None
+                piece.flags.add("overtime_group_payer_unknown")
 
     @staticmethod
     def _overtime_bucket(members: list[Contribution], threshold: Fraction) -> None:

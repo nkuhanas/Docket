@@ -17,6 +17,9 @@ class PublicRefDefinition:
 
 
 _DEFINITIONS = (
+    PublicRefDefinition("fdoc", "FinancialDocument"),
+    PublicRefDefinition("fdrev", "FinancialDocumentRevision"),
+    PublicRefDefinition("clm", "WorkClaim"),
     PublicRefDefinition("ceval", "CompensationEvaluation"),
     PublicRefDefinition("cpol", "CompensationPolicy"),
     PublicRefDefinition("cprv", "CompensationPolicyRevision"),

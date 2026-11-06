@@ -216,6 +216,27 @@ def test_reported_dates_order_overtime_without_fabricating_clock_times():
     assert summarize(pieces)["overtime_us"] == 5 * HOUR
 
 
+def test_explicit_employer_grouping_with_unknown_payer_remains_unresolved():
+    source = work(minutes=60, day="2026-11-03")
+    pieces = calculate(
+        [source],
+        reporting={
+            "eng1": [
+                rules(group_with_payer=True, overtime_after_hours=40, overtime_multiplier="1.5")
+            ]
+        },
+    )
+    assert pieces[0].gross is None and pieces[0].overtime_us is None
+    assert summarize(pieces)["unresolved_gross_count"] == 1
+    rounded = calculate(
+        [source],
+        reporting={
+            "eng1": [rules(group_with_payer=True, rounding_minutes=15, rounding_scope="day")]
+        },
+    )
+    assert rounded[0].gross is None and rounded[0].reportable_us is None
+
+
 def test_unknown_within_day_overtime_order_and_separate_currencies():
     payer = "ent_00000000000000000000000000"
     sources = [

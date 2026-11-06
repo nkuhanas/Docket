@@ -84,6 +84,7 @@ def public_piece(piece: Contribution) -> dict[str, Any]:
             "reported_compensation_class": piece.source.reported_class,
             "overtime_us": piece.overtime_us,
             "pay_term_ref": piece.pay.ref if piece.pay else None,
+            "pay_basis": pay.basis if pay else None,
             "reporting_term_ref": piece.rules.ref if piece.rules else None,
             "currency": pay.currency if pay else None,
             "gross_line_estimate": money(piece.gross, pay.money_decimals or 0)

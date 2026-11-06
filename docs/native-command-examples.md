@@ -202,4 +202,34 @@ preserves reported classification. Salary/fixed-fee terms do not become hourly
 earnings. Follow next_cursor for detail pages; use export_cursor with format json
 or csv for the exact frozen calculation, continuing until complete. Later corrections
 do not alter that retained result. Evaluation creates no financial claim, submission,
-invoice or payment. Formal documents and settlement are later implementation slices.
+invoice or payment. Invoices, expenses and settlement are later implementation slices.
+
+Prepare a formal timesheet with `docket_prepare_timesheet`:
+
+```json
+{"context_id":"<engagement-context>","operation_id":"example-timesheet","engagement_ref":"<selected-engagement>","date_from":"2026-11-02","date_to":"2026-11-09","timezone":"America/Los_Angeles"}
+```
+
+Omit both dates for the current configured period (or configured week). Preparation
+creates a canonical draft and reserves available work once; preview reserves nothing.
+The receipt supplies the document reference, known time and unresolved coverage.
+Missing rates do not fabricate zero pay. `docket_refresh_timesheet` takes context,
+operation identity and timesheet_ref to regenerate a draft after corrections.
+
+After a reported manual submission, use `docket_update_timesheet`:
+
+```json
+{"context_id":"<timesheet-context>","operation_id":"example-reported-submission","timesheet_ref":"<selected-document>","status":"submitted","note":"Reported manual submission"}
+```
+
+This records an observation, without sending anything externally or recording money
+received. Verification can be recorded separately. Approval/rejection retain the
+submitted content; cancelled drafts release reservations. A submitted report uses a
+new amendment instead of refresh. Corrected or split work preserves existing claims.
+
+`docket_read_document` takes ref and optional format summary/json/csv/markdown. Exact
+fdrev_ references preserve a particular revision; continuation cursors pin it across
+later changes. JSON/CSV retain references and calculation basis; Markdown provides a
+usable timesheet rendition. Concatenate content until complete. No export creates
+submission, delivery or payment. Work context derives reserved/reported/issued/available
+quantities; engagement context links recent documents and history covers older drafts.

@@ -73,10 +73,30 @@ not invented hourly earnings. Read the summary before quoting a total; known
 subtotals do not establish complete reporting or payment. Follow next_cursor for
 bounded details. The export_cursor starts lossless JSON/CSV of the same frozen
 calculation, unaffected by later work/rate corrections. Evaluation creates no claim,
-submission or payment. Formal timesheets/invoices and settlement remain unfinished.
+submission or payment. Invoice/expense and settlement operations remain unfinished.
 For complete
 immutable policy history, follow the returned audit ref and concatenate
 policy_json_chunk using text_next_offset until absent.
+
+Use `docket_prepare_timesheet` with an engagement and optional explicit period.
+Omitted bounds use its configured current reporting period or the current week.
+The canonical draft reserves available work quantities; an optional preview reserves
+nothing. The receipt includes the document reference, known time and relevant gaps.
+Missing rates do not block a draft or fabricate zero pay. Engagement context links
+recent documents; history can find older or abandoned drafts.
+Use `docket_refresh_timesheet` after correcting draft work/terms. It replaces that
+draft's reservations atomically and retains earlier revisions. Work context derives
+reserved/reported/issued/available quantities from stable work lineage, including
+after corrections or splits. Do not recreate claim allocation graphs yourself.
+`docket_update_timesheet` records verification, cancellation or reported manual
+submission/approval/rejection. Verification is optional before recording a valid
+manual submission. The command sends nothing to an employer. Record submission or
+approval only when supported by an authorized report/evidence, never from export.
+Cancelled drafts release reservations; submitted content stays immutable. Use
+amends_ref on a new prepared report for later corrections; review its reconciliation
+flags and existing claims. A new revision does not make previously claimed hours fresh.
+`docket_read_document` reads a document or exact revision as summary, JSON, CSV or
+Markdown. Follow cursor until complete; export creates no delivery or payment.
 
 Use named business tools with ordinary fields. Creating a meeting takes title,
 ISO start/end, timezone and a calendar_ref from context. Docket derives its support

@@ -546,6 +546,191 @@ async def check_compensation_policies(settings, factory, principal):
         assert "80.123456789" not in json.dumps(rows, default=str)
 
 
+async def check_financial_documents(settings, factory, principal):
+    from docket.agent_auth import AgentCallContext, AgentPrincipal, agent_call_context
+    from docket.models import (
+        FinancialDocument,
+        FinancialDocumentRevision,
+        WorkClaim,
+        WorkClaimEvent,
+    )
+    from docket.plugin.server import PluginMCP
+
+    async def call(name, arguments, actor=principal):
+        token = agent_call_context.set(AgentCallContext(actor))
+        try:
+            return (await PluginMCP(settings).call_tool(name, arguments)).structured_content
+        finally:
+            agent_call_context.reset(token)
+
+    packet = await call("docket_get_work_context", {})
+    created = await call(
+        "docket_create_engagement",
+        {
+            "context_id": packet["context_id"],
+            "operation_id": "pg-timesheet-engagement",
+            "label": "Synthetic timesheet engagement",
+            "kind": "employment",
+        },
+    )
+    assert created.get("disposition") == "committed", created
+    eng = next(ref for ref in created["affected_refs"] if ref.startswith("eng_"))
+    packet = await call("docket_get_work_context", {"refs": [eng]})
+    logged = await call(
+        "docket_log_work_session",
+        {
+            "context_id": packet["context_id"],
+            "operation_id": "pg-timesheet-work",
+            "description": "Synthetic claim source",
+            "engagement_ref": eng,
+            "duration_minutes": 90,
+            "work_date": "2026-11-03",
+            "timezone": "UTC",
+        },
+    )
+    assert logged.get("disposition") == "committed", logged
+    work = logged["work_records"][0]["ref"]
+    packet = await call("docket_get_work_context", {"refs": [eng]})
+    proposals = []
+    for index in range(2):
+        prepared = await call(
+            "docket_prepare_timesheet",
+            {
+                "context_id": packet["context_id"],
+                "operation_id": f"pg-timesheet-preview-{index}",
+                "engagement_ref": eng,
+                "date_from": "2026-11-02",
+                "date_to": "2026-11-09",
+                "timezone": "UTC",
+                "preview": True,
+            },
+        )
+        assert prepared.get("disposition") == "prepared", prepared
+        proposals.append(prepared)
+    with factory() as session:
+        assert not session.scalar(select(WorkClaim)) and not session.scalar(
+            select(FinancialDocument)
+        )
+    barrier = Barrier(2)
+
+    def apply(proposal):
+        barrier.wait(timeout=10)
+        return asyncio.run(call("docket_apply_change", {"change_id": proposal["change_id"]}))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(apply, proposals))
+    assert sum(row.get("disposition") == "committed" for row in outcomes) == 1, outcomes
+    winner = next(row for row in outcomes if row.get("disposition") == "committed")
+    doc = next(ref for ref in winner["affected_refs"] if ref.startswith("fdoc_"))
+    packet = await call("docket_get_work_context", {"refs": [doc]})
+    submitted = await call(
+        "docket_update_timesheet",
+        {
+            "context_id": packet["context_id"],
+            "operation_id": "pg-timesheet-submit",
+            "timesheet_ref": doc,
+            "status": "submitted",
+            "note": "Synthetic reported manual submission",
+        },
+    )
+    assert submitted.get("disposition") == "committed", submitted
+    with factory() as session:
+        revision = session.scalar(
+            select(FinancialDocumentRevision).where(
+                FinancialDocumentRevision.document_ref == doc,
+                FinancialDocumentRevision.status == "submitted",
+            )
+        )
+        submitted_ref, snapshot = revision.ref_id, revision.snapshot_json
+    packet = await call("docket_get_work_context", {"refs": [work]})
+    corrected = await call(
+        "docket_update_work_session",
+        {
+            "context_id": packet["context_id"],
+            "operation_id": "pg-timesheet-correct",
+            "work_ref": work,
+            "duration_minutes": 120,
+        },
+    )
+    assert corrected.get("disposition") == "committed", corrected
+    packet = await call("docket_get_work_context", {"refs": [eng, doc]})
+    amended = await call(
+        "docket_prepare_timesheet",
+        {
+            "context_id": packet["context_id"],
+            "operation_id": "pg-timesheet-amend",
+            "engagement_ref": eng,
+            "date_from": "2026-11-02",
+            "date_to": "2026-11-09",
+            "timezone": "UTC",
+            "amends_ref": doc,
+        },
+    )
+    assert amended.get("disposition") == "committed", amended
+    amendment = next(ref for ref in amended["affected_refs"] if ref.startswith("fdoc_"))
+    with factory() as session:
+        claim = session.scalar(select(WorkClaim).where(WorkClaim.document_ref == amendment))
+        assert claim.end_us - claim.start_us == 30 * 60_000_000
+        claim_ref, claim_version = claim.ref_id, claim.version
+        assert (
+            session.scalar(
+                select(FinancialDocumentRevision.snapshot_json).where(
+                    FinancialDocumentRevision.ref_id == submitted_ref
+                )
+            )
+            == snapshot
+        )
+    for statement, message in (
+        (
+            update(FinancialDocumentRevision)
+            .where(FinancialDocumentRevision.ref_id == submitted_ref)
+            .values(snapshot_json={}),
+            "immutable",
+        ),
+        (update(WorkClaim).where(WorkClaim.ref_id == claim_ref).values(end_us=1), "immutable"),
+        (delete(WorkClaimEvent).where(WorkClaimEvent.claim_ref == claim_ref), "immutable"),
+        (
+            update(WorkClaim)
+            .where(WorkClaim.ref_id == claim_ref)
+            .values(status="reported", version=claim_version + 1),
+            "transition evidence",
+        ),
+    ):
+        try:
+            with factory.begin() as session:
+                session.execute(statement)
+        except DBAPIError as exc:
+            assert message in str(exc.orig)
+        else:
+            raise AssertionError("PostgreSQL allowed rewriting or incomplete financial history")
+    other = AgentPrincipal(
+        "synthetic-other-finance", "synthetic-other-operator", "interactive", frozenset({"read"})
+    )
+    for name, arguments in (
+        ("docket_read_document", {"ref": doc, "format": "json"}),
+        ("docket_get_work_context", {"refs": [doc]}),
+        ("docket_get_history_entry", {"ref": submitted_ref, "view": "audit"}),
+    ):
+        denied = await call(name, arguments, other)
+        assert denied.get("ok") is False, denied
+    alternate = AgentPrincipal(
+        "synthetic-same-owner-finance", principal.operator_ref, "interactive", frozenset({"read"})
+    )
+    read = await call("docket_read_document", {"ref": submitted_ref}, alternate)
+    assert read.get("ok") and read["document"]["status"] == "submitted", read
+    packet = await call("docket_get_work_context", {"refs": [amendment]})
+    cancelled = await call(
+        "docket_update_timesheet",
+        {
+            "context_id": packet["context_id"],
+            "operation_id": "pg-timesheet-cancel",
+            "timesheet_ref": amendment,
+            "status": "cancelled",
+        },
+    )
+    assert cancelled.get("disposition") == "committed", cancelled
+
+
 async def check_native_lineage(settings, factory, principal):
     from docket.agent_auth import AgentCallContext, agent_call_context
     from docket.models import (
@@ -884,6 +1069,10 @@ async def check():
         CompensationTerm,
         Engagement,
         EngagementRevision,
+        FinancialDocument,
+        FinancialDocumentRevision,
+        WorkClaim,
+        WorkClaimEvent,
         WorkLineageEdge,
         WorkQuantityAllocation,
         WorkQuantityBasis,
@@ -909,6 +1098,10 @@ async def check():
     engine = configure_database(settings.database_url)
     factory = get_session_factory()
     tables = (
+        FinancialDocument,
+        FinancialDocumentRevision,
+        WorkClaim,
+        WorkClaimEvent,
         CompensationEvaluation,
         CompensationPolicy,
         CompensationPolicyRevision,
@@ -1286,6 +1479,7 @@ async def check():
     await check_native_timers(settings, factory, principal)
     await check_native_lineage(settings, factory, principal)
     await check_compensation_policies(settings, factory, principal)
+    await check_financial_documents(settings, factory, principal)
     changeset_ref = created["changeset_ref"]
     with factory.begin() as session:
         request_ref = session.scalar(
@@ -1483,6 +1677,7 @@ async def check():
                 "quantity_and_lineage_immutability": "passed",
                 "effective_compensation_policies_and_concurrency": "passed",
                 "frozen_compensation_evaluation_and_owner_isolation": "passed",
+                "timesheet_claim_race_and_conserved_amendment": "passed",
                 "compensation_owner_isolation_and_privacy": "passed",
                 "composite_time_precision_and_sealing": "passed",
                 "work_report_aggregates_and_exports": "passed",

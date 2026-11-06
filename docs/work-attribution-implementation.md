@@ -26,16 +26,16 @@ does not invent a payroll/banking integration or require its credentials.
 | P0b timers | Retry-stable instant, exact preview, start/pause/resume/stop/switch, restart survival; PostgreSQL single-active and races | Five named commands implemented; native/PostgreSQL races and fresh-process recovery checked; release acceptance pending |
 | P0b lineage | Atomic split/merge preserves known quantities/gaps/attribution; superseded parents excluded; stale races reject affected operation | Interval/duration and mixed/incomplete/differently dated composition implemented; MCP/PostgreSQL checks pass. Full release acceptance pending |
 | P1a policies | Effective dates, exact rates/currencies, hourly/nonhourly/unpaid distinction, explicit rounding/period/limits; unknown eligibility/estimates remain partial | Typed timelines and exact evaluation implemented; MCP/PostgreSQL history, snapshot isolation, rounding, overtime and coverage checks pass; full release acceptance pending |
-| P1a formal timesheets | Exact contributions, reporting lifecycle, immutable submitted snapshots, same-purpose duplicate-quantity protection, manual submission observations | Pending |
-| P1b claims/invoices | Stable lineage across corrections/splits, partial reservations/concurrent drafts, cancellation release, exact numbered issued snapshots, adjustments/reconciliation flags | Pending |
+| P1a formal timesheets | Exact contributions, reporting lifecycle, immutable submitted snapshots, same-purpose duplicate-quantity protection, manual submission observations | Implemented in source; real MCP and PostgreSQL claim races, correction/amendment and immutable history checks pass; release acceptance pending |
+| P1b claims/invoices | Stable lineage across corrections/splits, partial reservations/concurrent drafts, cancellation release, exact numbered issued snapshots, adjustments/reconciliation flags | Shared work-claim ledger and timesheet reservations/reporting implemented; invoice issuance/numbering and financial adjustment workflows pending |
 | P1b expenses | Independent exact money/currency/date/attribution/eligibility/ownership, optional protected receipt, submission/approval and distinct reimbursement claim | Pending |
 | P1c settlement | Partial/unmatched/overpaid payments, allocations/credits/reversals, external-ID dedup, gross/net differences and outstanding/due balances without false receipt | Pending |
-| Formal export | Deterministic CSV/JSON and usable invoice/timesheet rendition with references, policy/calculation/revision basis; no implicit sending | Pending |
+| Formal export | Deterministic CSV/JSON and usable invoice/timesheet rendition with references, policy/calculation/revision basis; no implicit sending | Timesheet JSON/CSV/Markdown and exact-revision continuation implemented; invoice/export-specific acceptance pending |
 | P2 operations | Source-grounded workload/capacity/interval unions, outcomes/professional history, explicit assumptions/coverage and suggested omissions without invented performed work | Pending |
 | P2 follow-up | Typed work/finance reminder/case/event subjects, bounded exception reconciliation, retained inbox, suppression/preferences and client scheduling | Pending |
 | Optional visibility | Explicit correlated actual-time Calendar projection, no duplicate editable time/accounting or default provider effect | Pending |
 | Authority/provenance | OAuth/current local grant, req_/call_, owner isolation/revocation, full approved automation, restricted triage, optional honest capture and sensitive-log protection | New commands enforce write admission and retain req_/call_ roots; read-only rejection checked; complete new-domain isolation/revocation/privacy acceptance pending |
-| Contracts/host | Actual schemas and budgets, first-valid-attempt MCP journeys, generated reference/skill, same registered plugin identity and actual advertised capabilities | Thirteen P0 definitions and three policy/evaluation tools measured within per-tool budgets; generated reference/skill aligned. Hosted refresh/release pending |
+| Contracts/host | Actual schemas and budgets, first-valid-attempt MCP journeys, generated reference/skill, same registered plugin identity and actual advertised capabilities | Thirteen P0, three policy/evaluation and four formal-report definitions fit per-tool budgets; generated reference/skill aligned. Hosted refresh/release pending |
 | Storage/operations | Fresh/populated PostgreSQL migrations, constraints/locking/races, protected history and migration-specific recovery | Initial work schema round-trip/immutability/uniqueness verified on PostgreSQL; full release pending |
 | Release | Local gate/affected groups, clean-source tested image, reviewed PR/merge, synchronized source, drain/idle/backup/migration/postdeploy and host evidence | Pending |
 
@@ -518,3 +518,71 @@ Formal timesheets and shared claim/reservation protection are next. P1b/P1c, P2,
 optional actual-time visibility, complete release acceptance, reviewed publication,
 deployment and the same hosted plugin refresh remain unfinished. These are source
 checks, not production activation or a completed full amendment.
+
+### P1a: formal timesheets and shared work claims
+
+Three flat commands prepare, refresh and update timesheets; one document read serves
+summary/JSON/CSV/Markdown. Current-period preparation derives explicit reporting
+anchors/week boundaries, while explicit bounds remain available. Receipts return the
+document, known time, status and relevant gaps directly. Optional preview reserves
+nothing. Canonical drafts reserve raw work units; refreshing replaces reservations
+atomically and retains earlier document/claim transitions. Missing rates remain
+unknown rather than preventing valid report preparation or manufacturing zero pay.
+
+The shared claim ledger uses conserved work-origin coordinates and explicit economic
+components. Changing an engagement label/reference does not make the same base units
+claimable twice. PostgreSQL serializes reservations on origins and rejects overlapping
+active claims. Already reported units can be referenced by a later report without
+creating another entitlement. A 90-minute reported session becoming 120 creates only
+30 newly reservable minutes. Cancellation releases draft reservations with retained
+events; split/merge/correction lineage keeps current availability coherent.
+
+Timesheet verification is optional before recording a valid reported manual
+submission. Submission/approval/rejection create retained revisions; the submitted
+snapshot stays immutable. Draft refresh requires current versions. Source/rate
+changes produce reconciliation flags, without rewriting earlier formal reports.
+The comparison uses applicable values/coverage rather than term IDs, so a future
+rate change does not flag an unaffected historical report. Newly configured terms
+surface as changed coverage. Configured employer grouping with an unknown payer
+leaves the affected rounding/overtime amount unresolved.
+Missing/unplaced time and relevant overlap/lineage issues affect finalization of the
+report, while ordinary work recording and unrelated commands continue. None of these
+operations submits externally, records payment or creates Calendar/provider effects.
+
+Migration 20261105a7b8 adds typed financial document heads, immutable revisions,
+work claims and retained claim transitions. Deferred PostgreSQL guards require a
+matching revision/event for each head version, forbid late claim insertion outside
+the retained draft membership, protect source quantities and exact monetary fractions,
+and preserve submitted content. No existing data is backfilled. Populated downgrade
+refuses to discard documents/claims; retain compatible source and backup and use a
+forward repair. Image rollback does not reverse this schema.
+
+Bounded work context derives reserved/reported/issued/available quantities; engagement
+context links recent documents and owner-filtered history covers older drafts. Exact
+revision JSON/CSV/Markdown exports pin immutable work descriptions, quantities, policy
+and calculation basis. UTF-8 continuation preserves entire records across chunks.
+Previous-revision links and bounded claim audit chunks retain navigable history.
+Reported approval remains independent of payment. Invoice issuance/settlement remain
+future work over this same ledger.
+
+Evidence:
+
+- Native gate: 232 passed in 35.18 seconds, with Ruff and strict mypy for 219 source
+  files. Storage: 123 passed in 21.69 seconds. Release tooling: 52 passed in 2.53
+  seconds. Focused journeys: 3 passed in 3.31 seconds, including configured
+  week boundaries, authority rejection, stale proposals, reported approval, UTF-8
+  JSON/CSV/Markdown exports, immutable submitted content and split availability.
+- Disposable PostgreSQL 16.9 passes migration/model parity and empty round-trip,
+  concurrent prepared drafts with one reservation winner, 90→120-minute conserved
+  amendment, immutable submitted revisions/claim quantities/events, required transition
+  evidence, cross-owner read denial and canonical same-owner reads from another
+  connection. Additional checks verify current 90-minute reported/30-minute available
+  quantities and compact durable financial receipts. Containers were removed.
+- Actual discovery: 91 tools / 61 typed mutation effects, 146,128 bytes. Prepare input
+  is 1,101 bytes / definition 1,680; update 846 / 1,399; refresh 563 / 1,124; document
+  read 429 / 969. All fit 4/6 KiB limits. No client allocation graph, UUID, family-wide
+  action union or new OAuth scope is required. Global instructions stay 1,643 bytes.
+
+P1b invoices/expenses, P1c settlement, P2 workload/follow-up, optional actual-time
+visibility and full release/host activation remain unfinished. These source checks
+create no real employer/work/payment data and do not complete the full amendment.
