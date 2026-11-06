@@ -12,10 +12,18 @@ from docket.config import Settings
 from docket.database import session_scope
 from docket.domain.errors import DocketError
 from docket.mcp.instrumented import ProvenanceMCP
-from docket.schemas.business import BUSINESS_DEFINITIONS, BusinessDefinition, RetractRecord
+from docket.schemas.business import (
+    BUSINESS_DEFINITIONS,
+    BusinessDefinition,
+    RetractRecord,
+    public_business_tool,
+)
 from docket.services.business_commands import BusinessCommandService, public_validation_error
 
-BUSINESS_TOOLS = frozenset(definition.tool_name for definition in BUSINESS_DEFINITIONS) | {
+BUSINESS_TOOLS = frozenset(
+    definition.tool_name for definition in BUSINESS_DEFINITIONS
+    if public_business_tool(definition) == definition.tool_name
+) | {
     "docket_retract_record",
 }
 
@@ -97,7 +105,8 @@ def register_business(server: ProvenanceMCP, settings: Settings) -> None:
         )
 
     for definition in BUSINESS_DEFINITIONS:
-        register(definition)
+        if public_business_tool(definition) == definition.tool_name:
+            register(definition)
 
     def retract(arguments: dict[str, Any]) -> dict[str, Any]:
         request_ref = arguments.pop("request_ref", None)

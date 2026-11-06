@@ -50,6 +50,8 @@ from docket.models import (
     FinancialTransaction,
     GatewayLifetime,
     GmailSource,
+    GoogleTaskList,
+    GoogleTaskObservation,
     IdentityBinding,
     IdentityHandle,
     IntentSession,
@@ -72,6 +74,12 @@ from docket.models import (
     SemanticRequestAttempt,
     Source,
     Task,
+    TaskBindingRevision,
+    TaskListPolicyRevision,
+    TaskPolicyEffect,
+    TaskProviderBinding,
+    TaskReminderGeneration,
+    TaskSyncConflict,
     TemporalBinding,
     TemporalCalendarProjection,
     ToolInvocation,
@@ -99,6 +107,14 @@ AUDIT_OUTPUT_BYTES = 64 * 1024
 MAX_TEXT_CHUNK_BYTES = 32 * 1024
 
 _PREFIX_MODELS: dict[str, tuple[str, type[Any], str]] = {
+    "tlist": ("task_list", GoogleTaskList, "created_at"),
+    "tobs": ("google_task_observation", GoogleTaskObservation, "observed_at"),
+    "tbnd": ("task_provider_binding", TaskProviderBinding, "created_at"),
+    "tpol": ("task_list_policy", TaskListPolicyRevision, "created_at"),
+    "tbrv": ("task_binding_revision", TaskBindingRevision, "created_at"),
+    "tscf": ("task_sync_conflict", TaskSyncConflict, "created_at"),
+    "teff": ("task_policy_effect", TaskPolicyEffect, "created_at"),
+    "trgen": ("task_reminder_generation", TaskReminderGeneration, "created_at"),
     "wcal": ("work_calendar_projection", WorkCalendarProjection, "created_at"),
     "wcrv": ("work_calendar_revision", WorkCalendarRevision, "created_at"),
     "wrec": ("workload_reconciliation", WorkloadReconciliation, "created_at"),
@@ -241,6 +257,45 @@ class HistoryService:
 
     def _summary(self, object_type: str, item: Any) -> dict[str, Any]:
         base: dict[str, Any] = {"ref": item.ref_id, "type": object_type}
+        if isinstance(item, GoogleTaskList | GoogleTaskObservation | TaskProviderBinding
+                      | TaskSyncConflict | TaskListPolicyRevision | TaskBindingRevision
+                      | TaskPolicyEffect | TaskReminderGeneration):
+            from docket.services.provenance_refs import ProvenanceRefService
+            from docket.services.task_bindings import TaskBindingService
+            from docket.services.task_views import TaskViewService
+
+            ProvenanceRefService(self.session).get(item.ref_id)
+            views = TaskViewService(self.session)
+            if isinstance(item, GoogleTaskList):
+                state = views.listing(item)
+            elif isinstance(item, GoogleTaskObservation):
+                state = views.observation(item)
+            elif isinstance(item, TaskProviderBinding):
+                state = TaskBindingService.status(item)
+            elif isinstance(item, TaskSyncConflict):
+                state = views.conflict(item)
+            elif isinstance(item, TaskListPolicyRevision):
+                state = {"task_list_ref": item.task_list_ref, "mode": item.mode,
+                         "revision": item.revision, "is_default": item.is_default,
+                         "reminder_calendar_ref": item.reminder_calendar_ref,
+                         "authorized_request_ref": item.authorized_request_ref,
+                         "created_by_changeset_ref": item.created_by_changeset_ref}
+            elif isinstance(item, TaskPolicyEffect):
+                state = {"policy_ref": item.policy_ref, "observation_ref": item.observation_ref,
+                         "planner_version": item.planner_version, "effect_hash": item.effect_hash,
+                         "expected_binding_version": item.expected_binding_version}
+            elif isinstance(item, TaskBindingRevision):
+                state = {"binding_ref": item.binding_ref, "revision": item.revision,
+                         "task_list_ref": item.task_list_ref, "generation": item.generation,
+                         "active": item.active, "detached": item.detached,
+                         "canonical_version": item.canonical_version,
+                         "observation_ref": item.observation_ref, "basis_refs": item.basis_refs}
+            else:
+                state = {"task_ref": item.task_ref, "generation": item.generation,
+                         "temporal_binding_ref": item.temporal_binding_ref,
+                         "projection_ref": item.projection_ref, "plan_ref": item.plan_ref,
+                         "created_by_changeset_ref": item.created_by_changeset_ref}
+            return {**base, **state}
         if isinstance(
             item, CompensationPolicy | CompensationPolicyRevision | CompensationTerm
         ):
@@ -676,6 +731,11 @@ class HistoryService:
                 "item_ref": item.item_ref,
                 "title": item.title,
                 "item_title_relationship": title_relationship(self.session, item.item_ref),
+                "task_list_ref": item.task_list_ref,
+                "scheduled_date": item.scheduled_date.isoformat() if item.scheduled_date else None,
+                "parent_task_ref": item.parent_task_ref,
+                "remind_at": _iso(item.remind_at),
+                "reminder_timezone": item.reminder_timezone,
                 "task_state": item.task_state,
                 "priority": item.priority,
                 "canonical_status": item.canonical_status,
@@ -1061,6 +1121,31 @@ class HistoryService:
                 select(OperatorUtterance.ref_id).where(OperatorUtterance.id == item.utterance_id)
             )
         if view == "audit":
+            if isinstance(item, Task | Item):
+                chunk = _text_chunk(item.description or "", text_offset, min(text_limit, 8192))
+                chunk["notes_chunk"] = chunk.pop("verbatim_text_chunk")
+                entry.update(chunk)
+            elif isinstance(item, GoogleTaskObservation):
+                from docket.providers.google.tasks import canonical_notes
+                from docket.services.task_bindings import TaskBindingService
+
+                binding_service = TaskBindingService(self.session)
+                binding = binding_service.identity(
+                    item.task_list_ref, item.provider_task_id
+                ) or binding_service.previous_identity(item.task_list_ref, item.provider_task_id)
+                notes = item.fields.get("notes") or ""
+                if binding and isinstance(notes, str):
+                    notes, _ = canonical_notes(notes, binding.correlation)
+                raw = json.dumps(
+                    {key: (notes if key == "notes" else item.fields.get(key))
+                     for key in (
+                         "title", "notes", "due", "status", "completed", "deleted", "hidden"
+                     )},
+                    ensure_ascii=False, separators=(",", ":"),
+                )
+                chunk = _text_chunk(raw, text_offset, min(text_limit, 8192))
+                chunk["task_fields_json_chunk"] = chunk.pop("verbatim_text_chunk")
+                entry.update(chunk)
             if isinstance(item, ExpenseRevision | ExpenseObservation):
                 raw = json.dumps({column.name: getattr(item, column.name)
                     for column in item.__table__.columns if column.name != "id"},

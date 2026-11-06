@@ -470,17 +470,6 @@ def docket_get_history_entry(
 
 
 @mcp.tool()
-def docket_get_conflict(conflict_ref: ConflictRef) -> dict[str, Any]:
-    """Read one Conflict with allowed resolution actions."""
-    try:
-        with session_scope() as session:
-            service = ConflictService(session)
-            return {"ok": True, **service.projection(service.get(conflict_ref))}
-    except Exception as exc:
-        return _error(exc)
-
-
-@mcp.tool()
 def docket_get_intent_session(intent_session_ref: SessionRef) -> dict[str, Any]:
     """Read durable semantic and commit state for one IntentSession."""
     try:

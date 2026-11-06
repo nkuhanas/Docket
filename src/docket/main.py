@@ -32,6 +32,7 @@ from docket.providers.google.factory import (
     build_calendar_read_provider,
     build_calendar_write_provider,
     build_gmail_read_provider,
+    build_tasks_provider,
 )
 from docket.providers.google.gmail_runtime import configure_gmail_read_provider
 from docket.providers.google.runtime import configure_calendar_read_provider
@@ -52,6 +53,7 @@ from docket.services.notification_delivery import NotificationDispatcher
 from docket.services.operations import OperationRunner
 from docket.services.reminders import ReminderService
 from docket.services.runtime_logs import RuntimeLogService
+from docket.services.tasks_polling import TasksPollingService
 from docket.services.triage_inbox import TriageInboxService
 from docket.worker import WorkerRuntime
 
@@ -75,6 +77,8 @@ calendar_write_provider = build_calendar_write_provider(settings)
 calendar_read_provider = build_calendar_read_provider(settings)
 configure_calendar_read_provider(calendar_read_provider)
 calendar_sync_service = CalendarSyncService(get_session_factory(), calendar_read_provider, settings)
+tasks_provider = build_tasks_provider(settings)
+tasks_polling_service = TasksPollingService(get_session_factory(), tasks_provider, settings)
 gmail_read_provider = build_gmail_read_provider(settings)
 if gmail_read_provider is not None:
     configure_gmail_read_provider(gmail_read_provider)
@@ -115,6 +119,8 @@ worker = WorkerRuntime(
     discord_projection_runner=discord_projection_runner,
     discord_projection_poll_seconds=settings.discord_projection_poll_seconds,
     calendar_sync_service=(calendar_sync_service if settings.calendar_reads_enabled else None),
+    tasks_polling_service=(tasks_polling_service if settings.tasks_enabled else None),
+    tasks_poll_seconds=settings.tasks_poll_seconds,
     calendar_sync_poll_seconds=settings.calendar_sync_poll_seconds,
     backup_service=(
         BackupService(get_session_factory(), settings) if settings.backup_enabled else None

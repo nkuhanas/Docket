@@ -84,13 +84,27 @@ class TrackedContextService:
         change: Any,
         affected_refs: list[str],
     ) -> None:
+        from docket.models import AuthenticatedRequest, IntentSession, TaskPolicyEffect
+
+        intent = self.session.get(IntentSession, changeset.intent_session_id)
+        actor_type, actor_id = "operator", get_settings().operator_discord_user_id
+        if intent and intent.source_policy_effect_ref:
+            effect = self.session.get(TaskPolicyEffect, intent.source_policy_effect_ref)
+            assert effect is not None
+            actor_type, actor_id = "task_sync_policy", effect.policy_ref
+        elif intent and intent.source_request_ref:
+            request = self.session.scalar(select(AuthenticatedRequest).where(
+                AuthenticatedRequest.ref_id == intent.source_request_ref,
+            ))
+            assert request is not None
+            actor_type, actor_id = "agent", request.principal_ref
         self.session.add(
             AuditEvent(
                 event_type=event_type,
                 entity_type=change.object_type,
                 entity_id=subject.id,
-                actor_type="operator",
-                actor_id=get_settings().operator_discord_user_id,
+                actor_type=actor_type,
+                actor_id=actor_id,
                 primary_ref=subject.ref_id,
                 affected_refs=affected_refs,
                 basis_refs=list(change.basis_refs),

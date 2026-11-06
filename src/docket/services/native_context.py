@@ -194,6 +194,10 @@ class NativeContextService:
             "evt",
             "item",
             "task",
+            "tlist",
+            "tobs",
+            "tbnd",
+            "tscf",
             "time",
             "tproj",
             "rem",
@@ -348,6 +352,12 @@ class NativeContextService:
                 from docket.services.conflicts import ConflictService
 
                 state = ConflictService(self.session).projection(row)
+            elif prefix in {"task", "tlist", "tobs", "tbnd", "tscf"}:
+                from docket.services.tasks_context import TasksContextService
+
+                obj, task_versions = TasksContextService(self.session, self.settings).object(ref)
+                kind, state = obj["type"], obj["state"]
+                versions.update(task_versions)
             elif prefix == "acct":
                 state = {
                     "provider": row.provider,
@@ -420,7 +430,11 @@ class NativeContextService:
                     }
                     actions = ["docket_get_work_context"]
             if kind == "task":
-                actions += ["docket_update_task"]
+                actions += ["docket_update_task", "docket_link_google_task"]
+            if kind == "task_list":
+                actions += ["docket_configure_task_list", "docket_refresh_tasks"]
+            if kind == "task_sync_conflict":
+                actions += ["docket_resolve_task_sync"]
             if kind == "conflict":
                 actions += ["docket_resolve_conflict"]
             if kind == "attention_case":

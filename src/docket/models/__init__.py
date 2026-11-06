@@ -86,6 +86,8 @@ from docket.models.google_tasks import (
     TaskPolicyEffect,
     TaskProviderBinding,
     TaskReminderGeneration,
+    TasksAccountState,
+    TasksMethodValidation,
     TaskSyncConflict,
     TaskSyncState,
 )
@@ -301,6 +303,8 @@ __all__ = [
     "TaskReminderGeneration",
     "TaskSyncConflict",
     "TaskSyncState",
+    "TasksAccountState",
+    "TasksMethodValidation",
     "TemporalBinding",
     "TemporalCalendarProjection",
     "ToolInvocation",

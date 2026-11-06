@@ -38,6 +38,8 @@ class TaskPolicyAuthority:
     def policy(
         self, ref: str, *, lock: bool = False
     ) -> tuple[TaskListPolicyRevision, GoogleTaskList]:
+        if not self.settings.tasks_enabled:
+            raise self.denied()
         policy = self.session.get(TaskListPolicyRevision, ref)
         if policy is None or policy.operator_ref != self.settings.canonical_operator_ref:
             raise self.denied()
@@ -164,19 +166,34 @@ class TaskPolicyAuthority:
             if change.action == "create":
                 if values.task_list_ref != listing.ref_id or values.item_ref is not None:
                     raise self.denied()
+                from sqlalchemy import select
+
+                existing_binding = self.session.scalar(
+                    select(TaskProviderBinding).where(
+                        TaskProviderBinding.task_list_ref == listing.ref_id,
+                        TaskProviderBinding.provider_task_id == observation.provider_task_id,
+                    )
+                )
+                if existing_binding is not None:
+                    raise self.denied()
             else:
                 from sqlalchemy import select
 
                 task = self.session.scalar(select(Task).where(Task.ref_id == change.object_ref))
                 binding = self.session.scalar(
-                    select(TaskProviderBinding).where(
+                    select(TaskProviderBinding)
+                    .where(
                         TaskProviderBinding.task_ref == change.object_ref,
                         TaskProviderBinding.task_list_ref == listing.ref_id,
                         TaskProviderBinding.provider_task_id == observation.provider_task_id,
                         TaskProviderBinding.active.is_(True),
+                        TaskProviderBinding.detached.is_(False),
                     )
+                    .execution_options(populate_existing=True)
                 )
                 if task is None or binding is None:
+                    raise self.denied()
+                if effect.expected_binding_version != binding.version:
                     raise self.denied()
                 if change.action == "retract":
                     if not policy.propagate_google_deletion or not observation.fields.get(

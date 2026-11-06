@@ -22,7 +22,6 @@ from docket.schemas.authority import (
 from docket.schemas.calendar import AllDayEventTiming
 from docket.schemas.native_commands import (
     CancelEvent,
-    CompleteTask,
     CreateTask,
     UpdateEvent,
     UpdateTask,
@@ -248,7 +247,7 @@ class RoutineCommandService(NativeCommandService):
         )
 
     def task(
-        self, command: CreateTask | UpdateTask | CompleteTask, request_ref: str, request_key: str
+        self, command: CreateTask | UpdateTask, request_ref: str, request_key: str
     ) -> dict[str, Any]:
         values = command.model_dump(mode="json", exclude_unset=True)
         create = isinstance(command, CreateTask)
@@ -257,7 +256,7 @@ class RoutineCommandService(NativeCommandService):
         def build(context: NativeContext) -> dict[str, Any]:
             actions: list[BaseModel] = []
             derived_refs: set[str] = set()
-            task_ref = command.task_ref if isinstance(command, UpdateTask | CompleteTask) else ""
+            task_ref = command.task_ref if isinstance(command, UpdateTask) else ""
             payload = {
                 ({"notes": "description", "state": "task_state"}.get(key, key)): value
                 for key, value in values.items()
@@ -290,8 +289,6 @@ class RoutineCommandService(NativeCommandService):
                     derived_refs.add(default.ref_id)
             if "remind_at" in values and values["remind_at"] is not None:
                 payload["reminder_timezone"] = values.get("timezone") or self.settings.timezone
-            if isinstance(command, CompleteTask):
-                payload["task_state"] = "completed"
             if payload.get("task_state") == "completed":
                 payload["completed_at"] = (
                     payload.get("completed_at") or datetime.now(UTC).isoformat()

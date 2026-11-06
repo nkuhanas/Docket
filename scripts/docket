@@ -53,6 +53,7 @@ safe_test_environment() {
     export DOCKET_DATABASE_URL="sqlite+pysqlite:///$ROOT/.runtime/check.db"
     export DOCKET_AUTO_CREATE_SCHEMA=true
     export DOCKET_CALENDAR_READS_ENABLED=false
+    export DOCKET_TASKS_ENABLED=false
     export DOCKET_EXTERNAL_WRITES_ENABLED=false
     export DOCKET_GMAIL_INGESTION_ENABLED=false
     export DOCKET_GMAIL_WRITES_ENABLED=false

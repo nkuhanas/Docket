@@ -16,7 +16,6 @@ from docket.schemas.native_commands import (
     CalendarRef,
     CancelEvent,
     ChangeId,
-    CompleteTask,
     CreateEvent,
     CreateTask,
     PrepareBatch,
@@ -52,10 +51,6 @@ ROUTINE_COMMANDS: dict[str, tuple[type[BaseModel], str]] = {
         UpdateTask,
         "Update supplied task fields. state=completed finishes the task; "
         "null due clears its observed due entry.",
-    ),
-    "docket_complete_task": (
-        CompleteTask,
-        "Complete a task; Docket records completion time unless supplied.",
     ),
 }
 NATIVE_COMMAND_TOOLS = frozenset(ROUTINE_COMMANDS) | {"docket_apply_change", "docket_prepare_batch"}
@@ -184,7 +179,7 @@ def register_commands(server: ProvenanceMCP, settings: Settings) -> None:
                     service = RoutineCommandService(session, settings)
                     if isinstance(command, UpdateEvent | CancelEvent):
                         return service.event(command, request_ref, request_key)
-                    assert isinstance(command, CreateTask | UpdateTask | CompleteTask)
+                    assert isinstance(command, CreateTask | UpdateTask)
                     return service.task(command, request_ref, request_key)
             except ValidationError as exc:
                 return public_validation_error(exc).as_dict()

@@ -19,6 +19,7 @@ from docket.services.gmail_ingestion import GmailIngestionService
 from docket.services.notification_delivery import NotificationDispatcher
 from docket.services.operations import OperationRunner
 from docket.services.reminders import ReminderService
+from docket.services.tasks_polling import TasksPollingService
 from docket.services.triage_inbox import TriageInboxService
 
 logger = structlog.get_logger(__name__)
@@ -38,6 +39,8 @@ class WorkerRuntime:
         discord_projection_poll_seconds: float = 5.0,
         calendar_sync_service: CalendarSyncService | None = None,
         calendar_sync_poll_seconds: float = 60.0,
+        tasks_polling_service: TasksPollingService | None = None,
+        tasks_poll_seconds: float = 15.0,
         backup_service: BackupService | None = None,
         backup_poll_seconds: float = 60.0,
         gmail_ingestion_service: GmailIngestionService | None = None,
@@ -70,6 +73,8 @@ class WorkerRuntime:
         self.discord_projection_poll_seconds = discord_projection_poll_seconds
         self.calendar_sync_service = calendar_sync_service
         self.calendar_sync_poll_seconds = calendar_sync_poll_seconds
+        self.tasks_polling_service = tasks_polling_service
+        self.tasks_poll_seconds = tasks_poll_seconds
         self.backup_service = backup_service
         self.backup_poll_seconds = backup_poll_seconds
         self.gmail_ingestion_service = gmail_ingestion_service
@@ -199,6 +204,7 @@ class WorkerRuntime:
         next_reconciliation = 0.0
         next_recovery = 0.0
         next_calendar_sync = 0.0
+        next_tasks_poll = 0.0
         next_backup = 0.0
         next_gmail_scan = 0.0
         next_daily_brief = 0.0
@@ -263,6 +269,12 @@ class WorkerRuntime:
                         self.calendar_sync_service.evaluate_staleness,
                     )
                     next_calendar_sync = now + self.calendar_sync_poll_seconds
+                if self.tasks_polling_service is not None and now >= next_tasks_poll:
+                    await self._run_leased(
+                        "cron_execution", "google-tasks-sync",
+                        self.tasks_polling_service.run_due_once,
+                    )
+                    next_tasks_poll = now + self.tasks_poll_seconds
                 if self.backup_service is not None and now >= next_backup:
                     await self._run_leased(
                         "cron_execution",

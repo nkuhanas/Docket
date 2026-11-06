@@ -33,11 +33,11 @@ from docket.plugin.commands import NATIVE_COMMAND_TOOLS, register_commands
 from docket.plugin.events import EventMethods, advertise_events
 from docket.plugin.instructions import NATIVE_INSTRUCTIONS
 from docket.plugin.schemas import compact_schema
+from docket.plugin.tasks import TASK_COMMAND_TOOLS, register_tasks
 from docket.plugin.work import NativeWork
 from docket.plugin.work_tools import WORK_COMMAND_TOOLS, register_work
 from docket.plugin.workflows import NATIVE_WORKFLOW_TOOLS, register_workflows
 from docket.providers.webhooks import WebhookPoster
-from docket.schemas.business import PLUGIN_COMPATIBILITY_TOOLS
 from docket.services.native_commands import NativeCommandService
 from docket.services.notifications import NotificationService
 from docket.tool_contracts import contract_tool_names
@@ -46,6 +46,7 @@ from docket.tool_contracts import contract_tool_names
 class PluginMCP(ProvenanceMCP):
     authority_tools = (
         NATIVE_WORKFLOW_TOOLS | NATIVE_COMMAND_TOOLS | BUSINESS_TOOLS | WORK_COMMAND_TOOLS
+        | TASK_COMMAND_TOOLS
     )
 
     def __init__(self, settings: Settings, poster: WebhookPoster | None = None) -> None:
@@ -62,6 +63,7 @@ class PluginMCP(ProvenanceMCP):
         )
         self.plugin_settings = settings
         register_commands(self, settings)
+        register_tasks(self, settings)
         register_business(self, settings)
         register_work(self, settings)
         register_workflows(self, settings)
@@ -69,8 +71,7 @@ class PluginMCP(ProvenanceMCP):
             read_only_hint=True, destructive_hint=False,
             idempotent_hint=True, open_world_hint=False,
         )
-        # Cached clients retain their original registered aliases/permission path.
-        names = contract_tool_names("plugin") | PLUGIN_COMPATIBILITY_TOOLS
+        names = contract_tool_names("plugin")
         for info in mcp._tool_manager.list_tools():
             if info.name in names and info.name not in self.authority_tools:
                 self.add_tool(info.fn, name=info.name, description=info.description,
@@ -137,7 +138,7 @@ class PluginMCP(ProvenanceMCP):
                 return AgentCallContext(authenticated.principal, root.request_key,
                     "native-exact-proposal", "apply:" + proposal.ref_id,
                     supplied_argument_names=frozenset(arguments)), arguments
-        if (name in NATIVE_COMMAND_TOOLS | BUSINESS_TOOLS | WORK_COMMAND_TOOLS
+        if (name in NATIVE_COMMAND_TOOLS | BUSINESS_TOOLS | WORK_COMMAND_TOOLS | TASK_COMMAND_TOOLS
                 and arguments.get("replaces_change_id")):
             with session_scope() as session:
                 proposal = session.scalar(select(PreparedCommand).where(
@@ -200,8 +201,7 @@ class PluginMCP(ProvenanceMCP):
         return result
 
     async def list_tools(self) -> list[Tool]:
-        tools = [tool for tool in await super().list_tools()
-                 if tool.name not in PLUGIN_COMPATIBILITY_TOOLS]
+        tools = await super().list_tools()
         for tool in tools:
             tool.input_schema = deepcopy(tool.input_schema)
             properties = tool.input_schema.get("properties", {})

@@ -14,6 +14,7 @@
       "tests/unit/test_local_ci.py",
       "tests/integration/test_native_plugin.py",
       "tests/integration/test_native_commands.py",
+      "tests/integration/test_native_tasks.py",
       "tests/integration/test_native_work.py",
       "tests/integration/test_native_timers.py",
       "tests/integration/test_work_lineage.py",
@@ -42,6 +43,7 @@
       "tests/unit/test_tasks_provider.py",
       "tests/integration/test_calendar_outcome_contract.py",
       "tests/integration/test_calendar_sync_scheduling.py",
+      "tests/integration/test_tasks_polling.py",
       "tests/integration/test_gmail_ingestion.py"
     ],
     "storage": [
@@ -50,6 +52,8 @@
       "tests/integration/test_sparse_event_patches.py",
       "tests/integration/test_tracked_context_changesets.py",
       "tests/integration/test_task_policy_authority.py",
+      "tests/integration/test_task_sync.py",
+      "tests/unit/test_task_reconciliation.py",
       "tests/integration/test_occurrence_mutations.py",
       "tests/integration/test_typed_registry.py",
       "tests/integration/test_temporal_calendar_projection.py",

@@ -25,6 +25,12 @@ from docket.schemas.expenses import ExpenseRef, ExpenseSpec
 from docket.schemas.financial_documents import DocumentRef, TimesheetSpec, TimesheetStatusSpec
 from docket.schemas.followup import OperationalReminderSpec, WorkloadReconciliationSpec
 from docket.schemas.invoices import InvoiceSpec, InvoiceStatusSpec
+from docket.schemas.native_tasks import (
+    TaskConflictRef,
+    TaskGoogleLinkSpec,
+    TaskListPolicySpec,
+    TaskSyncResolutionSpec,
+)
 from docket.schemas.policy import (
     CalendarLaneCreateSpec,
     CalendarLanePatchSpec,
@@ -900,6 +906,33 @@ class TaskRetract(MutationBase):
     payload: EmptyMutationSpec = Field(default_factory=EmptyMutationSpec)
 
 
+class TaskListConfigure(MutationBase):
+    mutation_type: Literal["task_list_configure"] = "task_list_configure"
+    action: Literal["update"]
+    object_type: Literal["task_list"]
+    object_ref: Annotated[str, Field(pattern=r"^tlist_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: TaskListPolicySpec
+
+
+class TaskGoogleLink(MutationBase):
+    mutation_type: Literal["task_google_link"] = "task_google_link"
+    action: Literal["update"]
+    object_type: Literal["task_google_link"]
+    object_ref: Annotated[str, Field(pattern=r"^task_[0-9A-HJKMNP-TV-Z]{26}$")]
+    create_spec: None = None
+    payload: TaskGoogleLinkSpec
+
+
+class TaskSyncResolve(MutationBase):
+    mutation_type: Literal["task_sync_resolve"] = "task_sync_resolve"
+    action: Literal["update"]
+    object_type: Literal["task_sync_resolution"]
+    object_ref: TaskConflictRef
+    create_spec: None = None
+    payload: TaskSyncResolutionSpec
+
+
 class TemporalCalendarProjectionCreate(MutationBase):
     mutation_type: Literal["temporal_calendar_projection_create"] = (
         "temporal_calendar_projection_create"
@@ -1359,6 +1392,9 @@ type TrackedContextMutation = (
     | TaskCreate
     | TaskModify
     | TaskRetract
+    | TaskListConfigure
+    | TaskGoogleLink
+    | TaskSyncResolve
     | TemporalCalendarProjectionCreate
     | TemporalCalendarProjectionModify
     | TemporalCalendarProjectionRetract
@@ -1433,6 +1469,9 @@ type CanonicalMutation = (
     | TaskCreate
     | TaskModify
     | TaskRetract
+    | TaskListConfigure
+    | TaskGoogleLink
+    | TaskSyncResolve
     | TemporalCalendarProjectionCreate
     | TemporalCalendarProjectionModify
     | TemporalCalendarProjectionRetract

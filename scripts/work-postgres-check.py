@@ -2123,6 +2123,9 @@ async def check():
     from work_calendar_postgres_check import check_work_calendar
 
     work_calendar_evidence = await check_work_calendar(settings, factory, principal)
+    from tasks_postgres_checks import check_tasks
+
+    tasks_evidence = await check_tasks(settings, factory, principal)
     changeset_ref = created["changeset_ref"]
     with factory.begin() as session:
         request_ref = session.scalar(
@@ -2315,6 +2318,7 @@ async def check():
                 **workload_evidence,
                 **followup_evidence,
                 **work_calendar_evidence,
+                **tasks_evidence,
                 "work_schema_roundtrip": "passed",
                 "canonical_work_retry": "passed",
                 "canonical_correction_race": "passed",

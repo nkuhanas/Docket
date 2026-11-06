@@ -1,27 +1,48 @@
 """Task graph → lists → Items → Tasks, followed by derived title ownership."""
 
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from docket.models.base import utc_now
-from docket.models.google_tasks import GoogleTaskList
+from docket.models.google_tasks import (
+    GoogleTaskList,
+    GoogleTaskObservation,
+    TaskProviderBinding,
+    TaskSyncConflict,
+)
 from docket.models.tracked_context import Item, Task, TaskItemTitleOwnership
 from docket.services.notifications import identity_lock
 from docket.services.work_attribution import read_operator
 
 
 def lock_title_targets(session: Session, changes: list[Any]) -> None:
-    if any(change.object_type == "task" for change in changes):
-        identity_lock(session, "task-graph:" + read_operator())
+    task_types = {"task", "task_google_link", "task_sync_resolution", "task_list"}
+    if any(change.object_type == "task_list" for change in changes):
+        identity_lock(session, "task-list-default:" + read_operator())
     task_refs = sorted(
         {
             change.object_ref
             for change in changes
-            if change.object_type == "task" and change.object_ref
+            if change.object_type in {"task", "task_google_link"} and change.object_ref
         }
     )
+    extra_lists: set[str] = set()
+    for change in changes:
+        if change.object_type == "task_list":
+            extra_lists.add(change.object_ref)
+        elif change.object_type == "task_google_link":
+            ref = getattr(change.payload, "observation_ref", None)
+            observation = session.get(GoogleTaskObservation, ref) if ref else None
+            if observation is not None:
+                extra_lists.add(observation.task_list_ref)
+        elif change.object_type == "task_sync_resolution":
+            conflict = session.get(TaskSyncConflict, change.object_ref)
+            binding = session.get(TaskProviderBinding, conflict.binding_ref) if conflict else None
+            if binding:
+                task_refs.append(binding.task_ref)
     for change in changes:
         if change.object_type == "task":
             spec = change.create_spec if change.action == "create" else change.payload
@@ -34,14 +55,50 @@ def lock_title_targets(session: Session, changes: list[Any]) -> None:
                     )
                     if ref
                 )
-    task_refs = sorted(set(task_refs))
-    list_refs = set(session.scalars(select(Task.task_list_ref).where(Task.ref_id.in_(task_refs))))
+    item_refs = {
+        change.object_ref
+        for change in changes
+        if change.object_type == "item" and change.object_ref
+    }
     for change in changes:
         if change.object_type == "task":
             spec = change.create_spec if change.action == "create" else change.payload
             ref = getattr(spec, "task_list_ref", None)
             if ref:
-                list_refs.add(ref)
+                extra_lists.add(ref)
+            ref = getattr(spec, "item_ref", None)
+            if ref:
+                item_refs.add(ref)
+    lock_task_rows(
+        session,
+        task_refs,
+        lists=sorted(extra_lists),
+        items=sorted(item_refs),
+        graph=any(change.object_type in task_types for change in changes),
+    )
+
+
+def lock_task_rows(
+    session: Session,
+    task_refs: Sequence[str] = (),
+    *,
+    lists: Sequence[str] = (),
+    items: Sequence[str] = (),
+    graph: bool = True,
+) -> None:
+    """Shared by canonical commands, imports and delivery callbacks; no authority is granted."""
+    if graph:
+        identity_lock(session, "task-graph:" + read_operator())
+    task_refs = sorted(set(task_refs))
+    list_refs = set(session.scalars(select(Task.task_list_ref).where(Task.ref_id.in_(task_refs))))
+    list_refs.update(
+        session.scalars(
+            select(TaskProviderBinding.task_list_ref).where(
+                TaskProviderBinding.task_ref.in_(task_refs),
+            )
+        )
+    )
+    list_refs.update(lists)
     if any(list_refs):
         session.scalars(
             select(GoogleTaskList)
@@ -50,19 +107,8 @@ def lock_title_targets(session: Session, changes: list[Any]) -> None:
             .with_for_update()
             .execution_options(populate_existing=True)
         ).all()
-    item_refs = {
-        change.object_ref
-        for change in changes
-        if change.object_type == "item" and change.object_ref
-    }
+    item_refs = set(items)
     item_refs.update(session.scalars(select(Task.item_ref).where(Task.ref_id.in_(task_refs))))
-    for change in changes:
-        if change.object_type == "task":
-            spec = change.create_spec if change.action == "create" else change.payload
-            if spec is not None:
-                ref = getattr(spec, "item_ref", None)
-                if ref:
-                    item_refs.add(ref)
     if item_refs:
         session.scalars(
             select(Item)
@@ -79,6 +125,7 @@ def lock_title_targets(session: Session, changes: list[Any]) -> None:
             .with_for_update()
             .execution_options(populate_existing=True)
         ).all()
+
         # A concurrent relink before our locks requires a fresh observed version.
         if any(task.item_ref not in item_refs for task in tasks):
             from docket.domain.errors import DocketError
@@ -91,6 +138,14 @@ def lock_title_targets(session: Session, changes: list[Any]) -> None:
             select(TaskItemTitleOwnership)
             .where(TaskItemTitleOwnership.item_ref.in_(sorted(item_refs)))
             .order_by(TaskItemTitleOwnership.item_ref)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+    if task_refs:
+        session.scalars(
+            select(TaskProviderBinding)
+            .where(TaskProviderBinding.task_ref.in_(task_refs))
+            .order_by(TaskProviderBinding.ref_id)
             .with_for_update()
             .execution_options(populate_existing=True)
         ).all()

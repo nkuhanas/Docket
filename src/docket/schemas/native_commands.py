@@ -132,11 +132,6 @@ class UpdateTask(CommandBase):
     remind_at: AwareDatetime | None = None
 
 
-class CompleteTask(CommandBase):
-    task_ref: TaskRef
-    completed_at: str | None = Field(default=None, max_length=64)
-
-
 class ApplyChange(StrictModel):
     change_id: ChangeId
 

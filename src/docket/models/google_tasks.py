@@ -67,6 +67,7 @@ class GoogleTaskList(Base):
         ForeignKey("calendar_lanes.ref_id", ondelete="RESTRICT")
     )
     available: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    discovery_generation: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
@@ -100,6 +101,10 @@ class TaskListPolicyRevision(Base):
     operator_ref: Mapped[str] = mapped_column(String(255), nullable=False)
     mode: Mapped[str] = mapped_column(String(16), nullable=False)
     propagate_google_deletion: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    is_default: Mapped[bool | None] = mapped_column(Boolean)
+    reminder_calendar_ref: Mapped[str | None] = mapped_column(
+        ForeignKey("calendar_lanes.ref_id", ondelete="RESTRICT")
+    )
     authorized_request_ref: Mapped[str] = mapped_column(
         ForeignKey("authenticated_requests.ref_id", ondelete="RESTRICT"), nullable=False
     )
@@ -144,6 +149,8 @@ class GoogleTaskObservation(Base):
         DateTime(timezone=True), nullable=False, default=utc_now
     )
     provider_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    read_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    read_after_binding_version: Mapped[int | None] = mapped_column(Integer)
     inventory_generation: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
 
 
@@ -163,6 +170,7 @@ class TaskProviderBinding(Base):
         CheckConstraint(
             "generation >= 1 AND version >= 1", name="ck_task_provider_binding_version"
         ),
+        CheckConstraint("NOT (active AND detached)", name="ck_task_binding_detached_inactive"),
     )
 
     ref_id: Mapped[str] = mapped_column(
@@ -184,6 +192,7 @@ class TaskProviderBinding(Base):
     provider_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     baseline: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    provider_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     limitations: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
     observation_ref: Mapped[str | None] = mapped_column(
         ForeignKey("google_task_observations.ref_id", ondelete="RESTRICT")
@@ -221,6 +230,7 @@ class TaskBindingRevision(Base):
     provider_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     baseline: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    provider_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     limitations: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False)
     observation_ref: Mapped[str | None] = mapped_column(
         ForeignKey("google_task_observations.ref_id", ondelete="RESTRICT")
@@ -264,10 +274,12 @@ class TaskConflictResolution(Base):
     conflict_ref: Mapped[str] = mapped_column(
         ForeignKey("task_sync_conflicts.ref_id", ondelete="RESTRICT"), primary_key=True
     )
+    field_name: Mapped[str] = mapped_column(String(32), primary_key=True)
     changeset_ref: Mapped[str] = mapped_column(
         ForeignKey("change_sets.ref_id", ondelete="RESTRICT"), nullable=False
     )
     selection: Mapped[str] = mapped_column(String(16), nullable=False)
+    canonical_version_after: Mapped[int | None] = mapped_column(Integer)
     resolved_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
@@ -298,6 +310,45 @@ class TaskSyncState(Base):
     requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
+class TasksAccountState(Base):
+    """Resumable list discovery; it grants no authority over discovered lists."""
+
+    __tablename__ = "tasks_account_states"
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("provider_accounts.id", ondelete="RESTRICT"), primary_key=True
+    )
+    operator_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    lease_token: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    leased_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    page_token: Mapped[str | None] = mapped_column(String(4096))
+    generation: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error_code: Mapped[str | None] = mapped_column(String(128))
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class TasksMethodValidation(Base):
+    """Retained G0 evidence, scoped to one account, adapter and credential grant."""
+
+    __tablename__ = "tasks_method_validations"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("provider_accounts.id", ondelete="RESTRICT"), nullable=False
+    )
+    method: Mapped[str] = mapped_column(String(16), nullable=False)
+    adapter_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    credential_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    evidence_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    capabilities: Mapped[dict[str, bool]] = mapped_column(JSON, nullable=False)
+    verified_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+
+
 class TaskPolicyEffect(Base):
     """An exact deterministic import admission, never a fabricated user request."""
 
@@ -314,6 +365,7 @@ class TaskPolicyEffect(Base):
     effect_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     content: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     planner_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    expected_binding_version: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
@@ -365,6 +417,7 @@ for _model in (
     TaskConflictResolution,
     TaskPolicyEffect,
     TaskReminderGeneration,
+    TasksMethodValidation,
 ):
     event.listen(_model, "before_update", _immutable)
     event.listen(_model, "before_delete", _immutable)

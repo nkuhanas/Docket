@@ -31,6 +31,11 @@ from docket.services.change_sets import ChangeSetService, _content_payload
 from docket.services.tracked_context import TrackedContextService
 
 
+@pytest.fixture(autouse=True)
+def enabled_tasks(monkeypatch):
+    monkeypatch.setattr(get_settings(), "tasks_enabled", True)
+
+
 def admitted_import(session, *, oauth=False):
     owner = get_settings().canonical_operator_ref
     principal_ref, epoch = "agent:interactive", None
@@ -181,7 +186,9 @@ def test_policy_import_uses_shared_engine_and_genuine_service_root(session):
     assert audit.actor_type == "task_sync_policy" and audit.actor_id == effect.policy_ref
 
 
-@pytest.mark.parametrize("revocation", ["list", "account", "local_grant", "oauth_grant"])
+@pytest.mark.parametrize(
+    "revocation", ["list", "account", "local_grant", "oauth_grant", "tasks_switch"]
+)
 def test_revocation_between_preparation_and_commit_stops_import(session, monkeypatch, revocation):
     if revocation == "oauth_grant":
         monkeypatch.setattr(get_settings(), "plugin_oauth_issuer", "https://issuer.example.test/")
@@ -192,6 +199,8 @@ def test_revocation_between_preparation_and_commit_stops_import(session, monkeyp
         session.get(ProviderAccount, listing.account_id).enabled = False
     elif revocation == "local_grant":
         monkeypatch.setattr(get_settings(), "interactive_agent_enabled", False)
+    elif revocation == "tasks_switch":
+        monkeypatch.setattr(get_settings(), "tasks_enabled", False)
     else:
         session.scalar(select(OAuthPrincipal)).enabled = False
     with pytest.raises(DocketError) as caught:

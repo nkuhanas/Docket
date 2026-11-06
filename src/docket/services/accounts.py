@@ -13,6 +13,9 @@ class AccountService:
         self.session = session
 
     def ensure_configured_google(self, settings: Settings) -> ProviderAccount:
+        capabilities = [
+            *_GOOGLE_CAPABILITIES, *(["google_tasks"] if settings.tasks_enabled else []),
+        ]
         account = self.session.scalar(
             select(ProviderAccount).where(
                 ProviderAccount.provider == "google",
@@ -24,14 +27,14 @@ class AccountService:
                 provider="google",
                 external_account_id=settings.google_account_external_id,
                 display_name="Configured Google account",
-                capabilities=_GOOGLE_CAPABILITIES,
+                capabilities=capabilities,
                 credential_ref=str(settings.google_oauth_token_file),
                 enabled=True,
             )
             self.session.add(account)
             self.session.flush()
         else:
-            account.capabilities = _GOOGLE_CAPABILITIES
+            account.capabilities = capabilities
             account.credential_ref = str(settings.google_oauth_token_file)
         return account
 

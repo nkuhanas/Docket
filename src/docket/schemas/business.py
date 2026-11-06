@@ -153,6 +153,9 @@ def _business_definition(mutation: type[BaseModel]) -> BusinessDefinition:
 CANONICAL_MUTATIONS = tuple(_models(authority.CanonicalChangeInput))
 # Calendar and tasks get purpose-built everyday commands with derived support records.
 SPECIAL_TOOL_BY_MUTATION = {
+    "task_list_configure": "docket_configure_task_list",
+    "task_google_link": "docket_link_google_task",
+    "task_sync_resolve": "docket_resolve_task_sync",
     "work_calendar_create": "docket_show_work_session",
     "work_calendar_modify": "docket_show_work_session",
     "operational_reminder_create": "docket_schedule_followup",
@@ -203,10 +206,10 @@ RETRACTION_BY_PREFIX = {
         ("task", "task"), ("tproj", "temporal_calendar_projection"), ("rem", "reminder_plan"),
     )
 }
-RETRACTION_ALIASES = frozenset(value.tool_name for value in RETRACTION_BY_PREFIX.values())
-PLUGIN_COMPATIBILITY_TOOLS = RETRACTION_ALIASES | {
-    "docket_complete_task", "docket_get_conflict",
-}
+RETRACTION_MUTATIONS = frozenset(
+    value.mutation.model_fields["mutation_type"].default
+    for value in RETRACTION_BY_PREFIX.values()
+)
 
 
 class RetractRecord(BusinessCommand):
@@ -218,7 +221,8 @@ class RetractRecord(BusinessCommand):
 def public_business_tool(definition: BusinessDefinition) -> str:
     return (
         "docket_retract_record"
-        if definition.tool_name in RETRACTION_ALIASES else definition.tool_name
+        if definition.mutation.model_fields["mutation_type"].default in RETRACTION_MUTATIONS
+        else definition.tool_name
     )
 
 

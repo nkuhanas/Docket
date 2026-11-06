@@ -54,10 +54,11 @@ def test_shared_retraction_preserves_each_existing_domain_plan(session, monkeypa
 
 @pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
 @pytest.mark.asyncio
-async def test_shared_retraction_transport_keeps_history_retry_and_cached_alias(
+async def test_shared_retraction_transport_keeps_history_retry_and_retires_aliases(
     session_factory, linked_plugin,
 ):
-    from docket.schemas.business import PLUGIN_COMPATIBILITY_TOOLS, public_effect_tools
+    from docket.plugin.server import PluginMCP
+    from docket.schemas.business import RETRACTION_BY_PREFIX, public_effect_tools
 
     app, _settings, token, _principal = linked_plugin
     async with (
@@ -68,11 +69,16 @@ async def test_shared_retraction_transport_keeps_history_retry_and_cached_alias(
                mode="legacy") as client,
     ):
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
-        assert PLUGIN_COMPATIBILITY_TOOLS.isdisjoint(tools)
+        retired = {definition.tool_name for definition in RETRACTION_BY_PREFIX.values()} | {
+            "docket_complete_task", "docket_get_conflict",
+        }
+        assert retired.isdisjoint(tools)
+        registered = {tool.name for tool in PluginMCP(_settings)._tool_manager.list_tools()}
+        assert retired.isdisjoint(registered)
         assert set(public_effect_tools().values()) <= set(tools)
         assert len(json.dumps(tools["docket_retract_record"].input_schema).encode()) <= 1024
         overview = (await client.call_tool("docket_get_overview", {})).structured_content
-        for index, tool_name in enumerate(("docket_retract_record", "docket_retract_item")):
+        for index in range(2):
             created = (await client.call_tool("docket_create_item", {
                 "context_id": overview["context_id"], "operation_id": f"create-{index}",
                 "title": f"Retraction sample {index}", "kind": "test.retraction",
@@ -89,9 +95,9 @@ async def test_shared_retraction_transport_keeps_history_retry_and_cached_alias(
             assert "docket_retract_item" not in packet["objects"][0]["actions"]
             args = {"context_id": packet["context_id"], "operation_id": f"retract-{index}",
                     "target_ref": item_ref}
-            receipt = (await client.call_tool(tool_name, args)).structured_content
+            receipt = (await client.call_tool("docket_retract_record", args)).structured_content
             assert receipt.get("disposition") == "committed", receipt
-            retry = (await client.call_tool(tool_name, args)).structured_content
+            retry = (await client.call_tool("docket_retract_record", args)).structured_content
             assert retry["replayed"] and retry["changeset_ref"] == receipt["changeset_ref"]
     with session_factory() as session:
         assert set(session.scalars(select(Item.canonical_status))) == {"retracted"}
@@ -462,10 +468,11 @@ async def test_task_due_and_completion_use_derived_records_and_current_versions(
             "context_id": context["context_id"],
             "operation_id": "task-complete",
             "task_ref": task_ref,
+            "state": "completed",
         }
-        completed = (await client.call_tool("docket_complete_task", arguments)).structured_content
+        completed = (await client.call_tool("docket_update_task", arguments)).structured_content
         assert completed.get("disposition") == "committed", completed
-        retry = (await client.call_tool("docket_complete_task", arguments)).structured_content
+        retry = (await client.call_tool("docket_update_task", arguments)).structured_content
         assert retry.pop("replayed") is True and retry == completed
         stale = (
             await client.call_tool(

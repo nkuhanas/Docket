@@ -32,6 +32,15 @@ class Settings(BaseSettings):
         alias="DOCKET_DATABASE_URL",
     )
     timezone: str = Field(default="America/Los_Angeles", alias="DOCKET_TIMEZONE")
+    tasks_enabled: bool = Field(default=False, alias="DOCKET_TASKS_ENABLED")
+    tasks_poll_seconds: float = Field(default=15.0, ge=1, alias="DOCKET_TASKS_POLL_SECONDS")
+    tasks_sync_interval_seconds: int = Field(
+        default=300, ge=30, alias="DOCKET_TASKS_SYNC_INTERVAL_SECONDS",
+    )
+    tasks_full_inventory_seconds: int = Field(
+        default=86400, ge=300, alias="DOCKET_TASKS_FULL_INVENTORY_SECONDS",
+    )
+    tasks_lease_seconds: int = Field(default=120, ge=30, alias="DOCKET_TASKS_LEASE_SECONDS")
     operator_ref: str | None = Field(default=None, alias="DOCKET_OPERATOR_REF", max_length=255)
     discord_adapter_enabled: bool = Field(default=True, alias="DOCKET_DISCORD_ADAPTER_ENABLED")
     plugin_enabled: bool = Field(default=False, alias="DOCKET_PLUGIN_ENABLED")

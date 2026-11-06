@@ -17,7 +17,6 @@ INTERACTIVE_TOOLS = {
     "docket_commit_changeset",
     "docket_get_attention_case",
     "docket_get_calendar_sync_status",
-    "docket_get_conflict",
     "docket_get_context_neighborhood",
     "docket_get_history_entry",
     "docket_get_intent_session",

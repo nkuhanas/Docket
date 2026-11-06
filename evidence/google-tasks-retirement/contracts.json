@@ -1,0 +1,48 @@
+{
+  "contract_version": "docket-tools-2026-11-06-v68",
+  "tools": 114,
+  "new_tools": [
+    "docket_configure_task_list",
+    "docket_get_tasks_context",
+    "docket_link_google_task",
+    "docket_query_tasks",
+    "docket_refresh_tasks",
+    "docket_resolve_task_sync"
+  ],
+  "measurements": {
+    "docket_configure_task_list": {
+      "input_bytes": 838,
+      "definition_bytes": 1414
+    },
+    "docket_create_task": {
+      "input_bytes": 1665,
+      "definition_bytes": 2285
+    },
+    "docket_get_tasks_context": {
+      "input_bytes": 362,
+      "definition_bytes": 833
+    },
+    "docket_link_google_task": {
+      "input_bytes": 718,
+      "definition_bytes": 1288
+    },
+    "docket_query_tasks": {
+      "input_bytes": 1085,
+      "definition_bytes": 1548
+    },
+    "docket_refresh_tasks": {
+      "input_bytes": 181,
+      "definition_bytes": 653
+    },
+    "docket_resolve_task_sync": {
+      "input_bytes": 842,
+      "definition_bytes": 1416
+    },
+    "docket_update_task": {
+      "input_bytes": 2180,
+      "definition_bytes": 2808
+    }
+  },
+  "all_new_and_modified_definitions_bytes": 12245,
+  "scope": "local source definitions; no deployment or G0 claim"
+}

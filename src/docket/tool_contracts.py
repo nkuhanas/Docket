@@ -6,18 +6,19 @@ import hashlib
 from collections.abc import Mapping
 from typing import Literal, TypedDict
 
-from docket.schemas.business import BUSINESS_DEFINITIONS, PLUGIN_COMPATIBILITY_TOOLS
+from docket.schemas.business import BUSINESS_DEFINITIONS, public_business_tool
 from docket.schemas.compensation import POLICY_TOOL_PURPOSES
 from docket.schemas.expenses import EXPENSE_TOOL_PURPOSES
 from docket.schemas.financial_documents import FINANCIAL_TOOL_PURPOSES
 from docket.schemas.followup import FOLLOWUP_TOOL_PURPOSES
 from docket.schemas.invoices import INVOICE_TOOL_PURPOSES
+from docket.schemas.native_tasks import TASK_TOOL_PURPOSES
 from docket.schemas.settlement import SETTLEMENT_TOOL_PURPOSES
 from docket.schemas.work import WORK_TOOL_PURPOSES
 from docket.schemas.work_calendar import WORK_CALENDAR_PURPOSES
 from docket.schemas.workload import WORKLOAD_TOOL_PURPOSES
 
-CONTRACT_VERSION = "docket-tools-2026-11-05-v67"
+CONTRACT_VERSION = "docket-tools-2026-11-06-v68"
 ContractProfile = Literal["interactive", "triage", "plugin"]
 
 
@@ -77,10 +78,6 @@ _INTERACTIVE_READS: dict[str, tuple[str, str]] = {
         "statuses and closed-interval timing, including executions with no calls. "
         "Restart a call cursor if its trace or invocation snapshot changes; "
         "domain outcomes remain live observations.",
-    ),
-    "docket_get_conflict": (
-        "ONT-TOOL-0008",
-        "Read one Conflict and its allowed resolution actions.",
     ),
     "docket_get_intent_session": (
         "ONT-TOOL-0010",
@@ -375,6 +372,7 @@ _native_business_entries: tuple[ToolContractEntry, ...] = tuple({
     ("docket_cancel_event", "Cancel one event, occurrence or series."),
     ("docket_create_task", "Create a task with optional priority and due time."),
     ("docket_update_task", "Update supplied task fields and observed due time."),
+    *TASK_TOOL_PURPOSES.items(),
     ("docket_retract_record", "Retract a selected supported record through its domain handler."),
     *WORK_TOOL_PURPOSES.items(),
     *POLICY_TOOL_PURPOSES.items(),
@@ -388,12 +386,11 @@ _native_business_entries: tuple[ToolContractEntry, ...] = tuple({
     *((definition.tool_name,
        f"{definition.action.capitalize()} {definition.object_type} with ordinary business fields.")
       for definition in BUSINESS_DEFINITIONS
-      if definition.tool_name not in PLUGIN_COMPATIBILITY_TOOLS),
+      if public_business_tool(definition) == definition.tool_name),
 ), start=1))
 CONTRACT_ENTRIES = {
     **CONTRACT_ENTRIES,
-    "plugin": tuple(entry for entry in (*CONTRACT_ENTRIES["plugin"], *_native_business_entries)
-                    if entry["tool_name"] not in PLUGIN_COMPATIBILITY_TOOLS),
+    "plugin": (*CONTRACT_ENTRIES["plugin"], *_native_business_entries),
 }
 
 

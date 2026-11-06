@@ -817,7 +817,7 @@ compatibility endpoints. This proposal itself changes no published wire version.
   [OAuth profiles](../src/docket/providers/google/oauth.py).
 - [Native contexts](../src/docket/services/native_context.py),
   [native workflow contracts](../src/docket/schemas/native_workflows.py),
-  [current alias definitions](../src/docket/schemas/business.py),
+  [typed retraction dispatch](../src/docket/schemas/business.py),
   [native registration](../src/docket/plugin/server.py),
   [workload context](../src/docket/services/workload_context.py) and
   [supported Compose](../docker-compose.yml).

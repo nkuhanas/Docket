@@ -85,6 +85,8 @@ class InteractiveAuthorityService:
         from docket.services.expenses import ExpenseService
         from docket.services.financial_documents import FinancialDocumentService
         from docket.services.settlement import SettlementService
+        from docket.services.task_linking import TaskLinkService
+        from docket.services.task_lists import TaskListService
         from docket.services.work_calendar import WorkCalendarService
         from docket.services.workload_followup import WorkloadFollowupService
 
@@ -101,6 +103,9 @@ class InteractiveAuthorityService:
                 **policy_handlers,
                 **event_handlers,
                 **tracked_context_handlers,
+                "task_list": TaskListService(session).apply,
+                "task_google_link": TaskLinkService(session).link,
+                "task_sync_resolution": TaskLinkService(session).resolve,
                 **WorkAttributionService(session).handlers(),
                 "financial_document": FinancialDocumentService(session).apply,
                 "financial_transaction": SettlementService(session).apply,

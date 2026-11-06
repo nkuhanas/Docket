@@ -7,11 +7,23 @@ from docket.providers.google.calendar import (
 from docket.providers.google.disabled_calendar import DisabledCalendarProvider
 from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.providers.google.fake_gmail import FakeGmailProvider
+from docket.providers.google.fake_tasks import DisabledTasksProvider, FakeTasksProvider
 from docket.providers.google.gmail import (
     GmailMutationProvider,
     GmailReadProvider,
     GoogleGmailProvider,
 )
+from docket.providers.google.tasks import GoogleTasksProvider, TasksProvider, TasksWriteGate
+
+
+def build_tasks_provider(
+    settings: Settings, *, gate: TasksWriteGate | None = None,
+) -> TasksProvider:
+    if not settings.tasks_enabled:
+        return DisabledTasksProvider()
+    if settings.environment.value == "production":
+        return GoogleTasksProvider(str(settings.google_oauth_token_file), gate=gate)
+    return FakeTasksProvider()
 
 
 def build_calendar_write_provider(settings: Settings) -> CalendarProvider:

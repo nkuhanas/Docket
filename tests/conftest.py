@@ -17,6 +17,7 @@ os.environ.update(
         "DOCKET_OPERATOR_REF": "",
         "DOCKET_DATABASE_URL": f"sqlite+pysqlite:///{ROOT / '.runtime/test-bootstrap.db'}",
         "DOCKET_CALENDAR_READS_ENABLED": "false",
+        "DOCKET_TASKS_ENABLED": "false",
         "DOCKET_EXTERNAL_WRITES_ENABLED": "false",
         "DOCKET_GMAIL_INGESTION_ENABLED": "false",
         "DOCKET_GMAIL_WRITES_ENABLED": "false",
