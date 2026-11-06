@@ -25,6 +25,10 @@ from docket.models import (
 from docket.models.base import utc_now
 
 EVENTS = {
+    "docket.work.attention": "Work records or commitments need operational review.",
+    "docket.finance.attention": (
+        "A financial obligation needs review; no money movement is implied."
+    ),
     "docket.system.alert": "Docket has an operational alert.",
     "docket.triage.ready": "A source is ready for bounded non-authoritative triage.",
     "docket.attention.created": "An attention case has a new revision.",

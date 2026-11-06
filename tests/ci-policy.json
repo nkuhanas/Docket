@@ -26,6 +26,7 @@
       "tests/integration/test_expenses.py",
       "tests/integration/test_work_reports.py",
       "tests/integration/test_workload.py",
+      "tests/integration/test_workload_followup.py",
       "tests/integration/test_plugin_oauth.py",
       "tests/integration/test_plugin_notifications.py",
       "tests/integration/test_triage_inbox.py",

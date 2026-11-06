@@ -96,6 +96,7 @@ _GROUP_FOR_OBJECT_TYPE = {
     "expense": "tracked_context_changes",
     "financial_document": "tracked_context_changes",
     "financial_transaction": "tracked_context_changes",
+    "workload_reconciliation": "tracked_context_changes",
     "entity": "registry_changes",
     "identity_handle": "registry_changes",
     "identity_binding": "registry_changes",

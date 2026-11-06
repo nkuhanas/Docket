@@ -252,7 +252,8 @@ class ReminderPlan(Base):
     __table_args__ = (
         CheckConstraint(_CANONICAL_STATUS, name="ck_reminder_plans_canonical_status"),
         CheckConstraint(
-            "subject_ref LIKE 'evt\\_%' ESCAPE '\\' OR subject_ref LIKE 'time\\_%' ESCAPE '\\'",
+            "substr(subject_ref, 1, 4) IN ('evt_','eng_','exp_','pay_') OR "
+            "substr(subject_ref, 1, 5) IN ('time_','work_','fdoc_')",
             name="ck_reminder_plans_subject_ref",
         ),
         CheckConstraint("version >= 1", name="ck_reminder_plans_version"),

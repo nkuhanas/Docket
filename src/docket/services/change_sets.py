@@ -135,6 +135,7 @@ class ChangeSetApplicationReceipt:
     financial_documents: list[dict[str, Any]] = field(default_factory=list)
     expenses: list[dict[str, Any]] = field(default_factory=list)
     financial_records: list[dict[str, Any]] = field(default_factory=list)
+    workload_reviews: list[dict[str, Any]] = field(default_factory=list)
 
     def add_refs(self, refs: list[str]) -> None:
         for ref_id in refs:
@@ -226,7 +227,9 @@ class ChangeSetApplicationReceipt:
                 **({"financial_records": self.financial_records[:min(limit, 3)],
                     "financial_record_count": len(self.financial_records),
                     "financial_records_truncated": len(self.financial_records) > min(limit, 3)}
-                   if self.financial_records else {})}
+                   if self.financial_records else {}),
+                **({"workload_reviews": self.workload_reviews[:min(limit, 3)]}
+                   if self.workload_reviews else {})}
 
 
 _GROUP_TYPES: dict[str, frozenset[str]] = {
@@ -256,6 +259,7 @@ _GROUP_TYPES: dict[str, frozenset[str]] = {
             "task",
             "temporal_calendar_projection",
             "reminder_plan",
+            "workload_reconciliation",
         }
     ),
     "resolution_changes": frozenset({"attention_case_resolution"}),
@@ -263,6 +267,7 @@ _GROUP_TYPES: dict[str, frozenset[str]] = {
 
 _OBJECT_PREFIXES: dict[str, str] = {
     "financial_transaction": "ftxn",
+    "workload_reconciliation": "wrec",
     "expense": "exp",
     "financial_document": "fdoc",
     "engagement": "eng",
@@ -647,6 +652,21 @@ class ChangeSetService:
             refs = self.handlers[change.object_type](self.session, changeset, resolved_change)
             refs_by_change_id[change.change_id] = refs
             receipt.add_refs(refs)
+            if change.object_type == "workload_reconciliation":
+                from docket.models import WorkloadReconciliation
+
+                record = self.session.scalar(select(WorkloadReconciliation).where(
+                    WorkloadReconciliation.ref_id == refs[0]))
+                assert record is not None
+                categories: dict[str, int] = {}
+                for exception in record.snapshot["exceptions"]:
+                    category = exception["category"]
+                    categories[category] = categories.get(category, 0) + 1
+                receipt.workload_reviews.append({"ref": record.ref_id,
+                    "as_of": record.snapshot["as_of"], "case_count": len(record.case_refs),
+                    "categories": categories, "case_refs": record.case_refs[:3],
+                    "coverage": record.snapshot["coverage"], "provider_effects": False,
+                    "detail": {"tool": "docket_get_context", "refs": [record.ref_id]}})
             if change.object_type == "financial_transaction":
                 from docket.models import FinancialTransaction
 

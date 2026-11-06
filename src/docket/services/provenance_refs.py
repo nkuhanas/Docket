@@ -63,6 +63,7 @@ from docket.models import (
     ToolInvocation,
     TriageRun,
     WorkClaim,
+    WorkloadReconciliation,
     WorkSession,
     WorkSessionRevision,
 )
@@ -71,7 +72,7 @@ PROVENANCE_PREFIXES = frozenset(
     {
         "pay", "ftxn", "fent",
         "fdoc", "fdrev", "clm", "ceval", "alloc", "fobs", "exp", "exrev", "exobs",
-        "eng", "erev", "work", "wrev",
+        "eng", "erev", "work", "wrev", "wrec",
         "utt",
         "req",
         "rec",
@@ -116,6 +117,7 @@ PROVENANCE_PREFIXES = frozenset(
 )
 
 _PHASE_TWO_MODELS: dict[str, type[Any]] = {
+    "wrec": WorkloadReconciliation,
     "pay": Payment,
     "ftxn": FinancialTransaction,
     "fent": FinancialEntry,
@@ -215,6 +217,13 @@ class ProvenanceRefService:
                 message="A referenced provenance object does not exist.",
                 details={"ref": ref_id},
             )
+        if isinstance(item, WorkloadReconciliation):
+            from docket.services.work_attribution import read_operator
+
+            if item.operator_ref != read_operator():
+                raise DocketError(
+                    code="workload_record_unavailable", message="Select owned records."
+                )
         if isinstance(item, Payment | FinancialTransaction | FinancialEntry):
             from docket.services.work_attribution import read_operator
 

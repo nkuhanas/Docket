@@ -14,7 +14,7 @@ from docket.config import get_settings
 from docket.database import get_session_factory, session_scope
 from docket.domain.errors import DocketError
 from docket.mcp.instrumented import ProvenanceMCP, _validation_issues
-from docket.models import ReminderPlan
+from docket.models import OperationalReminder, ReminderPlan
 from docket.providers.google.gmail_runtime import get_gmail_read_provider
 from docket.providers.google.runtime import get_calendar_read_provider
 from docket.schemas.assembly import (
@@ -685,7 +685,7 @@ def docket_list_reminder_plans(
     cursor: str | None = None,
     limit: Annotated[int, Field(ge=1, le=100)] = 25,
 ) -> dict[str, Any]:
-    """List canonical ReminderPlans, optionally scoped to one Event or Time."""
+    """List canonical reminder plans, optionally scoped to one supported subject."""
     try:
         offset = _offset_cursor(cursor)
         with session_scope() as session:
@@ -709,6 +709,11 @@ def docket_list_reminder_plans(
                 }
                 for row in selected
             ]
+            for item in items:
+                operational = session.get(OperationalReminder, item["ref"])
+                if operational is not None:
+                    item["trigger_at"] = operational.trigger_at.isoformat()
+                    item["label"] = operational.label
             next_offset = offset + len(selected)
             return {
                 "ok": True,

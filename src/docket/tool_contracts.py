@@ -10,12 +10,13 @@ from docket.schemas.business import BUSINESS_DEFINITIONS, PLUGIN_COMPATIBILITY_T
 from docket.schemas.compensation import POLICY_TOOL_PURPOSES
 from docket.schemas.expenses import EXPENSE_TOOL_PURPOSES
 from docket.schemas.financial_documents import FINANCIAL_TOOL_PURPOSES
+from docket.schemas.followup import FOLLOWUP_TOOL_PURPOSES
 from docket.schemas.invoices import INVOICE_TOOL_PURPOSES
 from docket.schemas.settlement import SETTLEMENT_TOOL_PURPOSES
 from docket.schemas.work import WORK_TOOL_PURPOSES
 from docket.schemas.workload import WORKLOAD_TOOL_PURPOSES
 
-CONTRACT_VERSION = "docket-tools-2026-11-05-v65"
+CONTRACT_VERSION = "docket-tools-2026-11-05-v66"
 ContractProfile = Literal["interactive", "triage", "plugin"]
 
 
@@ -119,7 +120,7 @@ _INTERACTIVE_READS: dict[str, tuple[str, str]] = {
     ),
     "docket_list_reminder_plans": (
         "ONT-TRACK-TOOL-0007",
-        "List canonical ReminderPlans for Events or TemporalBindings.",
+        "List canonical reminders for calendar, temporal or operational subjects.",
     ),
 }
 
@@ -381,6 +382,7 @@ _native_business_entries: tuple[ToolContractEntry, ...] = tuple({
     *INVOICE_TOOL_PURPOSES.items(),
     *SETTLEMENT_TOOL_PURPOSES.items(),
     *WORKLOAD_TOOL_PURPOSES.items(),
+    *FOLLOWUP_TOOL_PURPOSES.items(),
     *((definition.tool_name,
        f"{definition.action.capitalize()} {definition.object_type} with ordinary business fields.")
       for definition in BUSINESS_DEFINITIONS

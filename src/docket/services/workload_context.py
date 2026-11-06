@@ -584,6 +584,13 @@ class WorkloadContextService:
                 "dimensions": "planned_activity and firmness are independent "
                 "reported labels. Unknown stays unknown.",
             },
+            "actions": [
+                "docket_reconcile_workload",
+                "docket_set_workload_preferences",
+                "docket_set_project_budget",
+            ]
+            if "commit" in require_principal("read").permissions
+            else [],
             "guide": "Use event context_labels planned_work, firm, tentative or travel "
             "only when reported. Set availability/protected windows when useful. "
             "Calendar attendance and payment are never inferred. "

@@ -9,10 +9,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from docket.config import Settings, get_settings
 from docket.domain.canonical import sha256_json
+from docket.domain.errors import DocketError
 from docket.models import (
     AuditEvent,
     CanonicalEvent,
     Item,
+    OperationalReminder,
     OperatorProjection,
     OutboxEvent,
     ReminderPlan,
@@ -42,9 +44,11 @@ def _local_instant(
     *,
     fold: int = 0,
 ) -> datetime:
-    return datetime.combine(local_date, local_time).replace(
-        tzinfo=ZoneInfo(timezone), fold=fold
-    ).astimezone(UTC)
+    return (
+        datetime.combine(local_date, local_time)
+        .replace(tzinfo=ZoneInfo(timezone), fold=fold)
+        .astimezone(UTC)
+    )
 
 
 def _plan_date_time(plan: ReminderPlan) -> tuple[time, str]:
@@ -69,9 +73,7 @@ def _temporal_target(plan: ReminderPlan, binding: TemporalBinding) -> datetime:
     if kind == "date":
         target_date = DateTemporalValue.model_validate(binding.temporal_value).date
     else:
-        target_date = DateIntervalTemporalValue.model_validate(
-            binding.temporal_value
-        ).start_date
+        target_date = DateIntervalTemporalValue.model_validate(binding.temporal_value).start_date
     return _local_instant(target_date, trigger_time, timezone)
 
 
@@ -87,6 +89,15 @@ def _event_target(plan: ReminderPlan, event: CanonicalEvent) -> datetime:
 
 
 def _subject_title(session: Session, plan: ReminderPlan) -> tuple[str, datetime]:
+    operational = session.get(OperationalReminder, plan.ref_id)
+    if operational is not None:
+        from docket.services.workload_followup import operational_subject
+
+        try:
+            operational_subject(session, plan.subject_ref, operational.operator_ref)
+        except DocketError as exc:
+            raise ValueError("operational_reminder_subject_unavailable") from exc
+        return operational.label or "Operational follow-up", _aware(operational.trigger_at)
     if plan.subject_ref.startswith("evt_"):
         event = session.scalar(
             select(CanonicalEvent).where(CanonicalEvent.ref_id == plan.subject_ref)
@@ -212,8 +223,12 @@ class ReminderService:
                         reminder_plan_ref=plan.ref_id,
                         trigger_key=trigger_key,
                         scheduled_for=target - timedelta(seconds=lead_seconds),
-                        status="failed" if target <= now else "pending",
-                        last_error_code="reminder_target_elapsed" if target <= now else None,
+                        status="failed"
+                        if target <= now and session.get(OperationalReminder, plan.ref_id) is None
+                        else "pending",
+                        last_error_code="reminder_target_elapsed"
+                        if target <= now and session.get(OperationalReminder, plan.ref_id) is None
+                        else None,
                     )
                 )
                 changed += 1
@@ -245,15 +260,12 @@ class ReminderService:
             notification.status = "failed"
             notification.last_error_code = str(exc)[:128]
             return True
-        if target <= now:
+        if target <= now and session.get(OperationalReminder, plan.ref_id) is None:
             notification.status = "failed"
             notification.last_error_code = "reminder_target_elapsed"
             return True
         local_target = target.astimezone(ZoneInfo(self.settings.timezone))
-        visible_text = (
-            f"Reminder: {title}\n"
-            f"Target: {local_target.strftime('%Y-%m-%d %H:%M %Z')}"
-        )
+        visible_text = f"Reminder: {title}\nTarget: {local_target.strftime('%Y-%m-%d %H:%M %Z')}"
         semantic_content = {
             "reminder_plan_ref": plan.ref_id,
             "subject_ref": plan.subject_ref,
@@ -278,7 +290,9 @@ class ReminderService:
         session.add(projection)
         session.flush()
         outbox = route_projection(
-            session, self.settings, projection,
+            session,
+            self.settings,
+            projection,
             deduplication_key=f"reminder_projection:{plan.ref_id}:{notification.trigger_key}",
         )
         session.flush()

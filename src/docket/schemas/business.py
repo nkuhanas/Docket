@@ -153,6 +153,8 @@ def _business_definition(mutation: type[BaseModel]) -> BusinessDefinition:
 CANONICAL_MUTATIONS = tuple(_models(authority.CanonicalChangeInput))
 # Calendar and tasks get purpose-built everyday commands with derived support records.
 SPECIAL_TOOL_BY_MUTATION = {
+    "operational_reminder_create": "docket_schedule_followup",
+    "workload_reconcile": "docket_reconcile_workload",
     "financial_post": "docket_record_payment",
     "canonical_event_create": "docket_create_event",
     "canonical_event_modify": "docket_update_event",

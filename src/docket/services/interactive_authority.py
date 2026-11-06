@@ -85,6 +85,7 @@ class InteractiveAuthorityService:
         from docket.services.expenses import ExpenseService
         from docket.services.financial_documents import FinancialDocumentService
         from docket.services.settlement import SettlementService
+        from docket.services.workload_followup import WorkloadFollowupService
 
         registry_handlers = RegistryService(session).handlers()
         policy_handlers = ContextPolicyService(session).handlers()
@@ -102,6 +103,7 @@ class InteractiveAuthorityService:
                 **WorkAttributionService(session).handlers(),
                 "financial_document": FinancialDocumentService(session).apply,
                 "financial_transaction": SettlementService(session).apply,
+                "workload_reconciliation": WorkloadFollowupService(session, get_settings()).apply,
                 "expense": ExpenseService(session).apply,
                 **case_resolution_handlers,
                 **(handlers or {}),

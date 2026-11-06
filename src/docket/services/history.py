@@ -78,6 +78,7 @@ from docket.models import (
     TriageRun,
     WorkClaim,
     WorkClaimEvent,
+    WorkloadReconciliation,
     WorkSession,
     WorkSessionRevision,
 )
@@ -96,6 +97,7 @@ AUDIT_OUTPUT_BYTES = 64 * 1024
 MAX_TEXT_CHUNK_BYTES = 32 * 1024
 
 _PREFIX_MODELS: dict[str, tuple[str, type[Any], str]] = {
+    "wrec": ("workload_reconciliation", WorkloadReconciliation, "created_at"),
     "pay": ("payment", Payment, "created_at"),
     "ftxn": ("financial_transaction", FinancialTransaction, "created_at"),
     "fent": ("financial_entry", FinancialEntry, "created_at"),
@@ -272,6 +274,21 @@ class HistoryService:
                 "basis_refs": item.basis_refs,
                 "created_by_changeset_ref": item.created_by_changeset_ref,
                 "created_at": _iso(item.created_at),
+            }
+        if isinstance(item, WorkloadReconciliation):
+            from docket.services.work_attribution import read_operator
+
+            if item.operator_ref != read_operator():
+                raise DocketError(
+                    code="workload_record_unavailable", message="Select owned records."
+                )
+            return {
+                **base, "as_of": item.snapshot["as_of"],
+                "date_from": item.snapshot["date_from"], "date_to": item.snapshot["date_to"],
+                "case_refs": item.case_refs[:3], "case_count": len(item.case_refs),
+                "coverage": item.snapshot["coverage"][:5], "basis_refs": item.basis_refs,
+                "created_by_changeset_ref": item.created_by_changeset_ref,
+                "detail": {"view": "audit", "representation": "workload_json_chunk"},
             }
         if isinstance(item, Payment | FinancialTransaction | FinancialEntry):
             from docket.services.work_attribution import read_operator
@@ -1028,6 +1045,12 @@ class HistoryService:
                 chunk = _text_chunk(raw, text_offset, min(text_limit, 8192))
                 chunk["expense_json_chunk"] = chunk.pop("verbatim_text_chunk")
                 entry.update(chunk)
+            if isinstance(item, WorkloadReconciliation):
+                raw = json.dumps({"snapshot": item.snapshot, "case_refs": item.case_refs},
+                    ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                chunk = _text_chunk(raw, text_offset, min(text_limit, 8192))
+                chunk["workload_json_chunk"] = chunk.pop("verbatim_text_chunk")
+                entry.update(chunk)
             if isinstance(item, FinancialDocumentObservation):
                 raw = json.dumps({"ref":item.ref_id,"document_ref":item.document_ref,
                     "document_revision_ref":item.document_revision_ref,"kind":item.kind,
@@ -1275,7 +1298,7 @@ class HistoryService:
                 continue
             time_column = getattr(model, time_field)
             statement: Select[Any] = select(model)
-            if model in {Payment, FinancialEntry, FinancialTransaction}:
+            if model in {Payment, FinancialEntry, FinancialTransaction, WorkloadReconciliation}:
                 from docket.services.work_attribution import read_operator
 
                 statement = statement.where(model.operator_ref == read_operator())

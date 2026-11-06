@@ -35,6 +35,7 @@ _DEFINITIONS = (
     PublicRefDefinition("cprv", "CompensationPolicyRevision"),
     PublicRefDefinition("cptr", "CompensationTerm"),
     PublicRefDefinition("worg", "WorkQuantityOrigin"),
+    PublicRefDefinition("wrec", "WorkloadReconciliation"),
     PublicRefDefinition("wrep", "WorkReportSnapshot"),
     PublicRefDefinition("eng", "Engagement"),
     PublicRefDefinition("erev", "EngagementRevision"),

@@ -32,7 +32,7 @@ does not invent a payroll/banking integration or require its credentials.
 | P1c settlement | Partial/unmatched/overpaid payments, allocations/credits/reversals, external-ID dedup, gross/net differences and outstanding/due balances without false receipt | Five flat commands/context implemented; native and PostgreSQL journeys, matching conservation, history and owner isolation checked; activation pending |
 | Formal export | Deterministic CSV/JSON and usable invoice/timesheet rendition with references, policy/calculation/revision basis; no implicit sending | Timesheet and invoice JSON/CSV/Markdown with exact-revision continuation implemented; release acceptance pending |
 | P2 operations | Source-grounded workload/capacity/interval unions, outcomes/professional history, explicit assumptions/coverage and suggested omissions without invented performed work | Implemented in source; release acceptance pending |
-| P2 follow-up | Typed work/finance reminder/case/event subjects, bounded exception reconciliation, retained inbox, suppression/preferences and client scheduling | Pending |
+| P2 follow-up | Typed work/finance reminder/case/event subjects, bounded exception reconciliation, retained inbox, suppression/preferences and client scheduling | Implemented in source; release acceptance pending |
 | Optional visibility | Explicit correlated actual-time Calendar projection, no duplicate editable time/accounting or default provider effect | Pending |
 | Authority/provenance | OAuth/current local grant, req_/call_, owner isolation/revocation, full approved automation, restricted triage, optional honest capture and sensitive-log protection | New commands enforce write admission and retain req_/call_ roots; read-only rejection checked; complete new-domain isolation/revocation/privacy acceptance pending |
 | Contracts/host | Actual schemas and budgets, first-valid-attempt MCP journeys, generated reference/skill, same registered plugin identity and actual advertised capabilities | Thirteen P0, three policy/evaluation, four formal-report, three expense, three invoice and five settlement/context definitions fit per-tool budgets; generated reference/skill aligned. Hosted refresh/release pending |
@@ -864,3 +864,51 @@ and release groups pass. These are source checks, not deployment acceptance.
 
 Typed operational reminders/cases, bounded exception publication, optional actual
 Calendar visibility, full release validation and hosted refresh remain required.
+
+
+### P2: selective operational follow-up
+
+Two flat commands schedule an exact work/engagement/document/expense/payment
+follow-up or reconcile a bounded period into nonbinding attention cases. Reminder
+creation reuses ReminderPlan and its existing queue/inbox; its explicit retained
+trigger needs no synthetic Calendar event. Retraction cancels the plan. Due reminders
+remain deliverable after downtime and emit once. Labels and subject ownership are
+validated, with no payroll, Calendar write or financial transfer.
+
+Reconciliation discovers source refs internally and retains its as-of range,
+versions, coverage and exact exception set under a genuine request/ChangeSet.
+It checks actual interval overlaps, optional classification gaps, overdue tracked
+obligations and posted money, changed document bases, approaching explicit follow-ups
+and overlapping future commitments. The open-timer diagnostic is explicitly a
+12-hour heuristic, never an inferred stop. Scans and exception counts are bounded;
+partial coverage is visible. No work, compensation, attendance or payment is inferred.
+
+Existing supporting decision CaseItems represent these reviews without new blocking
+canonical consequences. Corrections append case revisions and new item payloads;
+earlier source snapshots remain intact. Stable situation identities, retained inbox
+notices and a default weekly cooldown suppress repeated alerts. Current notification
+preferences can further restrict publication at apply time. Suppression never blocks
+ordinary work. The client explicitly schedules reconciliation under its approved
+write delegation; no inference daemon or extra background authority was added.
+
+`docket.work.attention` and `docket.finance.attention` use the existing event protocol
+and generic ref/summary payload. Read the referenced case for facts; event delivery
+neither grants write authority nor proves the operator read it. No new OAuth scope.
+Migration `20261105f2a3` adds immutable operational trigger/review records and explicit
+ReminderPlan subjects. PostgreSQL checks owner matching, exact queue delivery and
+retained trigger identity; populated downgrade refuses before dropping history.
+Use prior image/backup and forward repair, never edit production rows to bypass it.
+
+Discovery is 107 tools / 69 canonical variants and 180,811 compact UTF-8 bytes.
+Follow-up schemas are 841/851 bytes, complete definitions 1,415/1,504 bytes; metadata
+v66, generated reference and packaged skill are aligned. New native journeys cover
+late delivery/retries/retraction, deduplication, retained case items, current quiet
+preferences, stale exact previews and read-only rejection. PostgreSQL additionally
+checks competing reviews, cross-owner rejection and direct-SQL immutability.
+Native local gate: 262 passed in 54.89 seconds; Ruff and strict mypy passed for
+246 source files. The storage group passed 122 checks before its explicit migration
+inventory assertion was updated; all three migration checks then passed. Disposable
+PostgreSQL completed fresh/model-parity/empty-round-trip checks, reminder owner and
+immutability constraints, concurrent review/deduplication, all earlier work/finance
+races and populated downgrade refusal. No real provider/work/financial records were
+created. Optional actual-time Calendar visibility and full release/host activation remain.

@@ -34,6 +34,7 @@ from docket.providers.google.fake_gmail import FakeGmailProvider
 from docket.providers.webhooks import WebhookResponse
 from docket.schemas.intelligence import CaseItemInput
 from docket.services.intelligence import IntelligenceService
+from docket.services.notifications import EVENTS
 from docket.services.oauth import OAuthAuthenticationError, OAuthPrincipalService, OAuthVerifier
 from docket.tool_contracts import contract_tool_names
 
@@ -348,7 +349,7 @@ async def test_modern_events_discovery_verification_refresh_and_stop(
         discovery = await request("server/discover", {})
         assert discovery["result"]["capabilities"]["events"] == {}
         catalog = await request("events/list", {})
-        assert len(catalog["result"]["events"]) == 6
+        assert {event["name"] for event in catalog["result"]["events"]} == set(EVENTS)
         params = {
             "name": "docket.attention.created",
             "arguments": {},

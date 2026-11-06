@@ -23,6 +23,7 @@ from docket.schemas.events import (
 from docket.schemas.evidence import FieldEvidenceInput
 from docket.schemas.expenses import ExpenseRef, ExpenseSpec
 from docket.schemas.financial_documents import DocumentRef, TimesheetSpec, TimesheetStatusSpec
+from docket.schemas.followup import OperationalReminderSpec, WorkloadReconciliationSpec
 from docket.schemas.invoices import InvoiceSpec, InvoiceStatusSpec
 from docket.schemas.policy import (
     CalendarLaneCreateSpec,
@@ -99,6 +100,7 @@ ImportEffect = Literal[
     "task",
     "temporal_calendar_projection",
     "reminder_plan",
+    "workload_reconciliation",
     "attention_case_resolution",
 ]
 
@@ -594,6 +596,24 @@ class ExpenseModify(MutationBase):
     object_ref: ExpenseRef
     create_spec: None = None
     payload: ExpenseSpec
+
+
+class OperationalReminderCreate(MutationBase):
+    mutation_type: Literal["operational_reminder_create"] = "operational_reminder_create"
+    action: Literal["create"]
+    object_type: Literal["reminder_plan"]
+    object_ref: None = None
+    create_spec: OperationalReminderSpec
+    payload: None = None
+
+
+class WorkloadReconcile(MutationBase):
+    mutation_type: Literal["workload_reconcile"] = "workload_reconcile"
+    action: Literal["create"]
+    object_type: Literal["workload_reconciliation"]
+    object_ref: None = None
+    create_spec: WorkloadReconciliationSpec
+    payload: None = None
 
 
 class FinancialPostingCreate(MutationBase):
@@ -1275,7 +1295,9 @@ type LaneMutation = (
 )
 type EventMutation = CanonicalEventCreate | CanonicalEventModify | CanonicalEventCancel
 type TrackedContextMutation = (
-    FinancialPostingCreate
+    OperationalReminderCreate
+    | WorkloadReconcile
+    | FinancialPostingCreate
     | InvoicePrepare
     | InvoiceRefresh
     | InvoiceTransition
@@ -1313,7 +1335,9 @@ type TrackedContextMutation = (
     | ReminderPlanRetract
 )
 type CanonicalMutation = (
-    FinancialPostingCreate
+    OperationalReminderCreate
+    | WorkloadReconcile
+    | FinancialPostingCreate
     | InvoicePrepare
     | InvoiceRefresh
     | InvoiceTransition

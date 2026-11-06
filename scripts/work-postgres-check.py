@@ -1698,11 +1698,15 @@ async def check():
         FinancialEntry,
         FinancialReportSnapshot,
         FinancialTransaction,
+        OperationalReminder,
         Payment,
         PaymentEvent,
+        WorkloadReconciliation,
     )
 
     tables = (
+        OperationalReminder,
+        WorkloadReconciliation,
         Payment,
         PaymentEvent,
         FinancialTransaction,
@@ -2109,6 +2113,9 @@ async def check():
     from workload_postgres_check import check_workload
 
     workload_evidence = await check_workload(settings, factory, principal)
+    from followup_postgres_check import check_followup
+
+    followup_evidence = await check_followup(settings, factory, principal)
     changeset_ref = created["changeset_ref"]
     with factory.begin() as session:
         request_ref = session.scalar(
@@ -2299,6 +2306,7 @@ async def check():
             {
                 **settlement_evidence,
                 **workload_evidence,
+                **followup_evidence,
                 "work_schema_roundtrip": "passed",
                 "canonical_work_retry": "passed",
                 "canonical_correction_race": "passed",

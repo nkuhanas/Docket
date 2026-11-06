@@ -1175,6 +1175,26 @@ class TrackedContextService:
         self, _session: Session, changeset: ChangeSet, change: Any
     ) -> list[str]:
         if change.action == "create":
+            if "trigger_at" in change.create_spec:
+                from docket.agent_auth import require_principal
+                from docket.models import OperationalReminder
+                from docket.schemas.followup import OperationalReminderSpec
+                from docket.services.workload_followup import operational_subject
+
+                spec_op = OperationalReminderSpec.model_validate(change.create_spec)
+                operational_subject(self.session, spec_op.subject_ref)
+                reminder = ReminderPlan(subject_ref=spec_op.subject_ref,
+                    delivery_channels=["docket_queue"], lead_seconds=[0], timezone=spec_op.timezone,
+                    basis_refs=list(change.basis_refs), created_by_changeset_ref=changeset.ref_id)
+                self.session.add(reminder)
+                self.session.flush()
+                self.session.add(OperationalReminder(reminder_ref=reminder.ref_id,
+                    operator_ref=require_principal("commit").operator_ref,
+                    trigger_at=spec_op.trigger_at, label=spec_op.label))
+                self._audit(event_type="reminder_plan.changed", subject=reminder,
+                    changeset=changeset, change=change,
+                    affected_refs=[reminder.ref_id, reminder.subject_ref])
+                return [reminder.ref_id]
             spec = ReminderPlanInput.model_validate(change.create_spec)
             assert spec.subject_ref is not None
             self._require_reminder_subject(spec.subject_ref)
@@ -1204,6 +1224,11 @@ class TrackedContextService:
             if change.action == "retract":
                 reminder.canonical_status = "retracted"
             elif change.action == "update":
+                from docket.models import OperationalReminder
+
+                if self.session.get(OperationalReminder, reminder.ref_id) is not None:
+                    raise DocketError(code="operational_reminder_immutable",
+                        message="Retract this follow-up and schedule its replacement.")
                 patch = ReminderPlanPatchInput.model_validate(change.payload)
                 values = patch.model_dump(exclude_unset=True)
                 if values.get("subject_ref") is not None:

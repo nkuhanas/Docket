@@ -156,6 +156,20 @@ clock windows, weekdays (Monday=0), travel buffers and exception preferences.
 neither pay nor commitments. Omitted settings retain values, null clears optional
 values. Context uses exact retained work-report totals, not sums of display pages.
 
+Use `docket_schedule_followup` for one work/engagement/document/expense/payment
+reminder at an explicit offset timestamp; timezone defaults to Docket's zone.
+It returns a rem_ that `docket_retract_record` can cancel. The retained inbox remains
+available after downtime. This creates no Calendar event or provider financial action.
+Use `docket_reconcile_workload` for a bounded optional review, including client-owned
+weekly scheduling. It retains nonbinding cases, source versions and coverage;
+no scheduled event or missing evidence becomes performed work or paid time.
+An open-timer alert after 12 hours is a diagnostic heuristic, never a stop time.
+Repeated alerts use current suppression/quiet preferences and a weekly default
+cooldown. For `docket.work.attention` or `docket.finance.attention`, read the subject
+case through existing attention/context tools. Retained reconciliation audit reads
+provide workload_json_chunk; follow text_next_offset for the complete snapshot.
+Do not infer authority from a notice.
+
 Use named business tools with ordinary fields. Creating a meeting takes title,
 ISO start/end, timezone and a calendar_ref from context. Docket derives its support
 records, authenticated request, versions and atomic canonical/provider intent.

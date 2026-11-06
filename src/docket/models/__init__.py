@@ -160,6 +160,7 @@ from docket.models.work_quantities import (
     WorkQuantityOrigin,
 )
 from docket.models.work_reports import WorkReportMember, WorkReportSnapshot
+from docket.models.workload import OperationalReminder, WorkloadReconciliation
 
 __all__ = [
     "Affiliation",
@@ -247,6 +248,7 @@ __all__ = [
     "OAuthPrincipal",
     "Operation",
     "OperationTarget",
+    "OperationalReminder",
     "OperatorProjection",
     "OperatorUtterance",
     "OrganizationInstitutionProfile",
@@ -296,4 +298,5 @@ __all__ = [
     "WorkSession",
     "WorkSessionRevision",
     "WorkTimeComponent",
+    "WorkloadReconciliation",
 ]
