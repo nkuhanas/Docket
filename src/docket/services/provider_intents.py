@@ -598,8 +598,13 @@ class ProviderIntentService:
                 event_type="operation.created",
                 entity_type="operation",
                 entity_id=operation.id,
-                actor_type="operator",
-                actor_id=get_settings().operator_discord_user_id,
+                actor_type=("system" if parameters.get("task_reminder_generation_ref")
+                            else "operator"),
+                actor_id=(
+                    "task_reminder_projection"
+                    if parameters.get("task_reminder_generation_ref")
+                    else get_settings().operator_discord_user_id
+                ),
                 primary_ref=operation.ref_id,
                 affected_refs=[operation.ref_id, *target_refs],
                 basis_refs=list(intent.basis_refs),

@@ -90,6 +90,8 @@ class TasksContextService:
             "google_write_grant": full,
             "local_tasks": True,
             "provider_methods": methods,
+            "clock": "Google's native clock is opaque and API edits can clear it. "
+            "Docket uses an AM/PM title header and a Calendar companion for exact alerts.",
         }
 
     def object(self, ref: str) -> tuple[dict[str, Any], dict[str, int]]:

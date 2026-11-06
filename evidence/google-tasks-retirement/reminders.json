@@ -1,0 +1,31 @@
+{
+  "status": "passed",
+  "head": "20261106f6a7",
+  "postgresql": "16.9",
+  "test_database": "isolated tmpfs disposable instance",
+  "providers": "synthetic Calendar and Tasks",
+  "checks": {
+    "task_storage_shape": "passed",
+    "task_import_genuine_policy_root": "passed",
+    "task_full_title_and_derived_item": "passed",
+    "task_binding_requires_retained_revision": "passed",
+    "task_native_concurrent_edit": "one_commit",
+    "task_shared_operation_and_retained_delivery": "passed",
+    "task_reminder_atomic_queue_and_title_header": "passed",
+    "task_reminder_concurrent_replacement": "one_commit",
+    "task_reminder_completion_cancellation": "passed"
+  },
+  "populated_narrowing_refused_without_data_or_revision_loss": true,
+  "production_rows_changed": false,
+  "release_or_activation_evidence": false,
+  "temporary_instance_removed": true,
+  "updated_at": "2026-11-06T23:26:22.114907+00:00",
+  "local_checks": {
+    "native": 268,
+    "provider": 119,
+    "storage": 151,
+    "ruff": "passed",
+    "strict_mypy": "passed"
+  },
+  "rehearsal_script_sha256": "b091b2bd6a42011091f590f712d616ba89e95c3927ee1a7def4e090586b1150e"
+}

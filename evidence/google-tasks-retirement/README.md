@@ -32,8 +32,11 @@ The existing deployment and hosted plugin have not been replaced by these slices
   cleanup pass at both DST boundaries; device display remains unobserved.
 - Reminder origins derive from scoped retained generation/operation identity,
   survive full cache rebuilds and exclude markers from workload accounting.
-  Copied labels or private properties alone confer no origin. Automatic
-  generation and lifecycle handling remain outstanding.
+  Copied labels or private properties alone confer no origin. Automatic outbound
+  generation, rescheduling and completion cancellation use that same identity.
+- Requested times appear as AM/PM headers in Google Tasks. Canonical Task/Item
+  titles remain clean; scoped transport normalization preserves Google-side
+  renames. Full titles are not truncated to make a header fit.
 
 The [contract measurements](contracts.json) record 114 advertised tools. All six
 new definitions plus both modified task definitions total 12,245 bytes; each input
@@ -54,7 +57,7 @@ A task GET 404 requires accessible-collection confirmation before deletion is co
 
 Focused native MCP journeys cover flat list configuration, task creation/query/
 completion, explicit linking, separate field resolutions and detachment. The
-storage group passed 149 checks and the provider group passed 115 checks, including
+storage group covers 151 checks and the provider group covers 119 checks, including
 polling lease recovery, observation-only policies and revoked standing authority.
 Ruff and strict mypy passed. Release validation and activation remain outstanding.
 
@@ -62,6 +65,12 @@ The [isolated PostgreSQL proof](postgres.json) verifies storage shape, genuine
 policy imports, full Task/Item titles, deferred retained-baseline constraints and
 competing native edits with exactly one commit, and shared-runner delivery with
 retained binding revisions. The disposable container was removed.
+
+The [reminder rehearsal](reminders.json) adds real PostgreSQL atomic reminder
+delivery, competing replacement with one commit, time-header normalization and
+completion cancellation. It also verifies fresh/empty migration roundtrips at
+`20261106f6a7`, correct projection discriminator width and safe populated narrowing
+refusal. This is isolated-provider evidence, not deployed Google/device acceptance.
 
 ## Retirement inventory
 
@@ -84,13 +93,13 @@ as recovery evidence, with no callable legacy runtime.
 - Shared-operation task writes and scoped recovery now pass native/fake and PostgreSQL
   checks. Complete hierarchy/moves, live acceptance and operational readiness reporting.
   A canonical commit remains distinct from provider delivery.
-- Implement the task reminder generation lifecycle and its atomic Calendar intent,
-  including cancellation/unknown-create recovery and inbound helper reconciliation.
-- Integrate the tested scoped reminder origins with automatic generation/lifecycle.
+- Complete inbound Calendar helper clock/deletion reconciliation. Automatic outbound
+  generations, cancellation and pending/claimed/unknown-create windows are implemented.
 - Consent and Tasks API enablement are complete. [Real provider checks](live-provider.json)
   pass on the Operator-authorized dedicated validation targets, including stale-write
-  rejection and native cross-list identity. Complete native clock/hierarchy evidence
-  and production method admission; device display is independent evidence.
+  rejection and native cross-list identity. The native-clock experiment lost its
+  UI time; the Operator selected AM/PM title headers plus Calendar alerts. Complete
+  hierarchy evidence and production method admission; device display is independent.
 - Complete release cold-start verification of legacy retirement, release validation, reviewed merge/deployment,
   existing-app action rescan and real task verification. Device popup observation is
   separate from API creation success and is not guaranteed by Docket.

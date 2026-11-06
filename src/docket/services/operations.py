@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -208,7 +208,8 @@ class OperationRunner:
         parameters = dict(target.parameters)
         lane_ref = parameters.get("lane_ref")
         if (
-            operation.operation_type
+            not parameters.get("task_reminder_generation_ref")
+            and operation.operation_type
             in {
                 "calendar_create_event",
                 "calendar_update_event",
@@ -231,12 +232,15 @@ class OperationRunner:
         return parameters
 
     def _claim(self, session: Session, *, reconcile: bool) -> ClaimedOperation | None:
+        from docket.services.task_item_titles import lock_task_rows
+
+        # Reminder delivery also shares the Task mutation lock order when
+        # Google Tasks synchronization is disabled.
+        lock_task_rows(session)
         task_types: set[str] = set()
         if self.tasks_provider is not None and self.settings.tasks_enabled:
-            from docket.services.task_item_titles import lock_task_rows
             from docket.services.tasks_method_admission import METHODS, TasksMethodAdmission
 
-            lock_task_rows(session)
             if reconcile or self.settings.environment.value != "production":
                 task_types = {"tasks_" + method for method in METHODS}
             else:
@@ -811,6 +815,10 @@ class OperationRunner:
         result: CalendarEventResult,
     ) -> None:
         with self.session_factory.begin() as session:
+            if claim.parameters.get("task_reminder_generation_ref"):
+                from docket.services.task_item_titles import lock_task_rows
+
+                lock_task_rows(session)
             rows = self._owned_claim(session, claim)
             if rows is None:
                 return
@@ -953,7 +961,10 @@ class OperationRunner:
 
             TasksExecutionService(self).execute(claim)
             return
-        self.mark_provider_call_started(claim)
+        prepared = self._prepare_calendar_claim(claim)
+        if prepared is None:
+            return
+        claim = prepared
         if claim.operation_type == "calendar_configure_lane":
             lane_result = self._calendar_provider().ensure_calendar_lane(
                 claim.lane_request(create_if_missing=True)
@@ -1005,19 +1016,55 @@ class OperationRunner:
 
     def _finish_no_reconciliation_match(self, claim: ClaimedOperation) -> None:
         with self.session_factory.begin() as session:
+            if claim.parameters.get("task_reminder_generation_ref"):
+                from docket.services.task_item_titles import lock_task_rows
+
+                lock_task_rows(session)
             rows = self._owned_claim(session, claim)
             if rows is None:
                 return
             operation, target, attempt = rows
-            operation.status = OperationStatus.PENDING.value
-            target.status = "pending"
-            operation.next_attempt_at = utc_now()
+            from docket.services.task_reminders import TaskReminderService
+
+            reminders = TaskReminderService(session)
+            generation = reminders.generation(target.parameters)
+            retired = generation is not None and reminders.retired(generation)
+            operation.status = target.status = (
+                "reconciliation_required" if retired else "pending"
+            )
+            operation.next_attempt_at = utc_now() + timedelta(seconds=30 if retired else 0)
             target.next_attempt_at = operation.next_attempt_at
             attempt.status = AttemptStatus.FAILED.value
             attempt.error_code = "reconciliation_no_match"
             attempt.completed_at = utc_now()
             self._clear_lease(operation, target)
             self._audit(session, operation, target, "operation.reconciliation_no_match")
+
+    def _prepare_calendar_claim(self, claim: ClaimedOperation) -> ClaimedOperation | None:
+        if not claim.parameters.get("task_reminder_generation_ref"):
+            self.mark_provider_call_started(claim)
+            return claim
+        from docket.services.task_item_titles import lock_task_rows
+        from docket.services.task_reminders import TaskReminderService
+
+        with self.session_factory.begin() as session:
+            lock_task_rows(session)
+            rows = self._owned_claim(session, claim)
+            if rows is None:
+                return None
+            operation, target, attempt = rows
+            if not TaskReminderService(session).prepare(operation, target):
+                attempt.status = "failed"
+                attempt.error_code = "task_reminder_retired_before_dispatch"
+                attempt.completed_at = utc_now()
+                self._clear_lease(operation, target)
+                self._audit(session, operation, target, "operation.reminder_dispatch_skipped")
+                return None
+            attempt.provider_request_id = f"call-started:{claim.lease_token}"
+            attempt.request_summary = {
+                **attempt.request_summary, "parameters_sha256": target.parameters_sha256,
+            }
+            return replace(claim, parameters=dict(target.parameters))
 
     def _finish_reconciliation_conflict(
         self,

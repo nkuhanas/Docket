@@ -45,6 +45,7 @@ from docket.schemas.tracked_context import (
 )
 from docket.services.task_fields import TaskFieldService
 from docket.services.task_item_titles import relinquish, title_relationship
+from docket.services.task_reminders import guard_owned_reminder
 
 TrackedContextHandler = Callable[[Session, ChangeSet, Any], list[str]]
 
@@ -880,6 +881,7 @@ class TrackedContextService:
     def apply_temporal_binding(
         self, _session: Session, changeset: ChangeSet, change: Any
     ) -> list[str]:
+        guard_owned_reminder(self.session, change)
         if change.action in {"create", "supersede"}:
             spec = TemporalBindingInput.model_validate(change.create_spec)
             assert spec.subject_ref is not None
@@ -1122,6 +1124,7 @@ class TrackedContextService:
     def apply_temporal_projection(
         self, _session: Session, changeset: ChangeSet, change: Any
     ) -> list[str]:
+        guard_owned_reminder(self.session, change)
         projection: TemporalCalendarProjection
         if change.action == "create":
             spec = TemporalCalendarProjectionInput.model_validate(change.create_spec)
@@ -1267,6 +1270,7 @@ class TrackedContextService:
     def apply_reminder_plan(
         self, _session: Session, changeset: ChangeSet, change: Any
     ) -> list[str]:
+        guard_owned_reminder(self.session, change)
         if change.action == "create":
             if "trigger_at" in change.create_spec:
                 from docket.agent_auth import require_principal

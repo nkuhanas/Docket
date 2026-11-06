@@ -650,6 +650,22 @@ not force truncation of the canonical/imported title to fit a narrower Event/cac
 title field. Do not automatically copy all task notes or linked private records
 into a possibly shared calendar. The task context remains the full detail source.
 
+The Operator's November 6 amendment uses an AM/PM header in the Google Task title
+for visible clock time, alongside the API scheduled day. Render a known `remind_at`
+as `5:00 PM — Task title`; include its local date if it differs from scheduled day.
+This is derived transport display, with a scoped retained prefix/binding basis.
+Keep canonical Task/derived Item titles clean, preserve Google-side body renames,
+and never parse arbitrary clock text into performed work, paid work or a reminder.
+Changing/clearing the reminder must update/clear the generated header. Full titles
+remain lossless; if the prefix cannot fit Google's 1,024-character limit, omit it
+and expose the display limitation while keeping the Task and Calendar alert valid.
+
+A controlled native-clock sample lost its UI time after sparse title/notes and
+day edits. Do not require more opaque-clock setup or promise its preservation.
+Exact alerts continue through the automatic Calendar companion; the title label
+is visible context, not notification configuration. Native clock support remains
+outside the public API contract. No new input field or operation grammar is needed.
+
 Changing `remind_at` updates the owned companion or uses an ordered, versioned
 replacement when necessary; never clone the Task or leave two active alerts.
 Null cancels the reminder and queues companion cancellation. Task completion,

@@ -59,6 +59,13 @@ class TaskViewService:
             "sync": TaskBindingService.status(binding) if binding else {"state": "local_only"},
             "version": task.version,
         }
+        from docket.services.task_title_labels import task_time_header
+
+        header, omitted = task_time_header(task)
+        if header:
+            result["google_time_header"] = header.rstrip(" —")
+        elif omitted:
+            result["google_time_header_omitted"] = "title_limit"
         if task.description:
             if with_notes and len(task.description.encode()) <= 1024:
                 result["notes"] = task.description

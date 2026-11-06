@@ -26,14 +26,15 @@ acceptance is claimed by a fixture or disabled capability.
 | G2 task writes | Flat create/update/complete/reopen/retract and exact retry/preview, with atomic Tasks intents | Shared Operation/Target/Attempt queue wired; native-to-fake create/edit/complete/reopen/delete, sparse conditional retries and explicit uncertain-creation repair pass. Live G0 remains |
 | G2 conflict/lifecycle | Three-way field merge, delete/edit conflict, detachment/disable/list loss without global blocking | Per-field merge, native resolution/detachment, supersession and scoped outbound recovery pass; live cross-interface validation remains |
 | G2 markers/limits | Transport-only marker baseline separation, no blind insert retry or silent field truncation | Unknown inserts recover only after complete scoped correlation coverage; missing markers stay uncertain, explicit link parks original uncertainty honestly, and polling defers plausible pending creations. More live limits/hierarchy cases remain |
-| G2 reminders | Flat remind_at derives exact owned primary Calendar companion, routing, reschedule/null/completion cancellation and uncertainty | Pending |
-| G2 privacy | Private/free actual request and read-back/reconciliation, existing zero-minute popup reused | Calendar renderer/read masks/reconciliation implemented and covered through HTTP adapter; Task intent derivation pending |
-| G2 workload origin | Validated typed origin survives cache refresh/restart and excludes canonical/cache commitment/capacity accounting | Scoped generation/retained-operation origin survives full cache rebuild and retired/unknown-create generations; workload excludes it before timing/accounting. Copied labels remain ordinary observations. Automatic generation lifecycle pending |
-| G2 DST | UTC start plus 60 elapsed seconds with independent offsets, actual rendering and reconciliation | Timed-marker compilation and actual rendering/reconciliation pass autumn and spring transitions; Task reminder flow pending |
+| G2 reminders | Flat remind_at derives exact owned primary Calendar companion, routing, reschedule/null/completion cancellation and uncertainty | Atomic generations and both provider queues implemented; rescheduling and native/Google completion retire helpers. Pending/claimed/unknown-create windows and PostgreSQL replacement race pass. Inbound Calendar helper edits/deletion remain |
+| G2 time display | Visible AM/PM time without relying on Google's opaque native clock | Derived Google title headers implemented; scoped normalization preserves clean Task/Item titles and Google-side renames. Independent reminder dates are labelled; 1,024-character titles remain lossless with an explicit display limitation |
+| G2 privacy | Private/free actual request and read-back/reconciliation, existing zero-minute popup reused | Task generation flows serialize private/free popup-zero markers; real adapter read-back/privacy-change checks pass. Inbound helper reconciliation remains |
+| G2 workload origin | Validated typed origin survives cache refresh/restart and excludes canonical/cache commitment/capacity accounting | Scoped generation/retained-operation origin survives full cache rebuild and retired/unknown-create generations; workload excludes it before timing/accounting. Copied labels remain ordinary observations |
+| G2 DST | UTC start plus 60 elapsed seconds with independent offsets, actual rendering and reconciliation | Task marker compilation and rendering/reconciliation pass autumn and spring transitions, including real UTC transport acceptance |
 | G3 hierarchy/planning | Native cross-list/parent/sibling moves, exact identity and constraints; workload/reminder/inbox integration | Pending |
 | Authority/privacy | OAuth/local grant, owner isolation/revocation/triage rejection, genuine service roots, no sensitive invocation payloads | Shared-engine policy import creates no per-poll request/utterance; list/account/local/OAuth revocation, triage rejection and exact-effect admission covered. Native workflows, polling revocation and shared-write runner evidence pass; real provider acceptance remains |
 | Contracts | Six compact tools, every modified schema, 4/6/24 KiB and context/result budgets, generated docs/skill | Local v68 source advertises 114 tools; six new plus two changed definitions total 12,245 bytes within 4/6/24 KiB budgets. Bundle skill/host refresh remains |
-| Storage | Fresh/populated isolated PostgreSQL migrations, constraints/history/races, restart/drain and recovery | Fresh/empty roundtrip and focused policy import/binding/Task edit proofs pass; populated forward-upgrade and shared Tasks runner evidence remain |
+| Storage | Fresh/populated isolated PostgreSQL migrations, constraints/history/races, restart/drain and recovery | Fresh/empty roundtrip, retained revisions, shared-runner delivery and atomic reminder/competing replacement proofs pass at 20261106f6a7; populated narrowing refuses without data loss. Release-artifact upgrade/restart/drain remains |
 | R1 retirement | Unique data migrated/disposed; all dedicated NocoDB runtime/access/startup removed; no fallback/dual write | Exact owned containers, volumes and networks removed and verified absent. Startup/ingress/secret-name/environment checks found only the retained archive key. Production remains healthy; release cold-start verification pending |
 | R1 aliases | All fifteen hidden native aliases unregistered without effects; current routes/history still work | Removed from registry/dispatch; surviving native completion/retraction journeys pass; historical records retained |
 | Activation | Local gates, tested image, reviewed merge, synchronized main, backup/migration/health and same App/plugin refresh | Pending |
@@ -83,10 +84,11 @@ aliases. [Measured compact runtime schemas](../evidence/google-tasks-retirement/
 are 1,665 bytes (create) and 2,180 bytes (update); all six new plus both changed
 definitions total 12,245 bytes within the 24 KiB budget. Canonical create/query/
 complete, explicit linking, independent field resolution and detachment pass
-native MCP journeys. The new reminder field is not a deployed alert capability
-until the G2 projection/delivery path is complete.
+native MCP journeys. The reminder field now has a locally tested atomic
+projection/delivery path; it remains undeployed until inbound reconciliation
+and release/host acceptance.
 
-Local gates pass 268 native, 149 storage and 106 provider checks, plus Ruff and
+Local tests cover 268 native, 151 storage and 119 provider checks, plus Ruff and
 strict mypy. [Isolated PostgreSQL evidence](../evidence/google-tasks-retirement/postgres.json)
 covers retained policy imports and baselines, title persistence, competing
 native Task edits and shared-runner delivery with retained binding revisions. These checks do not establish live G0 capability or activation.
@@ -115,8 +117,10 @@ stale patch/move/delete rejection, native cross-list identity and deletion.
 One actual insert response was deliberately discarded, then uniquely located
 through complete scoped marker inspection without another insert. This is a
 controlled recovery exercise, not a claim of an uncontrolled network failure.
-Native scheduled-clock preservation, additional hierarchy behavior, Calendar
-device evidence and production method admission remain outstanding. Real Calendar
+The controlled native clock did not survive combined API edits. The Operator
+selected explicit AM/PM Google title headers with Calendar alerts instead of
+further opaque-clock setup. Additional hierarchy behavior, Calendar device
+evidence and production method admission remain outstanding. Real Calendar
 private/free popup-zero creation, privacy-change reconciliation and cleanup pass
 at autumn and spring DST boundaries. Google rejects the backwards autumn local
 range despite exact offsets; the timed-marker compiler now uses UTC transport
@@ -127,5 +131,16 @@ identity, immutable reminder generation and retained sent operation/binding.
 They survive cache rebuilds even without private Calendar properties and after
 generation retirement. Copied labels/private properties cannot establish local
 ownership. Four focused cases cover successful/unknown creation across both DST
-transitions; 115 provider checks and strict static checks pass. This does not
-yet implement automatic reminder generation or its lifecycle.
+transitions. Automatic outbound generations now reuse the same shared provider
+queue, supersede unsent work, wait for unknown creation outcomes and cancel
+retired helpers without resurrecting an old reminder. Google-side Task completion
+uses its genuine standing-policy effect to retire the Calendar helper and clear
+the managed time header; it does not manufacture a new user request.
+
+[The reminder PostgreSQL rehearsal](../evidence/google-tasks-retirement/reminders.json)
+verifies atomic delivery, clean canonical/transport titles, one winning concurrent
+replacement and completion cancellation. It exposed an existing 16-character
+`ProviderEventBinding.target_kind` column that could not hold the admitted
+`temporal_projection` value. Ordered migration `20261106f6a7` widens it safely;
+populated narrowing refuses to truncate history. The temporary instance was removed.
+Inbound Calendar helper edits/deletion and full release activation remain pending.

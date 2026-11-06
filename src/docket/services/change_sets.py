@@ -800,10 +800,15 @@ class ChangeSetService:
                 )
             )
         from docket.services.task_provider_intents import TaskProviderIntentService
+        from docket.services.task_reminders import TaskReminderService
 
-        for operation in TaskProviderIntentService(self.session).materialize(
+        derived_operations = TaskReminderService(self.session).materialize(
             changeset, content, refs_by_change_id,
-        ):
+        )
+        derived_operations.extend(TaskProviderIntentService(self.session).materialize(
+            changeset, content, refs_by_change_id,
+        ))
+        for operation in derived_operations:
             receipt.add_refs([operation.ref_id])
             receipt.provider_operations.append(ProviderOperationReceipt(
                 intent_id="derived-task:" + operation.ref_id,

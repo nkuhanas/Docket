@@ -249,7 +249,11 @@ class TasksExecutionService:
                         session, operation, target, "operation.old_response_retained"
                     )
                     return
-                values, marker = observed_values(session, observation, binding)
+                values, marker = observed_values(
+                    session, observation, binding,
+                    title_prefix=(params.get("title_prefix", "")
+                                  if "title" in params["projected_fields"] else None),
+                )
                 existing = TaskBindingService(session).identity(list_ref, result.task_id)
                 baseline = deepcopy(binding.baseline)
                 for field in params["projected_fields"]:

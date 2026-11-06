@@ -55,6 +55,11 @@ class TasksDispatchService:
             key in current and value != current[key] for key, value in desired.items()
         ):
             return answer("superseded", "newer_task_field_intent")
+        if kind == "patch" and "title" in desired:
+            from docket.services.task_title_labels import task_time_header
+
+            if params.get("title_prefix", "") != task_time_header(task)[0]:
+                return answer("superseded", "newer_task_time_header")
         if kind == "move" and desired.get("location") != task.task_list_ref:
             return answer("superseded", "newer_task_location_intent")
         if not self.settings.tasks_enabled:
@@ -204,6 +209,8 @@ class TasksDispatchService:
         result = {
             key: value for key, value in values.items() if key in {"title", "notes", "status"}
         }
+        if "title" in result:
+            result["title"] = params.get("title_prefix", "") + result["title"]
         if "notes" in result and params.get("append_marker"):
             result["notes"] = transport_notes(result["notes"], params["correlation"])
         elif insert:

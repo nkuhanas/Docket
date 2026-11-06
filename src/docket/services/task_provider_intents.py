@@ -26,6 +26,7 @@ from docket.providers.google.tasks import TasksProviderError, transport_notes
 from docket.schemas.authority import ChangeSetContent
 from docket.services.task_bindings import TaskBindingService
 from docket.services.task_reconciliation import canonical_values
+from docket.services.task_title_labels import task_time_header
 
 _FIELD_NAMES = {
     "title": "title",
@@ -37,6 +38,8 @@ _FIELD_NAMES = {
     "task_list_ref": "location",
     "after_task_ref": "position",
     "canonical_status": "deletion",
+    "remind_at": "title",
+    "reminder_timezone": "title",
 }
 _TERMINAL = {"succeeded", "superseded", "failed"}
 
@@ -339,6 +342,7 @@ class TaskProviderIntentService:
             "after_task_ref": after,
             "append_marker": kind == "insert" or binding.marker_present,
             "sequence": sequence,
+            "title_prefix": task_time_header(task)[0],
         }
         if kind == "insert":
             # An over-limit note stays canonical. Its explicit field limitation
@@ -382,10 +386,7 @@ class TaskProviderIntentService:
         refs_by_change: dict[str, list[str]],
     ) -> list[Operation]:
         intent = self.session.get(IntentSession, changeset.intent_session_id)
-        if intent is not None and intent.source_policy_effect_ref:
-            # Import provenance is retained by TaskSyncService. It sets the
-            # matching baseline atomically and never sends an echo write.
-            return []
+        policy_import = intent is not None and bool(intent.source_policy_effect_ref)
         queued: list[Operation] = []
         for change in content.tracked_context_changes:
             if change.object_type not in {"task", "task_sync_resolution"}:
@@ -396,6 +397,19 @@ class TaskProviderIntentService:
                 continue
             task = self.session.scalar(select(Task).where(Task.ref_id == task_ref))
             assert task is not None
+            if policy_import:
+                # A confirmed completion retires only the managed display
+                # header; imported user fields never produce an echo write.
+                binding = self.bindings.active(task.ref_id)
+                if (binding is not None and binding.provider_task_id
+                        and task.canonical_status == "active"
+                        and task.remind_at is None
+                        and binding.provider_snapshot.get("transport_title_prefix")):
+                    self.supersede_pending(task.ref_id, changeset, fields={"title"},
+                                           binding_ref=binding.ref_id)
+                    queued.append(self._queue(task, binding, changeset, "patch",
+                                              {"title": task.title}))
+                continue
             binding = self._binding(task, changeset)
             if binding is None:
                 continue
@@ -416,6 +430,18 @@ class TaskProviderIntentService:
                         _FIELD_NAMES[key] for key in values.model_fields_set if key in _FIELD_NAMES
                     }
                 )
+                if fields.intersection({"status", "deletion", "scheduled_date"}):
+                    pending_header = self.session.scalar(select(OperationTarget.id).join(
+                        Operation,
+                    ).where(
+                        OperationTarget.parameters["binding_ref"].as_string() == binding.ref_id,
+                        OperationTarget.parameters["title_prefix"].as_string() != "",
+                        Operation.status.in_({"pending", "running", "reconciliation_required"}),
+                    ).limit(1))
+                    if (pending_header is not None
+                            or binding.provider_snapshot.get("transport_title_prefix")
+                            or task_time_header(task)[0]):
+                        fields.add("title")
                 after = getattr(values, "after_task_ref", None)
                 if change.action == "update":
                     self.operator_update(binding, task, fields, changeset)
@@ -494,7 +520,9 @@ class TaskProviderIntentService:
                 if all(
                     key in binding.provider_snapshot and binding.provider_snapshot[key] == value
                     for key, value in selected.items()
-                ):
+                ) and ("title" not in selected or binding.provider_snapshot.get(
+                    "transport_title_prefix", "",
+                ) == task_time_header(task)[0]):
                     continue
                 self.supersede_pending(
                     task.ref_id, changeset, binding_ref=binding.ref_id, fields=group

@@ -296,7 +296,9 @@ class TaskSyncService:
                 task_ref=task.ref_id, task_list_ref=listing.ref_id,
                 provider_task_id=observation.provider_task_id, canonical_version=task.version,
                 correlation=uuid.uuid4().hex, created_by_changeset_ref=changeset.ref_id,
-                baseline=deepcopy(google), provider_snapshot=deepcopy(google), limitations={},
+                baseline={key: deepcopy(value) for key, value in google.items()
+                          if key != "transport_title_prefix"},
+                provider_snapshot=deepcopy(google), limitations={},
                 generation=1, active=True, detached=False,
             )
             fields: list[str] = []

@@ -382,6 +382,15 @@ Completion/cancel/null retires the reminder and queues cancellation atomically;
 stale/uncertain creates cannot resurrect it. Separate Calendar/Tasks delivery and
 observed device notification; canonical success never guarantees device display.
 
+Show a requested reminder time in the Google Task title as a derived AM/PM header
+(`5:00 PM — Title`). The API still carries the scheduled day. Keep the canonical
+Task/Item title clean and strip only a scoped, retained generated header on import;
+ordinary clock text cannot set a reminder. Include the reminder date if it differs
+from the scheduled day. Preserve the full 1,024-character title: if a header cannot
+fit, expose that display limitation without truncating or blocking the Task/alert.
+Google's opaque native clock is not the supported exact-alert route; a controlled
+API edit lost its UI time. Calendar companions deliver requested exact alerts.
+
 ## 6. Providers, storage and recovery
 
 Google OAuth credentials are protected local material. Calendar/Gmail ingestion
@@ -506,7 +515,7 @@ disabled required operations do not complete two-way synchronization.
 | 008 | Reference-dispatched shared retraction and equivalent alias consolidation | Reduce discovery without adding action unions, conditional input modes or lost domain effects. |
 | 009 | Opt-in revision-pinned work Calendar snapshots with durable source invalidation | Provider readiness affects display refresh, preserving usable actual-work records and one accounting source. |
 | 010 | Existing canonical Tasks with deterministic selected-list Google synchronization | Keep stable relationships/history while enabling everyday provider-side capture and completion. |
-| 011 | Scheduled day, deadline and reminder instant remain distinct; exact alerts use owned Calendar companions | Public Tasks APIs expose a day; private/free reminders need full rendering, cache-origin and instant-based timing support. Live Google rejects backwards wall-clock ranges despite exact offsets, so those markers use UTC transport with canonical timezone retained. |
+| 011 | Scheduled day, deadline and reminder instant remain distinct; visible task times use AM/PM headers and exact alerts use owned Calendar companions | Public Tasks APIs expose a day and edits can clear the opaque native clock. Derived headers preserve clean canonical titles. Live Google rejects backwards wall-clock ranges despite exact offsets, so those markers use UTC transport with canonical timezone retained. |
 | 012 | Typed ownership of automatically derived Item titles | Preserve long imported titles and useful synchronized names without overwriting independently edited/shared Items. |
 | 013 | Retire NocoDB and fifteen hidden native aliases completely | Preserve data/provenance while removing running legacy/compatibility debt rather than adding fallback paths. |
 
@@ -514,6 +523,6 @@ disabled required operations do not complete two-way synchronization.
 
 | Version | Change |
 | --- | --- |
-| 1.2 | Adopts the November 6 Google Tasks/NocoDB delta and revised reviews under the Operator implementation goal. Live provider evidence clarifies UTC transport at backwards DST wall-clock boundaries (ADR 011). Implementation/acceptance is in progress; deployed 1.1 remains the runtime baseline until validated activation. |
+| 1.2 | Adopts the November 6 Google Tasks/NocoDB delta and revised reviews under the Operator implementation goal. Live provider evidence clarifies UTC marker transport; the Operator selects AM/PM Task headers after native-clock loss (ADR 011). Implementation/acceptance is in progress; deployed 1.1 remains the runtime baseline until validated activation. |
 | 1.1 | Adopts the November 5 work-attribution/personal-operations delta including catalogue consolidation. C0–P2 and optional visibility are implemented, deployed and host-accepted, with separate phase evidence; external provider choices remain a concrete follow-on delta. Implementation clarifies revision-pinned visibility and nonblocking invalidation (ADR 009). |
 | 1.0 | First current SPEC synthesized from signed ontology and Operator amendments; adopts November 4 context/local-CI delta and retirement cleanup. No invented prior version. Implemented, deployed and verified through live native-tool use. |

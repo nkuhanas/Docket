@@ -21,7 +21,7 @@
     "insert_response_discarded_correlation_recovery": true
   },
   "safe_failure_codes": {},
-  "native_clock_preservation": "not yet checked in the Google UI",
+  "native_clock_preservation": "not preserved in controlled combined edit; operator observed date only",
   "device_notification": "not yet observed; API tests used past instants",
   "production_canonical_rows_changed": false,
   "autumn_calendar_transport_probe": [
@@ -52,5 +52,16 @@
     }
   ],
   "synthetic_tasks_removed_in_final_cleanup_pass": 5,
-  "native_clock_probe_prepared": true
+  "native_clock_probe_prepared": true,
+  "native_clock_check": {
+    "operator_reported_initial_time": "2026-11-13T17:00:00-08:00",
+    "sparse_title_notes_then_day_edit": "2026-11-14",
+    "operator_observed_time_after_edits": false,
+    "unrelated_patch_alone_isolated": false,
+    "supported_exact_alert_route": "Docket remind_at with Calendar companion"
+  },
+  "visible_ampm_header_and_date_roundtrip": true,
+  "native_clock_probe_removed": true,
+  "selected_clock_strategy": "explicit AM/PM title header; exact alerts use Calendar companions",
+  "updated_at": "2026-11-06T23:26:22.114738+00:00"
 }

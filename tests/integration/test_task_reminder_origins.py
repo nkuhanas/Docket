@@ -37,6 +37,9 @@ def seed(session, start):
     ))
     assert changeset.state == "committed", changeset.validation_errors
     task = session.scalar(select(Task))
+    task.remind_at = start.astimezone(UTC)
+    task.reminder_timezone = "America/Los_Angeles"
+    task.reminder_generation = 1
     # The fixture's real service root represents a standing policy, not a
     # manufactured request for every Calendar observation.
     from docket.models import ProviderAccount
@@ -50,8 +53,9 @@ def seed(session, start):
     )
     time = TemporalBinding(
         subject_ref=task.ref_id, role="expected_at", binding_key="task-reminder:1",
-        temporal_value={"kind": "datetime", "local_datetime": start.isoformat(),
-                        "timezone": "America/Los_Angeles"},
+        temporal_value={"kind": "datetime",
+                        "local_datetime": start.replace(tzinfo=None).isoformat(),
+                        "timezone": "America/Los_Angeles", "fold": 0},
         basis_refs=changeset.basis_refs, created_by_changeset_ref=changeset.ref_id,
     )
     session.add_all([lane, time])
@@ -65,7 +69,7 @@ def seed(session, start):
     projection = TemporalCalendarProjection(
         temporal_binding_ref=time.ref_id, lane_ref=lane.ref_id, reminder_plan_ref=plan.ref_id,
         display_policy={"kind": "timed_marker", "duration_seconds": 60,
-                        "visibility": "private", "transparency": "transparent"},
+                        "transparency": "transparent"},
         basis_refs=changeset.basis_refs, created_by_changeset_ref=changeset.ref_id,
     )
     session.add(projection)

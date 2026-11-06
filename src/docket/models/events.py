@@ -84,7 +84,7 @@ class ProviderEventBinding(TimestampMixin, Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     canonical_target_ref: Mapped[str] = mapped_column(String(40), nullable=False)
-    target_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    target_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     account_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("provider_accounts.id", ondelete="RESTRICT"), nullable=False
     )

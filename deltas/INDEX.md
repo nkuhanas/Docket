@@ -10,5 +10,7 @@ Current specification: [SPEC 1.2](../SPEC.md).
 
 The Operator additionally requested removal of Hermes/SearXNG directories and
 project Playwright artifacts. SPEC ADR 005 records that scoped amendment.
+The November 6 Tasks amendment uses derived AM/PM title headers for visible times,
+with Calendar companions for exact alerts (SPEC ADR 011).
 Older private registries/frozen sources remain unchanged and are not implicitly
 imported into this forward index.

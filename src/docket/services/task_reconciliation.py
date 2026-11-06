@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from docket.domain.errors import DocketError
 from docket.models import GoogleTaskObservation, Task, TaskProviderBinding
 from docket.providers.google.tasks import canonical_notes
+from docket.services.task_title_labels import TITLE_PREFIX_KEY
 
 SYNC_FIELDS = ("title", "notes", "scheduled_date", "status", "completed_at", "parent", "deletion")
 
@@ -63,6 +64,7 @@ def observed_values(
     session: Session,
     observation: GoogleTaskObservation,
     binding: TaskProviderBinding | None,
+    *, title_prefix: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     fields = observation.fields
     if fields.get("deleted") is True:
@@ -73,6 +75,39 @@ def observed_values(
         raise DocketError(
             code="google_task_invalid_title", message="The observed task needs a valid title."
         )
+    if title_prefix is None:
+        title_prefix = str(binding.provider_snapshot.get(TITLE_PREFIX_KEY, "")) if binding else ""
+        if binding is not None and title_prefix and not title.startswith(title_prefix):
+            from docket.models import TaskBindingRevision
+
+            historical = session.scalar(select(TaskBindingRevision.provider_snapshot).where(
+                TaskBindingRevision.binding_ref == binding.ref_id,
+                TaskBindingRevision.provider_etag == observation.provider_etag,
+            ).order_by(TaskBindingRevision.revision.desc()).limit(1))
+            if isinstance(historical, dict):
+                title_prefix = str(historical.get(TITLE_PREFIX_KEY, ""))
+        if binding is not None and TITLE_PREFIX_KEY not in binding.provider_snapshot:
+            # Before an insert callback, an explicit counterpart selection may
+            # still need its exact retained, transmitted rendering.
+            from docket.models import ExecutionAttempt, Operation, OperationTarget
+
+            candidate = session.scalar(select(OperationTarget).join(Operation).where(
+                OperationTarget.parameters["binding_ref"].as_string() == binding.ref_id,
+                Operation.operation_type.in_({"tasks_insert", "tasks_patch"}),
+                OperationTarget.parameters["values"]["title"].as_string().is_not(None),
+                Operation.id.in_(select(ExecutionAttempt.operation_id).where(
+                    ExecutionAttempt.provider_request_id.is_not(None),
+                )),
+            ).order_by(Operation.created_at.desc()).limit(1))
+            if candidate is not None:
+                expected_prefix = candidate.parameters.get("title_prefix", "")
+                expected_title = candidate.parameters.get("values", {}).get("title")
+                if expected_prefix and title == expected_prefix + (expected_title or ""):
+                    title_prefix = expected_prefix
+    if title_prefix and title.startswith(title_prefix) and len(title) > len(title_prefix):
+        title = title[len(title_prefix):]
+    else:
+        title_prefix = ""
     notes = fields.get("notes") or ""
     if not isinstance(notes, str):
         raise DocketError(
@@ -123,6 +158,7 @@ def observed_values(
         "completed_at": completed,
         "parent": parent_ref,
         "deletion": False,
+        TITLE_PREFIX_KEY: title_prefix,
     }, marker
 
 
@@ -177,7 +213,7 @@ def task_patch(values: dict[str, Any], current: Task | None = None) -> dict[str,
             key, key
         ): value
         for key, value in values.items()
-        if key not in {"deletion", "completed_at"}
+        if key in SYNC_FIELDS and key not in {"deletion", "completed_at"}
     }
     if "status" in values:
         status = values["status"]
