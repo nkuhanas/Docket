@@ -300,6 +300,22 @@ class GoogleTasksProvider:
             raise TasksProviderError(
                 "google_tasks_transient", "Google Tasks is temporarily unavailable.", transient=True
             )
+        if response.status_code == 403:
+            # Use only Google's machine reason; its free-form message can contain
+            # private project/account details and must not enter receipts.
+            try:
+                error = response.json().get("error", {})
+                details = error.get("details", []) if isinstance(error, dict) else []
+            except (ValueError, AttributeError):
+                details = []
+            if isinstance(details, list) and any(
+                isinstance(item, dict) and item.get("reason") == "SERVICE_DISABLED"
+                for item in details
+            ):
+                raise TasksProviderError(
+                    "google_tasks_api_disabled",
+                    "Enable Google Tasks API in the OAuth client's Google Cloud project.",
+                )
         if response.status_code >= 400 and response.status_code != 404:
             raise TasksProviderError(
                 "google_tasks_rejected", f"Google Tasks returned HTTP {response.status_code}."

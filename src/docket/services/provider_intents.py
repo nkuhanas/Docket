@@ -24,6 +24,7 @@ from docket.models import (
     ProviderEventBinding,
     ReminderPlan,
     Task,
+    TaskReminderGeneration,
     TemporalBinding,
     TemporalCalendarProjection,
 )
@@ -205,11 +206,19 @@ class ProviderIntentService:
                 start = start.astimezone(zone)
             duration = int(display_policy["duration_seconds"])
             marker_end = (start.astimezone(UTC) + timedelta(seconds=duration)).astimezone(zone)
+            wire_zone = str(value["timezone"])
+            if marker_end.replace(tzinfo=None) <= start.replace(tzinfo=None):
+                # Google rejects a backwards wall-clock range even with exact
+                # distinct offsets (live timeRangeEmpty at the autumn fold).
+                # Single marker events can use UTC transport without changing
+                # the canonical instant or its reported IANA timezone.
+                start, marker_end = start.astimezone(UTC), marker_end.astimezone(UTC)
+                wire_zone = "UTC"
             return {
                 "kind": "timed",
                 "start_local": start.isoformat(),
                 "end_local": marker_end.isoformat(),
-                "timezone": str(value["timezone"]),
+                "timezone": wire_zone,
             }
         if value_kind == "date_interval" and policy_kind == "interval_span":
             start = date.fromisoformat(str(value["start_date"]))
@@ -353,6 +362,8 @@ class ProviderIntentService:
                     "transparency", "transparent"
                 ),
                 "temporal_role": binding.role,
+                **({"visibility": projection.display_policy["visibility"]}
+                   if "visibility" in projection.display_policy else {}),
             }
             reminder_plan = self._projection_reminder_plan(projection)
         else:
@@ -374,6 +385,16 @@ class ProviderIntentService:
             "canonical_target_ref": canonical_target_ref,
             "target_kind": target_kind,
         }
+        if projection is not None:
+            generation = self.session.scalar(select(TaskReminderGeneration).where(
+                TaskReminderGeneration.projection_ref == projection.ref_id,
+            ))
+            if generation is not None:
+                # A bounded display label does not truncate the canonical Task.
+                event_payload["title"] = ("Task reminder: " + event_payload["title"])[:512]
+                event_payload.update(visibility="private", transparency="transparent")
+                parameters["task_reminder_generation_ref"] = generation.ref_id
+                parameters["origin_kind"] = "task_reminder"
         if operation_type != "calendar_create_event":
             if operation_type == "calendar_update_event" and event is not None:
                 provider_binding = validate_event_update_plan(

@@ -635,6 +635,15 @@ provided by the current Calendar infrastructure:
   not only an isolated duration helper. Keep this fix scoped to the reminder/timed
   marker path rather than redesigning general Calendar recurrence or timing.
 
+  November 6 live validation found that Google returns `timeRangeEmpty` for
+  the exact local-offset fall-back pair above, including UTC `dateTime` values
+  accompanied by the Los Angeles `timeZone`. UTC endpoints with `timeZone=UTC`
+  succeed and read back correctly. Use that transport when local wall time moves
+  backwards; retain the original IANA zone in canonical context. This applies
+  the permitted UTC representation rather than changing the reminder instant.
+  [Provider evidence](../evidence/google-tasks-retirement/live-provider.json)
+  records the rejected/accepted encodings and cleaned-up private/free popup tests.
+
 Preserve full 1,024-character Task/Item titles. A Calendar helper label can be a
 bounded, clearly labelled display excerpt with a stable task reference; it must
 not force truncation of the canonical/imported title to fit a narrower Event/cache
@@ -741,7 +750,7 @@ schema wording/count tests. Use fake providers and synthetic accounts by default
 | Reminder planning/privacy | Canonical/cache workload and capacity exclude reminder display spans. Calendar labels can be bounded while Task/Item titles stay lossless, including a 1,024-character title with `remind_at`. No attendee invite, copied private note or duplicate default Docket push is created; owned-helper edits/deletion affect only its reminder |
 | G2 private renderer | Follow a companion through intent compilation and real request serialization: explicit `visibility=private`, `transparency=transparent`, `useDefault=false` and a popup override at zero minutes. Read-back/snapshot/reconciliation must retain and compare required visibility; missing/public visibility cannot falsely match a private request |
 | G2 cached origin/workload | Create the owned companion, perform Calendar refresh/new cache generation and restart/read from persisted observations. Its validated typed origin/link survives and both canonical/cache paths exclude it from commitment counts and capacity. A normal transparent event or copied reminder-looking title/property is not blanket-excluded; existing actual-work exclusions remain |
-| G2 DST marker | At the specified Los Angeles fall-back boundary, the rendered start/end are 08:59Z/09:00Z with independent -07:00/-08:00 offsets and exactly 60 elapsed seconds. Shared-fold/wall-time arithmetic must fail the regression; include a spring-forward boundary to check that the endpoint is a real instant and reconcile the emitted result |
+| G2 DST marker | At the specified Los Angeles fall-back boundary, start/end are 08:59Z/09:00Z, representing local -07:00/-08:00 offsets and exactly 60 elapsed seconds. Google transport uses UTC when the local wall-clock range is rejected; canonical IANA zone remains. Shared-fold/wall-time arithmetic must fail the regression; include a spring-forward boundary and real provider read-back |
 | Completion | Google UI completion/hidden completion imports once; Docket completion reaches Google; reopening works; blocked/in-progress and existing work links survive ordinary open observations |
 | Coverage | Multi-page scans include hidden/completed/deleted records; failed/truncated scans cannot imply deletion; watermark overlap and restart recover without skipping changes |
 | Reconciliation | External one-sided/disjoint edits converge; divergent same-field edits and delete-versus-edit retain both bases and block only affected work; echo loops do not occur |

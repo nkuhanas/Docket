@@ -26,6 +26,14 @@ The existing deployment and hosted plugin have not been replaced by these slices
   from registration and dispatch. Historical receipts and tool-call names remain.
 - Calendar rendering emits and reconciles explicit private visibility. Timed
   marker endpoints use elapsed UTC duration and independent offsets across DST.
+  Live Google rejects backwards local wall-clock ranges despite exact offsets;
+  those markers use UTC transport with their canonical timezone retained. Real
+  private/free popup-zero creation, read-back, privacy-change detection and
+  cleanup pass at both DST boundaries; device display remains unobserved.
+- Reminder origins derive from scoped retained generation/operation identity,
+  survive full cache rebuilds and exclude markers from workload accounting.
+  Copied labels or private properties alone confer no origin. Automatic
+  generation and lifecycle handling remain outstanding.
 
 The [contract measurements](contracts.json) record 114 advertised tools. All six
 new definitions plus both modified task definitions total 12,245 bytes; each input
@@ -46,7 +54,7 @@ A task GET 404 requires accessible-collection confirmation before deletion is co
 
 Focused native MCP journeys cover flat list configuration, task creation/query/
 completion, explicit linking, separate field resolutions and detachment. The
-storage group passed 149 checks and the provider group passed 106 checks, including
+storage group passed 149 checks and the provider group passed 115 checks, including
 polling lease recovery, observation-only policies and revoked standing authority.
 Ruff and strict mypy passed. Release validation and activation remain outstanding.
 
@@ -78,11 +86,11 @@ as recovery evidence, with no callable legacy runtime.
   A canonical commit remains distinct from provider delivery.
 - Implement the task reminder generation lifecycle and its atomic Calendar intent,
   including cancellation/unknown-create recovery and inbound helper reconciliation.
-- Persist validated reminder origins through Calendar cache refresh and exclude them
-  from workload/capacity accounting. Renderer fixes alone do not complete that path.
-- Complete the Google Tasks consent upgrade; the Operator has authorized dedicated
-  `Docket validation` Tasks/Calendar targets. Record
-  live per-method G0 behavior, including stale-write rejection and native clock effects.
+- Integrate the tested scoped reminder origins with automatic generation/lifecycle.
+- Consent and Tasks API enablement are complete. [Real provider checks](live-provider.json)
+  pass on the Operator-authorized dedicated validation targets, including stale-write
+  rejection and native cross-list identity. Complete native clock/hierarchy evidence
+  and production method admission; device display is independent evidence.
 - Complete release cold-start verification of legacy retirement, release validation, reviewed merge/deployment,
   existing-app action rescan and real task verification. Device popup observation is
   separate from API creation success and is not guaranteed by Docket.

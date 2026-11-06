@@ -375,7 +375,9 @@ popup and no attendees. Preserve/compare privacy through actual rendering and
 reconciliation. Persist validated app origin/binding through Calendar refresh and
 exclude companions from canonical/cache commitments and capacity, not just by title
 or transparency. Compute the one-minute display span as UTC start plus 60 elapsed
-seconds, with independent endpoint offsets across DST. It is not performed work.
+seconds, with independently resolved endpoint offsets across DST. If Google
+rejects backwards local wall times, serialize that marker in UTC while retaining
+its original IANA zone in canonical context. It is not performed work.
 Completion/cancel/null retires the reminder and queues cancellation atomically;
 stale/uncertain creates cannot resurrect it. Separate Calendar/Tasks delivery and
 observed device notification; canonical success never guarantees device display.
@@ -504,7 +506,7 @@ disabled required operations do not complete two-way synchronization.
 | 008 | Reference-dispatched shared retraction and equivalent alias consolidation | Reduce discovery without adding action unions, conditional input modes or lost domain effects. |
 | 009 | Opt-in revision-pinned work Calendar snapshots with durable source invalidation | Provider readiness affects display refresh, preserving usable actual-work records and one accounting source. |
 | 010 | Existing canonical Tasks with deterministic selected-list Google synchronization | Keep stable relationships/history while enabling everyday provider-side capture and completion. |
-| 011 | Scheduled day, deadline and reminder instant remain distinct; exact alerts use owned Calendar companions | Public Tasks APIs expose a day; private/free reminders need full rendering, cache-origin and instant-based timing support. |
+| 011 | Scheduled day, deadline and reminder instant remain distinct; exact alerts use owned Calendar companions | Public Tasks APIs expose a day; private/free reminders need full rendering, cache-origin and instant-based timing support. Live Google rejects backwards wall-clock ranges despite exact offsets, so those markers use UTC transport with canonical timezone retained. |
 | 012 | Typed ownership of automatically derived Item titles | Preserve long imported titles and useful synchronized names without overwriting independently edited/shared Items. |
 | 013 | Retire NocoDB and fifteen hidden native aliases completely | Preserve data/provenance while removing running legacy/compatibility debt rather than adding fallback paths. |
 
@@ -512,6 +514,6 @@ disabled required operations do not complete two-way synchronization.
 
 | Version | Change |
 | --- | --- |
-| 1.2 | Adopts the November 6 Google Tasks/NocoDB delta and revised reviews under the Operator implementation goal. Implementation/acceptance is in progress; deployed 1.1 remains the runtime baseline until validated activation. |
+| 1.2 | Adopts the November 6 Google Tasks/NocoDB delta and revised reviews under the Operator implementation goal. Live provider evidence clarifies UTC transport at backwards DST wall-clock boundaries (ADR 011). Implementation/acceptance is in progress; deployed 1.1 remains the runtime baseline until validated activation. |
 | 1.1 | Adopts the November 5 work-attribution/personal-operations delta including catalogue consolidation. C0–P2 and optional visibility are implemented, deployed and host-accepted, with separate phase evidence; external provider choices remain a concrete follow-on delta. Implementation clarifies revision-pinned visibility and nonblocking invalidation (ADR 009). |
 | 1.0 | First current SPEC synthesized from signed ontology and Operator amendments; adopts November 4 context/local-CI delta and retirement cleanup. No invented prior version. Implemented, deployed and verified through live native-tool use. |

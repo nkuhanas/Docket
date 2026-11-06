@@ -240,6 +240,8 @@ class WorkloadCalendarService:
                         targets
                     ),
                     CalendarEventCache.status != "cancelled",
+                    or_(CalendarEventCache.origin_kind.is_(None),
+                        CalendarEventCache.origin_kind != "task_reminder"),
                     or_(
                         (CalendarEventCache.start_at < last) & (CalendarEventCache.end_at > first),
                         (CalendarEventCache.start_date < coarse_last)

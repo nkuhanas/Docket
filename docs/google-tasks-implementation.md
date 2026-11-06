@@ -15,9 +15,9 @@ acceptance is claimed by a fixture or disabled capability.
 | Adoption | One current SPEC, decisions/history and index reconciled | SPEC 1.2 adopted in working source |
 | R0 inventory | Exact ownership/status of NocoDB containers, networks, volumes, startup/access and unique data | Six dedicated evaluation containers, four exclusive volumes (including Redis), and two exclusive networks inventoried and removed under explicit Operator instruction |
 | R0 protected data | Consistent encrypted archive, checksums/recovery, schema/count/identity comparison and unique-data disposition | Three authenticated encrypted archives verified; isolated restores inventoried. Operator classified the legacy data as unnecessary and authorized disposal without import; protected archives retained |
-| G0 OAuth/readiness | Tasks scope profiles preserve granted scopes; atomic verified replacement and isolated feature readiness | Scope upgrade and isolated Tasks context readiness implemented; live grant/method evidence pending |
+| G0 OAuth/readiness | Tasks scope profiles preserve granted scopes; atomic verified replacement and isolated feature readiness | Tasks consent completed, Calendar grants preserved and Tasks API enabled. Local context readiness and safe SERVICE_DISABLED diagnosis implemented |
 | G0 adapter | Real/fake/disabled Tasks read/write protocols, exact field/marker handling and guarded method dispatch | Transport/pagination, exact-version writes, unknown outcomes and scoped notes implemented with synthetic tests; shared-runner dispatch implemented; live validation pending |
-| G0 live capabilities | Method-specific controlled insert/patch/move/delete/date/time/uncertainty evidence | Pending; unverified methods remain disabled |
+| G0 live capabilities | Method-specific controlled insert/patch/move/delete/date/time/uncertainty evidence | Real insert/patch/move/delete, date set/preserve/null, full limits, completion/reopening and response-discarded correlation checks pass on authorized targets. Native UI clock and hierarchy cases remain; runtime admission/activation pending |
 | G1 title path | Full 1,024-character Task and required Item schemas/columns/mutations/context/export, including creation without Item | Full canonical/import/native paths and isolated PostgreSQL proof pass; live Google roundtrip pending |
 | G1 title ownership | Typed derived-pair ownership, atomic renames, independent/shared/relinked relinquishment and concurrency | Typed ownership, native rename/relinquishment and concurrent PostgreSQL Task/Item rename pass; further independent-Item race rehearsal remains |
 | G1 durable domain | Scheduling/hierarchy, lists/policies, immutable observations, bindings/generations, baselines/conflicts and sync state | Typed storage, retained baselines/provider snapshots, per-field decisions and bounded policy-effect roots implemented; no live activation |
@@ -28,7 +28,7 @@ acceptance is claimed by a fixture or disabled capability.
 | G2 markers/limits | Transport-only marker baseline separation, no blind insert retry or silent field truncation | Unknown inserts recover only after complete scoped correlation coverage; missing markers stay uncertain, explicit link parks original uncertainty honestly, and polling defers plausible pending creations. More live limits/hierarchy cases remain |
 | G2 reminders | Flat remind_at derives exact owned primary Calendar companion, routing, reschedule/null/completion cancellation and uncertainty | Pending |
 | G2 privacy | Private/free actual request and read-back/reconciliation, existing zero-minute popup reused | Calendar renderer/read masks/reconciliation implemented and covered through HTTP adapter; Task intent derivation pending |
-| G2 workload origin | Validated typed origin survives cache refresh/restart and excludes canonical/cache commitment/capacity accounting | Pending |
+| G2 workload origin | Validated typed origin survives cache refresh/restart and excludes canonical/cache commitment/capacity accounting | Scoped generation/retained-operation origin survives full cache rebuild and retired/unknown-create generations; workload excludes it before timing/accounting. Copied labels remain ordinary observations. Automatic generation lifecycle pending |
 | G2 DST | UTC start plus 60 elapsed seconds with independent offsets, actual rendering and reconciliation | Timed-marker compilation and actual rendering/reconciliation pass autumn and spring transitions; Task reminder flow pending |
 | G3 hierarchy/planning | Native cross-list/parent/sibling moves, exact identity and constraints; workload/reminder/inbox integration | Pending |
 | Authority/privacy | OAuth/local grant, owner isolation/revocation/triage rejection, genuine service roots, no sensitive invocation payloads | Shared-engine policy import creates no per-poll request/utterance; list/account/local/OAuth revocation, triage rejection and exact-effect admission covered. Native workflows, polling revocation and shared-write runner evidence pass; real provider acceptance remains |
@@ -103,9 +103,29 @@ exclusive networks, with production Docket/PostgreSQL healthy afterward.
 Protected encrypted archives remain; no legacy runtime or fallback was retained.
 
 The Operator authorized disposable Google Tasks and Calendar targets named
-`Docket validation` for live acceptance and cleanup. The Tasks consent upgrade
-is still pending: account selection reportedly freezes. Setup now normalizes the
-downloaded client endpoint to Google's documented v2 authorization endpoint;
-19 OAuth tests pass, including real-library URL/PKCE/single-parameter checks.
-A fresh-link private-browser retry has been requested. This change does not
-establish the cause of the browser freeze or claim successful consent.
+`Docket validation` for live acceptance and cleanup. Consent completed after
+the setup endpoint update and fresh-link private-browser retry. Tasks API was
+then enabled after a sanitized SERVICE_DISABLED diagnosis. Tasks access and the
+prior Calendar grants are present; credentials and URLs were not exposed.
+The cause of the original browser freeze was not established.
+
+[Real provider checks](../evidence/google-tasks-retirement/live-provider.json)
+pass full title/notes limits, date set/unchanged/null, completion/reopening,
+stale patch/move/delete rejection, native cross-list identity and deletion.
+One actual insert response was deliberately discarded, then uniquely located
+through complete scoped marker inspection without another insert. This is a
+controlled recovery exercise, not a claim of an uncontrolled network failure.
+Native scheduled-clock preservation, additional hierarchy behavior, Calendar
+device evidence and production method admission remain outstanding. Real Calendar
+private/free popup-zero creation, privacy-change reconciliation and cleanup pass
+at autumn and spring DST boundaries. Google rejects the backwards autumn local
+range despite exact offsets; the timed-marker compiler now uses UTC transport
+for that case while retaining the canonical IANA timezone (SPEC ADR 011).
+
+Typed Calendar marker origins derive from the exact scoped reserved provider
+identity, immutable reminder generation and retained sent operation/binding.
+They survive cache rebuilds even without private Calendar properties and after
+generation retirement. Copied labels/private properties cannot establish local
+ownership. Four focused cases cover successful/unknown creation across both DST
+transitions; 115 provider checks and strict static checks pass. This does not
+yet implement automatic reminder generation or its lifecycle.

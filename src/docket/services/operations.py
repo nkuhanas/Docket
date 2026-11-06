@@ -78,7 +78,9 @@ class ClaimedOperation:
             priority_basis=str(self.parameters.get("priority_basis", "explicit_operator")),
             reminder_plan_sha256=self.parameters.get("reminder_plan_sha256"),
             origin_kind=(
-                "temporal_projection"
+                "task_reminder"
+                if self.parameters.get("task_reminder_generation_ref")
+                else "temporal_projection"
                 if self.parameters.get("target_kind") == "temporal_projection"
                 else "canonical_event"
             ),
@@ -794,6 +796,14 @@ class OperationRunner:
         )
         row.provider_etag = result.provider_etag
         row.synced_at = utc_now()
+        from docket.services.task_reminder_origins import (
+            stamp_task_reminder_origin,
+            task_reminder_origins,
+        )
+
+        stamp_task_reminder_origin(
+            row, task_reminder_origins(session, operation.account_id, calendar_id),
+        )
 
     def _finish_event_success(
         self,

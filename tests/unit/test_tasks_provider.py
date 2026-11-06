@@ -108,6 +108,19 @@ def test_stale_delete_is_not_treated_as_success(provider, monkeypatch) -> None:
     assert caught.value.code == "google_tasks_stale"
 
 
+def test_disabled_api_has_actionable_error_without_private_diagnostics(provider, monkeypatch):
+    monkeypatch.setattr(httpx, "request", lambda *a, **k: httpx.Response(403, json={
+        "error": {"message": "private project and account details", "details": [
+            {"reason": "SERVICE_DISABLED", "metadata": {"consumer": "private-project"}},
+        ]},
+    }))
+    with pytest.raises(TasksProviderError) as caught:
+        provider.list_task_lists()
+    assert caught.value.code == "google_tasks_api_disabled"
+    assert "Enable Google Tasks API" in str(caught.value)
+    assert "private" not in str(caught.value)
+
+
 def test_transport_marker_is_scoped_and_lossless() -> None:
     notes = "User notes\n\n[Docket-Task-v1:literal_user_text]"
     outgoing = transport_notes(notes, "binding_123")

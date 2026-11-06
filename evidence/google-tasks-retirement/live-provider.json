@@ -1,0 +1,56 @@
+{
+  "recorded_at": "2026-11-06T22:54:31.397204+00:00",
+  "adapter_version": 1,
+  "targets": "dedicated disposable validation targets",
+  "real_google_api": true,
+  "checks": {
+    "title_1024_notes_8192_roundtrip": true,
+    "due_discards_clock": true,
+    "unrelated_patch_preserves_date": true,
+    "due_null_clears": true,
+    "scheduled_date_set_preserve_clear": true,
+    "patch_conditional_write": true,
+    "completion_timestamp_returned": true,
+    "completion_reopen": true,
+    "move_conditional_write": true,
+    "native_move_stable_identity": true,
+    "native_move_source_removed": true,
+    "native_cross_list_move": true,
+    "delete_conditional_write": true,
+    "delete_and_tombstone": true,
+    "insert_response_discarded_correlation_recovery": true
+  },
+  "safe_failure_codes": {},
+  "native_clock_preservation": "not yet checked in the Google UI",
+  "device_notification": "not yet observed; API tests used past instants",
+  "production_canonical_rows_changed": false,
+  "autumn_calendar_transport_probe": [
+    {
+      "wire_timezone": "America/Los_Angeles",
+      "http_status": 400,
+      "time_range_empty": true
+    },
+    {
+      "wire_timezone": "UTC",
+      "http_status": 200,
+      "test_event_removed": true
+    }
+  ],
+  "autumn_local_offset_transport_rejected": true,
+  "calendar_marker_checks": [
+    {
+      "transition": "autumn",
+      "private_free_popup_zero_roundtrip": true,
+      "visibility_change_detected": true,
+      "test_event_removed": true
+    },
+    {
+      "transition": "spring",
+      "private_free_popup_zero_roundtrip": true,
+      "visibility_change_detected": true,
+      "test_event_removed": true
+    }
+  ],
+  "synthetic_tasks_removed_in_final_cleanup_pass": 5,
+  "native_clock_probe_prepared": true
+}

@@ -120,7 +120,15 @@ def test_private_popup_marker_uses_elapsed_minute_and_independent_endpoint_offse
             "useDefault": False,
             "overrides": [{"method": "popup", "minutes": 0}],
         }
-        assert body["end"]["dateTime"] == expected_end
+        from zoneinfo import ZoneInfo
+
+        local_end = datetime.fromisoformat(body["end"]["dateTime"]).astimezone(
+            ZoneInfo("America/Los_Angeles"),
+        )
+        assert local_end.isoformat() == expected_end
+        assert body["start"]["timeZone"] == (
+            "UTC" if local_start.startswith("2026-11-01") else "America/Los_Angeles"
+        )
         start = datetime.fromisoformat(body["start"]["dateTime"]).astimezone(UTC)
         end = datetime.fromisoformat(body["end"]["dateTime"]).astimezone(UTC)
         assert (end - start).total_seconds() == 60

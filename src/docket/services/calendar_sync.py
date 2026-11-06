@@ -292,6 +292,12 @@ class CalendarSyncService:
                 )
             }
             seen: set[str] = set()
+            from docket.services.task_reminder_origins import (
+                stamp_task_reminder_origin,
+                task_reminder_origins,
+            )
+
+            origins = task_reminder_origins(session, state.account_id, state.calendar_id)
             for event in events:
                 seen.add(event.provider_event_id)
                 row = existing.get(event.provider_event_id)
@@ -335,6 +341,7 @@ class CalendarSyncService:
                 row.provider_etag = event.provider_etag
                 row.provider_updated_at = event.provider_updated_at
                 row.synced_at = now
+                stamp_task_reminder_origin(row, origins)
                 binding = bindings.get(event.provider_event_id)
                 if (
                     binding is not None

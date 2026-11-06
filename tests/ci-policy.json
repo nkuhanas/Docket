@@ -45,6 +45,7 @@
       "tests/integration/test_calendar_sync_scheduling.py",
       "tests/integration/test_tasks_polling.py",
       "tests/integration/test_tasks_operations.py",
+      "tests/integration/test_task_reminder_origins.py",
       "tests/integration/test_gmail_ingestion.py"
     ],
     "storage": [
