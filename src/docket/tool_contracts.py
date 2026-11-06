@@ -10,7 +10,7 @@ from docket.schemas.business import BUSINESS_DEFINITIONS, PLUGIN_COMPATIBILITY_T
 from docket.schemas.compensation import POLICY_TOOL_PURPOSES
 from docket.schemas.work import WORK_TOOL_PURPOSES
 
-CONTRACT_VERSION = "docket-tools-2026-11-05-v58"
+CONTRACT_VERSION = "docket-tools-2026-11-05-v59"
 ContractProfile = Literal["interactive", "triage", "plugin"]
 
 

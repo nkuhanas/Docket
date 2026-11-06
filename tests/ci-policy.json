@@ -4,6 +4,7 @@
     "native": [
       "tests/unit/test_agent_auth.py",
       "tests/unit/test_work_time.py",
+      "tests/unit/test_compensation.py",
       "tests/unit/test_plugin_configuration.py",
       "tests/unit/test_plugin_package.py",
       "tests/unit/test_webhooks.py",
@@ -14,6 +15,7 @@
       "tests/integration/test_native_timers.py",
       "tests/integration/test_work_lineage.py",
       "tests/integration/test_compensation_policies.py",
+      "tests/integration/test_compensation_evaluations.py",
       "tests/integration/test_work_reports.py",
       "tests/integration/test_plugin_oauth.py",
       "tests/integration/test_plugin_notifications.py",

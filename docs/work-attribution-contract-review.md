@@ -9,11 +9,12 @@ is in the [implementation report](work-attribution-implementation.md). Measureme
 below remain historical design evidence, not implementation or a second specification.
 
 Current source implements the primary catalogue consolidation, thirteen P0
-definitions and two effective-policy commands: 86 advertised tools total. The P0
-definitions occupy 28,228 bytes; policy commands add 5,458 bytes.
+definitions, two effective-policy commands and one evaluation read: 87 advertised
+tools total. The P0 definitions occupy 28,228 bytes; policy/evaluation definitions
+add 6,982 bytes.
 Every new input is below 4 KiB and complete definition below 6 KiB. Known-time
-and mixed-time split/merge and effective-policy configuration are checked;
-compensation evaluation, formal finance and intelligence remain unfinished.
+and mixed-time split/merge, effective-policy configuration and compensation
+evaluation are checked; formal finance and intelligence remain unfinished.
 The implementation report records exact evidence and the separate release boundary.
 
 The extension adds actual-work records first, then reporting/financial state and

@@ -65,8 +65,16 @@ rounding, hour limits and overtime rules. Omitted fields retain each applicable
 window's values; null clears nullable terms. Sparse changes preserve future rates.
 An expired rate is not extended into an unconfigured gap. These are canonical
 configuration records, without claims or payment/provider effects. Reported billability
-is unchanged. Earnings evaluation, formal timesheets/invoices and settlement remain
-unimplemented; do not describe configuration as those capabilities. For complete
+is unchanged. Use `docket_get_compensation` with an engagement and date range for
+effective-rate gross estimates, reportable/eligible quantities and coverage flags.
+It keeps currencies separate, evaluates configured rounding/overtime and leaves
+unknown or ambiguous earnings unresolved. Salary/fixed fees are configured terms,
+not invented hourly earnings. Read the summary before quoting a total; known
+subtotals do not establish complete reporting or payment. Follow next_cursor for
+bounded details. The export_cursor starts lossless JSON/CSV of the same frozen
+calculation, unaffected by later work/rate corrections. Evaluation creates no claim,
+submission or payment. Formal timesheets/invoices and settlement remain unfinished.
+For complete
 immutable policy history, follow the returned audit ref and concatenate
 policy_json_chunk using text_next_offset until absent.
 

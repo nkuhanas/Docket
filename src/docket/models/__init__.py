@@ -33,6 +33,7 @@ from docket.models.compensation import (
     CompensationRevisionTerm,
     CompensationTerm,
 )
+from docket.models.compensation_evaluations import CompensationEvaluation
 from docket.models.continuity import (
     DeferredIngress,
     DrainBarrier,
@@ -156,6 +157,7 @@ __all__ = [
     "ChangeSet",
     "ChangeSetRevision",
     "ClarificationReply",
+    "CompensationEvaluation",
     "CompensationPolicy",
     "CompensationPolicyRevision",
     "CompensationRevisionTerm",

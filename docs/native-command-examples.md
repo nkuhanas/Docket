@@ -188,5 +188,18 @@ Refresh the changed engagement context between commands. The same exact optional
 preview/apply and unchanged retry behavior applies. Policy/head references can be
 read through work context; its history pointer provides bounded policy_json_chunk
 audit reads. Pay/reporting configuration neither rewrites work nor establishes a
-financial claim, payment, external submission or provider operation. Computed earnings,
-formal documents and settlement are later implementation slices.
+financial claim, payment, external submission or provider operation.
+
+Evaluate an explicit period with `docket_get_compensation`:
+
+```json
+{"engagement_ref":"<selected-engagement>","date_from":"2026-11-02","date_to":"2026-11-09","timezone":"America/Los_Angeles"}
+```
+
+The result separates known quantities, eligibility, gross estimates by currency and
+unresolved coverage. It applies effective terms rather than the newest rate and
+preserves reported classification. Salary/fixed-fee terms do not become hourly
+earnings. Follow next_cursor for detail pages; use export_cursor with format json
+or csv for the exact frozen calculation, continuing until complete. Later corrections
+do not alter that retained result. Evaluation creates no financial claim, submission,
+invoice or payment. Formal documents and settlement are later implementation slices.

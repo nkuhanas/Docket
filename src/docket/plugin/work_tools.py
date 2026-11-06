@@ -10,9 +10,10 @@ from docket.database import session_scope
 from docket.domain.errors import DocketError
 from docket.mcp.instrumented import ProvenanceMCP
 from docket.plugin.business import model_function
-from docket.schemas.compensation import POLICY_TOOL_PURPOSES
+from docket.schemas.compensation import POLICY_TOOL_PURPOSES, GetCompensation
 from docket.schemas.work import WORK_TOOL_PURPOSES, GetWorkContext, QueryWorkSessions
 from docket.services.business_commands import public_validation_error
+from docket.services.compensation_evaluations import CompensationEvaluationService
 from docket.services.compensation_policies import (
     POLICY_COMMAND_MODELS,
     CompensationPolicyCommandService,
@@ -130,6 +131,27 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
         model_function(QueryWorkSessions, "docket_query_work_sessions", query),
         name="docket_query_work_sessions",
         description=WORK_TOOL_PURPOSES["docket_query_work_sessions"],
+        annotations=ToolAnnotations(
+            read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
+        ),
+    )
+
+    def compensation(arguments: dict[str, Any]) -> dict[str, Any]:
+        arguments.pop("request_ref", None)
+        arguments.pop("request_key", None)
+        try:
+            public = GetCompensation.model_validate(arguments)
+            with session_scope() as session:
+                return CompensationEvaluationService(session, settings).query(public)
+        except ValidationError as exc:
+            return public_validation_error(exc).as_dict()
+        except DocketError as exc:
+            return exc.as_dict()
+
+    server.add_tool(
+        model_function(GetCompensation, "docket_get_compensation", compensation),
+        name="docket_get_compensation",
+        description=POLICY_TOOL_PURPOSES["docket_get_compensation"],
         annotations=ToolAnnotations(
             read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
         ),

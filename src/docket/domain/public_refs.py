@@ -17,6 +17,7 @@ class PublicRefDefinition:
 
 
 _DEFINITIONS = (
+    PublicRefDefinition("ceval", "CompensationEvaluation"),
     PublicRefDefinition("cpol", "CompensationPolicy"),
     PublicRefDefinition("cprv", "CompensationPolicyRevision"),
     PublicRefDefinition("cptr", "CompensationTerm"),

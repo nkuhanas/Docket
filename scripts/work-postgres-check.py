@@ -200,6 +200,7 @@ asyncio.run(check())
 async def check_compensation_policies(settings, factory, principal):
     from docket.agent_auth import AgentCallContext, AgentPrincipal, agent_call_context
     from docket.models import (
+        CompensationEvaluation,
         CompensationPolicy,
         CompensationPolicyRevision,
         CompensationRevisionTerm,
@@ -489,6 +490,57 @@ async def check_compensation_policies(settings, factory, principal):
         denied = await call(name, arguments, other)
         assert denied.get("ok") is False, denied
         assert "80.123456789" not in json.dumps(denied)
+    packet = await call("docket_get_work_context", {"refs": [eng_ref]})
+    logged = await call(
+        "docket_log_work_session",
+        {
+            "context_id": packet["context_id"],
+            "operation_id": "pg-compensation-work",
+            "description": "Synthetic compensation calculation",
+            "engagement_ref": eng_ref,
+            "duration_minutes": 90,
+            "work_date": "2026-11-04",
+            "timezone": "America/Los_Angeles",
+        },
+    )
+    assert logged.get("disposition") == "committed", logged
+    evaluated = await call(
+        "docket_get_compensation",
+        {
+            "engagement_ref": eng_ref,
+            "date_from": "2026-11-02",
+            "date_to": "2026-11-09",
+            "timezone": "America/Los_Angeles",
+        },
+    )
+    assert evaluated.get("ok"), evaluated
+    assert evaluated["summary"]["gross_estimates"] == [
+        {"currency": "CAD", "amount": "120.19", "money_decimals": 2}
+    ], evaluated
+    for reader in (
+        other,
+        AgentPrincipal(
+            "synthetic-same-owner-other-reader",
+            principal.operator_ref,
+            "interactive",
+            frozenset({"read"}),
+        ),
+    ):
+        denied = await call(
+            "docket_get_compensation", {"cursor": evaluated["export_cursor"]}, reader
+        )
+        assert denied.get("ok") is False and "120.19" not in json.dumps(denied), denied
+    try:
+        with factory.begin() as session:
+            session.execute(
+                update(CompensationEvaluation)
+                .where(CompensationEvaluation.ref_id == evaluated["evaluation_ref"])
+                .values(calculation_version="rewritten")
+            )
+    except DBAPIError as exc:
+        assert "immutable" in str(exc.orig)
+    else:
+        raise AssertionError("PostgreSQL allowed rewriting a retained compensation calculation")
     with factory() as session:
         rows = [dict(row) for row in session.execute(select(ToolInvocation.__table__)).mappings()]
         assert "80.123456789" not in json.dumps(rows, default=str)
@@ -825,6 +877,7 @@ async def check():
     from docket.database import configure_database, get_session_factory
     from docket.models import (
         AuthenticatedRequest,
+        CompensationEvaluation,
         CompensationPolicy,
         CompensationPolicyRevision,
         CompensationRevisionTerm,
@@ -856,6 +909,7 @@ async def check():
     engine = configure_database(settings.database_url)
     factory = get_session_factory()
     tables = (
+        CompensationEvaluation,
         CompensationPolicy,
         CompensationPolicyRevision,
         CompensationRevisionTerm,
@@ -1428,6 +1482,7 @@ async def check():
                 "native_lineage_and_concurrent_quantity_growth": "passed",
                 "quantity_and_lineage_immutability": "passed",
                 "effective_compensation_policies_and_concurrency": "passed",
+                "frozen_compensation_evaluation_and_owner_isolation": "passed",
                 "compensation_owner_isolation_and_privacy": "passed",
                 "composite_time_precision_and_sealing": "passed",
                 "work_report_aggregates_and_exports": "passed",

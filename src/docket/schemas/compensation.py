@@ -84,6 +84,18 @@ class SetReportingRules(ReportingRulesFields, EffectivePolicyFields, CommandBase
     engagement_ref: EngagementRef
 
 
+class GetCompensation(StrictModel):
+    engagement_ref: EngagementRef | None = None
+    date_from: date | None = None
+    date_to: date | None = Field(default=None, description="Exclusive; defaults to one week.")
+    timezone: str | None = Field(default=None, max_length=128)
+    component_key: ComponentKey = "base"
+    as_of: datetime | None = None
+    cursor: str | None = Field(default=None, max_length=512)
+    format: Literal["summary", "json", "csv"] = "summary"
+    limit: int = Field(default=25, ge=1, le=100)
+
+
 class PolicyTermSpec(StrictModel):
     kind: Literal["pay", "reporting"]
     start_at: datetime
@@ -156,6 +168,10 @@ class PolicySetSpec(StrictModel):
 
 
 POLICY_TOOL_PURPOSES = {
+    "docket_get_compensation": "Evaluate reported work using effective pay/reporting terms. "
+    "Returns exact gross estimates by currency, eligibility and unresolved coverage. "
+    "JSON/CSV exports share the frozen calculation; follow cursor for all details. "
+    "No claim, submission, invoice, payment or provider effect.",
     "docket_set_pay_terms": "Set effective pay terms for an engagement. "
     "Omitted fields retain applicable terms. "
     "rate is hourly; amount is salary/fixed fee. No work, claim, payment or provider effect.",

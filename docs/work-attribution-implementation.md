@@ -25,7 +25,7 @@ does not invent a payroll/banking integration or require its credentials.
 | Time math | UTC elapsed/break union, midnight/travel/DST folds, no fabricated bounds or period allocation | Pure math, command and aggregate/query integration checked |
 | P0b timers | Retry-stable instant, exact preview, start/pause/resume/stop/switch, restart survival; PostgreSQL single-active and races | Five named commands implemented; native/PostgreSQL races and fresh-process recovery checked; release acceptance pending |
 | P0b lineage | Atomic split/merge preserves known quantities/gaps/attribution; superseded parents excluded; stale races reject affected operation | Interval/duration and mixed/incomplete/differently dated composition implemented; MCP/PostgreSQL checks pass. Full release acceptance pending |
-| P1a policies | Effective dates, exact rates/currencies, hourly/nonhourly/unpaid distinction, explicit rounding/period/limits; unknown eligibility/estimates remain partial | Typed pay/reporting timeline configuration and bounded history implemented and checked; evaluation/rounding/limit calculations remain pending |
+| P1a policies | Effective dates, exact rates/currencies, hourly/nonhourly/unpaid distinction, explicit rounding/period/limits; unknown eligibility/estimates remain partial | Typed timelines and exact evaluation implemented; MCP/PostgreSQL history, snapshot isolation, rounding, overtime and coverage checks pass; full release acceptance pending |
 | P1a formal timesheets | Exact contributions, reporting lifecycle, immutable submitted snapshots, same-purpose duplicate-quantity protection, manual submission observations | Pending |
 | P1b claims/invoices | Stable lineage across corrections/splits, partial reservations/concurrent drafts, cancellation release, exact numbered issued snapshots, adjustments/reconciliation flags | Pending |
 | P1b expenses | Independent exact money/currency/date/attribution/eligibility/ownership, optional protected receipt, submission/approval and distinct reimbursement claim | Pending |
@@ -35,7 +35,7 @@ does not invent a payroll/banking integration or require its credentials.
 | P2 follow-up | Typed work/finance reminder/case/event subjects, bounded exception reconciliation, retained inbox, suppression/preferences and client scheduling | Pending |
 | Optional visibility | Explicit correlated actual-time Calendar projection, no duplicate editable time/accounting or default provider effect | Pending |
 | Authority/provenance | OAuth/current local grant, req_/call_, owner isolation/revocation, full approved automation, restricted triage, optional honest capture and sensitive-log protection | New commands enforce write admission and retain req_/call_ roots; read-only rejection checked; complete new-domain isolation/revocation/privacy acceptance pending |
-| Contracts/host | Actual schemas and budgets, first-valid-attempt MCP journeys, generated reference/skill, same registered plugin identity and actual advertised capabilities | Thirteen P0 definitions measured within budgets; generated reference/skill aligned. Hosted refresh/release pending |
+| Contracts/host | Actual schemas and budgets, first-valid-attempt MCP journeys, generated reference/skill, same registered plugin identity and actual advertised capabilities | Thirteen P0 definitions and three policy/evaluation tools measured within per-tool budgets; generated reference/skill aligned. Hosted refresh/release pending |
 | Storage/operations | Fresh/populated PostgreSQL migrations, constraints/locking/races, protected history and migration-specific recovery | Initial work schema round-trip/immutability/uniqueness verified on PostgreSQL; full release pending |
 | Release | Local gate/affected groups, clean-source tested image, reviewed PR/merge, synchronized source, drain/idle/backup/migration/postdeploy and host evidence | Pending |
 
@@ -463,3 +463,58 @@ This slice implements policy configuration. P1a evaluation and formal timesheets
 the shared claim/reservation mechanism, P1b/P1c, P2 and full activation remain
 unfinished. No real rates, employers, work, claims or payments were seeded; no
 production data, provider state, OAuth grant or hosted release changed here.
+
+### P1a: deterministic compensation evaluation
+
+`docket_get_compensation` accepts an optional engagement, date range, timezone and
+component, with summary/JSON/CSV output and bounded continuation. Natural-language
+interpretation remains in the connected agent. The service captures exact work and
+policy revisions, derives employer-wide context internally, then evaluates the
+requested subset. Later work/rate corrections do not change the retained result.
+Explicit as-of reads select historical revisions rather than today's policy head.
+
+The calculator preserves integer microseconds and rational monetary arithmetic until
+the configured monetary rounding boundary. It splits actual active segments at rate,
+rule and civil-day boundaries without changing work history. Configured rounding
+sums the applicable segment/session/day/period quantities before rounding; rate
+boundaries do not independently round each fragment. Rounded quantities are allocated
+proportionally with exact largest-remainder microseconds, without inventing clock
+bounds. Overtime uses configured day/week thresholds and multipliers; reported dates
+establish inter-day order, while ambiguous within-day allocation at different rates
+remains unresolved. Explicit shared-payer rules group applicable engagements. Currency
+and precision buckets remain separate; there is no exchange-rate, tax or legal inference.
+
+Hourly eligibility, reported classification and payment remain distinct. Missing
+rates/currency/eligibility, open timers, unplaced/cross-period quantities and policy
+changes within an imprecise report yield partial results with coverage flags. Configured
+salary/fixed-fee amounts do not become hourly earnings. Overlaps, configured limits,
+engagement-date issues and lineage review remain visible. No estimate creates a claim,
+timesheet submission, invoice, payment or provider effect.
+
+Migration 20261105f6a7 adds immutable owner/principal-bound derived calculation
+snapshots, with genuine retained work-report and policy references. PostgreSQL and
+ORM guards reject rewriting/deleting these snapshots. A populated downgrade refuses
+to discard them; retain compatible source/backup and use a forward repair.
+
+Evidence:
+
+- Final native gate: 228 passed in 32.34 seconds; Ruff and strict mypy pass for
+  214 source files. Storage: 123 passed in 20.27 seconds. Release tooling: 52 passed
+  in 2.24 seconds. Focused calculation/MCP journeys: 13 passed in 2.67 seconds.
+- Disposable PostgreSQL 16.9 passes full migration/model parity and empty round-trip,
+  actual MCP exact-money evaluation, immutable snapshots, cross-owner and same-owner/
+  different-principal continuation denial, retained downgrade refusal, and all earlier
+  work/timer/lineage/report/policy concurrency checks. The disposable container was removed.
+- Real MCP checks exercise direct first-call evaluation, stale-independent retained
+  pages, explicit historical/as-of calculation, rate/work corrections, read-only
+  access and lossless JSON/CSV exports over multiple byte-limited responses. Normal
+  detail pages shrink to the result budget while full-set totals remain available.
+- Actual discovery: 87 tools, 58 typed mutation effects, 140,883 bytes. Evaluation
+  input is 900 bytes / complete definition 1,524 bytes. Pay and reporting definitions
+  remain 2,576 / 2,882 bytes. No new public action union, graph or internal UUID is
+  required; shared instructions remain 1,643 bytes.
+
+Formal timesheets and shared claim/reservation protection are next. P1b/P1c, P2,
+optional actual-time visibility, complete release acceptance, reviewed publication,
+deployment and the same hosted plugin refresh remain unfinished. These are source
+checks, not production activation or a completed full amendment.

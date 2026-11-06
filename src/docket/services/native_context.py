@@ -336,7 +336,8 @@ class NativeContextService:
             if kind == "engagement" or (kind == "work_session" and not row.superseded):
                 actions += ["docket_update_" + kind]
             if kind == "engagement":
-                actions += ["docket_set_pay_terms", "docket_set_reporting_rules"]
+                actions += ["docket_set_pay_terms", "docket_set_reporting_rules",
+                            "docket_get_compensation"]
             if kind == "compensation_policy":
                 actions += ["docket_set_pay_terms" if row.kind == "pay"
                             else "docket_set_reporting_rules"]
