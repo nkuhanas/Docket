@@ -14,6 +14,7 @@ from docket.schemas.compensation import POLICY_TOOL_PURPOSES, GetCompensation
 from docket.schemas.expenses import EXPENSE_TOOL_PURPOSES, QueryExpenses
 from docket.schemas.financial_documents import FINANCIAL_TOOL_PURPOSES, ReadDocument
 from docket.schemas.invoices import INVOICE_TOOL_PURPOSES
+from docket.schemas.settlement import SETTLEMENT_TOOL_PURPOSES, GetFinancialContext
 from docket.schemas.work import WORK_TOOL_PURPOSES, GetWorkContext, QueryWorkSessions
 from docket.services.business_commands import public_validation_error
 from docket.services.compensation_evaluations import CompensationEvaluationService
@@ -23,6 +24,7 @@ from docket.services.compensation_policies import (
 )
 from docket.services.expense_reports import ExpenseReportService
 from docket.services.expenses import EXPENSE_COMMAND_MODELS, ExpenseCommandService
+from docket.services.financial_context import FinancialContextService
 from docket.services.financial_document_reads import FinancialDocumentReadService
 from docket.services.financial_documents import (
     DOCUMENT_COMMAND_MODELS,
@@ -30,6 +32,7 @@ from docket.services.financial_documents import (
 )
 from docket.services.invoices import INVOICE_COMMAND_MODELS, InvoiceCommandService
 from docket.services.native_context import NativeContextService
+from docket.services.settlement_commands import SETTLEMENT_COMMAND_MODELS, SettlementCommandService
 from docket.services.work_commands import WORK_COMMAND_MODELS, WorkCommandService
 from docket.services.work_lineage import LINEAGE_COMMAND_MODELS, WorkLineageCommandService
 from docket.services.work_reports import WorkReportService
@@ -43,6 +46,7 @@ WORK_COMMAND_TOOLS = (
     | frozenset(DOCUMENT_COMMAND_MODELS)
     | frozenset(EXPENSE_COMMAND_MODELS)
     | frozenset(INVOICE_COMMAND_MODELS)
+    | frozenset(SETTLEMENT_COMMAND_MODELS)
 )
 
 
@@ -58,7 +62,9 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
                     )
                 with session_scope() as session:
                     service = (
-                        WorkTimerCommandService
+                        SettlementCommandService
+                        if name in SETTLEMENT_COMMAND_MODELS
+                        else WorkTimerCommandService
                         if name in TIMER_COMMAND_MODELS
                         else InvoiceCommandService
                         if name in INVOICE_COMMAND_MODELS
@@ -94,6 +100,7 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
                         **DOCUMENT_COMMAND_MODELS,
                         **EXPENSE_COMMAND_MODELS,
                         **INVOICE_COMMAND_MODELS,
+                        **SETTLEMENT_COMMAND_MODELS,
                     }
                 )[name],
                 name,
@@ -106,6 +113,7 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
                 **FINANCIAL_TOOL_PURPOSES,
                 **EXPENSE_TOOL_PURPOSES,
                 **INVOICE_TOOL_PURPOSES,
+                **SETTLEMENT_TOOL_PURPOSES,
             }[name],
             annotations=ToolAnnotations(
                 read_only_hint=False,
@@ -123,6 +131,7 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
         *DOCUMENT_COMMAND_MODELS,
         *EXPENSE_COMMAND_MODELS,
         *INVOICE_COMMAND_MODELS,
+        *SETTLEMENT_COMMAND_MODELS,
     ):
         register(name)
 
@@ -226,6 +235,27 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
         model_function(QueryExpenses, "docket_query_expenses", expenses),
         name="docket_query_expenses",
         description=EXPENSE_TOOL_PURPOSES["docket_query_expenses"],
+        annotations=ToolAnnotations(
+            read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
+        ),
+    )
+
+    def financial(arguments: dict[str, Any]) -> dict[str, Any]:
+        arguments.pop("request_ref", None)
+        arguments.pop("request_key", None)
+        try:
+            public = GetFinancialContext.model_validate(arguments)
+            with session_scope() as session:
+                return FinancialContextService(session, settings).query(public)
+        except ValidationError as exc:
+            return public_validation_error(exc).as_dict()
+        except DocketError as exc:
+            return exc.as_dict()
+
+    server.add_tool(
+        model_function(GetFinancialContext, "docket_get_financial_context", financial),
+        name="docket_get_financial_context",
+        description=SETTLEMENT_TOOL_PURPOSES["docket_get_financial_context"],
         annotations=ToolAnnotations(
             read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
         ),

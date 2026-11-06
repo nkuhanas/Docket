@@ -9,6 +9,14 @@ and actual phase/release evidence is in the
 [implementation report](work-attribution-implementation.md). The projections below
 retain their original reviewed baseline; they are not activation evidence.
 
+Subsequent C0 implementation: the primary 84 → 71 reduction is implemented and
+checked, with cached-client aliases outside discovery. The four conditional
+removals remain deferred because their current routes are not behaviorally
+equivalent. Work, policy, documents, expenses, invoices and settlement add 31
+purpose-built definitions, making the current source catalogue 102 tools. This
+adds domain capability without making a shared command's input more conditional;
+it is not a production/host inventory claim. See the implementation report.
+
 There are clear reductions that preserve the surviving input schemas. The largest
 group is twelve retraction wrappers with identical arguments apart from the target
 reference pattern. A second group contains convenient aliases of existing reads

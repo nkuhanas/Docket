@@ -1694,7 +1694,20 @@ async def check():
     command.upgrade(config, "head")
     engine = configure_database(settings.database_url)
     factory = get_session_factory()
+    from docket.models import (
+        FinancialEntry,
+        FinancialReportSnapshot,
+        FinancialTransaction,
+        Payment,
+        PaymentEvent,
+    )
+
     tables = (
+        Payment,
+        PaymentEvent,
+        FinancialTransaction,
+        FinancialEntry,
+        FinancialReportSnapshot,
         Expense,
         ExpenseRevision,
         ExpenseObservation,
@@ -2090,6 +2103,9 @@ async def check():
     await check_expenses(settings, factory, principal)
     await check_document_allocations(settings, factory, principal)
     await check_native_invoices(settings, factory, principal)
+    from settlement_postgres_check import check_settlement
+
+    settlement_evidence = await check_settlement(settings, factory, principal)
     changeset_ref = created["changeset_ref"]
     with factory.begin() as session:
         request_ref = session.scalar(
@@ -2278,6 +2294,7 @@ async def check():
     print(
         json.dumps(
             {
+                **settlement_evidence,
                 "work_schema_roundtrip": "passed",
                 "canonical_work_retry": "passed",
                 "canonical_correction_race": "passed",

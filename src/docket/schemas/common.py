@@ -25,6 +25,7 @@ ProviderAccountRef = Annotated[
 ]
 
 HistoryObjectType = Literal[
+    "payment", "financial_transaction", "financial_entry",
     "financial_document_observation",
     "document_allocation",
     "expense", "expense_revision", "expense_observation",

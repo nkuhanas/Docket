@@ -7,6 +7,7 @@ import pytest
 from docket.domain.compensation import HOUR, money
 from docket.domain.financial_pricing import (
     WorkPriceBasis,
+    distribute_money,
     expense_units,
     price_quote,
     remaining_ranges,
@@ -63,3 +64,13 @@ def test_expense_quantity_and_duplicate_ranges_never_use_float_or_double_count()
     assert remaining_ranges(90, 120, [(0, 90)]) == [(90, 120)]
     with pytest.raises(ValueError):
         expense_units("0.0000000001")
+
+
+def test_exact_largest_remainder_preserves_large_and_partial_currency_quantities():
+    total = 999999999999999999999999
+    weights = [Fraction(1, 3), Fraction(2, 3), Fraction(1, 7)]
+    values = distribute_money(total, weights)
+    assert sum(values) == total
+    for actual, weight in zip(values, weights, strict=True):
+        assert abs(Fraction(actual) - total * weight / sum(weights)) < 1
+    assert distribute_money(2, [Fraction(1), Fraction(1), Fraction(1)]) == [1, 1, 0]

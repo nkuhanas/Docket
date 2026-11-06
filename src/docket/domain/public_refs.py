@@ -17,6 +17,10 @@ class PublicRefDefinition:
 
 
 _DEFINITIONS = (
+    PublicRefDefinition("pay", "Payment"),
+    PublicRefDefinition("ftxn", "FinancialTransaction"),
+    PublicRefDefinition("fent", "FinancialEntry"),
+    PublicRefDefinition("frep", "FinancialReportSnapshot"),
     PublicRefDefinition("fobs", "FinancialDocumentObservation"),
     PublicRefDefinition("alloc", "DocumentAllocation"),
     PublicRefDefinition("exp", "Expense"),

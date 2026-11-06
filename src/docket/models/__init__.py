@@ -127,6 +127,13 @@ from docket.models.request_specifications import (
     RequestFieldEvidence,
     SemanticRequestSpecification,
 )
+from docket.models.settlement import (
+    FinancialEntry,
+    FinancialReportSnapshot,
+    FinancialTransaction,
+    Payment,
+    PaymentEvent,
+)
 from docket.models.tracked_context import (
     AttachmentEvidence,
     EncryptedAttachmentBlob,
@@ -215,6 +222,9 @@ __all__ = [
     "FinancialDocument",
     "FinancialDocumentObservation",
     "FinancialDocumentRevision",
+    "FinancialEntry",
+    "FinancialReportSnapshot",
+    "FinancialTransaction",
     "GatewayLifetime",
     "GmailSource",
     "IdentityBinding",
@@ -241,6 +251,8 @@ __all__ = [
     "OperatorUtterance",
     "OrganizationInstitutionProfile",
     "OutboxEvent",
+    "Payment",
+    "PaymentEvent",
     "PersistedSemanticOption",
     "PersonProfile",
     "PluginNotification",

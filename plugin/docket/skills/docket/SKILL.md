@@ -73,7 +73,7 @@ not invented hourly earnings. Read the summary before quoting a total; known
 subtotals do not establish complete reporting or payment. Follow next_cursor for
 bounded details. The export_cursor starts lossless JSON/CSV of the same frozen
 calculation, unaffected by later work/rate corrections. Evaluation creates no claim,
-submission or payment. Settlement operations remain unfinished.
+submission or payment.
 For complete
 immutable policy history, follow the returned audit ref and concatenate
 policy_json_chunk using text_next_offset until absent.
@@ -128,6 +128,22 @@ totals, explicit undated/unknown amounts and captured JSON/CSV exports. Follow
 totals_next_cursor for additional currencies and next_cursor for expense details.
 Use export_cursor to restart the same retained basis in another format. Export
 chunks concatenate in order; none of these commands sends a reimbursement claim.
+
+Use `docket_get_financial_context` for posted claims, received/applied/unapplied money,
+due balances and reconciliation flags. Document balances may overlap; use the
+currency totals, which count shared work/expense sources once. `docket_record_payment`
+records money actually received and can match target_ref in one command.
+`docket_apply_payment` matches an existing payment_ref. Docket derives allocations;
+never construct source graphs or infer payment from delivery. Record an explicit
+deduction_amount/deduction_kind only when known; net deposits do not prove gross
+wages were settled. `docket_adjust_financial_claim` records a credit or charge;
+`docket_reverse_financial_record` corrects retained bookkeeping without sending
+money. A credit can leave received money unapplied; it does not imply a refund.
+Receipt balances describe their retained transaction; context reads current state.
+Fully reverse a wrong receipt before recording its replacement with replaces_ref.
+Missing optional evidence/date remains a gap. Financial JSON/CSV uses the same
+cursor/chunk workflow; export_cursor restarts the captured basis. These commands
+create no bank transfer, payroll submission or provider delivery.
 
 Use named business tools with ordinary fields. Creating a meeting takes title,
 ISO start/end, timezone and a calendar_ref from context. Docket derives its support

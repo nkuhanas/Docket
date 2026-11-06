@@ -27,15 +27,15 @@ does not invent a payroll/banking integration or require its credentials.
 | P0b lineage | Atomic split/merge preserves known quantities/gaps/attribution; superseded parents excluded; stale races reject affected operation | Interval/duration and mixed/incomplete/differently dated composition implemented; MCP/PostgreSQL checks pass. Full release acceptance pending |
 | P1a policies | Effective dates, exact rates/currencies, hourly/nonhourly/unpaid distinction, explicit rounding/period/limits; unknown eligibility/estimates remain partial | Typed timelines and exact evaluation implemented; MCP/PostgreSQL history, snapshot isolation, rounding, overtime and coverage checks pass; full release acceptance pending |
 | P1a formal timesheets | Exact contributions, reporting lifecycle, immutable submitted snapshots, same-purpose duplicate-quantity protection, manual submission observations | Implemented in source; real MCP and PostgreSQL claim races, correction/amendment and immutable history checks pass; release acceptance pending |
-| P1b claims/invoices | Stable lineage across corrections/splits, partial reservations/concurrent drafts, cancellation release, exact numbered issued snapshots, adjustments/reconciliation flags | Native preparation/refresh/issuance/cancellation, numbered snapshots and shared-source work/expense claims implemented; settlement/financial adjustments remain P1c |
-| P1b expenses | Independent exact money/currency/date/attribution/eligibility/ownership, optional protected receipt, submission/approval and distinct reimbursement claim | Reported costs/approval basis, bounded reports and shared invoice allocation implemented; actual reimbursement/settlement pending |
-| P1c settlement | Partial/unmatched/overpaid payments, allocations/credits/reversals, external-ID dedup, gross/net differences and outstanding/due balances without false receipt | Pending |
+| P1b claims/invoices | Stable lineage across corrections/splits, partial reservations/concurrent drafts, cancellation release, exact numbered issued snapshots, adjustments/reconciliation flags | Native document lifecycle/shared-source claims and explicit settlement/adjustment records implemented in source; activation pending |
+| P1b expenses | Independent exact money/currency/date/attribution/eligibility/ownership, optional protected receipt, submission/approval and distinct reimbursement claim | Cost/approval basis, bounded reports, shared invoice allocation and partial reimbursement bookkeeping implemented in source; activation pending |
+| P1c settlement | Partial/unmatched/overpaid payments, allocations/credits/reversals, external-ID dedup, gross/net differences and outstanding/due balances without false receipt | Five flat commands/context implemented; native and PostgreSQL journeys, matching conservation, history and owner isolation checked; activation pending |
 | Formal export | Deterministic CSV/JSON and usable invoice/timesheet rendition with references, policy/calculation/revision basis; no implicit sending | Timesheet and invoice JSON/CSV/Markdown with exact-revision continuation implemented; release acceptance pending |
 | P2 operations | Source-grounded workload/capacity/interval unions, outcomes/professional history, explicit assumptions/coverage and suggested omissions without invented performed work | Pending |
 | P2 follow-up | Typed work/finance reminder/case/event subjects, bounded exception reconciliation, retained inbox, suppression/preferences and client scheduling | Pending |
 | Optional visibility | Explicit correlated actual-time Calendar projection, no duplicate editable time/accounting or default provider effect | Pending |
 | Authority/provenance | OAuth/current local grant, req_/call_, owner isolation/revocation, full approved automation, restricted triage, optional honest capture and sensitive-log protection | New commands enforce write admission and retain req_/call_ roots; read-only rejection checked; complete new-domain isolation/revocation/privacy acceptance pending |
-| Contracts/host | Actual schemas and budgets, first-valid-attempt MCP journeys, generated reference/skill, same registered plugin identity and actual advertised capabilities | Thirteen P0, three policy/evaluation, four formal-report, three expense and three invoice definitions fit per-tool budgets; generated reference/skill aligned. Hosted refresh/release pending |
+| Contracts/host | Actual schemas and budgets, first-valid-attempt MCP journeys, generated reference/skill, same registered plugin identity and actual advertised capabilities | Thirteen P0, three policy/evaluation, four formal-report, three expense, three invoice and five settlement/context definitions fit per-tool budgets; generated reference/skill aligned. Hosted refresh/release pending |
 | Storage/operations | Fresh/populated PostgreSQL migrations, constraints/locking/races, protected history and migration-specific recovery | Initial work schema round-trip/immutability/uniqueness verified on PostgreSQL; full release pending |
 | Release | Local gate/affected groups, clean-source tested image, reviewed PR/merge, synchronized source, drain/idle/backup/migration/postdeploy and host evidence | Pending |
 
@@ -763,3 +763,73 @@ This is source acceptance, not production/host activation. No real invoice,
 expense, payment or provider message was created. P1c settlement/adjustments, P2
 workload/follow-up, optional actual-time visibility and the full release/host
 refresh remain unfinished parts of the adopted objective.
+
+
+### P1c: receipts, shared settlement and financial context
+
+Five flat operations now record actual receipts, apply received money, adjust a
+claim, reverse bookkeeping and read financial context. Recording a receipt can
+match its target in the same command. The agent supplies ordinary references and
+amounts; Docket derives source allocation, current balances and retained ledger
+entries. Existing OAuth/local-owner checks, authenticated request/call attribution,
+exact previews, retries and the canonical ChangeSet transaction are reused. No
+financial scope, foreground attestation or capture requirement was introduced.
+
+One source capacity is shared across timesheets, invoices and expense claims.
+Exact matching stays within each recorded target's source range, including when a
+whole-timesheet receipt and a narrower invoice receipt overlap. Credits/deductions
+remain separate from cash. A credit releases excess allocations as retained
+reversal entries, leaving money unapplied without inventing a refund or moving it
+to an unrelated claim. Partial receipt reversal first releases sufficient cash
+allocation. Unknown deductions never silently clear the net/gross difference.
+
+Payments retain reported/imported origin, optional dates/evidence and stable
+external identities. Missing optional evidence does not block receipt recording.
+A corrected receipt is fully reversed and replaced; the external identity follows
+its linear replacement chain rather than creating duplicate cash. Mutable payment
+heads and affected financial versions are checked under locks. Exact financial
+previews reject changed bases. Receipt balances are explicitly transaction
+snapshots; financial context supplies current balances.
+
+Financial context distinguishes work claims, reimbursement claims, classified
+receipts, applied cash, explicit deductions, credits, outstanding and unapplied
+money by currency. Shared document balances are not summed twice. Unknown dates,
+unmatched allocations and source-change flags remain visible. Current explicit
+document reads compare retained basis with source heads; broad/as-of reads label
+their narrower reconciliation coverage. Frozen JSON/CSV reports are private to
+owner and principal, retain exact basis across continuations and remain bounded.
+PostgreSQL capture uses repeatable-read isolation across its source/ledger queries.
+
+Migration `20261105e1f2` adds payments, immutable transactions/entries/events and
+private financial reports. PostgreSQL enforces exact positive money/currency,
+receipt limits, bounded reversals, owned source ranges, complete version events,
+and immutable transaction entry membership. A later append cannot alter an old
+transaction. Empty downgrade round-trips; populated downgrade refuses before
+dropping any history. Preserve the prior image/backup and use forward repair;
+this slice authorizes no production row edits, reset or restore.
+
+Evidence:
+
+- Native gate: 253 passed in 54.76 seconds; Ruff and strict mypy passed for 238
+  source files. Storage: 123 in 23.68 seconds; release tooling: 52 in 2.67 seconds.
+- Real MCP journeys cover shared claims, partial/excess receipts, external-ID
+  retries, credits, reversals, gross/net gaps, explicit withholding, stale context,
+  nanounit reimbursements, corrected cost/approval basis, replacement identity,
+  missing optional archives, frozen exports and read-only rejection.
+- Disposable PostgreSQL 16.9: fresh migration/model parity and empty round trip;
+  concurrent imports yield one receipt; contested payment previews have one
+  winner; credits/reversals conserve money. Direct SQL cannot mutate receipts,
+  omit head events, exceed reversals, cross currencies or append to retained
+  transactions. Principal-bound reports and owner isolation hold. The broader
+  work/timer/policy/claim/invoice rehearsals also pass. A populated financial read
+  additionally verifies actual repeatable-read isolation and the 8 KiB context cap.
+- Source discovery: 102 tools / 67 canonical mutation variants, 172,557 compact
+  UTF-8 bytes. Settlement input/complete-definition bytes: record payment
+  2,336/2,941; apply 1,374/1,953; adjust 986/1,568; reverse 835/1,401; context
+  627/1,257. All fit 4/6 KiB. Global instructions remain 1,643 bytes. Metadata v64,
+  generated reference, context actions and packaged skill agree.
+
+These are local source checks, not a tested-image or deployment receipt. The
+same deployed plugin remains on the prior release. P2 workload/follow-up,
+optional actual-time visibility, complete release validation and host refresh
+remain required. P3 still depends on a separately selected concrete provider.

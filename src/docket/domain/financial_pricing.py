@@ -10,6 +10,22 @@ from docket.domain.compensation import HOUR
 NANO = 1_000_000_000
 
 
+def distribute_money(total: int, weights: list[Fraction]) -> list[int]:
+    """Allocate exact monetary units without bounded-precision surrogate weights."""
+    denominator = sum(weights, Fraction(0))
+    if total < 0 or any(value < 0 for value in weights) or (total and not denominator):
+        raise ValueError("Money distribution requires nonnegative exact weights")
+    if not denominator:
+        return [0] * len(weights)
+    exact = [total * weight / denominator for weight in weights]
+    result = [value.numerator // value.denominator for value in exact]
+    remaining = total - sum(result)
+    order = sorted(range(len(weights)), key=lambda i: (-(exact[i] - result[i]), i))
+    for index in order[:remaining]:
+        result[index] += 1
+    return result
+
+
 def expense_units(amount: str) -> int:
     value = Fraction(Decimal(amount)) * NANO
     if value < 0 or value.denominator != 1:

@@ -46,6 +46,8 @@ from docket.models import (
     FinancialDocument,
     FinancialDocumentObservation,
     FinancialDocumentRevision,
+    FinancialEntry,
+    FinancialTransaction,
     GatewayLifetime,
     GmailSource,
     IdentityBinding,
@@ -59,6 +61,7 @@ from docket.models import (
     Operation,
     OperatorProjection,
     OperatorUtterance,
+    Payment,
     PersistedSemanticOption,
     Preference,
     ProviderAccount,
@@ -93,6 +96,9 @@ AUDIT_OUTPUT_BYTES = 64 * 1024
 MAX_TEXT_CHUNK_BYTES = 32 * 1024
 
 _PREFIX_MODELS: dict[str, tuple[str, type[Any], str]] = {
+    "pay": ("payment", Payment, "created_at"),
+    "ftxn": ("financial_transaction", FinancialTransaction, "created_at"),
+    "fent": ("financial_entry", FinancialEntry, "created_at"),
     "fobs": ("financial_document_observation", FinancialDocumentObservation, "created_at"),
     "alloc": ("document_allocation", DocumentAllocation, "created_at"),
     "exp": ("expense", Expense, "created_at"),
@@ -267,6 +273,27 @@ class HistoryService:
                 "created_by_changeset_ref": item.created_by_changeset_ref,
                 "created_at": _iso(item.created_at),
             }
+        if isinstance(item, Payment | FinancialTransaction | FinancialEntry):
+            from docket.services.work_attribution import read_operator
+
+            if item.operator_ref != read_operator():
+                raise DocketError(
+                    code="financial_record_unavailable", message="Select owned records.")
+            if isinstance(item, FinancialTransaction):
+                return {**base, "kind": item.kind, "outcome": item.outcome_json,
+                        "created_by_changeset_ref": item.created_by_changeset_ref}
+            if isinstance(item, Payment):
+                return {**base, "version": item.version, "amount": item.amount,
+                        "currency": item.currency, "received_at": _iso(item.received_at),
+                        "received_on": item.received_on.isoformat() if item.received_on else None,
+                        "source_method": item.source_method, "source_ref": item.source_ref,
+                        "evidence_gap": item.evidence_gap, "replaces_ref": item.replaces_ref,
+                        "created_by_changeset_ref": item.created_by_changeset_ref}
+            return {**base, "kind": item.kind, "amount": item.amount, "currency": item.currency,
+                    "transaction_ref": item.transaction_ref, "payment_ref": item.payment_ref,
+                    "target_ref": item.target_ref, "target_basis_ref": item.target_basis_ref,
+                    "reverses_ref": item.reverses_ref, "deduction_kind": item.deduction_kind,
+                    "scopes": item.scopes_json, "matches": item.matches_json}
         if isinstance(item, Expense | ExpenseRevision | ExpenseObservation):
             from docket.services.expenses import ExpenseService
 
@@ -1248,6 +1275,10 @@ class HistoryService:
                 continue
             time_column = getattr(model, time_field)
             statement: Select[Any] = select(model)
+            if model in {Payment, FinancialEntry, FinancialTransaction}:
+                from docket.services.work_attribution import read_operator
+
+                statement = statement.where(model.operator_ref == read_operator())
             if model in {Expense, ExpenseRevision, ExpenseObservation}:
                 from docket.services.work_attribution import read_operator
 

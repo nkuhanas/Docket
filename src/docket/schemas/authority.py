@@ -44,6 +44,7 @@ from docket.schemas.registry import (
     InteractionCreateSpec,
     RelationshipCreateSpec,
 )
+from docket.schemas.settlement import SettlementSpec
 from docket.schemas.tracked_context import (
     ItemInput,
     ItemPatchInput,
@@ -593,6 +594,15 @@ class ExpenseModify(MutationBase):
     object_ref: ExpenseRef
     create_spec: None = None
     payload: ExpenseSpec
+
+
+class FinancialPostingCreate(MutationBase):
+    mutation_type: Literal["financial_post"] = "financial_post"
+    action: Literal["create"]
+    object_type: Literal["financial_transaction"]
+    object_ref: None = None
+    create_spec: SettlementSpec
+    payload: None = None
 
 
 class InvoicePrepare(MutationBase):
@@ -1265,7 +1275,8 @@ type LaneMutation = (
 )
 type EventMutation = CanonicalEventCreate | CanonicalEventModify | CanonicalEventCancel
 type TrackedContextMutation = (
-    InvoicePrepare
+    FinancialPostingCreate
+    | InvoicePrepare
     | InvoiceRefresh
     | InvoiceTransition
     | ExpenseCreate
@@ -1302,7 +1313,8 @@ type TrackedContextMutation = (
     | ReminderPlanRetract
 )
 type CanonicalMutation = (
-    InvoicePrepare
+    FinancialPostingCreate
+    | InvoicePrepare
     | InvoiceRefresh
     | InvoiceTransition
     | ExpenseCreate

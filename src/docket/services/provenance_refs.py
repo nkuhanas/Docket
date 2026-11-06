@@ -37,6 +37,8 @@ from docket.models import (
     FinancialDocument,
     FinancialDocumentObservation,
     FinancialDocumentRevision,
+    FinancialEntry,
+    FinancialTransaction,
     IdentityHandle,
     IntentSession,
     IntentTurn,
@@ -47,6 +49,7 @@ from docket.models import (
     Operation,
     OperatorProjection,
     OperatorUtterance,
+    Payment,
     PersistedSemanticOption,
     Preference,
     Relationship,
@@ -66,6 +69,7 @@ from docket.models import (
 
 PROVENANCE_PREFIXES = frozenset(
     {
+        "pay", "ftxn", "fent",
         "fdoc", "fdrev", "clm", "ceval", "alloc", "fobs", "exp", "exrev", "exobs",
         "eng", "erev", "work", "wrev",
         "utt",
@@ -112,6 +116,9 @@ PROVENANCE_PREFIXES = frozenset(
 )
 
 _PHASE_TWO_MODELS: dict[str, type[Any]] = {
+    "pay": Payment,
+    "ftxn": FinancialTransaction,
+    "fent": FinancialEntry,
     "fobs": FinancialDocumentObservation,
     "alloc": DocumentAllocation,
     "exp": Expense,
@@ -208,6 +215,12 @@ class ProvenanceRefService:
                 message="A referenced provenance object does not exist.",
                 details={"ref": ref_id},
             )
+        if isinstance(item, Payment | FinancialTransaction | FinancialEntry):
+            from docket.services.work_attribution import read_operator
+
+            if item.operator_ref != read_operator():
+                raise DocketError(
+                    code="financial_record_unavailable", message="Select owned records.")
         if isinstance(item, Expense | ExpenseRevision | ExpenseObservation):
             from docket.services.expenses import ExpenseService
 

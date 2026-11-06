@@ -134,6 +134,7 @@ class ChangeSetApplicationReceipt:
     work_records: list[dict[str, Any]] = field(default_factory=list)
     financial_documents: list[dict[str, Any]] = field(default_factory=list)
     expenses: list[dict[str, Any]] = field(default_factory=list)
+    financial_records: list[dict[str, Any]] = field(default_factory=list)
 
     def add_refs(self, refs: list[str]) -> None:
         for ref_id in refs:
@@ -221,7 +222,11 @@ class ChangeSetApplicationReceipt:
                 **({"expenses": self.expenses[:min(limit, 3)],
                     "expense_count": len(self.expenses),
                     "expenses_truncated": len(self.expenses) > min(limit, 3)}
-                   if self.expenses else {})}
+                   if self.expenses else {}),
+                **({"financial_records": self.financial_records[:min(limit, 3)],
+                    "financial_record_count": len(self.financial_records),
+                    "financial_records_truncated": len(self.financial_records) > min(limit, 3)}
+                   if self.financial_records else {})}
 
 
 _GROUP_TYPES: dict[str, frozenset[str]] = {
@@ -243,6 +248,7 @@ _GROUP_TYPES: dict[str, frozenset[str]] = {
         {
             "engagement",
             "financial_document",
+            "financial_transaction",
             "expense",
             "work_session",
             "item",
@@ -256,6 +262,7 @@ _GROUP_TYPES: dict[str, frozenset[str]] = {
 }
 
 _OBJECT_PREFIXES: dict[str, str] = {
+    "financial_transaction": "ftxn",
     "expense": "exp",
     "financial_document": "fdoc",
     "engagement": "eng",
@@ -640,6 +647,25 @@ class ChangeSetService:
             refs = self.handlers[change.object_type](self.session, changeset, resolved_change)
             refs_by_change_id[change.change_id] = refs
             receipt.add_refs(refs)
+            if change.object_type == "financial_transaction":
+                from docket.models import FinancialTransaction
+
+                for ref in refs:
+                    if ref.startswith("ftxn_"):
+                        txn = self.session.scalar(select(FinancialTransaction).where(
+                            FinancialTransaction.ref_id == ref))
+                        assert txn is not None
+                        outcome = txn.outcome_json
+                        receipt.financial_records.append({
+                            "ref": txn.ref_id, "kind": txn.kind,
+                            "balance_basis": "retained_transaction_snapshot",
+                            "deduplicated": txn.created_by_changeset_ref != changeset.ref_id,
+                            "payments": outcome["payments"][:3],
+                            "payments_truncated": len(outcome["payments"]) > 3,
+                            "entry_count": len(outcome["entries"]),
+                            "provider_effects": False,
+                            "detail": {"tool": "docket_get_financial_context", "refs": [ref]},
+                        })
             if change.object_type == "expense":
                 from docket.services.expenses import ExpenseService
 
