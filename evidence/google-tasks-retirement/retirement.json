@@ -1,0 +1,36 @@
+{
+  "project": "docket-workspace-eval",
+  "recorded_at": "2026-11-06T22:47:12.545060+00:00",
+  "operator_disposition": "discard legacy data; no import requested",
+  "containers": [
+    "docket-workspace-eval-docket-1",
+    "docket-workspace-eval-metadata-1",
+    "docket-workspace-eval-nocodb-1",
+    "docket-workspace-eval-nocodb-worker-1",
+    "docket-workspace-eval-postgres-1",
+    "docket-workspace-eval-redis-1"
+  ],
+  "volumes": [
+    "34086db380e4c060f45e73f50b4ee6d421e4fecbd9881a9e38998426e7e71b8b",
+    "docket-workspace-eval_canonical-data",
+    "docket-workspace-eval_metadata-data",
+    "docket-workspace-eval_nocodb-data"
+  ],
+  "networks": [
+    "docket-workspace-eval_workspace",
+    "docket-workspace-eval_workspace-ui"
+  ],
+  "executed": true,
+  "production_rows_changed": false,
+  "encrypted_inventory_archives_retained": true,
+  "verified_absent": true,
+  "residue_inspection": {
+    "startup_or_ingress_files": [],
+    "crontab_installed": false,
+    "legacy_named_secret_files": [
+      "nocodb-retirement-archive.key"
+    ],
+    "legacy_environment_keys": []
+  },
+  "production_docket_and_postgresql_healthy_after_removal": true
+}

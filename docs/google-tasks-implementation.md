@@ -13,8 +13,8 @@ acceptance is claimed by a fixture or disabled capability.
 | Requirement | Evidence required | State |
 | --- | --- | --- |
 | Adoption | One current SPEC, decisions/history and index reconciled | SPEC 1.2 adopted in working source |
-| R0 inventory | Exact ownership/status of NocoDB containers, networks, volumes, startup/access and unique data | Six evaluation containers stopped; three dedicated volumes identified by current read-only Docker metadata; data disposition pending |
-| R0 protected data | Consistent encrypted archive, checksums/recovery, schema/count/identity comparison and unique-data disposition | Three authenticated encrypted archives verified; both PostgreSQL archives restored into networkless temporary clones and inventoried. 9 Tasks/11 Items lack current canonical identities; disposition pending |
+| R0 inventory | Exact ownership/status of NocoDB containers, networks, volumes, startup/access and unique data | Six dedicated evaluation containers, four exclusive volumes (including Redis), and two exclusive networks inventoried and removed under explicit Operator instruction |
+| R0 protected data | Consistent encrypted archive, checksums/recovery, schema/count/identity comparison and unique-data disposition | Three authenticated encrypted archives verified; isolated restores inventoried. Operator classified the legacy data as unnecessary and authorized disposal without import; protected archives retained |
 | G0 OAuth/readiness | Tasks scope profiles preserve granted scopes; atomic verified replacement and isolated feature readiness | Scope upgrade and isolated Tasks context readiness implemented; live grant/method evidence pending |
 | G0 adapter | Real/fake/disabled Tasks read/write protocols, exact field/marker handling and guarded method dispatch | Transport/pagination, exact-version writes, unknown outcomes and scoped notes implemented with synthetic tests; shared-runner dispatch implemented; live validation pending |
 | G0 live capabilities | Method-specific controlled insert/patch/move/delete/date/time/uncertainty evidence | Pending; unverified methods remain disabled |
@@ -34,7 +34,7 @@ acceptance is claimed by a fixture or disabled capability.
 | Authority/privacy | OAuth/local grant, owner isolation/revocation/triage rejection, genuine service roots, no sensitive invocation payloads | Shared-engine policy import creates no per-poll request/utterance; list/account/local/OAuth revocation, triage rejection and exact-effect admission covered. Native workflows, polling revocation and shared-write runner evidence pass; real provider acceptance remains |
 | Contracts | Six compact tools, every modified schema, 4/6/24 KiB and context/result budgets, generated docs/skill | Local v68 source advertises 114 tools; six new plus two changed definitions total 12,245 bytes within 4/6/24 KiB budgets. Bundle skill/host refresh remains |
 | Storage | Fresh/populated isolated PostgreSQL migrations, constraints/history/races, restart/drain and recovery | Fresh/empty roundtrip and focused policy import/binding/Task edit proofs pass; populated forward-upgrade and shared Tasks runner evidence remain |
-| R1 retirement | Unique data migrated/disposed; all dedicated NocoDB runtime/access/startup removed; no fallback/dual write | Pending |
+| R1 retirement | Unique data migrated/disposed; all dedicated NocoDB runtime/access/startup removed; no fallback/dual write | Exact owned containers, volumes and networks removed and verified absent. Startup/ingress/secret-name/environment checks found only the retained archive key. Production remains healthy; release cold-start verification pending |
 | R1 aliases | All fifteen hidden native aliases unregistered without effects; current routes/history still work | Removed from registry/dispatch; surviving native completion/retraction journeys pass; historical records retained |
 | Activation | Local gates, tested image, reviewed merge, synchronized main, backup/migration/health and same App/plugin refresh | Pending |
 | Intended device | One actual notification observed on the intended device/client, independently recorded from API status | Pending |
@@ -95,5 +95,17 @@ The [sanitized R0 inventory](../evidence/google-tasks-retirement/inventory.json)
 records volume ownership, ciphertext checksums, restoration checks and aggregate
 identity comparisons. Private archives and schema/count inventories are retained
 under `.runtime/nocodb-retirement/`, with the protected key under `secrets/local/`.
-No private rows, transcripts or credentials are in that evidence. Original
-volumes remain unchanged; no NocoDB runtime deletion is claimed yet.
+No private rows, transcripts or credentials are in that evidence. The original
+volume inventory remains historical evidence. The Operator subsequently
+authorized disposal without import. [The retirement receipt](../evidence/google-tasks-retirement/retirement.json)
+records removal of the exact six containers, four exclusive volumes and two
+exclusive networks, with production Docket/PostgreSQL healthy afterward.
+Protected encrypted archives remain; no legacy runtime or fallback was retained.
+
+The Operator authorized disposable Google Tasks and Calendar targets named
+`Docket validation` for live acceptance and cleanup. The Tasks consent upgrade
+is still pending: account selection reportedly freezes. Setup now normalizes the
+downloaded client endpoint to Google's documented v2 authorization endpoint;
+19 OAuth tests pass, including real-library URL/PKCE/single-parameter checks.
+A fresh-link private-browser retry has been requested. This change does not
+establish the cause of the browser freeze or claim successful consent.

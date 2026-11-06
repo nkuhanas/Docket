@@ -59,13 +59,17 @@ retained binding revisions. The disposable container was removed.
 
 [The sanitized inventory](inventory.json) records the stopped evaluation containers
 and their dedicated volumes. Three protected encrypted volume archives were
-authenticated, decrypted and inspected using isolated disposable copies. Neither
-the production database nor the original evaluation volumes was modified.
+authenticated, decrypted and inspected using isolated disposable copies before
+retirement. The production database was not modified.
 
 Nine historical Tasks and eleven Items have identities absent from the current
 canonical database. Their private content remains in protected recovery artifacts;
-it has not been printed, committed or automatically imported. Final disposition
-and removal of the exact legacy resources remain outstanding.
+it has not been printed, committed or automatically imported. The Operator
+subsequently classified that data as unnecessary and authorized disposal without
+import. [The retirement receipt](retirement.json) records removal and verified
+absence of all six owned containers, four exclusive volumes and two networks.
+Production Docket/PostgreSQL remained healthy. Protected encrypted archives stay
+as recovery evidence, with no callable legacy runtime.
 
 ## Remaining milestones
 
@@ -76,8 +80,9 @@ and removal of the exact legacy resources remain outstanding.
   including cancellation/unknown-create recovery and inbound helper reconciliation.
 - Persist validated reminder origins through Calendar cache refresh and exclude them
   from workload/capacity accounting. Renderer fixes alone do not complete that path.
-- Obtain the Google Tasks consent upgrade and designated disposable targets. Record
+- Complete the Google Tasks consent upgrade; the Operator has authorized dedicated
+  `Docket validation` Tasks/Calendar targets. Record
   live per-method G0 behavior, including stale-write rejection and native clock effects.
-- Complete protected legacy retirement, release validation, reviewed merge/deployment,
+- Complete release cold-start verification of legacy retirement, release validation, reviewed merge/deployment,
   existing-app action rescan and real task verification. Device popup observation is
   separate from API creation success and is not guaranteed by Docket.
