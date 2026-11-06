@@ -83,6 +83,7 @@ class WorkloadCalendarService:
                 select(CanonicalEvent)
                 .where(
                     CanonicalEvent.status == "active",
+                    ~CanonicalEvent.canonical_key.startswith("actual-work:"),
                 )
                 .order_by(CanonicalEvent.ref_id)
                 .limit(10001)
@@ -262,6 +263,13 @@ class WorkloadCalendarService:
                 select(CanonicalEvent.ref_id).where(CanonicalEvent.status != "active")
             )
         )
+        actual_displays = set(
+            self.session.scalars(
+                select(CanonicalEvent.ref_id).where(
+                    CanonicalEvent.canonical_key.startswith("actual-work:")
+                )
+            )
+        )
         for cached_row in cached:
             state = states.get((cached_row.account_id, cached_row.calendar_id))
             if state is None or state.snapshot_generation != cached_row.snapshot_generation:
@@ -273,6 +281,8 @@ class WorkloadCalendarService:
                 binding = bindings.get(
                     (cached_row.account_id, cached_row.calendar_id, cached_row.recurring_event_id)
                 )
+            if binding and binding.canonical_target_ref in actual_displays:
+                continue
             if binding and binding.canonical_target_ref in retained | inactive:
                 if binding.status == "diverged":
                     result.flags.add("provider_divergence_needs_reconciliation")

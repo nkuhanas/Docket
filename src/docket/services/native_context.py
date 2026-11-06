@@ -209,6 +209,7 @@ class NativeContextService:
             "ftxn",
             "fent",
             "wrec",
+            "wcal",
         }
         objects: list[dict[str, Any]] = []
         versions: dict[str, int] = {}
@@ -285,6 +286,10 @@ class NativeContextService:
                          "trigger_at": operational.trigger_at.isoformat(),
                          "timezone": row.timezone, "label": operational.label,
                          "delivery_channels": row.delivery_channels, "basis_refs": row.basis_refs}
+            elif prefix == "wcal":
+                from docket.services.work_calendar import WorkCalendarService
+
+                state = WorkCalendarService(self.session).view(row)
             elif prefix in {"eng", "work", "cpol", "fdoc", "exp"}:
                 from docket.services.work_attribution import WorkAttributionService
 
@@ -381,6 +386,9 @@ class NativeContextService:
                         state[key] = value
                 if omitted:
                     state["omitted_fields"] = omitted
+            if kind == "work_session" and state.get("calendar_visibility"):
+                visibility = state["calendar_visibility"]
+                versions[visibility["ref"]] = visibility["version"]
             if hasattr(row, "version"):
                 versions[ref] = row.version
             actions = [
@@ -392,6 +400,19 @@ class NativeContextService:
                 actions = ["docket_retract_record"]
             if kind == "canonical_event":
                 actions += ["docket_update_event", "docket_cancel_event"]
+            if kind == "work_calendar_projection":
+                actions = ["docket_show_work_session", "docket_retract_record"]
+            if kind == "canonical_event":
+                from docket.services.work_calendar import WorkCalendarService
+
+                managed = WorkCalendarService(self.session).for_event(ref)
+                if managed:
+                    state["managed_work_snapshot"] = {
+                        "projection_ref": managed.ref_id, "work_ref": managed.work_ref,
+                        "current_display": managed.event_ref == ref,
+                        "detail": {"tool": "docket_get_context", "refs": [managed.ref_id]},
+                    }
+                    actions = ["docket_get_work_context"]
             if kind == "task":
                 actions += ["docket_update_task"]
             if kind == "conflict":
@@ -424,6 +445,7 @@ class NativeContextService:
                 actions += ["docket_set_pay_terms" if row.kind == "pay"
                             else "docket_set_reporting_rules"]
             if kind == "work_session" and row.lifecycle == "recorded" and not row.superseded:
+                actions += ["docket_show_work_session"]
                 actions += ["docket_split_work_session", "docket_merge_work_sessions"]
             if kind == "work_session" and row.lifecycle in {"running", "paused"}:
                 actions += [

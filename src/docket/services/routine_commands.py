@@ -145,6 +145,9 @@ class RoutineCommandService(NativeCommandService):
         name = "cancel_event" if cancel else "update_event"
 
         def build(context: NativeContext) -> dict[str, Any]:
+            from docket.services.work_calendar import WorkCalendarService
+
+            WorkCalendarService(self.session).require_editable_event(command.event_ref)
             state = context_object(context, command.event_ref)
             scope = occurrence_scope(values, state)
             payload: dict[str, Any] = {}

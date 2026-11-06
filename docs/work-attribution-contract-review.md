@@ -11,19 +11,19 @@ below remain historical design evidence, not implementation or a second specific
 Current source implements the primary catalogue consolidation, thirteen P0
 definitions, two effective-policy commands, one evaluation read and four formal-report
 tools, three expense and three invoice tools, five settlement/context tools,
-three workload tools and two follow-up commands:
-107 advertised tools total. Policy/evaluation definitions occupy 6,982 bytes;
+three workload tools, two follow-up commands and one opt-in Calendar display:
+108 advertised tools total. Policy/evaluation definitions occupy 6,982 bytes;
 the four formal-report definitions add 5,172 bytes.
 Every new input is below 4 KiB and complete definition below 6 KiB. Known-time
 and mixed-time split/merge, effective-policy configuration and compensation
 evaluation, formal timesheets, expenses, native invoice and settlement workflows
 are checked. Workload context/settings and selective follow-up are implemented in
-source; optional Calendar visibility and activation remain unfinished.
+source, including revision-pinned Calendar visibility; activation remains unfinished.
 The implementation report records exact evidence and the separate release boundary.
 
 The current settlement additions use 627–2,336 bytes per input and 1,257–2,941
-bytes per complete definition. Actual discovery is 180,811 compact UTF-8 bytes;
-this is a growing catalogue, not a claim that 107 tools are small. The original
+bytes per complete definition. Actual discovery is 182,165 compact UTF-8 bytes;
+this is a growing catalogue, not a claim that 108 tools are small. The original
 84-tool catalogue was consolidated to 71 before adding new domain operations.
 Create/update and other semantically distinct operations stay separate where a
 merge would require conditional fields or a generic action/patch grammar.

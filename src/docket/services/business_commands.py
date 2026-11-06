@@ -180,6 +180,11 @@ class BusinessCommandService(NativeCommandService):
     ) -> dict[str, Any]:
         public = definition.input_model.model_validate(arguments)
         values = public.model_dump(mode="json", exclude_unset=True)
+        if definition.object_type == "work_calendar_projection":
+            from docket.services.work_calendar import WorkCalendarCommandService
+
+            return WorkCalendarCommandService(self.session, self.settings).hide(
+                arguments, request_ref, request_key)
         command_name = command_name or definition.tool_name
 
         def build(context: NativeContext) -> dict[str, Any]:

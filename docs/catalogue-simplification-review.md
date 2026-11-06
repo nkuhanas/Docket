@@ -13,8 +13,8 @@ Subsequent C0 implementation: the primary 84 → 71 reduction is implemented and
 checked, with cached-client aliases outside discovery. The four conditional
 removals remain deferred because their current routes are not behaviorally
 equivalent. Work, policy, documents, expenses, invoices, settlement and operational
-review add 36 purpose-built definitions, making the current source catalogue 107 tools. This
-adds domain capability without making a shared command's input more conditional;
+review/visibility add 37 purpose-built definitions, making the current source
+catalogue 108 tools. This adds domain capability without making a shared command's input more conditional;
 it is not a production/host inventory claim. See the implementation report.
 
 There are clear reductions that preserve the surviving input schemas. The largest

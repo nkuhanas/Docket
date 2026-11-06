@@ -17,6 +17,7 @@ from docket.schemas.followup import FOLLOWUP_TOOL_PURPOSES
 from docket.schemas.invoices import INVOICE_TOOL_PURPOSES
 from docket.schemas.settlement import SETTLEMENT_TOOL_PURPOSES, GetFinancialContext
 from docket.schemas.work import WORK_TOOL_PURPOSES, GetWorkContext, QueryWorkSessions
+from docket.schemas.work_calendar import WORK_CALENDAR_PURPOSES
 from docket.schemas.workload import WORKLOAD_TOOL_PURPOSES, GetWorkloadContext
 from docket.services.business_commands import public_validation_error
 from docket.services.compensation_evaluations import CompensationEvaluationService
@@ -35,6 +36,7 @@ from docket.services.financial_documents import (
 from docket.services.invoices import INVOICE_COMMAND_MODELS, InvoiceCommandService
 from docket.services.native_context import NativeContextService
 from docket.services.settlement_commands import SETTLEMENT_COMMAND_MODELS, SettlementCommandService
+from docket.services.work_calendar import WORK_CALENDAR_MODELS, WorkCalendarCommandService
 from docket.services.work_commands import WORK_COMMAND_MODELS, WorkCommandService
 from docket.services.work_lineage import LINEAGE_COMMAND_MODELS, WorkLineageCommandService
 from docket.services.work_reports import WorkReportService
@@ -60,6 +62,7 @@ WORK_COMMAND_TOOLS = (
     | frozenset(SETTLEMENT_COMMAND_MODELS)
     | frozenset(WORKLOAD_COMMAND_MODELS)
     | frozenset(FOLLOWUP_COMMAND_MODELS)
+    | frozenset(WORK_CALENDAR_MODELS)
 )
 
 
@@ -75,7 +78,9 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
                     )
                 with session_scope() as session:
                     service = (
-                        WorkloadFollowupCommandService
+                        WorkCalendarCommandService
+                        if name in WORK_CALENDAR_MODELS
+                        else WorkloadFollowupCommandService
                         if name in FOLLOWUP_COMMAND_MODELS
                         else WorkloadPreferenceCommandService
                         if name in WORKLOAD_COMMAND_MODELS
@@ -120,6 +125,7 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
                         **SETTLEMENT_COMMAND_MODELS,
                         **WORKLOAD_COMMAND_MODELS,
                         **FOLLOWUP_COMMAND_MODELS,
+                        **WORK_CALENDAR_MODELS,
                     }
                 )[name],
                 name,
@@ -135,12 +141,13 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
                 **SETTLEMENT_TOOL_PURPOSES,
                 **WORKLOAD_TOOL_PURPOSES,
                 **FOLLOWUP_TOOL_PURPOSES,
+                **WORK_CALENDAR_PURPOSES,
             }[name],
             annotations=ToolAnnotations(
                 read_only_hint=False,
                 destructive_hint=False,
                 idempotent_hint=True,
-                open_world_hint=False,
+                open_world_hint=name in WORK_CALENDAR_MODELS or name in FOLLOWUP_COMMAND_MODELS,
             ),
         )
 
@@ -155,6 +162,7 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
         *SETTLEMENT_COMMAND_MODELS,
         *WORKLOAD_COMMAND_MODELS,
         *FOLLOWUP_COMMAND_MODELS,
+        *WORK_CALENDAR_MODELS,
     ):
         register(name)
 

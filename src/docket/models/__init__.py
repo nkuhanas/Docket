@@ -152,6 +152,7 @@ from docket.models.work import (
     WorkSession,
     WorkSessionRevision,
 )
+from docket.models.work_calendar import WorkCalendarProjection, WorkCalendarRevision
 from docket.models.work_components import WorkTimeComponent
 from docket.models.work_quantities import (
     WorkLineageEdge,
@@ -286,6 +287,8 @@ __all__ = [
     "TriageRun",
     "TriageWindow",
     "TriageWindowMembership",
+    "WorkCalendarProjection",
+    "WorkCalendarRevision",
     "WorkClaim",
     "WorkClaimEvent",
     "WorkLineageEdge",

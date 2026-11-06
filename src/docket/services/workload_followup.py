@@ -26,6 +26,7 @@ from docket.models import (
     Payment,
     PluginNotification,
     ReminderPlan,
+    WorkCalendarProjection,
     WorkloadReconciliation,
     WorkSegment,
     WorkSession,
@@ -311,6 +312,31 @@ class WorkloadFollowupService:
                 related={reminder.ref_id: reminder.version},
                 detail={"trigger_at": instant(operational.trigger_at).isoformat()},
             )
+        stale_displays = list(
+            self.session.execute(
+                select(WorkCalendarProjection, WorkSession)
+                .join(WorkSession, WorkSession.ref_id == WorkCalendarProjection.work_ref)
+                .where(
+                    WorkCalendarProjection.operator_ref == require_principal("read").operator_ref,
+                    WorkCalendarProjection.enabled.is_(True),
+                    WorkCalendarProjection.needs_refresh.is_(True),
+                )
+                .order_by(WorkCalendarProjection.ref_id)
+                .limit(101)
+            )
+        )
+        if len(stale_displays) > 100:
+            flags.append("work_calendar_review_scan_incomplete")
+        for display, displayed_work in stale_displays[:100]:
+            add(
+                "reconciliation",
+                displayed_work.ref_id,
+                displayed_work.version,
+                "A Calendar work snapshot is pinned to an earlier report. Refresh or hide it; "
+                "the actual work correction is already retained.",
+                related={display.ref_id: display.version},
+                identity="calendar_visibility",
+            )
         ordered = sorted(found.values(), key=lambda x: (x.category, x.key))
         if len(ordered) > public.limit:
             flags.append("exception_limit_reached_narrow_period_or_review_again")
@@ -442,6 +468,7 @@ class WorkloadFollowupService:
                 event = (
                     "docket.finance.attention"
                     if exception.category in {"outstanding_money", "reconciliation"}
+                    and exception.subject_ref.startswith(("fdoc_", "exp_", "pay_"))
                     else "docket.work.attention"
                 )
                 latest = self.session.scalar(

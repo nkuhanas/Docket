@@ -287,6 +287,12 @@ class WorkAttributionService:
                 for segment in spec.time.segments
                 if segment.kind == "active" and segment.end_at is None
             )
+        from docket.services.work_calendar import WorkCalendarService
+
+        calendar = WorkCalendarService(self.session)
+        projection = calendar.for_work(head.ref_id)
+        if projection:
+            state["calendar_visibility"] = calendar.view(projection)
         return state
 
     def validate_links(self, spec: EngagementSpec | WorkSessionSpec) -> None:
@@ -607,6 +613,10 @@ class WorkAttributionService:
         session.flush()
         quantities.record(head, revision, changeset.ref_id, spans=quantity_spans)
         self.audit(head, revision.ref_id, changeset, change)
+        from docket.services.work_calendar import WorkCalendarService
+
+        WorkCalendarService(self.session).invalidate(
+            head, revision.ref_id, changeset, list(change.basis_refs))
         return [head.ref_id]
 
 

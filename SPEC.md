@@ -299,7 +299,12 @@ and server aggregation, not model-side summation of history.
 
 Planned activity, commitment firmness and actual work remain separate dimensions.
 Optional actual-time Calendar visibility is an explicitly requested correlated
-projection, never duplicate accounting time or a default provider effect. Workload
+projection, never duplicate accounting time or a default provider effect. Displays
+pin an exact work revision and label its net active hours separately from its span.
+Source corrections, retraction and split/merge invalidate enabled displays in the
+same transaction. Refresh/hide uses normal provider readiness; a blocked display
+operation never rolls back valid work recording or correction. Display Events are
+read-only through ordinary event tools. Workload
 views combine commitments, deadlines, travel, protected time, configured limits and
 budgets with interval unions and explicit assumptions/coverage. Free calendar space
 is potential availability, not guaranteed capacity. History/outcome summaries
@@ -404,10 +409,11 @@ complete this amendment. Real financial/provider effects are not smoke fixtures.
 | 006 | Typed performed work and independent engagement/policy state | Actual effort and reported attribution remain useful before finance, without overloading generic metadata or schedules. |
 | 007 | Stable quantity/claim lineage and immutable formal snapshots | Corrections cannot duplicate claims or silently rewrite issued/submitted history. |
 | 008 | Reference-dispatched shared retraction and equivalent alias consolidation | Reduce discovery without adding action unions, conditional input modes or lost domain effects. |
+| 009 | Opt-in revision-pinned work Calendar snapshots with durable source invalidation | Provider readiness affects display refresh, preserving usable actual-work records and one accounting source. |
 
 ## 10. Version history
 
 | Version | Change |
 | --- | --- |
-| 1.1 | Adopts the November 5 work-attribution/personal-operations delta including catalogue consolidation. Implementation and activation remain in progress, with separate phase evidence; external provider choices remain a concrete follow-on delta. |
+| 1.1 | Adopts the November 5 work-attribution/personal-operations delta including catalogue consolidation. Implementation and activation remain in progress, with separate phase evidence; external provider choices remain a concrete follow-on delta. Implementation clarifies revision-pinned visibility and nonblocking invalidation (ADR 009). |
 | 1.0 | First current SPEC synthesized from signed ontology and Operator amendments; adopts November 4 context/local-CI delta and retirement cleanup. No invented prior version. Implemented, deployed and verified through live native-tool use. |

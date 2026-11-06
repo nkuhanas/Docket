@@ -14,9 +14,10 @@ from docket.schemas.followup import FOLLOWUP_TOOL_PURPOSES
 from docket.schemas.invoices import INVOICE_TOOL_PURPOSES
 from docket.schemas.settlement import SETTLEMENT_TOOL_PURPOSES
 from docket.schemas.work import WORK_TOOL_PURPOSES
+from docket.schemas.work_calendar import WORK_CALENDAR_PURPOSES
 from docket.schemas.workload import WORKLOAD_TOOL_PURPOSES
 
-CONTRACT_VERSION = "docket-tools-2026-11-05-v66"
+CONTRACT_VERSION = "docket-tools-2026-11-05-v67"
 ContractProfile = Literal["interactive", "triage", "plugin"]
 
 
@@ -383,6 +384,7 @@ _native_business_entries: tuple[ToolContractEntry, ...] = tuple({
     *SETTLEMENT_TOOL_PURPOSES.items(),
     *WORKLOAD_TOOL_PURPOSES.items(),
     *FOLLOWUP_TOOL_PURPOSES.items(),
+    *WORK_CALENDAR_PURPOSES.items(),
     *((definition.tool_name,
        f"{definition.action.capitalize()} {definition.object_type} with ordinary business fields.")
       for definition in BUSINESS_DEFINITIONS

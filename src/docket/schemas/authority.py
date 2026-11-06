@@ -68,6 +68,7 @@ from docket.schemas.work import (
     WorkTimerSwitchSpec,
     WorkTimerTransitionSpec,
 )
+from docket.schemas.work_calendar import WorkCalendarRef, WorkCalendarSpec
 
 UtteranceRef = Annotated[str, Field(pattern=r"^utt_[0-9A-HJKMNP-TV-Z]{26}$")]
 RequestRef = Annotated[str, Field(pattern=r"^req_[0-9A-HJKMNP-TV-Z]{26}$")]
@@ -101,6 +102,7 @@ ImportEffect = Literal[
     "temporal_calendar_projection",
     "reminder_plan",
     "workload_reconciliation",
+    "work_calendar_projection",
     "attention_case_resolution",
 ]
 
@@ -605,6 +607,33 @@ class OperationalReminderCreate(MutationBase):
     object_ref: None = None
     create_spec: OperationalReminderSpec
     payload: None = None
+
+
+class WorkCalendarCreate(MutationBase):
+    mutation_type: Literal["work_calendar_create"] = "work_calendar_create"
+    action: Literal["create"]
+    object_type: Literal["work_calendar_projection"]
+    object_ref: None = None
+    create_spec: WorkCalendarSpec
+    payload: None = None
+
+
+class WorkCalendarModify(MutationBase):
+    mutation_type: Literal["work_calendar_modify"] = "work_calendar_modify"
+    action: Literal["update"]
+    object_type: Literal["work_calendar_projection"]
+    object_ref: WorkCalendarRef
+    create_spec: None = None
+    payload: WorkCalendarSpec
+
+
+class WorkCalendarRetract(MutationBase):
+    mutation_type: Literal["work_calendar_retract"] = "work_calendar_retract"
+    action: Literal["retract"]
+    object_type: Literal["work_calendar_projection"]
+    object_ref: WorkCalendarRef
+    create_spec: None = None
+    payload: EmptyMutationSpec = Field(default_factory=EmptyMutationSpec)
 
 
 class WorkloadReconcile(MutationBase):
@@ -1295,7 +1324,10 @@ type LaneMutation = (
 )
 type EventMutation = CanonicalEventCreate | CanonicalEventModify | CanonicalEventCancel
 type TrackedContextMutation = (
-    OperationalReminderCreate
+    WorkCalendarCreate
+    | WorkCalendarModify
+    | WorkCalendarRetract
+    | OperationalReminderCreate
     | WorkloadReconcile
     | FinancialPostingCreate
     | InvoicePrepare
@@ -1335,7 +1367,10 @@ type TrackedContextMutation = (
     | ReminderPlanRetract
 )
 type CanonicalMutation = (
-    OperationalReminderCreate
+    WorkCalendarCreate
+    | WorkCalendarModify
+    | WorkCalendarRetract
+    | OperationalReminderCreate
     | WorkloadReconcile
     | FinancialPostingCreate
     | InvoicePrepare

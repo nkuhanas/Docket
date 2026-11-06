@@ -153,6 +153,8 @@ def _business_definition(mutation: type[BaseModel]) -> BusinessDefinition:
 CANONICAL_MUTATIONS = tuple(_models(authority.CanonicalChangeInput))
 # Calendar and tasks get purpose-built everyday commands with derived support records.
 SPECIAL_TOOL_BY_MUTATION = {
+    "work_calendar_create": "docket_show_work_session",
+    "work_calendar_modify": "docket_show_work_session",
     "operational_reminder_create": "docket_schedule_followup",
     "workload_reconcile": "docket_reconcile_workload",
     "financial_post": "docket_record_payment",
@@ -197,6 +199,7 @@ RETRACTION_BY_PREFIX = {
         ("ent", "entity"), ("idn", "identity_handle"), ("aff", "affiliation"),
         ("rel", "relationship"), ("fact", "fact"), ("pref", "preference"),
         ("lane", "calendar_lane"), ("item", "item"), ("time", "temporal_binding"),
+        ("wcal", "work_calendar_projection"),
         ("task", "task"), ("tproj", "temporal_calendar_projection"), ("rem", "reminder_plan"),
     )
 }

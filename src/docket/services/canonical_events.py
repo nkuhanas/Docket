@@ -202,6 +202,9 @@ class CanonicalEventAuthorityService:
         changeset: ChangeSet,
         change: Any,
     ) -> list[str]:
+        from docket.services.work_calendar import WorkCalendarService
+
+        WorkCalendarService(self.session).guard_event(changeset, change)
         event: CanonicalEvent
         if change.action == "create":
             spec = MaterializedEventCreateSpec.model_validate(change.create_spec)

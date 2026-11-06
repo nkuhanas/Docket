@@ -1,10 +1,11 @@
 # Native capability disposition
 
 Generated from current canonical definitions and their native public routes.
-All 69 canonical mutation variants have an advertised route.
+All 72 canonical mutation variants have an advertised route.
 
 | Internal effect | Native business tool |
 | --- | --- |
+| `work_calendar_retract` | `docket_retract_record` |
 | `entity_create` | `docket_create_entity` |
 | `entity_modify` | `docket_update_entity` |
 | `entity_retract` | `docket_retract_record` |
@@ -47,6 +48,8 @@ All 69 canonical mutation variants have an advertised route.
 | `reminder_plan_create` | `docket_create_reminder_plan` |
 | `reminder_plan_modify` | `docket_update_reminder_plan` |
 | `reminder_plan_retract` | `docket_retract_record` |
+| `work_calendar_create` | `docket_show_work_session` |
+| `work_calendar_modify` | `docket_show_work_session` |
 | `operational_reminder_create` | `docket_schedule_followup` |
 | `workload_reconcile` | `docket_reconcile_workload` |
 | `financial_post` | `docket_record_payment` |

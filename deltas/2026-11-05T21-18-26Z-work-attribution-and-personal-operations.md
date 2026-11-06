@@ -391,6 +391,16 @@ Logging actual work creates no Calendar/provider intent by default. Optional
 actual-time visualization is an explicit projection with stable correlation,
 clear actual/planned labeling and cancellation/update recovery. It neither adds
 hours to accounting totals nor requires a duplicate editable time binding.
+The implementation boundary is a revision-pinned snapshot: the title identifies
+its source revision and net active hours; its span may include reported breaks.
+Corrections, retraction and split/merge durably mark enabled displays for refresh
+in the source transaction. Explicit refresh/hide uses the normal guarded provider
+path. A blocked refresh cannot block or roll back an otherwise valid work command.
+Superseded/retracted source snapshots can be hidden; displaying successor work is
+a separate choice. Duration-only, incomplete or composite work without one known
+bounded interval cannot invent one for display. Managed snapshot Events are read-only
+through ordinary event editing. Stable wcal_ correlation and retained revisions
+preserve earlier displays and delivery evidence. See SPEC ADR 009.
 
 Capacity views combine known commitments, deadlines, travel constraints, protected
 time, work-hour limits and optional project budgets. State the queried range,

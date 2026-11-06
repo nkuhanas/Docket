@@ -33,7 +33,7 @@ does not invent a payroll/banking integration or require its credentials.
 | Formal export | Deterministic CSV/JSON and usable invoice/timesheet rendition with references, policy/calculation/revision basis; no implicit sending | Timesheet and invoice JSON/CSV/Markdown with exact-revision continuation implemented; release acceptance pending |
 | P2 operations | Source-grounded workload/capacity/interval unions, outcomes/professional history, explicit assumptions/coverage and suggested omissions without invented performed work | Implemented in source; release acceptance pending |
 | P2 follow-up | Typed work/finance reminder/case/event subjects, bounded exception reconciliation, retained inbox, suppression/preferences and client scheduling | Implemented in source; release acceptance pending |
-| Optional visibility | Explicit correlated actual-time Calendar projection, no duplicate editable time/accounting or default provider effect | Pending |
+| Optional visibility | Explicit correlated actual-time Calendar projection, no duplicate editable time/accounting or default provider effect | Revision-pinned display/refresh/hide and nonblocking source invalidation implemented; native/PostgreSQL acceptance checked; release pending |
 | Authority/provenance | OAuth/current local grant, req_/call_, owner isolation/revocation, full approved automation, restricted triage, optional honest capture and sensitive-log protection | New commands enforce write admission and retain req_/call_ roots; read-only rejection checked; complete new-domain isolation/revocation/privacy acceptance pending |
 | Contracts/host | Actual schemas and budgets, first-valid-attempt MCP journeys, generated reference/skill, same registered plugin identity and actual advertised capabilities | Thirteen P0, three policy/evaluation, four formal-report, three expense, three invoice and five settlement/context definitions fit per-tool budgets; generated reference/skill aligned. Hosted refresh/release pending |
 | Storage/operations | Fresh/populated PostgreSQL migrations, constraints/locking/races, protected history and migration-specific recovery | Initial work schema round-trip/immutability/uniqueness verified on PostgreSQL; full release pending |
@@ -912,3 +912,51 @@ PostgreSQL completed fresh/model-parity/empty-round-trip checks, reminder owner 
 immutability constraints, concurrent review/deduplication, all earlier work/finance
 races and populated downgrade refusal. No real provider/work/financial records were
 created. Optional actual-time Calendar visibility and full release/host activation remain.
+
+
+### Optional actual-time visibility and compact entry guidance
+
+`docket_show_work_session` takes only the selected work and Calendar destination
+plus the standard command fields. Docket derives the Event, scoped routing and
+atomic provider intent. Stable wcal_ identity links the retained work revision to
+its display; immutable wcrv_ revisions retain subsequent refresh/hide/invalidation.
+Snapshot titles identify the source revision and net hours. UTC rendering preserves
+exact instants across DST/travel, while notes retain source timezone and explain
+breaks. Unbounded, incomplete or composite work never invents a display interval.
+
+Ordinary logging has no Calendar effect. Source corrections commit immediately and
+invalidate enabled display metadata in the same transaction. A stale snapshot is
+refreshable through the show command when standard provider evidence is ready;
+provider readiness gates only that display operation. Retraction or split/merge can
+leave a historical snapshot marked for hiding, never a duplicated accounting row.
+Shared `docket_retract_record` dispatches wcal_ hiding to exact Event cancellation.
+Managed Events cannot be independently edited, and canonical/cached actual displays
+are excluded from workload commitments. Work totals still count only work lineage.
+SPEC ADR 009, the adopted delta and forward index record this boundary together.
+
+Migration `20261105a3b4` adds typed projection heads and immutable revisions.
+PostgreSQL enforces source ownership, exact retained head versions, immutable
+identity/history and source invalidation at commit. A populated downgrade refuses;
+retain prior image/backup and use forward repair. No production reset/row editing.
+
+Native journeys cover unknown create/cancel outcomes, original-effect recovery,
+source correction while Google is unresolved, exact preview rejection, refresh of
+the same Event, readonly managed displays, split lineage, hiding and unchanged work
+accounting. Disposable PostgreSQL verifies one winning concurrent display with one
+Event/provider intent, rollback of the competing proposal, nonblocking source
+invalidation, immutable history and complete version/owner guards. All earlier
+work/finance/follow-up rehearsals and the retained downgrade refusal pass.
+
+Evidence: native 265 passed in 57.59 seconds; storage 123 in 22.31 seconds; provider
+77 in 4.68 seconds. Ruff and strict mypy passed for 249 checked source files.
+Discovery is 108 tools / 72 canonical variants, 182,165 compact UTF-8 bytes.
+The show input is 643 bytes and complete definition 1,350 bytes. Shared retraction
+adds only the closed wcal_ prefix: 617-byte input with the same five fields.
+Metadata v67 and generated contract/disposition align. Global MCP instructions
+remain 1,643 bytes. The entry skill shrinks from 17,195 to 4,441 bytes, routing
+work, finance, operations, triage and advanced commands to on-demand reference files.
+
+C0–P2 and optional visibility are now implemented and checked in source. Complete
+clean-source tested-image validation, publication/merge/deployment and the same
+hosted-plugin refresh remain required. No real Calendar/work/financial records were
+created for verification. P3 still requires its separate concrete provider choice.

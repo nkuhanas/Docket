@@ -136,6 +136,7 @@ class ChangeSetApplicationReceipt:
     expenses: list[dict[str, Any]] = field(default_factory=list)
     financial_records: list[dict[str, Any]] = field(default_factory=list)
     workload_reviews: list[dict[str, Any]] = field(default_factory=list)
+    calendar_views: list[dict[str, Any]] = field(default_factory=list)
 
     def add_refs(self, refs: list[str]) -> None:
         for ref_id in refs:
@@ -229,7 +230,9 @@ class ChangeSetApplicationReceipt:
                     "financial_records_truncated": len(self.financial_records) > min(limit, 3)}
                    if self.financial_records else {}),
                 **({"workload_reviews": self.workload_reviews[:min(limit, 3)]}
-                   if self.workload_reviews else {})}
+                   if self.workload_reviews else {}),
+                **({"calendar_views": self.calendar_views[:min(limit, 3)]}
+                   if self.calendar_views else {})}
 
 
 _GROUP_TYPES: dict[str, frozenset[str]] = {
@@ -260,6 +263,7 @@ _GROUP_TYPES: dict[str, frozenset[str]] = {
             "temporal_calendar_projection",
             "reminder_plan",
             "workload_reconciliation",
+            "work_calendar_projection",
         }
     ),
     "resolution_changes": frozenset({"attention_case_resolution"}),
@@ -268,6 +272,7 @@ _GROUP_TYPES: dict[str, frozenset[str]] = {
 _OBJECT_PREFIXES: dict[str, str] = {
     "financial_transaction": "ftxn",
     "workload_reconciliation": "wrec",
+    "work_calendar_projection": "wcal",
     "expense": "exp",
     "financial_document": "fdoc",
     "engagement": "eng",
@@ -652,6 +657,11 @@ class ChangeSetService:
             refs = self.handlers[change.object_type](self.session, changeset, resolved_change)
             refs_by_change_id[change.change_id] = refs
             receipt.add_refs(refs)
+            if change.object_type == "work_calendar_projection":
+                from docket.services.work_calendar import WorkCalendarService
+
+                calendar = WorkCalendarService(self.session)
+                receipt.calendar_views.append(calendar.view(calendar.head(refs[0])))
             if change.object_type == "workload_reconciliation":
                 from docket.models import WorkloadReconciliation
 
@@ -762,6 +772,12 @@ class ChangeSetService:
                             for segment in snapshot.time.segments
                             if segment.kind == "active" and segment.end_at is None
                         )
+                    from docket.services.work_calendar import WorkCalendarService
+
+                    calendar = WorkCalendarService(self.session)
+                    projection = calendar.for_work(head.ref_id)
+                    if projection:
+                        item["calendar_visibility"] = calendar.view(projection)
                     receipt.work_records.append(item)
             if isinstance(change, MaterializedEventModify) and change.no_op:
                 continue

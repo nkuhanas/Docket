@@ -76,6 +76,8 @@ from docket.models import (
     TemporalCalendarProjection,
     ToolInvocation,
     TriageRun,
+    WorkCalendarProjection,
+    WorkCalendarRevision,
     WorkClaim,
     WorkClaimEvent,
     WorkloadReconciliation,
@@ -97,6 +99,8 @@ AUDIT_OUTPUT_BYTES = 64 * 1024
 MAX_TEXT_CHUNK_BYTES = 32 * 1024
 
 _PREFIX_MODELS: dict[str, tuple[str, type[Any], str]] = {
+    "wcal": ("work_calendar_projection", WorkCalendarProjection, "created_at"),
+    "wcrv": ("work_calendar_revision", WorkCalendarRevision, "created_at"),
     "wrec": ("workload_reconciliation", WorkloadReconciliation, "created_at"),
     "pay": ("payment", Payment, "created_at"),
     "ftxn": ("financial_transaction", FinancialTransaction, "created_at"),
@@ -275,6 +279,19 @@ class HistoryService:
                 "created_by_changeset_ref": item.created_by_changeset_ref,
                 "created_at": _iso(item.created_at),
             }
+        if isinstance(item, WorkCalendarProjection | WorkCalendarRevision):
+            from docket.services.work_calendar import STATE_FIELDS, WorkCalendarService
+
+            calendar_service = WorkCalendarService(self.session)
+            calendar_head = calendar_service.head(
+                item.projection_ref if isinstance(item, WorkCalendarRevision) else item.ref_id)
+            if isinstance(item, WorkCalendarProjection):
+                return {**base, "state": calendar_service.view(calendar_head),
+                        "created_by_changeset_ref": item.created_by_changeset_ref}
+            return {**base, "projection_ref": calendar_head.ref_id, "version": item.version,
+                    **{key: getattr(item, key) for key in STATE_FIELDS}, "reason": item.reason,
+                    "basis_refs": item.basis_refs,
+                    "created_by_changeset_ref": item.created_by_changeset_ref}
         if isinstance(item, WorkloadReconciliation):
             from docket.services.work_attribution import read_operator
 
@@ -1298,10 +1315,19 @@ class HistoryService:
                 continue
             time_column = getattr(model, time_field)
             statement: Select[Any] = select(model)
-            if model in {Payment, FinancialEntry, FinancialTransaction, WorkloadReconciliation}:
+            if model in {
+                Payment, FinancialEntry, FinancialTransaction,
+                WorkloadReconciliation, WorkCalendarProjection
+            }:
                 from docket.services.work_attribution import read_operator
 
                 statement = statement.where(model.operator_ref == read_operator())
+            if model is WorkCalendarRevision:
+                from docket.services.work_attribution import read_operator
+
+                statement = statement.join(WorkCalendarProjection,
+                    WorkCalendarProjection.ref_id == WorkCalendarRevision.projection_ref).where(
+                        WorkCalendarProjection.operator_ref == read_operator())
             if model in {Expense, ExpenseRevision, ExpenseObservation}:
                 from docket.services.work_attribution import read_operator
 
