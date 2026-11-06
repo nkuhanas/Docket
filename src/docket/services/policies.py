@@ -4,7 +4,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session
 
 from docket.config import get_settings
@@ -100,9 +100,7 @@ class ContextPolicyService:
         elif spec.target_type == "source":
             target = self.session.scalar(
                 select(GmailSource).where(GmailSource.ref_id == spec.target_ref)
-            ) or self.session.scalar(
-                select(Source).where(Source.ref_id == spec.target_ref)
-            )
+            ) or self.session.scalar(select(Source).where(Source.ref_id == spec.target_ref))
         if spec.target_type in {"entity", "identity", "source"} and target is None:
             raise DocketError(
                 code="preference_target_not_found",
@@ -164,6 +162,11 @@ class ContextPolicyService:
         if change.action == "create":
             spec = PreferenceCreateSpec.model_validate(change.create_spec)
             self._validate_preference_target(spec)
+            if self.session.get_bind().dialect.name == "postgresql":
+                self.session.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtextextended(:key,0))"),
+                    {"key": "preference:" + spec.preference_key},
+                )
             existing = self.session.scalar(
                 select(Preference).where(Preference.preference_key == spec.preference_key)
             )
@@ -198,11 +201,19 @@ class ContextPolicyService:
                     message="Preference mutation requires an exact public ref.",
                 )
             stored_preference = self.session.scalar(
-                select(Preference).where(Preference.ref_id == change.object_ref)
+                select(Preference)
+                .where(Preference.ref_id == change.object_ref)
+                .with_for_update(key_share=True)
+                .execution_options(populate_existing=True)
             )
             if stored_preference is None:
                 raise DocketError(code="preference_not_found", message="Preference was not found.")
             preference = stored_preference
+            if changeset.expected_versions.get(preference.ref_id) != preference.version:
+                raise DocketError(
+                    code="preference_version_conflict",
+                    message="Read current preference context and retry.",
+                )
             if change.action == "retract":
                 preference.status = "retracted"
             elif change.action in {"update", "supersede"}:

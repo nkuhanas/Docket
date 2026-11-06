@@ -16,6 +16,7 @@ from docket.schemas.financial_documents import FINANCIAL_TOOL_PURPOSES, ReadDocu
 from docket.schemas.invoices import INVOICE_TOOL_PURPOSES
 from docket.schemas.settlement import SETTLEMENT_TOOL_PURPOSES, GetFinancialContext
 from docket.schemas.work import WORK_TOOL_PURPOSES, GetWorkContext, QueryWorkSessions
+from docket.schemas.workload import WORKLOAD_TOOL_PURPOSES, GetWorkloadContext
 from docket.services.business_commands import public_validation_error
 from docket.services.compensation_evaluations import CompensationEvaluationService
 from docket.services.compensation_policies import (
@@ -37,6 +38,11 @@ from docket.services.work_commands import WORK_COMMAND_MODELS, WorkCommandServic
 from docket.services.work_lineage import LINEAGE_COMMAND_MODELS, WorkLineageCommandService
 from docket.services.work_reports import WorkReportService
 from docket.services.work_timers import TIMER_COMMAND_MODELS, WorkTimerCommandService
+from docket.services.workload_context import WorkloadContextService
+from docket.services.workload_preferences import (
+    WORKLOAD_COMMAND_MODELS,
+    WorkloadPreferenceCommandService,
+)
 
 WORK_COMMAND_TOOLS = (
     frozenset(WORK_COMMAND_MODELS)
@@ -47,6 +53,7 @@ WORK_COMMAND_TOOLS = (
     | frozenset(EXPENSE_COMMAND_MODELS)
     | frozenset(INVOICE_COMMAND_MODELS)
     | frozenset(SETTLEMENT_COMMAND_MODELS)
+    | frozenset(WORKLOAD_COMMAND_MODELS)
 )
 
 
@@ -62,7 +69,9 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
                     )
                 with session_scope() as session:
                     service = (
-                        SettlementCommandService
+                        WorkloadPreferenceCommandService
+                        if name in WORKLOAD_COMMAND_MODELS
+                        else SettlementCommandService
                         if name in SETTLEMENT_COMMAND_MODELS
                         else WorkTimerCommandService
                         if name in TIMER_COMMAND_MODELS
@@ -101,6 +110,7 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
                         **EXPENSE_COMMAND_MODELS,
                         **INVOICE_COMMAND_MODELS,
                         **SETTLEMENT_COMMAND_MODELS,
+                        **WORKLOAD_COMMAND_MODELS,
                     }
                 )[name],
                 name,
@@ -114,6 +124,7 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
                 **EXPENSE_TOOL_PURPOSES,
                 **INVOICE_TOOL_PURPOSES,
                 **SETTLEMENT_TOOL_PURPOSES,
+                **WORKLOAD_TOOL_PURPOSES,
             }[name],
             annotations=ToolAnnotations(
                 read_only_hint=False,
@@ -132,6 +143,7 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
         *EXPENSE_COMMAND_MODELS,
         *INVOICE_COMMAND_MODELS,
         *SETTLEMENT_COMMAND_MODELS,
+        *WORKLOAD_COMMAND_MODELS,
     ):
         register(name)
 
@@ -146,6 +158,27 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
             return public_validation_error(exc).as_dict()
         except DocketError as exc:
             return exc.as_dict()
+
+    def workload(arguments: dict[str, Any]) -> dict[str, Any]:
+        arguments.pop("request_ref", None)
+        arguments.pop("request_key", None)
+        try:
+            public = GetWorkloadContext.model_validate(arguments)
+            with session_scope() as session:
+                return WorkloadContextService(session, settings).query(public)
+        except ValidationError as exc:
+            return public_validation_error(exc).as_dict()
+        except DocketError as exc:
+            return exc.as_dict()
+
+    server.add_tool(
+        model_function(GetWorkloadContext, "docket_get_workload_context", workload),
+        name="docket_get_workload_context",
+        description=WORKLOAD_TOOL_PURPOSES["docket_get_workload_context"],
+        annotations=ToolAnnotations(
+            read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False
+        ),
+    )
 
     server.add_tool(
         model_function(GetWorkContext, "docket_get_work_context", context),

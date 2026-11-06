@@ -12,8 +12,8 @@ retain their original reviewed baseline; they are not activation evidence.
 Subsequent C0 implementation: the primary 84 → 71 reduction is implemented and
 checked, with cached-client aliases outside discovery. The four conditional
 removals remain deferred because their current routes are not behaviorally
-equivalent. Work, policy, documents, expenses, invoices and settlement add 31
-purpose-built definitions, making the current source catalogue 102 tools. This
+equivalent. Work, policy, documents, expenses, invoices and settlement and workload add 34
+purpose-built definitions, making the current source catalogue 105 tools. This
 adds domain capability without making a shared command's input more conditional;
 it is not a production/host inventory claim. See the implementation report.
 

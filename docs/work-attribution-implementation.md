@@ -31,7 +31,7 @@ does not invent a payroll/banking integration or require its credentials.
 | P1b expenses | Independent exact money/currency/date/attribution/eligibility/ownership, optional protected receipt, submission/approval and distinct reimbursement claim | Cost/approval basis, bounded reports, shared invoice allocation and partial reimbursement bookkeeping implemented in source; activation pending |
 | P1c settlement | Partial/unmatched/overpaid payments, allocations/credits/reversals, external-ID dedup, gross/net differences and outstanding/due balances without false receipt | Five flat commands/context implemented; native and PostgreSQL journeys, matching conservation, history and owner isolation checked; activation pending |
 | Formal export | Deterministic CSV/JSON and usable invoice/timesheet rendition with references, policy/calculation/revision basis; no implicit sending | Timesheet and invoice JSON/CSV/Markdown with exact-revision continuation implemented; release acceptance pending |
-| P2 operations | Source-grounded workload/capacity/interval unions, outcomes/professional history, explicit assumptions/coverage and suggested omissions without invented performed work | Pending |
+| P2 operations | Source-grounded workload/capacity/interval unions, outcomes/professional history, explicit assumptions/coverage and suggested omissions without invented performed work | Implemented in source; release acceptance pending |
 | P2 follow-up | Typed work/finance reminder/case/event subjects, bounded exception reconciliation, retained inbox, suppression/preferences and client scheduling | Pending |
 | Optional visibility | Explicit correlated actual-time Calendar projection, no duplicate editable time/accounting or default provider effect | Pending |
 | Authority/provenance | OAuth/current local grant, req_/call_, owner isolation/revocation, full approved automation, restricted triage, optional honest capture and sensitive-log protection | New commands enforce write admission and retain req_/call_ roots; read-only rejection checked; complete new-domain isolation/revocation/privacy acceptance pending |
@@ -833,3 +833,34 @@ These are local source checks, not a tested-image or deployment receipt. The
 same deployed plugin remains on the prior release. P2 workload/follow-up,
 optional actual-time visibility, complete release validation and host refresh
 remain required. P3 still depends on a separately selected concrete provider.
+
+
+### P2: source-grounded workload and reported planning preferences
+
+Three flat tools read workload context and set availability/protected windows or
+optional project hour budgets. Settings use existing versioned canonical Preferences,
+request attribution and exact ChangeSets. They create no calendar/provider effects.
+Missing schedules stay unknown; no standard workday is invented. Capacity uses UTC
+interval unions, explicit travel buffers and local clock policies, preserving DST
+and date-line gaps. Past work totals remain separate from future capacity.
+
+The packet combines canonical commitments, covered cached provider observations,
+due tasks, current reported settings, configured reporting limits, full-set actual
+work totals and outcomes, shared-source outstanding money and exact project-week
+budgets. Recurring occurrences retain their identities. Linked work can resolve
+one candidate occurrence without hiding other occurrences. Calendar candidates
+never create attendance, work quantities or compensation. Overlapping meetings
+consume capacity once; unplaced duration and all-day constraints remain explicit.
+Read capture is repeatable-read on PostgreSQL and normal packets fit 8 KiB.
+
+The new definitions measure 556–2,113 input bytes and 1,151–2,727 complete-definition
+bytes; discovery is 105 tools / 177,885 compact UTF-8 bytes. Metadata v65 and the
+generated reference agree. Human-readable hours accompany exact microseconds.
+Native journeys check sparse/stale settings, provider deduplication, interval unions,
+unknown capacity, project totals/outcomes, candidate occurrence review and absence
+of unintended work/provider writes. Disposable PostgreSQL checks singleton create
+and version races, exact native settings and retained project reports. The storage
+and release groups pass. These are source checks, not deployment acceptance.
+
+Typed operational reminders/cases, bounded exception publication, optional actual
+Calendar visibility, full release validation and hosted refresh remain required.

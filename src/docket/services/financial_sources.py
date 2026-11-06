@@ -150,6 +150,7 @@ class FinancialSourceService:
                 "engagement_ref": head.engagement_ref,
                 "date_from": revision.date_from.isoformat(),
                 "date_to": revision.date_to.isoformat(),
+                "timezone": revision.timezone,
                 "due_on": revision.snapshot_json.get("header", {}).get("due_on"),
                 "label": revision.snapshot_json.get("header", {}).get("client_label")
                 or revision.snapshot_json.get("engagement_label", head.engagement_ref),

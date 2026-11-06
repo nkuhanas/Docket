@@ -14,6 +14,7 @@ from docket.agent_auth import require_principal
 from docket.config import Settings
 from docket.domain.errors import DocketError
 from docket.domain.public_refs import new_public_ref
+from docket.domain.work_time import work_zone
 from docket.models import FinancialReportSnapshot, PaymentEvent
 from docket.models.base import utc_now
 from docket.schemas.settlement import GetFinancialContext
@@ -160,9 +161,11 @@ class FinancialContextService:
             bucket["outstanding"] += state.match.outstanding[part.ref]
         rows: list[dict[str, Any]] = []
         versions: dict[str, int] = {}
-        today = as_of.date()
         for ref in sorted(selected_targets):
             target = dict(state.sources.targets[ref])
+            today = as_of.astimezone(
+                work_zone(target.get("timezone") or self.settings.timezone)
+            ).date()
             if (
                 target["kind"] in {"invoice", "timesheet"}
                 and ref in query.refs

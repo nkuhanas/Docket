@@ -2106,6 +2106,9 @@ async def check():
     from settlement_postgres_check import check_settlement
 
     settlement_evidence = await check_settlement(settings, factory, principal)
+    from workload_postgres_check import check_workload
+
+    workload_evidence = await check_workload(settings, factory, principal)
     changeset_ref = created["changeset_ref"]
     with factory.begin() as session:
         request_ref = session.scalar(
@@ -2295,6 +2298,7 @@ async def check():
         json.dumps(
             {
                 **settlement_evidence,
+                **workload_evidence,
                 "work_schema_roundtrip": "passed",
                 "canonical_work_retry": "passed",
                 "canonical_correction_race": "passed",

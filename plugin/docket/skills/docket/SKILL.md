@@ -145,6 +145,17 @@ Missing optional evidence/date remains a gap. Financial JSON/CSV uses the same
 cursor/chunk workflow; export_cursor restarts the captured basis. These commands
 create no bank transfer, payroll submission or provider delivery.
 
+Use `docket_get_workload_context` for commitments, deadlines, actual-work totals,
+reported outcomes, outstanding money and potential capacity. date_to is exclusive.
+Coverage and assumptions qualify the result; calendar space is not guaranteed
+usable time and planned activity is not performed work. Activity review candidates
+are suggestions only. Log work only from an authorized report, with actual known
+precision. `docket_set_workload_preferences` records local availability/protected
+clock windows, weekdays (Monday=0), travel buffers and exception preferences.
+`docket_set_project_budget` records an optional weekly project limit; it changes
+neither pay nor commitments. Omitted settings retain values, null clears optional
+values. Context uses exact retained work-report totals, not sums of display pages.
+
 Use named business tools with ordinary fields. Creating a meeting takes title,
 ISO start/end, timezone and a calendar_ref from context. Docket derives its support
 records, authenticated request, versions and atomic canonical/provider intent.
