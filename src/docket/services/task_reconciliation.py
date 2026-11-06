@@ -45,6 +45,10 @@ def transport_fields_match(
 
 def canonical_values(task: Task) -> dict[str, Any]:
     completed = task.completed_at
+    if completed is not None:
+        # The real Tasks API truncates sub-millisecond completion precision.
+        # Compare/project at that precision without altering canonical evidence.
+        completed = completed.replace(microsecond=(completed.microsecond // 1000) * 1000)
     return {
         "title": task.title,
         "notes": task.description or "",

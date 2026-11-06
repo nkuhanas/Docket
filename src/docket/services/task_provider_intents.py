@@ -444,7 +444,13 @@ class TaskProviderIntentService:
                         fields.add("title")
                 after = getattr(values, "after_task_ref", None)
                 if change.action == "update":
-                    self.operator_update(binding, task, fields, changeset)
+                    # A derived time header does not authorize resolving an
+                    # independently conflicting user-authored title.
+                    explicit_fields = {
+                        _FIELD_NAMES[key] for key in values.model_fields_set
+                        if key in _FIELD_NAMES and key not in {"remind_at", "reminder_timezone"}
+                    }
+                    self.operator_update(binding, task, explicit_fields, changeset)
             desired = canonical_values(task)
             blocked = self._open_fields(binding)
             if task.canonical_status == "retracted":

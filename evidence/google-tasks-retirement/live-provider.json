@@ -63,5 +63,31 @@
   "visible_ampm_header_and_date_roundtrip": true,
   "native_clock_probe_removed": true,
   "selected_clock_strategy": "explicit AM/PM title header; exact alerts use Calendar companions",
-  "updated_at": "2026-11-06T23:26:22.114738+00:00"
+  "updated_at": "2026-11-06T23:26:22.114738+00:00",
+  "hierarchy_probe": {
+    "grandchild_insert_supported": true,
+    "parent_with_descendants_native_move_supported": true,
+    "parent_identity_stable": true,
+    "native_move_carries_child": true,
+    "native_move_carries_grandchild": true,
+    "move_old_get_missing": true,
+    "move_old_get_deleted": false,
+    "move_source_inventory_has_parent_tombstone": false,
+    "move_source_inventory_has_child_tombstone": false,
+    "delete_get_missing": false,
+    "delete_get_deleted": true,
+    "delete_inventory_has_tombstone": true,
+    "only_created_test_ids_cleaned": true
+  },
+  "parent_lifecycle_probe": {
+    "adding_child_changes_parent_etag": false,
+    "old_parent_etag_rejects_delete_after_child_added": false,
+    "delete_parent_cascades_to_child": true,
+    "explicit_completion_microseconds_preserved": false,
+    "explicit_completion_milliseconds_returned": true,
+    "complete_parent_cascades_to_child": true,
+    "patch_deleted_supported": true,
+    "patch_deleted_cascades_to_child": true,
+    "created_test_records_cleaned": true
+  }
 }

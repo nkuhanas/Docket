@@ -15,11 +15,13 @@ from docket.models import (
     Operation,
     ProviderAccount,
     Task,
+    TaskConflictResolution,
     TaskListPolicyRevision,
     TaskReminderGeneration,
     TemporalCalendarProjection,
 )
 from docket.models.base import utc_now
+from docket.services.task_provider_intents import TaskProviderIntentService
 from docket.services.task_sync import TaskSyncService
 
 linked_plugin = test_tasks_operations.linked_plugin
@@ -196,3 +198,42 @@ async def test_completion_cannot_resurrect_an_older_reminder_creation(
         with session_factory() as session:
             assert not any(session.scalars(select(TemporalCalendarProjection.enabled)))
             assert set(session.scalars(select(Operation.status))) <= {"succeeded", "superseded"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+async def test_reminder_edit_does_not_resolve_an_unrelated_title_conflict(
+    session_factory, tasks_client, monkeypatch,
+):
+    async with tasks_client() as (call, runner, provider, _packet):
+        monkeypatch.setattr(get_settings(), "tasks_enabled", True)
+        monkeypatch.setattr(
+            get_settings(), "plugin_oauth_issuer", runner.settings.plugin_oauth_issuer,
+        )
+        context_id = await configure(call, session_factory)
+        created = await call("docket_create_task", {
+            "context_id": context_id, "operation_id": "clock-title-conflict",
+            "title": "Original", "scheduled_date": "2026-11-13",
+            "remind_at": "2026-11-13T17:00:00-08:00",
+        })
+        assert created.get("disposition") == "committed", created
+        drain(runner)
+        with session_factory() as session:
+            ref = session.scalar(select(Task.ref_id))
+        await edit(call, ref, "local-title-before-google", title="Local title")
+        remote = provider.list_tasks("synthetic-list").tasks[0]
+        changed = provider.patch_task("synthetic-list", remote.task_id,
+                                      {"title": "5:00 PM — Google title"}, etag=remote.etag)
+        with session_factory.begin() as session:
+            listing = session.scalar(select(GoogleTaskList))
+            sync = TaskSyncService(session, runner.settings)
+            sync.reconcile(sync.observe(
+                listing, changed, generation=uuid.uuid4(), read_started_at=utc_now(),
+            ))
+        await edit(call, ref, "change-clock-with-title-conflict",
+                   remind_at="2026-11-13T18:00:00-08:00")
+        with session_factory() as session:
+            binding = TaskProviderIntentService(session).bindings.active(ref)
+            assert "title" in TaskProviderIntentService(session)._open_fields(binding)
+            assert session.scalar(select(TaskConflictResolution)) is None
+            assert session.scalar(select(Task.title)) == "Local title"

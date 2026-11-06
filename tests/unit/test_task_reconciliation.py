@@ -10,6 +10,7 @@ from docket.services.task_reconciliation import (
     merge_fields,
     observed_values,
     task_patch,
+    transport_fields_match,
 )
 from docket.services.task_title_labels import TITLE_PREFIX_KEY, task_time_header
 
@@ -99,3 +100,19 @@ def test_time_header_preserves_long_titles_and_labels_an_independent_reminder_da
     task.title = "A" * 1024
     assert task_time_header(task) == ("", True)
     assert len(task.title) == 1024
+
+
+def test_google_completion_precision_does_not_rewrite_reported_canonical_instant():
+    reported = datetime.fromisoformat("2026-11-06T22:00:00.123456+00:00")
+    task = Task(title="Reported completion", task_state="completed", completed_at=reported)
+    values = canonical_values(task)
+    assert values["completed_at"] == "2026-11-06T22:00:00.123000+00:00"
+    assert task.completed_at == reported
+    assert transport_fields_match(
+        {"completed": "2026-11-06T22:00:00.123Z"},
+        {"completed": values["completed_at"]}, "binding123",
+    )
+    google, _ = observed_values(Mock(), GoogleTaskObservation(fields={
+        "title": task.title, "status": "completed", "completed": "2026-11-06T22:00:00.123Z",
+    }), None)
+    assert google["completed_at"] == values["completed_at"]

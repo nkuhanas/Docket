@@ -271,7 +271,7 @@ establishes ownership. This is a domain distinction, not a legacy dispatch path.
 | Deadline | Existing date/datetime `due_by` | Never overwrite it with a Google scheduled day; no invented midnight or lost deadline clock |
 | Timed reminder | Typed Task-owned reminder plan with an exact instant/zone, exposed as `remind_at` | Derive one linked Calendar projection and its popup; no Tasks-native time/Deadline write is claimed |
 | Open status | not_started / in_progress / blocked | All project to `needsAction`; an unchanged Google open status does not reset Docket's richer state |
-| Completion | completed plus exact completion basis | Project/import completion; repeated observations do not rewrite completion time |
+| Completion | completed plus exact completion basis | Project/import completion; compare at Google's observed millisecond precision while preserving full canonical reported evidence. Repeated observations do not rewrite completion time |
 | Reopening | Nonterminal canonical state | A genuine completed → open transition reopens; default to not_started, while retaining history |
 | Priority, project, Item, work links | Existing canonical relationships | Stay local; Google absence is not a request to clear them |
 | Parent/list/order | Typed parent plus provider binding and observed order | Use supported move semantics; validate same-list parent/sibling, descendants and cycles |
@@ -371,12 +371,18 @@ the old create. Source identities and canonical references remain traceable.
 
 Assigned tasks are observation-only initially because removal can affect other
 Google surfaces. Do not send assigned deletes through a generic retraction.
-For parents, preserve discovered children and verify Google's actual completion,
-move and deletion effects before enabling them. Initially permit leaf deletion;
-return an actionable subtree constraint for a parent with remaining children.
-An explicitly authorized subtree removal can use current named child retractions
-and exact batching with provider prerequisites, without a generic cascade option
-on every retraction tool. Incomplete hierarchy coverage never authorizes deletion.
+The Operator selected Google's normal subtree semantics on November 6 after live
+validation showed that completing/deleting a parent cascades and adding a child
+does not change the parent's ETag. A parent completion/deletion request therefore
+authorizes that provider task's current subtree, including children added since
+the last Docket read. Reflect known canonical descendants through admitted,
+versioned services and retain actual provider observations for later-discovered
+children. Native parent moves likewise carry their subtree without copy/delete.
+Describe this standing behavior in task context, previews and receipts; add no
+recursive input flag or repeated approval prompt. It grants no authority over
+unrelated tasks, other lists, WorkSessions or financial records. Preserve stable
+canonical references/history and honest outcome reconciliation when concurrent
+external moves change subtree membership.
 
 Retain first-party recurring/scheduled task information that the API cannot expose
 without inferring a recurrence rule, materializing future instances or claiming
@@ -773,7 +779,7 @@ schema wording/count tests. Use fake providers and synthetic accounts by default
 | Provider activation/races | Missing/failed G0 evidence prevents the corresponding HTTP write; real method guards reject stale patch/delete/move or a valid constrained strategy is proven. Concurrent local edits/imports cannot overwrite the pinned basis; unverified move/delete and scheduled-time preservation cannot inherit a patch checkbox |
 | Uncertain creation | Crash/timeout after insert never causes a blind second insert; exact/ambiguous/no-match cases preserve the original intent and honest unresolved status |
 | Correlation versus notes | Recognized transport markers never enter canonical user notes/exports/baselines; marker-only changes do not conflict or echo. Edits preserve one intended marker, lookalike user text survives, absent-marker outcomes remain uncertain where identity cannot be recovered, and combined provider notes respect the size limit |
-| Identity and hierarchy | Cross-list moves preserve canonical refs and WorkSession links; verified provider identity changes update binding generations; duplicates, cycles and unobserved child cascades are prevented |
+| Identity and hierarchy | Cross-list moves preserve canonical refs and WorkSession links; verified provider identity changes update binding generations. Prevent duplicates/cycles and effects outside the authorized subtree; parent completion/deletion follows the Operator-selected current-subtree semantics, including newly observed children |
 | G1 title path | Import a 1,024-character Google title without an existing Item; the required Item and Task persist the full text, and context/export plus subsequent sync preserve it. Cover create/patch inputs and canonical mutation validation, not only Task storage |
 | Derived Item title ownership | A Google Task rename updates its exclusively owned derived Item atomically; an independently titled/shared/relinked Item stays untouched. Concurrent Item-title edits cannot be overwritten, and unmarked historical pairs are not auto-adopted from matching names |
 | Other field limits | Oversized notes and unsupported assignments remain useful and visibly limited rather than truncated or falsely delivered |

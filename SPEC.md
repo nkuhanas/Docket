@@ -391,6 +391,15 @@ fit, expose that display limitation without truncating or blocking the Task/aler
 Google's opaque native clock is not the supported exact-alert route; a controlled
 API edit lost its UI time. Calendar companions deliver requested exact alerts.
 
+Task-parent completion/deletion uses Google's normal current-subtree semantics,
+including subtasks added since the last read. Parent moves carry their hierarchy.
+Keep inputs flat and scope effects to that subtree; preserve canonical references,
+versions and observed provider outcomes. No recurring approval prompt or generic
+recursive flag is required. List disappearance never authorizes bulk retraction.
+Compare projected completion timestamps at Google's observed millisecond precision;
+retain the operator's full reported instant canonically. Derived time-label changes
+cannot resolve an independently conflicting task title.
+
 ## 6. Providers, storage and recovery
 
 Google OAuth credentials are protected local material. Calendar/Gmail ingestion
@@ -518,11 +527,12 @@ disabled required operations do not complete two-way synchronization.
 | 011 | Scheduled day, deadline and reminder instant remain distinct; visible task times use AM/PM headers and exact alerts use owned Calendar companions | Public Tasks APIs expose a day and edits can clear the opaque native clock. Derived headers preserve clean canonical titles. Live Google rejects backwards wall-clock ranges despite exact offsets, so those markers use UTC transport with canonical timezone retained. |
 | 012 | Typed ownership of automatically derived Item titles | Preserve long imported titles and useful synchronized names without overwriting independently edited/shared Items. |
 | 013 | Retire NocoDB and fifteen hidden native aliases completely | Preserve data/provenance while removing running legacy/compatibility debt rather than adding fallback paths. |
+| 014 | Use Google-style current-subtree behavior for task-parent completion/deletion and native hierarchy moves | Operator-selected scope matches real API cascades without adding recursive inputs or recurring prompts. Adding a child does not change the parent's ETag; retain actual outcomes and protect unrelated records. |
 
 ## 10. Version history
 
 | Version | Change |
 | --- | --- |
-| 1.2 | Adopts the November 6 Google Tasks/NocoDB delta and revised reviews under the Operator implementation goal. Live provider evidence clarifies UTC marker transport; the Operator selects AM/PM Task headers after native-clock loss (ADR 011). Implementation/acceptance is in progress; deployed 1.1 remains the runtime baseline until validated activation. |
+| 1.2 | Adopts the November 6 Google Tasks/NocoDB delta and revised reviews under the Operator implementation goal. Live evidence clarifies UTC marker transport; Operator amendments select AM/PM headers after native-clock loss and Google-style Task subtrees (ADRs 011, 014). Implementation/acceptance is in progress; deployed 1.1 remains the runtime baseline until validated activation. |
 | 1.1 | Adopts the November 5 work-attribution/personal-operations delta including catalogue consolidation. C0–P2 and optional visibility are implemented, deployed and host-accepted, with separate phase evidence; external provider choices remain a concrete follow-on delta. Implementation clarifies revision-pinned visibility and nonblocking invalidation (ADR 009). |
 | 1.0 | First current SPEC synthesized from signed ontology and Operator amendments; adopts November 4 context/local-CI delta and retirement cleanup. No invented prior version. Implemented, deployed and verified through live native-tool use. |
