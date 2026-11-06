@@ -17,6 +17,8 @@ async def check_tasks(settings, factory, _principal):
         GoogleTaskList,
         GoogleTaskObservation,
         Item,
+        Operation,
+        OperationTarget,
         OperatorUtterance,
         ProviderAccount,
         Task,
@@ -53,6 +55,7 @@ async def check_tasks(settings, factory, _principal):
         GoogleTaskList, GoogleTaskObservation, TaskProviderBinding, TaskBindingRevision,
         TaskListPolicyRevision, TaskPolicyEffect, TaskSyncConflict, TaskConflictResolution,
         TaskSyncState, TasksAccountState, TasksMethodValidation, TaskItemTitleOwnership,
+        Operation, OperationTarget,
     ):
         columns = {column["name"]: column for column in inspect(engine).get_columns(
             model.__tablename__,
@@ -139,11 +142,31 @@ async def check_tasks(settings, factory, _principal):
             assert session.scalar(
                 select(Item.title).where(Item.ref_id == task.item_ref)
             ) == task.title
+        from docket.providers.google.fake_tasks import FakeTasksProvider
+        from docket.services.operations import OperationRunner
+
+        provider = FakeTasksProvider()
+        provider.seed_list("synthetic-validation", "Task validation")
+        provider.tasks[("synthetic-validation", "synthetic-task")] = {
+            "id": "synthetic-task", "etag": '"one"',
+            "title": "A" * 1024, "status": "needsAction",
+        }
+        runner = OperationRunner(factory, None, settings=settings, tasks_provider=provider)
+        assert runner.run_due_once()
+        with factory() as session:
+            operation = session.scalar(select(Operation).join(OperationTarget).where(
+                OperationTarget.canonical_target_ref == task_ref,
+            ))
+            assert operation.status == "succeeded", operation.last_error_code
+            binding = session.get(TaskProviderBinding, binding_ref)
+            task = session.scalar(select(Task).where(Task.ref_id == task_ref))
+            assert binding.baseline["title"] == task.title
         return {
             "task_storage_shape": "passed", "task_import_genuine_policy_root": "passed",
             "task_full_title_and_derived_item": "passed",
             "task_binding_requires_retained_revision": "passed",
             "task_native_concurrent_edit": "one_commit",
+            "task_shared_operation_and_retained_delivery": "passed",
         }
     finally:
         settings.tasks_enabled, settings.interactive_agent_enabled = saved_enabled, saved_agent

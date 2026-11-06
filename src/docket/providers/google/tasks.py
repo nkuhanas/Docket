@@ -6,6 +6,8 @@ Mutations are never retried here, including inserts with an uncertain outcome.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -49,6 +51,7 @@ class TasksWriteGate:
     """Admitted method capabilities, populated only from scoped G0 evidence."""
 
     methods: frozenset[WriteMethod] = frozenset()
+    credential_fingerprint: str | None = None
 
     def require(self, method: WriteMethod) -> None:
         if method not in self.methods:
@@ -56,6 +59,26 @@ class TasksWriteGate:
                 "google_tasks_method_unverified",
                 f"Google Tasks {method} has not passed its provider validation.",
             )
+
+
+def credential_fingerprint(path: Path) -> str | None:
+    """Compare grant identity in memory; never return or log credential contents."""
+    try:
+        value = json.loads(path.read_text())
+        if not isinstance(value, dict):
+            return None
+        client, refresh, scopes = (
+            value.get(key) for key in ("client_id", "refresh_token", "scopes")
+        )
+        if (not isinstance(client, str) or not client or not isinstance(refresh, str) or not refresh
+                or not isinstance(scopes, list)
+                or not all(isinstance(item, str) for item in scopes)):
+            return None
+        return hashlib.sha256(json.dumps(
+            [client, refresh, sorted(set(scopes))], separators=(",", ":"),
+        ).encode()).hexdigest()
+    except (OSError, ValueError, TypeError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -148,6 +171,12 @@ def canonical_notes(notes: str, expected_correlation: str) -> tuple[str, bool]:
     return notes, False
 
 
+def creation_correlation(notes: str) -> str | None:
+    """Extract transport data for scoped lookup; this is never authority or identity proof."""
+    match = _MARKER.search(notes)
+    return match.group(1) if match else None
+
+
 def _document(response: httpx.Response) -> dict[str, Any]:
     try:
         result = response.json()
@@ -193,6 +222,13 @@ class GoogleTasksProvider:
     def _authorization_header(self, *, write: bool) -> str:
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
+
+        if write and (self.gate.credential_fingerprint is None
+                      or self.gate.credential_fingerprint
+                      != credential_fingerprint(Path(self.token_file))):
+            raise TasksProviderError(
+                "google_tasks_gate_changed", "Google Tasks method admission needs revalidation."
+            )
 
         scope = TASKS_SCOPE
         if (

@@ -28,7 +28,7 @@ from docket.models import (
     TaskSyncConflict,
 )
 from docket.models.base import utc_now
-from docket.providers.google.tasks import GoogleTask
+from docket.providers.google.tasks import GoogleTask, creation_correlation
 from docket.schemas.authority import ChangeSetCommit, ChangeSetContent, ChangeSetPrepare
 from docket.services.change_sets import _content_payload
 from docket.services.task_bindings import TaskBindingService
@@ -40,6 +40,7 @@ from docket.services.task_reconciliation import (
     merge_fields,
     observed_values,
     task_patch,
+    transport_fields_match,
 )
 
 
@@ -209,11 +210,52 @@ class TaskSyncService:
         if listing.policy_mode != "two_way":
             return {"state": "observed", "observation_ref": observation.ref_id}
         if binding is not None and (binding.detached or not binding.active):
-            return {"state": "detached", "observation_ref": observation.ref_id}
+            return {"state": "detached" if binding.detached else "inactive",
+                    "observation_ref": observation.ref_id}
         assert listing.policy_ref is not None
         TaskPolicyAuthority(self.session, self.settings).policy(listing.policy_ref, lock=True)
         if observation.fields.get("assignmentInfo"):
             return {"state": "assigned_read_only", "observation_ref": observation.ref_id}
+        if binding is None:
+            raw_notes = observation.fields.get("notes")
+            correlation = creation_correlation(raw_notes) if isinstance(raw_notes, str) else None
+            if correlation:
+                pending = self.session.scalar(select(TaskProviderBinding).where(
+                    TaskProviderBinding.task_list_ref == listing.ref_id,
+                    TaskProviderBinding.provider_task_id.is_(None),
+                    TaskProviderBinding.correlation == correlation,
+                ))
+                if pending is not None:
+                    # A changed resource or copied marker cannot resolve an
+                    # uncertain creation. It also must not manufacture a second
+                    # canonical Task while the original outcome is being checked.
+                    return {"state": "creation_reconciliation_pending",
+                            "binding_ref": pending.ref_id,
+                            "observation_ref": observation.ref_id}
+            from docket.models import Operation, OperationTarget
+
+            candidates = self.session.execute(
+                select(OperationTarget).join(Operation).join(
+                    TaskProviderBinding,
+                    TaskProviderBinding.ref_id
+                    == OperationTarget.parameters["binding_ref"].as_string(),
+                ).where(
+                    Operation.operation_type == "tasks_insert",
+                    Operation.status.in_({"running", "reconciliation_required"}),
+                    OperationTarget.parameters["task_list_ref"].as_string() == listing.ref_id,
+                    TaskProviderBinding.provider_task_id.is_(None),
+                )
+            ).scalars()
+            for candidate in candidates:
+                call = candidate.parameters.get("dispatch")
+                if not isinstance(call, dict):
+                    continue
+                if (transport_fields_match(observation.fields, call["fields"],
+                                           candidate.parameters["correlation"])
+                        and observation.fields.get("parent") == call.get("parent_id")):
+                    return {"state": "creation_identity_ambiguous",
+                            "binding_ref": candidate.parameters["binding_ref"],
+                            "observation_ref": observation.ref_id}
         if binding is not None:
             previous_at = binding.observed_at
             started = observation.read_started_at or observation.observed_at
@@ -223,9 +265,26 @@ class TaskSyncService:
                     and observation.provider_etag != binding.provider_etag
                     and observation.read_after_binding_version != binding.version):
                 return {"state": "fresh_read_required", "binding_ref": binding.ref_id}
-            if binding.observation_ref == observation.ref_id:
-                return {"state": "unchanged", "binding_ref": binding.ref_id}
+        previous = (
+            deepcopy(binding.baseline), deepcopy(binding.provider_snapshot),
+            binding.observation_ref, binding.provider_etag, binding.marker_present,
+            binding.canonical_version,
+            binding.provider_updated_at.replace(tzinfo=binding.provider_updated_at.tzinfo or UTC)
+            if binding.provider_updated_at else None,
+        ) if binding is not None else None
         google, marker = observed_values(self.session, observation, binding)
+        if binding is not None and google["deletion"]:
+            from docket.models import Operation, OperationTarget
+
+            pending_move = self.session.scalar(select(Operation).join(OperationTarget).where(
+                OperationTarget.canonical_target_ref == binding.task_ref,
+                Operation.operation_type == "tasks_move",
+                Operation.status.in_({"pending", "running", "reconciliation_required"}),
+                OperationTarget.parameters["binding_ref"].as_string() == binding.ref_id,
+            ).limit(1))
+            if pending_move is not None:
+                return {"state": "move_delivery_pending", "binding_ref": binding.ref_id,
+                        "observation_ref": observation.ref_id}
         if binding is None:
             if google["deletion"]:
                 return {"state": "unlinked_tombstone", "observation_ref": observation.ref_id}
@@ -251,8 +310,10 @@ class TaskSyncService:
             fields = merged.conflicts
             if google["deletion"] and not local["deletion"]:
                 # A provider deletion never erases independent local edits.
-                if any(local.get(key) != value for key, value in binding.baseline.items()
-                       if key != "deletion"):
+                if binding.baseline.get("deletion") is True or any(
+                    local.get(key) != value for key, value in binding.baseline.items()
+                    if key != "deletion"
+                ):
                     fields = sorted(set(fields) | {"deletion"})
                     merged.inbound.pop("deletion", None)
                     merged.baseline.pop("deletion", None)
@@ -278,15 +339,29 @@ class TaskSyncService:
         binding.observation_ref = observation.ref_id
         binding.provider_etag = observation.provider_etag
         binding.marker_present = marker
-        binding.observed_at = utc_now()
         raw_updated = observation.fields.get("updated")
         if isinstance(raw_updated, str):
             with suppress(ValueError):
                 binding.provider_updated_at = instant(raw_updated)
         binding.canonical_version = task.version
-        self.bindings.retain(binding, [observation.ref_id, listing.policy_ref])
+        current = (
+            binding.baseline, binding.provider_snapshot, binding.observation_ref,
+            binding.provider_etag, binding.marker_present, binding.canonical_version,
+            binding.provider_updated_at.replace(tzinfo=binding.provider_updated_at.tzinfo or UTC)
+            if binding.provider_updated_at else None,
+        )
+        changed = previous != current
+        if changed:
+            binding.observed_at = utc_now()
+            self.bindings.retain(binding, [observation.ref_id, listing.policy_ref])
+        from docket.services.task_provider_intents import TaskProviderIntentService
+
+        TaskProviderIntentService(self.session, self.settings).recover_stale(
+            binding, observation.ref_id,
+        )
         return {
-            "state": "conflict" if fields else "reconciled", "task_ref": task.ref_id,
+            "state": "conflict" if fields else "reconciled" if changed else "unchanged",
+            "task_ref": task.ref_id,
             "binding_ref": binding.ref_id, "conflict_fields": fields,
             "observation_ref": observation.ref_id,
         }

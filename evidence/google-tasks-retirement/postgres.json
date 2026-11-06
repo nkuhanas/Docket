@@ -1,13 +1,14 @@
 {
   "database": "disposable PostgreSQL 16.9",
-  "head": "20261106d4e5",
+  "head": "20261106e5f6",
   "migration": "fresh upgrade and empty downgrade/upgrade completed",
   "checks": {
     "task_storage_shape": "passed",
     "task_import_genuine_policy_root": "passed",
     "task_full_title_and_derived_item": "passed",
     "task_binding_requires_retained_revision": "passed",
-    "task_native_concurrent_edit": "one_commit"
+    "task_native_concurrent_edit": "one_commit",
+    "task_shared_operation_and_retained_delivery": "passed"
   },
   "activation": false
 }

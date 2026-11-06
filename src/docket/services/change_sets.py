@@ -799,6 +799,17 @@ class ChangeSetService:
                     refs=tuple(refs),
                 )
             )
+        from docket.services.task_provider_intents import TaskProviderIntentService
+
+        for operation in TaskProviderIntentService(self.session).materialize(
+            changeset, content, refs_by_change_id,
+        ):
+            receipt.add_refs([operation.ref_id])
+            receipt.provider_operations.append(ProviderOperationReceipt(
+                intent_id="derived-task:" + operation.ref_id,
+                operation_type=operation.operation_type, refs=(operation.ref_id,),
+                target_refs=tuple(operation.canonical_target_refs),
+            ))
         for compiled in content.occurrence_plans:
             if compiled.plan.no_op:
                 continue

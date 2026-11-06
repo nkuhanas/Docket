@@ -31,13 +31,14 @@ class Operation(TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint(
             "status IN ('pending', 'running', 'succeeded', 'partial_failed', "
-            "'failed', 'reconciliation_required')",
+            "'failed', 'reconciliation_required', 'superseded')",
             name="ck_operations_status",
         ),
         CheckConstraint(
             "operation_type IN ('calendar_create_event', 'calendar_update_event', "
             "'calendar_update_reminders', 'calendar_cancel_event', "
-            "'calendar_configure_lane', 'calendar_delete_lane')",
+            "'calendar_configure_lane', 'calendar_delete_lane', "
+            "'tasks_insert', 'tasks_patch', 'tasks_move', 'tasks_delete')",
             name="ck_operations_type",
         ),
         Index("ix_operations_due", "status", "next_attempt_at"),
@@ -75,7 +76,8 @@ class OperationTarget(TimestampMixin, Base):
     __tablename__ = "operation_targets"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('pending', 'running', 'succeeded', 'failed', 'reconciliation_required')",
+            "status IN ('pending', 'running', 'succeeded', 'failed', "
+            "'reconciliation_required', 'superseded')",
             name="ck_operation_targets_status",
         ),
         UniqueConstraint("operation_id", "target_key", name="uq_operation_targets_key"),
@@ -91,6 +93,7 @@ class OperationTarget(TimestampMixin, Base):
     idempotency_key: Mapped[str] = mapped_column(String(512), unique=True, nullable=False)
     parameters: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     parameters_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    recovery: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False)
     lease_token: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     leased_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

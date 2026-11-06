@@ -24,17 +24,18 @@ _STATES = {
     "pending": "queued", "running": "executing", "succeeded": "confirmed",
     "failed": "failed", "partial_failed": "partial_failed",
     "reconciliation_required": "reconciling",
+    "superseded": "superseded",
 }
 
 
 def _next_action(state: str, error: str | None) -> str:
-    if state == "confirmed":
+    if state in {"confirmed", "superseded"}:
         return "none"
     if state == "reconciling":
         return "await_reconciliation_do_not_resend"
     if state in {"queued", "executing"}:
         return "follow_operation_status"
-    if error == "google_auth_invalid":
+    if error in {"google_auth_invalid", "google_tasks_auth_invalid", "google_tasks_scope_missing"}:
         return "restore_provider_authorization_then_recover_same_operation"
     return "inspect_failed_operation_do_not_restage_request"
 
@@ -112,7 +113,7 @@ class ChangeSetDeliveryService:
                 continue
             parameters = row["parameters"] or {}
             event = parameters.get("event") or {}
-            title = event.get("title") or parameters.get("display_name")
+            title = event.get("title") or parameters.get("display_name") or parameters.get("title")
             timing: dict[str, Any] | None = None
             timing_invalid = False
             if event.get("timing") is not None:
@@ -135,6 +136,11 @@ class ChangeSetDeliveryService:
                 "timing": timing,
                 "snapshot_diagnostic": "invalid_stored_timing" if timing_invalid else None,
                 "lane_ref": parameters.get("lane_ref"),
+                "task_list_ref": parameters.get("task_list_ref"),
+                "provider_domain": (
+                    "google_tasks" if parameters.get("target_kind") == "google_task"
+                    else "google_calendar"
+                ),
                 "error_code": error if state != "confirmed" else None,
                 "next_action": _next_action(state, error),
             }
@@ -158,6 +164,9 @@ class ChangeSetDeliveryService:
         disposition = (
             "no_provider_operations" if operation_count == 0
             else "confirmed" if counts.get("confirmed") == operation_count
+            else "superseded" if counts.get("superseded") == operation_count
+            else "completed_with_superseded_work"
+            if counts.get("confirmed", 0) + counts.get("superseded", 0) == operation_count
             else "needs_recovery" if counts.get("failed") or counts.get("partial_failed")
             else "reconciling" if counts.get("reconciling")
             else "in_progress"

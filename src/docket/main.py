@@ -109,6 +109,7 @@ worker = WorkerRuntime(
     OperationRunner(
         get_session_factory(),
         calendar_write_provider,
+        tasks_provider=tasks_provider,
         execution_enabled=settings.calendar_write_mode() != "disabled",
         settings=settings,
     ),

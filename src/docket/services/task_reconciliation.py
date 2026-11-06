@@ -21,6 +21,27 @@ def instant(value: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
+def transport_fields_match(
+    actual: dict[str, Any], requested: dict[str, Any], correlation: str,
+) -> bool:
+    """Compare supported request fields; note markers do not become user notes."""
+    for key, expected in requested.items():
+        value = actual.get(key)
+        if key == "notes":
+            value, _ = canonical_notes(value or "", correlation)
+            expected, _ = canonical_notes(expected or "", correlation)
+        if key == "due" and value and expected:
+            value, expected = value[:10], expected[:10]
+        if key == "completed" and value and expected:
+            try:
+                value, expected = instant(value), instant(expected)
+            except ValueError:
+                return False
+        if value != expected:
+            return False
+    return not actual.get("deleted")
+
+
 def canonical_values(task: Task) -> dict[str, Any]:
     completed = task.completed_at
     return {

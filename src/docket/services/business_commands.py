@@ -130,9 +130,16 @@ def mutation_plan(
     targets = {
         ref for action in actions for ref in ChangeSetAssemblyService._semantic_target_refs(action)
     }
+    related_bindings = {
+        obj["state"]["sync"]["binding_ref"]
+        for obj in context.snapshot.get("objects", [])
+        if obj.get("type") == "task" and obj.get("ref") in substantive
+        and obj.get("state", {}).get("sync", {}).get("binding_ref")
+    }
     return {
         "expected_versions": {
-            ref: version for ref, version in context.versions.items() if ref in substantive
+            ref: version for ref, version in context.versions.items()
+            if ref in substantive or ref in related_bindings
         },
         "assembly_scope": {
             "resolved_intent": {"business_command": command},

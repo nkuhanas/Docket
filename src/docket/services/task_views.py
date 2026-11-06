@@ -97,6 +97,19 @@ class TaskViewService:
             "source": "untrusted_google_task",
             "linked_task_ref": binding.task_ref if binding else None,
         }
+        if binding is None:
+            from docket.providers.google.tasks import creation_correlation
+
+            notes = row.fields.get("notes")
+            correlation = creation_correlation(notes) if isinstance(notes, str) else None
+            pending = self.session.scalar(select(TaskProviderBinding).where(
+                TaskProviderBinding.task_list_ref == row.task_list_ref,
+                TaskProviderBinding.provider_task_id.is_(None),
+                TaskProviderBinding.correlation == correlation,
+            )) if correlation else None
+            if pending is not None:
+                result["pending_creation_task_ref"] = pending.task_ref
+                result["pending_creation_binding_ref"] = pending.ref_id
         if binding is not None:
             result["sync"] = TaskBindingService.status(binding)
         from docket.domain.errors import DocketError
@@ -146,6 +159,10 @@ class TaskViewService:
             "observation_ref": row.observation_ref,
             "fields": remaining,
             "choices": values,
-            "state": "resolved" if not remaining else "open",
+            "state": (
+                "resolved" if not remaining
+                else "superseded" if binding and binding.observation_ref != row.observation_ref
+                else "open"
+            ),
             "resolved_fields": sorted(resolved),
         }

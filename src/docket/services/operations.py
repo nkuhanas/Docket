@@ -6,7 +6,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, true
 from sqlalchemy.orm import Session, sessionmaker
 
 from docket.config import Settings, get_settings
@@ -36,8 +36,11 @@ from docket.providers.google.calendar import (
     CalendarUnknownOutcome,
     event_matches_request,
 )
+from docket.providers.google.tasks import TasksProvider, TasksProviderError, TasksUnknownOutcome
 from docket.services.notifications import NotificationService
 from docket.services.provider_intents import ProviderIntentService
+
+DEFAULT_PROVIDER_MAX_ATTEMPTS = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,13 +155,14 @@ class OperationRunner:
     def __init__(
         self,
         session_factory: sessionmaker[Session],
-        provider: CalendarProvider,
+        provider: CalendarProvider | None,
         *,
         lease_seconds: int = 60,
-        max_attempts: int = 5,
+        max_attempts: int = DEFAULT_PROVIDER_MAX_ATTEMPTS,
         consistency_window_seconds: int = 30,
         execution_enabled: bool = True,
         settings: Settings | None = None,
+        tasks_provider: TasksProvider | None = None,
     ) -> None:
         self.session_factory = session_factory
         self.provider = provider
@@ -167,6 +171,14 @@ class OperationRunner:
         self.consistency_window_seconds = consistency_window_seconds
         self.execution_enabled = execution_enabled
         self.settings = settings or get_settings()
+        self.tasks_provider = tasks_provider
+
+    def _calendar_provider(self) -> CalendarProvider:
+        if self.provider is None:
+            raise CalendarProviderError(
+                "calendar_provider_disabled", "Calendar delivery is disabled.", transient=False,
+            )
+        return self.provider
 
     @staticmethod
     def _target(session: Session, operation: Operation) -> OperationTarget:
@@ -217,6 +229,24 @@ class OperationRunner:
         return parameters
 
     def _claim(self, session: Session, *, reconcile: bool) -> ClaimedOperation | None:
+        task_types: set[str] = set()
+        if self.tasks_provider is not None and self.settings.tasks_enabled:
+            from docket.services.task_item_titles import lock_task_rows
+            from docket.services.tasks_method_admission import METHODS, TasksMethodAdmission
+
+            lock_task_rows(session)
+            if reconcile or self.settings.environment.value != "production":
+                task_types = {"tasks_" + method for method in METHODS}
+            else:
+                account = session.scalar(select(ProviderAccount).where(
+                    ProviderAccount.provider == "google", ProviderAccount.enabled.is_(True),
+                    ProviderAccount.external_account_id == self.settings.google_account_external_id,
+                ))
+                if account is not None:
+                    task_types = {
+                        "tasks_" + method
+                        for method in TasksMethodAdmission(session, self.settings).evidence(account)
+                    }
         now = utc_now()
         desired = (
             OperationStatus.RECONCILIATION_REQUIRED.value
@@ -227,6 +257,9 @@ class OperationRunner:
             select(Operation)
             .where(
                 Operation.status == desired,
+                Operation.operation_type.in_(task_types) if self.provider is None else true(),
+                or_(Operation.operation_type.not_like("tasks_%"),
+                    Operation.operation_type.in_(task_types)),
                 or_(Operation.next_attempt_at.is_(None), Operation.next_attempt_at <= now),
                 or_(Operation.leased_until.is_(None), Operation.leased_until < now),
                 or_(
@@ -372,7 +405,7 @@ class OperationRunner:
     def requeue_auth_failures(self, changeset_ref: str) -> AuthFailureRecoveryStatus:
         """Requeue one exact committed scope after a restored Google refresh grant."""
 
-        self.provider.validate_authorization()
+        self._calendar_provider().validate_authorization()
         with self.session_factory.begin() as session:
             operations = self._changeset_operations(session, changeset_ref, lock=True)
             if not operations:
@@ -478,7 +511,7 @@ class OperationRunner:
             )
         if not 1 <= batch_size <= 100:
             raise ValueError("Recovery batch size must be between 1 and 100")
-        self.provider.validate_authorization()
+        self._calendar_provider().validate_authorization()
         cutoff = utc_now()
         cursor = ""
         result: ReauthorizationRecoveryStatus | None = None
@@ -837,7 +870,7 @@ class OperationRunner:
     def _finish_error(
         self,
         claim: ClaimedOperation,
-        error: CalendarProviderError,
+        error: CalendarProviderError | TasksProviderError,
         *,
         reconciling: bool = False,
     ) -> None:
@@ -882,7 +915,9 @@ class OperationRunner:
                 else ("operation.retry_scheduled" if retry else "operation.failed"),
             )
 
-    def _finish_unknown(self, claim: ClaimedOperation, message: str) -> None:
+    def _finish_unknown(
+        self, claim: ClaimedOperation, message: str, *, code: str = "calendar_unknown_outcome",
+    ) -> None:
         with self.session_factory.begin() as session:
             rows = self._owned_claim(session, claim)
             if rows is None:
@@ -890,42 +925,47 @@ class OperationRunner:
             operation, target, attempt = rows
             operation.status = OperationStatus.RECONCILIATION_REQUIRED.value
             target.status = "reconciliation_required"
-            operation.last_error_code = "calendar_unknown_outcome"
+            operation.last_error_code = code
             operation.last_error_message = message
-            target.last_error_code = "calendar_unknown_outcome"
+            target.last_error_code = code
             operation.next_attempt_at = utc_now()
             target.next_attempt_at = operation.next_attempt_at
             attempt.status = AttemptStatus.UNKNOWN.value
-            attempt.error_code = "calendar_unknown_outcome"
+            attempt.error_code = code
             attempt.error_message = message
             attempt.completed_at = utc_now()
             self._clear_lease(operation, target)
             self._audit(session, operation, target, "operation.reconciliation_required")
 
     def _execute(self, claim: ClaimedOperation) -> None:
+        if claim.operation_type.startswith("tasks_"):
+            from docket.services.tasks_execution import TasksExecutionService
+
+            TasksExecutionService(self).execute(claim)
+            return
         self.mark_provider_call_started(claim)
         if claim.operation_type == "calendar_configure_lane":
-            lane_result = self.provider.ensure_calendar_lane(
+            lane_result = self._calendar_provider().ensure_calendar_lane(
                 claim.lane_request(create_if_missing=True)
             )
             self._finish_lane_success(claim, lane_result)
             return
         if claim.operation_type == "calendar_delete_lane":
-            lane_delete_result = self.provider.delete_calendar_lane(
+            lane_delete_result = self._calendar_provider().delete_calendar_lane(
                 claim.lane_request(create_if_missing=False)
             )
             self._finish_lane_success(claim, lane_delete_result)
             return
         request = claim.calendar_request()
         if claim.operation_type == "calendar_create_event":
-            event_result = self.provider.create_event(request)
+            event_result = self._calendar_provider().create_event(request)
         elif claim.operation_type in {
             "calendar_update_event",
             "calendar_update_reminders",
         }:
-            event_result = self.provider.update_event(request)
+            event_result = self._calendar_provider().update_event(request)
         elif claim.operation_type == "calendar_cancel_event":
-            event_result = self.provider.cancel_event(request)
+            event_result = self._calendar_provider().cancel_event(request)
         else:  # model constraint prevents this branch
             raise DocketError(
                 code="provider_operation_not_supported",
@@ -941,6 +981,14 @@ class OperationRunner:
             self._execute(claim)
         except CalendarUnknownOutcome as exc:
             self._finish_unknown(claim, exc.safe_message)
+        except TasksUnknownOutcome as exc:
+            self._finish_unknown(claim, exc.safe_message, code="google_tasks_unknown_outcome")
+        except TasksProviderError as exc:
+            self._finish_error(
+                claim, exc, reconciling=(
+                    claim.operation_type == "tasks_delete" and exc.code == "google_tasks_not_found"
+                ),
+            )
         except CalendarProviderError as exc:
             self._finish_error(claim, exc)
         return True
@@ -989,6 +1037,11 @@ class OperationRunner:
         if claim is None:
             return False
         try:
+            if claim.operation_type.startswith("tasks_"):
+                from docket.services.tasks_execution import TasksExecutionService
+
+                TasksExecutionService(self).reconcile(claim)
+                return True
             if claim.operation_type in {
                 "calendar_configure_lane",
                 "calendar_delete_lane",
@@ -998,7 +1051,7 @@ class OperationRunner:
             self.mark_provider_call_started(claim)
             request = claim.calendar_request()
             if claim.operation_type == "calendar_create_event":
-                matches = self.provider.find_by_correlation(request)
+                matches = self._calendar_provider().find_by_correlation(request)
                 if len(matches) == 1 and event_matches_request(matches[0], request):
                     self._finish_event_success(claim, matches[0])
                 elif not matches and request.external_event_id is not None:
@@ -1006,7 +1059,7 @@ class OperationRunner:
                 else:
                     self._finish_reconciliation_conflict(claim, len(matches))
                 return True
-            result = self.provider.get_event(request)
+            result = self._calendar_provider().get_event(request)
             if claim.operation_type == "calendar_cancel_event" and result is None:
                 result = CalendarEventResult(
                     external_event_id=str(request.external_event_id),
@@ -1022,6 +1075,10 @@ class OperationRunner:
                 self._finish_reconciliation_conflict(claim, 1)
         except CalendarUnknownOutcome as exc:
             self._finish_unknown(claim, exc.safe_message)
+        except TasksUnknownOutcome as exc:
+            self._finish_unknown(claim, exc.safe_message, code="google_tasks_unknown_outcome")
+        except TasksProviderError as exc:
+            self._finish_error(claim, exc, reconciling=True)
         except CalendarProviderError as exc:
             self._finish_error(claim, exc, reconciling=True)
         return True
@@ -1054,8 +1111,9 @@ class OperationRunner:
                 )
                 provider_started = bool(
                     attempt is not None
-                    and attempt.provider_request_id
-                    and attempt.provider_request_id.startswith("call-started:")
+                    and (attempt.kind == AttemptKind.RECONCILE.value
+                         or (attempt.provider_request_id
+                             and attempt.provider_request_id.startswith("call-started:")))
                 )
                 if provider_started:
                     operation.status = OperationStatus.RECONCILIATION_REQUIRED.value

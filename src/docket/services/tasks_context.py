@@ -17,6 +17,7 @@ from docket.models import (
     GoogleTaskList,
     GoogleTaskObservation,
     Item,
+    ProviderAccount,
     Task,
     TaskProviderBinding,
     TaskSyncConflict,
@@ -60,6 +61,8 @@ class TasksContextService:
         self.views = TaskViewService(session)
 
     def readiness(self) -> dict[str, Any]:
+        from docket.services.tasks_method_admission import METHODS, TasksMethodAdmission
+
         full = (
             authorized_user_file_status(
                 self.settings.google_oauth_token_file, required_scopes=[TASKS_SCOPE]
@@ -73,11 +76,20 @@ class TasksContextService:
             )
             == "configured"
         )
+        account = self.session.scalar(select(ProviderAccount).where(
+            ProviderAccount.provider == "google",
+            ProviderAccount.external_account_id == self.settings.google_account_external_id,
+        ))
+        methods = (
+            TasksMethodAdmission(self.session, self.settings).readiness(account)
+            if account is not None else {method: {"verified": False} for method in METHODS}
+        )
         return {
             "enabled": self.settings.tasks_enabled,
             "google_read_grant": read,
             "google_write_grant": full,
             "local_tasks": True,
+            "provider_methods": methods,
         }
 
     def object(self, ref: str) -> tuple[dict[str, Any], dict[str, int]]:

@@ -31,17 +31,29 @@ The [contract measurements](contracts.json) record 114 advertised tools. All six
 new definitions plus both modified task definitions total 12,245 bytes; each input
 is below 4 KiB and each definition below 6 KiB. These are local-source measurements.
 
+
+The shared runner now executes Tasks operations using its existing claims, attempts,
+leases and recovery. Task state and provider intents commit together; newer unsent
+intents can supersede old work, and independent fields remain separate. A stale
+conditional write retries its original named field only after fresh reconciliation.
+Unknown insert recovery pages the full selected list before accepting a unique
+corroborated match. Removed markers remain uncertain; an explicit native counterpart
+selection preserves that original uncertainty while allowing current work to continue.
+Read-reconciliation interruption never returns an uncertain insert to execution.
+A task GET 404 requires accessible-collection confirmation before deletion is confirmed.
+
 ## Verification
 
 Focused native MCP journeys cover flat list configuration, task creation/query/
 completion, explicit linking, separate field resolutions and detachment. The
-storage group passed 144 checks and the provider group passed 96 checks, including
+storage group passed 149 checks and the provider group passed 106 checks, including
 polling lease recovery, observation-only policies and revoked standing authority.
 Ruff and strict mypy passed. Release validation and activation remain outstanding.
 
 The [isolated PostgreSQL proof](postgres.json) verifies storage shape, genuine
 policy imports, full Task/Item titles, deferred retained-baseline constraints and
-competing native edits with exactly one commit. The disposable container was removed.
+competing native edits with exactly one commit, and shared-runner delivery with
+retained binding revisions. The disposable container was removed.
 
 ## Retirement inventory
 
@@ -57,8 +69,9 @@ and removal of the exact legacy resources remain outstanding.
 
 ## Remaining milestones
 
-- Complete shared-operation Tasks writes, recovery, hierarchy/moves and operational
-  readiness reporting. A canonical commit must remain distinct from provider delivery.
+- Shared-operation task writes and scoped recovery now pass native/fake and PostgreSQL
+  checks. Complete hierarchy/moves, live acceptance and operational readiness reporting.
+  A canonical commit remains distinct from provider delivery.
 - Implement the task reminder generation lifecycle and its atomic Calendar intent,
   including cancellation/unknown-create recovery and inbound helper reconciliation.
 - Persist validated reminder origins through Calendar cache refresh and exclude them

@@ -100,6 +100,11 @@ class TaskLinkService:
                 raise DocketError(code="task_not_linked", message="This task has no active link.")
             previous.active, previous.detached = False, True
             self.bindings.retain(previous, list(change.basis_refs))
+            from docket.services.task_provider_intents import TaskProviderIntentService
+
+            TaskProviderIntentService(self.session).supersede_pending(
+                task.ref_id, changeset, binding_ref=previous.ref_id,
+            )
             refs = [task.ref_id, previous.ref_id]
             self._audit(changeset, change, refs, "task.google_detached")
             return refs
@@ -113,6 +118,11 @@ class TaskLinkService:
                 code="task_list_not_two_way", message="Enable two-way synchronization first."
             )
         current = self.bindings.identity(listing.ref_id, observation.provider_task_id)
+        if (current is None and previous is not None and previous.provider_task_id is None
+                and previous.task_list_ref == listing.ref_id):
+            # This is an explicit authenticated counterpart selection, not a
+            # heuristic match or an automatic retry of the uncertain creation.
+            current = previous
         if current is not None and current.task_ref != task.ref_id:
             raise DocketError(
                 code="google_task_already_linked", message="That representation has another task."
@@ -126,6 +136,11 @@ class TaskLinkService:
         if previous is not None and previous is not current:
             previous.active, previous.detached = False, True
             self.bindings.retain(previous, list(change.basis_refs))
+            from docket.services.task_provider_intents import TaskProviderIntentService
+
+            TaskProviderIntentService(self.session).supersede_pending(
+                task.ref_id, changeset, binding_ref=previous.ref_id,
+            )
         # Selecting a counterpart does not silently adopt its differing content.
         if task.task_list_ref != listing.ref_id:
             mutation = TaskModify.model_validate({
@@ -146,6 +161,7 @@ class TaskLinkService:
         local = canonical_values(task)
         differing = [key for key in local if local.get(key) != google.get(key)]
         binding.active, binding.detached = True, False
+        binding.provider_task_id = observation.provider_task_id
         binding.canonical_version = task.version
         binding.baseline = {key: value for key, value in local.items() if key not in differing}
         binding.provider_snapshot = deepcopy(google)
@@ -155,6 +171,11 @@ class TaskLinkService:
         binding.marker_present = marker
         self.bindings.retain(binding, list(change.basis_refs))
         refs = [task.ref_id, binding.ref_id]
+        from docket.services.task_provider_intents import TaskProviderIntentService
+
+        refs.extend(TaskProviderIntentService(self.session).identify_uncertain_creation(
+            binding, observation.ref_id, changeset,
+        ))
         if differing:
             conflict = TaskSyncService(self.session).conflict(
                 binding, observation, task, differing, google,

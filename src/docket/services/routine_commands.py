@@ -415,12 +415,18 @@ class RoutineCommandService(NativeCommandService):
                     )
             except ValidationError as exc:
                 raise public_validation_error(exc) from exc
-            return mutation_plan(
+            plan = mutation_plan(
                 context,
                 [mutation_input_json(action, preserve_explicit_nulls=True) for action in actions],
                 name,
                 retained_refs=derived_refs,
             )
+            if task_ref:
+                sync = context_object(context, task_ref).get("sync", {})
+                binding_ref = sync.get("binding_ref")
+                if binding_ref in context.versions:
+                    plan["expected_versions"][binding_ref] = context.versions[binding_ref]
+            return plan
 
         return self.execute(
             command=name,

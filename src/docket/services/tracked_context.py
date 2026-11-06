@@ -1059,6 +1059,24 @@ class TrackedContextService:
                 task.reminder_timezone = None
             elif change.action == "update":
                 patch = TaskPatchInput.model_validate(change.payload)
+                from docket.models import IntentSession, TaskProviderBinding
+
+                intent = self.session.get(IntentSession, changeset.intent_session_id)
+                binding = self.session.scalar(select(TaskProviderBinding).where(
+                    TaskProviderBinding.task_ref == task.ref_id,
+                    TaskProviderBinding.active.is_(True),
+                ))
+                provider_fields = {
+                    "title", "description", "scheduled_date", "task_state", "completed_at",
+                    "parent_task_ref", "task_list_ref", "after_task_ref", "canonical_status",
+                }
+                if (binding is not None and intent is not None and intent.source_request_ref
+                        and provider_fields.intersection(patch.model_fields_set)
+                        and changeset.expected_versions.get(binding.ref_id) != binding.version):
+                    raise DocketError(
+                        code="task_binding_changed",
+                        message="Read the task context again before updating synchronized fields.",
+                    )
                 values, _after = TaskFieldService(self.session).values(patch, task)
                 if values.get("item_ref") is not None:
                     self._item(values["item_ref"])

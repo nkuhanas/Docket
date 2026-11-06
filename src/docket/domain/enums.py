@@ -22,6 +22,7 @@ class OperationStatus(StrEnum):
     PARTIAL_FAILED = "partial_failed"
     FAILED = "failed"
     RECONCILIATION_REQUIRED = "reconciliation_required"
+    SUPERSEDED = "superseded"
 
 
 class AttemptKind(StrEnum):
