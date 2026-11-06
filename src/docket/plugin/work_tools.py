@@ -10,8 +10,13 @@ from docket.database import session_scope
 from docket.domain.errors import DocketError
 from docket.mcp.instrumented import ProvenanceMCP
 from docket.plugin.business import model_function
+from docket.schemas.compensation import POLICY_TOOL_PURPOSES
 from docket.schemas.work import WORK_TOOL_PURPOSES, GetWorkContext, QueryWorkSessions
 from docket.services.business_commands import public_validation_error
+from docket.services.compensation_policies import (
+    POLICY_COMMAND_MODELS,
+    CompensationPolicyCommandService,
+)
 from docket.services.native_context import NativeContextService
 from docket.services.work_commands import WORK_COMMAND_MODELS, WorkCommandService
 from docket.services.work_lineage import LINEAGE_COMMAND_MODELS, WorkLineageCommandService
@@ -22,6 +27,7 @@ WORK_COMMAND_TOOLS = (
     frozenset(WORK_COMMAND_MODELS)
     | frozenset(TIMER_COMMAND_MODELS)
     | frozenset(LINEAGE_COMMAND_MODELS)
+    | frozenset(POLICY_COMMAND_MODELS)
 )
 
 
@@ -39,6 +45,8 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
                     service = (
                         WorkTimerCommandService
                         if name in TIMER_COMMAND_MODELS
+                        else CompensationPolicyCommandService
+                        if name in POLICY_COMMAND_MODELS
                         else WorkLineageCommandService
                         if name in LINEAGE_COMMAND_MODELS
                         else WorkCommandService
@@ -56,12 +64,19 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
 
         server.add_tool(
             model_function(
-                ({**WORK_COMMAND_MODELS, **TIMER_COMMAND_MODELS, **LINEAGE_COMMAND_MODELS})[name],
+                (
+                    {
+                        **WORK_COMMAND_MODELS,
+                        **TIMER_COMMAND_MODELS,
+                        **LINEAGE_COMMAND_MODELS,
+                        **POLICY_COMMAND_MODELS,
+                    }
+                )[name],
                 name,
                 invoke,
             ),
             name=name,
-            description=WORK_TOOL_PURPOSES[name],
+            description={**WORK_TOOL_PURPOSES, **POLICY_TOOL_PURPOSES}[name],
             annotations=ToolAnnotations(
                 read_only_hint=False,
                 destructive_hint=False,
@@ -70,7 +85,12 @@ def register_work(server: ProvenanceMCP, settings: Settings) -> None:
             ),
         )
 
-    for name in (*WORK_COMMAND_MODELS, *TIMER_COMMAND_MODELS, *LINEAGE_COMMAND_MODELS):
+    for name in (
+        *WORK_COMMAND_MODELS,
+        *TIMER_COMMAND_MODELS,
+        *LINEAGE_COMMAND_MODELS,
+        *POLICY_COMMAND_MODELS,
+    ):
         register(name)
 
     def context(arguments: dict[str, Any]) -> dict[str, Any]:

@@ -55,7 +55,20 @@ precision and placement inside composite work. Unknown quantities stay unknown;
 known_duration_us is only the known subtotal. Work context returns time_components.
 Select a component's source_work_ref in each split part, optionally providing bounds
 or minutes when dividing known work. Docket derives quantity identity internally.
-No claim graph is a client input. Finance milestones are not yet advertised.
+No claim graph is a client input.
+
+Read an engagement with `docket_get_work_context` for bounded pay/reporting policies.
+Use `docket_set_pay_terms` with engagement_ref, effective_from and the changed rate,
+basis, amount, currency, payer or eligibility fields. Rate is hourly; amount records
+salary/fixed-fee terms. `docket_set_reporting_rules` records explicit reporting periods,
+rounding, hour limits and overtime rules. Omitted fields retain each applicable
+window's values; null clears nullable terms. Sparse changes preserve future rates.
+An expired rate is not extended into an unconfigured gap. These are canonical
+configuration records, without claims or payment/provider effects. Reported billability
+is unchanged. Earnings evaluation, formal timesheets/invoices and settlement remain
+unimplemented; do not describe configuration as those capabilities. For complete
+immutable policy history, follow the returned audit ref and concatenate
+policy_json_chunk using text_next_offset until absent.
 
 Use named business tools with ordinary fields. Creating a meeting takes title,
 ISO start/end, timezone and a calendar_ref from context. Docket derives its support

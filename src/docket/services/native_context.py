@@ -198,6 +198,7 @@ class NativeContextService:
             "case",
             "eng",
             "work",
+            "cpol",
         }
         objects: list[dict[str, Any]] = []
         versions: dict[str, int] = {}
@@ -228,22 +229,33 @@ class NativeContextService:
                     details={"field": "refs", "ref": ref},
                 )
             kind, model, _ = _PREFIX_MODELS[prefix]
-            row = self.session.scalar(select(model).where(model.ref_id == ref))
+            row: Any = self.session.scalar(select(model).where(model.ref_id == ref))
             if row is None:
                 raise DocketError(
                     code="context_target_unavailable",
                     message="The selected object no longer exists.",
                     details={"field": "refs", "ref": ref},
                 )
-            if prefix in {"eng", "work"}:
+            if prefix in {"eng", "work", "cpol"}:
                 from docket.services.work_attribution import WorkAttributionService
 
                 service = WorkAttributionService(self.session)
                 row = service.head(model, ref)
-                state = service.view(row)
+                if prefix == "cpol":
+                    from docket.models import Engagement
+                    from docket.services.compensation_policies import CompensationPolicyService
+
+                    policy_service = CompensationPolicyService(self.session)
+                    row = policy_service.owned(ref)
+                    state = policy_service.view(row)
+                    versions[row.engagement_ref] = service.head(
+                        Engagement, row.engagement_ref,
+                    ).version
+                else:
+                    state = service.view(row)
                 omitted = []
                 for key, value in list(state.items()):
-                    ceiling = 3072 if key == "time_components" else 1024
+                    ceiling = 3072 if key in {"time_components", "policies", "terms"} else 1024
                     if len(json.dumps(value, ensure_ascii=False).encode()) > ceiling:
                         del state[key]
                         omitted.append(key)
@@ -323,6 +335,11 @@ class NativeContextService:
                 actions += ["docket_resolve_attention_case"]
             if kind == "engagement" or (kind == "work_session" and not row.superseded):
                 actions += ["docket_update_" + kind]
+            if kind == "engagement":
+                actions += ["docket_set_pay_terms", "docket_set_reporting_rules"]
+            if kind == "compensation_policy":
+                actions += ["docket_set_pay_terms" if row.kind == "pay"
+                            else "docket_set_reporting_rules"]
             if kind == "work_session" and row.lifecycle == "recorded" and not row.superseded:
                 actions += ["docket_split_work_session", "docket_merge_work_sessions"]
             if kind == "work_session" and row.lifecycle in {"running", "paused"}:

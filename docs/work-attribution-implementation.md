@@ -25,7 +25,7 @@ does not invent a payroll/banking integration or require its credentials.
 | Time math | UTC elapsed/break union, midnight/travel/DST folds, no fabricated bounds or period allocation | Pure math, command and aggregate/query integration checked |
 | P0b timers | Retry-stable instant, exact preview, start/pause/resume/stop/switch, restart survival; PostgreSQL single-active and races | Five named commands implemented; native/PostgreSQL races and fresh-process recovery checked; release acceptance pending |
 | P0b lineage | Atomic split/merge preserves known quantities/gaps/attribution; superseded parents excluded; stale races reject affected operation | Interval/duration and mixed/incomplete/differently dated composition implemented; MCP/PostgreSQL checks pass. Full release acceptance pending |
-| P1a policies | Effective dates, exact rates/currencies, hourly/nonhourly/unpaid distinction, explicit rounding/period/limits; unknown eligibility/estimates remain partial | Pending |
+| P1a policies | Effective dates, exact rates/currencies, hourly/nonhourly/unpaid distinction, explicit rounding/period/limits; unknown eligibility/estimates remain partial | Typed pay/reporting timeline configuration and bounded history implemented and checked; evaluation/rounding/limit calculations remain pending |
 | P1a formal timesheets | Exact contributions, reporting lifecycle, immutable submitted snapshots, same-purpose duplicate-quantity protection, manual submission observations | Pending |
 | P1b claims/invoices | Stable lineage across corrections/splits, partial reservations/concurrent drafts, cancellation release, exact numbered issued snapshots, adjustments/reconciliation flags | Pending |
 | P1b expenses | Independent exact money/currency/date/attribution/eligibility/ownership, optional protected receipt, submission/approval and distinct reimbursement claim | Pending |
@@ -408,3 +408,58 @@ Core P0 behavior is implemented in source. P1a–P1c, P2, full release acceptanc
 tested-image validation, reviewed publication/merge, deployment and same hosted
 plugin refresh remain unfinished. This checkpoint adds no finance/provider effect
 or production-data change, and does not complete the full amendment.
+
+### P1a: effective compensation and reporting configuration
+
+Two small native commands set effective pay terms and reporting rules under an
+owned engagement. The commands have one uniform target and required effective date;
+they avoid conditional create/update envelopes. They compile to typed engagement
+effects through the existing request/preview/ChangeSet path. The engagement version
+guards concurrency and policy streams retain their own immutable revisions.
+
+Pay terms distinguish hourly rates, salary/fixed-fee amounts, unpaid/unknown basis,
+explicit currency/payer, eligibility assertions and monetary precision. Reported
+WorkSession classification and original time stay unchanged. Reporting rules retain
+explicit period anchors, week boundaries, rounding scope/mode, configured hour limits,
+overtime threshold/multiplier and optional employer grouping. No legal entitlement,
+student limit, payer, exchange rate or nonhourly earnings is inferred from a name.
+
+Sparse edits apply to every existing window within the requested range. Changing
+only currency/payer preserves differing future rates; bounded corrections resume
+prior terms outside the range. A gap uses unknown/default terms rather than copying
+an expired rate. Effective windows use explicit UTC boundaries with reporting timezone.
+Unchanged terms outside the edit reuse their stable references. Earlier snapshots
+remain genuine and immutable. Configuration is not compensation evaluation or a claim.
+
+Migration 20261105e5f6 adds policy heads, sealed revisions, immutable terms and ordered
+revision membership. Decimal quantities are canonical strings, avoiding binary-float
+storage. PostgreSQL protects owned stable heads, completed sealed revisions, ordered
+nonoverlapping windows, source-preserving clipped terms, exact numeric syntax, and
+immutable/closed history. No historical or provider data is backfilled. Populated
+policy history refuses downgrade; retain the backup and use compatible forward repair.
+
+Work context derives short policy views; explicit history audit reads expose lossless
+policy_json_chunk continuation over a selected immutable revision. Owner filters apply
+to context, detail and history lists. No new OAuth scope or owner reapproval is needed.
+
+Evidence:
+
+- Native gate: 215 passed in 31.67 seconds with Ruff/strict mypy. Storage: 123 passed
+  in 20.69 seconds with static checks. Release checks: 52 passed in 2.11 seconds.
+  Final focused checks: 5 passed in 3.62 seconds. Three new MCP journeys cover effective/bounded
+  and sparse corrections, expiry gaps, exact preview/retry/stale handling, policy
+  history continuation, unchanged work/classification and read-only rejection.
+- Disposable PostgreSQL 16.9 passes migration/model parity and empty rollback,
+  effective and sparse timeline changes, concurrent exact proposals with one winner,
+  invalid-money rejection, late/history edits, incomplete-head and skipped-revision rejection,
+  overlap protection, other-owner context/audit denial and invocation privacy.
+  Existing work/timer/report concurrency and retained-downgrade checks still pass.
+- Source discovery: 86 tools / 58 typed effects, 139,358 bytes. Pay input is 2,048
+  bytes / definition 2,576; reporting input 2,354 / definition 2,882. Both are below
+  4/6 KiB limits; no operation-discriminator union is exposed. Global instructions
+  remain 1,643 bytes. The original thirteen work tools remain within their P0 budget.
+
+This slice implements policy configuration. P1a evaluation and formal timesheets,
+the shared claim/reservation mechanism, P1b/P1c, P2 and full activation remain
+unfinished. No real rates, employers, work, claims or payments were seeded; no
+production data, provider state, OAuth grant or hosted release changed here.

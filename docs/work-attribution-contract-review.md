@@ -8,10 +8,12 @@ The subsequent Operator instruction adopts [SPEC 1.1](../SPEC.md); actual progre
 is in the [implementation report](work-attribution-implementation.md). Measurements
 below remain historical design evidence, not implementation or a second specification.
 
-Current source now implements the primary catalogue consolidation and thirteen P0
-definitions: 84 advertised tools total, with 28,228 bytes of work definitions.
+Current source implements the primary catalogue consolidation, thirteen P0
+definitions and two effective-policy commands: 86 advertised tools total. The P0
+definitions occupy 28,228 bytes; policy commands add 5,458 bytes.
 Every new input is below 4 KiB and complete definition below 6 KiB. Known-time
-and mixed-time split/merge are checked; finance/intelligence remain unfinished.
+and mixed-time split/merge and effective-policy configuration are checked;
+compensation evaluation, formal finance and intelligence remain unfinished.
 The implementation report records exact evidence and the separate release boundary.
 
 The extension adds actual-work records first, then reporting/financial state and

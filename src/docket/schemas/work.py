@@ -273,7 +273,7 @@ class GetWorkContext(StrictModel):
         Annotated[
             str,
             Field(
-                pattern=r"^(eng|work|ent|evt|item|task|aff)_[0-9A-HJKMNP-TV-Z]{26}$",
+                pattern=r"^(eng|work|ent|evt|item|task|aff|cpol)_[0-9A-HJKMNP-TV-Z]{26}$",
             ),
         ]
     ] = Field(default_factory=list, max_length=32)

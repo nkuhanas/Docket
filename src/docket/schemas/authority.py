@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from docket.domain.public_refs import is_public_ref
 from docket.schemas.common import ProviderAccountRef, PublicRef, StrictModel, validate_refs
+from docket.schemas.compensation import PolicySetSpec
 from docket.schemas.event_occurrences import (
     CompiledOccurrenceEdit,
     EventMutationScope,
@@ -580,6 +581,24 @@ class EngagementCreate(MutationBase):
     object_ref: None = None
     create_spec: EngagementSpec
     payload: None = None
+
+
+class EngagementPayTermsSet(MutationBase):
+    mutation_type: Literal["engagement_pay_terms_set"] = "engagement_pay_terms_set"
+    action: Literal["update"]
+    object_type: Literal["engagement"]
+    object_ref: EngagementRef
+    create_spec: None = None
+    payload: PolicySetSpec
+
+
+class EngagementReportingRulesSet(MutationBase):
+    mutation_type: Literal["engagement_reporting_rules_set"] = "engagement_reporting_rules_set"
+    action: Literal["update"]
+    object_type: Literal["engagement"]
+    object_ref: EngagementRef
+    create_spec: None = None
+    payload: PolicySetSpec
 
 
 class EngagementModify(MutationBase):
@@ -1172,6 +1191,8 @@ type LaneMutation = (
 type EventMutation = CanonicalEventCreate | CanonicalEventModify | CanonicalEventCancel
 type TrackedContextMutation = (
     WorkTimerStart
+    | EngagementPayTermsSet
+    | EngagementReportingRulesSet
     | WorkSessionSplit
     | WorkSessionMerge
     | WorkTimerTransition
@@ -1199,6 +1220,8 @@ type TrackedContextMutation = (
 )
 type CanonicalMutation = (
     WorkTimerStart
+    | EngagementPayTermsSet
+    | EngagementReportingRulesSet
     | WorkSessionSplit
     | WorkSessionMerge
     | WorkTimerTransition

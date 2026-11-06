@@ -23,6 +23,9 @@ from docket.models import (
     CanonicalEvent,
     CaseItem,
     ChangeSet,
+    CompensationPolicy,
+    CompensationPolicyRevision,
+    CompensationTerm,
     Conflict,
     ContextPacket,
     ConversationalToolTrace,
@@ -80,6 +83,9 @@ AUDIT_OUTPUT_BYTES = 64 * 1024
 MAX_TEXT_CHUNK_BYTES = 32 * 1024
 
 _PREFIX_MODELS: dict[str, tuple[str, type[Any], str]] = {
+    "cpol": ("compensation_policy", CompensationPolicy, "created_at"),
+    "cprv": ("compensation_policy_revision", CompensationPolicyRevision, "created_at"),
+    "cptr": ("compensation_term", CompensationTerm, "created_at"),
     "eng": ("engagement", Engagement, "created_at"),
     "erev": ("engagement_revision", EngagementRevision, "created_at"),
     "work": ("work_session", WorkSession, "created_at"),
@@ -205,6 +211,44 @@ class HistoryService:
 
     def _summary(self, object_type: str, item: Any) -> dict[str, Any]:
         base: dict[str, Any] = {"ref": item.ref_id, "type": object_type}
+        if isinstance(
+            item, CompensationPolicy | CompensationPolicyRevision | CompensationTerm
+        ):
+            from docket.services.compensation_policies import (
+                CompensationPolicyService,
+                term_spec,
+            )
+
+            service = CompensationPolicyService(self.session)
+            head = service.owned(
+                item.ref_id if isinstance(item, CompensationPolicy) else item.policy_ref
+            )
+            if isinstance(item, CompensationPolicy):
+                return {
+                    **base,
+                    "version": head.version,
+                    "state": service.view(head),
+                    "created_by_changeset_ref": head.created_by_changeset_ref,
+                    "created_at": _iso(head.created_at),
+                }
+            if isinstance(item, CompensationTerm):
+                return {
+                    **base,
+                    "parent_ref": head.ref_id,
+                    "state": term_spec(item).model_dump(mode="json", exclude_none=True),
+                    "derived_from_ref": item.derived_from_ref,
+                    "created_by_changeset_ref": item.created_by_changeset_ref,
+                    "created_at": _iso(item.created_at),
+                }
+            return {
+                **base,
+                "parent_ref": head.ref_id,
+                "revision": item.revision,
+                "sealed": item.sealed,
+                "basis_refs": item.basis_refs,
+                "created_by_changeset_ref": item.created_by_changeset_ref,
+                "created_at": _iso(item.created_at),
+            }
         if isinstance(item, Engagement | WorkSession):
             from docket.services.work_attribution import WorkAttributionService
 
@@ -878,6 +922,34 @@ class HistoryService:
                 select(OperatorUtterance.ref_id).where(OperatorUtterance.id == item.utterance_id)
             )
         if view == "audit":
+            if isinstance(item, CompensationPolicyRevision):
+                from docket.services.compensation_policies import (
+                    CompensationPolicyService,
+                    term_spec,
+                )
+
+                raw = json.dumps(
+                    {
+                        "ref": item.ref_id,
+                        "policy_ref": item.policy_ref,
+                        "revision": item.revision,
+                        "terms": [
+                            {
+                                "ref": term.ref_id,
+                                **term_spec(term).model_dump(mode="json", exclude_none=True),
+                            }
+                            for term in CompensationPolicyService(self.session).terms(
+                                item.ref_id
+                            )
+                        ],
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                chunk = _text_chunk(raw, text_offset, min(text_limit, MAX_TEXT_CHUNK_BYTES))
+                chunk["policy_json_chunk"] = chunk.pop("verbatim_text_chunk")
+                entry.update(chunk)
             if isinstance(item, ConversationRecord) and item.ciphertext is not None:
                 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -1045,6 +1117,19 @@ class HistoryService:
                 continue
             time_column = getattr(model, time_field)
             statement: Select[Any] = select(model)
+            if model in {CompensationPolicy, CompensationPolicyRevision, CompensationTerm}:
+                from docket.services.work_attribution import read_operator
+
+                if model is CompensationPolicy:
+                    statement = statement.where(
+                        CompensationPolicy.operator_ref == read_operator()
+                    )
+                else:
+                    statement = statement.join(
+                        CompensationPolicy, CompensationPolicy.ref_id == model.policy_ref
+                    ).where(
+                        CompensationPolicy.operator_ref == read_operator(),
+                    )
             if model in {Engagement, WorkSession, EngagementRevision, WorkSessionRevision}:
                 from docket.services.work_attribution import read_operator
 

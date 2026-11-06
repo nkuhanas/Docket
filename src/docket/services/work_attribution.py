@@ -203,7 +203,13 @@ class WorkAttributionService:
 
     def view(self, head: Engagement | WorkSession) -> dict[str, Any]:
         if isinstance(head, Engagement):
-            return self.engagement_spec(head).model_dump(mode="json", exclude_none=True)
+            from docket.services.compensation_policies import CompensationPolicyService
+
+            result = self.engagement_spec(head).model_dump(mode="json", exclude_none=True)
+            policies = CompensationPolicyService(self.session).summaries(head.ref_id)
+            if policies:
+                result["policies"] = policies
+            return result
         revision = self.work_revision(head)
         spec = self.revision_spec(revision)
         state = spec.model_dump(mode="json", exclude_none=True, exclude={"time"})
@@ -411,9 +417,28 @@ class WorkAttributionService:
         )
 
     def apply_engagement(self, session: Session, changeset: ChangeSet, change: Any) -> list[str]:
+        if change.mutation_type in {"engagement_pay_terms_set", "engagement_reporting_rules_set"}:
+            from docket.services.compensation_policies import CompensationPolicyService
+
+            return CompensationPolicyService(session).apply(changeset, change)
         spec = EngagementSpec.model_validate(change.create_spec or change.payload)
         self.validate_links(spec)
-        if change.action == "create":
+        head = None
+        if change.action != "create":
+            head = self.head(Engagement, change.object_ref, lock=True)
+            self.check_version(head, changeset)
+        return self.persist_engagement(changeset, change, spec, head=head)
+
+    def persist_engagement(
+        self,
+        changeset: ChangeSet,
+        change: Any,
+        spec: EngagementSpec,
+        *,
+        head: Engagement | None = None,
+    ) -> list[str]:
+        session = self.session
+        if head is None:
             head = Engagement(
                 operator_ref=require_principal("commit").operator_ref,
                 created_by_changeset_ref=changeset.ref_id,
@@ -422,8 +447,6 @@ class WorkAttributionService:
             session.add(head)
             session.flush()
         else:
-            head = self.head(Engagement, change.object_ref, lock=True)
-            self.check_version(head, changeset)
             head.version += 1
             head.updated_at = utc_now()
         revision = EngagementRevision(

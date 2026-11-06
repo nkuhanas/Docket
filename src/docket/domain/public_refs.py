@@ -17,6 +17,9 @@ class PublicRefDefinition:
 
 
 _DEFINITIONS = (
+    PublicRefDefinition("cpol", "CompensationPolicy"),
+    PublicRefDefinition("cprv", "CompensationPolicyRevision"),
+    PublicRefDefinition("cptr", "CompensationTerm"),
     PublicRefDefinition("worg", "WorkQuantityOrigin"),
     PublicRefDefinition("wrep", "WorkReportSnapshot"),
     PublicRefDefinition("eng", "Engagement"),

@@ -27,6 +27,12 @@ from docket.models.calendar import (
     ScheduledNotification,
 )
 from docket.models.clarifications import ClarificationReply
+from docket.models.compensation import (
+    CompensationPolicy,
+    CompensationPolicyRevision,
+    CompensationRevisionTerm,
+    CompensationTerm,
+)
 from docket.models.continuity import (
     DeferredIngress,
     DrainBarrier,
@@ -150,6 +156,10 @@ __all__ = [
     "ChangeSet",
     "ChangeSetRevision",
     "ClarificationReply",
+    "CompensationPolicy",
+    "CompensationPolicyRevision",
+    "CompensationRevisionTerm",
+    "CompensationTerm",
     "Conflict",
     "ConnectorCheckpoint",
     "ContextPacket",

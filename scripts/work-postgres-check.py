@@ -197,6 +197,303 @@ asyncio.run(check())
         agent_call_context.reset(token)
 
 
+async def check_compensation_policies(settings, factory, principal):
+    from docket.agent_auth import AgentCallContext, AgentPrincipal, agent_call_context
+    from docket.models import (
+        CompensationPolicy,
+        CompensationPolicyRevision,
+        CompensationRevisionTerm,
+        CompensationTerm,
+        ToolInvocation,
+    )
+    from docket.plugin.server import PluginMCP
+    from docket.services.compensation_policies import CompensationPolicyService
+
+    async def call(name, arguments, actor=principal):
+        token = agent_call_context.set(AgentCallContext(actor))
+        try:
+            return (await PluginMCP(settings).call_tool(name, arguments)).structured_content
+        finally:
+            agent_call_context.reset(token)
+
+    packet = await call("docket_get_work_context", {})
+    created = await call(
+        "docket_create_engagement",
+        {
+            "context_id": packet["context_id"],
+            "operation_id": "pg-pay-engagement",
+            "label": "Synthetic compensation engagement",
+            "kind": "contract",
+        },
+    )
+    assert created.get("disposition") == "committed", created
+    eng_ref = next(ref for ref in created["affected_refs"] if ref.startswith("eng_"))
+    for index, values in enumerate(
+        (
+            {
+                "effective_from": "2026-10-01",
+                "rate": "80.123456789",
+                "currency": "USD",
+                "billable": True,
+            },
+            {"effective_from": "2026-11-15", "rate": "90"},
+            {"effective_from": "2026-11-10", "effective_to": "2026-11-12", "rate": "85"},
+        )
+    ):
+        packet = await call("docket_get_work_context", {"refs": [eng_ref]})
+        result = await call(
+            "docket_set_pay_terms",
+            {
+                "context_id": packet["context_id"],
+                "operation_id": f"pg-pay-term-{index}",
+                "engagement_ref": eng_ref,
+                "timezone": "America/Los_Angeles",
+                **values,
+            },
+        )
+        assert result.get("disposition") == "committed", result
+    packet = await call("docket_get_work_context", {"refs": [eng_ref]})
+    result = await call(
+        "docket_set_reporting_rules",
+        {
+            "context_id": packet["context_id"],
+            "operation_id": "pg-pay-reporting",
+            "engagement_ref": eng_ref,
+            "effective_from": "2026-10-01",
+            "period_days": 14,
+            "anchor_date": "2026-10-05",
+            "overtime_after_hours": 40,
+            "overtime_multiplier": "1.5",
+        },
+    )
+    assert result.get("disposition") == "committed", result
+    with factory() as session:
+        service = CompensationPolicyService(session)
+        head = session.scalar(
+            select(CompensationPolicy).where(
+                CompensationPolicy.engagement_ref == eng_ref,
+                CompensationPolicy.kind == "pay",
+            )
+        )
+        head_ref = head.ref_id
+        revision = service.revision(head)
+        revision_ref = revision.ref_id
+        terms = service.terms(revision_ref)
+        assert [row.rate for row in terms] == ["80.123456789", "85", "80.123456789", "90"]
+        assert all(row.currency == "USD" and row.billable for row in terms)
+        term_ref = terms[0].ref_id
+        original = session.scalar(
+            select(CompensationTerm)
+            .where(
+                CompensationTerm.policy_ref == head_ref, CompensationTerm.derived_from_ref.is_(None)
+            )
+            .order_by(CompensationTerm.created_at)
+            .limit(1)
+        )
+        assert original.end_at is None and original.rate == "80.123456789"
+        original_ref = original.ref_id
+        root_ref = revision.created_by_changeset_ref
+        version = head.version
+    packet = await call("docket_get_work_context", {"refs": [eng_ref]})
+    changed = await call(
+        "docket_set_pay_terms",
+        {
+            "context_id": packet["context_id"],
+            "operation_id": "pg-pay-currency-only",
+            "engagement_ref": eng_ref,
+            "effective_from": "2026-11-01",
+            "currency": "CAD",
+        },
+    )
+    assert changed.get("disposition") == "committed", changed
+    with factory() as session:
+        service = CompensationPolicyService(session)
+        head = session.scalar(
+            select(CompensationPolicy).where(CompensationPolicy.ref_id == head_ref)
+        )
+        version = head.version
+        current = service.terms(service.revision(head).ref_id)
+        assert [t.rate for t in current] == [
+            "80.123456789",
+            "80.123456789",
+            "85",
+            "80.123456789",
+            "90",
+        ]
+        assert [t.currency for t in current] == ["USD", "CAD", "CAD", "CAD", "CAD"]
+    packet = await call("docket_get_work_context", {"refs": [head_ref]})
+    assert packet.get("ok"), packet
+    assert packet["objects"][0]["state"]["engagement_ref"] == eng_ref
+    proposals = []
+    for rate in (100, 110):
+        proposal = await call(
+            "docket_set_pay_terms",
+            {
+                "context_id": packet["context_id"],
+                "operation_id": f"pg-pay-race-{rate}",
+                "engagement_ref": eng_ref,
+                "effective_from": "2026-12-01",
+                "rate": rate,
+                "preview": True,
+            },
+        )
+        assert proposal.get("disposition") == "prepared", proposal
+        proposals.append(proposal)
+    barrier = Barrier(2)
+
+    def apply(proposal):
+        barrier.wait(timeout=10)
+        return asyncio.run(call("docket_apply_change", {"change_id": proposal["change_id"]}))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(apply, proposals))
+    assert sum(row.get("disposition") == "committed" for row in results) == 1, results
+    with factory() as session:
+        assert (
+            session.scalar(
+                select(CompensationPolicy.version).where(CompensationPolicy.ref_id == head_ref)
+            )
+            == version + 1
+        )
+    for statement, message in (
+        (
+            update(CompensationTerm).where(CompensationTerm.ref_id == term_ref).values(rate="0"),
+            "append-only",
+        ),
+        (
+            delete(CompensationRevisionTerm).where(
+                CompensationRevisionTerm.revision_ref == revision_ref
+            ),
+            "append-only",
+        ),
+        (
+            update(CompensationPolicyRevision)
+            .where(CompensationPolicyRevision.ref_id == revision_ref)
+            .values(sealed=False),
+            "append-only",
+        ),
+        (
+            CompensationRevisionTerm.__table__.insert().values(
+                revision_ref=revision_ref, ordinal=99, term_ref=original_ref
+            ),
+            "sealed",
+        ),
+        (
+            update(CompensationPolicy)
+            .where(CompensationPolicy.ref_id == head_ref)
+            .values(operator_ref="other"),
+            "immutable",
+        ),
+        (
+            update(CompensationPolicy)
+            .where(CompensationPolicy.ref_id == head_ref)
+            .values(version=version + 2),
+            "sealed revision",
+        ),
+    ):
+        try:
+            with factory.begin() as session:
+                session.execute(statement)
+        except DBAPIError as exc:
+            assert message in str(exc.orig), str(exc.orig)
+        else:
+            raise AssertionError("PostgreSQL allowed invalid compensation history")
+    try:
+        with factory.begin() as session:
+            head = session.scalar(
+                select(CompensationPolicy).where(CompensationPolicy.ref_id == head_ref)
+            )
+            old_version = head.version
+            session.execute(
+                update(CompensationPolicy)
+                .where(CompensationPolicy.ref_id == head_ref)
+                .values(version=old_version + 1)
+            )
+            session.execute(
+                update(CompensationPolicy)
+                .where(CompensationPolicy.ref_id == head_ref)
+                .values(version=old_version + 2)
+            )
+            revision = CompensationPolicyRevision(
+                policy_ref=head_ref,
+                revision=old_version + 2,
+                created_by_changeset_ref=root_ref,
+                sealed=False,
+                basis_refs=[],
+            )
+            session.add(revision)
+            session.flush()
+            session.add(
+                CompensationRevisionTerm(
+                    revision_ref=revision.ref_id, ordinal=0, term_ref=original_ref
+                )
+            )
+            session.flush()
+            revision.sealed = True
+
+    except DBAPIError as exc:
+        assert "sealed revision" in str(exc.orig)
+    else:
+        raise AssertionError("PostgreSQL allowed skipped compensation revisions")
+    try:
+        with factory.begin() as session:
+            original = session.scalar(
+                select(CompensationTerm).where(CompensationTerm.ref_id == original_ref)
+            )
+            fields = {
+                column.name: getattr(original, column.name)
+                for column in CompensationTerm.__table__.columns
+                if column.name not in {"id", "ref_id"}
+            }
+            fields.update(rate="-1", derived_from_ref=None)
+            session.execute(CompensationTerm.__table__.insert().values(**fields))
+    except DBAPIError as exc:
+        assert "ck_compensation_decimal_rate" in str(exc.orig)
+    else:
+        raise AssertionError("PostgreSQL accepted an invalid monetary rate")
+    try:
+        with factory.begin() as session:
+            head = session.scalar(
+                select(CompensationPolicy).where(CompensationPolicy.ref_id == head_ref)
+            )
+            revision = CompensationPolicyRevision(
+                policy_ref=head_ref,
+                revision=head.version + 1,
+                basis_refs=[],
+                created_by_changeset_ref=root_ref,
+                sealed=False,
+            )
+            session.add(revision)
+            session.flush()
+            session.add(
+                CompensationRevisionTerm(
+                    revision_ref=revision.ref_id, ordinal=0, term_ref=original_ref
+                )
+            )
+            session.flush()
+            session.add(
+                CompensationRevisionTerm(revision_ref=revision.ref_id, ordinal=1, term_ref=term_ref)
+            )
+            session.flush()
+    except DBAPIError as exc:
+        assert "overlap" in str(exc.orig)
+    else:
+        raise AssertionError("PostgreSQL allowed overlapping effective compensation windows")
+    other = AgentPrincipal(
+        "synthetic-other-pay-reader", "synthetic-other-operator", "interactive", frozenset({"read"})
+    )
+    for name, arguments in (
+        ("docket_get_work_context", {"refs": [head_ref]}),
+        ("docket_get_history_entry", {"ref": revision_ref, "view": "audit"}),
+    ):
+        denied = await call(name, arguments, other)
+        assert denied.get("ok") is False, denied
+        assert "80.123456789" not in json.dumps(denied)
+    with factory() as session:
+        rows = [dict(row) for row in session.execute(select(ToolInvocation.__table__)).mappings()]
+        assert "80.123456789" not in json.dumps(rows, default=str)
+
+
 async def check_native_lineage(settings, factory, principal):
     from docket.agent_auth import AgentCallContext, agent_call_context
     from docket.models import (
@@ -528,6 +825,10 @@ async def check():
     from docket.database import configure_database, get_session_factory
     from docket.models import (
         AuthenticatedRequest,
+        CompensationPolicy,
+        CompensationPolicyRevision,
+        CompensationRevisionTerm,
+        CompensationTerm,
         Engagement,
         EngagementRevision,
         WorkLineageEdge,
@@ -555,6 +856,10 @@ async def check():
     engine = configure_database(settings.database_url)
     factory = get_session_factory()
     tables = (
+        CompensationPolicy,
+        CompensationPolicyRevision,
+        CompensationRevisionTerm,
+        CompensationTerm,
         Engagement,
         EngagementRevision,
         WorkSession,
@@ -926,6 +1231,7 @@ async def check():
         raise AssertionError("PostgreSQL appended to a sealed work report")
     await check_native_timers(settings, factory, principal)
     await check_native_lineage(settings, factory, principal)
+    await check_compensation_policies(settings, factory, principal)
     changeset_ref = created["changeset_ref"]
     with factory.begin() as session:
         request_ref = session.scalar(
@@ -1121,6 +1427,8 @@ async def check():
                 "timer_fresh_process_survival": "passed",
                 "native_lineage_and_concurrent_quantity_growth": "passed",
                 "quantity_and_lineage_immutability": "passed",
+                "effective_compensation_policies_and_concurrency": "passed",
+                "compensation_owner_isolation_and_privacy": "passed",
                 "composite_time_precision_and_sealing": "passed",
                 "work_report_aggregates_and_exports": "passed",
                 "retained_report_membership": "sealed",

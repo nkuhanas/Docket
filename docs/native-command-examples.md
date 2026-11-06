@@ -164,3 +164,29 @@ clock times for duration-only or incomplete work. Queries aggregate the matching
 components in SQL. JSON/CSV exports preserve the same immutable basis and precision.
 Report calculation/export version v2 includes components; retained v1 exports keep
 their original shape.
+
+Set explicit effective pay terms through the engagement's context:
+
+```json
+{"context_id":"<engagement-context>","operation_id":"example-pay-terms","engagement_ref":"<selected-engagement>","effective_from":"2026-11-01","rate":"80.125","currency":"USD","billable":true}
+```
+
+`docket_set_pay_terms` inherits omitted fields from the applicable windows. A later
+rate alone retains currency and other terms, while a currency-only change preserves
+scheduled future rates. effective_to is exclusive; a bounded correction resumes the
+prior applicable terms after the window. Gaps retain unknown values rather than
+extending expired rates. component_key defaults to base; additional
+components are explicit arrangements, not inferred duplicate pay.
+
+Use `docket_set_reporting_rules` for configured reporting and rounding:
+
+```json
+{"context_id":"<engagement-context>","operation_id":"example-reporting-rules","engagement_ref":"<selected-engagement>","effective_from":"2026-11-01","period_days":14,"anchor_date":"2026-10-26","rounding_minutes":15,"rounding_scope":"period","rounding_mode":"nearest"}
+```
+
+Refresh the changed engagement context between commands. The same exact optional
+preview/apply and unchanged retry behavior applies. Policy/head references can be
+read through work context; its history pointer provides bounded policy_json_chunk
+audit reads. Pay/reporting configuration neither rewrites work nor establishes a
+financial claim, payment, external submission or provider operation. Computed earnings,
+formal documents and settlement are later implementation slices.
