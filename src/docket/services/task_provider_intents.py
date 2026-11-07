@@ -193,12 +193,20 @@ class TaskProviderIntentService:
         self.session.flush()
         return affected
 
-    def _binding(self, task: Task, changeset: ChangeSet) -> TaskProviderBinding | None:
+    def _binding(
+        self,
+        task: Task,
+        changeset: ChangeSet,
+        *,
+        publish: bool = False,
+    ) -> TaskProviderBinding | None:
         active = self.bindings.active(task.ref_id)
         if (
             active is not None
             and active.provider_snapshot.get("deletion")
             and task.canonical_status == "active"
+            and task.task_state != "cancelled"
+            and publish
         ):
             self.supersede_pending(task.ref_id, changeset, binding_ref=active.ref_id)
             active.active = False
@@ -211,6 +219,14 @@ class TaskProviderIntentService:
             return None
         if active is not None:
             return active
+        if not publish and self.session.scalar(
+            select(TaskProviderBinding.ref_id)
+            .where(
+                TaskProviderBinding.task_ref == task.ref_id,
+            )
+            .limit(1)
+        ):
+            return None
         # Detachment is an exclusion, not a request for a new representation.
         previous = self.session.scalar(
             select(TaskProviderBinding)
@@ -345,7 +361,7 @@ class TaskProviderIntentService:
             "append_marker": kind == "insert" or binding.marker_present,
             "sequence": sequence,
             "title_prefix": task_time_header(task)[0],
-            "carried_by_task_ref": carried_by,
+            "subtree_root_ref": carried_by,
         }
         if kind == "insert":
             # An over-limit note stays canonical. Its explicit field limitation
@@ -452,9 +468,19 @@ class TaskProviderIntentService:
                             )
                         )
                 scoped = remaining
-            # Complete/delete known children first. New Google children still
-            # follow the parent's admitted current-subtree semantics.
-            frames.extend((frame, ref, None, group) for frame, ref in reversed(scoped))
+            cascading = original.action == "retract" or (
+                original.action == "update"
+                and (
+                    getattr(original.payload, "task_state", None) in {"completed", "cancelled"}
+                    or getattr(original.payload, "canonical_status", None) == "retracted"
+                )
+            )
+            # Only the parent writes Google's current subtree. Descendants retain
+            # actual read-back evidence, never independent lifecycle writes.
+            frames.extend(
+                (frame, ref, refs[0] if cascading and ref != refs[0] else None, group)
+                for frame, ref in scoped
+            )
         for change, task_ref, carried_by, _group in frames:
             if change.object_type not in {"task", "task_sync_resolution"}:
                 continue
@@ -483,7 +509,20 @@ class TaskProviderIntentService:
                         self._queue(task, binding, changeset, "patch", {"title": task.title})
                     )
                 continue
-            binding = self._binding(task, changeset)
+            publish = change.action == "create" or (
+                change.object_type == "task"
+                and change.action == "update"
+                and bool(
+                    {"task_state", "canonical_status", "task_list_ref"}.intersection(
+                        change.payload.model_fields_set,
+                    )
+                )
+            )
+            if change.object_type == "task_sync_resolution" and change.payload.choose == "docket":
+                conflict = self.session.get(TaskSyncConflict, change.object_ref)
+                assert conflict is not None
+                publish = "deletion" in (change.payload.fields or conflict.fields)
+            binding = self._binding(task, changeset, publish=publish)
             if binding is None:
                 continue
             if change.object_type == "task_sync_resolution":
@@ -535,6 +574,8 @@ class TaskProviderIntentService:
             desired = canonical_values(task)
             blocked = self._open_fields(binding)
             if task.canonical_status == "retracted" or task.task_state == "cancelled":
+                if binding.provider_snapshot.get("deletion"):
+                    continue
                 self.supersede_pending(task.ref_id, changeset, binding_ref=binding.ref_id)
                 in_flight = self.session.scalar(
                     select(Operation)
@@ -550,7 +591,16 @@ class TaskProviderIntentService:
                     binding.active = False
                     self.bindings.retain(binding, [changeset.ref_id])
                     continue
-                queued.append(self._queue(task, binding, changeset, "delete", {"deletion": True}))
+                queued.append(
+                    self._queue(
+                        task,
+                        binding,
+                        changeset,
+                        "delete",
+                        {"deletion": True},
+                        carried_by=carried_by,
+                    )
+                )
                 continue
             limitations = dict(binding.limitations)
             try:
@@ -610,6 +660,8 @@ class TaskProviderIntentService:
                         carried_by=carried_by,
                     )
                 )
+            if carried_by:
+                fields.intersection_update({"status", "deletion"})
             for field_group in (
                 {"title"},
                 {"notes"},
@@ -622,7 +674,11 @@ class TaskProviderIntentService:
                     or set(binding.limitations).intersection(field_group)
                 ):
                     continue
-                selected = {key: desired[key] for key in sorted(field_group)}
+                selected = {
+                    key: desired[key]
+                    for key in sorted(field_group)
+                    if not (carried_by and key == "completed_at")
+                }
                 if all(
                     key in binding.provider_snapshot and binding.provider_snapshot[key] == value
                     for key, value in selected.items()
@@ -638,7 +694,9 @@ class TaskProviderIntentService:
                 self.supersede_pending(
                     task.ref_id, changeset, binding_ref=binding.ref_id, fields=field_group
                 )
-                queued.append(self._queue(task, binding, changeset, "patch", selected))
+                queued.append(
+                    self._queue(task, binding, changeset, "patch", selected, carried_by=carried_by)
+                )
         scopes: list[set[str]] = []
         for _, _ref, _, group in frames:
             if group:
@@ -650,10 +708,24 @@ class TaskProviderIntentService:
                 scopes.append(scope)
         for scope in scopes:
             predecessor = None
+            roots: dict[str, Operation] = {}
             for operation in queued:
                 if not scope.intersection(operation.canonical_target_refs):
                     continue
-                if predecessor is not None:
-                    operation.predecessor_operation_id = predecessor.id
+                target = self.session.scalar(
+                    select(OperationTarget).where(
+                        OperationTarget.operation_id == operation.id,
+                    )
+                )
+                assert target is not None
+                root = target.parameters.get("subtree_root_ref")
+                dependency = (
+                    roots.get(root)
+                    if root and operation.operation_type != "tasks_move"
+                    else predecessor
+                )
+                if dependency is not None:
+                    operation.predecessor_operation_id = dependency.id
+                roots[target.canonical_target_ref] = operation
                 predecessor = operation
         return queued

@@ -326,6 +326,7 @@ async def test_owned_calendar_observation_changes_only_reminder_under_its_origin
         AuthenticatedRequest,
         OAuthPrincipal,
         OperatorUtterance,
+        PluginNotification,
         TaskPolicyEffect,
     )
     from docket.providers.google.calendar import CalendarSnapshotEvent
@@ -460,6 +461,14 @@ async def test_owned_calendar_observation_changes_only_reminder_under_its_origin
                 )
             )
             assert len(effects) == (1 if external_edit in {"clock", "delete", "privacy"} else 0)
+            notices = session.scalar(
+                select(func.count())
+                .select_from(PluginNotification)
+                .where(
+                    PluginNotification.event_name == "docket.system.alert",
+                )
+            )
+            assert notices == (1 if external_edit in {"all_day", "revoked"} else 0)
             if external_edit == "privacy":
                 assert task.reminder_generation == 2
         if external_edit in {"clock", "delete", "privacy"}:

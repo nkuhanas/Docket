@@ -490,8 +490,9 @@ async def test_parent_subtree_move_completion_and_retraction_preserve_identity(
     monkeypatch,
 ):
     async with tasks_client() as (call, runner, provider, _packet):
-        monkeypatch.setattr("docket.services.task_policy_authority.get_settings",
-                            lambda: runner.settings)
+        monkeypatch.setattr(
+            "docket.services.task_policy_authority.get_settings", lambda: runner.settings
+        )
         with session_factory.begin() as session:
             source = session.scalar(select(GoogleTaskList))
             source_ref, account_id = source.ref_id, source.account_id
@@ -622,3 +623,143 @@ async def test_parent_subtree_move_completion_and_retraction_preserve_identity(
         with session_factory() as session:
             assert set(session.scalars(select(Task.canonical_status))) == {"retracted"}
             assert set(session.scalars(select(Operation.status))) == {"succeeded"}
+
+
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+@pytest.mark.asyncio
+async def test_parent_completion_cannot_write_a_concurrently_moved_descendants_subtree(
+    session_factory,
+    tasks_client,
+    monkeypatch,
+):
+    from sqlalchemy import func
+
+    from docket.models import PluginNotification
+
+    async with tasks_client() as (call, runner, provider, _packet):
+        refs = []
+        for index in range(3):
+            context = await call("docket_get_tasks_context", {"refs": refs[-1:]})
+            result = await call(
+                "docket_create_task",
+                {
+                    "context_id": context["context_id"],
+                    "operation_id": "moving-child-" + str(index),
+                    "title": "Node " + str(index),
+                    **({"parent_task_ref": refs[-1]} if refs else {}),
+                },
+            )
+            assert result.get("disposition") == "committed", result
+            assert runner.run_due_once()
+            with session_factory() as session:
+                refs.append(
+                    session.scalar(select(Task.ref_id).where(Task.title == "Node " + str(index)))
+                )
+        with session_factory() as session:
+            ids = {
+                row.task_ref: row.provider_task_id
+                for row in session.scalars(select(TaskProviderBinding))
+            }
+        other = provider.insert_task("synthetic-list", {"title": "Unrelated parent"})
+        original_patch = provider.patch_task
+        moved = []
+
+        def concurrent_edit(list_id, task_id, fields, **kwargs):
+            if task_id == ids[refs[0]] and fields.get("status") == "completed" and not moved:
+                grandchild = provider.get_task(list_id, ids[refs[2]])
+                child = provider.get_task(list_id, ids[refs[1]])
+                provider.move_task(list_id, child.task_id, etag=child.etag, parent=other.task_id)
+                # Google's parent ETags do not fence the whole graph. A child
+                # write can still be stale in scope with an unchanged ETag.
+                assert provider.get_task(list_id, grandchild.task_id).etag == grandchild.etag
+                moved.append(True)
+            return original_patch(list_id, task_id, fields, **kwargs)
+
+        monkeypatch.setattr(provider, "patch_task", concurrent_edit)
+        context = await call("docket_get_tasks_context", {"refs": [refs[0]]})
+        result = await call(
+            "docket_update_task",
+            {
+                "context_id": context["context_id"],
+                "operation_id": "complete-parent-during-move",
+                "task_ref": refs[0],
+                "state": "completed",
+            },
+        )
+        assert result.get("disposition") == "committed", result
+        for _ in range(3):
+            assert runner.run_due_once()
+        assert provider.get_task("synthetic-list", ids[refs[0]]).fields["status"] == "completed"
+        assert provider.get_task("synthetic-list", ids[refs[1]]).fields["status"] == "needsAction"
+        assert provider.get_task("synthetic-list", ids[refs[2]]).fields["status"] == "needsAction"
+        patches = [url for method, url in provider.calls if method == "PATCH"]
+        assert len(patches) == 1 and patches[0].endswith(ids[refs[0]])
+        with session_factory() as session:
+            failed = list(session.scalars(select(Operation).where(Operation.status == "failed")))
+            assert len(failed) == 2
+            assert {operation.last_error_code for operation in failed} == {
+                "google_tasks_subtree_membership_changed",
+            }
+            assert all(operation.result.get("observation_ref") for operation in failed)
+            assert (
+                session.scalar(
+                    select(func.count())
+                    .select_from(PluginNotification)
+                    .where(
+                        PluginNotification.event_name == "docket.system.alert",
+                    )
+                )
+                == 1
+            )
+
+
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+@pytest.mark.asyncio
+async def test_cancellation_and_explicit_reopening_keep_one_canonical_task(
+    session_factory,
+    tasks_client,
+):
+    async with tasks_client() as (call, runner, provider, packet):
+        result = await call(
+            "docket_create_task",
+            {
+                "context_id": packet["context_id"],
+                "operation_id": "cancel-sample-create",
+                "title": "A cancellable task",
+            },
+        )
+        assert result.get("disposition") == "committed", result
+        assert runner.run_due_once()
+        with session_factory() as session:
+            task_ref = session.scalar(select(Task.ref_id))
+            item_ref = session.scalar(select(Task.item_ref))
+        for index, fields in enumerate(
+            (
+                {"state": "cancelled"},
+                {"notes": "Preserve this history"},
+                {"state": "not_started"},
+            )
+        ):
+            context = await call("docket_get_tasks_context", {"refs": [task_ref]})
+            updated = await call(
+                "docket_update_task",
+                {
+                    "context_id": context["context_id"],
+                    "operation_id": "cancel-sample-" + str(index),
+                    "task_ref": task_ref,
+                    **fields,
+                },
+            )
+            assert updated.get("disposition") == "committed", updated
+            if index == 1:
+                assert not runner.run_due_once()  # Notes do not republish a cancelled task.
+            else:
+                assert runner.run_due_once()
+        active = [task for task in provider.tasks.values() if not task.get("deleted")]
+        assert len(active) == 1 and active[0]["status"] == "needsAction"
+        with session_factory() as session:
+            tasks = list(session.scalars(select(Task)))
+            assert len(tasks) == 1 and tasks[0].ref_id == task_ref and tasks[0].item_ref == item_ref
+            assert tasks[0].description == "Preserve this history"
+            assert tasks[0].task_state == "not_started" and tasks[0].completed_at is None
+            assert len(list(session.scalars(select(TaskProviderBinding)))) == 2

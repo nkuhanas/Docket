@@ -148,6 +148,17 @@ class TaskSyncService:
             )
             self.session.add(row)
             self.session.flush()
+            from docket.services.notifications import NotificationService
+
+            NotificationService(self.session, self.settings).system_alert(
+                row.ref_id,
+                key=f"tasks:conflict:{binding.ref_id}:{task.version}:"
+                + sha256_json(sorted(fields)),
+                summary="A Google Task has conflicting fields: "
+                + ", ".join(sorted(fields))
+                + ". Read the conflict and choose Docket or Google for the affected fields.",
+                occurred_at=utc_now(),
+            )
         return row
 
     def _apply(
@@ -293,8 +304,11 @@ class TaskSyncService:
                 )
             )
             if known_bindings:
-                if (len(known_bindings) != 1 or not known_bindings[0].active
-                        or known_bindings[0].detached):
+                if (
+                    len(known_bindings) != 1
+                    or not known_bindings[0].active
+                    or known_bindings[0].detached
+                ):
                     return {
                         "state": "known_identity_unavailable",
                         "observation_ref": observation.ref_id,

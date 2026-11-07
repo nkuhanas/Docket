@@ -338,7 +338,7 @@ async def check_tasks(settings, factory, _principal):
             ).order_by(Operation.created_at)))
             assert len(completion_ops) == 3
             assert completion_ops[1].predecessor_operation_id == completion_ops[0].id
-            assert completion_ops[2].predecessor_operation_id == completion_ops[1].id
+            assert completion_ops[2].predecessor_operation_id == completion_ops[0].id
         drain()
         packet = await call("docket_get_context", {"refs": [tree_refs[0]]})
         removed = await call("docket_retract_record", {

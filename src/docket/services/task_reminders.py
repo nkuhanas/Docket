@@ -373,8 +373,19 @@ class TaskReminderService:
                     and previous_instant == instant(task.remind_at)
                     and value.timezone == task.reminder_timezone
                     and title == ("Task reminder: " + task.title)[:512]
-                    and (ref not in explicit_clocks
-                         or self.route(task, None).ref_id == projection.lane_ref)
+                    and (
+                        ref not in explicit_clocks
+                        or (
+                            self.route(task, None).ref_id == projection.lane_ref
+                            and self.session.scalar(
+                                select(ProviderEventBinding.id).where(
+                                    ProviderEventBinding.canonical_target_ref == old.projection_ref,
+                                    ProviderEventBinding.status == "diverged",
+                                )
+                            )
+                            is None
+                        )
+                    )
                     and not (
                         effect is not None
                         and effect.reminder_generation_ref == old.ref_id

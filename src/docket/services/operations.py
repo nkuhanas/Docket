@@ -899,9 +899,7 @@ class OperationRunner:
             operation, target, attempt = rows
             retry = error.transient and operation.attempt_count < self.max_attempts
             operation.status = (
-                OperationStatus.PENDING.value
-                if retry
-                else OperationStatus.FAILED.value
+                OperationStatus.PENDING.value if retry else OperationStatus.FAILED.value
             )
             target.status = "pending" if retry else "failed"
             if reconciling:
@@ -924,6 +922,31 @@ class OperationRunner:
             attempt.error_message = error.safe_message
             attempt.completed_at = utc_now()
             self._clear_lease(operation, target)
+            if (
+                operation.operation_type.startswith("tasks_")
+                and not retry
+                and not reconciling
+                and error.code != "google_tasks_stale"
+            ):
+                from docket.services.notifications import NotificationService
+
+                root = target.parameters.get("subtree_root_ref")
+                NotificationService(session, self.settings).system_alert(
+                    root or operation.ref_id,
+                    key=(
+                        f"tasks:subtree:{operation.originating_changeset_ref}:{root}"
+                        if root
+                        else f"tasks:delivery:{operation.ref_id}"
+                    ),
+                    summary=(
+                        "Google's subtree changed; inspect the parent delivery and retained "
+                        "child observations before correcting the affected tasks."
+                        if root
+                        else "A Google Tasks delivery failed. Read its retained "
+                        "operation before retrying or correcting the task."
+                    ),
+                    occurred_at=utc_now(),
+                )
             self._audit(
                 session,
                 operation,

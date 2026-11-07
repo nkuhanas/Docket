@@ -153,6 +153,18 @@ class TasksPollingService:
                 seconds=min(3600, 15 * 2 ** min(row.failure_count, 8)) + random.uniform(0, 5)
             )
             row.lease_token, row.leased_until = None, None
+            if row.failure_count >= 3:
+                from docket.services.notifications import NotificationService
+
+                account = session.get(ProviderAccount, ref) if kind == "discovery" else None
+                subject = account.ref_id if account is not None else str(ref)
+                episode = row.last_success_at.isoformat() if row.last_success_at else "initial"
+                NotificationService(session, self.settings).system_alert(
+                    subject, key=f"tasks:poll:{subject}:{episode}",
+                    summary="Google Tasks polling has repeatedly failed. Read Tasks readiness "
+                    "and the affected list's freshness before changing permissions or retrying.",
+                    occurred_at=aware(self.clock()),
+                )
             if code == "google_tasks_invalid_request":
                 # An expired page token cannot establish full inventory coverage.
                 row.page_token, row.generation = None, None
@@ -212,6 +224,17 @@ class TasksPollingService:
                         )):
                             absent.available = False
                             absent.version += 1
+                            if absent.policy_mode != "disabled":
+                                from docket.services.notifications import NotificationService
+
+                                NotificationService(session, self.settings).system_alert(
+                                    absent.ref_id,
+                                    key=f"tasks:list-unavailable:{absent.ref_id}:{absent.version}",
+                                    summary=("A selected Google Tasks list is unavailable. "
+                                             "Canonical tasks are preserved; inspect the list "
+                                             "and choose a destination or continue locally."),
+                                    occurred_at=aware(self.clock()),
+                                )
                         state.generation = None
                         state.last_success_at = aware(self.clock())
                         state.requested = False

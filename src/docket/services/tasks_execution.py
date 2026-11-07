@@ -35,7 +35,11 @@ from docket.providers.google.tasks import (
 )
 from docket.services.task_bindings import TaskBindingService
 from docket.services.task_item_titles import lock_task_rows
-from docket.services.task_reconciliation import observed_values, transport_fields_match
+from docket.services.task_reconciliation import (
+    canonical_values,
+    observed_values,
+    transport_fields_match,
+)
 from docket.services.task_sync import TaskSyncService
 from docket.services.tasks_dispatch import TasksDispatchService
 from docket.services.tasks_method_admission import TasksMethodAdmission
@@ -144,7 +148,48 @@ class TasksExecutionService:
         kind = claim.operation_type.removeprefix("tasks_")
         result: GoogleTask | None
         try:
-            if kind == "insert":
+            if claim.parameters.get("subtree_root_ref") and kind in {"patch", "delete"}:
+                result = provider.get_task(call["source_list_id"], call["task_id"])
+                if (
+                    result is None
+                    or (kind == "delete" and not result.fields.get("deleted"))
+                    or (kind == "patch" and not self.matches(result, claim.parameters))
+                ):
+                    if result is not None:
+                        with self.runner.session_factory.begin() as session:
+                            lock_task_rows(session, [claim.parameters["task_ref"]])
+                            rows = self.runner._owned_claim(session, claim)
+                            if rows is not None:
+                                operation, target, attempt = rows
+                                listing = session.scalar(
+                                    select(GoogleTaskList).where(
+                                        GoogleTaskList.account_id == operation.account_id,
+                                        GoogleTaskList.provider_list_id == call["source_list_id"],
+                                    )
+                                )
+                                if listing is not None:
+                                    observation = TaskSyncService(
+                                        session,
+                                        self.runner.settings,
+                                    ).observe(
+                                        listing,
+                                        result,
+                                        generation=uuid.uuid4(),
+                                        read_started_at=datetime.fromisoformat(
+                                            call["started_at"],
+                                        ),
+                                    )
+                                    operation.result = target.result = {
+                                        "observation_ref": observation.ref_id,
+                                        "parent_effect_confirmed": False,
+                                        "confirmation_only": True,
+                                    }
+                                    attempt.response_summary = dict(operation.result)
+                    raise TasksProviderError(
+                        "google_tasks_subtree_membership_changed",
+                        "The child no longer confirms its parent's subtree outcome.",
+                    )
+            elif kind == "insert":
                 result = provider.insert_task(
                     call["source_list_id"],
                     call["fields"],
@@ -158,7 +203,7 @@ class TasksExecutionService:
                     call["fields"],
                     etag=call["etag"],
                 )
-            elif kind == "move" and claim.parameters.get("carried_by_task_ref"):
+            elif kind == "move" and claim.parameters.get("subtree_root_ref"):
                 result = provider.get_task(call["destination_list_id"], call["task_id"])
                 if result is None or not self.matches(result, claim.parameters):
                     raise TasksProviderError(
@@ -195,9 +240,12 @@ class TasksExecutionService:
                 with self.runner.session_factory.begin() as session:
                     lock_task_rows(session, [claim.parameters["task_ref"]])
                     listing = session.scalar(
-                        select(GoogleTaskList).join(
-                            Operation, Operation.account_id == GoogleTaskList.account_id,
-                        ).where(
+                        select(GoogleTaskList)
+                        .join(
+                            Operation,
+                            Operation.account_id == GoogleTaskList.account_id,
+                        )
+                        .where(
                             GoogleTaskList.provider_list_id == call["source_list_id"],
                             Operation.id == claim.operation_id,
                         )
@@ -222,12 +270,28 @@ class TasksExecutionService:
             assert binding is not None and task is not None
             matched = True
             basis = [operation.ref_id, operation.originating_changeset_ref]
-            if result is None:
+            if result is None or (
+                operation.operation_type == "tasks_delete" and result.fields.get("deleted")
+            ):
                 # HTTP deletion acknowledgement is evidence of the effect, not a
                 # fabricated provider Task resource or a synthetic poll response.
+                observation = None
+                if result is not None:
+                    listing = session.get(GoogleTaskList, binding.task_list_ref)
+                    assert listing is not None
+                    observation = TaskSyncService(session, self.runner.settings).observe(
+                        listing,
+                        result,
+                        generation=uuid.uuid4(),
+                        read_started_at=datetime.fromisoformat(call["started_at"]),
+                    )
+                    basis.append(observation.ref_id)
                 binding.provider_snapshot = {**binding.provider_snapshot, "deletion": True}
                 binding.baseline = {**binding.baseline, "deletion": True}
-                binding.observation_ref, binding.provider_etag = None, None
+                binding.observation_ref = observation.ref_id if observation is not None else None
+                binding.provider_etag = (
+                    observation.provider_etag if observation is not None else None
+                )
                 if task.canonical_status == "retracted":
                     binding.active = False
                 elif binding.active:
@@ -283,6 +347,30 @@ class TasksExecutionService:
                         session, operation, target, "operation.old_response_retained"
                     )
                     return
+                if (
+                    params.get("subtree_root_ref")
+                    and operation.operation_type == "tasks_patch"
+                    and params["values"].get("status") == "completed"
+                ):
+                    sync = TaskSyncService(session, self.runner.settings)
+                    actual, _ = observed_values(session, observation, binding)
+                    if (
+                        task.version == params["canonical_version"]
+                        and task.task_state == "completed"
+                        and actual.get("status") == "completed"
+                        and actual.get("completed_at") != canonical_values(task)["completed_at"]
+                    ):
+                        sync._apply(
+                            listing,
+                            observation,
+                            "update",
+                            {
+                                "completed_at": actual["completed_at"],
+                            },
+                            task=task,
+                            binding=binding,
+                        )
+                    sync.reconcile(observation)
                 values, marker = observed_values(
                     session,
                     observation,
@@ -319,6 +407,11 @@ class TasksExecutionService:
                 "binding_ref": binding.ref_id,
                 "observation_ref": binding.observation_ref,
                 "matched_requested_fields": matched,
+                **(
+                    {"confirmed_parent_effect": params["subtree_root_ref"]}
+                    if params.get("subtree_root_ref")
+                    else {}
+                ),
             }
             operation.last_error_code = target.last_error_code = (
                 None if matched else "google_tasks_result_mismatch"
@@ -451,6 +544,26 @@ class TasksExecutionService:
                     "match_count": len(matches),
                     "complete": page.next_page_token is None,
                 }
+                if (
+                    page.next_page_token is None
+                    and (
+                        utc_now()
+                        - operation.created_at.replace(
+                            tzinfo=operation.created_at.tzinfo or UTC,
+                        )
+                    ).total_seconds()
+                    >= 300
+                ):
+                    from docket.services.notifications import NotificationService
+
+                    NotificationService(session, self.runner.settings).system_alert(
+                        operation.ref_id,
+                        key=f"tasks:uncertain:{operation.ref_id}",
+                        summary="A Google Task creation remains uncertain after correlation "
+                        "checks. Inspect its operation and observed candidates; link a verified "
+                        "counterpart instead of repeating the creation.",
+                        occurred_at=utc_now(),
+                    )
                 self.runner._clear_lease(operation, target)
             return
         list_id = call["destination_list_id"] if kind == "move" else call["source_list_id"]
@@ -463,9 +576,9 @@ class TasksExecutionService:
                 {"missing_task": True, "observed_at": utc_now().isoformat()},
                 "google_tasks_deletion_uncertain",
             )
-        elif kind == "delete" and result is not None and result.fields.get("deleted"):
-            self.success(claim, None)
-        elif result is not None and self.matches(result, claim.parameters):
+        elif (kind == "delete" and result is not None and result.fields.get("deleted")) or (
+            result is not None and self.matches(result, claim.parameters)
+        ):
             self.success(claim, result)
         else:
             self.runner._finish_error(

@@ -405,6 +405,16 @@ class CalendarSyncService:
                         except DocketError as exc:
                             outcome = exc.code
                         if outcome not in {"unchanged", "retired", "reconciled"}:
+                            from docket.services.notifications import NotificationService
+
+                            NotificationService(session, self.settings).system_alert(
+                                reminder.task_ref,
+                                key=f"tasks:reminder:{reminder.ref_id}:{outcome}",
+                                summary="A Calendar task reminder edit could not update Docket. "
+                                "Read the Task's reminder/binding status and correct its clock "
+                                "or restore the required permission.",
+                                occurred_at=now,
+                            )
                             session.add(
                                 AuditEvent(
                                     event_type="task.reminder_observation_deferred",
