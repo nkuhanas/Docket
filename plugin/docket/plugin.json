@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "docket",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "Manage personal operations with delegated writes, bounded triage and inbox notifications.",
   "author": {
     "name": "Docket"

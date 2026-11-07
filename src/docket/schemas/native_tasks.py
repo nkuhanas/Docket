@@ -27,7 +27,8 @@ TaskSyncMode = Literal["disabled", "observe", "two_way"]
 
 TASK_TOOL_PURPOSES = {
     "docket_get_tasks_context": "Read task lists or selected task/sync records and their versions.",
-    "docket_query_tasks": "Filter canonical tasks; return bounded results and a lossless cursor.",
+    "docket_query_tasks": "Filter canonical tasks or export JSON/CSV. Concatenate export content "
+    "chunks in order; follow next_cursor while present.",
     "docket_configure_task_list":
         "Select observe/two-way/disabled policy, default and reminder calendar.",
     "docket_refresh_tasks":
@@ -55,6 +56,7 @@ class QueryTasks(StrictModel):
     scheduled_to: date | None = None
     include_closed: bool = False
     include_retracted: bool = False
+    format: Literal["summary", "json", "csv"] = "summary"
     limit: int = Field(default=20, ge=1, le=50)
     cursor: str | None = Field(default=None, max_length=1536)
 

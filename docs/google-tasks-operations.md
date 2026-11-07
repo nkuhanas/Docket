@@ -59,6 +59,11 @@ deadline and remind_at are separate. An AM/PM header displays the managed time i
 Google Tasks; an owned private/free Calendar companion handles the exact alert.
 Calendar success is not proof a device displayed a popup.
 
+Use docket_query_tasks with format="json" or format="csv" for full-text export.
+Concatenate content chunks and follow next_cursor while present. A captured page is
+stable across chunk retries; later pages use current canonical observations.
+This adds no second export tool or provider-side write.
+
 Parent completion/deletion/list moves use Google's current subtree, including
 new subtasks. One parent lifecycle write affects Google; known descendants have
 independent read-back confirmations. Concurrently moved descendants retain actual
@@ -96,3 +101,17 @@ conditional request only after a fresh read proves the exact original non-wildca
 ETag remains unchanged. Binding refreshes cannot replace a sent cancellation pin.
 Changed versions remain visible for reconciliation. This does not allow a retired
 creation to run again or a creation to be blindly repeated.
+
+## Device acceptance and diagnosis
+
+The Operator observed both the native Task companion and a plain API control on
+the iPhone Google Calendar app at 7:15 PM PST on November 6. Both entries and their
+at-time bell settings were confirmed on the phone before that instant. The
+companion used the existing private/free one-minute format and zero-minute popup.
+
+Earlier trials missed alerts, including a plain baseline. Late synchronization
+to the device is the leading hypothesis, not a proven sole cause or a measured
+minimum lead time. For a diagnostic smoke, verify future event visibility before
+its instant; this is not a manual setup requirement for ordinary Tasks. Preserve
+the requested reminder instant and current privacy policy instead of adding an
+invented delivery delay, changing event duration or silently switching channels.

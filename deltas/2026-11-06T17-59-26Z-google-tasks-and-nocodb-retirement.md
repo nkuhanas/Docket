@@ -868,3 +868,12 @@ point without inventing a duration or making the entire Calendar generation stal
 This is a reader/cache rule: canonical Event creation still requires a positive
 interval, and backwards or incomplete provider ranges remain invalid. Typed task
 reminder origin and workload exclusion survive the promoted mixed snapshot.
+
+### Implementation clarification — Task exports
+
+The required JSON/CSV export uses one optional flat `format` on docket_query_tasks.
+Follow its existing cursor while present and concatenate content in order. Full
+canonical titles and notes survive output budgets, including one oversized row.
+Each page's chunks use existing connection-owned bounded read snapshots; later
+pages are read when requested. This does not promise an immutable whole-query
+financial report or add another tool, public payload grammar or storage table.

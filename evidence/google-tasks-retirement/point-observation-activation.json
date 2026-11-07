@@ -1,0 +1,35 @@
+{
+  "recorded_at": "2026-11-07T02:54:00Z",
+  "implementation_commit": "177a598d745353eaa0af90be95869994ac984a26",
+  "source_tree": "f42a2a52df9c84d3d8e4c14158aff33fe5b94941",
+  "tested_and_deployed_image": "sha256:fe39dab1dbdc4aafe89981be953709e7fc2965ea1d95e8d6d904aa143ac2ae8e",
+  "checks": {
+    "native": "passed",
+    "provider": "passed",
+    "storage": "passed",
+    "release": "passed",
+    "static": "passed",
+    "isolated_postgres": "passed"
+  },
+  "test_cases": 594,
+  "native_tools": 114,
+  "schema_head": "20261106a7b8",
+  "pr": 68,
+  "deployment_drain_backup_health": "passed",
+  "backup_retained": true,
+  "rollback_image": "docket-docket:rollback-20261107T025246Z",
+  "live_snapshot_and_workload": {
+    "verified_at": "2026-11-07T02:53:33.948443+00:00",
+    "real_google_snapshot": true,
+    "new_generation_promoted": true,
+    "cache_state": "current",
+    "iphone_created_point_retained_without_invented_duration": true,
+    "point_elapsed_occupancy_seconds": 0,
+    "owned_marker_origins_retained": 4,
+    "unowned_metadata_copy_does_not_grant_ownership": true,
+    "owned_markers_excluded_from_actual_workload_capture": true,
+    "unresolved_snapshot_generation": false,
+    "manual_production_row_changes": false
+  },
+  "task_companion_device_popup_acceptance": "pending"
+}

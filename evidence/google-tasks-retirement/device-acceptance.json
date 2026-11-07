@@ -1,0 +1,141 @@
+{
+  "recorded_at": "2026-11-07T03:31:46.234684+00:00",
+  "scheduled_instant": "2026-11-06T19:15:00-08:00",
+  "client": "Google Calendar for iPhone",
+  "operator_confirmed_device_events_visible_before_instant": true,
+  "operator_confirmed_both_bells_at_time_of_event": true,
+  "operator_reported_popups": {
+    "native_task_companion": "received",
+    "plain_api_control_G": "received"
+  },
+  "native_request_ref": "req_01M6SZ2QPPT6PMSRCW1T7QREXR",
+  "native_changeset_ref": "chg_01M6SZ2QR011ZRZY2G0MQ7KTSB",
+  "device_acceptance": "passed",
+  "profile": {
+    "private": true,
+    "free": true,
+    "elapsed_marker_seconds": 60,
+    "popup_minutes_before": 0
+  },
+  "diagnosis": {
+    "leading_hypothesis": "late Google-to-device synchronization or alert registration",
+    "sole_cause_proven": false,
+    "minimum_safe_lead_time_measured": false
+  },
+  "cleanup": {
+    "verified_at": "2026-11-07T03:22:50.492042+00:00",
+    "final_api_control_removed": true,
+    "native_task_retracted_with_item_and_history_retained": true,
+    "google_task_tombstone_readback": true,
+    "native_reminder_cancelled_readback": true,
+    "cleanup_changeset_ref": "chg_01M6T0AYEJYC8WNGB0BG0M04BH",
+    "cleanup_request_ref": "req_01M6T0AYDNMTAHGCM522S7C2WP",
+    "cleanup_provider_operations_confirmed": 2,
+    "validation_lists_empty_of_open_tasks": true,
+    "list_coverage": [
+      {
+        "list": "Docket validation",
+        "mode": "two_way",
+        "default": false,
+        "last_success_at": "2026-11-07T03:17:55.983586+00:00"
+      },
+      {
+        "list": "Docket validation move target",
+        "mode": "two_way",
+        "default": false,
+        "last_success_at": "2026-11-07T03:22:47.131879+00:00"
+      }
+    ],
+    "my_tasks_sync_disabled": true,
+    "four_older_local_tasks_version_one_and_unlinked": true,
+    "manual_production_row_changes": false
+  },
+  "earlier_disposable_controls": {
+    "verified_at": "2026-11-07T03:02:05.183448+00:00",
+    "calendar": "Docket validation",
+    "past_control_cleanup": [
+      {
+        "title": "API control A: normal",
+        "already_cancelled": true
+      },
+      {
+        "title": "API control B: no updates",
+        "removed_readback_confirmed": true
+      },
+      {
+        "title": "API control C: private",
+        "removed_readback_confirmed": true
+      },
+      {
+        "title": "API control D: one minute",
+        "removed_readback_confirmed": true
+      },
+      {
+        "title": "API control E: metadata",
+        "removed_readback_confirmed": true
+      },
+      {
+        "title": "API control F: baseline",
+        "removed_readback_confirmed": true
+      },
+      {
+        "title": "Notification API control: busy",
+        "removed_readback_confirmed": true
+      },
+      {
+        "title": "Notification Control",
+        "removed_readback_confirmed": true
+      }
+    ],
+    "future_1915_pair_preserved": true,
+    "exact_known_fixture_ids_and_fresh_etags": true,
+    "manual_production_row_changes": false
+  },
+  "runtime_checkpoint": {
+    "native_tools": 114,
+    "retired_aliases_unregistered": 15,
+    "native_instructions_bytes": 1889,
+    "changed_definitions": {
+      "docket_get_tasks_context": {
+        "input_bytes": 362,
+        "definition_bytes": 777
+      },
+      "docket_query_tasks": {
+        "input_bytes": 1085,
+        "definition_bytes": 1492
+      },
+      "docket_configure_task_list": {
+        "input_bytes": 838,
+        "definition_bytes": 1358
+      },
+      "docket_refresh_tasks": {
+        "input_bytes": 181,
+        "definition_bytes": 597
+      },
+      "docket_link_google_task": {
+        "input_bytes": 718,
+        "definition_bytes": 1232
+      },
+      "docket_resolve_task_sync": {
+        "input_bytes": 842,
+        "definition_bytes": 1360
+      },
+      "docket_create_task": {
+        "input_bytes": 1665,
+        "definition_bytes": 2229
+      },
+      "docket_update_task": {
+        "input_bytes": 2180,
+        "definition_bytes": 2752
+      }
+    },
+    "all_changed_definitions_bytes": 11797,
+    "entire_discovery_bytes": 190089,
+    "health_ready": true,
+    "image": "sha256:fe39dab1dbdc4aafe89981be953709e7fc2965ea1d95e8d6d904aa143ac2ae8e",
+    "source_tree": "f42a2a52df9c84d3d8e4c14158aff33fe5b94941",
+    "docket_healthy": true,
+    "nocodb_owned_containers_volumes_networks_images_absent": true
+  },
+  "retained_encrypted_archives_verified": 3
+}

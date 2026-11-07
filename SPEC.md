@@ -27,7 +27,7 @@ Wire models remain machine definitions; AGENTS is an operating guide;
 CONTRIBUTING and runbooks describe procedures, not competing specifications.
 
 The Operator goal to implement the [Google Tasks/NocoDB delta](deltas/2026-11-06T17-59-26Z-google-tasks-and-nocodb-retirement.md)
-adopts SPEC 1.2. Implementation is deployed from `5a2d63f4e0c2` (initial activation `c7d25789ecfb`), with contract v68,
+adopts SPEC 1.2. Implementation is deployed from `177a598d7453` (initial activation `c7d25789ecfb`), with contract v68,
 114 tools and the same private plugin updated to 2.2.0. Source-bound release checks,
 PostgreSQL migration/concurrency proofs, deployment and actual Google method
 admission pass in the [activation receipt](evidence/google-tasks-retirement/activation.json).
@@ -35,9 +35,12 @@ The Operator confirms fresh ChatGPT task context, corroborated by successful v68
 calls in the [host read receipt](evidence/google-tasks-retirement/host-context.json).
 [Native write evidence](evidence/google-tasks-retirement/native-journey.json) confirms
 creation/editing, subtree lifecycle and stable-ID moves with actual Google delivery.
-The [implementation report](docs/google-tasks-implementation.md) tracks remaining
-intended-device popup acceptance after successful same-host write journeys. Deployment does not
-substitute for those observations; complete delta acceptance remains pending.
+The Operator confirms the native reminder and plain control both alerted on the
+iPhone at 7:15 PM PST, recorded independently in the
+[device receipt](evidence/google-tasks-retirement/device-acceptance.json). Final
+audit adds the required JSON/CSV query exports through one optional format field;
+that follow-up's release and same-App package acceptance remain pending in the
+[implementation report](docs/google-tasks-implementation.md).
 
 The Operator instruction to implement the [work-attribution delta](deltas/2026-11-05T21-18-26Z-work-attribution-and-personal-operations.md)
 adopts its catalogue, work, reporting/finance and operational requirements.
@@ -373,6 +376,11 @@ refresh, linking and field-conflict resolution. Reuse create/update/retract and
 exact prepared workflows. Optional flat list/scheduled-date/parent/sibling and
 `remind_at` fields derive support records and provider intent internally. A list
 policy's optional `reminder_calendar_ref` supplies one-time reminder routing.
+Task queries also accept one flat `format` selector for summary, JSON or CSV.
+Exports preserve full canonical titles/notes through bounded content chunks in
+connection-owned read snapshots. A captured page survives chunk retries and
+subsequent edits; later pages are read at continuation, without claiming a frozen
+whole-query financial report. Concatenating all content yields valid JSON or CSV.
 Each new input is at most 4 KiB, each complete definition 6 KiB and gross additional
 discovery including modified tools 24 KiB. Publish only implemented capabilities.
 
@@ -543,6 +551,6 @@ disabled required operations do not complete two-way synchronization.
 
 | Version | Change |
 | --- | --- |
-| 1.2 | Adopts the November 6 Google Tasks/NocoDB delta and revised reviews under the Operator implementation goal. Live evidence clarifies UTC marker transport; Operator amendments select AM/PM headers after native-clock loss and Google-style Task subtrees (ADRs 011, 014). Implementation is deployed from 5a2d63f4e0c2 with actual method admission and plugin 2.2.0. Fresh ChatGPT Tasks context and native write journeys pass; device popup acceptance remains pending. Valid point observations retain exact zero duration without changing canonical event-input rules. |
+| 1.2 | Adopts the November 6 Google Tasks/NocoDB delta and revised reviews under the Operator implementation goal. Live evidence clarifies UTC marker transport; Operator amendments select AM/PM headers after native-clock loss and Google-style Task subtrees (ADRs 011, 014). Implementation is deployed from 177a598d7453 with actual method admission and plugin 2.2.0. Fresh ChatGPT Tasks context and native write journeys pass; device popup acceptance passes. The v69 JSON/CSV query-export follow-up awaits activation. Valid point observations retain exact zero duration without changing canonical event-input rules. |
 | 1.1 | Adopts the November 5 work-attribution/personal-operations delta including catalogue consolidation. C0–P2 and optional visibility are implemented, deployed and host-accepted, with separate phase evidence; external provider choices remain a concrete follow-on delta. Implementation clarifies revision-pinned visibility and nonblocking invalidation (ADR 009). |
 | 1.0 | First current SPEC synthesized from signed ontology and Operator amendments; adopts November 4 context/local-CI delta and retirement cleanup. No invented prior version. Implemented, deployed and verified through live native-tool use. |

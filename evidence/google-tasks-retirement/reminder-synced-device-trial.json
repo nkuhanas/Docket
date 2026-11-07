@@ -1,0 +1,54 @@
+{
+  "verified_at": "2026-11-07T03:00:36.724289+00:00",
+  "task_ref": "task_01M6STQCN6XXYVS4CMGZZW93HD",
+  "request_ref": "req_01M6SZ2QPPT6PMSRCW1T7QREXR",
+  "changeset_ref": "chg_01M6SZ2QR011ZRZY2G0MQ7KTSB",
+  "provider_operations_confirmed": 2,
+  "actual_google_readback": true,
+  "start": {
+    "dateTime": "2026-11-06T19:15:00-08:00",
+    "timeZone": "America/Los_Angeles"
+  },
+  "end": {
+    "dateTime": "2026-11-06T19:16:00-08:00",
+    "timeZone": "America/Los_Angeles"
+  },
+  "visibility": "private",
+  "availability": "transparent",
+  "popup_at_start": true,
+  "no_guests": true,
+  "device_events_visible_before_deadline": true,
+  "device_bells_at_event_time": true,
+  "device_popup": "pending",
+  "api_control": {
+    "verified_at": "2026-11-07T02:59:18.314544+00:00",
+    "title": "API control G: synced before alert",
+    "start": {
+      "dateTime": "2026-11-06T19:15:00-08:00",
+      "timeZone": "America/Los_Angeles"
+    },
+    "end": {
+      "dateTime": "2026-11-06T19:30:00-08:00",
+      "timeZone": "America/Los_Angeles"
+    },
+    "confirmed_google_readback": true,
+    "popup_at_start": true,
+    "no_guests": true,
+    "visibility": "default",
+    "availability": "opaque",
+    "device_observation": "pending"
+  },
+  "active_marker_cache_workload": {
+    "verified_at": "2026-11-07T03:00:38.928006+00:00",
+    "real_google_snapshot": true,
+    "new_generation_promoted": true,
+    "cache_state": "current",
+    "iphone_created_point_retained_without_invented_duration": true,
+    "point_elapsed_occupancy_seconds": 0,
+    "owned_marker_origins_retained": 5,
+    "unowned_metadata_copy_does_not_grant_ownership": true,
+    "owned_markers_excluded_from_actual_workload_capture": true,
+    "unresolved_snapshot_generation": false,
+    "manual_production_row_changes": false
+  }
+}

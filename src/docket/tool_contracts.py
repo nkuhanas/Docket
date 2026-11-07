@@ -18,7 +18,7 @@ from docket.schemas.work import WORK_TOOL_PURPOSES
 from docket.schemas.work_calendar import WORK_CALENDAR_PURPOSES
 from docket.schemas.workload import WORKLOAD_TOOL_PURPOSES
 
-CONTRACT_VERSION = "docket-tools-2026-11-06-v68"
+CONTRACT_VERSION = "docket-tools-2026-11-06-v69"
 ContractProfile = Literal["interactive", "triage", "plugin"]
 
 

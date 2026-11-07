@@ -77,10 +77,12 @@ The tested image cold-starts and production remains healthy without NocoDB.
 
 ## Remaining acceptance
 
-The current method gates are active, not read-only placeholders. Complete the
-same-App rescan and actual native Tasks journeys on the designated validation
-lists/Calendar. Observe one exact-time popup on the intended device/client and
-record the result independently. Do not infer display from Calendar event creation.
+The current method gates are active, not read-only placeholders. The same-App
+rescan and actual native Tasks journeys on the designated validation lists and
+Calendar pass. Task-companion popup acceptance remains unresolved. Observe one
+exact-time companion popup on the intended device/client and record that result
+independently. The working plain API controls do not substitute for this check.
+Do not infer display from Calendar event creation.
 Use the [operations procedure](../../docs/google-tasks-operations.md); no new Auth0
 permission, callback URL, foreground proof or repeated release approval is needed.
 
@@ -114,3 +116,19 @@ both working plain API alarms; [notification-attribute-controls.json](notificati
 records the pending 6:55 property comparison. These controls do not by themselves
 prove a Task companion alarm. Valid Google point observations also require the
 reader correction and a successful real postdeploy Calendar generation.
+
+[point-observation-activation.json](point-observation-activation.json) records that
+correction's deployed artifact and 594-case release validation. A real postdeploy
+refresh promotes a new current generation, retains the iPhone-created point
+without invented duration and preserves all four owned reminder origins. Actual
+workload capture excludes the owned markers; copied metadata grants no ownership.
+
+[device-acceptance.json](device-acceptance.json) supersedes earlier pending device
+fields: both the native companion and control G alerted on the iPhone at 7:15 PM.
+The exact native and API fixtures are cleaned, older personal Tasks are preserved
+and the three encrypted retirement archives remain checksum-valid.
+[notification-control-outcomes.json](notification-control-outcomes.json) retains
+the inconclusive earlier comparison; [reminder-synced-device-trial.json](reminder-synced-device-trial.json)
+retains the unchanged preflight settings and active-marker workload proof.
+The [completion audit](completion-audit.md) maps the adopted requirements to source
+and evidence; the final query-export correction awaits release/package activation.

@@ -32,6 +32,7 @@ from docket.schemas.native_tasks import GetTasksContext, QueryTasks
 from docket.services.native_context import NativeContextService
 from docket.services.provenance_refs import ProvenanceRefService
 from docket.services.task_bindings import TaskBindingService
+from docket.services.task_exports import TaskExportService
 from docket.services.task_views import TaskViewService, iso
 
 
@@ -342,12 +343,15 @@ class TasksContextService:
         identity = sha256_json(
             [principal.operator_ref, data.model_dump(mode="json", exclude={"cursor", "limit"})]
         )
+        export = TaskExportService(self.session, self.settings)
         if data.cursor:
             cursor = _read_cursor(data.cursor)
             if cursor.get("filter") != identity:
                 raise DocketError(
                     code="task_cursor_invalid", message="Keep the same query filters."
                 )
+            if "export_ref" in cursor:
+                return export.continue_chunk(str(cursor["export_ref"]), identity)
             try:
                 created = datetime.fromisoformat(cursor["created"])
                 after = str(cursor["ref"])
@@ -363,6 +367,14 @@ class TasksContextService:
         tasks = self.session.scalars(
             query.order_by(Task.created_at, Task.ref_id).limit(data.limit + 1)
         ).all()
+        if data.format != "summary":
+            selected = list(tasks[:data.limit])
+            next_page = _cursor({
+                "filter": identity, "created": iso(selected[-1].created_at),
+                "ref": selected[-1].ref_id,
+            }) if len(tasks) > data.limit else None
+            return export.page(selected, data.format, identity, total,
+                               first=data.cursor is None, next_page=next_page)
         rows: list[dict[str, Any]] = []
         objects: list[dict[str, Any]] = []
         versions = {}

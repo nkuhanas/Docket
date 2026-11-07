@@ -1,0 +1,226 @@
+{
+  "verified_at": "2026-11-07T02:57:11.994021+00:00",
+  "actual_google_readbacks": {
+    "A": {
+      "status": "confirmed",
+      "visibility": "default",
+      "transparency": "opaque",
+      "eventType": "default",
+      "reminders": {
+        "useDefault": false,
+        "overrides": [
+          {
+            "method": "popup",
+            "minutes": 0
+          }
+        ]
+      },
+      "attendees": null,
+      "guestsCanModify": null,
+      "guestsCanInviteOthers": null,
+      "guestsCanSeeOtherGuests": null,
+      "locked": null,
+      "privateCopy": null,
+      "source": null,
+      "has_docket_private_metadata": false,
+      "creator_same_as_A": true,
+      "organizer_same_as_A": true,
+      "start": {
+        "dateTime": "2026-11-06T18:40:00-08:00",
+        "timeZone": "America/Los_Angeles"
+      },
+      "end": {
+        "dateTime": "2026-11-06T18:55:00-08:00",
+        "timeZone": "America/Los_Angeles"
+      },
+      "creation_lead_seconds": 584.0,
+      "updated_before_start": true
+    },
+    "B": {
+      "status": "confirmed",
+      "visibility": "default",
+      "transparency": "opaque",
+      "eventType": "default",
+      "reminders": {
+        "useDefault": false,
+        "overrides": [
+          {
+            "method": "popup",
+            "minutes": 0
+          }
+        ]
+      },
+      "attendees": null,
+      "guestsCanModify": null,
+      "guestsCanInviteOthers": null,
+      "guestsCanSeeOtherGuests": null,
+      "locked": null,
+      "privateCopy": null,
+      "source": null,
+      "has_docket_private_metadata": false,
+      "creator_same_as_A": true,
+      "organizer_same_as_A": true,
+      "start": {
+        "dateTime": "2026-11-06T18:40:00-08:00",
+        "timeZone": "America/Los_Angeles"
+      },
+      "end": {
+        "dateTime": "2026-11-06T18:55:00-08:00",
+        "timeZone": "America/Los_Angeles"
+      },
+      "creation_lead_seconds": 583.0,
+      "updated_before_start": true
+    },
+    "C": {
+      "status": "confirmed",
+      "visibility": "private",
+      "transparency": "opaque",
+      "eventType": "default",
+      "reminders": {
+        "useDefault": false,
+        "overrides": [
+          {
+            "method": "popup",
+            "minutes": 0
+          }
+        ]
+      },
+      "attendees": null,
+      "guestsCanModify": null,
+      "guestsCanInviteOthers": null,
+      "guestsCanSeeOtherGuests": null,
+      "locked": null,
+      "privateCopy": null,
+      "source": null,
+      "has_docket_private_metadata": false,
+      "creator_same_as_A": true,
+      "organizer_same_as_A": true,
+      "start": {
+        "dateTime": "2026-11-06T18:55:00-08:00",
+        "timeZone": "America/Los_Angeles"
+      },
+      "end": {
+        "dateTime": "2026-11-06T19:10:00-08:00",
+        "timeZone": "America/Los_Angeles"
+      },
+      "creation_lead_seconds": 605.0,
+      "updated_before_start": true
+    },
+    "D": {
+      "status": "confirmed",
+      "visibility": "default",
+      "transparency": "opaque",
+      "eventType": "default",
+      "reminders": {
+        "useDefault": false,
+        "overrides": [
+          {
+            "method": "popup",
+            "minutes": 0
+          }
+        ]
+      },
+      "attendees": null,
+      "guestsCanModify": null,
+      "guestsCanInviteOthers": null,
+      "guestsCanSeeOtherGuests": null,
+      "locked": null,
+      "privateCopy": null,
+      "source": null,
+      "has_docket_private_metadata": false,
+      "creator_same_as_A": true,
+      "organizer_same_as_A": true,
+      "start": {
+        "dateTime": "2026-11-06T18:55:00-08:00",
+        "timeZone": "America/Los_Angeles"
+      },
+      "end": {
+        "dateTime": "2026-11-06T18:56:00-08:00",
+        "timeZone": "America/Los_Angeles"
+      },
+      "creation_lead_seconds": 604.0,
+      "updated_before_start": true
+    },
+    "E": {
+      "status": "confirmed",
+      "visibility": "default",
+      "transparency": "opaque",
+      "eventType": "default",
+      "reminders": {
+        "useDefault": false,
+        "overrides": [
+          {
+            "method": "popup",
+            "minutes": 0
+          }
+        ]
+      },
+      "attendees": null,
+      "guestsCanModify": null,
+      "guestsCanInviteOthers": null,
+      "guestsCanSeeOtherGuests": null,
+      "locked": null,
+      "privateCopy": null,
+      "source": null,
+      "has_docket_private_metadata": true,
+      "creator_same_as_A": true,
+      "organizer_same_as_A": true,
+      "start": {
+        "dateTime": "2026-11-06T18:55:00-08:00",
+        "timeZone": "America/Los_Angeles"
+      },
+      "end": {
+        "dateTime": "2026-11-06T19:10:00-08:00",
+        "timeZone": "America/Los_Angeles"
+      },
+      "creation_lead_seconds": 603.0,
+      "updated_before_start": true
+    },
+    "F": {
+      "status": "confirmed",
+      "visibility": "default",
+      "transparency": "opaque",
+      "eventType": "default",
+      "reminders": {
+        "useDefault": false,
+        "overrides": [
+          {
+            "method": "popup",
+            "minutes": 0
+          }
+        ]
+      },
+      "attendees": null,
+      "guestsCanModify": null,
+      "guestsCanInviteOthers": null,
+      "guestsCanSeeOtherGuests": null,
+      "locked": null,
+      "privateCopy": null,
+      "source": null,
+      "has_docket_private_metadata": false,
+      "creator_same_as_A": true,
+      "organizer_same_as_A": true,
+      "start": {
+        "dateTime": "2026-11-06T18:55:00-08:00",
+        "timeZone": "America/Los_Angeles"
+      },
+      "end": {
+        "dateTime": "2026-11-06T19:10:00-08:00",
+        "timeZone": "America/Los_Angeles"
+      },
+      "creation_lead_seconds": 602.0,
+      "updated_before_start": true
+    }
+  },
+  "user_observations": {
+    "A": "alerted",
+    "B": "alerted",
+    "C": "no alert",
+    "D": "no alert",
+    "E": "no alert",
+    "F": "no alert"
+  },
+  "assessment": "6:55 baseline also failed; this comparison does not isolate visibility, duration, metadata or sendUpdates as the cause.",
+  "iphone_at_1855": "another app; pre-alarm calendar visibility not established",
+  "earlier_1825_busy_and_free_controls": "neither alerted"
+}

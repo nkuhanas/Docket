@@ -1,5 +1,7 @@
 """Tasks remain small, authenticated native workflows rather than compiler payloads."""
 
+import csv
+import io
 import json
 import uuid
 
@@ -23,6 +25,76 @@ from docket.models import (
 from docket.schemas.native_tasks import TASK_TOOL_PURPOSES
 
 linked_plugin = test_native_plugin.linked_plugin
+
+
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+@pytest.mark.parametrize("format", ["json", "csv"])
+@pytest.mark.asyncio
+async def test_task_exports_keep_full_text_across_bounded_replayable_chunks(
+    session_factory, linked_plugin, format,
+):
+    app, _settings, token, _principal = linked_plugin
+    expected = []
+    async with (
+        app.router.lifespan_context(app),
+        httpx2.AsyncClient(transport=httpx2.ASGITransport(app),
+                          headers={"Authorization": "Bearer " + token}) as http,
+        Client(streamable_http_client("https://docket.you/mcp/", http_client=http),
+               mode="legacy") as client,
+    ):
+        context = (await client.call_tool("docket_get_overview", {})).structured_content
+        for index in range(3):
+            title = (f"Export {index}: " + "東京 🧪" * 256)[:1024]
+            notes = ('Work, "quoted"\n東京 🧪\t' * 1000)[:16000]
+            created = (await client.call_tool("docket_create_task", {
+                "context_id": context["context_id"], "operation_id": f"export-task-{index}",
+                "title": title, "notes": notes,
+            })).structured_content
+            assert created["disposition"] == "committed", created
+            ref = next(ref for ref in created["affected_refs"] if ref.startswith("task_"))
+            expected.append((ref, title, notes))
+        arguments = {"format": format, "limit": 2}
+        first = (await client.call_tool("docket_query_tasks", arguments)).structured_content
+        assert first["total_matching"] == 3 and first["next_cursor"]
+        # The rest of this captured page must survive a later real command edit.
+        selected = (await client.call_tool("docket_get_context", {
+            "refs": [expected[0][0]],
+        })).structured_content
+        edited = (await client.call_tool("docket_update_task", {
+            "context_id": selected["context_id"], "operation_id": "edit-during-export",
+            "task_ref": expected[0][0], "notes": "Changed after the export started",
+        })).structured_content
+        assert edited["disposition"] == "committed", edited
+        wrong = (await client.call_tool("docket_query_tasks", {
+            **arguments, "text": "changed filters", "cursor": first["next_cursor"],
+        })).structured_content
+        assert wrong["error"]["code"] == "task_cursor_invalid"
+        content, packet, count = "", first, 0
+        while True:
+            assert len(json.dumps(packet).encode()) <= 16384
+            content += packet["content"]
+            count += 1
+            assert count < 100
+            if not packet.get("next_cursor"):
+                break
+            continuation = {**arguments, "cursor": packet["next_cursor"]}
+            packet = (await client.call_tool("docket_query_tasks", continuation)).structured_content
+            replay = (await client.call_tool("docket_query_tasks", continuation)).structured_content
+            assert packet["content"] == replay["content"]
+        assert count > 3
+        rows = (json.loads(content) if format == "json" else
+                list(csv.DictReader(io.StringIO(content))))
+        assert [(row["ref"], row["title"], row["notes"]) for row in rows] == expected
+        assert all(len(row["title"]) == 1024 and len(row["notes"]) == 16000 for row in rows)
+        empty = (await client.call_tool("docket_query_tasks", {
+            **arguments, "text": "no matching task",
+        })).structured_content
+        assert empty.get("next_cursor") is None and empty["total_matching"] == 0
+        assert (json.loads(empty["content"]) if format == "json" else
+                list(csv.DictReader(io.StringIO(empty["content"])))) == []
+    with session_factory() as session:
+        changed = session.scalar(select(Task).where(Task.ref_id == expected[0][0]))
+        assert changed.description == "Changed after the export started"
 
 
 @pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)

@@ -6,6 +6,12 @@ follow its cursor for remaining results. Context supplies canonical refs and
 versions. Six Task workflows extend existing create/update/retract commands;
 do not reconstruct provider IDs, change graphs or internal staging payloads.
 
+For an export, use the same query with format="json" or format="csv". Concatenate
+each content chunk in order and follow next_cursor while present. Full titles and
+notes survive even when one row needs several chunks. Each captured page stays
+fixed during continuation; later pages are read when requested. Normal summary
+queries remain compact and keep editable context.
+
 For “remind me to file the report Friday at 5 PM,” resolve the date and timezone,
 then use `docket_create_task` with title, scheduled_date and remind_at (an ISO
 instant including its offset). Optional timezone is an IANA name. Docket derives
