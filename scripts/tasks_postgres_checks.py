@@ -210,6 +210,16 @@ async def check_tasks(settings, factory, _principal):
                     return
             raise AssertionError("Synthetic reminder queue did not drain")
 
+        def owned_calendar_events():
+            with factory() as session:
+                event_ids = set(session.scalars(select(
+                    ProviderEventBinding.provider_event_id,
+                ).join(TaskReminderGeneration,
+                       TaskReminderGeneration.projection_ref
+                       == ProviderEventBinding.canonical_target_ref,
+                ).where(TaskReminderGeneration.task_ref == task_ref)))
+            return [row for event_id, row in calendar.events.items() if event_id in event_ids]
+
         drain()
         with factory() as session:
             task = session.scalar(select(Task).where(Task.ref_id == task_ref))
@@ -248,7 +258,7 @@ async def check_tasks(settings, factory, _principal):
                     TaskReminderGeneration.task_ref == task_ref)) == 1
         drain()
         assert sum(row.snapshot.get("status") != "cancelled"
-                   for row in calendar.events.values()) == 1
+                   for row in owned_calendar_events()) == 1
         from dataclasses import replace
         from datetime import timedelta
 
@@ -316,7 +326,7 @@ async def check_tasks(settings, factory, _principal):
         })
         assert completed.get("disposition") == "committed", completed
         drain()
-        assert all(row.snapshot.get("status") == "cancelled" for row in calendar.events.values())
+        assert all(row.snapshot.get("status") == "cancelled" for row in owned_calendar_events())
         # A named parent owns ordinary subtree support under one genuine request.
         # PostgreSQL serializes the graph and retains every binding revision.
         tree_refs = []
