@@ -32,5 +32,12 @@
     ],
     "legacy_environment_keys": []
   },
-  "production_docket_and_postgresql_healthy_after_removal": true
+  "production_docket_and_postgresql_healthy_after_removal": true,
+  "images_removed": {
+    "nocodb/nocodb:2026.09.0": "sha256:4ccfc5114506b1725ffc63be56445fc6fe453a6e6d5cb56eb5f88f0540d4e56e",
+    "docket-workspace-eval:local": "sha256:27bb3c97aeb9eca748e903173385b5b315b66218d8e94ddb33e9bbd3c2d1a47a"
+  },
+  "images_had_no_container_consumers": true,
+  "images_verified_absent": true,
+  "image_removal_recorded_at": "2026-11-07T00:23:09.449058+00:00"
 }
