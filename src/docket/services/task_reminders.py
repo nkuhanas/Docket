@@ -560,7 +560,13 @@ class TaskReminderService:
                     ProviderEventBinding.canonical_target_ref == generation.projection_ref,
                 )
             )
-            if binding is not None:
+            sent_before = self.session.scalar(select(ExecutionAttempt.id).where(
+                ExecutionAttempt.operation_id == operation.id,
+                ExecutionAttempt.provider_request_id.is_not(None),
+            ).limit(1)) is not None
+            if binding is not None and not sent_before:
+                # Resolve a newly created marker before its first cancellation.
+                # Later attempts retain the pin used before the unknown outcome.
                 target.parameters = {
                     **target.parameters,
                     "provider_etag": binding.provider_etag,

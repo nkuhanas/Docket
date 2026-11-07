@@ -1,0 +1,32 @@
+{
+  "recorded_at": "2026-11-07T02:23:49.269028+00:00",
+  "implementation_commit": "3a6cd55521d7249faab97a3feecf773dfa3ddecb",
+  "source_tree": "4c5657e17ad210160a6134c86ca48001cf130d58",
+  "tested_and_deployed_image": "sha256:48a432ee14717d7c3d4ebbc891988a86e42e951b7726029af1bdcbe451b92fbd",
+  "release_checks": {
+    "native": "passed",
+    "release": "passed",
+    "storage": "passed",
+    "static": "passed",
+    "postgres": "passed"
+  },
+  "release_test_cases": 458,
+  "additional_affected_provider_cases": 132,
+  "release_elapsed_seconds": 244.29,
+  "schema_head": "20261106a7b8",
+  "pr": 66,
+  "deployment": {
+    "drain_backup_migration_health": "passed",
+    "backup_retained": true,
+    "rollback_image": "docket-docket:rollback-20261107T020502Z"
+  },
+  "native_delivery_readback": {
+    "changeset_ref": "chg_01M6SVA3090F2Q9J5GRWDQ0AD2",
+    "provider_disposition": "confirmed",
+    "ordinary_offset_timing_present": true,
+    "invalid_stored_timing_diagnostic": false
+  },
+  "plugin": "2.2.0 unchanged",
+  "task_method_admission": "all four methods remain verified",
+  "device_popup": "unresolved"
+}

@@ -1052,10 +1052,11 @@ class OperationRunner:
             reminders = TaskReminderService(session)
             generation = reminders.generation(target.parameters)
             retired = generation is not None and reminders.retired(generation)
+            blocked_retired = retired and claim.operation_type != "calendar_cancel_event"
             operation.status = target.status = (
-                "reconciliation_required" if retired else "pending"
+                "reconciliation_required" if blocked_retired else "pending"
             )
-            operation.next_attempt_at = utc_now() + timedelta(seconds=30 if retired else 0)
+            operation.next_attempt_at = utc_now() + timedelta(seconds=30 if blocked_retired else 0)
             target.next_attempt_at = operation.next_attempt_at
             attempt.status = AttemptStatus.FAILED.value
             attempt.error_code = "reconciliation_no_match"
@@ -1149,6 +1150,17 @@ class OperationRunner:
                 )
             if result is not None and event_matches_request(result, request):
                 self._finish_event_success(claim, result)
+            elif (
+                claim.operation_type == "calendar_cancel_event"
+                and claim.parameters.get("task_reminder_generation_ref")
+                and result is not None
+                and request.provider_etag is not None
+                and request.provider_etag.strip() not in {"", "*"}
+                and result.provider_etag == request.provider_etag
+            ):
+                # A fresh GET proves the owned retired marker is unchanged.
+                # Retry its original conditional cancellation, not its creation.
+                self._finish_no_reconciliation_match(claim)
             elif result is None:
                 self._finish_no_reconciliation_match(claim)
             else:

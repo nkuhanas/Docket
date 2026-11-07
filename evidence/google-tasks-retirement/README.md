@@ -98,3 +98,9 @@ browser/iPhone event visibility. [reminder-six-pm.json](reminder-six-pm.json) re
 the Operator-requested 6 PM native reschedule and actual provider acceptance; device
 observation remains pending. Earlier pending-write activation receipts are retained
 as historical evidence, not overwritten with later outcomes.
+
+[delivery-timing-activation.json](delivery-timing-activation.json) records the
+validated 3a6cd55521d7 display correction and actual corrected history output.
+[notification-comparison.json](notification-comparison.json) records failed earlier
+iPhone attempts and a working app-created control; the equal-lead-time 6:25 API
+busy/free comparison remains pending observation. No phone success is inferred.

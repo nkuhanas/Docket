@@ -1,6 +1,7 @@
 """Flat native reminders commit and retire through the shared Calendar queue."""
 
 import uuid
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
@@ -14,6 +15,7 @@ from docket.models import (
     Item,
     Operation,
     ProviderAccount,
+    ProviderEventBinding,
     Task,
     TaskConflictResolution,
     TaskListPolicyRevision,
@@ -21,6 +23,7 @@ from docket.models import (
     TemporalCalendarProjection,
 )
 from docket.models.base import utc_now
+from docket.providers.google.calendar import CalendarProviderError, CalendarUnknownOutcome
 from docket.services.task_provider_intents import TaskProviderIntentService
 from docket.services.task_sync import TaskSyncService
 
@@ -83,6 +86,102 @@ def drain(runner):
         if not runner.run_due_once():
             return
     pytest.fail("The bounded synthetic queue did not drain")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+@pytest.mark.parametrize("provider_changed", ["none", "before_read", "after_read"])
+async def test_unchanged_retired_marker_cancellation_recovers_original_intent(
+    session_factory, tasks_client, monkeypatch, provider_changed,
+):
+    async with tasks_client() as (call, runner, _provider, _packet):
+        monkeypatch.setattr(get_settings(), "tasks_enabled", True)
+        monkeypatch.setattr(get_settings(), "plugin_oauth_issuer",
+                            runner.settings.plugin_oauth_issuer)
+        context = await configure(call, session_factory)
+        created = await call("docket_create_task", {
+            "context_id": context, "operation_id": "cancel-recovery-create",
+            "title": "Cancellation recovery", "remind_at": "2026-11-13T17:00:00-08:00",
+            "timezone": "America/Los_Angeles",
+        })
+        assert created.get("disposition") == "committed", created
+        drain(runner)
+        with session_factory() as session:
+            task_ref = session.scalar(select(Task.ref_id))
+        original = next(iter(runner.provider.events))
+        cancel = runner.provider.cancel_event
+        lost = False
+
+        def unknown_before_cancel(request):
+            nonlocal lost
+            if not lost:
+                lost = True
+                raise CalendarUnknownOutcome()
+            current = runner.provider.events.get(request.external_event_id)
+            if current and request.provider_etag != current.provider_etag:
+                raise CalendarProviderError(
+                    "google_calendar_precondition_failed", "The marker changed.", transient=False,
+                )
+            return cancel(request)
+
+        monkeypatch.setattr(runner.provider, "cancel_event", unknown_before_cancel)
+        await edit(call, task_ref, "cancel-recovery-reschedule",
+                   remind_at="2026-11-13T18:00:00-08:00")
+        drain(runner)
+        assert original in runner.provider.events
+        with session_factory() as session:
+            cancellation = session.scalar(select(Operation).where(
+                Operation.operation_type == "calendar_cancel_event",
+            ))
+            operation_ref = cancellation.ref_id
+            assert cancellation.status == "reconciliation_required"
+        if provider_changed == "before_read":
+            prior = runner.provider.events[original]
+            runner.provider.events[original] = replace(
+                prior, provider_etag='"independent-edit"',
+                snapshot={**prior.snapshot, "summary": "An independently edited marker"},
+            )
+        assert runner.reconcile_once()
+        with session_factory() as session:
+            cancellation = session.scalar(select(Operation).where(
+                Operation.ref_id == operation_ref,
+            ))
+            assert cancellation.status == (
+                "reconciliation_required" if provider_changed == "before_read" else "pending"
+            )
+        if provider_changed == "before_read":
+            assert original in runner.provider.events
+            assert len(runner.provider.events) == 2
+            return
+        if provider_changed == "after_read":
+            prior = runner.provider.events[original]
+            runner.provider.events[original] = replace(
+                prior, provider_etag='"edit-after-read"',
+                snapshot={**prior.snapshot, "summary": "A concurrent Calendar edit"},
+            )
+            # A Calendar refresh may update the binding after the proof read.
+            with session_factory.begin() as session:
+                binding = session.scalar(select(ProviderEventBinding).where(
+                    ProviderEventBinding.provider_event_id == original,
+                ))
+                binding.provider_etag = '"edit-after-read"'
+                binding.version += 1
+        drain(runner)
+        if provider_changed == "after_read":
+            assert original in runner.provider.events
+            assert len(runner.provider.events) == 2
+            with session_factory() as session:
+                assert session.scalar(select(Operation.last_error_code).where(
+                    Operation.ref_id == operation_ref,
+                )) == "google_calendar_precondition_failed"
+            return
+        assert original not in runner.provider.events
+        assert len(runner.provider.events) == 1
+        with session_factory() as session:
+            assert session.scalar(select(Operation.status).where(
+                Operation.ref_id == operation_ref,
+            )) == "succeeded"
+            assert session.scalar(select(Task.reminder_generation)) == 2
 
 
 @pytest.mark.asyncio

@@ -76,7 +76,7 @@ class Settings(BaseSettings):
         default=10, ge=1, le=100, alias="DOCKET_OPERATION_DRAIN_LIMIT"
     )
     reconciliation_poll_seconds: float = Field(
-        default=300.0, alias="DOCKET_RECONCILIATION_POLL_SECONDS"
+        default=15.0, alias="DOCKET_RECONCILIATION_POLL_SECONDS"
     )
     stale_lease_poll_seconds: float = Field(default=60.0, alias="DOCKET_STALE_LEASE_POLL_SECONDS")
     discord_projection_enabled: bool = Field(

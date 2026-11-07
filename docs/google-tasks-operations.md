@@ -87,3 +87,12 @@ under MCPs → Issues → Rescan. Verify actual task context, creation/editing,
 completion/reopening, hierarchy, conflict/retry and reminder journeys on the
 dedicated targets. Separately observe one popup on the intended device/client;
 record that outcome honestly rather than infer it from API status.
+
+## Timed delivery recovery
+
+Recovery polling defaults to 15 seconds; individual ambiguous/error backoffs still
+apply. An unknown cancellation of an owned retired reminder can retry its original
+conditional request only after a fresh read proves the exact original non-wildcard
+ETag remains unchanged. Binding refreshes cannot replace a sent cancellation pin.
+Changed versions remain visible for reconciliation. This does not allow a retired
+creation to run again or a creation to be blindly repeated.

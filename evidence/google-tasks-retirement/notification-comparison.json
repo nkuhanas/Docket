@@ -1,0 +1,49 @@
+{
+  "verified_at": "2026-11-07T02:16:14.553163+00:00",
+  "target_calendar": "Docket validation",
+  "real_api_created_and_read_back": true,
+  "start": {
+    "dateTime": "2026-11-06T18:25:00-08:00",
+    "timeZone": "America/Los_Angeles"
+  },
+  "end": {
+    "dateTime": "2026-11-06T18:26:00-08:00",
+    "timeZone": "America/Los_Angeles"
+  },
+  "same_account_creator": true,
+  "same_private_visibility": true,
+  "same_60_second_duration": true,
+  "same_popup_at_start": true,
+  "api_control": {
+    "title": "Notification API control: busy",
+    "availability": "busy",
+    "created": "2026-11-07T02:14:36.000Z"
+  },
+  "docket_reminder": {
+    "title": "Task reminder: Docket validation: notification check",
+    "availability": "free",
+    "created": "2026-11-07T02:14:37.000Z",
+    "task_ref": "task_01M6STQCN6XXYVS4CMGZZW93HD",
+    "generation": 4
+  },
+  "device_result": "pending",
+  "previous_trials": [
+    {
+      "clock": "2026-11-06T17:47:10-08:00",
+      "device_popup": "not_received"
+    },
+    {
+      "clock": "2026-11-06T18:00:00-08:00",
+      "device_popup": "not_received",
+      "iphone_event_bell": "at time of event",
+      "ios_allow_notifications_and_banners": true
+    },
+    {
+      "clock": "2026-11-06T18:10:00-08:00",
+      "manual_app_control_popup": "received",
+      "docket_popup": "not_received",
+      "docket_event_created": "2026-11-07T02:09:20Z",
+      "late_after_transport_recovery": true
+    }
+  ]
+}

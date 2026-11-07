@@ -334,3 +334,34 @@ accepts bounded, ordered offset endpoints for retained delivery display, preserv
 both DST instants and the stored transport timezone. Public input schemas and
 provider effects are unchanged. Existing ordinary and spring/autumn reminder
 journeys now assert truthful timing summaries; affected provider checks pass.
+
+### Delivery correction activation and actual-device investigation
+
+The delivery-summary correction deployed from `3a6cd55521d7` through the validated
+image and ordinary drain/backup path. [delivery-timing-activation.json](../evidence/google-tasks-retirement/delivery-timing-activation.json)
+records 458 release cases plus 132 affected provider cases and actual corrected
+native history output. Native input contracts, plugin identity and method gates
+remain unchanged.
+
+The at-start alarm still did not appear at 6 PM. The Operator confirmed the exact
+timed event, its bell set to at-start, and iPhone Google Calendar notifications and
+banners enabled. An app-created control on the same Calendar alerted at 6:10 while
+the Docket event did not. Calendar transport failures delayed that Docket marker
+until forty seconds before the test. Exact original-operation read/reconciliation
+proved absence before the same reserved identity was executed; no blind creation
+or manual production row repair was used.
+
+[notification-comparison.json](../evidence/google-tasks-retirement/notification-comparison.json)
+records a 6:25 comparison prepared at 6:14: both API-created events share account,
+private visibility, one-minute duration and popup zero. The independent control
+is busy; the canonical Task companion is free. Actual device observation remains
+pending. API acceptance is not treated as a successful phone alarm.
+
+The cancellation recovery correction is implemented in source: a genuinely fresh
+read matching the original non-wildcard ETag can return the same retired-marker
+cancellation to execution. Its original transmission pin is retained, including
+if a Calendar refresh changes the binding between read and retry. Changed markers
+stay unresolved and are not deleted. Retired creation remains blocked. Recovery
+polling defaults to fifteen seconds with existing per-operation backoff, replacing
+the five-minute cadence that delayed the live test. Three focused interleavings
+prove unchanged cleanup and edits before/after the proof read.
