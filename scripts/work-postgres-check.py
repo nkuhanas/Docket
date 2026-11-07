@@ -2307,9 +2307,18 @@ async def check():
     try:
         command.downgrade(config, "20261104e3f4")
     except RuntimeError as exc:
-        assert "cannot discard retained" in str(exc)
+        assert str(exc) == "retained reminder authority requires forward repair"
     else:
         raise AssertionError("Downgrade discarded populated work history")
+    from alembic.runtime.migration import MigrationContext
+
+    from docket.models import TaskReminderAuthority
+
+    with engine.connect() as connection:
+        assert MigrationContext.configure(connection).get_current_revision() == "20261106a7b8"
+    with factory() as session:
+        assert session.scalar(select(TaskReminderAuthority.generation_ref).limit(1))
+        assert session.scalar(select(WorkSession.id).limit(1))
     engine.dispose()
     print(
         json.dumps(
