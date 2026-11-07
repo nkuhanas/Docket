@@ -33,13 +33,17 @@ their pending acceptance fields. Device success does not establish a notificatio
 | Complete NocoDB runtime/access/startup/storage/image retirement | Exact six containers, four volumes, two networks and dedicated images absent; no active source/Compose/environment dependency; tested image cold starts and production is healthy after retirement |
 | Fifteen aliases removed, current routes and historical receipts retained | Native registry/transport test and actual deployed registration introspection; no compatibility registrations, translators or fallback service |
 | Additive PostgreSQL storage, concurrency and recovery | Ordered migrations through `20261106a7b8`; full release isolated fresh/additive migration, retained downgrade refusal, constraints/history and work/Task races. No production-row repair/reset |
-| Tested artifact, drain/idle/backup/deployment and same App | Source-bound release receipts and deployed image, normal deployment logs/backup and health; [same-App package](hosted-plugin.json), actual v68 host reads/writes. Export follow-up release and package are tracked separately |
+| Tested artifact, drain/idle/backup/deployment and same App | Source-bound release receipts and deployed image, normal deployment logs/backup and health; original [same-App package](hosted-plugin.json), actual v68 host writes and [final v69 package/export acceptance](exports-activation.json) |
 | Intended-device alert | Operator confirmed both the native Task companion and API control G at 7:15 PM PST on the iPhone; [device acceptance](device-acceptance.json) records pre-alarm visibility and cleanup independently from API acceptance |
 | Final fixture cleanup and preservation | Native cleanup has two confirmed operations and actual Task tombstone/Calendar cancellation; all nine plain/manual controls removed, both selected validation lists have no open fixtures; four older local Tasks remain version 1 and unlinked, My Tasks stays disabled |
 | SPEC, index, generated contracts, capability disposition, skill and runbook | SPEC 1.2 and forward index; generated native contract/capability report, task skill reference and operational procedure. Current release status is reported separately from frozen historical checkpoints |
 
-Export follow-up: implementation and native validation are in progress. Final
-artifact/package evidence must pass before complete acceptance is claimed.
+All R0/G0/G1/G2/G3/R1/A milestones pass. The [final export activation](exports-activation.json)
+records PR69, 460 successful source-bound cases, the deployed immutable artifact,
+PostgreSQL/native image proofs, same-App plugin 2.2.1 read-back and actual v69
+CSV acceptance (eight rows, thirteen fields). No required work remains. Controlled
+native fault/conflict tests and real Google method admission are separate evidence;
+this audit does not describe every injected failure as a manual Google UI trial.
 
 The 7:15 test used an already visible event on the phone. Late device propagation
 or alert registration is the leading explanation for earlier misses, not a proven

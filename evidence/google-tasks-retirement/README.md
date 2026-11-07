@@ -75,14 +75,14 @@ prune or production reset occurred. Protected recovery archives remain separate
 from the retired runtime; no fallback, compatibility registry or dual write remains.
 The tested image cold-starts and production remains healthy without NocoDB.
 
-## Remaining acceptance
+## Acceptance status
 
 The current method gates are active, not read-only placeholders. The same-App
 rescan and actual native Tasks journeys on the designated validation lists and
-Calendar pass. Task-companion popup acceptance remains unresolved. Observe one
-exact-time companion popup on the intended device/client and record that result
-independently. The working plain API controls do not substitute for this check.
-Do not infer display from Calendar event creation.
+Calendar pass. The Operator confirmed the native companion and control alerts
+for the 7:15 PM trial. Final v69 JSON/CSV exports also pass actual ChatGPT
+acceptance. The receipts below keep device observations separate from API
+acceptance; earlier pending checkpoints remain historical.
 Use the [operations procedure](../../docs/google-tasks-operations.md); no new Auth0
 permission, callback URL, foreground proof or repeated release approval is needed.
 
@@ -131,4 +131,7 @@ and the three encrypted retirement archives remain checksum-valid.
 the inconclusive earlier comparison; [reminder-synced-device-trial.json](reminder-synced-device-trial.json)
 retains the unchanged preflight settings and active-marker workload proof.
 The [completion audit](completion-audit.md) maps the adopted requirements to source
-and evidence; the final query-export correction awaits release/package activation.
+and evidence. [exports-activation.json](exports-activation.json) records the final
+460-case gate, deployed PR69 artifact, exact same-App plugin 2.2.1 read-back and
+the successful v69 CSV invocation with eight rows and thirteen fields. All
+required milestones pass; no additional manual acceptance step remains.

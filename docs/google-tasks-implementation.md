@@ -4,12 +4,13 @@ Requirements: [SPEC 1.2](../SPEC.md), adopted from the
 [November 6 delta](../deltas/2026-11-06T17-59-26Z-google-tasks-and-nocodb-retirement.md).
 Implementation starts at `d0bb86ce4330bb9d1febbc2686e4e43791deffca` (runtime
 source baseline `8488f165efc100436813f1bebda7d014dcd5846c`).
-Status: deployed from `177a598d7453` (initial activation `c7d25789ecfb`) with
-contract v68, 114 tools and plugin 2.2.0.
+Status: complete, deployed from `4236a81e55fd` (initial activation `c7d25789ecfb`) with
+contract v69, 114 tools and plugin 2.2.1.
 All source-bound release groups and actual runtime Google write-method admission
 pass. Fresh ChatGPT Tasks reads, write journeys and the intended-device popup pass.
-The final JSON/CSV export follow-up has passed native/static checks and awaits
-release/package activation; complete delta acceptance is not yet claimed.
+The JSON/CSV export follow-up passes release, package read-back and fresh host
+acceptance: the actual v69 call exported eight tasks with thirteen fields. Full
+delta acceptance is recorded in the [final receipt](../evidence/google-tasks-retirement/exports-activation.json).
 See the [activation receipt](../evidence/google-tasks-retirement/activation.json)
 and [same-App read-back](../evidence/google-tasks-retirement/hosted-plugin.json).
 Implementation notes below retain earlier checkpoint evidence; this status and the
@@ -28,10 +29,10 @@ acceptance matrix describe current readiness.
 | G1 title path | Full 1,024-character Task and required Item schemas/columns/mutations/context/export, including creation without Item | Full canonical/import/native paths and isolated PostgreSQL proof pass; actual Google 1,024-character roundtrip and runtime field-limit admission pass. Actual Google import/rename/retraction and native context preserve the full title; full-title-live.json records scoped service reconciliation |
 | G1 title ownership | Typed derived-pair ownership, atomic renames, independent/shared/relinked relinquishment and concurrency | Typed ownership and rename/relinquishment pass native tests and competing PostgreSQL Task/Item edits in the tested release artifact |
 | G1 durable domain | Scheduling/hierarchy, lists/policies, immutable observations, bindings/generations, baselines/conflicts and sync state | Typed storage and immutable roots/baselines/conflicts deployed at 20261106a7b8; runtime healthy. Actual native configuration and write journeys on both selected validation lists pass |
-| G1 reads/import | Context/query/export and selected-list import through admitted canonical services with policy/observation roots | Flat native context/query and lossless notes detail, policy imports and explicit linking implemented; synthetic native/PostgreSQL proofs pass |
+| G1 reads/import | Context/query/export and selected-list import through admitted canonical services with policy/observation roots | Flat native context/query, full-text JSON/CSV export, policy imports and explicit linking pass native/PostgreSQL checks. Actual v69 ChatGPT CSV export returns all eight requested active/historical tasks and thirteen fields |
 | G1 polling | Full hidden/completed/deleted pagination, overlap watermarks, resumability/full inventories and coverage | Deployed bounded discovery/polling with leases, overlap/full inventories, exception reporting and revocation proofs. Lists start disabled until configured through native authority |
 | G2 task writes | Flat create/update/complete/reopen/retract and exact retry/preview, with atomic Tasks intents | Tested native/shared-runner create/edit/complete/reopen/delete deployed; all actual method gates pass. Real native create/edit/complete/reopen, subtree moves and retraction pass with confirmed Google delivery |
-| G2 conflict/lifecycle | Three-way field merge, delete/edit conflict, detachment/disable/list loss without global blocking | Per-field merge, native resolution/detachment, supersession and scoped outbound recovery pass; live cross-interface validation remains |
+| G2 conflict/lifecycle | Three-way field merge, delete/edit conflict, detachment/disable/list loss without global blocking | Per-field merge, native resolution/detachment, supersession and scoped outbound recovery pass native tests; actual Google rename/completion imports, method-specific stale-write probes and native context/version rejections corroborate the external boundary |
 | G2 markers/limits | Transport-only marker baseline separation, no blind insert retry or silent field truncation | Actual runtime probe verifies full limits and unique discarded-response correlation recovery with cleanup; ambiguous/lost identities remain uncertain without blind retries |
 | G2 reminders | Flat remind_at derives exact owned primary Calendar companion, routing, reschedule/null/completion cancellation and uncertainty | Atomic generations and both provider queues implemented; actual native rescheduling and native/Google completion retire helpers. Pending/claimed/unknown-create windows and PostgreSQL replacement race pass. Owned Calendar clock edits/deletion use exact immutable authority and genuine Calendar observations through the shared ChangeSet engine; revoked grants, copied identities and unsupported all-day edits cannot mutate Tasks. Real companion API and intended-device acceptance pass |
 | G2 time display | Visible AM/PM time without relying on Google's opaque native clock | Derived Google title headers implemented; scoped normalization preserves clean Task/Item titles and Google-side renames. Independent reminder dates are labelled; 1,024-character titles remain lossless with an explicit display limitation |
@@ -40,11 +41,11 @@ acceptance matrix describe current readiness.
 | G2 DST | UTC start plus 60 elapsed seconds with independent offsets, actual rendering and reconciliation | Task marker compilation and rendering/reconciliation pass autumn and spring transitions, including real UTC transport acceptance |
 | G3 hierarchy/planning | Native cross-list/parent/sibling moves, exact identity and constraints; workload/reminder/inbox integration | Live moves carry children/grandchildren with stable identities and no source tombstones. Deletion emits tombstones. Parent completion/deletion cascades without a parent-ETag change on child creation; Operator adopted Google-style subtree semantics (ADR 014). Parent-only lifecycle writes, independent child read-back, native/Google stable-ID moves and immediate stale-ETag reconciliation pass native and isolated PostgreSQL checks. Concurrent ancestry moves retain actual mismatch evidence; conflicts, persistent polling/list loss and unsupported reminders use coalesced inbox notices. Bounded sibling read-back can confirm lost move acknowledgements without resending. Runtime method admission passes; same-host hierarchy journeys pass |
 | Authority/privacy | OAuth/local grant, owner isolation/revocation/triage rejection, genuine service roots, no sensitive invocation payloads | Shared-engine policy import creates no per-poll request/utterance; list/account/local/OAuth revocation, triage rejection and exact-effect admission covered. Native write journeys and real Google completion/import retain genuine request/policy roots; no production-row edits |
-| Contracts | Six compact tools, every modified schema, 4/6/24 KiB and context/result budgets, generated docs/skill | Deployed catalogue has 114 tools, all six Tasks workflows and no retired alias registration. Eight new/modified definitions total 12,245 bytes. Plugin 2.2.0 read-back and fresh ChatGPT Tasks context pass |
+| Contracts | Six compact tools, every modified schema, 4/6/24 KiB and context/result budgets, generated docs/skill | Deployed catalogue has 114 tools, all six Tasks workflows and no retired alias registration. Current live compact serialization totals 11,927 bytes across eight new/modified definitions; query input is 1,164 bytes. Plugin 2.2.1 exact read-back, fresh ChatGPT Tasks context and v69 CSV export pass |
 | Storage | Fresh/populated isolated PostgreSQL migrations, constraints/history/races, restart/drain and recovery | Tested immutable artifact passes fresh/empty migrations, retained populated downgrade refusal, atomic reminder/Task races and existing work/finance concurrency. Production drain/backup/upgrade/restart/health pass at 20261106a7b8 |
 | R1 retirement | Unique data migrated/disposed; all dedicated NocoDB runtime/access/startup removed; no fallback/dual write | Dedicated NocoDB containers, exclusive volumes/networks and images removed under disposition; encrypted recovery retained. Tested artifact cold startup and healthy production prove no runtime dependency |
 | R1 aliases | All fifteen hidden native aliases unregistered without effects; current routes/history still work | Removed from registry/dispatch; surviving native completion/retraction journeys pass; historical records retained |
-| Activation | Local gates, tested image, reviewed merge, synchronized main, backup/migration/health and same App/plugin refresh | PR65 merged; clean synchronized main deployed using tested image, durable drain, backup, migration and health checks. Runtime method admission and same-App plugin 2.2.0 read-back pass. Fresh ChatGPT Tasks reads pass; native write journeys and intended-device popup pass; v69 export follow-up awaits release |
+| Activation | Local gates, tested image, reviewed merge, synchronized main, backup/migration/health and same App/plugin refresh | PR65 initial activation and PR69 export follow-up merged; clean synchronized main deployed using the tested image, durable drain, backup, migration and health checks. Current method admission, same-App plugin 2.2.1 read-back, fresh v69 CSV export, native writes and intended-device popup pass |
 | Intended device | One actual notification observed on the intended device/client, independently recorded from API status | Passed: Operator observed both the native Task companion and plain API control at 7:15 PM PST on the iPhone after confirming pre-alarm visibility and bell settings; device-acceptance.json records actual cleanup and preserved personal tasks |
 
 ## Initial inventory
@@ -424,4 +425,10 @@ serialized into bounded connection-owned read snapshots, with stable page chunks
 keyset continuation and no new table or tool. Native roundtrips cover both formats,
 1,024-character Unicode titles, 16,000-character quoted/multiline notes, empty
 exports, changed-filter rejection and edits during continuation. All 270 native
-tests, Ruff and strict mypy pass. Release and same-App publication are pending.
+tests, Ruff and strict mypy pass. The final 460-case source-bound release gate,
+immutable-image native smoke and isolated PostgreSQL checks pass; PR69 is merged
+and the tested image is deployed. Plugin 2.2.1 preserves the existing App and
+presentation with exact source read-back. The Operator confirms a downloadable
+CSV; the corresponding successful v69 server invocation and retained export
+verify all eight rows and thirteen fields without copying private task content
+into the receipt. All R0/G0/G1/G2/G3/R1/A milestones are complete.

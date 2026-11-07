@@ -27,8 +27,8 @@ Wire models remain machine definitions; AGENTS is an operating guide;
 CONTRIBUTING and runbooks describe procedures, not competing specifications.
 
 The Operator goal to implement the [Google Tasks/NocoDB delta](deltas/2026-11-06T17-59-26Z-google-tasks-and-nocodb-retirement.md)
-adopts SPEC 1.2. Implementation is deployed from `177a598d7453` (initial activation `c7d25789ecfb`), with contract v68,
-114 tools and the same private plugin updated to 2.2.0. Source-bound release checks,
+adopts SPEC 1.2. Implementation is deployed from `4236a81e55fd` (initial activation `c7d25789ecfb`), with contract v69,
+114 tools and the same private plugin updated to 2.2.1. Source-bound release checks,
 PostgreSQL migration/concurrency proofs, deployment and actual Google method
 admission pass in the [activation receipt](evidence/google-tasks-retirement/activation.json).
 The Operator confirms fresh ChatGPT task context, corroborated by successful v68
@@ -38,9 +38,13 @@ creation/editing, subtree lifecycle and stable-ID moves with actual Google deliv
 The Operator confirms the native reminder and plain control both alerted on the
 iPhone at 7:15 PM PST, recorded independently in the
 [device receipt](evidence/google-tasks-retirement/device-acceptance.json). Final
-audit adds the required JSON/CSV query exports through one optional format field;
-that follow-up's release and same-App package acceptance remain pending in the
-[implementation report](docs/google-tasks-implementation.md).
+audit adds the required JSON/CSV query exports through one optional format field.
+The successful v69 ChatGPT CSV call exported eight tasks and thirteen fields;
+release, package read-back and complete acceptance are recorded in the
+[final receipt](evidence/google-tasks-retirement/exports-activation.json) and
+[implementation report](docs/google-tasks-implementation.md). All required
+R0/G0/G1/G2/G3/R1/A milestones pass, with exact fixture cleanup and personal
+Tasks preserved.
 
 The Operator instruction to implement the [work-attribution delta](deltas/2026-11-05T21-18-26Z-work-attribution-and-personal-operations.md)
 adopts its catalogue, work, reporting/finance and operational requirements.
@@ -551,6 +555,6 @@ disabled required operations do not complete two-way synchronization.
 
 | Version | Change |
 | --- | --- |
-| 1.2 | Adopts the November 6 Google Tasks/NocoDB delta and revised reviews under the Operator implementation goal. Live evidence clarifies UTC marker transport; Operator amendments select AM/PM headers after native-clock loss and Google-style Task subtrees (ADRs 011, 014). Implementation is deployed from 177a598d7453 with actual method admission and plugin 2.2.0. Fresh ChatGPT Tasks context and native write journeys pass; device popup acceptance passes. The v69 JSON/CSV query-export follow-up awaits activation. Valid point observations retain exact zero duration without changing canonical event-input rules. |
+| 1.2 | Adopts the November 6 Google Tasks/NocoDB delta and revised reviews under the Operator implementation goal. Live evidence clarifies UTC marker transport; Operator amendments select AM/PM headers after native-clock loss and Google-style Task subtrees (ADRs 011, 014). Implementation is deployed from 4236a81e55fd with actual method admission and plugin 2.2.1. Fresh ChatGPT Tasks context and native write journeys pass; device popup acceptance passes. The v69 JSON/CSV exports pass release and actual host acceptance; the complete delta is accepted. Valid point observations retain exact zero duration without changing canonical event-input rules. |
 | 1.1 | Adopts the November 5 work-attribution/personal-operations delta including catalogue consolidation. C0–P2 and optional visibility are implemented, deployed and host-accepted, with separate phase evidence; external provider choices remain a concrete follow-on delta. Implementation clarifies revision-pinned visibility and nonblocking invalidation (ADR 009). |
 | 1.0 | First current SPEC synthesized from signed ontology and Operator amendments; adopts November 4 context/local-CI delta and retirement cleanup. No invented prior version. Implemented, deployed and verified through live native-tool use. |

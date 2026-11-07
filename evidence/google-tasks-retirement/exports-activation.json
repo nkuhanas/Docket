@@ -1,0 +1,124 @@
+{
+  "recorded_at": "2026-11-07T03:42:40.464720+00:00",
+  "implementation_commit": "4236a81e55fdab5138556c62e9790a962dcb6890",
+  "source_tree": "510bcd191242ff8656453fcfd23c905597e095c1",
+  "tested_and_deployed_image": "sha256:448134f5042479d8373a52455164b3b1fbaaa46cf2a16f401df9a78989949c33",
+  "pr": 69,
+  "schema_head": "20261106a7b8",
+  "release_checks": {
+    "native": "passed",
+    "storage": "passed",
+    "release": "passed",
+    "static": "passed",
+    "isolated_postgres": "passed"
+  },
+  "source_bound_test_cases": 460,
+  "native_test_cases": 270,
+  "provider_source_unchanged_from_fully_validated_177a598": true,
+  "deployment": {
+    "drain_backup_migration_health": "passed",
+    "backup_retained": true,
+    "rollback_image": "docket-docket:rollback-20261107T034005Z"
+  },
+  "native_exports": {
+    "formats": [
+      "json",
+      "csv"
+    ],
+    "title_characters": 1024,
+    "notes_characters": 16000,
+    "multiline_quoted_unicode_roundtrip": true,
+    "escaped_packet_bytes_maximum": 16384,
+    "captured_page_survives_edits_and_chunk_retries": true,
+    "changed_filter_rejected": true,
+    "empty_export_valid": true,
+    "later_pages_read_at_continuation": true,
+    "new_tools": 0,
+    "new_tables": 0,
+    "new_optional_fields": [
+      "format"
+    ]
+  },
+  "actual_runtime_catalogue": {
+    "contract_version": "docket-tools-2026-11-06-v69",
+    "native_tools": 114,
+    "retired_aliases_unregistered": 15,
+    "native_instructions_bytes": 1889,
+    "changed_definitions": {
+      "docket_get_tasks_context": {
+        "input_bytes": 362,
+        "definition_bytes": 777
+      },
+      "docket_query_tasks": {
+        "input_bytes": 1164,
+        "definition_bytes": 1622
+      },
+      "docket_configure_task_list": {
+        "input_bytes": 838,
+        "definition_bytes": 1358
+      },
+      "docket_refresh_tasks": {
+        "input_bytes": 181,
+        "definition_bytes": 597
+      },
+      "docket_link_google_task": {
+        "input_bytes": 718,
+        "definition_bytes": 1232
+      },
+      "docket_resolve_task_sync": {
+        "input_bytes": 842,
+        "definition_bytes": 1360
+      },
+      "docket_create_task": {
+        "input_bytes": 1665,
+        "definition_bytes": 2229
+      },
+      "docket_update_task": {
+        "input_bytes": 2180,
+        "definition_bytes": 2752
+      }
+    },
+    "all_changed_definitions_bytes": 11927,
+    "entire_discovery_bytes": 190219,
+    "health_ready": true,
+    "image": "sha256:448134f5042479d8373a52455164b3b1fbaaa46cf2a16f401df9a78989949c33",
+    "source_tree": "510bcd191242ff8656453fcfd23c905597e095c1",
+    "docket_healthy": true,
+    "nocodb_owned_containers_volumes_networks_images_absent": true
+  },
+  "runtime_tasks_methods_verified": [
+    "insert",
+    "patch",
+    "move",
+    "delete"
+  ],
+  "hosted_plugin": {
+    "plugin_id": "plugin_asdk_app_6aebd82ba1108191a77747be377965f8",
+    "app_id": "asdk_app_6aebd82ba1108191a77747be377965f8",
+    "version": "2.2.1",
+    "previous_release_id": "pluginrel_6aee7fb51964819180ff390891072ccc",
+    "release_id": "pluginrel_6aee9dd85a188191916ddeaa0f3ad890",
+    "scope": "USER",
+    "visibility": "PRIVATE",
+    "all_previous_paths_preserved": true,
+    "app_configuration_audience_and_presentation_preserved": true,
+    "task_reference_and_contract_exact_readback": true,
+    "archive_sha256": "a05f8e8841e5550313763f8a415a51c7c02db881283cdaf84a1c2a1e781588d9"
+  },
+  "device_acceptance": "passed; see device-acceptance.json",
+  "fresh_host_export_acceptance": {
+    "verified_at": "2026-11-07T03:44:26.295960+00:00",
+    "operator_screenshot_confirms_downloadable_csv": true,
+    "call_ref": "call_01M6T1M6YBSW17RYZ70EQ4YAWW",
+    "started_at": "2026-11-07T03:42:52.363625+00:00",
+    "contract": "docket-tools-2026-11-06-v69",
+    "transport": "completed",
+    "domain": "succeeded",
+    "export_format": "csv",
+    "task_rows": 8,
+    "fields": 13,
+    "complete_export": true,
+    "private_export_content_not_retained_in_receipt": true
+  },
+  "complete_delta_acceptance": true
+}

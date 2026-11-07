@@ -1,7 +1,7 @@
 # Docket: Google Tasks synchronization and NocoDB retirement
 
 Draft timestamp: 2026-11-06 17:59:26 UTC
-Status: adopted by Operator implementation goal; implementation in progress
+Status: adopted into SPEC 1.2; implemented, deployed and accepted
 SPEC baseline: [1.1](../SPEC.md)
 Inspected source: `8488f165efc100436813f1bebda7d014dcd5846c`
 Adopted SPEC target: [1.2](../SPEC.md); [implementation evidence](../docs/google-tasks-implementation.md)
