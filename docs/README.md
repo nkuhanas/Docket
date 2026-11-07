@@ -6,6 +6,8 @@ independent current specifications.
 
 The [Google Tasks implementation report](google-tasks-implementation.md) tracks
 SPEC 1.2's adopted provider/reminder and NocoDB/compatibility retirement requirements.
+Use [Google Tasks operations](google-tasks-operations.md) for consent, actual
+method validation, selected-list policy, reminders and same-App acceptance.
 
 * [Native context and local CI](native-context-local-ci.md) — current delta progress,
   test inventory and contract/cutover evidence.

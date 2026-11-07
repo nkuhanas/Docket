@@ -462,6 +462,11 @@ calendar_recovery() {
     compose exec -T docket ./.venv/bin/docket-calendar-recovery "$@"
 }
 
+google_tasks() {
+    init_docker
+    compose exec -T docket ./.venv/bin/docket-tasks "$@"
+}
+
 
 
 
@@ -493,6 +498,9 @@ Commands:
                   Requeue exact Google-auth failures after validating the credential.
   calendar-recover-auth requeue-after-reauth --execute --credential-sha256-stdin
                   Retry current auth-failed deliveries after a matching Google reauthorization.
+  tasks status    Report current Google Tasks method admission without exposing credentials.
+  tasks validate --targets-file CONTAINER_PATH [--report CONTAINER_PATH]
+                  Probe the dedicated validation lists and retain grant-bound method evidence.
   gmail-status    Report Gmail gates, checkpoint freshness, and source counts.
   gmail-scan      Force one bounded metadata scan; never invokes semantic triage.
   gmail-propose-archive SOURCE_ID SOURCE_VERSION REQUEST_KEY
@@ -515,6 +523,7 @@ case "${1:-}" in
     backup) encrypted_backup ;;
     verify-restore) verify_restore "${2:-}" ;;
     calendar-recover-auth) calendar_recovery "${@:2}" ;;
+    tasks) google_tasks "${@:2}" ;;
     gmail-status) gmail status ;;
     gmail-scan) gmail scan ;;
     gmail-propose-archive)

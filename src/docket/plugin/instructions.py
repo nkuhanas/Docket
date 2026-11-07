@@ -5,6 +5,9 @@ Start with docket_get_overview. Read calendar choices with docket_get_calendar_c
 read selected objects and observed versions with docket_get_context. Reuse suitable
 context; refresh affected targets after they change. Packets describe their coverage
 and freshness. Missing observations do not establish that an event is absent.
+For tasks use docket_get_tasks_context or docket_query_tasks. Keep scheduled day,
+deadline and remind_at separate. Parent completion, deletion and moves affect the
+current subtree, including new Google subtasks; Docket derives the child effects.
 
 Use named business commands with ordinary fields. One operation_id identifies a
 command and its unchanged retries. Docket supplies authenticated request identity,

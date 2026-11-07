@@ -31,7 +31,7 @@ acceptance is claimed by a fixture or disabled capability.
 | G2 privacy | Private/free actual request and read-back/reconciliation, existing zero-minute popup reused | Task generation flows serialize private/free popup-zero markers; real adapter read-back/privacy-change checks pass. Owned-helper changes resnapshot privacy/free popup-zero projections through scoped canonical effects; live-host/device acceptance remains |
 | G2 workload origin | Validated typed origin survives cache refresh/restart and excludes canonical/cache commitment/capacity accounting | Scoped generation/retained-operation origin survives full cache rebuild and retired/unknown-create generations; workload excludes it before timing/accounting. Copied labels remain ordinary observations |
 | G2 DST | UTC start plus 60 elapsed seconds with independent offsets, actual rendering and reconciliation | Task marker compilation and rendering/reconciliation pass autumn and spring transitions, including real UTC transport acceptance |
-| G3 hierarchy/planning | Native cross-list/parent/sibling moves, exact identity and constraints; workload/reminder/inbox integration | Live moves carry children/grandchildren with stable identities and no source tombstones. Deletion emits tombstones. Parent completion/deletion cascades without a parent-ETag change on child creation; Operator adopted Google-style subtree semantics (ADR 014). Parent-only lifecycle writes, independent child read-back, native/Google stable-ID moves and immediate stale-ETag reconciliation pass native and isolated PostgreSQL checks. Concurrent ancestry moves retain actual mismatch evidence; conflicts, persistent polling/list loss and unsupported reminders use coalesced inbox notices. Live-host and ordering recovery checks remain |
+| G3 hierarchy/planning | Native cross-list/parent/sibling moves, exact identity and constraints; workload/reminder/inbox integration | Live moves carry children/grandchildren with stable identities and no source tombstones. Deletion emits tombstones. Parent completion/deletion cascades without a parent-ETag change on child creation; Operator adopted Google-style subtree semantics (ADR 014). Parent-only lifecycle writes, independent child read-back, native/Google stable-ID moves and immediate stale-ETag reconciliation pass native and isolated PostgreSQL checks. Concurrent ancestry moves retain actual mismatch evidence; conflicts, persistent polling/list loss and unsupported reminders use coalesced inbox notices. Bounded sibling read-back can confirm lost move acknowledgements without resending. Runtime method admission and live-host checks remain |
 | Authority/privacy | OAuth/local grant, owner isolation/revocation/triage rejection, genuine service roots, no sensitive invocation payloads | Shared-engine policy import creates no per-poll request/utterance; list/account/local/OAuth revocation, triage rejection and exact-effect admission covered. Native workflows, polling revocation and shared-write runner evidence pass; real provider acceptance remains |
 | Contracts | Six compact tools, every modified schema, 4/6/24 KiB and context/result budgets, generated docs/skill | Local v68 source advertises 114 tools; six new plus two changed definitions total 12,245 bytes within 4/6/24 KiB budgets. Bundle skill/host refresh remains |
 | Storage | Fresh/populated isolated PostgreSQL migrations, constraints/history/races, restart/drain and recovery | Fresh/empty roundtrip, retained revisions, shared-runner delivery and atomic reminder/competing replacement proofs pass at 20261106f6a7; populated narrowing refuses without data loss. Release-artifact upgrade/restart/drain remains |
@@ -236,3 +236,24 @@ PostgreSQL proof. The provider suite passed 129 cases; 268 native cases passed,
 and final Ruff/strict mypy passed separately. Production has not been changed.
 Remaining work includes runtime method admission, release/host acceptance and the
 intended-device notification check.
+
+### Runtime method validation and sibling recovery
+
+The local `docket-tasks` administration command probes only supplied dedicated
+validation lists and records immutable account/adapter/current-grant evidence
+through application services, with a safe audit event. It does not accept a
+hand-written success report. Scoped target checks precede fixture creation;
+cleanup touches only identified fixtures. A grant rotating during the probe
+records no admission, and normal access-token refresh preserves existing evidence.
+`status` exposes readiness without credentials. The source procedure is
+[Google Tasks operations](google-tasks-operations.md). Runtime execution and
+production admission are still pending deployment.
+
+A sibling hint is now explicitly a provider projection in canonical previews,
+preventing the former missing-Task-column failure. Lost move/insert responses with
+an after_task_ref can use bounded paged sibling coverage, nearest-predecessor
+comparison and a final target read. Changed, ambiguous or incomplete ordering
+stays uncertain. A satisfied move acknowledgement recovers without a second move.
+The synthetic lost-ack journey passes; no canonical sibling-rank column or new
+MCP argument is introduced. Native instructions remain 1,889 bytes and the prepared
+plugin source is version 2.2.0. Hosted identity/configuration remain unchanged.

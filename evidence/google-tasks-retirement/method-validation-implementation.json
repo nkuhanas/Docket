@@ -1,0 +1,23 @@
+{
+  "implemented": true,
+  "runtime_google_admission_executed": false,
+  "production_rows_changed": false,
+  "checks": {
+    "affected_provider_and_storage_cases": 285,
+    "provider_cases": 132,
+    "storage_cases": 153,
+    "unsafe_delete_probe_rejected": true,
+    "other_lists_refused_before_writes": true,
+    "preexisting_validation_list_record_preserved": true,
+    "grant_rotation_during_probe_records_no_admission": true,
+    "lost_sibling_ack_recovered_after_paged_coverage_without_second_move": true,
+    "native_instruction_bytes": 1889,
+    "ruff": "passed",
+    "strict_mypy": "passed",
+    "lockfile_check": "passed"
+  },
+  "plugin_source_version": "2.2.0",
+  "hosted_plugin_updated": false,
+  "release_or_activation_evidence": false,
+  "recorded_at": "2026-11-07T01:07:52.919332+00:00"
+}

@@ -56,6 +56,14 @@ class TasksDispatchService:
         if observation is not None and observation.fields.get("assignmentInfo"):
             return answer("wait", "google_tasks_assigned_read_only")
         kind = operation.operation_type.removeprefix("tasks_")
+        if (
+            kind == "move"
+            and observation is not None
+            and observation.fields.get("hidden")
+            and observation.fields.get("status") == "completed"
+            and (params.get("after_task_ref") or params["values"].get("parent"))
+        ):
+            return answer("wait", "google_tasks_hidden_task_requires_reopen")
         if task.canonical_status == "retracted" and kind != "delete":
             return answer("superseded", "task_retracted_before_dispatch")
         desired = params["values"]
@@ -196,8 +204,25 @@ class TasksDispatchService:
             ):
                 return answer("wait", "task_hierarchy_binding_pending")
             if role == "parent":
+                observed_parent = (
+                    self.session.get(GoogleTaskObservation, linked.observation_ref)
+                    if linked.observation_ref
+                    else None
+                )
+                if observed_parent is not None and (
+                    observed_parent.fields.get("assignmentInfo")
+                    or observed_parent.fields.get("hidden")
+                ):
+                    return answer("wait", "google_tasks_parent_unavailable")
                 parent_id = linked.provider_task_id
             else:
+                observed_previous = (
+                    self.session.get(GoogleTaskObservation, linked.observation_ref)
+                    if linked.observation_ref
+                    else None
+                )
+                if observed_previous is not None and observed_previous.fields.get("hidden"):
+                    return answer("wait", "google_tasks_previous_unavailable")
                 previous_id = linked.provider_task_id
         params["dispatch"] = {
             "source_list_id": listing.provider_list_id,

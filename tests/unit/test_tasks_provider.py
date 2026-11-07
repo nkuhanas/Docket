@@ -109,11 +109,21 @@ def test_stale_delete_is_not_treated_as_success(provider, monkeypatch) -> None:
 
 
 def test_disabled_api_has_actionable_error_without_private_diagnostics(provider, monkeypatch):
-    monkeypatch.setattr(httpx, "request", lambda *a, **k: httpx.Response(403, json={
-        "error": {"message": "private project and account details", "details": [
-            {"reason": "SERVICE_DISABLED", "metadata": {"consumer": "private-project"}},
-        ]},
-    }))
+    monkeypatch.setattr(
+        httpx,
+        "request",
+        lambda *a, **k: httpx.Response(
+            403,
+            json={
+                "error": {
+                    "message": "private project and account details",
+                    "details": [
+                        {"reason": "SERVICE_DISABLED", "metadata": {"consumer": "private-project"}},
+                    ],
+                },
+            },
+        ),
+    )
     with pytest.raises(TasksProviderError) as caught:
         provider.list_task_lists()
     assert caught.value.code == "google_tasks_api_disabled"
@@ -161,3 +171,45 @@ def test_disabled_provider_satisfies_transport_without_any_network(monkeypatch) 
     with pytest.raises(TasksProviderError) as caught:
         DisabledTasksProvider().list_task_lists()
     assert caught.value.code == "google_tasks_disabled"
+
+
+def test_live_method_probe_refuses_other_lists_and_preserves_existing_records():
+    from docket.domain.errors import DocketError
+    from docket.providers.google.fake_tasks import FakeTasksProvider
+    from docket.services.tasks_validation import validate_tasks_methods
+
+    provider = FakeTasksProvider(page_size=1)
+    provider.seed_list("source", "Personal tasks")
+    provider.seed_list("destination", "Docket validation move target")
+    with pytest.raises(DocketError) as error:
+        validate_tasks_methods(provider, "source", "destination")
+    assert error.value.code == "tasks_validation_targets_invalid"
+    assert all(method == "GET" for method, _ in provider.calls)
+    provider.seed_list("source", "Docket validation")
+    existing = provider.insert_task("source", {"title": "Existing record stays"})
+    report = validate_tasks_methods(provider, "source", "destination")
+    assert all(report["checks"].values()), report
+    assert report["created_records_cleaned"] is True
+    assert not provider.get_task("source", existing.task_id).fields.get("deleted")
+    assert all(
+        task.get("deleted")
+        for (_, task_id), task in provider.tasks.items()
+        if task_id != existing.task_id
+    )
+
+
+def test_live_method_probe_cannot_admit_an_unconditional_delete():
+    from docket.providers.google.fake_tasks import FakeTasksProvider
+    from docket.services.tasks_validation import validate_tasks_methods
+
+    class UnsafeDeleteProvider(FakeTasksProvider):
+        def delete_task(self, list_id, task_id, *, etag):
+            current = self.get_task(list_id, task_id)
+            return super().delete_task(list_id, task_id, etag=current.etag)
+
+    provider = UnsafeDeleteProvider()
+    provider.seed_list("source", "Docket validation")
+    provider.seed_list("destination", "Docket validation move target")
+    report = validate_tasks_methods(provider, "source", "destination")
+    assert report["capabilities"]["delete"]["conditional_write"] is False
+    assert report["checks"]["delete_conditional_tombstone"] is False

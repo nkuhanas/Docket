@@ -257,7 +257,13 @@ class TasksExecutionService:
                         )
                         sync.reconcile(observation)
 
-    def success(self, claim: ClaimedOperation, result: GoogleTask | None) -> None:
+    def success(
+        self,
+        claim: ClaimedOperation,
+        result: GoogleTask | None,
+        *,
+        read_started_at: datetime | None = None,
+    ) -> None:
         with self.runner.session_factory.begin() as session:
             lock_task_rows(session, [claim.parameters["task_ref"]])
             rows = self.runner._owned_claim(session, claim)
@@ -265,6 +271,7 @@ class TasksExecutionService:
                 return
             operation, target, attempt = rows
             params, call = claim.parameters, claim.parameters["dispatch"]
+            observed_start = read_started_at or datetime.fromisoformat(call["started_at"])
             binding = session.get(TaskProviderBinding, params["binding_ref"])
             task = session.scalar(select(Task).where(Task.ref_id == params["task_ref"]))
             assert binding is not None and task is not None
@@ -283,7 +290,7 @@ class TasksExecutionService:
                         listing,
                         result,
                         generation=uuid.uuid4(),
-                        read_started_at=datetime.fromisoformat(call["started_at"]),
+                        read_started_at=observed_start,
                     )
                     basis.append(observation.ref_id)
                 binding.provider_snapshot = {**binding.provider_snapshot, "deletion": True}
@@ -311,7 +318,7 @@ class TasksExecutionService:
                     listing,
                     result,
                     generation=uuid.uuid4(),
-                    read_started_at=datetime.fromisoformat(call["started_at"]),
+                    read_started_at=observed_start,
                 )
                 if self._selected_counterpart(
                     session,
@@ -319,7 +326,7 @@ class TasksExecutionService:
                     actual_observation_ref=observation.ref_id,
                 ):
                     return
-                started = datetime.fromisoformat(call["started_at"])
+                started = observed_start
                 if (
                     binding.observed_at is not None
                     and binding.observed_at.replace(tzinfo=binding.observed_at.tzinfo or UTC)
@@ -408,6 +415,11 @@ class TasksExecutionService:
                 "observation_ref": binding.observation_ref,
                 "matched_requested_fields": matched,
                 **(
+                    {"sibling_order_verified": True}
+                    if (target.recovery or {}).get("position_read", {}).get("matched")
+                    else {}
+                ),
+                **(
                     {"confirmed_parent_effect": params["subtree_root_ref"]}
                     if params.get("subtree_root_ref")
                     else {}
@@ -463,6 +475,8 @@ class TasksExecutionService:
         claim: ClaimedOperation,
         recovery: dict[str, Any],
         code: str,
+        *,
+        delay_seconds: int = 30,
     ) -> None:
         with self.runner.session_factory.begin() as session:
             rows = self.runner._owned_claim(session, claim)
@@ -474,10 +488,91 @@ class TasksExecutionService:
             target.recovery = recovery
             operation.status = target.status = "reconciliation_required"
             operation.last_error_code = target.last_error_code = code
-            operation.next_attempt_at = target.next_attempt_at = utc_now() + timedelta(seconds=1)
+            operation.next_attempt_at = target.next_attempt_at = utc_now() + timedelta(
+                seconds=delay_seconds,
+            )
             attempt.status, attempt.completed_at = "unknown", utc_now()
             attempt.response_summary = {"next_step": code}
             self.runner._clear_lease(operation, target)
+
+    def _position_read(
+        self,
+        claim: ClaimedOperation,
+        provider: TasksProvider,
+        task: GoogleTask,
+        recovery: dict[str, Any],
+    ) -> None:
+        """Verify the requested predecessor through bounded complete sibling coverage."""
+        call = claim.parameters["dispatch"]
+        position = task.fields.get("position")
+        if not isinstance(position, str) or not position:
+            self._checkpoint(claim, {}, "google_tasks_position_unverifiable")
+            return
+        state = recovery.get("position_read", {})
+        if (state.get("task_id"), state.get("etag"), state.get("position")) != (
+            task.task_id,
+            task.etag,
+            position,
+        ):
+            state = {
+                "task_id": task.task_id,
+                "etag": task.etag,
+                "position": position,
+                "nearest_id": None,
+                "nearest_position": None,
+                "page": None,
+            }
+        list_id = (
+            call["destination_list_id"]
+            if claim.operation_type == "tasks_move"
+            else call["source_list_id"]
+        )
+        page = provider.list_tasks(list_id, page_token=state["page"])
+        for sibling in page.tasks:
+            rank = sibling.fields.get("position")
+            if (
+                sibling.task_id == task.task_id
+                or sibling.fields.get("deleted")
+                or sibling.fields.get("parent") != task.fields.get("parent")
+            ):
+                continue
+            if not isinstance(rank, str) or rank == position:
+                state["ambiguous"] = True
+            elif rank < position and (
+                state["nearest_position"] is None or rank > state["nearest_position"]
+            ):
+                state["nearest_id"], state["nearest_position"] = sibling.task_id, rank
+            elif rank == state["nearest_position"] and sibling.task_id != state["nearest_id"]:
+                state["ambiguous"] = True
+        state["page"] = page.next_page_token
+        if page.next_page_token:
+            self._checkpoint(
+                claim,
+                {"position_read": state},
+                "google_tasks_order_recovery_paging",
+                delay_seconds=1,
+            )
+            return
+        matched = not state.get("ambiguous") and state["nearest_id"] == call["previous_id"]
+        if not matched:
+            self._checkpoint(claim, {}, "google_tasks_position_changed")
+            return
+        read_started = utc_now()
+        latest = provider.get_task(list_id, task.task_id)
+        if (
+            latest is None
+            or latest.etag != task.etag
+            or latest.fields.get("position") != position
+            or latest.fields.get("parent") != task.fields.get("parent")
+        ):
+            self._checkpoint(claim, {}, "google_tasks_position_changed")
+            return
+        with self.runner.session_factory.begin() as session:
+            rows = self.runner._owned_claim(session, claim)
+            if rows is None:
+                return
+            rows[1].recovery = {"position_read": {**state, "complete": True, "matched": True}}
+        self.success(claim, latest, read_started_at=read_started)
 
     def reconcile(self, claim: ClaimedOperation) -> None:
         call = claim.parameters.get("dispatch")
@@ -504,6 +599,17 @@ class TasksExecutionService:
                 if rows is not None:
                     self._selected_counterpart(session, rows)
             return
+        if kind == "insert" and recovery.get("position_read"):
+            candidate = provider.get_task(
+                call["source_list_id"], recovery["position_read"]["task_id"]
+            )
+            if candidate is not None and self.matches(
+                candidate, claim.parameters, acknowledged=True
+            ):
+                self._position_read(claim, provider, candidate, recovery)
+            else:
+                self._checkpoint(claim, {}, "google_tasks_creation_uncertain")
+            return
         if kind == "insert":
             page = provider.list_tasks(call["source_list_id"], page_token=recovery.get("page"))
             matches = list(recovery.get("matches", []))
@@ -511,12 +617,16 @@ class TasksExecutionService:
                 _, marker = canonical_notes(
                     task.fields.get("notes") or "", claim.parameters["correlation"]
                 )
-                if marker and self.matches(task, claim.parameters):
+                if marker and self.matches(task, claim.parameters, acknowledged=True):
                     matches.append({"id": task.task_id, "etag": task.etag, "fields": task.fields})
                     matches = matches[:2]
             if page.next_page_token is None and len(matches) == 1:
                 match = matches[0]
-                self.success(claim, GoogleTask(match["id"], match["etag"], match["fields"]))
+                candidate = GoogleTask(match["id"], match["etag"], match["fields"])
+                if claim.parameters.get("after_task_ref"):
+                    self._position_read(claim, provider, candidate, {})
+                else:
+                    self.success(claim, candidate)
                 return
             with self.runner.session_factory.begin() as session:
                 rows = self.runner._owned_claim(session, claim)
@@ -568,7 +678,13 @@ class TasksExecutionService:
             return
         list_id = call["destination_list_id"] if kind == "move" else call["source_list_id"]
         result = provider.get_task(list_id, call["task_id"])
-        if kind == "delete" and result is None:
+        if (
+            result is not None
+            and claim.parameters.get("after_task_ref")
+            and self.matches(result, claim.parameters, acknowledged=True)
+        ):
+            self._position_read(claim, provider, result, recovery)
+        elif kind == "delete" and result is None:
             # A cross-list move produces 404 in its source without a tombstone.
             # Source absence cannot prove a lost DELETE succeeded.
             self._checkpoint(

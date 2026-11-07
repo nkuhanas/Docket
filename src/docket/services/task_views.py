@@ -105,6 +105,7 @@ class TaskViewService:
             "task_list_ref": row.task_list_ref,
             "observed_at": iso(row.observed_at),
             "assigned": bool(row.fields.get("assignmentInfo")),
+            "hidden": bool(row.fields.get("hidden")),
             "source": "untrusted_google_task",
             "linked_task_ref": binding.task_ref if binding else None,
         }

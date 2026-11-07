@@ -214,6 +214,9 @@ def capture_canonical_patch_preview(
                     patch["display_name"] = patch["display_name"].strip()
         before: dict[str, Any] = {}
         after: dict[str, Any] = {}
+        if change.object_type == "task" and "after_task_ref" in patch:
+            # Sibling order is a provider projection hint, not a Task column.
+            header["provider_projection_hints"] = {"after_task_ref": patch.pop("after_task_ref")}
         for key, value in patch.items():
             if key.endswith("_change_id"):
                 if value is not None:

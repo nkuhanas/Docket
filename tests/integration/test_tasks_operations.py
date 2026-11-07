@@ -763,3 +763,77 @@ async def test_cancellation_and_explicit_reopening_keep_one_canonical_task(
             assert tasks[0].description == "Preserve this history"
             assert tasks[0].task_state == "not_started" and tasks[0].completed_at is None
             assert len(list(session.scalars(select(TaskProviderBinding)))) == 2
+
+
+@pytest.mark.parametrize("linked_plugin", [{"write": True}], indirect=True)
+@pytest.mark.asyncio
+async def test_lost_sibling_move_ack_recovers_from_paged_order_without_another_move(
+    session_factory,
+    tasks_client,
+    monkeypatch,
+):
+    from docket.providers.google.tasks import TasksUnknownOutcome
+
+    async with tasks_client() as (call, runner, provider, _packet):
+        now = [datetime.now(UTC)]
+        monkeypatch.setattr("docket.services.operations.utc_now", lambda: now[0])
+        monkeypatch.setattr("docket.services.tasks_execution.utc_now", lambda: now[0])
+        refs = []
+        for index in range(2):
+            context = await call("docket_get_tasks_context", {})
+            result = await call(
+                "docket_create_task",
+                {
+                    "context_id": context["context_id"],
+                    "operation_id": "order-create-" + str(index),
+                    "title": "Order sample " + str(index),
+                },
+            )
+            assert result.get("disposition") == "committed", result
+            assert runner.run_due_once()
+            with session_factory() as session:
+                refs.append(
+                    session.scalar(
+                        select(Task.ref_id).where(
+                            Task.title == "Order sample " + str(index),
+                        )
+                    )
+                )
+        original_move = provider.move_task
+
+        def discard_ack(list_id, task_id, **kwargs):
+            original_move(list_id, task_id, **kwargs)
+            # Observed Google positions are opaque lexicographic sibling ranks.
+            provider.tasks[(list_id, kwargs["previous"])]["position"] = "0001"
+            provider.tasks[(list_id, task_id)]["position"] = "0002"
+            raise TasksUnknownOutcome()
+
+        monkeypatch.setattr(provider, "move_task", discard_ack)
+        context = await call("docket_get_tasks_context", {"refs": refs})
+        moved = await call(
+            "docket_update_task",
+            {
+                "context_id": context["context_id"],
+                "operation_id": "uncertain-sibling-move",
+                "task_ref": refs[1],
+                "after_task_ref": refs[0],
+            },
+        )
+        assert moved.get("disposition") == "committed", moved
+        assert runner.run_due_once()
+        assert runner.reconcile_once()
+        with session_factory() as session:
+            operation = session.scalar(
+                select(Operation).where(Operation.operation_type == "tasks_move")
+            )
+            assert operation.status == "reconciliation_required"
+            assert operation.last_error_code == "google_tasks_order_recovery_paging"
+        now[0] += timedelta(seconds=2)
+        assert runner.reconcile_once()
+        with session_factory() as session:
+            operation = session.scalar(
+                select(Operation).where(Operation.operation_type == "tasks_move")
+            )
+            assert operation.status == "succeeded"
+            assert operation.result["sibling_order_verified"] is True
+        assert sum(url.endswith("/move") for _, url in provider.calls) == 1

@@ -113,3 +113,50 @@ def test_move_requires_stable_identity_and_insert_requires_uncertainty_proof(ses
     )
     evidence(service, account, "insert", capabilities={"uncertain_insert_recovery": True}, later=1)
     assert service.gate(account).methods == {"insert", "move"}
+
+
+def test_local_validation_cannot_record_success_for_a_rotated_grant(
+    session_factory,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    from sqlalchemy import func, select
+
+    from docket import tasks_cli
+    from docket.providers.google.fake_tasks import FakeTasksProvider
+    from docket.services.tasks_validation import validate_tasks_methods
+
+    with session_factory.begin() as session:
+        service, _account = setup_admission(session, tmp_path)
+        settings = service.settings
+    targets = tmp_path / "validation-targets.json"
+    targets.write_text(json.dumps({"source_list": "source", "destination_list": "destination"}))
+    targets.chmod(0o600)
+    provider = FakeTasksProvider()
+    provider.seed_list("source", "Docket validation")
+    provider.seed_list("destination", "Docket validation move target")
+    monkeypatch.setattr(tasks_cli, "get_settings", lambda: settings)
+    monkeypatch.setattr(tasks_cli, "configure_database", lambda _url: None)
+    monkeypatch.setattr(tasks_cli, "get_session_factory", lambda: session_factory)
+    monkeypatch.setattr(tasks_cli, "GoogleTasksProvider", lambda *_args, **_kwargs: provider)
+
+    def rotate_after_probe(adapter, source, destination):
+        report = validate_tasks_methods(adapter, source, destination)
+        original = json.loads(settings.google_oauth_token_file.read_text())
+        settings.google_oauth_token_file.write_text(
+            json.dumps(
+                {
+                    **original,
+                    "refresh_token": "rotated-synthetic-grant",
+                }
+            )
+        )
+        return report
+
+    monkeypatch.setattr(tasks_cli, "validate_tasks_methods", rotate_after_probe)
+    assert tasks_cli.main(["validate", "--targets-file", str(targets)]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["error"]["code"] == "tasks_validation_grant_changed"
+    with session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(TasksMethodValidation)) == 0

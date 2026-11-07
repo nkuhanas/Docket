@@ -119,11 +119,17 @@ class FakeTasksProvider(GoogleTasksProvider):
             else:
                 document.update(deepcopy(fields or {}))
                 if document.get("status") == "completed":
+                    if not document.get("completed"):
+                        document["completed"] = datetime.now(UTC).isoformat(timespec="milliseconds")
                     for descendant in subtree - {task_id}:
                         child = self.tasks[(list_id, descendant)]
                         if child.get("status") != "completed":
                             child.update(status="completed", completed=document["completed"])
                         child["etag"] = f'"fake-{self.sequence}-{descendant}"'
+        if document.get("due"):
+            document["due"] = document["due"][:10] + "T00:00:00.000Z"
+        if document.get("status") == "completed" and not document.get("completed"):
+            document["completed"] = datetime.now(UTC).isoformat(timespec="milliseconds")
         document["etag"] = f'"fake-{self.sequence}"'
         document["updated"] = datetime.now(UTC).isoformat()
         self.tasks[key] = deepcopy(document)
