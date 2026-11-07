@@ -1,0 +1,32 @@
+{
+  "recorded_at": "2026-11-07T01:40:07.410909+00:00",
+  "operator_confirmed_fresh_chat_context": true,
+  "contract": "docket-tools-2026-11-06-v68",
+  "calls": [
+    {
+      "ref": "call_01M6STC4K0SNGX3M69GR7CPZXQ",
+      "tool": "docket_get_tasks_context",
+      "started_at": "2026-11-07T01:36:07.776539+00:00",
+      "transport": "completed",
+      "domain": "succeeded"
+    },
+    {
+      "ref": "call_01M6STC8BGKR5SD36XREYMQF99",
+      "tool": "docket_query_tasks",
+      "started_at": "2026-11-07T01:36:11.632757+00:00",
+      "transport": "completed",
+      "domain": "succeeded"
+    },
+    {
+      "ref": "call_01M6STCCDXQCD5A3K91M18VEFX",
+      "tool": "docket_get_tasks_context",
+      "started_at": "2026-11-07T01:36:15.805231+00:00",
+      "transport": "completed",
+      "domain": "succeeded"
+    }
+  ],
+  "host_rescan_and_read_acceptance": "passed",
+  "native_tasks_write_journeys": "pending",
+  "intended_device_popup": "not_observed",
+  "prior_activation_receipt_retained": true
+}

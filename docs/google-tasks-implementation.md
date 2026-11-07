@@ -6,7 +6,7 @@ Implementation starts at `d0bb86ce4330bb9d1febbc2686e4e43791deffca` (runtime
 source baseline `8488f165efc100436813f1bebda7d014dcd5846c`).
 Status: deployed from `c7d25789ecfb` with contract v68, 114 tools and plugin 2.2.0.
 All source-bound release groups and actual runtime Google write-method admission
-pass. Same-host Tasks journeys and intended-device popup observation remain pending;
+pass. Fresh ChatGPT Tasks reads pass. Host write journeys and intended-device popup observation remain pending;
 complete delta acceptance is not claimed. See the [activation receipt](../evidence/google-tasks-retirement/activation.json)
 and [same-App read-back](../evidence/google-tasks-retirement/hosted-plugin.json).
 Implementation notes below retain earlier checkpoint evidence; this status and the
@@ -37,11 +37,11 @@ acceptance matrix describe current readiness.
 | G2 DST | UTC start plus 60 elapsed seconds with independent offsets, actual rendering and reconciliation | Task marker compilation and rendering/reconciliation pass autumn and spring transitions, including real UTC transport acceptance |
 | G3 hierarchy/planning | Native cross-list/parent/sibling moves, exact identity and constraints; workload/reminder/inbox integration | Live moves carry children/grandchildren with stable identities and no source tombstones. Deletion emits tombstones. Parent completion/deletion cascades without a parent-ETag change on child creation; Operator adopted Google-style subtree semantics (ADR 014). Parent-only lifecycle writes, independent child read-back, native/Google stable-ID moves and immediate stale-ETag reconciliation pass native and isolated PostgreSQL checks. Concurrent ancestry moves retain actual mismatch evidence; conflicts, persistent polling/list loss and unsupported reminders use coalesced inbox notices. Bounded sibling read-back can confirm lost move acknowledgements without resending. Runtime method admission passes; same-host hierarchy journeys remain |
 | Authority/privacy | OAuth/local grant, owner isolation/revocation/triage rejection, genuine service roots, no sensitive invocation payloads | Shared-engine policy import creates no per-poll request/utterance; list/account/local/OAuth revocation, triage rejection and exact-effect admission covered. Native workflows, polling revocation and shared-write runner evidence pass; real provider acceptance remains |
-| Contracts | Six compact tools, every modified schema, 4/6/24 KiB and context/result budgets, generated docs/skill | Deployed catalogue has 114 tools, all six Tasks workflows and no retired alias registration. Eight new/modified definitions total 12,245 bytes. Plugin 2.2.0 read-back passes; host rescan pending |
+| Contracts | Six compact tools, every modified schema, 4/6/24 KiB and context/result budgets, generated docs/skill | Deployed catalogue has 114 tools, all six Tasks workflows and no retired alias registration. Eight new/modified definitions total 12,245 bytes. Plugin 2.2.0 read-back and fresh ChatGPT Tasks context pass |
 | Storage | Fresh/populated isolated PostgreSQL migrations, constraints/history/races, restart/drain and recovery | Tested immutable artifact passes fresh/empty migrations, retained populated downgrade refusal, atomic reminder/Task races and existing work/finance concurrency. Production drain/backup/upgrade/restart/health pass at 20261106a7b8 |
 | R1 retirement | Unique data migrated/disposed; all dedicated NocoDB runtime/access/startup removed; no fallback/dual write | Dedicated NocoDB containers, exclusive volumes/networks and images removed under disposition; encrypted recovery retained. Tested artifact cold startup and healthy production prove no runtime dependency |
 | R1 aliases | All fifteen hidden native aliases unregistered without effects; current routes/history still work | Removed from registry/dispatch; surviving native completion/retraction journeys pass; historical records retained |
-| Activation | Local gates, tested image, reviewed merge, synchronized main, backup/migration/health and same App/plugin refresh | PR65 merged; clean synchronized main deployed using tested image, durable drain, backup, migration and health checks. Runtime method admission and same-App plugin 2.2.0 read-back pass. Host Tasks journeys pending |
+| Activation | Local gates, tested image, reviewed merge, synchronized main, backup/migration/health and same App/plugin refresh | PR65 merged; clean synchronized main deployed using tested image, durable drain, backup, migration and health checks. Runtime method admission and same-App plugin 2.2.0 read-back pass. Fresh ChatGPT Tasks reads pass; write journeys pending |
 | Intended device | One actual notification observed on the intended device/client, independently recorded from API status | Pending |
 
 ## Initial inventory
@@ -285,3 +285,15 @@ reference. Native OAuth overview/account/context calls work. The authorized
 validation Calendar was adopted through an ordinary native command, with genuine
 request/ChangeSet attribution and no provider effect. A manual server rescan,
 new Tasks-tool journeys and intended-device popup observation remain outstanding.
+
+### Fresh ChatGPT context acceptance
+
+The Operator completed the same-App rescan and confirmed task context loads in a
+fresh chat. [host-context.json](../evidence/google-tasks-retirement/host-context.json)
+corroborates that observation with two successful docket_get_tasks_context calls
+and one docket_query_tasks call on contract v68. Access and method admission are
+ready; lists remain disabled until their explicit native policy is configured.
+The four older local tasks remain local. The current long-running Codex connection
+still exposes its cached older tool bindings, so the fresh ChatGPT chat is the
+available native host for the validation-list write and reminder journey. No
+legacy alias, fabricated request or direct production row edit is used to bypass it.

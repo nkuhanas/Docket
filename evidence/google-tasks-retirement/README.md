@@ -6,6 +6,11 @@ The [implementation matrix](../../docs/google-tasks-implementation.md) distingui
 implemented behavior, live API evidence and remaining acceptance. Same-host Tasks
 journeys and intended-device popup observation remain pending.
 
+[host-context.json](host-context.json) supersedes the initial rescan-pending status:
+the Operator confirms fresh ChatGPT Tasks context, and three successful completed
+v68 Tasks read calls corroborate it. Host write journeys and device display remain
+separate acceptance. The original activation/plugin receipts stay immutable.
+
 ## Activation
 
 [activation.json](activation.json) records the tested source/tree/image, 590 passing
