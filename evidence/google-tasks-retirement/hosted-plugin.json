@@ -1,0 +1,20 @@
+{
+  "recorded_at": "2026-11-07T01:34:06.553Z",
+  "plugin_id": "plugin_asdk_app_6aebd82ba1108191a77747be377965f8",
+  "app_id": "asdk_app_6aebd82ba1108191a77747be377965f8",
+  "previous_release_id": "pluginrel_6aed8a3a0cc881918fff5ef23158ae83",
+  "release_id": "pluginrel_6aee7fb51964819180ff390891072ccc",
+  "version": "2.2.0",
+  "scope": "USER",
+  "visibility": "PRIVATE",
+  "plugin_url": "https://chatgpt.com/plugins/plugin_asdk_app_6aebd82ba1108191a77747be377965f8",
+  "manifest_changes": "version only",
+  "presentation_and_configuration_preserved": true,
+  "app_binding_preserved": true,
+  "task_skill_reference_read_back": true,
+  "all_previous_paths_preserved": true,
+  "archive_sha256": "b24e62b84cb307f91339a93cf93fb10599e78273cf6bcc7cf04be32cdc425896",
+  "host_rescan_accepted": false,
+  "device_popup_observed": false,
+  "hosted_contract_exact_source_match": true
+}

@@ -4,40 +4,44 @@ Requirements: [SPEC 1.2](../SPEC.md), adopted from the
 [November 6 delta](../deltas/2026-11-06T17-59-26Z-google-tasks-and-nocodb-retirement.md).
 Implementation starts at `d0bb86ce4330bb9d1febbc2686e4e43791deffca` (runtime
 source baseline `8488f165efc100436813f1bebda7d014dcd5846c`).
-Status: adopted; implementation in progress. Deployed behavior remains SPEC 1.1
-until source-bound release validation and activation. No real provider/device
-acceptance is claimed by a fixture or disabled capability.
+Status: deployed from `c7d25789ecfb` with contract v68, 114 tools and plugin 2.2.0.
+All source-bound release groups and actual runtime Google write-method admission
+pass. Same-host Tasks journeys and intended-device popup observation remain pending;
+complete delta acceptance is not claimed. See the [activation receipt](../evidence/google-tasks-retirement/activation.json)
+and [same-App read-back](../evidence/google-tasks-retirement/hosted-plugin.json).
+Implementation notes below retain earlier checkpoint evidence; this status and the
+acceptance matrix describe current readiness.
 
 ## Scope and acceptance tracking
 
 | Requirement | Evidence required | State |
 | --- | --- | --- |
-| Adoption | One current SPEC, decisions/history and index reconciled | SPEC 1.2 adopted in working source |
+| Adoption | One current SPEC, decisions/history and index reconciled | SPEC 1.2 adopted and tracked |
 | R0 inventory | Exact ownership/status of NocoDB containers, networks, volumes, startup/access and unique data | Six dedicated evaluation containers, four exclusive volumes (including Redis), and two exclusive networks inventoried and removed under explicit Operator instruction |
 | R0 protected data | Consistent encrypted archive, checksums/recovery, schema/count/identity comparison and unique-data disposition | Three authenticated encrypted archives verified; isolated restores inventoried. Operator classified the legacy data as unnecessary and authorized disposal without import; protected archives retained |
 | G0 OAuth/readiness | Tasks scope profiles preserve granted scopes; atomic verified replacement and isolated feature readiness | Tasks consent completed, Calendar grants preserved and Tasks API enabled. Local context readiness and safe SERVICE_DISABLED diagnosis implemented |
-| G0 adapter | Real/fake/disabled Tasks read/write protocols, exact field/marker handling and guarded method dispatch | Transport/pagination, exact-version writes, unknown outcomes and scoped notes implemented with synthetic tests; shared-runner dispatch implemented; live validation pending |
-| G0 live capabilities | Method-specific controlled insert/patch/move/delete/date/time/uncertainty evidence | Real insert/patch/move/delete, date set/preserve/null, full limits, completion/reopening and response-discarded correlation checks pass on authorized targets. Native UI clock and hierarchy cases remain; runtime admission/activation pending |
-| G1 title path | Full 1,024-character Task and required Item schemas/columns/mutations/context/export, including creation without Item | Full canonical/import/native paths and isolated PostgreSQL proof pass; live Google roundtrip pending |
-| G1 title ownership | Typed derived-pair ownership, atomic renames, independent/shared/relinked relinquishment and concurrency | Typed ownership, native rename/relinquishment and concurrent PostgreSQL Task/Item rename pass; further independent-Item race rehearsal remains |
-| G1 durable domain | Scheduling/hierarchy, lists/policies, immutable observations, bindings/generations, baselines/conflicts and sync state | Typed storage, retained baselines/provider snapshots, per-field decisions and bounded policy-effect roots implemented; no live activation |
+| G0 adapter | Real/fake/disabled Tasks read/write protocols, exact field/marker handling and guarded method dispatch | Deployed shared-runner adapter; real current-grant insert/patch/move/delete method admission passes. Runtime status verifies all four methods; no gate bypass |
+| G0 live capabilities | Method-specific controlled insert/patch/move/delete/date/time/uncertainty evidence | Actual runtime probe passes full limits, date set/preserve/clear, completion/reopen, stale writes, stable cross-list identity and discarded-response recovery. Fixtures cleaned. Native clock loss led to accepted AM/PM headers |
+| G1 title path | Full 1,024-character Task and required Item schemas/columns/mutations/context/export, including creation without Item | Full canonical/import/native paths and isolated PostgreSQL proof pass; actual Google 1,024-character roundtrip and runtime field-limit admission pass. Host import journey remains |
+| G1 title ownership | Typed derived-pair ownership, atomic renames, independent/shared/relinked relinquishment and concurrency | Typed ownership and rename/relinquishment pass native tests and competing PostgreSQL Task/Item edits in the tested release artifact |
+| G1 durable domain | Scheduling/hierarchy, lists/policies, immutable observations, bindings/generations, baselines/conflicts and sync state | Typed storage and immutable roots/baselines/conflicts deployed at 20261106a7b8; runtime healthy. Selected-list host acceptance remains |
 | G1 reads/import | Context/query/export and selected-list import through admitted canonical services with policy/observation roots | Flat native context/query and lossless notes detail, policy imports and explicit linking implemented; synthetic native/PostgreSQL proofs pass |
-| G1 polling | Full hidden/completed/deleted pagination, overlap watermarks, resumability/full inventories and coverage | Worker wired; bounded discovery/list paging, leases, overlap/full inventories and revocation tests pass. Later-page parents remain observed for the next scan; live polling pending |
-| G2 task writes | Flat create/update/complete/reopen/retract and exact retry/preview, with atomic Tasks intents | Shared Operation/Target/Attempt queue wired; native-to-fake create/edit/complete/reopen/delete, sparse conditional retries and explicit uncertain-creation repair pass. Live G0 remains |
+| G1 polling | Full hidden/completed/deleted pagination, overlap watermarks, resumability/full inventories and coverage | Deployed bounded discovery/polling with leases, overlap/full inventories, exception reporting and revocation proofs. Lists start disabled until configured through native authority |
+| G2 task writes | Flat create/update/complete/reopen/retract and exact retry/preview, with atomic Tasks intents | Tested native/shared-runner create/edit/complete/reopen/delete deployed; all actual method gates pass. Same-host live task journey remains |
 | G2 conflict/lifecycle | Three-way field merge, delete/edit conflict, detachment/disable/list loss without global blocking | Per-field merge, native resolution/detachment, supersession and scoped outbound recovery pass; live cross-interface validation remains |
-| G2 markers/limits | Transport-only marker baseline separation, no blind insert retry or silent field truncation | Unknown inserts recover only after complete scoped correlation coverage; missing markers stay uncertain, explicit link parks original uncertainty honestly, and polling defers plausible pending creations. More live limits/hierarchy cases remain |
+| G2 markers/limits | Transport-only marker baseline separation, no blind insert retry or silent field truncation | Actual runtime probe verifies full limits and unique discarded-response correlation recovery with cleanup; ambiguous/lost identities remain uncertain without blind retries |
 | G2 reminders | Flat remind_at derives exact owned primary Calendar companion, routing, reschedule/null/completion cancellation and uncertainty | Atomic generations and both provider queues implemented; rescheduling and native/Google completion retire helpers. Pending/claimed/unknown-create windows and PostgreSQL replacement race pass. Owned Calendar clock edits/deletion use exact immutable authority and genuine Calendar observations through the shared ChangeSet engine; revoked grants, copied identities and unsupported all-day edits cannot mutate Tasks. API and device acceptance remain |
 | G2 time display | Visible AM/PM time without relying on Google's opaque native clock | Derived Google title headers implemented; scoped normalization preserves clean Task/Item titles and Google-side renames. Independent reminder dates are labelled; 1,024-character titles remain lossless with an explicit display limitation |
 | G2 privacy | Private/free actual request and read-back/reconciliation, existing zero-minute popup reused | Task generation flows serialize private/free popup-zero markers; real adapter read-back/privacy-change checks pass. Owned-helper changes resnapshot privacy/free popup-zero projections through scoped canonical effects; live-host/device acceptance remains |
 | G2 workload origin | Validated typed origin survives cache refresh/restart and excludes canonical/cache commitment/capacity accounting | Scoped generation/retained-operation origin survives full cache rebuild and retired/unknown-create generations; workload excludes it before timing/accounting. Copied labels remain ordinary observations |
 | G2 DST | UTC start plus 60 elapsed seconds with independent offsets, actual rendering and reconciliation | Task marker compilation and rendering/reconciliation pass autumn and spring transitions, including real UTC transport acceptance |
-| G3 hierarchy/planning | Native cross-list/parent/sibling moves, exact identity and constraints; workload/reminder/inbox integration | Live moves carry children/grandchildren with stable identities and no source tombstones. Deletion emits tombstones. Parent completion/deletion cascades without a parent-ETag change on child creation; Operator adopted Google-style subtree semantics (ADR 014). Parent-only lifecycle writes, independent child read-back, native/Google stable-ID moves and immediate stale-ETag reconciliation pass native and isolated PostgreSQL checks. Concurrent ancestry moves retain actual mismatch evidence; conflicts, persistent polling/list loss and unsupported reminders use coalesced inbox notices. Bounded sibling read-back can confirm lost move acknowledgements without resending. Runtime method admission and live-host checks remain |
+| G3 hierarchy/planning | Native cross-list/parent/sibling moves, exact identity and constraints; workload/reminder/inbox integration | Live moves carry children/grandchildren with stable identities and no source tombstones. Deletion emits tombstones. Parent completion/deletion cascades without a parent-ETag change on child creation; Operator adopted Google-style subtree semantics (ADR 014). Parent-only lifecycle writes, independent child read-back, native/Google stable-ID moves and immediate stale-ETag reconciliation pass native and isolated PostgreSQL checks. Concurrent ancestry moves retain actual mismatch evidence; conflicts, persistent polling/list loss and unsupported reminders use coalesced inbox notices. Bounded sibling read-back can confirm lost move acknowledgements without resending. Runtime method admission passes; same-host hierarchy journeys remain |
 | Authority/privacy | OAuth/local grant, owner isolation/revocation/triage rejection, genuine service roots, no sensitive invocation payloads | Shared-engine policy import creates no per-poll request/utterance; list/account/local/OAuth revocation, triage rejection and exact-effect admission covered. Native workflows, polling revocation and shared-write runner evidence pass; real provider acceptance remains |
-| Contracts | Six compact tools, every modified schema, 4/6/24 KiB and context/result budgets, generated docs/skill | Local v68 source advertises 114 tools; six new plus two changed definitions total 12,245 bytes within 4/6/24 KiB budgets. Bundle skill/host refresh remains |
-| Storage | Fresh/populated isolated PostgreSQL migrations, constraints/history/races, restart/drain and recovery | Fresh/empty roundtrip, retained revisions, shared-runner delivery and atomic reminder/competing replacement proofs pass at 20261106f6a7; populated narrowing refuses without data loss. Release-artifact upgrade/restart/drain remains |
-| R1 retirement | Unique data migrated/disposed; all dedicated NocoDB runtime/access/startup removed; no fallback/dual write | Exact owned containers, volumes and networks removed and verified absent. Startup/ingress/secret-name/environment checks found only the retained archive key. Production remains healthy; release cold-start verification pending |
+| Contracts | Six compact tools, every modified schema, 4/6/24 KiB and context/result budgets, generated docs/skill | Deployed catalogue has 114 tools, all six Tasks workflows and no retired alias registration. Eight new/modified definitions total 12,245 bytes. Plugin 2.2.0 read-back passes; host rescan pending |
+| Storage | Fresh/populated isolated PostgreSQL migrations, constraints/history/races, restart/drain and recovery | Tested immutable artifact passes fresh/empty migrations, retained populated downgrade refusal, atomic reminder/Task races and existing work/finance concurrency. Production drain/backup/upgrade/restart/health pass at 20261106a7b8 |
+| R1 retirement | Unique data migrated/disposed; all dedicated NocoDB runtime/access/startup removed; no fallback/dual write | Dedicated NocoDB containers, exclusive volumes/networks and images removed under disposition; encrypted recovery retained. Tested artifact cold startup and healthy production prove no runtime dependency |
 | R1 aliases | All fifteen hidden native aliases unregistered without effects; current routes/history still work | Removed from registry/dispatch; surviving native completion/retraction journeys pass; historical records retained |
-| Activation | Local gates, tested image, reviewed merge, synchronized main, backup/migration/health and same App/plugin refresh | Pending |
+| Activation | Local gates, tested image, reviewed merge, synchronized main, backup/migration/health and same App/plugin refresh | PR65 merged; clean synchronized main deployed using tested image, durable drain, backup, migration and health checks. Runtime method admission and same-App plugin 2.2.0 read-back pass. Host Tasks journeys pending |
 | Intended device | One actual notification observed on the intended device/client, independently recorded from API status | Pending |
 
 ## Initial inventory
@@ -246,8 +250,8 @@ hand-written success report. Scoped target checks precede fixture creation;
 cleanup touches only identified fixtures. A grant rotating during the probe
 records no admission, and normal access-token refresh preserves existing evidence.
 `status` exposes readiness without credentials. The source procedure is
-[Google Tasks operations](google-tasks-operations.md). Runtime execution and
-production admission are still pending deployment.
+[Google Tasks operations](google-tasks-operations.md). Actual runtime execution and current-grant admission now pass for all four methods;
+see the activation receipt. No credential fingerprints are published.
 
 A sibling hint is now explicitly a provider projection in canonical previews,
 preventing the former missing-Task-column failure. Lost move/insert responses with
@@ -257,3 +261,27 @@ stays uncertain. A satisfied move acknowledgement recovers without a second move
 The synthetic lost-ack journey passes; no canonical sibling-rank column or new
 MCP argument is introduced. Native instructions remain 1,889 bytes and the prepared
 plugin source is version 2.2.0. Hosted identity/configuration remain unchanged.
+
+## Validated activation — November 6, 2026
+
+The final source snapshot passed 590 tests, Ruff, strict mypy and all selected
+native/provider/storage/release groups. Its immutable image passed native startup
+with 114 tools, migration roundtrips, retained-history refusal, exact preview and
+atomic batch checks, and PostgreSQL work/finance/task/reminder/subtree races.
+Rehearsal assertions now select only their owned Calendar records, refresh their
+exact account/calendar and verify the new populated reminder-authority downgrade
+guard without discarding retained history.
+
+PR65 merged by a history-preserving fast-forward. Clean synchronized main deployed
+through `scripts/docket deploy`; the tested image, prior rollback image, pre-migration
+backup, drain, schema head and health are recorded in the activation receipt.
+Actual runtime method admission exercised only the two authorized disposable lists,
+cleaned its fixtures and verified all four methods against the current Google grant.
+Discovery is enabled; personal lists have not been silently enrolled in two-way sync.
+
+The same private App/plugin is updated to 2.2.0. Read-back confirms the original
+App binding, presentation, connection metadata and audience, plus the compact Tasks
+reference. Native OAuth overview/account/context calls work. The authorized
+validation Calendar was adopted through an ordinary native command, with genuine
+request/ChangeSet attribution and no provider effect. A manual server rescan,
+new Tasks-tool journeys and intended-device popup observation remain outstanding.

@@ -1,0 +1,120 @@
+{
+  "recorded_at": "2026-11-07T01:34:06.602312+00:00",
+  "implementation_commit": "c7d25789ecfbae83ef78fa28f63222dfda4d695a",
+  "source_tree": "e0b316a5acef62939e35340ce92a85d46b75a81a",
+  "tested_and_deployed_image": "sha256:77df1b9e86e5b6761a11e8478f11d3b902621487738884103b45fc96d57abb02",
+  "release_checks": {
+    "native": "passed",
+    "provider": "passed",
+    "release": "passed",
+    "storage": "passed",
+    "static": "passed",
+    "postgres": "passed"
+  },
+  "release_elapsed_seconds": 237.61,
+  "snapshot_test_cases": 590,
+  "postgres_schema_head": "20261106a7b8",
+  "deployment": {
+    "source_synchronized_clean_main": true,
+    "pr": 65,
+    "drain_completed": true,
+    "pre_migration_backup_retained": true,
+    "rollback_image": "docket-docket:rollback-20261107T013132Z",
+    "health": "healthy",
+    "native_authentication_boundary": "passed"
+  },
+  "runtime_tasks_enabled": true,
+  "runtime_method_admission": {
+    "account_ref": "acct_01M1APWBFXS7CH0J22APH20KPA",
+    "adapter_version": 1,
+    "admission_recorded": true,
+    "capabilities": {
+      "delete": {
+        "conditional_write": true
+      },
+      "insert": {
+        "date_write": true,
+        "field_limits": true,
+        "uncertain_insert_recovery": true
+      },
+      "move": {
+        "conditional_write": true,
+        "stable_move_identity": true
+      },
+      "patch": {
+        "completion_reopen": true,
+        "conditional_write": true,
+        "date_write": true
+      }
+    },
+    "checks": {
+      "completion_reopen": true,
+      "date_write": true,
+      "delete_conditional_tombstone": true,
+      "discarded_insert_correlation": true,
+      "field_limits": true,
+      "move_conditional_identity": true,
+      "patch_conditional_write": true
+    },
+    "created_records_cleaned": true,
+    "current_grant_bound": true,
+    "discarded_response_is_controlled_recovery_test": true,
+    "evidence_sha256": "ad841fc7371b0b4649dfeec2051fff62817a9f283031383f34cbb50bf0105115",
+    "methods_passed": {
+      "delete": true,
+      "insert": true,
+      "move": true,
+      "patch": true
+    },
+    "ok": true,
+    "real_google_api": true,
+    "safe_failures": {}
+  },
+  "runtime_method_readiness": {
+    "enabled": true,
+    "methods": {
+      "delete": {
+        "date_write_verified": false,
+        "verified": true
+      },
+      "insert": {
+        "date_write_verified": true,
+        "verified": true
+      },
+      "move": {
+        "date_write_verified": false,
+        "verified": true
+      },
+      "patch": {
+        "date_write_verified": true,
+        "verified": true
+      }
+    },
+    "ok": true
+  },
+  "runtime_catalogue": {
+    "tools": 114,
+    "six_tasks_tools_present": true,
+    "retired_alias_registration_removed": true
+  },
+  "native_oauth_checks": {
+    "overview": "passed",
+    "calendar_context": "passed",
+    "provider_account_includes_google_tasks": true,
+    "validation_calendar_adopted_through_native_command": true,
+    "adoption_request_ref": "req_01M6ST6EN62HT4NYD3E1RXCTHA",
+    "adoption_changeset_ref": "chg_01M6ST6EPA6P67GP8TZHCK99E6",
+    "adoption_has_no_provider_effect": true
+  },
+  "neighbors": {
+    "aphelion_api": "running",
+    "aphelion_worker": "running",
+    "ollama": "healthy"
+  },
+  "nocodb_runtime_removed": true,
+  "same_app_plugin": "2.2.0",
+  "host_rescan_acceptance": "pending",
+  "native_tasks_live_journeys": "pending",
+  "intended_device_popup": "not_observed",
+  "complete_delta_acceptance": false
+}
