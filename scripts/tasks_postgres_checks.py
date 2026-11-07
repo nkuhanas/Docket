@@ -220,7 +220,9 @@ async def check_tasks(settings, factory, _principal):
             binding = session.get(TaskProviderBinding, binding_ref)
             assert binding.provider_snapshot["title"] == task.title
             assert binding.provider_snapshot["transport_title_prefix"] == "5:00 PM — "
-            assert session.scalar(select(CalendarEventCache.origin_kind)) == "task_reminder"
+            assert session.scalar(select(CalendarEventCache.origin_kind).where(
+                CalendarEventCache.origin_owner_ref == task_ref,
+            )) == "task_reminder"
         packet = await call("docket_get_tasks_context", {"refs": [task_ref]})
         replacements = [await call("docket_update_task", {
             "context_id": packet["context_id"], "operation_id": "pg-reminder-race-" + str(hour),
@@ -235,10 +237,15 @@ async def check_tasks(settings, factory, _principal):
             assert session.scalar(select(Task.reminder_generation).where(
                 Task.ref_id == task_ref,
             )) == 2
-            assert session.scalar(select(func.count()).select_from(TaskReminderGeneration)) == 2
+            assert session.scalar(select(func.count()).select_from(TaskReminderGeneration).where(
+                TaskReminderGeneration.task_ref == task_ref,
+            )) == 2
             assert session.scalar(select(func.count()).select_from(
                 TemporalCalendarProjection,
-            ).where(TemporalCalendarProjection.enabled.is_(True))) == 1
+            ).join(TaskReminderGeneration,
+                   TaskReminderGeneration.projection_ref == TemporalCalendarProjection.ref_id,
+            ).where(TemporalCalendarProjection.enabled.is_(True),
+                    TaskReminderGeneration.task_ref == task_ref)) == 1
         drain()
         assert sum(row.snapshot.get("status") != "cancelled"
                    for row in calendar.events.values()) == 1
@@ -281,8 +288,14 @@ async def check_tasks(settings, factory, _principal):
             assert session.scalar(select(func.count()).select_from(
                 AuthenticatedRequest,
             )) == requests_before
-            assert session.scalar(select(func.count()).select_from(TaskReminderAuthority)) == 3
-            authority_ref = session.scalar(select(TaskReminderAuthority.generation_ref))
+            assert session.scalar(select(func.count()).select_from(TaskReminderAuthority).join(
+                TaskReminderGeneration,
+                TaskReminderGeneration.ref_id == TaskReminderAuthority.generation_ref,
+            ).where(TaskReminderGeneration.task_ref == task_ref)) == 3
+            authority_ref = session.scalar(select(TaskReminderAuthority.generation_ref).join(
+                TaskReminderGeneration,
+                TaskReminderGeneration.ref_id == TaskReminderAuthority.generation_ref,
+            ).where(TaskReminderGeneration.task_ref == task_ref))
         try:
             with factory.begin() as session:
                 session.execute(update(TaskReminderAuthority).where(
