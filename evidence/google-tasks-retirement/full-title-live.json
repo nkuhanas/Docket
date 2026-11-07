@@ -1,0 +1,22 @@
+{
+  "real_google_api": true,
+  "target": "Docket validation",
+  "standing_policy_ref": "tpol_01M6STM267AKZ8PSEA8V763HM4",
+  "native_policy_request_ref": "req_01M6STKTYJYEJMTN5DRV3EBR2V",
+  "imports_use_admitted_service": true,
+  "manual_production_row_edits": false,
+  "task_ref": "task_01M6STXYYSK4PNWQFGCM8A6N65",
+  "item_ref": "item_01M6STXYYMQ8613CW39952VRXX",
+  "imported_task_title_length": 1024,
+  "imported_item_title_length": 1024,
+  "derived_title_ownership": true,
+  "google_rename_updates_owned_item": true,
+  "renamed_task_title_length": 1024,
+  "renamed_item_title_length": 1024,
+  "google_tombstone_confirmed": true,
+  "canonical_retraction_with_history_retained": true,
+  "own_fixture_cleaned": true,
+  "ok": true,
+  "native_context_task_title_length": 1024,
+  "native_context_item_title_length": 1024
+}

@@ -1,0 +1,231 @@
+{
+  "recorded_at": "2026-11-07T01:57:43.685741+00:00",
+  "operator_confirmed_native_journey": true,
+  "real_google_delivery": true,
+  "contract": "docket-tools-2026-11-06-v68",
+  "native_write_calls": [
+    {
+      "ref": "call_01M6STKTYGHW38SCBFZAFXHZT0",
+      "tool": "docket_configure_task_list",
+      "domain": "rejected",
+      "error_code": "targets_not_in_context",
+      "request_ref": "req_01M6STKTYJYEJMTN5DRV3EBR2V"
+    },
+    {
+      "ref": "call_01M6STM24BXSAW81TE2X35VF9B",
+      "tool": "docket_configure_task_list",
+      "domain": "succeeded",
+      "error_code": null,
+      "request_ref": "req_01M6STKTYJYEJMTN5DRV3EBR2V"
+    },
+    {
+      "ref": "call_01M6STM3QEBTNZZK412Y29AD61",
+      "tool": "docket_configure_task_list",
+      "domain": "succeeded",
+      "error_code": null,
+      "request_ref": "req_01M6STM3QVZXCSPQKQ3B501DNR"
+    },
+    {
+      "ref": "call_01M6STMERWFKM9NY9JSQ5BHJ0C",
+      "tool": "docket_create_task",
+      "domain": "succeeded",
+      "error_code": null,
+      "request_ref": "req_01M6STMERY934NGZKZ57VP7JWN"
+    },
+    {
+      "ref": "call_01M6STMMH8HXNFSFXFYMV6XJ0C",
+      "tool": "docket_create_task",
+      "domain": "succeeded",
+      "error_code": null,
+      "request_ref": "req_01M6STMMHAD5WGW1VGXWJBSCRG"
+    },
+    {
+      "ref": "call_01M6STN37X9RF9S3SS9WN3G9V1",
+      "tool": "docket_update_task",
+      "domain": "succeeded",
+      "error_code": null,
+      "request_ref": "req_01M6STN37ZJB2VDK2VN72VXBZQ"
+    },
+    {
+      "ref": "call_01M6STN4GHHHMQMNZVDS2X4VJT",
+      "tool": "docket_update_task",
+      "domain": "succeeded",
+      "error_code": null,
+      "request_ref": "req_01M6STN4GK8XYSYW8BJVXJJ4TH"
+    },
+    {
+      "ref": "call_01M6STNE664EE0FYA9R0X8H59E",
+      "tool": "docket_update_task",
+      "domain": "succeeded",
+      "error_code": null,
+      "request_ref": "req_01M6STNE6KEHKECNS29DCTZJYB"
+    },
+    {
+      "ref": "call_01M6STNQD7HVVDD45BX3YCE7FN",
+      "tool": "docket_update_task",
+      "domain": "rejected",
+      "error_code": "task_binding_changed",
+      "request_ref": "req_01M6STNQDMKEMXBQMEJMSZW9BM"
+    },
+    {
+      "ref": "call_01M6STNX15181AWW1W3B3MSE2T",
+      "tool": "docket_update_task",
+      "domain": "succeeded",
+      "error_code": null,
+      "request_ref": "req_01M6STNQDMKEMXBQMEJMSZW9BM"
+    },
+    {
+      "ref": "call_01M6STP9KJCMTWJMZYWR404WN7",
+      "tool": "docket_update_task",
+      "domain": "succeeded",
+      "error_code": null,
+      "request_ref": "req_01M6STP9KNCH0Q5MRTDZT57QQH"
+    },
+    {
+      "ref": "call_01M6STPJCZNF8K3S565REQ9XMW",
+      "tool": "docket_update_task",
+      "domain": "succeeded",
+      "error_code": null,
+      "request_ref": "req_01M6STPJDB46RKVAXZERFG1B0E"
+    },
+    {
+      "ref": "call_01M6STPX6DSFHVZTY94PR6NP9K",
+      "tool": "docket_retract_record",
+      "domain": "succeeded",
+      "error_code": null,
+      "request_ref": "req_01M6STPX6FGGFX9VXWYK4256ZR"
+    },
+    {
+      "ref": "call_01M6STQCJXTP47S027M7NSYVS2",
+      "tool": "docket_create_task",
+      "domain": "succeeded",
+      "error_code": null,
+      "request_ref": "req_01M6STQCK0X1K6PKMWK2JQKJG6"
+    }
+  ],
+  "subtree": [
+    {
+      "task_ref": "task_01M6STMEVAD3MXDAG48M9QDZMH",
+      "item_ref": "item_01M6STMEV6G67SGPTWN83FQBET",
+      "final_version": 7,
+      "final_state": "not_started",
+      "canonical_status": "retracted",
+      "retained_binding_revisions": 10,
+      "provider_identity_stable": true,
+      "lists_seen": 2,
+      "binding_active": false,
+      "notes_changed": true,
+      "scheduled_day_changed": true
+    },
+    {
+      "task_ref": "task_01M6STMMKAZQ2CWTM6MG10FH39",
+      "item_ref": "item_01M6STMMK7Y6ZDW944FGRCCMPV",
+      "final_version": 6,
+      "final_state": "completed",
+      "canonical_status": "retracted",
+      "retained_binding_revisions": 10,
+      "provider_identity_stable": true,
+      "lists_seen": 2,
+      "binding_active": false,
+      "notes_changed": true,
+      "scheduled_day_changed": true
+    }
+  ],
+  "confirmed_operations": [
+    {
+      "ref": "op_01M6STMEVRKTX6C991K3RVN3Z1",
+      "type": "tasks_insert",
+      "task_ref": "task_01M6STMEVAD3MXDAG48M9QDZMH",
+      "status": "succeeded"
+    },
+    {
+      "ref": "op_01M6STMMKHD631H4JQY1TRB8AH",
+      "type": "tasks_insert",
+      "task_ref": "task_01M6STMMKAZQ2CWTM6MG10FH39",
+      "status": "succeeded"
+    },
+    {
+      "ref": "op_01M6STN3A65BPK8NHGMDABABXJ",
+      "type": "tasks_patch",
+      "task_ref": "task_01M6STMEVAD3MXDAG48M9QDZMH",
+      "status": "succeeded"
+    },
+    {
+      "ref": "op_01M6STN3A9685H2HQK401ZGP1A",
+      "type": "tasks_patch",
+      "task_ref": "task_01M6STMEVAD3MXDAG48M9QDZMH",
+      "status": "succeeded"
+    },
+    {
+      "ref": "op_01M6STN4JPJ8QV3GYX0QNG482E",
+      "type": "tasks_patch",
+      "task_ref": "task_01M6STMMKAZQ2CWTM6MG10FH39",
+      "status": "succeeded"
+    },
+    {
+      "ref": "op_01M6STN4JSAVQNTW3VVSQ8V2NN",
+      "type": "tasks_patch",
+      "task_ref": "task_01M6STMMKAZQ2CWTM6MG10FH39",
+      "status": "succeeded"
+    },
+    {
+      "ref": "op_01M6STNE8VG9ATX49E3KBSAD26",
+      "type": "tasks_patch",
+      "task_ref": "task_01M6STMEVAD3MXDAG48M9QDZMH",
+      "status": "succeeded"
+    },
+    {
+      "ref": "op_01M6STNE908BRWYVZFX2AHXDK8",
+      "type": "tasks_patch",
+      "task_ref": "task_01M6STMMKAZQ2CWTM6MG10FH39",
+      "status": "succeeded"
+    },
+    {
+      "ref": "op_01M6STNX3MKT7DK2C2SK2Z9XRR",
+      "type": "tasks_patch",
+      "task_ref": "task_01M6STMEVAD3MXDAG48M9QDZMH",
+      "status": "succeeded"
+    },
+    {
+      "ref": "op_01M6STP9PESGQY0142A5YD0G5K",
+      "type": "tasks_move",
+      "task_ref": "task_01M6STMEVAD3MXDAG48M9QDZMH",
+      "status": "succeeded"
+    },
+    {
+      "ref": "op_01M6STP9PJ0MNG0F0J6ZKPWVRP",
+      "type": "tasks_move",
+      "task_ref": "task_01M6STMMKAZQ2CWTM6MG10FH39",
+      "status": "succeeded"
+    },
+    {
+      "ref": "op_01M6STPJFMSGDRBJ841P33F0VM",
+      "type": "tasks_move",
+      "task_ref": "task_01M6STMEVAD3MXDAG48M9QDZMH",
+      "status": "succeeded"
+    },
+    {
+      "ref": "op_01M6STPJFR4ZE66VXR3H63Q9ST",
+      "type": "tasks_move",
+      "task_ref": "task_01M6STMMKAZQ2CWTM6MG10FH39",
+      "status": "succeeded"
+    },
+    {
+      "ref": "op_01M6STPX95PKD4CM83C9GBXPCM",
+      "type": "tasks_delete",
+      "task_ref": "task_01M6STMEVAD3MXDAG48M9QDZMH",
+      "status": "succeeded"
+    },
+    {
+      "ref": "op_01M6STPX9AYMT1GVJCD0EG8ZNY",
+      "type": "tasks_delete",
+      "task_ref": "task_01M6STMMKAZQ2CWTM6MG10FH39",
+      "status": "succeeded"
+    }
+  ],
+  "parent_reopen_preserved_completed_child": true,
+  "four_older_local_tasks_unchanged": true,
+  "my_tasks_mode": "disabled",
+  "notification_check_task_ref": "task_01M6STQCN6XXYVS4CMGZZW93HD",
+  "device_notification": "first_popup_not_received; 6 PM retry pending"
+}

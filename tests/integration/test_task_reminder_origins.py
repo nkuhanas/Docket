@@ -13,6 +13,7 @@ from docket.config import get_settings
 from docket.models import (
     CalendarEventCache,
     CalendarLane,
+    ChangeSet,
     ReminderPlan,
     Task,
     TaskReminderGeneration,
@@ -23,6 +24,7 @@ from docket.providers.google.calendar import CalendarSnapshotEvent
 from docket.providers.google.fake_calendar import FakeCalendarProvider
 from docket.schemas.authority import ChangeSetCommit, ProviderIntentInput
 from docket.services.calendar_sync import CalendarSyncService
+from docket.services.changeset_delivery import ChangeSetDeliveryService
 from docket.services.operations import OperationRunner
 from docket.services.provider_intents import ProviderIntentService
 from docket.services.task_reminder_origins import task_reminder_origins
@@ -125,6 +127,21 @@ def test_rendered_owned_marker_survives_cache_rebuild_and_does_not_consume_capac
     assert last.astimezone(UTC) - first.astimezone(UTC) == timedelta(seconds=60)
     zone = ZoneInfo("America/Los_Angeles")
     assert first.astimezone(zone).utcoffset() != last.astimezone(zone).utcoffset()
+    with session_factory() as session:
+        task = session.scalar(select(Task).where(Task.ref_id == task_ref))
+        changeset = session.scalar(select(ChangeSet).where(
+            ChangeSet.ref_id == task.created_by_changeset_ref,
+        ))
+        delivery = ChangeSetDeliveryService(session).read(changeset)
+        marker = next(row for row in delivery["items"] if row["target_ref"] == projection_ref)
+        assert "snapshot_diagnostic" not in marker
+        timing = marker["timing"]
+        reported_first = datetime.fromisoformat(timing["start_local"])
+        reported_last = datetime.fromisoformat(timing["end_local"])
+        assert reported_first.astimezone(UTC) == first.astimezone(UTC)
+        assert reported_last.astimezone(UTC) == last.astimezone(UTC)
+        assert (reported_first.astimezone(zone).utcoffset()
+                != reported_last.astimezone(zone).utcoffset())
     with session_factory.begin() as session:
         row = session.scalar(select(CalendarEventCache))
         if outcome == "success":

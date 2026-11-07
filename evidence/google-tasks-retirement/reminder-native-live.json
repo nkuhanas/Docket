@@ -1,0 +1,30 @@
+{
+  "verified_at": "2026-11-07T01:46:26.094003+00:00",
+  "real_google_api": true,
+  "task_ref": "task_01M6STQCN6XXYVS4CMGZZW93HD",
+  "calendar_start": "2026-11-06T17:47:10-08:00",
+  "elapsed_seconds": 60,
+  "visibility": "private",
+  "transparency": "transparent",
+  "reminders": {
+    "useDefault": false,
+    "overrides": [
+      {
+        "method": "popup",
+        "minutes": 0
+      }
+    ]
+  },
+  "task_title_header": "5:47 PM",
+  "google_task_and_calendar_read_back": true,
+  "device_display": "operator_did_not_receive_popup",
+  "browser_and_iphone_timed_event_visible": true,
+  "cache_refresh": {
+    "real_google_calendar_snapshot_refresh": true,
+    "new_cache_generation": true,
+    "persisted_typed_origin": "task_reminder",
+    "task_ref": "task_01M6STQCN6XXYVS4CMGZZW93HD",
+    "projection_ref": "tproj_01M6STQCNDM3GDK33PR06K9XT9",
+    "elapsed_seconds": 60.0
+  }
+}

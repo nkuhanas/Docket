@@ -126,6 +126,16 @@ async def test_flat_reminder_reschedules_and_completes_without_changing_schedule
         assert first.snapshot["visibility"] == "private"
         assert first.snapshot["transparency"] == "transparent"
         assert first.snapshot["reminders"]["overrides"] == [{"method": "popup", "minutes": 0}]
+        delivery = await call("docket_get_history_entry", {
+            "ref": result["changeset_ref"], "view": "delivery",
+        })
+        marker = next(row for row in delivery["items"]
+                      if row["operation_type"] == "calendar_create_event")
+        assert "snapshot_diagnostic" not in marker
+        assert marker["timing"] == {
+            "kind": "timed", "start_local": "2026-11-13T17:00:00-08:00",
+            "end_local": "2026-11-13T17:01:00-08:00", "timezone": "America/Los_Angeles",
+        }
         assert next(iter(provider.tasks.values()))["title"] == (
             "5:00 PM — Task with an exact clock"
         )

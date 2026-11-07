@@ -33,8 +33,10 @@ PostgreSQL migration/concurrency proofs, deployment and actual Google method
 admission pass in the [activation receipt](evidence/google-tasks-retirement/activation.json).
 The Operator confirms fresh ChatGPT task context, corroborated by successful v68
 calls in the [host read receipt](evidence/google-tasks-retirement/host-context.json).
+[Native write evidence](evidence/google-tasks-retirement/native-journey.json) confirms
+creation/editing, subtree lifecycle and stable-ID moves with actual Google delivery.
 The [implementation report](docs/google-tasks-implementation.md) tracks remaining
-same-host write journeys and intended-device popup acceptance. Deployment does not
+intended-device popup acceptance after successful same-host write journeys. Deployment does not
 substitute for those observations; complete delta acceptance remains pending.
 
 The Operator instruction to implement the [work-attribution delta](deltas/2026-11-05T21-18-26Z-work-attribution-and-personal-operations.md)
@@ -538,6 +540,6 @@ disabled required operations do not complete two-way synchronization.
 
 | Version | Change |
 | --- | --- |
-| 1.2 | Adopts the November 6 Google Tasks/NocoDB delta and revised reviews under the Operator implementation goal. Live evidence clarifies UTC marker transport; Operator amendments select AM/PM headers after native-clock loss and Google-style Task subtrees (ADRs 011, 014). Implementation is deployed from c7d25789ecfb with actual method admission and plugin 2.2.0. Fresh ChatGPT Tasks context passes; host write journeys and device acceptance remain pending. |
+| 1.2 | Adopts the November 6 Google Tasks/NocoDB delta and revised reviews under the Operator implementation goal. Live evidence clarifies UTC marker transport; Operator amendments select AM/PM headers after native-clock loss and Google-style Task subtrees (ADRs 011, 014). Implementation is deployed from c7d25789ecfb with actual method admission and plugin 2.2.0. Fresh ChatGPT Tasks context and native write journeys pass; device popup acceptance remains pending. |
 | 1.1 | Adopts the November 5 work-attribution/personal-operations delta including catalogue consolidation. C0–P2 and optional visibility are implemented, deployed and host-accepted, with separate phase evidence; external provider choices remain a concrete follow-on delta. Implementation clarifies revision-pinned visibility and nonblocking invalidation (ADR 009). |
 | 1.0 | First current SPEC synthesized from signed ontology and Operator amendments; adopts November 4 context/local-CI delta and retirement cleanup. No invented prior version. Implemented, deployed and verified through live native-tool use. |

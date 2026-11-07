@@ -83,3 +83,18 @@ lists/Calendar. Observe one exact-time popup on the intended device/client and
 record the result independently. Do not infer display from Calendar event creation.
 Use the [operations procedure](../../docs/google-tasks-operations.md); no new Auth0
 permission, callback URL, foreground proof or repeated release approval is needed.
+
+## Native writes and device retry
+
+[native-journey.json](native-journey.json) records real v68 task configuration,
+creation/editing, current-subtree completion/reopening, stable-ID cross-list moves
+and retraction with fifteen confirmed provider operations. [full-title-live.json](full-title-live.json)
+adds real 1,024-character import/owned-Item rename, native context and safe cleanup.
+
+[reminder-native-live.json](reminder-native-live.json) confirms the independent timed
+Calendar event, privacy/free popup-zero read-back and typed cache origin after a
+new real Google snapshot generation. The first popup was not received despite
+browser/iPhone event visibility. [reminder-six-pm.json](reminder-six-pm.json) records
+the Operator-requested 6 PM native reschedule and actual provider acceptance; device
+observation remains pending. Earlier pending-write activation receipts are retained
+as historical evidence, not overwritten with later outcomes.

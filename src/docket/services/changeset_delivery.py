@@ -9,7 +9,9 @@ from __future__ import annotations
 import base64
 import json
 from collections import Counter
+from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import case, func, select, true
@@ -26,6 +28,32 @@ _STATES = {
     "reconciliation_required": "reconciling",
     "superseded": "superseded",
 }
+
+
+def _snapshot_timing(value: Any) -> dict[str, Any]:
+    try:
+        return TypeAdapter(CalendarEventTiming).validate_python(value).model_dump(
+            mode="json", exclude_none=True,
+        )
+    except ValidationError:
+        # Committed reminder projections carry independently offset endpoints,
+        # including the two different folds of an autumn marker. The public
+        # event-input model deliberately accepts only offset-free wall clocks.
+        if (
+            not isinstance(value, dict) or value.get("kind") != "timed"
+            or set(value) - {"kind", "start_local", "end_local", "timezone", "fold"}
+            or value.get("fold") not in {None, 0, 1}
+        ):
+            raise
+        zone = ZoneInfo(value["timezone"])
+        first, last = (datetime.fromisoformat(value[key]) for key in ("start_local", "end_local"))
+        if (
+            first.utcoffset() is None or last.utcoffset() is None
+            or last.astimezone(UTC) <= first.astimezone(UTC)
+        ):
+            raise ValueError("invalid committed reminder interval") from None
+        return {"kind": "timed", "start_local": first.astimezone(zone).isoformat(),
+                "end_local": last.astimezone(zone).isoformat(), "timezone": zone.key}
 
 
 def _next_action(state: str, error: str | None) -> str:
@@ -118,10 +146,8 @@ class ChangeSetDeliveryService:
             timing_invalid = False
             if event.get("timing") is not None:
                 try:
-                    timing = TypeAdapter(CalendarEventTiming).validate_python(
-                        event["timing"]
-                    ).model_dump(mode="json", exclude_none=True)
-                except ValidationError:
+                    timing = _snapshot_timing(event["timing"])
+                except (ValueError, TypeError, KeyError):
                     timing_invalid = True
             state = _STATES.get(row["target_status"], "unknown")
             error = row["target_error"] or row["operation_error"]

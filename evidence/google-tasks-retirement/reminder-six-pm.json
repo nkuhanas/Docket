@@ -1,0 +1,30 @@
+{
+  "verified_at": "2026-11-07T01:53:08.037502+00:00",
+  "real_google_api": true,
+  "task_ref": "task_01M6STQCN6XXYVS4CMGZZW93HD",
+  "generation": 2,
+  "start": {
+    "dateTime": "2026-11-06T18:00:00-08:00",
+    "timeZone": "America/Los_Angeles"
+  },
+  "end": {
+    "dateTime": "2026-11-06T18:01:00-08:00",
+    "timeZone": "America/Los_Angeles"
+  },
+  "visibility": "private",
+  "transparency": "transparent",
+  "reminders": {
+    "useDefault": false,
+    "overrides": [
+      {
+        "method": "popup",
+        "minutes": 0
+      }
+    ]
+  },
+  "task_time_header": "6:00 PM",
+  "old_marker_cancelled": true,
+  "device_popup": "pending",
+  "native_request_ref": "req_01M6SVA2ZA66ED69AD8KN1G45T",
+  "native_changeset_ref": "chg_01M6SVA3090F2Q9J5GRWDQ0AD2"
+}
